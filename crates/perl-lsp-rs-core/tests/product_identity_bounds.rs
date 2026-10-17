@@ -126,3 +126,48 @@ fn oversized_build_and_candidate_inputs_fail_closed() {
         oversized_candidate.limitations
     );
 }
+
+#[test]
+fn executable_owned_source_uses_existing_packet_normalization() {
+    let baseline = BinaryIdentityPacketV1::embedded_server("1.2.3");
+    let packet = BinaryIdentityPacketV1::embedded_server_with_source(
+        "1.2.3",
+        Some(&revision('a')),
+        Some(&digest('b')),
+    );
+    assert_eq!(packet.build.source_revision, Some(revision('a')));
+    assert_eq!(packet.build.source_tree_digest, Some(digest('b')));
+    assert_eq!(packet.product, baseline.product);
+    assert_eq!(packet.binary, baseline.binary);
+    assert_eq!(packet.artifact, baseline.artifact);
+    assert_eq!(packet.build.target, baseline.build.target);
+    assert_eq!(packet.build.profile, baseline.build.profile);
+    let unchanged = BinaryIdentityPacketV1::embedded_server_with_source("1.2.3", None, None);
+    assert_eq!(unchanged, baseline, "absent facade source retains existing embedded facts");
+    let invalid =
+        BinaryIdentityPacketV1::embedded_server_with_source("1.2.3", Some("main"), Some("stale"));
+    assert_eq!(invalid.build.source_revision, None);
+    assert_eq!(invalid.build.source_tree_digest, None);
+}
+
+#[test]
+fn facade_revision_does_not_retain_embedded_digest() {
+    let revision_only =
+        BinaryIdentityPacketV1::embedded_server_with_source("1.2.3", Some(&revision('c')), None);
+    assert_eq!(revision_only.build.source_revision, Some(revision('c')));
+    assert_eq!(
+        revision_only.build.source_tree_digest, None,
+        "must not retain another source's digest"
+    );
+}
+
+#[test]
+fn facade_digest_does_not_retain_embedded_revision() {
+    let digest_only =
+        BinaryIdentityPacketV1::embedded_server_with_source("1.2.3", None, Some(&digest('d')));
+    assert_eq!(
+        digest_only.build.source_revision, None,
+        "must not retain another source's revision"
+    );
+    assert_eq!(digest_only.build.source_tree_digest, Some(digest('d')));
+}

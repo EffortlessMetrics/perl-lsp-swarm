@@ -47,7 +47,10 @@
     clippy::module_name_repetitions
 )]
 
+#[path = "../../perllsp/src/build_source_identity.rs"]
+mod build_source_identity;
 pub mod client;
+
 pub mod diagnostics;
 pub mod env;
 pub mod observation;
@@ -275,6 +278,9 @@ pub struct ScenarioConfig {
     /// Optional workspace folders for multi-root initialization.
     /// Each entry is `(relative_path, name)`.
     pub workspace_folders: Vec<(String, String)>,
+    /// Initialize with `rootUri: null` and `workspaceFolders: []`.
+    /// Incompatible with nonempty `workspace_folders`.
+    pub rootless: bool,
     /// Extra client capabilities to merge into the initialize request.
     pub client_capability_overrides: Value,
     /// Optional `initialize` request `initializationOptions`.
@@ -295,6 +301,7 @@ impl Default for ScenarioConfig {
             extra_env: Vec::new(),
             workspace_files: Vec::new(),
             workspace_folders: Vec::new(),
+            rootless: false,
             client_capability_overrides: Value::Object(Map::new()),
             initialization_options: Value::Null,
         }
@@ -328,6 +335,20 @@ impl ScenarioConfig {
     pub fn with_file(mut self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.workspace_files.push((path.into(), content.into()));
         self
+    }
+
+    /// Select single-file initialization with no workspace root or folders.
+    pub fn without_workspace_root(mut self) -> Self {
+        self.rootless = true;
+        self
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.rootless || self.workspace_folders.is_empty(),
+            "rootless initialization cannot include workspace folders"
+        );
+        Ok(())
     }
 
     /// Add a workspace folder for multi-root initialization.
@@ -374,6 +395,33 @@ pub(crate) fn poll_child_exit(child: &Mutex<Child>, deadline: Instant) -> Result
     }
 }
 
+/// A concurrent fork can briefly retain a copied executable's writable descriptor.
+/// Retry that Unix exec failure alone, bounded by both caller time and 500ms.
+pub(crate) fn spawn_executable(
+    mut spawn: impl FnMut() -> std::io::Result<Child>,
+    deadline: Instant,
+) -> std::io::Result<Child> {
+    let deadline = deadline.min(Instant::now() + Duration::from_millis(500));
+    loop {
+        match spawn() {
+            Err(error)
+                if cfg!(unix) && error.raw_os_error() == Some(26) && Instant::now() < deadline =>
+            {
+                // ux-timing: product-retry — a fork-inherited write descriptor
+                // has no close notification; retry only ETXTBSY until deadline.
+                std::thread::sleep(
+                    Duration::from_millis(10)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
 /// The main UX test harness.
 ///
 /// Wraps a spawned LSP server process and a temporary workspace.
@@ -383,12 +431,14 @@ pub struct UxHarness {
     pub client: UxClient,
     pub workspace: FakeWorkspace,
     config: ScenarioConfig,
+    _binary_evidence: tempfile::TempDir,
     document_versions: Mutex<HashMap<String, i32>>,
 }
 
 impl UxHarness {
     /// Spawn a fresh LSP server and set up a clean workspace.
     pub fn new(config: ScenarioConfig) -> Result<Self> {
+        config.validate()?;
         let workspace = FakeWorkspace::new()?;
 
         // Write any pre-seeded workspace files.
@@ -400,12 +450,25 @@ impl UxHarness {
             workspace.ensure_dir(path)?;
         }
 
-        let binary_path = resolve_binary()?;
+        let selected = resolve_binary_path()?;
+        let binary_evidence = tempfile::tempdir().context("capture exact UX executable")?;
+        let captured =
+            binary_evidence.path().join(if cfg!(windows) { "perl-lsp.exe" } else { "perl-lsp" });
+        std::fs::copy(&selected, &captured).context("copy exact UX executable")?;
+        let binary_path =
+            captured.to_str().ok_or_else(|| anyhow!("non-UTF8 captured executable path"))?;
+        verify_binary_source(binary_path)?;
 
-        let client = UxClient::spawn(&binary_path, &workspace, &config)
+        let client = UxClient::spawn(binary_path, &workspace, &config)
             .context("Failed to spawn LSP server")?;
 
-        Ok(Self { client, workspace, config, document_versions: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            client,
+            workspace,
+            config,
+            _binary_evidence: binary_evidence,
+            document_versions: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Open a file in the LSP server (textDocument/didOpen).
@@ -1348,7 +1411,7 @@ pub const REQUIRE_BINARY_ENV: &str = "PERL_LSP_UX_REQUIRE_BINARY";
 /// treated as a hard failure (a clear `assert!` panic with an actionable
 /// message) instead of a silent skip. Because every scenario funnels its skip
 /// decision through this single function, setting the env var in a CI job
-/// makes the entire suite fail loud if `cargo build -p perl-lsp-rs` was never
+/// makes the entire suite fail loud if `cargo build -p perllsp` was never
 /// run — see #3596. Uses `assert!` rather than `panic!` directly: this
 /// workspace denies `clippy::panic` in production code, and `assert!` is the
 /// sanctioned hard-failure idiom.
@@ -1359,8 +1422,8 @@ pub fn binary_available() -> bool {
             assert!(
                 !strict_binary_required(),
                 "{REQUIRE_BINARY_ENV}=1 is set, which forbids the silent \
-                 UX-suite SKIP path — perl-lsp binary not built. \
-                 Run `cargo build -p perl-lsp-rs` first. \
+                 UX-suite SKIP path — no current perl-lsp executable evidence. \
+                 Run `cargo build -p perllsp` first. \
                  Resolution error: {err}"
             );
             false
@@ -1404,6 +1467,78 @@ pub fn missing_binary_skip() -> UxScenarioSkip {
 /// 5. `perl-lsp` / `perllsp` in PATH.
 /// 6. Error with actionable message.
 pub fn resolve_binary() -> Result<String> {
+    let binary = resolve_binary_path()?;
+    verify_binary_source(&binary)?;
+    Ok(binary)
+}
+
+/// Reject executable evidence from another product, revision, or dirty source tree.
+pub fn verify_binary_source(binary: &str) -> Result<()> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .ok_or_else(|| anyhow!("UX workspace root unavailable"))?;
+    let (revision, digest) = build_source_identity::complete_source_identity(None, None, || {
+        build_source_identity::source_identity(root)
+    })
+    .map_err(|error| anyhow!("cannot establish UX source identity: {error}"))?;
+    let stdout = tempfile::NamedTempFile::new()?;
+    let stderr = tempfile::NamedTempFile::new()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut command = std::process::Command::new(binary);
+    command
+        .args(["--info", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout.reopen()?)
+        .stderr(stderr.reopen()?);
+    let child = spawn_executable(|| command.spawn(), deadline)
+        .with_context(|| format!("identity probe failed for {binary}"))?;
+    let child = Mutex::new(child);
+    let outcome = poll_child_exit(&child, deadline);
+    let status = match outcome {
+        Ok(ChildExit::Exited(status)) => status,
+        other => {
+            let mut process = child.lock().unwrap_or_else(|error| error.into_inner());
+            let _ = process.kill();
+            let _ = process.wait();
+            anyhow::bail!(
+                "identity probe did not finish for {binary}: {}",
+                match other {
+                    Err(error) => error.to_string(),
+                    _ => "five-second deadline exceeded".to_owned(),
+                }
+            );
+        }
+    };
+    anyhow::ensure!(status.success(), "identity probe failed for {binary}: {status}");
+    let packet_bytes = std::fs::read(stdout.path())?;
+    let identity: Value = serde_json::from_slice(&packet_bytes)
+        .with_context(|| format!("invalid product_identity from {binary}"))?;
+    anyhow::ensure!(
+        identity.pointer("/product/name").and_then(Value::as_str) == Some("perl-lsp"),
+        "wrong product identity from {binary}"
+    );
+    for (pointer, expected) in [
+        ("/schema_version", "perl_lsp.binary_identity.v1"),
+        ("/binary/role", "server"),
+        ("/binary/cargo_package", "perllsp"),
+    ] {
+        anyhow::ensure!(
+            identity.pointer(pointer).and_then(Value::as_str) == Some(expected),
+            "wrong executable identity from {binary}: {pointer} must be {expected}"
+        );
+    }
+    for (field, expected) in [("source_revision", revision), ("source_tree_digest", digest)] {
+        let observed = identity.pointer(&format!("/build/{field}")).and_then(Value::as_str);
+        anyhow::ensure!(
+            observed == Some(expected.as_str()),
+            "{binary} is not current UX source evidence: {field} expected {expected}, observed {observed:?}; rebuild perllsp"
+        );
+    }
+    Ok(())
+}
+
+fn resolve_binary_path() -> Result<String> {
     // 1. Explicit override
     if let Ok(p) = std::env::var("PERL_LSP_BIN")
         && !p.is_empty()
@@ -1466,7 +1601,7 @@ pub fn resolve_binary() -> Result<String> {
     // 6. No binary found — actionable error message.
     Err(anyhow!(
         "perl-lsp binary not found. \
-        Set PERL_LSP_BIN=/path/to/perl-lsp or run: cargo build -p perl-lsp-rs"
+        Set PERL_LSP_BIN=/path/to/perl-lsp or run: cargo build -p perllsp"
     ))
 }
 
@@ -2021,14 +2156,10 @@ mod strict_binary_guard_subprocess_tests {
     ///    real binary. The child remains launchable because `isolated_exe` is
     ///    an absolute path.
     ///
-    /// Note: merely pointing `PERL_LSP_BIN` at a nonexistent path does NOT
-    /// exercise this guard — `resolve_binary()`'s step 1 returns `Ok` for
-    /// any non-empty `PERL_LSP_BIN` without checking the path actually
-    /// exists, so that approach "resolves" to a bogus path and fails later
-    /// via a completely different error surface (a process-launch failure
-    /// elsewhere in the harness), not this guard's `assert!`. Removing the
-    /// var entirely is what forces a genuine `resolve_binary()` `Err`, which
-    /// is what this test needs to exercise.
+    /// Clearing `PERL_LSP_BIN` together with the Cargo hints and `PATH`
+    /// exercises discovery with every fallback denied. The public resolver
+    /// also rejects a missing explicit override; this test establishes the
+    /// strict guard when no override or fallback can select an executable.
     #[test]
     fn strict_mode_fails_loud_in_subprocess_when_binary_missing() -> anyhow::Result<()> {
         let current_exe = std::env::current_exe()?;
@@ -2039,8 +2170,8 @@ mod strict_binary_guard_subprocess_tests {
         let isolated_exe = isolated_dir.path().join(exe_name);
         std::fs::copy(&current_exe, &isolated_exe)?;
 
-        let output = Command::new(&isolated_exe)
-            .args([
+        let mut command = Command::new(&isolated_exe);
+        command.args([
                 // `--exact` matches on the FULLY QUALIFIED name (module path
                 // included) — the bare function name alone matches nothing.
                 "strict_binary_guard_subprocess_tests::binary_available_panics_when_strict_and_missing",
@@ -2049,7 +2180,14 @@ mod strict_binary_guard_subprocess_tests {
             ])
             .env_clear()
             .env(REQUIRE_BINARY_ENV, "1")
-            .output()?;
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = crate::spawn_executable(
+            || command.spawn(),
+            std::time::Instant::now() + std::time::Duration::from_millis(500),
+        )?
+        .wait_with_output()?;
 
         assert!(
             !output.status.success(),
@@ -2065,11 +2203,158 @@ mod strict_binary_guard_subprocess_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            combined.contains("forbids the silent")
-                && combined.contains("cargo build -p perl-lsp-rs"),
+            combined.contains("forbids the silent") && combined.contains("cargo build -p perllsp"),
             "expected the actionable fail-loud message in child output, got: {combined}"
         );
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod executable_busy_retry_tests {
+    use super::spawn_executable;
+    use std::io;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn nonbusy_spawn_errors_are_returned_without_retry() {
+        for error in [
+            io::Error::from_raw_os_error(2),
+            io::Error::from_raw_os_error(13),
+            io::Error::other("transport failure"),
+        ] {
+            let expected = (error.kind(), error.raw_os_error());
+            let mut error = Some(error);
+            let mut attempts = 0;
+            let result = spawn_executable(
+                || {
+                    attempts += 1;
+                    Err(error.take().unwrap_or_else(|| io::Error::other("unexpected retry")))
+                },
+                Instant::now() + Duration::from_secs(30),
+            );
+            let error = result.err().unwrap_or_else(|| io::Error::other("unexpected child"));
+            assert_eq!((error.kind(), error.raw_os_error()), expected);
+            assert_eq!(attempts, 1, "nonbusy error must not be retried");
+        }
+    }
+
+    #[test]
+    fn actual_missing_executable_fails_without_retry() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut command = std::process::Command::new(dir.path().join("missing-executable"));
+        let mut attempts = 0;
+        let error = spawn_executable(
+            || {
+                attempts += 1;
+                command.spawn()
+            },
+            Instant::now() + Duration::from_secs(2),
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("missing executable unexpectedly spawned"))?;
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(attempts, 1);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn busy_copy() -> anyhow::Result<(tempfile::TempDir, std::process::Command, std::fs::File)> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("copied-test-executable");
+        std::fs::copy(std::env::current_exe()?, &path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        let writer = std::fs::OpenOptions::new().write(true).open(&path)?;
+        let mut command = std::process::Command::new(path);
+        command
+            .arg("--list")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let initial = match command.spawn() {
+            Err(error) => error,
+            Ok(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("writer did not prevent exec");
+            }
+        };
+        assert_eq!(initial.raw_os_error(), Some(26), "real writable ELF must be busy");
+        Ok((dir, command, writer))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn actual_busy_executable_recovers_after_writer_release() -> anyhow::Result<()> {
+        let (_dir, mut command, writer) = busy_copy()?;
+        let (send, receive) = std::sync::mpsc::channel();
+        let release = std::thread::spawn(move || {
+            let signaled = receive.recv_timeout(Duration::from_secs(2)).is_ok();
+            if signaled {
+                // ux-timing: deliberate-stimulus — hold the writer after the first
+                // actual busy refusal so recovery requires a subsequent retry.
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            drop(writer);
+            signaled
+        });
+        let mut attempts = 0;
+        let result = spawn_executable(
+            || {
+                attempts += 1;
+                let result = command.spawn();
+                if attempts == 1 {
+                    assert_eq!(result.as_ref().err().and_then(io::Error::raw_os_error), Some(26));
+                    let _ = send.send(());
+                }
+                result
+            },
+            Instant::now() + Duration::from_secs(2),
+        );
+        assert!(release.join().map_err(|_| anyhow::anyhow!("writer thread failed"))?);
+        let mut child = result?;
+        assert!(child.wait()?.success());
+        assert!(attempts > 1, "success must follow an actual busy refusal");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn actual_persistent_busy_executable_honors_shorter_deadline() -> anyhow::Result<()> {
+        let (_dir, mut command, _writer) = busy_copy()?;
+        let deadline = Instant::now() + Duration::from_millis(60);
+        let mut attempted_after_deadline = false;
+        let mut attempts = 0;
+        let error = spawn_executable(
+            || {
+                attempted_after_deadline |= attempts > 0 && Instant::now() >= deadline;
+                attempts += 1;
+                command.spawn()
+            },
+            deadline,
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("persistent writer unexpectedly allowed exec"))?;
+        assert_eq!(error.raw_os_error(), Some(26));
+        assert!(!attempted_after_deadline, "must not spawn again after retry deadline");
+        assert!(Instant::now() >= deadline, "persistent busy must reach the retry bound");
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn actual_persistent_busy_executable_is_capped_at_500ms() -> anyhow::Result<()> {
+        let (_dir, mut command, _writer) = busy_copy()?;
+        let start = Instant::now();
+        let error = spawn_executable(|| command.spawn(), start + Duration::from_secs(2))
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("persistent writer unexpectedly allowed exec"))?;
+        assert_eq!(error.raw_os_error(), Some(26));
+        // Monotonic observation with 1s scheduling tolerance above the 500ms
+        // cap; a retry until the caller's 2s deadline must still fail.
+        assert!(start.elapsed() >= Duration::from_millis(450));
+        assert!(start.elapsed() < Duration::from_millis(1500));
         Ok(())
     }
 }
