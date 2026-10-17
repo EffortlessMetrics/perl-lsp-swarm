@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { execFile } from 'child_process';
 import {
   CloseAction,
@@ -212,6 +213,9 @@ let currentServerPath: string | null = null;
 // does not exist, so the "not found" error can name the broken setting instead
 // of failing silently.
 let configuredServerPathMissing: string | null = null;
+// Why the configured path was rejected ("does not exist", "is not a file",
+// "is not executable"); paired with configuredServerPathMissing.
+let configuredServerPathProblemDetail: string | null = null;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let healthWidget: HealthWidget | undefined;
 let healthWidgetDataSource: HealthWidgetDataSource | undefined;
@@ -1657,6 +1661,7 @@ function clearActivationProjections(): void {
   client = undefined;
   currentServerPath = null;
   configuredServerPathMissing = null;
+  configuredServerPathProblemDetail = null;
   testAdapter = undefined;
   streamingController = undefined;
   statusBarItem = undefined;
@@ -1954,8 +1959,64 @@ export function diagnoseConfiguredServerPath(
   if (!userPath || pathExists) {
     return null;
   }
+  return rejectConfiguredServerPath(userPath, 'missing', channel);
+}
+
+/// Expand a leading `~` in a configured server path to the home directory.
+/// VS Code does not expand shell-style paths in settings, so without this a
+/// `~/bin/perllsp` setting never matches a real file (#18118).
+export function expandConfiguredServerPath(userPath: string): string {
+  if (userPath === '~') {
+    return os.homedir();
+  }
+  if (userPath.startsWith('~/') || userPath.startsWith('~\\')) {
+    return path.join(os.homedir(), userPath.slice(2));
+  }
+  return userPath;
+}
+
+/// Why a configured server path cannot be spawned, or null when it can.
+/// Existence alone is not enough: a directory passes `existsSync` and then
+/// fails at spawn with a misleading permission diagnosis (#18118).
+export type ConfiguredServerPathProblem = 'missing' | 'not-a-file' | 'not-executable';
+
+export function configuredServerPathProblem(
+  userPath: string,
+): ConfiguredServerPathProblem | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(userPath);
+  } catch {
+    return 'missing';
+  }
+  if (!stat.isFile()) {
+    return 'not-a-file';
+  }
+  if (process.platform !== 'win32') {
+    try {
+      fs.accessSync(userPath, fs.constants.X_OK);
+    } catch {
+      return 'not-executable';
+    }
+  }
+  return null;
+}
+
+const CONFIGURED_PATH_PROBLEM_TEXT: Record<ConfiguredServerPathProblem, string> = {
+  missing: 'does not exist',
+  'not-a-file': 'is not a file',
+  'not-executable': 'is not executable',
+};
+
+/// Log why a configured server path was rejected and return the path so
+/// callers can surface an actionable error. Exported for testing.
+export function rejectConfiguredServerPath(
+  userPath: string,
+  problem: ConfiguredServerPathProblem,
+  channel: vscode.LogOutputChannel,
+): string {
   channel.info(
-    `[startup] perl-lsp.serverPath is configured but does not exist: ${userPath}. ` +
+    `[startup] perl-lsp.serverPath is configured but ${CONFIGURED_PATH_PROBLEM_TEXT[problem]}: ${userPath}. ` +
       `Falling back to PATH/bundled binary (or auto-download).`,
   );
   return userPath;
@@ -1966,20 +2027,23 @@ async function getServerPath(
 ): Promise<{ path: string | null; source: BinaryResolutionSource }> {
   // First check user settings
   const config = vscode.workspace.getConfiguration('perl-lsp');
-  const userPath = config.get<string>('serverPath');
-  const userPathExists = userPath ? fs.existsSync(userPath) : false;
+  const configuredPath = config.get<string>('serverPath');
+  const userPath = configuredPath ? expandConfiguredServerPath(configuredPath) : configuredPath;
+  const problem = userPath ? configuredServerPathProblem(userPath) : null;
 
-  if (userPath && userPathExists) {
+  if (userPath && !problem) {
     outputChannel.info(`Using user-configured Perl LSP binary: ${userPath}`);
     configuredServerPathMissing = null;
+    configuredServerPathProblemDetail = null;
     return { path: userPath, source: 'configured' };
   }
 
-  configuredServerPathMissing = diagnoseConfiguredServerPath(
-    userPath,
-    userPathExists,
-    outputChannel,
-  );
+  configuredServerPathMissing = null;
+  configuredServerPathProblemDetail = null;
+  if (userPath && problem) {
+    configuredServerPathMissing = rejectConfiguredServerPath(userPath, problem, outputChannel);
+    configuredServerPathProblemDetail = CONFIGURED_PATH_PROBLEM_TEXT[problem];
+  }
 
   const platform = process.platform;
   const arch = process.arch;
@@ -2324,7 +2388,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
     if (!lifecycle.serverPath) {
       healthWidget?.onStateChange(ClientState.Stopped);
       const notFoundMessage = configuredServerPathMissing
-        ? `Perl Language Server not found: your perl-lsp.serverPath points to "${configuredServerPathMissing}", which does not exist. Fix the path or clear the setting to auto-download.`
+        ? `Perl Language Server not found: your perl-lsp.serverPath points to "${configuredServerPathMissing}", which ${configuredServerPathProblemDetail ?? 'does not exist'}. Fix the path or clear the setting to auto-download.`
         : 'Perl Language Server (perllsp) not found.';
       void vscode.window
         .showErrorMessage(notFoundMessage, 'Install (cargo install perllsp)', 'Open Settings')
