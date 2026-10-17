@@ -2422,14 +2422,16 @@ impl LspServer {
             match command {
                 // Keep existing test commands for backward compatibility
                 "perl.runTest" => {
-                    if let Some(test_id) = arguments.first().and_then(|v| v.as_str()) {
-                        return self.run_test(test_id);
-                    }
+                    let test_id = arguments.first().and_then(Value::as_str).ok_or_else(|| {
+                        invalid_params("perl.runTest: arguments[0] must be a test ID string; retry with arguments: [\"file:///path/to/test.t::test name\"].")
+                    })?;
+                    return self.run_test(test_id);
                 }
                 "perl.runTestFile" => {
-                    if let Some(file_uri) = arguments.first().and_then(|v| v.as_str()) {
-                        return self.run_test_file(file_uri);
-                    }
+                    let file_uri = arguments.first().and_then(Value::as_str).ok_or_else(|| {
+                        invalid_params("perl.runTestFile: arguments[0] must be a file URI string; retry with arguments: [\"file:///path/to/test.t\"].")
+                    })?;
+                    return self.run_test_file(file_uri);
                 }
                 "perl.runSubtest" => {
                     // Two argument forms:
