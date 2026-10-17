@@ -1615,15 +1615,16 @@ fn review_guidance_items(value: &Value, limit: usize) -> (Vec<Value>, Vec<Value>
         };
         for item in items {
             let gap = review_guidance_item(source, item);
-            if review_guidance_item_is_static_limitation(&gap)
-                && !static_limitation_gaps
+            if review_guidance_item_is_static_limitation(&gap) {
+                if !static_limitation_gaps
                     .iter()
                     .any(|seen| seen.get("gap_id") == gap.get("gap_id"))
-            {
-                // Keep scanning past the top-gaps window so a receipt naming
-                // more static limitations than the window holds still earns
-                // full clearing credit (#15630).
-                static_limitation_gaps.push(gap.clone());
+                {
+                    // The producer can include generic suggested_test text on a
+                    // nonactionable card. Its disposition takes precedence.
+                    static_limitation_gaps.push(gap);
+                }
+                continue;
             }
             if gaps.len() < limit && review_guidance_item_is_actionable(&gap) {
                 gaps.push(gap);
@@ -1735,8 +1736,34 @@ fn review_guidance_item(source: &str, item: &Value) -> Value {
         // The producer's own disposition for this seam (#15630). Only the
         // literal value "static_limitation" is consumed downstream; exposure
         // classes (`weakly_exposed`/`grip_class`) never carry it.
-        "classification": first_string(item, &["/classification"]),
+        "classification": guidance_classification(item),
+        "gap_state": first_string(item, &["/gap_state"]),
     })
+}
+
+/// RIPR 0.10 uses `gap_state` for its canonical actionability decision, while
+/// older guidance used `classification`. A conflicting pair or a 0.10 static
+/// card without its producer explanation cannot earn clearing credit.
+fn guidance_classification(item: &Value) -> Option<String> {
+    let classification = first_string(item, &["/classification"]);
+    let gap_state = first_string(item, &["/gap_state"]);
+    match (classification, gap_state) {
+        (Some(classification), Some(gap_state)) if classification != gap_state => None,
+        (Some(_), Some(gap_state))
+            if gap_state == "static_limitation"
+                && !string_field_is_filled(item, "why_not_actionable") =>
+        {
+            None
+        }
+        (Some(classification), _) => Some(classification),
+        (None, Some(gap_state))
+            if gap_state == "static_limitation"
+                && string_field_is_filled(item, "why_not_actionable") =>
+        {
+            Some(gap_state)
+        }
+        _ => None,
+    }
 }
 
 fn first_string(item: &Value, pointers: &[&str]) -> Option<String> {
@@ -3451,6 +3478,189 @@ mod tests {
             "comments",
             &no_identity
         )));
+    }
+
+    fn hosted_16619_inline_subset() -> Result<Value> {
+        let mut guidance: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-static-limitations.json"
+        ))?;
+        // The capture keeps its real artifact SHAs; substitute the subject for
+        // this evaluation so the gate checks the same identity relationship.
+        guidance["head_sha"] = json!("hosted-head");
+        guidance["base_sha"] = json!("hosted-base");
+        // Isolate the three inline cards for per-item accept/reject controls.
+        // The complete hosted receipt has seven additional summary-only cards;
+        // the separate counted-basis test below must use all ten.
+        guidance["summary_only"] = json!([]);
+        guidance["suppressed"] = json!([]);
+        guidance["warnings"] = json!([]);
+        Ok(guidance)
+    }
+
+    fn evaluate_hosted_16619_guidance(
+        guidance: &Value,
+        gap_count: u64,
+        pr_head: &str,
+        pr_base: &str,
+    ) -> Result<GateEvaluation> {
+        let dir = tempdir()?;
+        fs::write(
+            dir.path().join("ripr-plus.json"),
+            json!({ "schema_version": 2, "head": "hosted-head", "unresolved": 0 }).to_string(),
+        )?;
+        fs::write(
+            dir.path().join("repo-exposure.json"),
+            json!({
+                "schema_version": "0.1",
+                "head_sha": pr_head,
+                "base": "origin/main",
+                "base_sha": pr_base,
+                "summary": {
+                    "severe_gaps": gap_count,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": gap_count
+                }
+            })
+            .to_string(),
+        )?;
+        fs::write(dir.path().join("comments.json"), guidance.to_string())?;
+        evaluate_new_ripr("hosted-head", &new_ripr_args(dir.path())?, None)
+    }
+
+    /// #16712: real RIPR 0.10 guidance has a generic suggested_test even on
+    /// explicitly nonactionable call-presence limitations. The suggestion must
+    /// not spend an actionable slot or turn the disposition into a repair packet.
+    #[test]
+    fn hosted_16619_inline_subset_clears_only_auditable_same_subject_gaps() -> Result<()> {
+        let guidance = hosted_16619_inline_subset()?;
+        let pass = evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "hosted-base")?;
+        assert!(!pass.failed, "{:?}", pass.receipt["next_actions"]);
+        assert_eq!(pass.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
+        assert_eq!(pass.receipt.pointer("/review_guidance/top_gaps"), Some(&json!([])));
+        let limitations =
+            pass.receipt["review_guidance"]["static_limitation_gaps"].as_array().map(Vec::len);
+        assert_eq!(limitations, Some(3));
+
+        // A fourth, genuinely actionable card remains a blocking repair packet.
+        let mut mixed = guidance.clone();
+        let mut actionable = mixed["comments"][0].clone();
+        actionable["seam_id"] = json!("actionable-fourth");
+        actionable["gap_state"] = json!("actionable");
+        if let Some(card) = actionable.as_object_mut() {
+            card.remove("why_not_actionable");
+        }
+        if let Some(cards) = mixed["comments"].as_array_mut() {
+            cards.push(actionable);
+        }
+        let blocked = evaluate_hosted_16619_guidance(&mixed, 4, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
+        assert_eq!(gap_action(&blocked, "new_ripr_gap")["new_unresolved"], json!(1));
+
+        // One unauditable card cannot consume credit just because it carries
+        // the producer's disposition text.
+        let mut missing_id = guidance.clone();
+        if let Some(card) = missing_id["comments"][0].as_object_mut() {
+            card.remove("seam_id");
+        }
+        let blocked = evaluate_hosted_16619_guidance(&missing_id, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        let mut missing_explanation = guidance.clone();
+        if let Some(card) = missing_explanation["comments"][0].as_object_mut() {
+            card.remove("why_not_actionable");
+        }
+        let blocked =
+            evaluate_hosted_16619_guidance(&missing_explanation, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        let mut dual_field_without_explanation = missing_explanation.clone();
+        dual_field_without_explanation["comments"][0]["classification"] =
+            json!("static_limitation");
+        let blocked = evaluate_hosted_16619_guidance(
+            &dual_field_without_explanation,
+            3,
+            "hosted-head",
+            "hosted-base",
+        )?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        // An opposite disposition must not be resolved in favor of clearing.
+        let mut conflicting = guidance.clone();
+        conflicting["comments"][0]["classification"] = json!("actionable");
+        let blocked =
+            evaluate_hosted_16619_guidance(&conflicting, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        let stale = evaluate_hosted_16619_guidance(&guidance, 3, "another-head", "hosted-base")?;
+        assert!(stale.failed);
+        assert_eq!(stale.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(0)));
+
+        let mut stale_guidance = guidance.clone();
+        stale_guidance["head_sha"] = json!("another-head");
+        let blocked =
+            evaluate_hosted_16619_guidance(&stale_guidance, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(0)));
+
+        let other_base =
+            evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "another-base")?;
+        assert!(other_base.failed);
+        assert_eq!(
+            other_base.receipt.pointer("/ripr_pr/static_limitation_cleared"),
+            Some(&json!(0))
+        );
+
+        // The pre-0.10 producer's classification form remains supported.
+        let mut older = guidance.clone();
+        if let Some(cards) = older["comments"].as_array_mut() {
+            for card in cards {
+                card["classification"] = json!("static_limitation");
+                if let Some(card) = card.as_object_mut() {
+                    card.remove("gap_state");
+                    card.remove("why_not_actionable");
+                }
+            }
+        }
+        let old_pass = evaluate_hosted_16619_guidance(&older, 3, "hosted-head", "hosted-base")?;
+        assert!(!old_pass.failed, "{:?}", old_pass.receipt["next_actions"]);
+        assert_eq!(old_pass.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
+        Ok(())
+    }
+
+    /// The complete hosted artifact falsifies count-only disposition clearing:
+    /// its three counted raw probes are changed literals, not the three inline
+    /// static-limitation call seams. A safe gate must retain all three blockers
+    /// until a producer-backed item-to-count relationship can be established.
+    #[test]
+    fn hosted_16619_full_receipt_does_not_clear_unrelated_raw_gaps() -> Result<()> {
+        let raw: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-counted-raw-gaps.json"
+        ))?;
+        assert_eq!(raw["summary"]["no_static_path"], json!(3));
+        assert_eq!(raw["findings"].as_array().map(Vec::len), Some(3));
+
+        let mut guidance: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-static-limitations.json"
+        ))?;
+        assert_eq!(guidance["summary"]["comments"], json!(3));
+        assert_eq!(guidance["summary"]["summary_only"], json!(7));
+        guidance["head_sha"] = json!("hosted-head");
+        guidance["base_sha"] = json!("hosted-base");
+        let evaluation =
+            evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "hosted-base")?;
+        assert!(evaluation.failed, "the changed raw gaps must remain blocking");
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_pr/static_limitation_cleared"),
+            Some(&json!(0)),
+            "unjoined static guidance cannot clear distinct counted raw probes"
+        );
+        assert_eq!(gap_action(&evaluation, "new_ripr_gap")["new_unresolved"], json!(3));
+        Ok(())
     }
 
     #[test]
