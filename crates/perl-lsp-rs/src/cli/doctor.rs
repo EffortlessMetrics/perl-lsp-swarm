@@ -8,7 +8,8 @@
 
 use crate::util::run_command_with_timeout;
 use perl_lsp_rs_core::config::{
-    Perl5LibPrecedence, PerlOracleEnv, RejectedIncludePath, WorkspaceConfig, load_project_config,
+    Perl5LibPrecedence, PerlOracleEnv, RejectedIncludePath, WorkspaceConfig,
+    discover_project_config_path, load_project_config,
 };
 use perl_lsp_rs_core::external_tool_doctor::{
     critic_compatibility_entry, external_tool_doctor_entries, render_critic_compatibility_text,
@@ -406,7 +407,13 @@ fn load_workspace_config(
             include_source: "default includePaths",
             rejected_include_paths: Vec::new(),
         }),
-        Err(error) => Err(format!("{}: {error}", workspace.join(".perl-lsp.toml").display())),
+        Err(error) => {
+            // Discovery walks upward, so the failed config can belong to an
+            // ancestor rather than the directory doctor was asked to inspect.
+            let config_path = discover_project_config_path(workspace)
+                .unwrap_or_else(|| workspace.join(".perl-lsp.toml"));
+            Err(format!("{}: {error}", config_path.display()))
+        }
     }
 }
 
