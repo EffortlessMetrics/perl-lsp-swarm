@@ -9,6 +9,8 @@ mod changie;
 #[path = "commit_checks.rs"]
 mod established;
 
+pub use established::run_named_check_for_publication;
+
 pub use established::{CheckReport, CommitCheckOutcome, Posture, parse_report};
 
 use crate::utils::project_root;

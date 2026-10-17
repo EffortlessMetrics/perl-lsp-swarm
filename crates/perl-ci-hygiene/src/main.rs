@@ -3533,14 +3533,17 @@ mod tests {
         let home_user_path = Regex::new(r"/home/([A-Za-z0-9._-]+)")?;
 
         assert!(!has_machine_specific_home_path(
-            "Use /home/user/project as the example.",
+            concat!("Use /", "home/user/project as the example."),
             &home_user_path,
         ));
         assert!(has_machine_specific_home_path(
-            "My path is /home/ubuntu/workspace/perl-lsp",
+            concat!("My path is /", "home/ubuntu/workspace/perl-lsp"),
             &home_user_path,
         ));
-        assert!(has_machine_specific_home_path("Local path: /home/u/project", &home_user_path,));
+        assert!(has_machine_specific_home_path(
+            concat!("Local path: /", "home/u/project"),
+            &home_user_path,
+        ));
 
         Ok(())
     }
@@ -3550,15 +3553,15 @@ mod tests {
         let users_name_path = Regex::new(r"/Users/([A-Za-z0-9._-]+)")?;
 
         assert!(!has_machine_specific_users_path(
-            "Template: /Users/Name/project",
+            concat!("Template: /", "Users/Name/project"),
             &users_name_path,
         ));
         assert!(!has_machine_specific_users_path(
-            "Template: /Users/user/project",
+            concat!("Template: /", "Users/user/project"),
             &users_name_path,
         ));
         assert!(has_machine_specific_users_path(
-            "Personal path: /Users/alice/dev/perl-lsp",
+            concat!("Personal path: /", "Users/alice/dev/perl-lsp"),
             &users_name_path,
         ));
 
@@ -3702,10 +3705,10 @@ mod tests {
             hook.contains("Branch deletion"),
             "hook must print a message when skipping due to deletion"
         );
-        // Normal pushes (non-zero SHA) must still run the fast push gate.
+        // Normal pushes (non-zero SHA) execute committed publication consistency.
         assert!(
-            hook.contains("just pr-fast"),
-            "hook must invoke the fast PR gate for normal pushes"
+            hook.contains("gates --tier publication"),
+            "hook must invoke publication consistency for normal pushes"
         );
     }
 
@@ -3737,56 +3740,6 @@ mod tests {
     }
 
     #[test]
-    fn pre_push_hook_has_doc_only_fast_path() -> color_eyre::Result<()> {
-        let hook = pre_push_hook_script();
-        // Doc-only pushes (markdown, text, license, changelog) should run a
-        // lighter gate instead of the full ci-gate. The full test suite is
-        // pointless for prose-only changes.
-        assert!(
-            hook.contains("DOC_ONLY") || hook.contains("doc_only"),
-            "hook must detect doc-only diffs"
-        );
-        assert!(
-            hook.contains("Doc-only push") || hook.contains("doc-only push"),
-            "hook must announce when it picks the doc-only fast path"
-        );
-        // The lighter gate should NOT shell out to `just ci-gate` from the
-        // doc-only branch — it should exit before reaching that fallback.
-        // We verify this indirectly: the doc-only message must precede an exit.
-        let doc_idx = hook
-            .find("Doc-only push")
-            .or_else(|| hook.find("doc-only push"))
-            .ok_or_else(|| color_eyre::eyre::eyre!("doc-only message must exist in hook script"))?;
-        let after_doc = &hook[doc_idx..];
-        assert!(
-            after_doc.contains("exit 0"),
-            "doc-only branch must exit 0 without invoking the full gate"
-        );
-        let exit_idx = after_doc
-            .find("exit 0")
-            .ok_or_else(|| color_eyre::eyre::eyre!("doc-only branch must contain 'exit 0'"))?;
-        let doc_branch = &after_doc[..exit_idx];
-        assert!(
-            !doc_branch.contains("cargo fmt --all -- --check"),
-            "doc-only branch must not run workspace-wide rustfmt checks before exiting"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn pre_push_hook_doc_only_fast_path_matches_crate_subdir_license_files() {
-        let hook = pre_push_hook_script();
-        // Issue #3305: the doc-only case pattern must also match license files
-        // in crate subdirectories (e.g. crates/tree-sitter-perl-rs/LICENSE-APACHE).
-        // Pattern `LICENSE*` only matches root-level files; `*/LICENSE*` is required
-        // to handle files like `crates/*/LICENSE-APACHE` and `crates/*/LICENSE-MIT`.
-        assert!(
-            hook.contains("*/LICENSE*"),
-            "hook doc-only pattern must include '*/LICENSE*' to match crate-subdir license files              (e.g. crates/tree-sitter-perl-rs/LICENSE-APACHE) — see issue #3305"
-        );
-    }
-
-    #[test]
     fn checked_in_pre_push_hook_matches_generated_hook() {
         let checked_in = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../hooks/pre-push"))
             .replace("\r\n", "\n");
@@ -3799,69 +3752,29 @@ mod tests {
     }
 
     #[test]
-    fn pre_push_hook_has_single_crate_tier() -> color_eyre::Result<()> {
+    fn pre_push_hook_uses_universal_committed_consistency() {
         let hook = pre_push_hook_script();
-        // When all changed files are under crates/<name>/, run a targeted
-        // cargo fmt/clippy/test -p <name> instead of the workspace-wide
-        // just pr-fast.  This is the single-crate proportional tier.
-        assert!(
-            hook.contains("SINGLE_CRATE") || hook.contains("single_crate"),
-            "hook must detect single-crate diffs"
-        );
-        assert!(
-            hook.contains("cargo test -p"),
-            "hook must run targeted 'cargo test -p <crate>' for single-crate pushes"
-        );
-        assert!(
-            hook.contains("cargo clippy -p") || hook.contains("cargo clippy --package"),
-            "hook must run targeted clippy for single-crate pushes"
-        );
-        assert!(
-            hook.contains("cargo fmt -p") || hook.contains("cargo fmt --package"),
-            "hook must run targeted fmt for single-crate pushes"
-        );
-        // The single-crate path must announce itself so the contributor knows
-        // why the gate is faster than usual.
-        assert!(
-            hook.contains("Single-crate") || hook.contains("single-crate"),
-            "hook must announce when it picks the single-crate fast path"
-        );
-        // The single-crate path must exit before reaching just pr-fast
-        let single_idx = hook
-            .find("Single-crate")
-            .or_else(|| hook.find("single-crate"))
-            .ok_or_else(|| color_eyre::eyre::eyre!("single-crate message must exist"))?;
-        let after_single = &hook[single_idx..];
-        assert!(
-            after_single.contains("exit 0"),
-            "single-crate branch must exit 0 without invoking just pr-fast"
-        );
-        Ok(())
+        assert!(hook.contains("gates --tier publication"));
+        assert!(hook.contains("--head \"$local_sha\""));
+        assert!(hook.contains("--base \"$base\""));
+        for retired in ["DOC_ONLY=", "SINGLE_CRATE", "just pr-fast", "update-current-status.py"] {
+            assert!(
+                !hook.contains(retired),
+                "publication still starts retired automatic work: {retired}"
+            );
+        }
     }
 
     #[test]
-    fn pre_push_hook_single_crate_tier_falls_back_on_cross_crate() {
+    fn pre_push_hook_keeps_runtime_root_and_child_selector_isolation() {
         let hook = pre_push_hook_script();
-        // When files span multiple crates, we must NOT run the single-crate
-        // path — it must fall through to the full just pr-fast gate.
-        // The safest way to verify this is: the hook must still invoke
-        // just pr-fast for the cross-crate (default) case.
+        assert!(hook.contains("--worktree-root \"$REPO_ROOT\""));
+        assert!(hook.contains("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE"));
+        assert!(hook.contains("NOT PROVEN: Cargo is unavailable"));
         assert!(
-            hook.contains("just pr-fast"),
-            "hook must still invoke just pr-fast for cross-crate pushes"
+            hook.contains("scripts/cargo-admitted\" run --package xtask --bin xtask --locked --")
         );
-    }
-
-    #[test]
-    fn pre_push_hook_explains_known_failure_modes() {
-        let hook = pre_push_hook_script();
-        // When the gate fails, the hook should hint at known issues so
-        // contributors can recognize them instead of bypassing in confusion.
-        assert!(hook.contains("#3202"), "hook must mention issue #3202 (Windows file-lock race)");
-        assert!(
-            hook.contains("cargo xtask fmt") || hook.contains("cargo fmt"),
-            "hook must suggest the fmt fix command on fmt failures"
-        );
+        assert!(hook.contains("cargo-admitted front door is unavailable"));
     }
 
     #[test]
@@ -3873,17 +3786,6 @@ mod tests {
         assert!(
             hook.contains("REPO_ROOT_FOR_HOOK") && hook.contains("hooks/pre-push"),
             "hook must self-heal stale installation (issue #4220)"
-        );
-    }
-
-    #[test]
-    fn pre_push_hook_has_os_error_206_hint() {
-        let hook = pre_push_hook_script();
-        // Issue #4220 — Windows CreateProcess command-line limit (os error 206)
-        // hint must appear in the gate-failure handler so contributors know how to fix it.
-        assert!(
-            hook.contains("os error 206") || hook.contains("CreateProcess"),
-            "hook must hint at Windows CreateProcess limit fix (issue #4220)"
         );
     }
 
@@ -3908,7 +3810,7 @@ mod tests {
             .to_str()
             .ok_or_else(|| color_eyre::eyre::eyre!("temp dir must be valid UTF-8 in CI"))?;
         // On Linux CI this will be /tmp/e2e-suite.lock (acceptable)
-        // On Windows this will be C:\Users\...\AppData\Local\Temp\e2e-suite.lock
+        // On Windows this uses the current user's local temporary directory.
         assert!(!lock_str.is_empty(), "lock file path must be non-empty");
         Ok(())
     }

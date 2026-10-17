@@ -73,7 +73,9 @@ cargo xtask precommit
             "   The pre-commit hook blocks placeholder identities, formats the staged Rust diff \
              ('cargo xtask fmt --staged'), then runs 'cargo xtask precommit'"
         );
-        println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
+        println!(
+            "   The pre-push hook checks committed publication consistency; qualification is separate"
+        );
         println!(
             "   The pre-push hook also refuses non-fast-forward updates and protected-ref rewrites \
              (escape hatch: PERL_LSP_ALLOW_HISTORY_REWRITE=\"<remote-ref>\")"
@@ -124,7 +126,7 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 # Hook logic version (#17431 review wave 3): bump the integer below on EVERY
 # guard-logic change. Self-heal only upgrades (checkout > installed) and
 # never downgrades; unmarked legacy hooks count as version 0.
-# pre-push-hook-version: 1
+# pre-push-hook-version: 2
 
 set -euo pipefail
 
@@ -282,279 +284,39 @@ if [ "$IS_DELETE_ONLY" = true ]; then
     exit 0
 fi
 
-# --- Detect doc-only changes for the fast-path gate ---
-# A push is doc-only if every changed file matches one of:
-#   *.md, *.txt, LICENSE*, CHANGELOG*, docs/**, .github/ISSUE_TEMPLATE/**,
-#   or */LICENSE* (crate-subdir license files, e.g. crates/*/LICENSE-APACHE)
-# Doc-only pushes skip code gates entirely instead of running the full
-# ci-gate, since the test suite and workspace-wide rustfmt check are
-# pointless for prose-only changes and can fail spuriously on Windows (#4047).
+# Publication consistency is separate from candidate preparation and late
+# qualification (#17940). Check each exact committed ref without a filename classifier.
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-DOC_ONLY=true
-TEST_FILES_CHANGED=false
-HAS_DIFFABLE_REF=false
-# Track unique crate names for the single-crate tier.
-# We use a newline-separated string rather than an array for POSIX compat.
-SINGLE_CRATE_NAMES=""
-SINGLE_CRATE_ALL_UNDER_CRATES=true
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "NOT PROVEN: Cargo is unavailable for publication consistency." >&2
+    exit 1
+fi
+if [ ! -f "$REPO_ROOT/scripts/cargo-admitted" ]; then
+    echo "NOT PROVEN: the canonical cargo-admitted front door is unavailable." >&2
+    exit 1
+fi
 for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    [ -z "$line" ] && continue
     read -r _local_ref local_sha _remote_ref remote_sha <<< "$line"
-    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-        # New branch: there is no known remote SHA to diff against. Resolve
-        # the changed-path set through the single shared #3985 change_set
-        # resolver (`cargo xtask change-set` — main-first: origin/main,
-        # main, HEAD~1; never origin/master, which does not exist on this
-        # remote) instead of a second shell base-resolution algorithm.
-        #
-        # The former fallback here was
-        #   git merge-base "$local_sha" origin/master 2>/dev/null || echo "$local_sha"
-        # which always failed (origin/master is absent on this remote) and
-        # silently fell back to comparing "$local_sha" against itself —
-        # an empty self-diff for every new-branch push (issue #3985
-        # Slice 3A: the pre-push affected-proof was silently degrading to
-        # the broadest/full gate for every new branch instead of running
-        # the intended targeted proof against the real diff).
-        if ! CHANGED_FILES="$(cargo xtask change-set --base auto --head "$local_sha" --format paths)"; then
-            echo ""
-            echo "❌ NOT PROVEN: could not resolve the change set for this new-branch push."
-            echo "   'cargo xtask change-set' failed to resolve a canonical base ref"
-            echo "   (see the error above — e.g. origin/main unreachable, no network, or"
-            echo "   another git error). Refusing to silently treat this as an empty"
-            echo "   change set and skip the affected-scope proof."
-            echo "   Fix the underlying git/network issue, or bypass with:"
-            echo "   git push --no-verify (only for a genuinely environmental failure —"
-            echo "   see the bypass policy at the top of this file)."
-            exit 1
-        fi
-    else
-        CHANGED_FILES="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)"
-    fi
-    if [ -n "$CHANGED_FILES" ]; then
-        HAS_DIFFABLE_REF=true
-    fi
-    while IFS= read -r changed; do
-        [ -z "$changed" ] && continue
-        case "$changed" in
-            *.md|*.txt|LICENSE*|CHANGELOG*|docs/*|.github/ISSUE_TEMPLATE/*|*/LICENSE*)
-                ;;
-            *)
-                DOC_ONLY=false
-                # Track whether this code file lives under crates/<name>/
-                case "$changed" in
-                    crates/*/*)
-                        # Extract the crate directory name: crates/<name>/...
-                        crate_name="${changed#crates/}"
-                        crate_name="${crate_name%%/*}"
-                        # Append to list if not already present
-                        if ! printf '%s\n' "$SINGLE_CRATE_NAMES" | grep -qxF "$crate_name" 2>/dev/null; then
-                            SINGLE_CRATE_NAMES="${SINGLE_CRATE_NAMES}${crate_name}
-"
-                        fi
-                        ;;
-                    *)
-                        # File is outside crates/ — can't be single-crate
-                        SINGLE_CRATE_ALL_UNDER_CRATES=false
-                        ;;
-                esac
-                ;;
-        esac
-    done <<< "$CHANGED_FILES"
-    if echo "$CHANGED_FILES" | grep -qE '^crates/.*/tests/.*\.rs$'; then
-        TEST_FILES_CHANGED=true
-    fi
+    [ "$local_sha" = "$ZERO_SHA" ] && continue
+    base="$remote_sha"
+    [ "$base" != "$ZERO_SHA" ] || base=auto
+    echo "Checking committed publication consistency for $local_sha (base $base)"
+    # Keep hook Git selectors for ref guards; isolate only the validation child.
+    # --worktree-root is the existing runtime authority for a borrowed binary.
+    (
+        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+        unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+        bash "$REPO_ROOT/scripts/cargo-admitted" run --package xtask --bin xtask --locked -- \
+            --worktree-root "$REPO_ROOT" gates --tier publication \
+            --base "$base" --head "$local_sha" --receipt
+    ) || exit "$?"
 done
 
-# If we couldn't compute a diff for any ref (e.g., shallow clone, missing
-# remote), assume code changes and run the full gate to be safe.
-if [ "$HAS_DIFFABLE_REF" != true ]; then
-    DOC_ONLY=false
-fi
-
-if [ "$DOC_ONLY" = true ]; then
-    echo "📝 Doc-only push — skipping code gates"
-    echo "   (Skip with: git push --no-verify)"
-    echo "✅ Doc-only fast-path gate passed"
-    exit 0
-fi
-
-# --- Single-crate proportional gate ---
-# If every code change is under a single crates/<name>/ directory, run a
-# targeted cargo fmt/clippy/test -p <name> instead of the full workspace gate.
-# Falls back to the full gate if classification is ambiguous.
-SINGLE_CRATE_COUNT="$(printf '%s' "$SINGLE_CRATE_NAMES" | grep -c . 2>/dev/null || echo 0)"
-if [ "$SINGLE_CRATE_ALL_UNDER_CRATES" = true ] && [ "$SINGLE_CRATE_COUNT" = "1" ]; then
-    SINGLE_CRATE_DIR="$(printf '%s' "$SINGLE_CRATE_NAMES" | tr -d '[:space:]')"
-    # Resolve the Cargo package name from Cargo.toml, not the directory basename.
-    # This fixes the perl-lsp -> perl-lsp-rs mismatch (issue #4512).
-    # Falls back to directory name if cargo xtask is unavailable.
-    SINGLE_CRATE_NAME="$(cargo xtask resolve-package-name "crates/${SINGLE_CRATE_DIR}" 2>/dev/null || printf '%s' "$SINGLE_CRATE_DIR")"
-    echo "Single-crate push (${SINGLE_CRATE_DIR} -> ${SINGLE_CRATE_NAME}) — running targeted gate"
-    echo "   (Skip with: git push --no-verify)"
-    echo ""
-    # Clippy target selection follows the crate's CI cohort, because the tier
-    # is meant to narrow SCOPE (one crate instead of the workspace), not to
-    # apply a different contract than CI does.
-    #
-    # Cargo's default selection is lib + bins, so a bare `cargo clippy -p X`
-    # cannot see tests/, benches/ or examples/ at all. For a crate in the
-    # clippy_tests_kernel cohort that is a real hole: the #14549 regression was
-    # a duplicated #![deny(clippy::map_err_ignore)] in
-    # crates/perl-workspace-core/tests/, a file this tier never compiled, so it
-    # reached main and reddened the kernel gate for every PR.
-    #
-    # But --all-targets is NOT universally right here. The crates in
-    # CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES (#15677, #15613) are deliberately
-    # outside that cohort because they retain measured test-target lint debt;
-    # CI lints them through clippy_strict, which is lib + bins. Applying
-    # --all-targets to those would fail every otherwise valid push on
-    # pre-existing findings that CI does not gate on.
-    #
-    # So read the cohort from the gate policy rather than assuming one answer,
-    # and match its exact lint flags. The list is parsed out of the
-    # clippy_tests_kernel command itself, so it cannot drift from what CI runs;
-    # unparseable or missing policy falls back to the narrower command.
-    #
-    # --locked on every command so a gate run cannot quietly rewrite Cargo.lock
-    # and have CI reject the push it just approved. Deliberately NOT
-    # --all-targets on cargo test: that flag drops doctests, which the current
-    # invocation does run.
-    clippy_tests_kernel_cohort() {
-        awk '
-            /^  - name: clippy_tests_kernel$/ { in_gate = 1; next }
-            in_gate && /^  - name: / { in_gate = 0 }
-            in_gate {
-                line = $0
-                sub(/^[[:space:]]+/, "", line)
-                sub(/[[:space:]]+$/, "", line)
-                # Whole-line match only: prose in this block mentions "-p <crate>"
-                # when narrating past admissions, and those must not count.
-                if (line ~ /^-p [A-Za-z0-9_-]+$/) { print substr(line, 4) }
-            }
-        ' "$1"
-    }
-
-    GATE_POLICY_FILE="$REPO_ROOT/.ci/gate-policy.yaml"
-    CLIPPY_ALL_TARGETS=false
-    if [ -f "$GATE_POLICY_FILE" ]; then
-        if clippy_tests_kernel_cohort "$GATE_POLICY_FILE" \
-            | grep -qxF "$SINGLE_CRATE_NAME" 2>/dev/null; then
-            CLIPPY_ALL_TARGETS=true
-        fi
-    fi
-
-    if [ "$CLIPPY_ALL_TARGETS" = true ]; then
-        echo "   clippy: --all-targets (crate is in the clippy_tests_kernel cohort)"
-    else
-        echo "   clippy: lib + bins (crate is outside the clippy_tests_kernel cohort)"
-    fi
-    echo ""
-
-    run_single_crate_gate() {
-        cargo fmt -p "$SINGLE_CRATE_NAME" -- --check || return
-        if [ "$CLIPPY_ALL_TARGETS" = true ]; then
-            cargo clippy -p "$SINGLE_CRATE_NAME" --all-targets --locked \
-                -- -D warnings -A missing_docs || return
-        else
-            cargo clippy -p "$SINGLE_CRATE_NAME" --locked -- -D warnings || return
-        fi
-        cargo test -p "$SINGLE_CRATE_NAME" --locked
-    }
-    GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
-    trap 'rm -f "$GATE_LOG"' EXIT
-    set +e
-    run_single_crate_gate 2>&1 | tee "$GATE_LOG"
-    GATE_STATUS=${PIPESTATUS[0]}
-    set -e
-    if [ "$GATE_STATUS" -ne 0 ]; then
-        echo ""
-        echo "❌ Single-crate gate failed (exit $GATE_STATUS)"
-        echo "   See bypass policy at the top of .git/hooks/pre-push for when"
-        echo "   --no-verify is appropriate."
-        exit "$GATE_STATUS"
-    fi
-    echo "✅ Single-crate gate passed"
-    exit 0
-fi
-
-echo "Running local fast gate before push: nix develop -c just pr-fast"
-echo "   (Skip with: git push --no-verify)"
-echo ""
-
-# --- Check if test files changed and CURRENT_STATUS.md needs updating ---
-if [ "$TEST_FILES_CHANGED" = true ] && [ -f "$REPO_ROOT/scripts/update-current-status.py" ]; then
-    echo "📊 Test files changed — checking if docs/project/status/ is up to date..."
-    if command -v python3 &>/dev/null; then
-        python3 "$REPO_ROOT/scripts/update-current-status.py" 2>/dev/null || true
-        if ! git diff --quiet -- docs/project/status/ 2>/dev/null; then
-            echo ""
-            echo "⚠️  docs/project/status/ has stale test counts!"
-            echo "   Run: python3 scripts/update-current-status.py"
-            echo "   Then commit the updated files before pushing."
-            echo "   git add docs/project/status/"
-            echo ""
-            exit 1
-        fi
-    fi
-fi
-
-# --- Run the full gate, capturing output for failure-mode hints ---
-GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
-trap 'rm -f "$GATE_LOG"' EXIT
-
-run_gate() {
-    if command -v nix &>/dev/null && [ -f flake.nix ]; then
-        nix develop -c just pr-fast
-    elif command -v just &>/dev/null; then
-        just pr-fast
-    else
-        echo "⚠️  Neither 'nix develop' nor 'just' available, skipping pre-push gate"
-        echo "   Install just: cargo install just"
-        return 0
-    fi
-}
-
-set +e
-run_gate 2>&1 | tee "$GATE_LOG"
-GATE_STATUS=${PIPESTATUS[0]}
-set -e
-
-if [ "$GATE_STATUS" -ne 0 ]; then
-    echo ""
-    echo "❌ pr-fast failed (exit $GATE_STATUS) — checking for known issues..."
-    HINTED=false
-    if grep -q 'ci-parser-features-check' "$GATE_LOG" 2>/dev/null && \
-       grep -qE 'os error 5|Access is denied' "$GATE_LOG" 2>/dev/null; then
-        echo "   • Known: Windows file-lock race in ci-parser-features-check (#3202)"
-        echo "     Workaround: re-run the gate, or use --no-verify if you're confident"
-        echo "     your change is unrelated to xtask/parser-features."
-        HINTED=true
-    fi
-    if grep -qE 'cargo (xtask )?fmt.*--check' "$GATE_LOG" 2>/dev/null && \
-       grep -qE 'Diff in|rustfmt' "$GATE_LOG" 2>/dev/null; then
-        echo "   • Formatting drift — run \`cargo xtask fmt\` to auto-fix"
-        HINTED=true
-    fi
-    if grep -qE 'clippy::|warning: .*-> .*\.rs' "$GATE_LOG" 2>/dev/null; then
-        echo "   • Clippy warnings — look for the error above and fix the warnings"
-        HINTED=true
-    fi
-    if grep -qE 'os error 206|filename.*too long|ERROR_FILENAME_EXCED' "$GATE_LOG" 2>/dev/null; then
-        echo "   • Windows CreateProcess command-line length limit (os error 206)"
-        echo "     'cargo fmt --all' passes all 1200+ source files in one command,"
-        echo "     exceeding the ~32K-char CreateProcess limit on Windows."
-        echo "     Fix: bash scripts/install-githooks.sh"
-        echo "     This installs the current hook which uses 'cargo xtask fmt' (per-crate)."
-        echo "     See: docs/contributing/FIRST_PR.md"
-        HINTED=true
-    fi
-    if [ "$HINTED" = false ]; then
-        echo "   No known-issue patterns matched. Read the gate output above."
-    fi
-    echo ""
-    echo "   See bypass policy at the top of .git/hooks/pre-push for when"
-    echo "   --no-verify is appropriate."
-    exit "$GATE_STATUS"
-fi
+echo "Publication consistency passed; focused proof and required late qualification remain separate."
+# Generated-status inventory remains affected candidate proof (#9559/#17939),
+# not an automatic publishing side effect. Its direct CLI is unchanged.
+exit 0
 "#
 }
 
@@ -843,8 +605,8 @@ mod tests {
         let refusal = hook
             .find("Refusing non-fast-forward")
             .ok_or_else(|| color_eyre::eyre::eyre!("refusal headline must exist in hook script"))?;
-        let gate = hook.find("just pr-fast").ok_or_else(|| {
-            color_eyre::eyre::eyre!("fast gate invocation must exist in hook script")
+        let gate = hook.find("gates --tier publication").ok_or_else(|| {
+            color_eyre::eyre::eyre!("publication gate invocation must exist in hook script")
         })?;
         assert!(
             refusal < gate,
@@ -893,7 +655,7 @@ mod tests {
         // upgrades (and refuses that one push).
         let hook = pre_push_hook_script();
         for marker in [
-            "# pre-push-hook-version: 1",
+            "# pre-push-hook-version: 2",
             "hook_version()",
             "\"$checkout_version\" -gt \"$installed_version\"",
             "keeping the installed hook. Update this branch/worktree",
