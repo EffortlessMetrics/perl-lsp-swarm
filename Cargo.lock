@@ -2107,8 +2107,8 @@ name = "perl-position-tracking"
 version = "0.17.0"
 dependencies = [
  "lsp-types",
- "perl-tdd-support",
  "perl-test-generators",
+ "perl-test-must",
  "proptest",
  "ropey",
  "serde",
