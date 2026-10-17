@@ -615,7 +615,13 @@ fn document_symbols_to_json(
 
 /// Helper function to convert offset to line number
 fn offset_to_line(content: &str, offset: usize) -> usize {
-    content[..offset.min(content.len())].chars().filter(|&c| c == '\n').count()
+    // Floor to a char boundary: an externally-derived offset can land
+    // mid-codepoint, and slicing there would panic (#18097).
+    let mut offset = offset.min(content.len());
+    while offset > 0 && !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    content[..offset].chars().filter(|&c| c == '\n').count()
 }
 
 /// Scan for POD blocks (`=pod`/`=head*`/`=begin` ... `=cut`/`=end`) and return
@@ -775,6 +781,17 @@ mod tests {
         CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcId, JsonRpcRequest,
         JsonRpcResponse, METHOD_NOT_FOUND, REQUEST_FAILED,
     };
+
+    /// A mid-codepoint offset must floor instead of panicking (#18097).
+    #[test]
+    fn offset_to_line_floors_mid_codepoint_offsets() {
+        // "é" is 2 bytes (0..2), "\n" at 2, "x" at 3.
+        let content = "é\nx";
+        assert_eq!(offset_to_line(content, 1), 0, "mid-codepoint floors to line 0");
+        assert_eq!(offset_to_line(content, 2), 0);
+        assert_eq!(offset_to_line(content, 3), 1);
+        assert_eq!(offset_to_line(content, usize::MAX), 1, "length clamp still applies");
+    }
 
     #[test]
     fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input()

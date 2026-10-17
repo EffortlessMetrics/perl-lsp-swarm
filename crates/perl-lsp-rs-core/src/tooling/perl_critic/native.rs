@@ -2591,7 +2591,13 @@ pub(crate) fn range_for_byte_span(content: &str, start: usize, end: usize) -> Ra
 }
 
 fn position_for_byte_offset(content: &str, offset: usize) -> Position {
-    let offset = offset.min(content.len());
+    // Floor to a char boundary: a caller-supplied span can land
+    // mid-codepoint, and slicing there would panic (#18097). The reported
+    // `byte` is the floored offset so the position stays self-consistent.
+    let mut offset = offset.min(content.len());
+    while offset > 0 && !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
     let prefix = &content[..offset];
     let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
     let line_start = prefix.rfind('\n').map_or(0, |idx| idx + 1);
@@ -2900,6 +2906,26 @@ mod tests {
     use perl_parser::Parser;
     use perl_parser_core::position::{Position, Range};
     use perl_tdd_support::{must, must_some};
+
+    /// A mid-codepoint span must floor instead of panicking (#18097).
+    #[test]
+    fn range_for_byte_span_floors_mid_codepoint_offsets() {
+        // "é" is 2 bytes (0..2), "\n" at 2, "x" at 3.
+        let content = "é\nx";
+        let range = range_for_byte_span(content, 1, 1);
+        assert_eq!(range.start.byte, 0, "mid-codepoint start floors to the boundary");
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.column, 0);
+        assert_eq!(range.end.byte, 0);
+
+        // Boundary-aligned inputs are unchanged.
+        let aligned = range_for_byte_span(content, 3, 4);
+        assert_eq!(aligned.start.byte, 3);
+        assert_eq!(aligned.start.line, 1);
+        assert_eq!(aligned.start.column, 0);
+        assert_eq!(aligned.end.byte, 4);
+        assert_eq!(aligned.end.column, 1);
+    }
 
     struct DummyRule;
 
