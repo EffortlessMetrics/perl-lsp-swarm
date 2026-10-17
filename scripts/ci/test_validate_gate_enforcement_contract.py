@@ -906,5 +906,133 @@ class ContractTests(unittest.TestCase):
         self.assertNotEqual(left["subject_sha256"], right["subject_sha256"])
 
 
+
+class QualificationSourceTests(unittest.TestCase):
+    """Opt-in staged source shape, not runtime qualification admission."""
+
+    def run_source(self, workflow: str, selected: str = '.github/workflows/ci.yml'):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root, REQUIRED.replace('["pull_request", "merge_group"]', '["workflow_dispatch"]'),
+                    workflow=workflow)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), '--root', str(root), '--json',
+                 '--qualification-source', selected], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 2, result.stderr)
+            return result.returncode, json.loads(result.stdout)
+
+    @staticmethod
+    def source(on: str = 'on:\n  workflow_dispatch: {}', extra: str = '') -> str:
+        return f'''name: qualification rehearsal
+{on}
+jobs:
+  compile:
+    name: Compile All Targets
+    runs-on: ubuntu-latest
+    steps: []
+{extra}'''
+
+    def test_explicit_dispatch_source_is_only_static_success(self):
+        code, result = self.run_source(self.source())
+        self.assertEqual(code, 0)
+        self.assertEqual(result['qualification_status'], 'NOT_PROVEN')
+        self.assertEqual(result['qualification_sources'], ['.github/workflows/ci.yml'])
+
+    def test_ordinary_pr_draft_readiness_push_and_merge_roots_refuse(self):
+        for event in ('pull_request', 'pull_request_target', 'push', 'merge_group',
+                      'workflow_run', 'workflow_call', 'schedule', 'unknown_event'):
+            with self.subTest(event=event):
+                code, result = self.run_source(self.source(
+                    'on:\n  workflow_dispatch: {}\n  ' + event + ': {}'))
+                self.assertEqual(code, 1)
+                self.assertIn('qualification_automatic_entry', {x['code'] for x in result['findings']})
+
+    def test_comment_cannot_hide_lifecycle_entry(self):
+        events, _ = contract._parse_events(
+            'on:\n  workflow_dispatch: {}\n# comment\n  pull_request:\n    types: [synchronize, ready_for_review]\njobs:'.splitlines())
+        self.assertIn('pull_request', events)
+        code, result = self.run_source(self.source(
+            'on:\n  workflow_dispatch: {}\n# comment\n  pull_request:\n    types: [synchronize, ready_for_review]'))
+        self.assertEqual(code, 1)
+        self.assertIn('qualification_automatic_entry', {x['code'] for x in result['findings']})
+
+    def test_unresolved_reusable_edges_refuse_including_quoted_key(self):
+        for key in ('uses', '"uses"', "'uses'"):
+            with self.subTest(key=key):
+                code, result = self.run_source(self.source(extra=
+                    '  child:\n    ' + key + ': ./.github/workflows/product.yml\n'))
+                self.assertEqual(code, 1)
+                self.assertIn('qualification_unresolved_reusable', {x['code'] for x in result['findings']})
+
+    def test_unsupported_jobs_and_event_shapes_do_not_pass(self):
+        for text in (self.source(extra='  child: {uses: ./product.yml}'),
+                     self.source(extra='  child: *shared'),
+                     self.source(extra='  <<: *shared'),
+                     self.source(extra='  child:\n    <<: *shared'),
+                     self.source(extra='  child:\n    &key uses: ./product.yml'),
+                     self.source(extra='  child:\n    ? uses\n    : ./product.yml'),
+                     self.source('on:\n  workflow_dispatch: {}\n  &ev pull_request: {}'),
+                     'on: workflow_dispatch\njobs: {child: {uses: ./product.yml}}',
+                     self.source('on: {}'), self.source('on: [workflow_dispatch, push]'),
+                     self.source('on:\n  workflow_dispatch: {}\non:\n  pull_request: {}')):
+            with self.subTest(text=text):
+                code, result = self.run_source(text)
+                self.assertEqual(code, 1)
+                self.assertNotEqual(result['status'], 'SUCCESS')
+
+    def test_noncanonical_direct_job_indentation_is_unproven(self):
+        for spaces in (6, 8):
+            with self.subTest(spaces=spaces):
+                code, result = self.run_source(self.source(extra=
+                    '  child:\n' + ' ' * spaces + 'uses: ./.github/workflows/product.yml\n'))
+                self.assertEqual(code, 1)
+                self.assertIn('qualification_source_unsupported', {x['code'] for x in result['findings']})
+
+    def test_step_action_reference_is_not_a_job_reusable_edge(self):
+        code, result = self.run_source(self.source().replace('    steps: []',
+            '    steps:\n      - uses: actions/checkout@' + 'a' * 40))
+        self.assertEqual(code, 0)
+        self.assertEqual(result['qualification_status'], 'NOT_PROVEN')
+
+    def test_selection_binding_and_non_ci_root_regression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = fixture(root, REQUIRED.replace('["pull_request", "merge_group"]', '["workflow_dispatch"]'),
+                             workflow=self.source())
+            paths = ['.github/workflows/ci.yml', '.github/workflows/ripr.yml',
+                     '.github/workflows/em-ci-routed-rust.yml']
+            for path in paths[1:]:
+                (root / path).write_text(self.source().replace('name: Compile All Targets', 'name: ' + path))
+            commit_all(root, 'staged selected roots')
+            default = contract.validate(root, policy)
+            one = contract.validate(root, policy, qualification_sources=paths[:1])
+            all_sources = contract.validate(root, policy, qualification_sources=paths)
+            self.assertEqual(all_sources['status'], 'SUCCESS')
+            self.assertNotIn('qualification_status', default)
+            self.assertNotEqual(one['subject_sha256'], all_sources['subject_sha256'])
+            self.assertNotEqual(one['exact_source_sha256'], all_sources['exact_source_sha256'])
+            for path in paths[1:]:
+                (root / path).write_text(self.source('on:\n  workflow_dispatch: {}\n  pull_request:\n    types: [ready_for_review, synchronize, converted_to_draft]').replace(
+                    'name: Compile All Targets', 'name: ' + path))
+                commit_all(root, 'ordinary path reintroduced')
+                args = [sys.executable, str(SCRIPT), '--root', str(root), '--json']
+                for selected in paths:
+                    args.extend(['--qualification-source', selected])
+                run = subprocess.run(args, capture_output=True, text=True, timeout=10)
+                self.assertEqual(run.returncode, 1, run.stderr)
+                result = json.loads(run.stdout)
+                self.assertTrue(any(row['code'] == 'qualification_automatic_entry' and row['subject'] == path
+                                    for row in result['findings']))
+                (root / path).write_text(self.source().replace('name: Compile All Targets', 'name: ' + path))
+                commit_all(root, 'restore explicit root')
+
+    def test_unknown_or_unsafe_source_does_not_pass(self):
+        for path in ('.github/workflows/missing.yml', '../ci.yml'):
+            with self.subTest(path=path):
+                code, result = self.run_source(self.source(), selected=path)
+                self.assertEqual(code, 1)
+                self.assertNotEqual(result['status'], 'SUCCESS')
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -77,6 +77,35 @@ This is separate from policy role. An advisory context may propagate failure and
 
 The parser is deliberately bounded. It reads the direct workflow fields needed for this contract rather than pretending to evaluate arbitrary GitHub Actions expressions. A condition that cannot be established at the claimed strength blocks the static contract instead of being guessed.
 
+## Staged qualification-source diagnostic
+
+The same command has an opt-in source-shape diagnostic for #17903:
+
+```bash
+python3 scripts/ci/validate_gate_enforcement_contract.py --root <clean-staged-checkout> --json \
+  --qualification-source .github/workflows/ci.yml \
+  --qualification-source .github/workflows/ripr.yml \
+  --qualification-source .github/workflows/em-ci-routed-rust.yml
+```
+
+It retains the normal policy/producer checks and reuses their tracked workflow catalog.
+Each selected source must have only `workflow_dispatch` as its entry event. Ordinary
+PR (including Draft/Ready/update), push, merge-group and unknown entry events refuse.
+Unresolved job-level reusable calls, job merges, and unsupported event/job mapping
+shapes also refuse; this bounded parser does not silently certify omitted edges.
+The selected list is included in both semantic and exact-source receipt identities.
+Omitting the option retains the ordinary contract mode.
+
+This is a local static source diagnostic. `qualification_status` remains `NOT_PROVEN`
+even when source shape passes. It does not validate dispatch input values, trusted
+request acceptance, head-change invalidation, required-check application association,
+step-script dispatch or the complete indirect graph. #17900 owns actual request/result
+behavior; #17903 must close the full event perimeter; #17080/#10065 retain coordinated
+source/settings activation. The current live workflows are expected to fail this
+staged diagnostic. No trigger, required-context setting, permission or runtime admission
+changes merely by invoking it; do not remove live producers before compatible replacements
+are qualified. This diagnostic does not authorize a dispatch or merge.
+
 ## Subject binding
 
 A successful receipt is bound to:
