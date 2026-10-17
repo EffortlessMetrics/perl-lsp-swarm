@@ -1,0 +1,136 @@
+"""Inactive composition of existing canonical owners; no executor or HTTP writer.
+
+All ports are trusted in-process control code. In particular, native_import is
+bound to the central authenticated importer and canonical_owner to the existing
+Rust verifier plus its command-observation adapter. Objects/paths constructed by
+candidate JSON do not authenticate evidence. There is no CLI or environment flag
+that installs these ports into the production request path.
+"""
+import hashlib
+import json
+from pathlib import Path
+
+from . import candidate_readiness as admission
+from . import qualification_publication as publication
+from .export_rust_small_receipt import MAX_RECEIPT_BYTES, regular_bytes
+from .request_qualification import Eligibility, Refused
+from .rust_small_evidence import unique_object
+from .rust_small_subject import product_subject
+
+
+class RustSmallOwners:
+    """Bind central custody and canonical semantics to existing admission ports.
+
+    native_import(*, acquire_plan) returns the authenticated private packet Path.
+    canonical_owner(receipt_path, plan, selection) returns CommittedProof only
+    after canonical semantic verification. It owns execution/command semantics;
+    this adapter checks identity, immutable bytes and producer association only.
+    """
+    def __init__(self, adapter, environment, *, selection_owner, native_import,
+                 canonical_owner, applicability_owner):
+        if not all(callable(port) for port in (selection_owner, native_import,
+                                               canonical_owner, applicability_owner)):
+            raise ValueError('existing trusted owner callback missing')
+        self.adapter, self.environment = adapter, dict(environment)
+        self.selection_owner, self.native_import = selection_owner, native_import
+        self.canonical_owner, self.applicability_owner = canonical_owner, applicability_owner
+
+    def acquire(self):
+        plan = self.adapter.snapshot()
+        if (self.environment.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
+                or plan['repository'] != self.environment.get('GITHUB_REPOSITORY')
+                or plan['control'] != self.environment.get('GITHUB_SHA')):
+            raise Refused('native control differs from acquired plan')
+        return plan
+
+    def capture(self, central_capture):
+        """Use the central owner's native-context writer, never request JSON."""
+        if not callable(central_capture):
+            raise Refused('central capture owner missing')
+        return central_capture(self.environment, acquire_plan=self.acquire)
+
+    def export(self):
+        from .export_rust_small_receipt import export
+        return export(self.environment, acquire_plan=self.acquire)
+
+    def result_environment(self):
+        from .rust_standard_result import policy_environment
+        return policy_environment(self.environment, acquire_plan=self.acquire)
+
+    def committed_proof(self, plan, selected):
+        if (not isinstance(selected, admission.Selection)
+                or selected.subject_key != plan['request_key']
+                or selected.portfolio_sha256 != plan['portfolio_sha256']
+                or selected.policy_sha256 != plan['policy_sha256']
+                or not selected.reference or not isinstance(selected.selected, tuple)
+                or not selected.selected or selected.inapplicable_reason
+                or any(not isinstance(command, str) or not command for command in selected.selected)
+                or len(set(selected.selected)) != len(selected.selected)):
+            raise Refused('canonical import requires selected owner subject')
+        if self.acquire() != plan:
+            raise Refused('requested subject changed before native import')
+        root = self.native_import(acquire_plan=self.acquire)
+        if not isinstance(root, Path) or not root.is_absolute():
+            raise Refused('central native importer omitted its private packet')
+        context_raw, _ = regular_bytes(root / 'em-ci-job-context.json', 16384)
+        context = json.loads(context_raw, object_pairs_hook=unique_object)
+        product_subject(self.environment, context, self.acquire)
+        receipt_path = root / 'rust-small-proof.json'
+        raw, _ = regular_bytes(receipt_path, MAX_RECEIPT_BYTES)
+        digest = hashlib.sha256(raw).hexdigest()
+        check = context.get('producer_check_run_id')
+        if type(check) is not int or check <= 0:
+            raise Refused('canonical imported producer identity missing')
+        reference = (f'https://github.com/{plan["repository"]}/actions/runs/'
+                     f'{context["run_id"]}/attempts/{context["run_attempt"]}#job-{check}')
+        proof = self.canonical_owner(receipt_path, plan, selected)
+        if (not isinstance(proof, admission.CommittedProof)
+                or proof.subject_key != plan['request_key']
+                or proof.canonical_receipt_sha256 != digest
+                or proof.producer_reference != reference):
+            raise Refused('canonical owner omitted exact imported bytes/producer association')
+        # A verifier may return zero for coherent failure diagnostics. Preserve
+        # its typed disposition; never manufacture success from an exit code.
+        if proof.disposition not in {'verified', 'failure', 'untrusted', 'unavailable'}:
+            raise Refused('canonical disposition unsupported')
+        if proof.disposition in {'verified', 'failure'}:
+            if (not isinstance(proof.executed, tuple) or not isinstance(proof.failed, tuple)
+                    or proof.executed != selected.selected[:len(proof.executed)]
+                    or len(set(proof.executed)) != len(proof.executed)
+                    or len(set(proof.failed)) != len(proof.failed)
+                    or any(command not in proof.executed for command in proof.failed)):
+                raise Refused('canonical execution differs from selected owner commands')
+            if proof.disposition == 'verified' and (proof.executed != selected.selected or proof.failed):
+                raise Refused('canonical success lacks complete selected execution')
+            if proof.disposition == 'failure' and not proof.failed:
+                raise Refused('canonical product failure lacks failed execution')
+        again, _ = regular_bytes(receipt_path, MAX_RECEIPT_BYTES)
+        context_again, _ = regular_bytes(root / 'em-ci-job-context.json', 16384)
+        if again != raw or context_again != context_raw or self.acquire() != plan:
+            raise Refused('imported proof/context/subject changed during canonical verification')
+        return proof
+
+    def eligibility(self, plan):
+        """Concrete callable for Adapter(..., eligibility=owners.eligibility)."""
+        result = admission.production(plan, selection_owner=self.selection_owner,
+            committed_owner=self.committed_proof, applicability_owner=self.applicability_owner)
+        return Eligibility(result['classification'], result.get('reason', 'existing owner join'))
+
+    def prepare_publication(self, run_id, run_attempt):
+        """Prepare only; publisher permission and mutation remain uninstalled."""
+        plan = self.acquire()
+        selected = self.selection_owner(plan)
+        proof = self.committed_proof(plan, selected)
+        if (proof.disposition not in {'verified', 'failure'}
+                or not isinstance(proof.executed, tuple) or not isinstance(proof.failed, tuple)):
+            raise Refused('canonical owner has no publishable execution')
+        verified = publication.VerifiedQualification(
+            **{name: plan[name] for name in ('request_key', 'head', 'tree', 'base', 'control',
+                                           'portfolio_sha256', 'policy_sha256')},
+            run_id=int(self.environment['GITHUB_RUN_ID']),
+            run_attempt=int(self.environment['GITHUB_RUN_ATTEMPT']),
+            selected=len(selected.selected), executed=len(proof.executed), failed=len(proof.failed),
+            result='success' if proof.disposition == 'verified' else 'product_failure',
+            canonical_receipt_sha256=proof.canonical_receipt_sha256,
+            authenticated_producer_reference=proof.producer_reference)
+        return publication.prepare(self.adapter, run_id, run_attempt, verified)

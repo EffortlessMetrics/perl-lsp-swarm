@@ -1,8 +1,10 @@
 # Staged workflow composition for explicit qualification
 
-This branch composes the exact #18066 adapter source at
-`80a20786588be34e33214064ea7ab7f8a1270582` with #18063's source perimeter and
-the two generated-PR dispatch repairs. It is not an activated late qualification
+This branch composes #18066's adapter, #18069's admission/publication source at
+`a2a0ab9a9c2ab16f0672eee3269efd7a09560683`, #18063's source perimeter, and
+the two generated-PR dispatch repairs. It imports the bounded H/S bridge dependency
+closure from #18068 at `b9cdc78b78467f75efcf9946f32239a31b7c8da9`; it does not
+merge that carrier's unrelated source history. It is not an activated late qualification
 generation. No required check, protection, runner allowance or permission is changed.
 
 The actual `post-merge-status.yml` and `aggregate-ci-lane-history.yml` dispatch
@@ -46,40 +48,58 @@ and rejects reintroduced Ready/synchronize roots outside ci.yml. It also calls t
 actual production-default adapter against its existing fake GitHub boundary:
 H differs from S, admission remains NOT_PROVEN and every API call is GET-only.
 
+## Implemented inactive owner composition
+
+`qualification_runtime.RustSmallOwners` connects existing owner interfaces: a
+trusted central capture/import callback, the H/S receipt exporter and result
+mapping, the existing admission join, and the existing read-only H-bound payload
+preparer. It requires exact selected portfolio/policy identity, an independently
+captured H/tree/B/control/request key, authenticated private imported bytes and
+producer run/attempt/check identity, and a typed canonical semantic disposition.
+It rechecks checkout, receipt/context bytes and current request after verification.
+Coherent product failure remains failure; JSON, exit zero, incomplete execution,
+wrong commands, changed policy, stale attempts and moved subjects cannot become
+success. The importer and semantic callbacks are trusted code boundaries, not
+candidate data. There is no CLI, environment flag or installed workflow that
+supplies these callbacks.
+
+The focused runtime regression invokes the actual bridge/export/result/admission
+and publication-preparation functions. Its native-import and canonical-semantic
+callbacks are synthetic fixtures; this is not product qualification or a claim
+that a typed object authenticates itself. The seven imported bridge/dependency
+files are byte-identical to #18068. Only the bridge/export test closure is imported;
+full carrier workflow/result tests require that owner's additional source and
+were not qualified here.
+
 ## Actual runtime joins still needed
 
-These gaps are in current executable source, not inferred from open issue labels:
-
-1. `request_qualification.py:unavailable_eligibility` returns NOT_PROVEN.
-   `Adapter.request` exits before POST. Its only transport target is the fixed
-   `qualification-rehearsal.yml`. That workflow calls `rehearse-event`, whose
-   manifest has selected/executed/failed = 0 and no check ID. It exports no product
-   admission output. The adapter owner must supply the real eligibility boundary
-   and qualified allocation handoff before a root can consume it. Reuse existing
-   semantic-review/currentness and convergence owners; do not add another readiness
-   engine or infer readiness from a caller-provided hash. After native-context
-   binding, the composed rehearsal now executes the existing policy validator and
-   docs-agents diagnostic on control S, retaining their reports separately. These
-   are real diagnostic commands; they do not execute the selected product proof on
-   H or change the zero-execution NOT_PROVEN result manifest.
-2. The legacy roots are not callable consumers of that accepted run. CI's normal
-   dispatch resolver requires head == GITHUB_SHA, whereas the adapter correctly
-   binds control S separately from H/tree/B. The existing `ci_subject` explicit
-   mode (`--event-name explicit`) can describe evaluated H/B without rewriting S;
-   the eventual consumer must prove its checkout and native origin. In ci.yml,
-   `repository-contract` still derives CONTRACT_HEAD only from PR/merge events;
-   `public-api-pr` and `semver-pr` still have PR/push event guards and API scope
-   assumptions. Merely applying this trigger patch would retain their source but
-   fail to qualify those obligations. Compose them with authenticated selected
-   scope when the allocator contract exists, before activation.
-3. `Adapter.inspect` consumes an exact run/attempt artifact plus an approved
-   check on H. No installed workflow produces that success manifest/check bridge.
-   #16134's canonical Rust receipt/producer/result policy already exists in its
-   owner branch, but is a different retained contract; its d69 source pin is
-   explicitly unadmitted. Do not reinterpret a coherent ProductFailure receipt,
-   metadata election, or the controller's green S check as qualification of H.
-   Compose a trusted result translation and custody boundary with that owner,
-   retaining all five currently protected contexts and selected mandatory proof.
+1. The adapter now calls the real #10057 admission join by default. It requires
+   clean exact control S and existing current review/convergence authorities;
+   its product selection, committed-proof and applicability ports remain
+   uninstalled in production. `RustSmallOwners` supplies a source-level committed
+   proof callback, but its bound authenticated importer and canonical Rust
+   semantic/command-observation callback must still be installed by their owners.
+   The fixed `qualification-rehearsal.yml` target remains a diagnostic: selected,
+   executed and failed counts are zero, with no product check ID or allocation.
+   Its existing control-S policy/docs diagnostics do not qualify product H.
+2. The legacy roots are not callable consumers of an accepted allocation. CI's
+   normal dispatch resolver requires head == GITHUB_SHA; selected qualification
+   instead binds H/tree/B separately from native control S. The eventual central
+   consumer must capture that binding, checkout exact clean H, execute the
+   existing selected proof and import its native packet. Optional central
+   capture/import hooks alone do not change the current checkout/emitter/Rust
+   commands. In ci.yml, repository-contract still derives CONTRACT_HEAD only from
+   PR/merge events; public-api-pr and semver-pr retain event/API assumptions.
+   Compose these with authenticated selected scope before applying the root patch.
+3. `Adapter.inspect` consumes an exact run/attempt artifact plus an approved check
+   on H. `prepare_publication` prepares the existing Rust Small H check payload
+   using current native S custody, then rechecks the live native attempt. It
+   performs GETs only and returns PREPARED_NOT_PUBLISHED. No privileged workflow,
+   checks:write grant, HTTP writer, token acquisition or activated pin is added.
+   The final result/manifest publisher and its authorization remain a separate
+   integration dependency. Preserve all five protected contexts and their
+   substantive selected proof. Do not reinterpret the controller's green S check
+   or a coherent failure receipt as qualification of H.
 
 #17624 already implements the product-independent classifier/bootstrap in its
 owner branch. Desktop owns its build/admission composition. Do not compile a second

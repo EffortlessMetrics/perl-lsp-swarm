@@ -128,7 +128,7 @@ class StagedTriggerCutoverTests(unittest.TestCase):
                          '.github/workflows/qualification-rehearsal.yml')
         self.assertTrue(api.calls)
         self.assertTrue(all(method == 'GET' for method, *_ in api.calls))
-        self.assertIn('candidate_readiness.v1', result['reason'])
+        self.assertIn('#10057', result['reason'])
 
 
 if __name__ == '__main__':
