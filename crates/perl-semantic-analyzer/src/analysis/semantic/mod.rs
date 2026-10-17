@@ -2435,6 +2435,81 @@ sub process {
         Ok(())
     }
 
+    /// #17298: a sub's hover documentation is only its immediately
+    /// preceding POD block — not every POD block from the first `=head1`
+    /// onward, and never an intermediate sub's source.
+    #[test]
+    fn test_sub_pod_docs_do_not_bleed_across_subs() -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"package WidgetGarden;
+=head1 NAME
+
+WidgetGarden - a small fixture package.
+
+=head1 DESCRIPTION
+
+This module exists to exercise hover surfaces.
+
+=cut
+
+=head2 new
+
+Constructor. Takes a name.
+
+=cut
+
+sub new {
+    my ($class, %opts) = @_;
+    return bless \%opts, $class;
+}
+
+=head2 add_widgets
+
+Adds widgets to the garden.
+
+=cut
+
+sub add_widgets {
+    my ($self, $count) = @_;
+    return $count;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let subs = analyzer.symbol_table().find_symbol("add_widgets", 0, SymbolKind::Subroutine);
+        assert!(!subs.is_empty(), "Should find sub add_widgets");
+        let hover = analyzer.hover_at(subs[0].location).ok_or("hover not found")?;
+        let doc = hover.documentation.as_deref().ok_or("doc not found")?;
+        assert!(doc.contains("Adds widgets"), "own POD block expected, got: {doc}");
+        assert!(
+            !doc.contains("WidgetGarden - a small fixture"),
+            "file-level NAME POD must not bleed into add_widgets, got: {doc}"
+        );
+        assert!(
+            !doc.contains("Constructor. Takes a name."),
+            "previous sub's POD must not bleed into add_widgets, got: {doc}"
+        );
+        assert!(
+            !doc.contains("my ($class, %opts)"),
+            "intermediate sub source must not be presented as documentation, got: {doc}"
+        );
+
+        let news = analyzer.symbol_table().find_symbol("new", 0, SymbolKind::Subroutine);
+        assert!(!news.is_empty(), "Should find sub new");
+        let new_hover = analyzer.hover_at(news[0].location).ok_or("hover not found")?;
+        let new_doc = new_hover.documentation.as_deref().ok_or("doc not found")?;
+        assert!(
+            new_doc.contains("Constructor. Takes a name."),
+            "new keeps its own POD block, got: {new_doc}"
+        );
+        assert!(
+            !new_doc.contains("WidgetGarden - a small fixture"),
+            "file-level NAME POD must not bleed into new either, got: {new_doc}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_variable_hover_shows_declaration_type() -> Result<(), Box<dyn std::error::Error>> {
         let code = r#"my $count = 42;
