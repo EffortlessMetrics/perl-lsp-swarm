@@ -1424,7 +1424,15 @@ impl LspServer {
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
-        let previous_result_id = params["previousResultId"].as_str().map(|s| s.to_string());
+        let previous_result_id = match params.get("previousResultId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) => Some(id.clone()),
+            Some(_) => {
+                return Err(invalid_params(
+                    "textDocument/diagnostic params.previousResultId must be a string resultId from an earlier diagnostic report; omit it or use null to request a full report.",
+                ));
+            }
+        };
 
         // Parse URI — an unparseable URI is a client-side protocol error (LSP 3.17)
         let uri: Uri =
