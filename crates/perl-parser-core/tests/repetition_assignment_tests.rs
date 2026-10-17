@@ -371,21 +371,17 @@ fn repetition_assignment_recovers_missing_rhs_with_exact_spans() -> Result<(), S
 
 #[test]
 fn repetition_assignment_rejects_malformed_missing_rhs_and_triple_equals() -> Result<(), String> {
+    // One failed statement records one diagnostic (#16605): the synthetic
+    // `expected statement` recovery duplicate at the same position that these
+    // pins used to carry alongside the original error is gone.
     let pos_output = Parser::new("pos $value x=;").parse_with_recovery();
     let pos_sexp = pos_output.ast.to_sexp();
     if find_assignment(&pos_output.ast, "x=").is_some()
         || !pos_sexp.contains("(ERROR (message \"expected expression, found ';' at position 13\")")
         || !matches!(
             pos_output.diagnostics.as_slice(),
-            [
-                ParseError::UnexpectedToken { expected, found, location },
-                ParseError::UnexpectedToken { expected: statement_expected, found: statement_found, location: statement_location },
-            ] if expected == "expression"
-                && found == "';'"
-                && *location == 13
-                && statement_expected == "statement"
-                && statement_found == "';'"
-                && *statement_location == 13
+            [ParseError::UnexpectedToken { expected, found, location }]
+                if expected == "expression" && found == "';'" && *location == 13
         )
     {
         return Err(format!(
@@ -401,15 +397,8 @@ fn repetition_assignment_rejects_malformed_missing_rhs_and_triple_equals() -> Re
             .contains("(ERROR (message \"expected expression, found '=' at position 10\")")
         || !matches!(
             triple_output.diagnostics.as_slice(),
-            [
-                ParseError::UnexpectedToken { expected, found, location },
-                ParseError::UnexpectedToken { expected: statement_expected, found: statement_found, location: statement_location },
-            ] if expected == "expression"
-                && found == "'='"
-                && *location == 10
-                && statement_expected == "statement"
-                && statement_found == "'='"
-                && *statement_location == 10
+            [ParseError::UnexpectedToken { expected, found, location }]
+                if expected == "expression" && found == "'='" && *location == 10
         )
     {
         return Err(format!(
