@@ -102,6 +102,9 @@ members = [
     "crates/perl-release-readiness",
     "crates/perl-workspace-core",
     "crates/perl-tree-sitter-compat",
+    # Lightweight shared-source bootstrap for xtask's routed-test-cohorts
+    # producer (#17623); publish = false, minimal deps. See its README.
+    "crates/routed-test-cohorts-bootstrap",
     "xtask",
 ]
 

@@ -85,6 +85,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-workspace` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-workspace-core` | swarm-product | private | `workspace_path` | #7369 |
 | `perllsp` | swarm-product | published | `workspace_path` | #7369 |
+| `routed-test-cohorts-bootstrap` | _pending_ | private | `workspace_path` | #17623 |
 | `tree-sitter-perl-c` | tree-sitter-perl-c | published | `workspace_path` | #7378 |
 | `tree-sitter-perl-rs` | _pending_ | published | `workspace_path` | #7400 |
 | `xtask` | swarm-product | private | `workspace_path` | #7369 |
@@ -127,7 +128,7 @@ _No package currently lives here._
 
 ## Unresolved placement
 
-17 package(s) have no accepted future owner. Each names the issue that owns the
+18 package(s) have no accepted future owner. Each names the issue that owns the
 decision and the exact question, so unresolved placement stays visible instead of
 becoming a false final answer.
 
@@ -149,6 +150,7 @@ becoming a false final answer.
 | `perl-symbol` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-test-generators` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-tree-sitter-compat` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
+| `routed-test-cohorts-bootstrap` | #17623 | Whether this private shared-source routed-verification bootstrap remains in swarm-product or moves with repository tooling is unresolved; #17623 owns recording the placement decision after native qualification. |
 | `tree-sitter-perl-rs` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 
 ## Excluded source trees
