@@ -844,16 +844,9 @@ impl<'a> PerlLexer<'a> {
                     // Check if this starts a POD section (=pod, =head, =over, etc.)
                     // Use byte-safe checks — avoid slicing &str at arbitrary byte positions
                     let remaining = &self.input_bytes[self.position..];
-                    if remaining.starts_with(b"=pod")
-                        || remaining.starts_with(b"=head")
-                        || remaining.starts_with(b"=over")
-                        || remaining.starts_with(b"=item")
-                        || remaining.starts_with(b"=back")
-                        || remaining.starts_with(b"=begin")
-                        || remaining.starts_with(b"=end")
-                        || remaining.starts_with(b"=for")
-                        || remaining.starts_with(b"=encoding")
-                    {
+                    // Perl treats any line-start `=<letter>` as a POD command (including
+                    // non-standard ones such as Pod::Weaver's `=construct`) until `=cut`.
+                    if remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic()) {
                         // Scan forward for \n=cut (end of POD block)
                         let search_start = self.position;
                         let mut found_cut = false;
