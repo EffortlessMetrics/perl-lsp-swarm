@@ -308,6 +308,10 @@ cargo fmt -p <package> -- --check
 cargo clippy -p <package> --all-targets --locked -- -D warnings
 cargo test -p <package> --all-targets --locked
 just pr-fast
+# Quiet xtask dispatch for agent queries: skips cargo's ~200KB cached-warning
+# replay on stderr (#17240). Fresh build errors still surface; xtask
+# stdout/stderr pass through untouched.
+bash scripts/xtask-quiet.sh ci doctor --help
 ```
 
 Choose the smallest command that can falsify the claim. Current GitHub protection
