@@ -1167,6 +1167,49 @@ mod tests {
         Ok(())
     }
 
+    /// Malformed Perl in a CRLF document must still fold the region on
+    /// the exact marker lines through production dispatch (#18034): the
+    /// extractor's byte offsets feed `offset_to_line`, whose direct slice
+    /// panicked when a CRLF drift landed inside a multi-byte character.
+    #[test]
+    fn folding_range_dispatch_handles_malformed_crlf_region()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": "file:///crlf-region.pl",
+                "languageId": "perl",
+                "version": 1,
+                "text": "#region\r\nmy $x = (\r\n#endregion",
+            }
+        })))?;
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///crlf-region.pl" } })),
+        )?;
+        if let Some(error) = response.error.as_ref() {
+            return Err(format!("malformed CRLF region must succeed: {error:?}").into());
+        }
+        let ranges = response
+            .result
+            .as_ref()
+            .and_then(Value::as_array)
+            .ok_or("folding range must return an array")?;
+        let region = ranges
+            .iter()
+            .find(|range| range.get("kind").and_then(Value::as_str) == Some("region"))
+            .ok_or("the CRLF region fold must be present")?;
+        assert_eq!(region.get("startLine"), Some(&json!(0)), "region start line: {region}");
+        assert_eq!(region.get("endLine"), Some(&json!(2)), "region end line: {region}");
+        Ok(())
+    }
+
     #[test]
     fn folding_range_dispatch_preserves_invalid_params_instead_of_empty_success()
     -> Result<(), Box<dyn std::error::Error>> {
