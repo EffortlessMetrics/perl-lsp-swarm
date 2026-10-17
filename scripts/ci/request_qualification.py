@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Staged exact-subject qualification adapter; never merges or writes checks.
 
-The production eligibility boundary deliberately refuses until #10057 supplies
-its real producer. Tests inject that boundary and GitHub transport; no file,
+The real production readiness join refuses while authoritative selection,
+warm-proof provenance and applicability owners remain uninstalled. Tests inject
+those boundaries and GitHub transport; no file,
 environment flag or candidate-supplied JSON can claim eligibility.
 """
 from __future__ import annotations

@@ -2,7 +2,9 @@
 
 Status: staged source; activation is **NOT_PROVEN**. Neither the root-trigger
 patch nor a publisher permission is enabled. This procedure does not authorize
-settings changes, a check writer, dispatch or cutover. The integration owner must
+settings changes, a check writer, dispatch or cutover. Generated-PR product
+dispatch removal and its Rust contract are also inside the unapplied leaf;
+tracked source retains current producers. The integration owner must
 review the final combined source and current observations before requesting that
 operation. Do not land the generated-PR dispatch removal alone while required
 producers still depend on it.
@@ -87,9 +89,11 @@ the exact affected attempts; do not certify their result or start duplicate work
    and `aggregate-ci-lane-history.yml` if its removal was part of cutover. Restore
    caller/mirror pins and entry/result wiring to the recorded compatible
    generation. Preserve unrelated changes; do not force-reset main.
-3. For the unchanged staged root leaf, `git apply --reverse --check
+3. For the unchanged staged root leaf, `git apply --unidiff-zero --reverse --check
    .ci/staged/17903-root-triggers.patch` followed by reverse application restores
-   the four files byte-for-byte. The regression proves this only for that exact
+   all seven files byte-for-byte (three roots, policy, two generated-PR workflows
+   and their Rust contract). Use `--unidiff-zero` for application and reversal:
+   the dispatch/contract projection uses zero-context hunks. The regression proves this only for that exact
    leaf. If files changed during integration, produce and review a contextual
    revert against the actual cutover commit; do not force an outdated patch.
 4. No protection setting changes are part of cutover or rollback. If a separately

@@ -72,9 +72,12 @@ legacy entrypoints and installed isolated exporter behavior. The bridge requires
 Canonical product receipt bytes bind H; the native export custody envelope still
 truthfully binds dispatcher S/run/attempt. Result policy maps the canonical proof
 subject to H and effective control to S. Git inspection strips all metadata tokens
-and Git overrides. The current central context/importer does not yet supply this
-capture/dual identity; legacy custody refuses the new mode instead of accepting
-H as S. The central owner must wire its actual producer/importer to this bridge.
+and Git overrides. The central source hooks now support this capture/dual
+identity, but native entrypoints still omit the trusted callback. Legacy custody
+refuses the new mode instead of accepting H as S. The central owner must wire its
+actual producer/importer to this bridge. This branch's exporter additionally
+compares an optional trusted process status to the exact receipt outcome before
+writing custody bytes, so a contradictory producer cannot leave a success packet.
 No existing carrier workflow or approved pin is silently replaced.
 
 ## Exact permission request (pending approval)

@@ -12,11 +12,12 @@ The exact remaining activation joins and source rollback procedure are in
 review against the actual final combined source and fresh native observations;
 the local reversal proof does not establish runtime rollback.
 
-The actual `post-merge-status.yml` and `aggregate-ci-lane-history.yml` dispatch
-steps retain title/history metadata and no longer launch CI/RIPR/Rust Small on
-publication. Their existing native contracts and executable shell-spy regressions
-are aligned. This partial source must not land alone while generated candidates
-still depend on those old required producers.
+The coordinated unapplied leaf changes `post-merge-status.yml` and
+`aggregate-ci-lane-history.yml` to metadata-only dispatch. Tracked workflows and
+their existing native Rust contract retain today's mandatory product dispatches,
+including exact CI base/head inputs. Shell-spy regressions distinguish installed
+and projected behavior. Dispatch removal must not land alone while generated
+candidates still depend on those required producers.
 
 ## Reviewable root trigger diff
 
@@ -25,7 +26,9 @@ leaf for the coordinated cutover. It removes ordinary PR/Ready/update, merge-gro
 and every-main-push entry from `ci.yml`, `ripr.yml` and `em-ci-routed-rust.yml`, and
 projects their policy event lists to manual dispatch in `required-checks.toml`. It preserves all job
 bodies, context names, required flags, app bindings, substantive commands and
-failure policy. The native static policy contract remains structurally valid. It does not prove
+failure policy. The same leaf contains generated-PR dispatch removal and its
+native Rust contract projection, so those changes remain unapplied too.
+The native static policy contract remains structurally valid. It does not prove
 the preserved jobs execute after migration: event-specific guards still need the
 selected-scope join below, even where a policy row now names manual dispatch.
 
@@ -95,7 +98,9 @@ The focused runtime regression invokes the actual bridge/export/result/admission
 and publication-preparation functions. Its native-import and canonical-semantic
 callbacks are synthetic fixtures; this is not product qualification or a claim
 that a typed object authenticates itself. The seven imported bridge/dependency
-files are byte-identical to #18068. Only the bridge/export test closure is imported;
+files originated byte-identically from #18068. The exporter now adds an optional
+trusted process-status check before any custody writes; the other six files are
+unchanged from that import. Only the bridge/export test closure is imported;
 full carrier workflow/result tests require that owner's additional source and
 were not qualified here.
 

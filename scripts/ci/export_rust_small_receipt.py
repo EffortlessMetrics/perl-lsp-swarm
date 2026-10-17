@@ -40,7 +40,7 @@ def regular_bytes(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
         os.close(descriptor)
 
 
-def export(environment: dict[str, str], *, acquire_plan=None) -> dict:
+def export(environment: dict[str, str], *, acquire_plan=None, expected_process_status=None) -> dict:
     # The installed `python3 -I` exporter stays stdlib-only. The bridge is an
     # in-process trusted-control composition, never a new script/path override.
     hooks = {}
@@ -106,6 +106,10 @@ def export(environment: dict[str, str], *, acquire_plan=None) -> dict:
         raise ValueError("canonical receipt source mismatch")
     if receipt.get("result") not in ("success", "product_failure", "not_completed", "instrument_failure"):
         raise ValueError("canonical receipt outcome missing")
+    if expected_process_status is not None:
+        if (type(expected_process_status) is not int or not 0 <= expected_process_status <= 255
+                or (expected_process_status == 0) != (receipt['result'] == 'success')):
+            raise ValueError('canonical producer exit differs from receipt outcome')
     manifest = {
         "schema": "perl-rust-small-export.v1", **{key: expected[key] for key in
             ("repository", "sha", "run_id", "run_attempt", "profile")},

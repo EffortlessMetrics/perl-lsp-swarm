@@ -7,8 +7,9 @@ The rehearsal workflow is non-required and accepts only explicit dispatch.
 Draft pushes, ordinary pushes and readiness changes are not qualification requests.
 
 This is source implementation and synthetic boundary coverage, not deployment of
-late qualification. Production admission deliberately returns `NOT_PROVEN` because
-#10057's `candidate_readiness.v1` producer is absent. There is no CLI, environment
+late qualification. Production invokes the real `candidate_readiness.v1` join but
+returns `NOT_PROVEN` while its authoritative selection, authenticated distinct
+warm-proof and applicability owner ports remain uninstalled. There is no CLI, environment
 flag or candidate JSON override. The installed workflow executes metadata only,
 emits `not_proven`, and publishes no check on H. A successful metadata job is not
 successful qualification. Existing mandatory producers remain necessary until a
@@ -37,9 +38,9 @@ not an atomic GitHub transaction; final judgment must reacquire live state.
 
 The trusted admission callback receives that acquired plan and returns an
 `Eligibility(classification, reason)`, where classification is `READY`, `NOT_READY`,
-`NOT_PROVEN` or `UNTRUSTED_REPLAY_REQUIRED`. Production has only the missing-producer
-implementation; tests inject the future boundary. Before enabling dispatch, #10057
-must supply real prequalification evidence, including current substantive review
+`NOT_PROVEN` or `UNTRUSTED_REPLAY_REQUIRED`. Production runs the existing readiness
+join; tests inject its missing owner boundaries. Before enabling dispatch, those
+owners must supply real prequalification evidence, including current substantive review
 and review-thread convergence, without requiring the future qualification result
 or final merge guard (which would create a dependency cycle). Portfolio/policy
 strings alone do not authenticate mandatory selection. This adapter does not
@@ -163,9 +164,9 @@ Concrete authorities and source gaps, inspected October 17:
 | Risk/command selection | `xtask/src/tasks/ci_subject.rs` explicit mode plus `ci_scope.rs` own subject and risk-sensitive lane selection; `.ci/gate-policy.yaml` and the existing shard runner own gate commands. Do not copy their selection logic into this adapter. |
 | Committed Rust Small proof | `rust_small_proof.rs` owns `rust_small_proof.v1`, all ten commands, exact clean source/toolchain/profile/census and outcome verification. Receipt freshness/presence helpers alone do not prove execution or producer custody. |
 | Export/import owner | #16134 head `382a0d10c9402f47391ef35ad8b4b09cb230a61b` adds `export_rust_small_receipt.py`, `rust_small_evidence.py`, isolated native import and canonical Rust verification through the pinned central workflow. Those interfaces remain the custody/semantic owners. |
-| H versus S bridge | That carrier's `rust_standard_result.policy_environment` requires dispatch `pre_merge_admission=true` and `reviewed_sha == GITHUB_SHA`, then sets candidate/evaluated source to that same SHA. It does not yet consume separate adapter H/B and dispatcher S. Coordinate this exact change with #16134; do not merely assert explicit ci_subject support wires it. |
+| H versus S bridge | `rust_standard_result.policy_environment(..., acquire_plan=...)` now consumes separate adapter H/B and dispatcher S through the trusted H/S bridge. Its default legacy entry remains unchanged; native central callback installation and exact-H checkout are still required. |
 | H/app publication | The caller and central `d69e3c9cbc55ee8c5d084facfe18432cd4c28618` use read-only checks access and native workflow jobs. No installed publisher emits this adapter's H/check/external-ID/attempt contract. No permission grant or alternate publisher is introduced here. |
-| Entry join | #10057 is open with no implementation carrier found in the inspected PR search. Joining canonical review/native findings with authenticated exact committed proof and actual selection remains unimplemented; the final pre-merge guard must not be reused to authorize its own future CI. |
+| Entry join | `candidate_readiness.production` joins live canonical review/native findings and trusted typed owner ports. Selection, applicability and authenticated distinct warm-proof adapters still need installation. `RustSmallOwners.enter_native` connects native election/current attempt to that join and capture; the final pre-merge guard must not authorize its own future CI. |
 
 This finite rehearsal executes real source/policy code and retains its result while
 preserving the distinct integration gaps. A hosted attempt requires publication

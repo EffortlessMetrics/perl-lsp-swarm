@@ -5,9 +5,11 @@
 //! ci.yml's `workflow_dispatch` declares required `base_sha`/`head_sha`
 //! inputs (#13019). The lane-history producer dispatched it bare, every
 //! scheduled run failed with HTTP 422, and the generated refresh PR's
-//! required checks never populated. The #17903 staged cutover preserves
-//! metadata dispatch and freshness/failure behavior, while product qualification
-//! is requested separately for the selected candidate through #17900.
+//! required checks never populated. These tests pin the repaired contract:
+//! the step resolves the created PR's recorded base/head identity, refuses
+//! to prove a moved subject, passes both SHAs to ci.yml only, keeps the
+//! other dispatches bare and independent, and fails the step when any
+//! lookup or dispatch fails.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -154,9 +156,10 @@ fn test_dispatch_step_declares_subject_identity_env() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-/// Retain generated-subject freshness while forbidding implicit product proof.
+/// The step must resolve the PR's recorded base/head through gh, pass both
+/// to ci.yml, and refuse to dispatch ci.yml for a moved subject (#15100).
 #[test]
-fn test_metadata_step_preserves_subject_identity() -> Result<(), Box<dyn std::error::Error>> {
+fn test_dispatch_step_binds_ci_subject_inputs() -> Result<(), Box<dyn std::error::Error>> {
     let step = dispatch_step()?;
     assert!(
         step.run.contains("gh pr view \"$PR_NUMBER\" --json baseRefOid,headRefOid"),
@@ -164,9 +167,9 @@ fn test_metadata_step_preserves_subject_identity() -> Result<(), Box<dyn std::er
         step.run
     );
     assert!(
-        !step.run.contains("-f \"base_sha=$base_sha\"")
-            && !step.run.contains("-f \"head_sha=$head_sha\""),
-        "publication must not request product qualification (#17903):\n{}",
+        step.run.contains("-f \"base_sha=$base_sha\"")
+            && step.run.contains("-f \"head_sha=$head_sha\""),
+        "ci.yml dispatch must pass the resolved base_sha/head_sha inputs (#13019):\n{}",
         step.run
     );
     assert!(
@@ -183,32 +186,21 @@ fn test_metadata_step_preserves_subject_identity() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-/// Publication raises only title and payload metadata, never product proof.
+/// Every required-check workflow must be raised on the generated PR, plus
+/// the lane-history validator, and each must accept workflow_dispatch.
 #[test]
-fn test_dispatch_set_contains_only_metadata() -> Result<(), Box<dyn std::error::Error>> {
+fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::Error>> {
     let step = dispatch_step()?;
     let order = dispatch_order(&step.run)?;
     let dispatched: BTreeSet<String> = order.iter().cloned().collect();
 
     let policy_path = project_root().join(".ci/policies/required-checks.toml");
     let policy: TomlValue = toml::from_str(&fs::read_to_string(policy_path)?)?;
-    let mut required = required_workflows(&policy)?;
-    for product in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml"] {
-        required.remove(product);
-        assert!(!dispatched.contains(product), "publication cannot dispatch {product}");
-    }
+    let required = required_workflows(&policy)?;
     assert!(
         required.is_subset(&dispatched),
         "generated-PR dispatch set must cover every required-check workflow; missing: {:?}",
         required.difference(&dispatched).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        dispatched,
-        BTreeSet::from([
-            "pr-title-check.yml".to_string(),
-            "validate-ci-lane-history.yml".to_string(),
-        ]),
-        "publication may dispatch only the retained metadata set"
     );
     assert!(
         dispatched.contains("validate-ci-lane-history.yml"),
@@ -376,11 +368,20 @@ mod simulation {
     fn expected_calls(order: &[String]) -> Vec<String> {
         order
             .iter()
-            .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
+            .map(|workflow| {
+                if workflow == "ci.yml" {
+                    format!(
+                        "workflow run {workflow} --ref {DISPATCH_BRANCH} -f base_sha={BASE_SHA} -f head_sha={HEAD_SHA}"
+                    )
+                } else {
+                    format!("workflow run {workflow} --ref {DISPATCH_BRANCH}")
+                }
+            })
             .collect()
     }
 
-    /// Healthy publication dispatches only metadata, in loop order.
+    /// A healthy run dispatches ci.yml with the resolved PR identity and the
+    /// remaining workflows bare, in loop order (#15100).
     #[test]
     fn test_all_success_dispatch_passes_subject_identity() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -393,13 +394,14 @@ mod simulation {
             "all-success dispatch run failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(calls, expected_calls(&order), "metadata dispatch must retain exact arguments");
+        assert_eq!(calls, expected_calls(&order), "ci.yml must receive the exact PR identity");
         Ok(())
     }
 
-    /// Failed identity lookup stays red while metadata checks remain independent.
+    /// A failed identity lookup must fail the step, skip the ci.yml
+    /// dispatch, and still attempt the other workflows (#15100).
     #[test]
-    fn test_failed_identity_lookup_stays_red() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_failed_identity_lookup_skips_ci_dispatch() -> Result<(), Box<dyn std::error::Error>> {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
         let stub = stubbed_step()?;
@@ -456,10 +458,13 @@ mod simulation {
         Ok(())
     }
 
-    /// A generated head moving during metadata dispatch must fail the step.
-    /// Lookup order is initial resolve, then post-loop re-resolve.
+    /// A head that moves after the initial lookup but before the ci.yml
+    /// dispatch must be caught by the per-dispatch re-resolution: ci.yml is
+    /// skipped and the step fails rather than proving the moved subject
+    /// (#15100 TOCTOU guard). Lookup order in the step is: initial resolve
+    /// (1), ci.yml pre-dispatch re-resolve (2), post-loop re-resolve (3).
     #[test]
-    fn test_head_moving_during_metadata_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_head_moving_before_ci_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
         let stub = stubbed_step()?;
@@ -477,6 +482,28 @@ mod simulation {
             .map(|workflow| format!("workflow run {workflow} --ref {DISPATCH_BRANCH}"))
             .collect();
         assert_eq!(calls, bare, "the other workflows must still be attempted");
+        Ok(())
+    }
+
+    /// A head that moves after the ci.yml dispatch is caught by the
+    /// post-loop re-resolution: the dispatch already landed on the
+    /// then-verified subject, but the step must fail loudly because later
+    /// checks may name different subjects (#15100 TOCTOU guard).
+    #[test]
+    fn test_head_moving_after_ci_dispatch_fails_the_step() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let step = dispatch_step()?;
+        let order = dispatch_order(&step.run)?;
+        let stub = stubbed_step()?;
+        let moved = "fedcba9876543210fedcba9876543210fedcba98";
+        let (output, calls) =
+            stub.run_moving(&pr_json(BASE_SHA, HEAD_SHA), 3, &pr_json(BASE_SHA, moved))?;
+        assert!(!output.status.success(), "a post-dispatch head move must fail the step");
+        assert_eq!(
+            calls,
+            expected_calls(&order),
+            "the ci.yml dispatch already landed on the verified subject"
+        );
         Ok(())
     }
 }

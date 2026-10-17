@@ -20,6 +20,9 @@ PATCH = ROOT / '.ci/staged/17903-root-triggers.patch'
 ROOTS = ('.github/workflows/ci.yml', '.github/workflows/ripr.yml',
          '.github/workflows/em-ci-routed-rust.yml')
 POLICY = '.ci/policies/required-checks.toml'
+DISPATCH_PATHS = ('.github/workflows/aggregate-ci-lane-history.yml',
+                  '.github/workflows/post-merge-status.yml',
+                  'xtask/tests/lane_history_ci_dispatch_contract.rs')
 ORDINARY = {'pull_request', 'pull_request_target', 'merge_group', 'push'}
 
 
@@ -34,7 +37,7 @@ def staged_tree():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         for name in (*[path.relative_to(ROOT).as_posix() for path in
-                       sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY):
+                       sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY, DISPATCH_PATHS[-1]):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -42,8 +45,8 @@ def staged_tree():
         git(root, 'add', '.')
         git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
             'commit', '-qm', 'source rehearsal')
-        git(root, 'apply', '--check', str(PATCH))
-        git(root, 'apply', str(PATCH))
+        git(root, 'apply', '--unidiff-zero', '--check', str(PATCH))
+        git(root, 'apply', '--unidiff-zero', str(PATCH))
         yield root
 
 
@@ -72,9 +75,9 @@ class StagedTriggerCutoverTests(unittest.TestCase):
 
     def test_root_policy_rollback_restores_exact_original_bytes(self):
         with staged_tree() as root:
-            git(root, 'apply', '--reverse', '--check', str(PATCH))
-            git(root, 'apply', '--reverse', str(PATCH))
-            for path in (*ROOTS, POLICY):
+            git(root, 'apply', '--unidiff-zero', '--reverse', '--check', str(PATCH))
+            git(root, 'apply', '--unidiff-zero', '--reverse', str(PATCH))
+            for path in (*ROOTS, POLICY, *DISPATCH_PATHS):
                 self.assertEqual((root / path).read_bytes(), (ROOT / path).read_bytes(), path)
             self.assertEqual(git(root, 'diff', '--exit-code'), '')
 

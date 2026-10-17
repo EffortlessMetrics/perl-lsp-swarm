@@ -161,6 +161,12 @@ class RuntimeCompositionTests(unittest.TestCase):
         self.bridge.write_receipt()
         with self.assertRaises(ValueError):
             self.owners.execute_proof(lambda environment, **kw: 0)
+        self.assertEqual(list(self.packet.iterdir()), [])
+        self.bridge.receipt['result'] = 'success'
+        self.bridge.write_receipt()
+        with self.assertRaises(ValueError):
+            self.owners.execute_proof(lambda environment, **kw: 7)
+        self.assertEqual(list(self.packet.iterdir()), [])
 
     def test_import_owner_callback_feeds_existing_admission_join(self):
         authorities = admission.ExistingControlAuthorities(Path('/unused'),

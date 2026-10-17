@@ -98,9 +98,10 @@ class RustSmallOwners:
         return dict(result, status='READY_FOR_ALLOCATION', context=context,
                     reason='native election and current owner admission joined; allocator still required')
 
-    def export(self):
+    def export(self, *, expected_process_status=None):
         from .export_rust_small_receipt import export
-        return export(self.environment, acquire_plan=self.acquire)
+        return export(self.environment, acquire_plan=self.acquire,
+                      expected_process_status=expected_process_status)
 
     def execute_proof(self, proof_owner):
         """Invoke the bound canonical producer after the existing allocation gate.
@@ -127,7 +128,7 @@ class RustSmallOwners:
         if after != before or self.acquire() != plan:
             raise Refused('producer context/request changed during execution')
         product_subject(self.environment, context, self.acquire)
-        manifest = self.export()
+        manifest = self.export(expected_process_status=status)
         if (status == 0) != (manifest['result'] == 'success'):
             raise Refused('canonical producer exit differs from exported receipt outcome')
         return status, manifest

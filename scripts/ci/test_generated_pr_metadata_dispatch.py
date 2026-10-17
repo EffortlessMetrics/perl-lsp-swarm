@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 import yaml
+from scripts.ci.test_staged_qualification_workflow_cutover import staged_tree
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = {
@@ -43,8 +44,13 @@ def dispatch_step(path):
 
 
 class GeneratedMetadataDispatchTests(unittest.TestCase):
-    def run_step(self, workflow, **overrides):
-        step = dispatch_step(ROOT / '.github/workflows' / workflow)
+    def setUp(self):
+        # Exercise the unapplied coordinated leaf, preserving today's required
+        # product dispatches in tracked workflows until native cutover is ready.
+        self.root = self.enterContext(staged_tree())
+
+    def run_step(self, workflow, *, source_root=None, **overrides):
+        step = dispatch_step((source_root or self.root) / '.github/workflows' / workflow)
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             (directory / 'gh').write_text(STUB)
@@ -60,6 +66,17 @@ class GeneratedMetadataDispatchTests(unittest.TestCase):
                                  capture_output=True, text=True, timeout=10)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             return run, calls
+
+    def test_installed_generation_retains_required_dispatch_and_exact_ci_inputs(self):
+        for workflow, (_, metadata) in WORKFLOWS.items():
+            with self.subTest(workflow=workflow):
+                run, calls = self.run_step(workflow, source_root=ROOT)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                dispatches = [call for call in calls if call[:2] == ['workflow', 'run']]
+                self.assertEqual([call[2] for call in dispatches],
+                                 ['ci.yml', 'em-ci-routed-rust.yml', 'ripr.yml', *metadata])
+                self.assertEqual(dispatches[0][-4:], ['-f', 'base_sha=' + 'a' * 40,
+                                                    '-f', 'head_sha=' + 'b' * 40])
 
     def test_publication_dispatches_exact_metadata_set_without_product(self):
         for workflow, (branch, expected) in WORKFLOWS.items():
@@ -88,10 +105,10 @@ class GeneratedMetadataDispatchTests(unittest.TestCase):
 
     def test_publication_conditions_preserve_refusal_guards(self):
         for workflow in WORKFLOWS:
-            condition = dispatch_step(ROOT / '.github/workflows' / workflow)['if']
+            condition = dispatch_step(self.root / '.github/workflows' / workflow)['if']
             self.assertIn("steps.create-pr.outputs.pull-request-number != '0'", condition)
         self.assertIn("steps.freshness.outputs.publish == 'true'",
-                      dispatch_step(ROOT / '.github/workflows/post-merge-status.yml')['if'])
+                      dispatch_step(self.root / '.github/workflows/post-merge-status.yml')['if'])
 
 
 if __name__ == '__main__':
