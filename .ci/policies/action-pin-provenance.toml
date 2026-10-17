@@ -235,6 +235,17 @@ sha = 'fb8b3582c8e4def4969c97caa2f19720cb33a72f'
 kind = 'release_tag'
 value = 'v7.0.0'
 
+# Verified against upstream on 2026-10-01:
+#   gh api repos/codecov/codecov-action/git/ref/tags/v7.1.0
+#   046562be8d17331600874a09d2c2062c27752c20  refs/tags/v7.1.0  (tag object)
+#   -> commit 0b35c9ecc4f0529d0eb674914510c22f85b196b4 (annotated tag,
+#      SSH signature verified: valid)
+[[pin]]
+action = 'codecov/codecov-action'
+sha = '0b35c9ecc4f0529d0eb674914510c22f85b196b4'
+kind = 'release_tag'
+value = 'v7.1.0'
+
 [[pin]]
 action = 'codecov/test-results-action'
 sha = '0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3'
