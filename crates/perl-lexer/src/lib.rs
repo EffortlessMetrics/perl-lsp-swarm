@@ -875,11 +875,18 @@ impl<'a> PerlLexer<'a> {
                         .iter()
                         .rev()
                         .find(|b| !b.is_ascii_whitespace())
-                        .is_none_or(|b| matches!(b, b';' | b'}' | b'{'));
+                        .is_none_or(|b| matches!(b, b';' | b'{'));
+                    // A generic word never swallows to EOF: a terminating `=cut` must exist.
+                    let has_later_cut = || {
+                        self.input_bytes[self.position..]
+                            .windows(5)
+                            .any(|w| matches!(w[0], b'\n' | b'\r') && &w[1..] == b"=cut")
+                    };
                     let generic_pod = remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
                         && (after_blank_line
                             || after_statement_end
-                            || !matches!(self.mode, LexerMode::ExpectOperator));
+                            || !matches!(self.mode, LexerMode::ExpectOperator))
+                        && has_later_cut();
                     if known || generic_pod {
                         // Scan forward for \n=cut (end of POD block)
                         let search_start = self.position;

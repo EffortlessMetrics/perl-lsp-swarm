@@ -41,7 +41,7 @@ fn word_after_term_on_continuation_line_is_not_pod() {
 
 #[test]
 fn custom_pod_command_after_statement_end_or_block_is_pod() {
-    for prefix in ["my $x = 1;\n", "sub one { 1 }\n", "sub one { 1 }\n\n", "my $y\n\n"] {
+    for prefix in ["my $x = 1;\n", "sub one { 1 }\n\n", "my $y\n\n"] {
         let src = format!("{prefix}=construct path\nunbalanced {{ text\n=cut\nsub two {{ 2 }}\n");
         let toks = idents(&src);
         assert!(toks.iter().any(|t| t == "two"), "{prefix:?}: {toks:?}");
@@ -53,5 +53,30 @@ fn custom_pod_command_after_statement_end_or_block_is_pod() {
 fn equals_word_inside_heredoc_and_string_is_untouched() {
     let src = "my $h = <<'EOT';\n=construct path\nEOT\nmy $s = \"a\n=foo\nb\";\nsub two { 2 }\n";
     let toks = idents(src);
+    assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
+}
+
+#[test]
+fn closing_brace_term_then_equals_word_is_not_pod() {
+    for head in [
+        "my %h; $h{a}\n=lc 'X';\n",
+        "my $x = do { 1 }\n=shift;\n",
+        "my $x = { a=>1 }\n=shift;\n",
+        "$h->{a}\n=shift;\n",
+        "@{$x}\n=shift;\n",
+        "my $v = $c ? {a=>1} : {}\n=lc;\n",
+    ] {
+        let src = format!("{head}=cut\nsub tail{{1}}\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
+        let src = format!("{head}sub tail{{1}}\n");
+        let toks = idents(&src);
+        assert!(toks.iter().any(|t| t == "tail"), "{head:?}: {toks:?}");
+    }
+}
+
+#[test]
+fn generic_word_without_later_cut_is_not_swallowed() {
+    let toks = idents("my $x = 1;\n\n=construct path\nsub two { 2 }\n");
     assert!(toks.iter().any(|t| t == "two"), "{toks:?}");
 }
