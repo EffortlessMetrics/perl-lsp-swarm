@@ -48,7 +48,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install repository-pinned Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # immutable action revision
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
         with:
           toolchain: '1.95.0'
           components: rustfmt, clippy
