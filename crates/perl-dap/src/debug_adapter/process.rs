@@ -7050,36 +7050,54 @@ mod tests {
         Ok(())
     }
 
-    /// Call-presence observer for the fast-path seam in
-    /// `terminate_child_process_with_outcome`: a live child must be observed
-    /// by the zero-wait call as not-exited (fast path rejected) and then
-    /// reaped through the kill path, surfacing `Exited` (#15740,
-    /// ripr gaps 41a2480a/41b34a0a).
+    /// An `Exited` outcome for an initially live child must agree with an
+    /// independent OS exit observation, not just the helper's return value
+    /// (#15740, #17557). This does not prescribe the internal signal sequence.
     #[test]
-    fn terminate_child_process_with_outcome_call_presence_observer() -> Result<(), String> {
+    fn terminate_child_process_with_outcome_reports_real_exit() -> Result<(), String> {
         use std::process::{Command, Stdio};
 
         // Spawn a long-running child that outlives the zero-wait probe.
         #[cfg(windows)]
-        let mut child = Command::new("ping")
+        let child = Command::new("ping")
             .args(["-n", "30", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
         #[cfg(not(windows))]
-        let mut child = Command::new("sleep")
+        let child = Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
 
-        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        // Keep early errors and unwinding from abandoning the exact owned child.
+        // Cleanup must not rely on the production helper being tested.
+        struct TestChild(std::process::Child);
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut owned = TestChild(child);
+        if let Some(status) = owned.0.try_wait().map_err(|e| format!("initial child poll: {e}"))? {
+            return Err(format!("fixture must still be running before termination, got {status}"));
+        }
+
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut owned.0);
         if !matches!(outcome, super::ChildExitOutcome::Exited) {
             return Err(format!(
-                "live child must be reaped through the kill path as Exited, got {outcome:?}"
+                "termination must report Exited for the live child, got {outcome:?}"
             ));
         }
-        Ok(())
+        // Observe before the guard cleans up: otherwise false success could
+        // pass merely because the test itself terminated the child.
+        match owned.0.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("reported Exited while its owned child is still running".to_string()),
+            Err(e) => Err(format!("error polling child after termination: {e}")),
+        }
     }
 
     /// Exact error-variant test for the `PollError` arm of the outcome
