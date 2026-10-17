@@ -230,6 +230,32 @@ class RuntimeCompositionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.owners.prepare_publication(123, 2)
 
+    def test_entry_uses_distinct_warm_owner_and_never_current_run_import(self):
+        self.assertEqual(self.owners.entry_committed_proof(self.plan, self.selected).disposition, 'unavailable')
+        self.assertEqual(self.imports, [])
+        warm = self.canonical_owner(self.packet / 'rust-small-proof.json', self.plan, self.selected)
+        self.owners.entry_committed_owner = lambda plan, selected: warm
+        def production(plan, **ports):
+            self.assertEqual(ports['committed_owner'](plan, self.selected), warm)
+            return {'classification': 'READY'}
+        with mock.patch.object(runtime.admission, 'production', side_effect=production):
+            self.assertEqual(self.owners.eligibility(self.plan).classification, 'READY')
+        self.assertEqual(self.imports, [])
+        self.owners.entry_committed_owner = self.owners.committed_proof
+        with self.assertRaisesRegex(ValueError, 'current-run'):
+            self.owners.entry_committed_proof(self.plan, self.selected)
+
+    def test_verified_observation_reused_by_completion_without_reimport(self):
+        from scripts.ci import qualification_completion as completion
+        verified = self.owners.verified_qualification()
+        self.assertEqual(len(self.imports), 1)
+        with mock.patch.object(self.owners, 'committed_proof', side_effect=AssertionError('reimported')):
+            manifest = completion.build(self.adapter, verified)
+        self.assertEqual(manifest['result'], 'not_proven')
+        self.assertIsNone(manifest['check_run_id'])
+        self.assertEqual((manifest['selected'], manifest['executed'], manifest['failed']), (1, 1, 0))
+        self.assertEqual(len(self.imports), 1)
+
     def test_canonical_failure_remains_failure_and_wrong_attempt_refuses(self):
         original = self.canonical_owner(self.packet / 'rust-small-proof.json', self.plan, self.selected)
         self.owners.canonical_owner = lambda *args: replace(original, disposition='failure', failed=('cargo-current',))

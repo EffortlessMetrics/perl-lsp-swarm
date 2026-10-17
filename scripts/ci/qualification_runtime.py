@@ -27,10 +27,13 @@ class RustSmallOwners:
     this adapter checks identity, immutable bytes and producer association only.
     """
     def __init__(self, adapter, environment, *, selection_owner, native_import,
-                 canonical_owner, applicability_owner):
+                 canonical_owner, applicability_owner, entry_committed_owner=None):
         if not all(callable(port) for port in (selection_owner, native_import,
                                                canonical_owner, applicability_owner)):
             raise ValueError('existing trusted owner callback missing')
+        if entry_committed_owner is not None and not callable(entry_committed_owner):
+            raise ValueError('entry committed proof owner must be a trusted callable')
+        self.entry_committed_owner = entry_committed_owner
         self.adapter, self.environment = adapter, dict(environment)
         self.selection_owner, self.native_import = selection_owner, native_import
         self.canonical_owner, self.applicability_owner = canonical_owner, applicability_owner
@@ -140,21 +143,30 @@ class RustSmallOwners:
             raise Refused('imported proof/context/subject changed during canonical verification')
         return proof
 
+    def entry_committed_proof(self, plan, selected):
+        """Entry consumes existing warm proof, never this requested run's import."""
+        if self.entry_committed_owner is None:
+            return admission.CommittedProof(plan['request_key'], 'unavailable', (), (), '', '',
+                                            'distinct existing warm proof owner unavailable')
+        if self.entry_committed_owner == self.committed_proof:
+            raise Refused('entry proof cannot depend on current-run qualification import')
+        return self.entry_committed_owner(plan, selected)
+
     def eligibility(self, plan):
         """Concrete callable for Adapter(..., eligibility=owners.eligibility)."""
         result = admission.production(plan, selection_owner=self.selection_owner,
-            committed_owner=self.committed_proof, applicability_owner=self.applicability_owner)
+            committed_owner=self.entry_committed_proof, applicability_owner=self.applicability_owner)
         return Eligibility(result['classification'], result.get('reason', 'existing owner join'))
 
-    def prepare_publication(self, run_id, run_attempt):
-        """Prepare only; publisher permission and mutation remain uninstalled."""
+    def verified_qualification(self):
+        """Verify the current run once; share its typed observation with consumers."""
         plan = self.acquire()
         selected = self.selection_owner(plan)
         proof = self.committed_proof(plan, selected)
         if (proof.disposition not in {'verified', 'failure'}
                 or not isinstance(proof.executed, tuple) or not isinstance(proof.failed, tuple)):
             raise Refused('canonical owner has no publishable execution')
-        verified = publication.VerifiedQualification(
+        return publication.VerifiedQualification(
             **{name: plan[name] for name in ('request_key', 'head', 'tree', 'base', 'control',
                                            'portfolio_sha256', 'policy_sha256')},
             run_id=int(self.environment['GITHUB_RUN_ID']),
@@ -163,4 +175,7 @@ class RustSmallOwners:
             result='success' if proof.disposition == 'verified' else 'product_failure',
             canonical_receipt_sha256=proof.canonical_receipt_sha256,
             authenticated_producer_reference=proof.producer_reference)
-        return publication.prepare(self.adapter, run_id, run_attempt, verified)
+
+    def prepare_publication(self, run_id, run_attempt):
+        """Prepare only; publisher permission and mutation remain uninstalled."""
+        return publication.prepare(self.adapter, run_id, run_attempt, self.verified_qualification())

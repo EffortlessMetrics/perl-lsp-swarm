@@ -137,3 +137,60 @@ blocker. It does not qualify this candidate. The combined source, result mapping
 reviewed rollback and current protection must be reacquired immediately before an
 explicitly authorized operational cutover. No merge into an unprotected stack base
 counts as main qualification. Until those joins exist, keep the root patch unapplied.
+
+## Operator-admitted actual local rehearsal
+
+`RustSmallOwners.entry_committed_owner` is a distinct existing warm-proof port.
+It defaults to unavailable; entry eligibility never calls the requested run's
+`committed_proof` importer. `verified_qualification()` returns the canonical
+current-run observation once, for reuse by publication preparation and
+`qualification_completion.build`. Completion without an existing exact H/app
+check retains `result: not_proven` and `check_run_id: null`.
+
+After the operator admits the exact tool build and local proof resource scope,
+run the existing trusted `[xtask, "rust-small-proof"]` warm pass separately in
+clean H and preserve its receipt. The helper's actual mode requires that existing
+receipt; it does not run a qualification producer to authorize its own entry.
+Use the committed control source explicitly when the process cwd is H:
+
+```sh
+PYTHONPATH="$CONTROL" python3 -B "$CONTROL/scripts/ci/rehearse_central_qualification.py" \
+  "$CENTRAL" --actual --xtask "$XTASK" --xtask-sha256 "$XTASK_SHA256" \
+  --control-sha "$S" --workspace "$H_WORKTREE" \
+  --warm-receipt "$WARM_RECEIPT" --output "$OUTPUT"
+```
+
+All supplied tool, checkout, receipt and output paths must be absolute. Output is
+a fresh directory outside H. The trusted tool digest is checked before entry
+verification and around production. Warm bytes are copied before the second pass
+can replace H's default receipt. Selection names are projected from that warm
+receipt, then accepted only after the actual Rust verifier validates the receipt
+against clean H and its canonical ordered vocabulary. No second command catalog
+is introduced.
+
+The local entry join combines that actual committed warm proof with explicitly
+fixture review/native facts. It also binds the existing `Adapter.explain` to
+`owners.eligibility`, injecting only the fixture review methods into the existing
+authorities. The production join still checks real clean control S and explain
+reacquires the current subject. Both entry surfaces must be READY before the fixed second-pass
+`[xtask, "rust-small-proof"]` producer in H. The producer loses metadata tokens,
+Git overrides and the control `PYTHONPATH`/`PYTHONHOME`; admitted Cargo resource
+environment remains intact. Actual central embedded capture, export, authenticated
+import and custody code surrounds the executed bytes. `CanonicalOwner` invokes
+the same trusted binary for current-run Rust semantic verification, then the
+no-write completion module retains NOT_PROVEN without H-check publication.
+
+The central import API/run/check metadata and review facts remain bounded fixtures;
+H's first parent supplies the fixture base. These do not claim GitHub acquisition,
+native producer authentication, production readiness or permission to merge.
+`entry.json` labels that acquisition mode, and `report.json` distinguishes actual
+Rust semantics from fixture facts. Actual start/finish timestamps delimit the
+fixture native envelope. A failed real producer remains failed; the existing
+success-only central importer is not fed fabricated success to consume it.
+Its actual receipt/log and NOT_PROVEN failure report remain available instead.
+
+This command neither builds its trusted tool nor allocates capacity, dispatches
+hosted CI, publishes a check, activates the staged root patch or installs callbacks
+into a product workflow. The operator retains resource admission and tool/source
+association. Real native origin and publisher/runtime installation remain later
+qualified joins.
