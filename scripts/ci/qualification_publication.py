@@ -73,6 +73,10 @@ def prepare(adapter, run_id: int, run_attempt: int, proof: VerifiedQualification
     else:
         raise Refused('publisher cannot certify rehearsal/cancellation/incomplete proof')
     adapter.current(plan)
+    latest = adapter.api.get(f'{adapter.root}/actions/runs/{run_id}')
+    if (not adapter.matches(latest, plan) or latest['run_attempt'] != run_attempt
+            or latest.get('status') != 'in_progress' or latest.get('conclusion') is not None):
+        raise Refused('publisher native control attempt moved during preparation')
     external = f'{plan["request_key"]}:{run_id}:{run_attempt}'
     url = f'https://github.com/{plan["repository"]}/actions/runs/{run_id}/attempts/{run_attempt}'
     return {'status': 'PREPARED_NOT_PUBLISHED', 'app_id': APP_ID, 'subject': plan,
