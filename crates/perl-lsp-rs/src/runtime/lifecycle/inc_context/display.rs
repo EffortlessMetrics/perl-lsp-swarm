@@ -118,4 +118,18 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Call-observation proof for the `root_source_label` seam: every @INC
+    /// source kind maps to its client-facing label and unknown sources fall
+    /// back without panicking. The helper moved into production scope with
+    /// the workspace-rename benchmark work (#18031).
+    #[test]
+    fn root_source_label_maps_every_inc_source_kind() {
+        assert_eq!(root_source_label("use-lib-lexical"), "use lib");
+        assert_eq!(root_source_label("workspace-include-paths"), "workspace includePaths");
+        assert_eq!(root_source_label("perl5lib-env"), "PERL5LIB");
+        assert_eq!(root_source_label("interpreter-startup-inc"), "interpreter startup @INC");
+        assert_eq!(root_source_label("some-future-source"), "unknown @INC source");
+        assert_eq!(root_source_label(""), "unknown @INC source");
+    }
 }
