@@ -745,3 +745,26 @@ fn pod_has_later_cut_observes_presence_absence_and_memo_reuse() {
     moved.position = source.find("\n=a").map_or(0, |i| i + 1);
     assert!(moved.pod_has_later_cut(), "earlier cursor still sees the first =cut");
 }
+
+#[test]
+fn new_lexer_starts_with_no_pod_cut_memo() {
+    let lexer = PerlLexer::new("sub a {}\n\n=construct x\nbody\n=cut\n");
+    assert_eq!(lexer.pod_cut_cache, None, "a fresh lexer has not scanned for =cut");
+}
+
+#[test]
+fn checkpoint_restore_does_not_replay_pod_cut_memo() {
+    use crate::checkpoint::Checkpointable;
+    let source = "sub a {}\n\n=construct x\nbody\n=cut\nsub b {}\n";
+    let mut lexer = lexer_at_equals(source);
+    let before = lexer.checkpoint();
+    assert!(lexer.pod_has_later_cut());
+    assert!(lexer.pod_cut_cache.is_some(), "memo filled after checkpoint");
+
+    let after = lexer.checkpoint();
+    assert_eq!(before.position(), after.position(), "memo is not part of replay position");
+    assert!(lexer.restore(&before).is_ok(), "restore to the pre-memo checkpoint");
+    assert_eq!(lexer.position, before.position());
+    // The memo is a pure cache: it stays valid or is recomputed, and the answer is identical.
+    assert!(lexer.pod_has_later_cut(), "answer after restore matches answer before");
+}
