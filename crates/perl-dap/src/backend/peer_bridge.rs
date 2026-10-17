@@ -1050,15 +1050,23 @@ fn parse_launch(args: Option<&Value>) -> Result<LaunchBackendParams, String> {
         // while the response still reports success. Error text names options
         // and, for `env`, the offending key only; values are never echoed.
         params.stop_on_entry = typed_stop_on_entry(a)?;
-        // `LaunchBackendParams` has no timeout slot (the peer owns the
-        // debuggee process), so a well-typed value is admitted and dropped;
-        // a wrong-typed one still refuses rather than being ignored.
+        // `LaunchBackendParams` has no timeout slot and the peer owns the
+        // debuggee process, so no watchdog can be armed in this mode.
+        // Refuse a positive request instead of accepting it silently
+        // (#18055); absent/null/zero keep the previous admitted behavior.
         match a.get("debuggeeTimeoutSeconds") {
             None | Some(Value::Null) => {}
             Some(value) => {
-                value.as_u64().ok_or_else(|| {
+                let timeout = value.as_u64().ok_or_else(|| {
                     "Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string()
                 })?;
+                if timeout > 0 {
+                    return Err(
+                        "debuggeeTimeoutSeconds is not supported in --external-peer mode: \
+                         the peer owns the debuggee process and no watchdog can be armed"
+                            .to_string(),
+                    );
+                }
             }
         }
         if let Some(p) = a.get("program").and_then(Value::as_str) {
@@ -1393,7 +1401,6 @@ mod tests {
             matches!(
                 parse(json!({
                     "stopOnEntry": true,
-                    "debuggeeTimeoutSeconds": 30,
                     "env": { "A": "1" }
                 })),
                 Ok(p) if p.stop_on_entry && p.env.get("A").map(String::as_str) == Some("1")
@@ -1401,6 +1408,22 @@ mod tests {
             "well-typed options admit with values intact"
         );
         assert!(parse_launch(None).is_ok());
+    }
+
+    /// #18055: a positive `debuggeeTimeoutSeconds` cannot be honored in
+    /// external-peer mode (no watchdog slot; the peer owns the process),
+    /// so it refuses instead of being silently dropped. Zero means no
+    /// watchdog was requested and still admits.
+    #[test]
+    fn parse_launch_refuses_positive_timeout_it_cannot_enforce() {
+        let parse = |args: Value| parse_launch(Some(&args));
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": 30 })),
+            Err("debuggeeTimeoutSeconds is not supported in --external-peer mode: \
+                 the peer owns the debuggee process and no watchdog can be armed"
+                .to_string())
+        );
+        assert!(parse(json!({ "debuggeeTimeoutSeconds": 0 })).is_ok(), "zero admits");
     }
 
     /// A refused launch never reaches the backend; a well-typed one does,
@@ -1416,6 +1439,11 @@ mod tests {
             (
                 json!({ "env": { "SECRET_TOKEN": 987654321 } }),
                 "Invalid env value for 'SECRET_TOKEN': expected a string",
+            ),
+            (
+                json!({ "debuggeeTimeoutSeconds": 30 }),
+                "debuggeeTimeoutSeconds is not supported in --external-peer mode: \
+                 the peer owns the debuggee process and no watchdog can be armed",
             ),
         ] {
             let (mut b, launch_calls, _) = recording_bridge();
@@ -1434,11 +1462,8 @@ mod tests {
         }
 
         let (mut b, launch_calls, last_launch) = recording_bridge();
-        let out = b.dispatch(
-            2,
-            "launch",
-            Some(json!({ "stopOnEntry": true, "debuggeeTimeoutSeconds": 30, "env": { "A": "1" } })),
-        );
+        let out =
+            b.dispatch(2, "launch", Some(json!({ "stopOnEntry": true, "env": { "A": "1" } })));
         let (_, ok, _) = as_response(&out[0])?;
         assert!(ok, "well-typed launch must succeed: {out:?}");
         assert_eq!(launch_calls.load(AtomicOrdering::SeqCst), 1);
