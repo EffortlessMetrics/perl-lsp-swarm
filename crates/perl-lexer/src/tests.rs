@@ -657,15 +657,16 @@ fn budget_limit_mirrors_in_contract_tests_stay_pinned() -> TestResult {
 }
 
 /// Lexer with the cursor on the first line-start `=` that follows `prefix`.
-fn lexer_at_equals(source: &str) -> std::result::Result<PerlLexer<'_>, Box<dyn std::error::Error>> {
-    let at = source.find("\n=").map(|i| i + 1).ok_or("fixture has no line-start `=`")?;
+fn lexer_at_equals(source: &str) -> PerlLexer<'_> {
+    let at = source.find("\n=").map_or(0, |i| i + 1);
+    assert!(at > 0, "fixture has no line-start `=`: {source:?}");
     let mut lexer = PerlLexer::new(source);
     lexer.position = at;
-    Ok(lexer)
+    lexer
 }
 
 #[test]
-fn pod_after_blank_line_observes_blank_whitespace_and_code_lines() -> TestResult {
+fn pod_after_blank_line_observes_blank_whitespace_and_code_lines() {
     for (source, expected) in [
         ("sub a {}\n\n=construct x\n=cut\n", true),
         ("sub a {}\n \t\n=construct x\n=cut\n", true),
@@ -673,17 +674,16 @@ fn pod_after_blank_line_observes_blank_whitespace_and_code_lines() -> TestResult
         ("sub a {}\n=construct x\n=cut\n", false),
         ("my $x\n=construct x\n=cut\n", false),
     ] {
-        let lexer = lexer_at_equals(source)?;
+        let lexer = lexer_at_equals(source);
         assert_eq!(lexer.pod_after_blank_line(), expected, "{source:?}");
     }
     let mut at_start = PerlLexer::new("=construct x\n=cut\n");
     at_start.position = 0;
     assert!(at_start.pod_after_blank_line(), "start of input counts as blank");
-    Ok(())
 }
 
 #[test]
-fn pod_after_statement_end_observes_last_significant_byte() -> TestResult {
+fn pod_after_statement_end_observes_last_significant_byte() {
     for (source, expected) in [
         ("sub a { 1 }\nuse x;\n=construct x\n=cut\n", true),
         ("sub a {\n=construct x\n=cut\n", true),
@@ -697,10 +697,9 @@ fn pod_after_statement_end_observes_last_significant_byte() -> TestResult {
         ("$a / $b # x;\n=construct x\n=cut\n", false),
         ("# only a comment;\n=construct x\n=cut\n", true),
     ] {
-        let lexer = lexer_at_equals(source)?;
+        let lexer = lexer_at_equals(source);
         assert_eq!(lexer.pod_after_statement_end(), expected, "{source:?}");
     }
-    Ok(())
 }
 
 #[test]
@@ -725,25 +724,24 @@ fn may_open_quote_like_observes_quotes_slashes_and_operator_words() {
 }
 
 #[test]
-fn pod_has_later_cut_observes_presence_absence_and_memo_reuse() -> TestResult {
-    let mut lexer = lexer_at_equals("sub a {}\n\n=construct x\nbody\n=cut\nsub b {}\n")?;
+fn pod_has_later_cut_observes_presence_absence_and_memo_reuse() {
+    let mut lexer = lexer_at_equals("sub a {}\n\n=construct x\nbody\n=cut\nsub b {}\n");
     assert!(lexer.pod_has_later_cut(), "later line-start =cut");
     assert!(lexer.pod_cut_cache.is_some(), "result memoized");
     assert!(lexer.pod_has_later_cut(), "memoized answer is stable");
 
-    let mut none = lexer_at_equals("sub a {}\n\n=construct x\nbody\nsub b {}\n")?;
+    let mut none = lexer_at_equals("sub a {}\n\n=construct x\nbody\nsub b {}\n");
     assert!(!none.pod_has_later_cut(), "no line-start =cut");
     assert!(!none.pod_has_later_cut(), "memoized absence is stable");
 
-    let mut inline = lexer_at_equals("sub a {}\n\n=construct x\n  =cut\nx =cut\n")?;
+    let mut inline = lexer_at_equals("sub a {}\n\n=construct x\n  =cut\nx =cut\n");
     assert!(!inline.pod_has_later_cut(), "indented or mid-line =cut is not a terminator");
 
     // A memo computed past the cursor must not be reused for an earlier cursor.
     let source = "x\n=a\n=cut\ny\n=cut\n";
     let mut moved = PerlLexer::new(source);
-    moved.position = source.rfind("\n=cut").map(|i| i + 1).ok_or("fixture")?;
+    moved.position = source.rfind("\n=cut").map_or(0, |i| i + 1);
     assert!(moved.pod_has_later_cut());
-    moved.position = source.find("\n=a").map(|i| i + 1).ok_or("fixture")?;
+    moved.position = source.find("\n=a").map_or(0, |i| i + 1);
     assert!(moved.pod_has_later_cut(), "earlier cursor still sees the first =cut");
-    Ok(())
 }
