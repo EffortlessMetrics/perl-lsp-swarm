@@ -576,6 +576,25 @@ impl DebugAdapter {
                 }
             };
 
+            // Reject malformed typed options before retaining configuration
+            // or touching process state (#18027), for the same reason as argv
+            // above: silently coercing them changes what the client asked for
+            // while the launch response still reports success.
+            let (stop_on_entry, debuggee_timeout_secs, env_overrides) =
+                match Self::parse_launch_typed_options(&args) {
+                    Ok(options) => options,
+                    Err(message) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(message),
+                        };
+                    }
+                };
+
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -727,28 +746,9 @@ impl DebugAdapter {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
-
-            // Wall-clock timeout for the perl -d debuggee process (#4640).
-            // 0 (the default) disables the watchdog so legitimate long-running
-            // debug sessions (e.g. a server paused at a breakpoint for minutes)
-            // are not interrupted.  A positive value kills the debuggee after
-            // the specified number of seconds of wall-clock time.
-            let debuggee_timeout_secs =
-                args.get("debuggeeTimeoutSeconds").and_then(|v| v.as_u64()).unwrap_or(0);
-
-            let env_overrides = args
-                .get("env")
-                .and_then(Value::as_object)
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .filter_map(|(key, value)| {
-                            value.as_str().map(|value| (key.clone(), value.to_string()))
-                        })
-                        .collect::<HashMap<String, String>>()
-                })
-                .unwrap_or_default();
+            // `stop_on_entry`, `debuggee_timeout_secs` (the #4640 watchdog;
+            // 0 disables it), and `env_overrides` were admitted without
+            // coercion by `parse_launch_typed_options` above (#18027).
 
             // Launch Perl debugger
             let launch_result = self.launch_debugger(
@@ -841,6 +841,53 @@ impl DebugAdapter {
                     .ok_or_else(|| format!("Invalid launch args[{index}]: expected a string"))
             })
             .collect()
+    }
+
+    /// Read `stopOnEntry` without coercion (#18027): absent or null means
+    /// false; any other non-boolean is a typed refusal, never a silent false.
+    fn typed_stop_on_entry(args: &Value) -> Result<bool, String> {
+        match args.get("stopOnEntry") {
+            None | Some(Value::Null) => Ok(false),
+            Some(value) => {
+                value.as_bool().ok_or_else(|| "Invalid stopOnEntry: expected a boolean".to_string())
+            }
+        }
+    }
+
+    /// Admit the typed launch options without coercion (#18027), following
+    /// the `parse_launch_script_args` precedent: a present-but-wrong-typed
+    /// value fails the request instead of silently changing behavior.
+    /// Error text names options and, for `env`, the offending key only;
+    /// values are never echoed.
+    fn parse_launch_typed_options(
+        args: &Value,
+    ) -> Result<(bool, u64, std::collections::HashMap<String, String>), String> {
+        let stop_on_entry = Self::typed_stop_on_entry(args)?;
+        let debuggee_timeout_secs = match args.get("debuggeeTimeoutSeconds") {
+            None | Some(Value::Null) => 0,
+            Some(value) => value.as_u64().ok_or_else(|| {
+                "Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string()
+            })?,
+        };
+        let env_overrides = match args.get("env") {
+            None | Some(Value::Null) => std::collections::HashMap::new(),
+            Some(Value::Object(entries)) => {
+                let mut map = std::collections::HashMap::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let value = value.as_str().ok_or_else(|| {
+                        format!("Invalid env value for '{key}': expected a string")
+                    })?;
+                    map.insert(key.clone(), value.to_string());
+                }
+                map
+            }
+            Some(_) => {
+                return Err(
+                    "Invalid env: expected an object mapping names to string values".to_string()
+                );
+            }
+        };
+        Ok((stop_on_entry, debuggee_timeout_secs, env_overrides))
     }
 
     /// Resolve the Perl interpreter for a debug launch from its `launch.json`
@@ -2816,7 +2863,21 @@ impl DebugAdapter {
                 .or_else(|| args.get("timeoutMs"))
                 .and_then(|t| t.as_u64())
                 .map(Self::u64_to_u32_saturating);
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+            // #18027: a present-but-non-boolean stopOnEntry is a typed
+            // refusal here too, never a silent false.
+            let stop_on_entry = match Self::typed_stop_on_entry(&args) {
+                Ok(value) => value,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
 
             // TCP attachment mode (IMPLEMENTED)
             let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
@@ -3907,6 +3968,70 @@ mod tests {
             )),
         })
         .expect("test authority resolution")
+    }
+
+    /// #18027: wrong-typed launch options refuse with a typed message;
+    /// absent and well-typed options keep their exact current meaning.
+    #[test]
+    fn launch_typed_options_refuse_wrong_types_without_coercion() {
+        let parse = |args: Value| DebugAdapter::parse_launch_typed_options(&args);
+
+        assert_eq!(
+            parse(json!({ "stopOnEntry": "true" })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "stopOnEntry": 1 })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": "30" })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": -5 })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "env": ["A=1"] })).map_err(|e| e),
+            Err("Invalid env: expected an object mapping names to string values".to_string())
+        );
+        let env_err = parse(json!({ "env": { "SECRET_TOKEN": 42 } })).unwrap_err();
+        assert!(env_err.contains("SECRET_TOKEN"), "error names the key: {env_err}");
+        assert!(!env_err.contains("42"), "error must not echo the value: {env_err}");
+
+        let (stop, timeout, env) = parse(json!({})).expect("absent options admit defaults");
+        assert!(!stop && timeout == 0 && env.is_empty());
+        let (stop, timeout, env) = parse(json!({
+            "stopOnEntry": true,
+            "debuggeeTimeoutSeconds": 30,
+            "env": { "A": "1" }
+        }))
+        .expect("well-typed options admit");
+        assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
+    }
+
+    /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
+    /// any session is created or connected.
+    #[test]
+    fn attach_refuses_string_stop_on_entry_before_connecting() {
+        let adapter = DebugAdapter::new();
+        let message = adapter.handle_attach(
+            1,
+            7,
+            Some(json!({ "host": "127.0.0.1", "port": 13603, "stopOnEntry": "true" })),
+        );
+        match message {
+            DapMessage::Response { success, message, .. } => {
+                assert!(!success, "malformed attach stopOnEntry must fail");
+                assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
+            }
+            other => panic!("expected failed attach response, got {other:?}"),
+        }
+        assert!(
+            lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
+            "no TCP session may be created for a refused attach"
+        );
     }
 
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {

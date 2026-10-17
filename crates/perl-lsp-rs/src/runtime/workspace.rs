@@ -2071,7 +2071,17 @@ impl LspServer {
         // here — and a bulk delete costs one sweep instead of one per change.
         // Matches the `handle_did_delete_files` seam order.
         if watched_delete {
-            self.republish_open_document_diagnostics();
+            if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+                // #17332 pull remainder: the push republish below is a no-op
+                // for a pull-diagnostics client, so its open consumers would
+                // keep stale findings after a dependency delete. Ask it to
+                // re-pull instead, mirroring the include-path seam.
+                if let Err(error) = self.request_diagnostic_refresh() {
+                    tracing::warn!(%error, "Failed to refresh pull diagnostics after watched delete");
+                }
+            } else {
+                self.republish_open_document_diagnostics();
+            }
         }
 
         // This is a notification, no response needed
@@ -5373,6 +5383,59 @@ mod tests {
         assert_eq!(server.pending_workspace_configuration_requests.lock().len(), 1);
         assert_eq!(server.workspace_indexing_invocation_count(), before_invocations);
         Ok(())
+    }
+
+    /// #17332 (pull remainder): a watched DELETED event must ask a
+    /// pull-diagnostics client to re-pull, because the push republish is a
+    /// no-op for that client and its open consumers keep stale findings.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_delete_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let dir = tempfile::tempdir()?;
+        let consumer_path = dir.path().join("consumer.pm");
+        let consumer_uri =
+            url::Url::from_file_path(&consumer_path).map_err(|_| "invalid file path")?.to_string();
+        let deleted_uri = url::Url::from_file_path(dir.path().join("gone.pm"))
+            .map_err(|_| "invalid file path")?
+            .to_string();
+        server.client_capabilities.lock().diagnostic_refresh_support = true;
+        server.client_supports_pull_diags.store(true, Ordering::Release);
+        server.initialized.store(true, Ordering::Release);
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": consumer_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Consumer;\nuse Gone;\n1;\n"
+            }
+        }))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": deleted_uri, "type": 3 }]
+        })))?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let refresh_count = output
+                .messages()?
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("workspace/diagnostic/refresh")
+                })
+                .count();
+            if refresh_count == 1 {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "expected one pull diagnostic refresh after a watched delete, saw {refresh_count}"
+                )
+                .into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(feature = "workspace")]
