@@ -23,7 +23,7 @@ The callable signature is `(receipt_path, acquired_plan, selection) ->
 CommittedProof`. It invokes only the existing executable interface:
 
 ```
-perl-rust-small-verifier --verify-receipt /absolute/imported/rust-small-proof.json
+/absolute/trusted/xtask rust-small-proof --verify-receipt /absolute/imported/rust-small-proof.json
 ```
 
 No Cargo build/product command runs in this callback. The canonical Rust owner

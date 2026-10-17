@@ -58,7 +58,7 @@ class CanonicalOwnerTests(unittest.TestCase):
                                          'GIT_DIR': '/untrusted/repository'}):
             proof = self.owner(self.receipt, self.plan, self.selected)
         observed = json.loads(self.observation.read_bytes())
-        self.assertEqual(observed['argv'], ['--verify-receipt', str(self.receipt)])
+        self.assertEqual(observed['argv'], ['rust-small-proof', '--verify-receipt', str(self.receipt)])
         self.assertEqual(Path(observed['cwd']), self.runtime.bridge.fixture.workspace)
         self.assertFalse(observed['sensitive'])
         self.assertEqual((observed['toolchain'], observed['auto_install']), ('1.95.0', '0'))
