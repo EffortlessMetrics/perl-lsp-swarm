@@ -12348,4 +12348,436 @@ pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn std::io::Writ
 pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::Result<()>
 pub mod perl_lsp_rs_core::uri
 pub fn perl_lsp_rs_core::uri::parse_uri(s: &str) -> lsp_types::uri::Uri
+pub mod perl_lsp_rs_core::workspace_lifecycle_status
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::Completeness
+pub perl_lsp_rs_core::workspace_lifecycle_status::Completeness::Complete
+pub perl_lsp_rs_core::workspace_lifecycle_status::Completeness::NotProven
+pub perl_lsp_rs_core::workspace_lifecycle_status::Completeness::Partial
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::Completeness
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::Completeness) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::Completeness) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::Completeness) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::Completeness::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::Completeness, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState
+pub perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::DeletedOrDefaulted
+pub perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::InvalidCurrent
+pub perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::NotProven
+pub perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::Reloading
+pub perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::Stale
+pub perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::Valid
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::HydrationState
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::AdoptedComplete
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::AdoptedPartial
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::ColdFallback
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::Loading
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::NotAttempted
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::NotProven
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::Rejected
+pub perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::Validating
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::HydrationState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::HydrationState) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::HydrationState) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::HydrationState) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::HydrationState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::HydrationState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState
+pub perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::Failed
+pub perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::NotProven
+pub perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::Ok
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction
+pub perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::ExportDiagnostic
+pub perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::InspectStorage
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::ExportQuarantinedCache
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::InspectStoragePermissions
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::ManualReload
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::NoneRequired
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::RepairAdapter
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::RepairConfiguration
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::RepairTrustOrIdentity
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::WaitForIndex
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::WaitForReload
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::CanonicalV1
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::LocalDiagnostic
+pub perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::PublicSafe
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::BoundedCurrent
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::ExactCurrent
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::InstrumentFailure
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::LegitimateEmpty
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::NotReady
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::ProductFailure
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::SafeRefusal
+pub perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::UnsupportedDynamic
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState
+pub perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::InstrumentFailed
+pub perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::NotProven
+pub perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::NotReady
+pub perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::Pending
+pub perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::Ready
+pub perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::ReadyLimited
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::Configuration
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::EnvironmentTrust
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::Hydration
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::Provider
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::Readiness
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::Reload
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::RootLifecycle
+pub perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::Storage
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState
+pub perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::Active
+pub perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::Creating
+pub perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::Detached
+pub perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::Limited
+pub perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::Reconfiguring
+pub perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::Removing
+pub perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::Shutdown
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>
+pub perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension::InstrumentFailed
+pub perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension::InstrumentFailed::instrument_id: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension::NotProven
+pub perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension::Observed
+pub perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension::Observed::provenance: perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance
+pub perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension::Observed::value: T
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::is_instrument_failed(&self) -> bool
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::is_not_proven(&self) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<T>::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::StorageState
+pub perl_lsp_rs_core::workspace_lifecycle_status::StorageState::Available
+pub perl_lsp_rs_core::workspace_lifecycle_status::StorageState::Busy
+pub perl_lsp_rs_core::workspace_lifecycle_status::StorageState::Disabled
+pub perl_lsp_rs_core::workspace_lifecycle_status::StorageState::Empty
+pub perl_lsp_rs_core::workspace_lifecycle_status::StorageState::Incompatible
+pub perl_lsp_rs_core::workspace_lifecycle_status::StorageState::Quarantined
+pub perl_lsp_rs_core::workspace_lifecycle_status::StorageState::Unavailable
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::StorageState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::StorageState) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::StorageState) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::StorageState) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StorageState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::StorageState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_lsp_rs_core::workspace_lifecycle_status::ValidationError
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::BoundExceeded
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::BoundExceeded::length: usize
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::BoundExceeded::limit: usize
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::BoundExceeded::what: &'static str
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::CompletenessContradiction
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::CrossGenerationJoin
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::CrossRootJoin
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::CrossSessionJoin
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::DuplicateRootGeneration
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::EmptyEnvelope
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::EmptyLogicalToken
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::FingerprintMismatch
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::HostilePublicContent
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::InstrumentStateContradiction
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::InvalidLogicalTokenCharset
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::LogicalTokenTooLong
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::LogicalTokenTooLong::length: usize
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::LogicalTokenTooLong::limit: usize
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::RowOrder
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::StaleRequiresGenerationMismatch
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::TokenOrder
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::TokenOrder::what: &'static str
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::UnsupportedSchemaVersion
+pub perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::UnsupportedSchemaVersion::version: u32
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::as_str(&self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ValidationError
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ValidationError) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ValidationError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::Accepted
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::Evaluating
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::Failed
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::Invalidated
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::NoOp
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::Pending
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::Registered
+pub perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::Unavailable
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::domain_generation(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::new(session_id: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, root_id: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, runtime_generation: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, source_identity: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, domain_generation: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken) -> perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::root_id(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::runtime_generation(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::session_id(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::source_identity(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::DimensionProvenance, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken(_)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::as_str(&self) -> &str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::parse(raw: impl core::convert::AsRef<str>) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, perl_lsp_rs_core::workspace_lifecycle_status::ValidationError>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::implementation(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::new(implementation: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken) -> perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::active_document(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState>
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::dependency_neighborhood(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::new(active_document: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState>, dependency_neighborhood: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState>, whole_workspace: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState>) -> perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::whole_workspace(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessState>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::local_diagnostic(&self) -> core::option::Option<perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::new(reason_code: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, owner_role: perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole, primary_action: perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind, local_diagnostic: core::option::Option<perl_lsp_rs_core::workspace_lifecycle_status::LocalDiagnosticAction>) -> perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::owner_role(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::ResponsibleOwnerRole
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::primary_action(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionKind
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::reason_code(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint(_)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint::as_str(&self) -> &str
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::completeness(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::Completeness
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::history_retained(&self) -> u16
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::instrument_state(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::new(completeness: perl_lsp_rs_core::workspace_lifecycle_status::Completeness, instrument_state: perl_lsp_rs_core::workspace_lifecycle_status::InstrumentState, privacy_class: perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass, history_retained: u16) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata, perl_lsp_rs_core::workspace_lifecycle_status::ValidationError>
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::privacy_class(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::PrivacyClass
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts::primary_action_priority_policy: perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts::producer: perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts::rows: alloc::vec::Vec<perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::configuration(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::from_parts(parts: perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow, perl_lsp_rs_core::workspace_lifecycle_status::ValidationError>
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::hydration(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::HydrationState>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::limitations(&self) -> &[perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken]
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::metadata(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::operation_links(&self) -> &[perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken]
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::provider_posture(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture>
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::readiness(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::reasons(&self) -> &[perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken]
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::repair(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::root_lifecycle(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState>
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::storage(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::StorageState>
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::subject(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::watch_reload(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::configuration: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ConfigurationState>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::hydration: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::HydrationState>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::limitations: alloc::vec::Vec<perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::metadata: perl_lsp_rs_core::workspace_lifecycle_status::StatusMetadata
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::operation_links: alloc::vec::Vec<perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::provider_posture: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::ProviderPosture>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::readiness: perl_lsp_rs_core::workspace_lifecycle_status::ReadinessObservation
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::reasons: alloc::vec::Vec<perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::repair: perl_lsp_rs_core::workspace_lifecycle_status::RepairProjection
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::root_lifecycle: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::RootLifecycleState>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::storage: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::StorageState>
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::subject: perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject
+pub perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::watch_reload: perl_lsp_rs_core::workspace_lifecycle_status::StatusDimension<perl_lsp_rs_core::workspace_lifecycle_status::WatchReloadState>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRowParts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion(pub u32)
+pub const perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::V1: Self
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::as_u32(self) -> u32
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::is_supported(self) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion) -> core::cmp::Ordering
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::partial_cmp(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::fingerprint(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::StatusFingerprint
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::from_parts(parts: perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusParts) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1, perl_lsp_rs_core::workspace_lifecycle_status::ValidationError>
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::primary_action_priority_policy(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::PrimaryActionPriorityPolicy
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::producer(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::ProducerIdentity
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::rows(&self) -> &[perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusRow]
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::schema_version(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusSchemaVersion
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleStatusV1, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::configuration_generation(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::environment_identity(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::new(session_id: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, workspace_id: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, root_id: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, runtime_generation: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, configuration_generation: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, trust_generation: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken, environment_identity: perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::root_id(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::runtime_generation(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::session_id(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::trust_generation(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub const fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::workspace_id(&self) -> &perl_lsp_rs_core::workspace_lifecycle_status::LogicalToken
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::clone(&self) -> perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::eq(&self, other: &perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject) -> bool
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::workspace_lifecycle_status::WorkspaceLifecycleSubject, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_lsp_rs_core::workspace_lifecycle_status::MAX_HISTORY_ENTRIES: u16
+pub const perl_lsp_rs_core::workspace_lifecycle_status::MAX_LIMITATIONS_PER_ROW: usize
+pub const perl_lsp_rs_core::workspace_lifecycle_status::MAX_LOGICAL_TOKEN_BYTES: usize
+pub const perl_lsp_rs_core::workspace_lifecycle_status::MAX_OPERATION_LINKS: usize
+pub const perl_lsp_rs_core::workspace_lifecycle_status::MAX_REASONS_PER_ROW: usize
+pub const perl_lsp_rs_core::workspace_lifecycle_status::MAX_STATUS_ROWS: usize
+pub const perl_lsp_rs_core::workspace_lifecycle_status::WORKSPACE_LIFECYCLE_STATUS_SCHEMA_VERSION_V1: u32
 pub macro perl_lsp_rs_core::check_cancellation!
