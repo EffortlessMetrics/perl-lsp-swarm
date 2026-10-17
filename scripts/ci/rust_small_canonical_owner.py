@@ -82,7 +82,7 @@ class CanonicalOwner:
         # no-auto-install policy. This CLI runs no product command/build.
         environment.update(RUSTUP_TOOLCHAIN='1.95.0', RUSTUP_AUTO_INSTALL='0')
         try:
-            process = subprocess.run([str(self.verifier), 'rust-small-proof', '--verify-receipt', str(receipt_path)],
+            process = subprocess.run([str(self.verifier), '--worktree-root', str(self.workspace), 'rust-small-proof', '--verify-receipt', str(receipt_path)],
                 cwd=self.workspace, env=environment, capture_output=True, timeout=60, check=False)
             completed = process.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
