@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Real Git controls for RIPR's workflow operand adapter (#15294).
 
-Recording cargo exercises the shipped CLI wiring, not RIPR's domain analysis.
+Recording cargo exercises CLI provenance wiring against an independent parent-
+delta oracle, not RIPR's domain analysis. Real xtask scope is tested by the
+ripr_comparison_subject Rust target.
 The fixture identities and patch digest are literal independent Git oracles.
 """
 import hashlib
@@ -46,9 +48,10 @@ def arg(name): return args[args.index(name) + 1]
 def sha(ref):
     return subprocess.check_output(['git', 'rev-parse', ref + '^{commit}'], text=True).strip()
 base, head = arg('--base'), arg('--head')
-patch = subprocess.check_output(['git', 'diff', '--binary', '--full-index', base + '...' + head])
+comparison = sha(head + '^1') if arg('--pr-head') else base
+patch = subprocess.check_output(['git', 'diff', '--binary', '--full-index', comparison + '...' + head])
 print(json.dumps({'base_sha': sha(base), 'head_sha': sha(head),
-                  'pr_head_sha': arg('--pr-head'),
+                  'pr_head_sha': arg('--pr-head'), 'comparison_base_sha': sha(comparison),
                   'digest': hashlib.sha256(patch).hexdigest()}))
 '''
 
@@ -119,7 +122,7 @@ class RiprEventOperands(unittest.TestCase):
         return json.loads(output)
 
     def test_workflow_stages_keep_the_event_tuple_when_main_moves(self):
-        expected = {"base_sha": A, "head_sha": E, "pr_head_sha": H, "digest": DIGEST}
+        expected = {"base_sha": A, "head_sha": E, "pr_head_sha": H, "comparison_base_sha": A, "digest": DIGEST}
         for lane in LANES:
             self.git("update-ref", "refs/remotes/origin/main", A)
             with self.subTest(lane=lane, stage="healthy"):
@@ -190,7 +193,7 @@ class RiprEventOperands(unittest.TestCase):
         self.assertEqual(self.git("show", "-s", "--format=%P", "HEAD"), B + " " + H)
         self.env["RIPR_EVALUATED_SHA"] = ADVANCED_E
         expected = {"base_sha": A, "head_sha": ADVANCED_E, "pr_head_sha": H,
-                    "digest": ADVANCED_DIGEST}
+                    "comparison_base_sha": B, "digest": DIGEST}
         for moving in (B, C):
             self.git("update-ref", "refs/remotes/origin/main", moving)
             result = self.guard()
@@ -198,6 +201,13 @@ class RiprEventOperands(unittest.TestCase):
             for lane in LANES:
                 with self.subTest(moving=moving, lane=lane):
                     self.assertEqual(self.stage(lane, moving == C), expected)
+        # Event A remains provenance, while the candidate integration delta
+        # excludes B's unrelated docs. The old A...E patch is a counterexample.
+        event_patch = subprocess.check_output(
+            ["git", "diff", "--binary", "--full-index", A + "..." + ADVANCED_E],
+            cwd=self.repo, env=self.env)
+        self.assertEqual(hashlib.sha256(event_patch).hexdigest(), ADVANCED_DIGEST)
+        self.assertNotEqual(ADVANCED_DIGEST, DIGEST)
         # Descendance does not admit an incompatible base or a different raw head.
         for changes in ({"RIPR_BASE_SHA": C}, {"RIPR_BASE_SHA": H},
                         {"RIPR_EVENT_HEAD_SHA": A, "PR_HEAD_SHA": A}):
@@ -279,6 +289,7 @@ class RiprEventOperands(unittest.TestCase):
                     self.assertIn('--pr-head "$PR_HEAD_SHA"', command)
                 self.assertIn('--ripr-base "$RIPR_BASE_SHA"', text)
                 self.assertIn('--ripr-head "$RIPR_EVALUATED_SHA"', text)
+                self.assertIn('--ripr-pr-head "$PR_HEAD_SHA"', text)
                 if lane != "ripr-fallback":
                     for name in ("RIPR_BASE_SHA", "RIPR_EVALUATED_SHA", "RIPR_EVENT_HEAD_SHA", "GITHUB_EVENT_NAME"):
                         self.assertRegex(text, r"-e " + name + r"(?:=|\s)")

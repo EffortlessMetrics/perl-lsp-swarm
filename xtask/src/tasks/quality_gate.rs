@@ -100,6 +100,7 @@ pub struct QualityGateArgs {
     pub patch_coverage: Option<f64>,
     pub ripr_base: String,
     pub ripr_head: String,
+    pub ripr_pr_head: Option<String>,
     /// Commit the repo-wide total-debt receipt may be bound to instead of the
     /// head, for `enforce-new-ripr` only. Normally the merge base the pull
     /// request is measured against. `None` keeps the receipt head-bound.
@@ -129,6 +130,18 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
         Ok(raw) => Some(compute_lifecycle_overlay(&raw)?),
         Err(_) => None,
     };
+    // Refused current RIPR admission must not leave an earlier success artifact.
+    if !args.check && !matches!(args.mode, QualityGateMode::EnforcePatchCoverage) {
+        for path in [&args.receipt, &args.summary] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("invalidating {}", path.display()));
+                }
+            }
+        }
+    }
     let root = std::env::current_dir().context("resolving current directory")?;
     let evaluation = evaluate(&root, &args, overlay.as_ref())?;
     publish(&args, evaluation)
@@ -184,11 +197,58 @@ fn evaluate(
     overlay: Option<&LifecycleOverlay>,
 ) -> Result<GateEvaluation> {
     let head = current_head(root)?;
-    match args.mode {
+    if matches!(args.mode, QualityGateMode::EnforcePatchCoverage) {
+        return evaluate_patch_coverage(&head, args, overlay);
+    }
+    let subject = super::ripr_evidence::pr_comparison_subject(
+        root,
+        &args.ripr_base,
+        &args.ripr_head,
+        args.ripr_pr_head.as_deref(),
+    )?;
+    if let Some(subject) = subject.as_ref() {
+        if subject["evaluated_sha"].as_str() != Some(head.as_str())
+            || args.ripr_baseline_commit.is_some()
+        {
+            bail!(
+                "PR comparison requires exact evaluated checkout and head-bound repository-wide RIPR proof"
+            );
+        }
+    }
+    if args.ripr_pr_head.is_some() {
+        for path in [&args.ripr_pr_receipt, &args.review_receipt] {
+            let packet: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+            super::ripr_evidence::validate_comparison_subject(&packet, subject.as_ref())?;
+            if packet.get("base_sha") != subject.as_ref().map(|s| &s["event_base_sha"])
+                || packet.get("head_sha") != subject.as_ref().map(|s| &s["evaluated_sha"])
+                || packet.get("evaluated_head_sha") != subject.as_ref().map(|s| &s["evaluated_sha"])
+                || packet.get("pr_head_sha") != subject.as_ref().map(|s| &s["pr_head_sha"])
+            {
+                bail!("RIPR outer provenance differs from independently selected subject");
+            }
+        }
+    } else {
+        for path in [&args.ripr_pr_receipt, &args.review_receipt] {
+            if let Ok(text) = fs::read_to_string(path) {
+                if let Ok(packet) = serde_json::from_str::<Value>(&text) {
+                    if packet.get("comparison_subject").is_some()
+                        || packet.get("pr_head_sha").is_some_and(|v| !v.is_null())
+                    {
+                        bail!("PR receipts require independent --ripr-pr-head input");
+                    }
+                }
+            }
+        }
+    }
+    let mut evaluation = match args.mode {
         QualityGateMode::Enforce => evaluate_final(&head, args, overlay),
         QualityGateMode::EnforcePatchCoverage => evaluate_patch_coverage(&head, args, overlay),
         QualityGateMode::EnforceNewRipr => evaluate_new_ripr(&head, args, overlay),
+    }?;
+    if let Some(subject) = subject {
+        evaluation.receipt["comparison_subject"] = subject;
     }
+    Ok(evaluation)
 }
 
 fn evaluate_final(
@@ -2705,6 +2765,9 @@ fn quality_gate_command(args: &QualityGateArgs, check: bool, patch: Option<f64>)
             }
         }
     }
+    if let Some(head) = &args.ripr_pr_head {
+        command.push_str(&format!(" --ripr-pr-head {head}"));
+    }
     command.push_str(&format!(
         " --receipt {} --summary {}",
         display_path(&args.receipt),
@@ -2730,6 +2793,9 @@ fn ripr_plus_command(args: &QualityGateArgs, check: bool) -> String {
 fn ripr_pr_command(args: &QualityGateArgs, check: bool) -> String {
     let mut command =
         format!("cargo xtask ripr-pr --base {} --head {}", args.ripr_base, args.ripr_head);
+    if let Some(head) = &args.ripr_pr_head {
+        command.push_str(&format!(" --pr-head {head}"));
+    }
     if check {
         command.push_str(" --check");
     }
@@ -2741,6 +2807,9 @@ fn ripr_review_command(args: &QualityGateArgs, check: bool) -> String {
         "cargo xtask ripr-review-comments --base {} --head {}",
         args.ripr_base, args.ripr_head
     );
+    if let Some(head) = &args.ripr_pr_head {
+        command.push_str(&format!(" --pr-head {head}"));
+    }
     if check {
         command.push_str(" --check");
     }
@@ -4048,6 +4117,7 @@ mod tests {
             patch_coverage: None,
             ripr_base: "origin/main".to_string(),
             ripr_head: "HEAD".to_string(),
+            ripr_pr_head: None,
             ripr_baseline_commit: None,
             receipt: dir.join("quality-gate.json"),
             summary: dir.join("quality-gate.md"),
@@ -4448,6 +4518,7 @@ mod tests {
             patch_coverage: None,
             ripr_base: "origin/main".to_string(),
             ripr_head: "HEAD".to_string(),
+            ripr_pr_head: None,
             ripr_baseline_commit: None,
             receipt: dir.path().join("quality-gate.json"),
             summary: dir.path().join("quality-gate.md"),
