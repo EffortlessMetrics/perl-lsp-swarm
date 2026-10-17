@@ -1,5 +1,6 @@
 from dataclasses import replace
 import unittest
+from unittest import mock
 from scripts.ci import qualification_publication as publisher
 from scripts.ci.test_request_qualification import GitHub, SUBJECT, adapter, ready
 
@@ -72,6 +73,21 @@ class PublicationTests(unittest.TestCase):
                         {'run_attempt': 2}, {'status': 'completed', 'conclusion': 'success'}):
             self.api.rows = [{**self.api.run(), 'status': 'in_progress', **changes}]
             with self.subTest(changes=changes), self.assertRaises(ValueError): self.prepare()
+
+    def test_native_attempt_or_terminal_state_changed_during_final_acquisition_refuses(self):
+        for change in ({'run_attempt': 2}, {'status': 'completed', 'conclusion': 'cancelled'}):
+            self.setUp()
+            original_get = self.api.get
+            observed = {'native_run': False}
+            def get(path):
+                if path == self.adapter.root and observed['native_run']:
+                    self.api.rows[0].update(change)
+                result = original_get(path)
+                if path.endswith('/actions/runs/21'):
+                    observed['native_run'] = True
+                return result
+            with self.subTest(change=change), mock.patch.object(self.api, 'get', side_effect=get), self.assertRaises(ValueError):
+                self.prepare()
 
     def test_complete_success_only_and_real_partial_product_failure_preserved(self):
         for changes in ({'executed': 9}, {'failed': 1}, {'selected': True}, {'executed': False},
