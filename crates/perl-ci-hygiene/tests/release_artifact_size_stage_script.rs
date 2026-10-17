@@ -110,6 +110,8 @@ fn sha256(path: &Path) -> Result<String> {
 fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> Result<()> {
     let fixture = ExecutableFixture::new()?;
     let root = staged_root(&fixture)?;
+    // Both inputs are copies of this seed. Capture the oracle before staging.
+    let unstripped = fs::metadata(&fixture.binary)?.len();
     let output = stage(root.path(), "baseline")?;
     ensure!(output.status.success(), "staging failed: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -138,9 +140,8 @@ fn staging_packages_stripped_binaries_whose_archive_matches_the_directory() -> R
             "`{binary}` differs between the staged directory and the archive"
         );
         // Strictly smaller: <= would also pass if staging omitted strip.
-        let unstripped = root.path().join("target").join(TARGET).join("release").join(binary);
         ensure!(
-            fs::metadata(&staged)?.len() < fs::metadata(unstripped)?.len(),
+            fs::metadata(&staged)?.len() < unstripped,
             "`{binary}` was not stripped, so the post-strip claim would be false"
         );
     }
