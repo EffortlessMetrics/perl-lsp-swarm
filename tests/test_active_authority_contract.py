@@ -140,7 +140,7 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "MERGE_BLOCKED",
         "NOT_PROVEN",
         "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
-        "re-evaluates the current tree and is the honest action",
+        "no admissible exact-subject producer means `NOT_PROVEN`",
         THREAD_PRECONDITION,
         "is `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`",
     ),
@@ -647,6 +647,14 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
             for marker in SEMANTIC_PARITY_MARKERS[skill]:
                 self.assertIn(marker, codex, f"{codex_path} is missing semantic invariant {marker!r}")
                 self.assertIn(marker, claude, f"{claude_path} is missing semantic invariant {marker!r}")
+
+    def test_missing_merge_tree_producer_refuses_instead_of_pushing(self) -> None:
+        for provider in (".agents", ".claude"):
+            text = active_text(f"{provider}/skills/verify-live-ci/SKILL.md")
+            self.assertIn("no admissible exact-subject producer means `NOT_PROVEN`", text)
+            for instruction in ("Authorize one verified-clean empty commit",
+                                "empty-commit head bump", "fresh-trigger exception applies"):
+                self.assertNotIn(instruction, text)
 
     def test_documented_worktree_root_is_ignored(self) -> None:
         protocol = active_text(WORKTREE_PROTOCOL)

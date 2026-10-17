@@ -152,12 +152,10 @@ the established candidate writer alone performs it.
 5. **Material base movement changed a merge-tree subject and the old attempt cannot
    answer it.** Prefer an admissible exact-subject dispatch that can satisfy the missing
    required context, with the same read-back as action 3.
-6. **No admissible exact-subject route can evaluate the required changed merge tree and
-   the currentness contract's narrow fresh-trigger exception applies.** Authorize one
-   verified-clean empty commit through the established candidate writer. The writer
-   proves no file or mode change, pushes the expected branch, and returns the new head.
-   Re-read the PR head before waiting for the resulting required run. This is not a
-   retry-to-green mechanism and this skill does not mutate the branch directly.
+6. **No admissible exact-subject route can evaluate the required changed merge tree.**
+   Return terminal `NOT_PROVEN` with the missing producer, subject, capability or
+   reporting identity. Do not create an empty commit or push to summon qualification.
+   Ordinary pushes communicate development; they are not a qualification button.
 7. **No action can be proven admissible or persisted.** Return terminal `NOT_PROVEN`
    with the missing policy, subject, capability, reporting identity, or read-back. Do not
    guess by pushing or call an unobserved action in flight.
@@ -194,17 +192,14 @@ evidence rule:
   integration fact. Request a job rerun where appropriate without mutating the branch.
   Never rebase, push an empty commit, or replay unrelated CI merely to manufacture a
   current status;
-- a rerun of a merge-tree-evaluated check replays its original merge snapshot: after
-  material base movement (release bumps, fmt/clippy sweeps landing on main), a fresh
-  trigger (empty-commit head bump, e.g. `ci: re-request fresh merge-tree checks`)
-  re-evaluates the current tree and is the honest action; the bound is at most one
-  fresh trigger per observed material base movement — never per wait cycle — and the
-  accountable root owns the action. The empty-commit ban covers
-  manufacturing a current status on an unchanged subject, not re-evaluating a changed
-  merge tree (#12174, #12251, #12256, #12258 each unblocked only through the fresh
-  trigger). Advisory CI-Gate shard redness on that fresh tree is then a main-red
-  signal, not noise: query main's own head check-runs before repairing branch-locally
-  (#12357, #12311/#12312, #12374-class).
+- a rerun of a merge-tree-evaluated check replays its original merge snapshot. After
+  material base movement, request an admissible explicit producer for the changed
+  subject. If that producer is unavailable, no admissible exact-subject producer means
+  `NOT_PROVEN`; preserve the named capability blocker. Historical empty-commit
+  workarounds do not authorize push-triggered qualification under the current contract.
+  Query main's own head check-runs when evidence suggests a base-owned failure before
+  repairing branch-locally.
+
 
 Classify failures as candidate-owned, base-owned, integration interaction,
 test/oracle defect, instrument failure, environment/capacity, pending, or
