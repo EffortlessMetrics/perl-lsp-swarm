@@ -1,0 +1,14 @@
+{
+  "schema_version": "standalone_path_persistence.v1",
+  "bound_plan_id": "path-plan-manual-instruction-only",
+  "bound_plan_sha256": "ca5b80210a43cd15aecb5eda4c764c3bcb4a2be98837ee407d2f460c9c33441a",
+  "result": "manual_action_required",
+  "mutation_performed": false,
+  "entry_state": "absent",
+  "observed_scope": "shell_specific",
+  "current_process_env_mutated": false,
+  "new_session_required": true,
+  "owned_entries_observed": 0,
+  "instrument_complete": true,
+  "redaction_policy": "bounded_typed_fields_only"
+}

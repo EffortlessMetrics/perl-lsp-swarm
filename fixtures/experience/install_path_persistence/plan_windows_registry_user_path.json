@@ -1,0 +1,37 @@
+{
+  "schema_version": "standalone_path_plan.v1",
+  "plan_id": "path-plan-windows-registry-user",
+  "transaction_id": "txn-standalone-install-0002",
+  "subject": {
+    "candidate_id": "perllsp-0.18.0-x86_64-pc-windows-msvc",
+    "selection_generation": 3,
+    "confirmation_state": "confirmed_current",
+    "executable_path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\perllsp.exe",
+    "executable_sha256": "e400000000000000000000000000000000000000000000000000000000000000",
+    "command_name": "perllsp"
+  },
+  "environment": {
+    "platform": "windows_native",
+    "shell_family": "powershell",
+    "install_root": {
+      "path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp",
+      "role": "user_install_root"
+    }
+  },
+  "path_policy": {
+    "policy": "installer_owned_entry",
+    "mutation_owner": "installer",
+    "scope": "user",
+    "owned_entry": {
+      "entry_kind": "registry_user_path",
+      "entry_location": "HKCU\\Environment\\Path",
+      "entry_value": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\bin",
+      "marker": "perl-lsp-installer-owned-path-entry"
+    },
+    "new_session_requirement": "logout_login"
+  },
+  "prior_state": {
+    "identity_kind": "unavailable"
+  },
+  "redaction_policy": "bounded_typed_fields_only"
+}
