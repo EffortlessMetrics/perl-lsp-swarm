@@ -22,7 +22,11 @@ sub fold {
 ";
 
 fn hover_value(result: &serde_json::Value) -> Option<String> {
-    result.get("contents").and_then(|c| c.get("value")).and_then(|v| v.as_str()).map(|s| s.to_string())
+    result
+        .get("contents")
+        .and_then(|c| c.get("value"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn hover_at(
@@ -78,7 +82,10 @@ fn hover_foreach_my_variable_decl_and_use_show_variable_card() -> TestResult {
         .or_else(|| definition.pointer("/range/start/line"))
         .and_then(|l| l.as_u64())
         .ok_or("definition should return a location")?;
-    assert_eq!(def_line, 4, "definition should land on the for-my declaration line, got: {definition}");
+    assert_eq!(
+        def_line, 4,
+        "definition should land on the for-my declaration line, got: {definition}"
+    );
 
     // References from the declaration must include the use site (line 5).
     let references = harness.request(
