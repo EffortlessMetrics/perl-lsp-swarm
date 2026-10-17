@@ -846,7 +846,7 @@ fn formatter_options_notice_waits_for_initialized_then_warns_once_per_key_set()
     })));
     server.flush_client_notices();
     assert_eq!(
-        server.config.lock().pending_client_notices.len(),
+        server.config.lock().pending_client_notices_len(),
         1,
         "the notice must stay pending before initialized"
     );
@@ -854,7 +854,7 @@ fn formatter_options_notice_waits_for_initialized_then_warns_once_per_key_set()
 
     // The real `initialized` dispatch flushes the pending notice.
     server.test_handle_initialized_dispatch()?;
-    assert_eq!(server.config.lock().pending_client_notices.len(), 0, "flush drains pending");
+    assert_eq!(server.config.lock().pending_client_notices_len(), 0, "flush drains pending");
     assert_eq!(server.session_warning_dedup_snapshot().formatter_options.entries, 1);
 
     // Re-applying the same key set warns no second time this session.

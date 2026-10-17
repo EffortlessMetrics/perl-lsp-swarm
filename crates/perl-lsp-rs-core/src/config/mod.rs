@@ -139,7 +139,7 @@ pub struct ServerConfig {
     /// The runtime drains these after each apply and forwards them to the
     /// client; never serialized into config payloads.
     #[serde(default, skip)]
-    pub pending_client_notices: Vec<String>,
+    pub(crate) pending_client_notices: Vec<String>,
 
     /// Whether to format on save (willSaveWaitUntil). Default `true` for
     /// backward compatibility. When `false`, manual formatting via
@@ -469,6 +469,11 @@ impl ServerConfig {
     /// Drain client-visible notices recorded since the last drain.
     pub fn take_client_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pending_client_notices)
+    }
+
+    /// Number of client-visible notices currently pending a drain.
+    pub fn pending_client_notices_len(&self) -> usize {
+        self.pending_client_notices.len()
     }
 
     /// Update configuration from LSP settings
