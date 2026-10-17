@@ -2265,6 +2265,29 @@ impl LspServer {
             }
         }
 
+        // Tombstones for vanished documents (#17332): a URI the client still
+        // holds a previous result ID for, but which is no longer in the
+        // open-document snapshot (closed or deleted), would otherwise get no
+        // row at all and the client would keep its stale diagnostics forever.
+        // Emit a full report with empty items and a null version (there is no
+        // live document version) and no resultId, so the client replaces the
+        // file's diagnostics with none and drops the stale ID. Documents
+        // still in the snapshot -- including ones skipped above while a newer
+        // generation settles -- are never tombstoned.
+        let snapshot_uris: std::collections::HashSet<&str> =
+            docs_snapshot.iter().map(|(uri, ..)| uri.as_str()).collect();
+        let mut tombstoned: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (uri, _previous_id) in &previous_result_ids {
+            if !snapshot_uris.contains(uri.as_str()) && tombstoned.insert(uri.as_str()) {
+                items.push(json!({
+                    "uri": uri,
+                    "version": Value::Null,
+                    "kind": "full",
+                    "items": []
+                }));
+            }
+        }
+
         let _identity_guard = self.workspace_identity_lock.lock();
         if !self.workspace_topology_stable.load(Ordering::SeqCst)
             || self.workspace_identity_generation.load(Ordering::SeqCst)
@@ -3070,6 +3093,128 @@ mod tests {
             item["resultId"].as_str(),
             Some(document_result_id.as_str()),
             "unchanged report must echo the reused result ID"
+        );
+        Ok(())
+    }
+
+    /// A URI the client still holds a result ID for, but which is no longer
+    /// in the open-document snapshot (closed/deleted), must get a full
+    /// empty-items row so the client clears its stale diagnostics (#17332).
+    /// A still-open unchanged document must keep its `unchanged` reuse.
+    #[test]
+    fn workspace_pull_emits_empty_full_row_for_closed_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("tombstone-project");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        let survivor_file = folder.join("survivor.pl");
+        let closed_file = folder.join("closed.pl");
+        let survivor_uri = url::Url::from_file_path(&survivor_file)
+            .map_err(|()| "failed to build survivor URI")?
+            .to_string();
+        let closed_uri = url::Url::from_file_path(&closed_file)
+            .map_err(|()| "failed to build closed URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+        let (server, _) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        let source = "sub f ($x) { return $x; }\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": survivor_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": closed_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+
+        // Emitted URIs use the server's canonical (normalized) key spelling.
+        let survivor_key = server.normalize_uri_key(&survivor_uri);
+        let closed_key = server.normalize_uri_key(&closed_uri);
+        let first = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("first workspace diagnostic response missing")?;
+        let first_items = first["items"].as_array().ok_or("first items must be an array")?;
+        let result_id_for = |uri: &str| -> Result<String, Box<dyn std::error::Error>> {
+            first_items
+                .iter()
+                .find(|item| item["uri"].as_str() == Some(uri))
+                .and_then(|item| item["resultId"].as_str())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    format!("first pull must mint a result ID for {uri}: {first}").into()
+                })
+        };
+        let survivor_id = result_id_for(&survivor_key)?;
+        let closed_id = result_id_for(&closed_key)?;
+
+        // Baseline: with nothing changed, both open documents reuse their IDs.
+        let reuse = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": survivor_uri, "value": survivor_id},
+                    {"uri": closed_uri, "value": closed_id}
+                ]
+            })))?
+            .ok_or("reuse workspace diagnostic response missing")?;
+        let reuse_items = reuse["items"].as_array().ok_or("reuse items must be an array")?;
+        for (key, id) in [(&survivor_key, &survivor_id), (&closed_key, &closed_id)] {
+            let row = reuse_items
+                .iter()
+                .find(|item| item["uri"].as_str() == Some(key.as_str()))
+                .ok_or_else(|| format!("reuse pull must contain {key}: {reuse}"))?;
+            assert_eq!(
+                row["kind"], "unchanged",
+                "unchanged open document must keep resultId reuse: {reuse}"
+            );
+            assert_eq!(row["resultId"].as_str(), Some(id.as_str()));
+        }
+
+        server.test_apply_did_close(&closed_uri)?;
+
+        // The closed URI is listed twice: duplicates must not duplicate the row.
+        let second = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": survivor_uri, "value": survivor_id},
+                    {"uri": closed_uri, "value": closed_id},
+                    {"uri": closed_uri, "value": closed_id}
+                ]
+            })))?
+            .ok_or("second workspace diagnostic response missing")?;
+        let items = second["items"].as_array().ok_or("second items must be an array")?;
+        let rows_for = |uri: &str| {
+            items.iter().filter(|item| item["uri"].as_str() == Some(uri)).collect::<Vec<_>>()
+        };
+        let survivor_rows = rows_for(&survivor_key);
+        assert_eq!(survivor_rows.len(), 1, "survivor must appear once: {second}");
+        // Closing a sibling may legitimately advance workspace facts and
+        // re-mint the survivor's identity, so it may be `full` here; it must
+        // never receive the empty tombstone while it is still open.
+        assert!(
+            survivor_rows[0]["kind"] == "unchanged"
+                || survivor_rows[0]["items"].as_array().is_some_and(|diag| !diag.is_empty()),
+            "still-open survivor must not be tombstoned: {second}"
+        );
+        let closed_rows = rows_for(&closed_key);
+        assert_eq!(
+            closed_rows.len(),
+            1,
+            "closed document must get exactly one tombstone row so stale diagnostics clear: {second}"
+        );
+        assert_eq!(
+            closed_rows[0]["kind"], "full",
+            "tombstone must be a full report, not unchanged: {second}"
+        );
+        assert_eq!(
+            closed_rows[0]["items"].as_array().map(Vec::len),
+            Some(0),
+            "tombstone must carry empty items so the client clears the file: {second}"
         );
         Ok(())
     }
