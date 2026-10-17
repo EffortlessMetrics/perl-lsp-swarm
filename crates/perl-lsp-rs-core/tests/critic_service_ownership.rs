@@ -13,6 +13,13 @@
 //! configuration at different times, re-running semantic work to recover
 //! findings, or flattening metadata differently — turns this red instead of
 //! silently reintroducing the split the issue closed.
+//!
+//! Test-only files leave the audited inventory only on positive
+//! declaration-based evidence (#15728): a file is skipped when its declaring
+//! `mod` statement sits under `#[cfg(test)]`, never because its filename
+//! sounds like a test. Production modules such as `test_more.rs` and
+//! `test_frameworks.rs` are unconditional `mod` declarations and stay
+//! scanned.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,6 +81,108 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
         }
     }
     Ok(())
+}
+
+/// Candidate files that may declare `mod <stem>;` for a module file: the
+/// sibling `<dir>.rs` when present, else the nested `<dir>/mod.rs`. A crate
+/// root (`lib.rs`, `main.rs`) declaring a top-level module is deliberately not
+/// guessed; a missed declaring site means the file stays scanned, which is the
+/// conservative direction (#15728).
+fn declaring_candidates(path: &Path) -> Vec<PathBuf> {
+    let Some(parent) = path.parent() else {
+        return Vec::new();
+    };
+    let mut sibling = parent.to_path_buf();
+    sibling.set_extension("rs");
+    let nested = parent.join("mod.rs");
+    if sibling == nested { vec![sibling] } else { vec![sibling, nested] }
+}
+
+/// Whether `code` is exactly the `#[cfg(test)]` attribute, compared without
+/// interior whitespace so `#[cfg( test )]` still matches.
+fn is_cfg_test_attribute(code: &str) -> bool {
+    code.split_whitespace().collect::<String>() == "#[cfg(test)]"
+}
+
+/// Whether the line's code ends with the exact `mod <stem>;` declaration,
+/// allowing only a visibility keyword or same-line attributes in front.
+/// Any other prefix means the line is not a clean declaration of `stem`.
+fn line_declares_module(code: &str, stem: &str) -> bool {
+    let needle = format!("mod {stem};");
+    if !code.ends_with(&needle) {
+        return false;
+    }
+    let prefix = code[..code.len() - needle.len()].trim_end();
+    prefix.is_empty() || prefix == "pub" || prefix.ends_with(')') || prefix.ends_with(']')
+}
+
+/// Whether `stem` is declared `#[cfg(test)]`-gated in `declaring`.
+///
+/// The gate must be positive evidence in the attribute run governing the
+/// declaration: attributes (and comments, and blank lines) between
+/// `#[cfg(test)]` and `mod <stem>;` keep the gate attached, but any
+/// intervening item (`fn`, `struct`, a prior module body) breaks the run so
+/// an ungated production declaration can never inherit a neighbour's gate.
+/// A declaration this reader cannot attribute cleanly is simply not gated,
+/// leaving the file in the scanned denominator (#15728).
+fn gate_decides_by_declaration(declaring: &str, stem: &str) -> bool {
+    let lines: Vec<&str> = declaring.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let code = line.split("//").next().unwrap_or("").trim();
+        if !line_declares_module(code, stem) {
+            continue;
+        }
+        let mut gated =
+            is_cfg_test_attribute(code[..code.len() - format!("mod {stem};").len()].trim_end());
+        for prior in lines[..index].iter().rev() {
+            let prior_code = prior.split("//").next().unwrap_or("").trim();
+            if prior_code.is_empty() {
+                continue;
+            }
+            if prior_code.starts_with("#[") && prior_code.ends_with(']') {
+                if is_cfg_test_attribute(prior_code) {
+                    gated = true;
+                }
+                continue;
+            }
+            // Any other code ends the governing attribute run.
+            break;
+        }
+        if gated {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `path` is only reachable through a `#[cfg(test)]`-gated `mod`
+/// declaration, making the whole file test-only even though its own items
+/// carry no gate.
+///
+/// Filename alone cannot decide (#15728): production modules such as
+/// `test_more.rs` and `test_frameworks.rs` are unconditional `mod`
+/// declarations. Every failure to establish positive gated evidence — no
+/// candidate declaring file, an unreadable one, an ungated declaration —
+/// leaves the file in the scanned inventory, so exclusion can only ever
+/// over-scan a test-only file, never hide production composition.
+fn path_is_test_gated(path: &Path) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    // `mod.rs`/crate roots are not declared by a `mod <stem>;` statement.
+    if matches!(stem, "mod" | "lib" | "main") {
+        return false;
+    }
+    for declaring in declaring_candidates(path) {
+        if declaring.is_file() {
+            if let Ok(content) = fs::read_to_string(&declaring) {
+                if gate_decides_by_declaration(&content, stem) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Strip each `#[cfg(test)]`-gated item so inline test modules do not count
@@ -282,6 +391,67 @@ fn skip_quote_or_lifetime(bytes: &[u8], start: usize) -> usize {
     j.max(start + 1)
 }
 
+/// Scan whole source trees for composition tokens outside the allowlist,
+/// returning one human-readable violation per offending site.
+///
+/// Exclusion from the inventory happens only through [`path_is_test_gated`]:
+/// positive `#[cfg(test)]` declaration evidence, never a test-shaped filename
+/// (#15728).
+fn scan_roots(roots: &[&Path]) -> Result<Vec<String>, String> {
+    let mut sources = Vec::new();
+    for root in roots {
+        collect_rust_sources(root, &mut sources)?;
+    }
+
+    let mut violations = Vec::new();
+    for path in &sources {
+        // Test-only module files are not production call sites — but only
+        // when a gated `mod` declaration proves it.
+        if path_is_test_gated(path) {
+            continue;
+        }
+
+        // Workspace-relative path: everything from the `crates` component on.
+        let mut seen_crates = false;
+        let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+        for component in path.components() {
+            let raw = component.as_os_str();
+            if seen_crates {
+                parts.push(raw);
+            } else if raw == "crates" {
+                seen_crates = true;
+                parts.push(raw);
+            }
+        }
+        let Some(relative_path) =
+            parts.split_first().map(|(_, tail)| tail.iter().collect::<PathBuf>())
+        else {
+            violations.push(format!(
+                "{}: source file outside both owning crates cannot happen",
+                path.display()
+            ));
+            continue;
+        };
+        let relative = relative_path.to_string_lossy().replace('\\', "/");
+
+        let source = fs::read_to_string(path).map_err(|error| {
+            format!("production source {} must be readable: {error}", path.display())
+        })?;
+        let production = production_portion(&source);
+        for token in SERVICE_ONLY_COMPOSITION {
+            if production.contains(token) {
+                let allowance = ALLOWED_SITES.iter().find(|(allowed, _)| *allowed == relative);
+                if allowance.is_none() {
+                    violations.push(format!(
+                        "{relative} composes `{token}` outside the native critic service (#9062)"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(violations)
+}
+
 #[test]
 fn test_only_items_are_stripped_but_later_production_stays_scanned() {
     let source = concat!(
@@ -386,6 +556,158 @@ fn raw_strings_comments_and_char_literals_do_not_skew_the_strip_span() {
 }
 
 #[test]
+fn exclusion_requires_positive_gated_declaration_evidence() {
+    // The gate attaches across blank lines, comments, and further attributes,
+    // but never across an intervening item, and never without the attribute.
+    let gated = "#[cfg(test)]\nmod probe;\n";
+    assert!(gate_decides_by_declaration(gated, "probe"), "plain gated declaration");
+    assert!(
+        gate_decides_by_declaration(
+            "#[cfg(test)]\n// why this module is here\nmod probe;\n",
+            "probe"
+        ),
+        "an intervening comment does not detach the gate"
+    );
+    assert!(
+        gate_decides_by_declaration("#[cfg(test)]\n#[allow(dead_code)]\nmod probe;\n", "probe"),
+        "a second attribute between gate and declaration keeps the gate"
+    );
+    assert!(
+        gate_decides_by_declaration("#[cfg(test)] mod probe;\n", "probe"),
+        "same-line attribute and declaration stay gated"
+    );
+    assert!(
+        gate_decides_by_declaration("#[cfg(test)]\npub mod probe;\n", "probe"),
+        "visibility keywords stay gated"
+    );
+    assert!(
+        !gate_decides_by_declaration("mod probe;\n", "probe"),
+        "an ungated declaration is positive production evidence"
+    );
+    assert!(
+        !gate_decides_by_declaration("#[cfg(test)]\nfn helper() {}\nmod probe;\n", "probe"),
+        "an intervening item breaks the gate run so production stays in the denominator"
+    );
+    assert!(
+        !gate_decides_by_declaration("#[cfg(test)]\nmod probe_extra;\n", "probe"),
+        "a same-prefix different module never gates another stem"
+    );
+}
+
+#[test]
+fn missing_or_unreadable_declaring_site_keeps_the_file_scanned() {
+    // A file whose declaring module site cannot be established is never
+    // excluded: the conservative direction is to scan it (#15728).
+    let ghost = Path::new("definitely-missing-declaring-dir-15728").join("tests.rs");
+    assert!(!path_is_test_gated(&ghost), "a missing declaring site must not justify exclusion");
+}
+
+#[test]
+fn module_gate_decides_by_declaration_not_filename() {
+    // Real repository files (#15728): `test_core_authority_policy.rs` is
+    // only reachable through a `#[cfg(test)]`-gated declaration, while the
+    // production completion modules `test_more.rs`, `test_frameworks.rs`,
+    // `test_api.rs`, and `test_support.rs` are unconditional `mod`
+    // declarations that a filename skip would have wrongly excluded.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let base = Path::new(manifest_dir);
+    let gated = base.join("src/tooling/perl_critic/test_core_authority_policy.rs");
+    let production_more = base.join("src/providers/completion/completion/test_more.rs");
+    let production_frameworks =
+        base.join("src/providers/completion/completion/request/test_frameworks.rs");
+    let production_test_api = base.join("../perl-lsp-rs/src/runtime/test_api.rs");
+    let production_test_support = base.join("../perl-lsp-rs/src/execute_command/test_support.rs");
+    for path in [
+        &gated,
+        &production_more,
+        &production_frameworks,
+        &production_test_api,
+        &production_test_support,
+    ] {
+        assert!(path.is_file(), "test fixture {} must exist", path.display());
+    }
+    assert!(path_is_test_gated(&gated), "a cfg(test)-declared module is test-only as a whole");
+    assert!(
+        !path_is_test_gated(&production_more),
+        "an unconditionally declared test_more module stays scanned"
+    );
+    assert!(
+        !path_is_test_gated(&production_frameworks),
+        "an unconditionally declared test_frameworks module stays scanned"
+    );
+    assert!(
+        !path_is_test_gated(&production_test_api),
+        "an unconditionally declared test_api module stays scanned"
+    );
+    assert!(
+        !path_is_test_gated(&production_test_support),
+        "an unconditionally declared test_support module stays scanned"
+    );
+}
+
+#[test]
+fn production_test_named_files_stay_in_the_ownership_denominator() -> Result<(), String> {
+    // End-to-end discriminator for #15728. The fixture mirrors the real
+    // production layout: a module file `widget.rs` declaring an unconditional
+    // production `mod test_more;` and `mod tests;` plus a `#[cfg(test)]`-
+    // gated `mod fixture_tests;`. Forbidden composition in the production
+    // test-named files must fail the full scan; the same token inside the
+    // genuinely gated module stays excluded. A filename-skip mutant leaves
+    // the violation list empty and fails this test.
+    let base = std::env::temp_dir().join("critic_ownership_fixture_15728");
+    let crates_dir = base.join("crates");
+    let src = crates_dir.join("fixture").join("src");
+    let widget_dir = src.join("widget");
+    if let Err(error) = fs::remove_dir_all(&base) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!(
+                "stale fixture tree {} must be removable: {error}",
+                base.display()
+            ));
+        }
+    }
+    fs::create_dir_all(&widget_dir).map_err(|error| {
+        format!("fixture tree {} must be creatable: {error}", widget_dir.display())
+    })?;
+    let write = |name: &str, content: &str| {
+        fs::write(widget_dir.join(name), content)
+            .map_err(|error| format!("fixture {name} must be writable: {error}"))
+    };
+    write(
+        "mod.rs",
+        concat!(
+            "pub fn entry() {}\n",
+            "mod test_more;\n",
+            "mod tests;\n",
+            "#[cfg(test)]\n",
+            "mod fixture_tests;\n",
+        ),
+    )?;
+    write("test_more.rs", "pub fn reconcile() { BuiltInAnalyzer::new(x); }\n")?;
+    write("tests.rs", "pub fn reconcile() { NativeCriticPolicy::new(a, b, c, d); }\n")?;
+    write("fixture_tests.rs", "fn hidden() { native_finding_candidates(x); }\n")?;
+
+    let violations = scan_roots(&[src.as_path()])?;
+    let joined = violations.join("\n");
+    assert!(
+        joined.contains("fixture/src/widget/test_more.rs"),
+        "a production module named test_more.rs carrying a forbidden token must be \
+         flagged, got:\n{joined}"
+    );
+    assert!(
+        joined.contains("fixture/src/widget/tests.rs"),
+        "a production module named tests.rs carrying a forbidden token must be \
+         flagged, got:\n{joined}"
+    );
+    assert!(
+        !joined.contains("fixture_tests.rs"),
+        "the genuinely gated module must stay excluded, got:\n{joined}"
+    );
+    let _ = fs::remove_dir_all(&base);
+    Ok(())
+}
+
+#[test]
 fn the_native_critic_pipeline_is_composed_only_by_its_service() -> Result<(), String> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let mut sources = Vec::new();
@@ -394,13 +716,15 @@ fn the_native_critic_pipeline_is_composed_only_by_its_service() -> Result<(), St
         .parent()
         .ok_or_else(|| format!("manifest dir {manifest_dir} must have a parent"))?
         .to_path_buf();
-    for crate_src in [base.join("src"), crates_dir.join("perl-lsp-rs").join("src")] {
+    let core_src = base.join("src");
+    let lsp_src = crates_dir.join("perl-lsp-rs").join("src");
+    for crate_src in [&core_src, &lsp_src] {
         assert!(
             crate_src.is_dir(),
             "owning package source tree {} must exist",
             crate_src.display()
         );
-        collect_rust_sources(&crate_src, &mut sources)?;
+        collect_rust_sources(crate_src, &mut sources)?;
     }
     assert!(
         sources.len() > 100,
@@ -408,52 +732,7 @@ fn the_native_critic_pipeline_is_composed_only_by_its_service() -> Result<(), St
         sources.len()
     );
 
-    let mut violations = Vec::new();
-    for path in &sources {
-        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-        // Test-only module files are not production call sites.
-        if file_name == "tests.rs" || file_name.starts_with("test_") {
-            continue;
-        }
-
-        // Workspace-relative path: everything from the `crates` component on.
-        let mut seen_crates = false;
-        let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
-        for component in path.components() {
-            let raw = component.as_os_str();
-            if seen_crates {
-                parts.push(raw);
-            } else if raw == "crates" {
-                seen_crates = true;
-                parts.push(raw);
-            }
-        }
-        let Some(relative_path) =
-            parts.split_first().map(|(_, tail)| tail.iter().collect::<PathBuf>())
-        else {
-            violations.push(format!(
-                "{}: source file outside both owning crates cannot happen",
-                path.display()
-            ));
-            continue;
-        };
-        let relative = relative_path.to_string_lossy().replace('\\', "/");
-
-        let source = fs::read_to_string(path).map_err(|error| {
-            format!("production source {} must be readable: {error}", path.display())
-        })?;
-        let production = production_portion(&source);
-        for token in SERVICE_ONLY_COMPOSITION {
-            if production.contains(token) {
-                let allowance = ALLOWED_SITES.iter().find(|(allowed, _)| *allowed == relative);
-                if allowance.is_none() {
-                    violations.push(format!(
-                        "{relative} composes `{token}` outside the native critic service (#9062)"
-                    ));
-                }
-            }
-        }
-    }
+    let violations = scan_roots(&[core_src.as_path(), lsp_src.as_path()])?;
 
     // The allowlist itself must stay honest: every entry still exists, so a
     // moved/renamed file cannot silently keep covering composition sites.
