@@ -1,0 +1,150 @@
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -6,16 +6,6 @@
+ # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
+ 
+ on:
+-  pull_request:
+-    branches: [ main, master ]
+-    # Deliberately exclude `labeled` / `unlabeled` — labels are navigation and
+-    # classification metadata, not CI authority. `ready_for_review` and
+-    # `converted_to_draft` are kept because they change the draft-pr-check guard
+-    # behavior and must trigger CI.
+-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+-  merge_group: {}
+-  push:
+-    branches: [ main, master ]
+   workflow_dispatch:
+     inputs:
+       base_sha:
+--- a/.github/workflows/ripr.yml
++++ b/.github/workflows/ripr.yml
+@@ -25,17 +25,6 @@
+ name: ripr
+ 
+ on:
+-  pull_request:
+-    branches: [master, main]
+-    types: [opened, synchronize, reopened, ready_for_review]
+-  merge_group:
+-  push:
+-    branches: [master, main]
+-  # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
+-  # restore warm artifacts instead of cold-building into the runner-eviction
+-  # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
+-  # PR-created caches are scoped to the PR merge ref and cannot warm other
+-  # PRs, they only burn the 10 GB quota.
+   schedule:
+     - cron: '23 11 * * *'
+   workflow_dispatch:
+--- a/.github/workflows/em-ci-routed-rust.yml
++++ b/.github/workflows/em-ci-routed-rust.yml
+@@ -13,16 +13,6 @@
+           - cx53
+           - cx43
+           - github
+-  pull_request:
+-    branches: [main]
+-    types: [opened, synchronize, reopened, ready_for_review]
+-  merge_group:
+-  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
+-  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
+-  # what actually sits on main. Landed main commits now carry their own baseline run.
+-  push:
+-    branches: [main, master]
+-
+ permissions:
+   actions: read
+   checks: read
+--- a/.ci/policies/required-checks.toml
++++ b/.ci/policies/required-checks.toml
+@@ -129,7 +129,7 @@
+ workflow = ".github/workflows/em-ci-routed-rust.yml"
+ job = "rust-small-result"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = true
+ policy_role = "required"
+ applicability = "always-or-scoped-noop"
+@@ -143,7 +143,7 @@
+ workflow = ".github/workflows/ripr.yml"
+ job = "ripr"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = true
+ policy_role = "required"
+ applicability = "always-or-scoped-noop"
+@@ -157,7 +157,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "check-all-targets"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = true
+ policy_role = "required"
+ applicability = "conditional"
+@@ -171,7 +171,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "conflict-markers"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = true
+ policy_role = "required"
+ applicability = "conditional"
+@@ -199,7 +199,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "rust-formatting"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "always-or-scoped-noop"
+@@ -248,7 +248,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "pr-smoke"
+ workflow_result = "continue"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "conditional"
+@@ -261,7 +261,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "ux-tests"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "conditional"
+@@ -274,7 +274,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "merge-gate"
+ workflow_result = "propagate"
+-events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "always-or-scoped-noop"
+@@ -326,7 +326,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "public-api-pr"
+ workflow_result = "propagate"
+-events = ["pull_request", "push"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "conditional"
+@@ -339,7 +339,7 @@
+ workflow = ".github/workflows/ci.yml"
+ job = "semver-pr"
+ workflow_result = "continue"
+-events = ["pull_request"]
++events = ["workflow_dispatch"]
+ required = false
+ policy_role = "advisory"
+ applicability = "conditional"
