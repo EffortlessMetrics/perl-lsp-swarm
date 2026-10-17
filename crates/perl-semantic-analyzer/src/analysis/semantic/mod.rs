@@ -2510,6 +2510,25 @@ sub add_widgets {
         Ok(())
     }
 
+    /// An indented `=foo` code line between the previous `=cut` and the
+    /// real POD opening is not a directive (perlpod: column 0), so it must
+    /// not become the block start and drag code into the hover docs.
+    #[test]
+    fn test_pod_opening_directive_requires_column_zero() -> Result<(), Box<dyn std::error::Error>> {
+        let code = "=head2 a\n\nDoc A.\n\n=cut\n\nsub a {\n    my $x\n        =shift;\n    return $x;\n}\n\n=head2 b\n\nDoc B.\n\n=cut\n\nsub b { 1 }\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let subs = analyzer.symbol_table().find_symbol("b", 0, SymbolKind::Subroutine);
+        assert!(!subs.is_empty(), "Should find sub b");
+        let hover = analyzer.hover_at(subs[0].location).ok_or("hover not found")?;
+        let doc = hover.documentation.as_deref().ok_or("doc not found")?;
+        assert!(doc.contains("Doc B"), "own POD block expected, got: {doc}");
+        assert!(!doc.contains("=shift"), "indented code must not enter docs, got: {doc}");
+        assert!(!doc.contains("Doc A"), "previous block must not bleed, got: {doc}");
+        Ok(())
+    }
+
     /// A `=cutover`-style line is not a POD terminator: a block ending
     /// with it must not become the following sub's documentation.
     #[test]
