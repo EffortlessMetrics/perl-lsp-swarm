@@ -312,6 +312,19 @@ impl<'a> PerlLexer<'a> {
         }
     }
 
+    /// Drain the trivia recorded while skipping comments and POD (#17295).
+    ///
+    /// The main token stream never carries `Comment`/`Pod` tokens, so surfaces
+    /// that must paint trivia call this after their lexing loop. Draining is
+    /// destructive — each recorded span is returned exactly once, in source
+    /// order. Accumulation is operation-local: it is not checkpoint replay
+    /// state, and [`restore`](crate::Checkpointable::restore) clears it so a
+    /// resumed lexer re-records only the trivia it skips from the restored
+    /// position onward.
+    pub fn take_trivia_tokens(&mut self) -> Vec<Token> {
+        std::mem::take(&mut self.trivia_tokens)
+    }
+
     /// Advance the lexer and return the next token.
     ///
     /// Returns `None` only after an `EOF` token has already been emitted.
@@ -824,7 +837,10 @@ impl<'a> PerlLexer<'a> {
                         break;
                     }
 
-                    // Skip line comment using memchr for fast newline search
+                    // Record the comment span for trivia consumers (#17295):
+                    // `#` through end of line, line terminator excluded. The
+                    // main token stream stays comment-free.
+                    let comment_start = self.position;
                     self.position += 1; // Skip # directly
 
                     // Use memchr2 to find CR/LF line endings quickly (supports LF, CRLF, and CR)
@@ -836,6 +852,13 @@ impl<'a> PerlLexer<'a> {
                         // No newline found, skip to end
                         self.position = self.input_bytes.len();
                     }
+                    let comment_text = Arc::from(&self.input[comment_start..self.position]);
+                    self.trivia_tokens.push(Token {
+                        token_type: TokenType::Comment(Arc::clone(&comment_text)),
+                        text: comment_text,
+                        start: comment_start,
+                        end: self.position,
+                    });
                 }
                 b'=' if self.position == 0
                     || (self.position > 0
@@ -857,6 +880,7 @@ impl<'a> PerlLexer<'a> {
                         // Scan forward for \n=cut (end of POD block)
                         let search_start = self.position;
                         let mut found_cut = false;
+                        let mut pod_end = self.input_bytes.len();
                         let bytes = self.input_bytes;
                         let mut i = search_start;
                         while i < bytes.len() {
@@ -869,6 +893,10 @@ impl<'a> PerlLexer<'a> {
                                 while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
                                     i += 1;
                                 }
+                                // The recorded block ends at the end of the
+                                // `=cut` line; its terminator belongs to the
+                                // file, not the POD block (#17295).
+                                pod_end = i;
                                 // Consume one line ending sequence if present
                                 if i < bytes.len() && bytes[i] == b'\r' {
                                     i += 1;
@@ -887,7 +915,20 @@ impl<'a> PerlLexer<'a> {
                         if !found_cut {
                             // POD extends to end of file
                             self.position = bytes.len();
+                            pod_end = bytes.len();
                         }
+                        // Record the POD block for trivia consumers (#17295):
+                        // opening directive line through the `=cut` line (or
+                        // EOF when unterminated). Body text stays in the source
+                        // and is addressed by `start..end` geometry — the same
+                        // convention as `HeredocBody` — so a large block is not
+                        // copied into the side channel.
+                        self.trivia_tokens.push(Token {
+                            token_type: TokenType::Pod,
+                            text: empty_arc(),
+                            start: search_start,
+                            end: pod_end,
+                        });
                         continue;
                     }
                     // Not a POD directive - regular '=' token

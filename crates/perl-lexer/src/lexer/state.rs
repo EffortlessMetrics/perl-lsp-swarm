@@ -4,6 +4,7 @@ use crate::config::LexerConfig;
 use crate::heredoc::HeredocSpec;
 use crate::mode::LexerMode;
 use crate::quote_handler;
+use crate::token::Token;
 use perl_source_identity::{LogicalSourceId, SourceGeneration};
 use std::sync::OnceLock;
 
@@ -43,4 +44,17 @@ pub struct PerlLexer<'a> {
     pub(crate) generation: SourceGeneration,
     /// Lazily computed identity for this immutable input.
     pub(crate) content_digest: OnceLock<perl_source_identity::ContentDigest>,
+    /// Trivia recorded while skipping comments and POD (#17295).
+    ///
+    /// The main token stream never carries `Comment`/`Pod` —
+    /// [`skip_whitespace_and_comments`](crate::PerlLexer::next_token) consumes
+    /// them silently, and every parser-facing consumer relies on that. Spans
+    /// accumulate here instead so trivia-painting surfaces (semantic tokens'
+    /// advertised `comment` legend entry) can drain them after lexing. Text is
+    /// the recorded source slice; large POD blocks keep an empty `text` and are
+    /// sliced from the source by their `start..end` geometry, matching the
+    /// `HeredocBody` convention. Operation-local accumulation: not checkpoint
+    /// replay state, and cleared on restore so a resumed lexer never
+    /// double-records.
+    pub(crate) trivia_tokens: Vec<Token>,
 }
