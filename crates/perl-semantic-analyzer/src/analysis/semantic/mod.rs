@@ -2510,6 +2510,25 @@ sub add_widgets {
         Ok(())
     }
 
+    /// A `=cutover`-style line is not a POD terminator: a block ending
+    /// with it must not become the following sub's documentation.
+    #[test]
+    fn test_pod_block_requires_exact_cut_terminator() -> Result<(), Box<dyn std::error::Error>> {
+        let code = "=head2 y\n\nWhy docs.\n\n=cutover\n\nsub y { 1 }\n";
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let subs = analyzer.symbol_table().find_symbol("y", 0, SymbolKind::Subroutine);
+        assert!(!subs.is_empty(), "Should find sub y");
+        let hover = analyzer.hover_at(subs[0].location).ok_or("hover not found")?;
+        assert!(
+            hover.documentation.as_deref().is_none_or(|d| !d.contains("Why docs")),
+            "=cutover must not terminate a POD block, got: {:?}",
+            hover.documentation
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_variable_hover_shows_declaration_type() -> Result<(), Box<dyn std::error::Error>> {
         let code = r#"my $count = 42;

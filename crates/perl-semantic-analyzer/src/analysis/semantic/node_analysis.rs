@@ -29,11 +29,10 @@ use perl_semantic_facts::Confidence;
 fn trailing_pod_block(before: &str) -> Option<String> {
     let lines: Vec<&str> = before.lines().collect();
     let last = lines.iter().rposition(|line| !line.trim().is_empty())?;
-    if !lines[last].trim_start().starts_with("=cut") {
+    if lines[last].trim() != "=cut" {
         return None;
     }
-    let boundary =
-        (0..last).rev().find(|&i| lines[i].trim_start().starts_with("=cut")).map_or(0, |i| i + 1);
+    let boundary = (0..last).rev().find(|&i| lines[i].trim() == "=cut").map_or(0, |i| i + 1);
     let opening = (boundary..last).find(|&i| {
         let trimmed = lines[i].trim_start();
         trimmed.len() > 1
