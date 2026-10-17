@@ -40,6 +40,7 @@ use crate::commands::todos::{
     has_unlinked_todo_in_rust_line_with_block_context, has_unlinked_todo_in_rust_line_with_state,
     linked_marker,
 };
+use crate::commands::unwraps_prod::check_unwraps_prod;
 #[cfg(test)]
 use crate::git_hooks::pre_push_hook_script;
 use crate::git_hooks::{check_githooks, cmd_install_githooks};
@@ -124,7 +125,7 @@ fn run() -> Result<i32> {
         CliCommand::CheckParserMatrix => cmd_check_parser_matrix(&repo_root)?,
         CliCommand::CheckUnsafeProd => cmd_check_unsafe_prod(&repo_root)?,
         CliCommand::CheckUnwrapsModules => cmd_check_unwraps_modules(&repo_root)?,
-        CliCommand::CheckUnwrapsProd => cmd_check_unwraps_prod(&repo_root)?,
+        CliCommand::CheckUnwrapsProd => check_unwraps_prod(&repo_root)?,
         CliCommand::CheckPanicTest { inventory, identity_registry } => {
             if inventory {
                 commands::panic_test::write_inventory(&repo_root)?
@@ -2570,123 +2571,6 @@ pub(crate) fn production_source_files_for_ci_checks(repo_root: &Path) -> Result<
     Ok(walked.into_iter().filter(|path| !test_only.contains(path)).collect())
 }
 
-pub(crate) fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
-    let report = scan_prod_unwraps_and_panics(repo_root)?;
-    report.print_and_exit()
-}
-
-/// The two production-line checks share a single walk so neither scanner
-/// reads ahead of the other. Splitting them apart used to mean an early
-/// return on the first failure hid the second; keeping them in one struct
-/// forces the printing layer to see both lists before deciding an exit
-/// code. #16253.
-pub(crate) struct ProdUnwrapsAndPanicsReport {
-    pub unwrap_offenders: Vec<String>,
-    pub panic_offenders: Vec<String>,
-    pub unwrap_baseline: usize,
-    pub panic_baseline: usize,
-}
-
-impl ProdUnwrapsAndPanicsReport {
-    fn print_and_exit(&self) -> Result<i32> {
-        let mut failed = false;
-        println!(
-            "unwrap/expect: {} (baseline: {})",
-            self.unwrap_offenders.len(),
-            self.unwrap_baseline
-        );
-        if self.unwrap_offenders.len() > self.unwrap_baseline {
-            failed = true;
-            println!(
-                "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
-                self.unwrap_offenders.len(),
-                self.unwrap_baseline
-            );
-            println!();
-            println!("Offenders:");
-            for line in self.unwrap_offenders.iter().take(10) {
-                println!("{line}");
-            }
-        }
-
-        println!(
-            "panic-family macros: {} (baseline: {})",
-            self.panic_offenders.len(),
-            self.panic_baseline
-        );
-        if self.panic_offenders.len() > self.panic_baseline {
-            failed = true;
-            println!(
-                "FAIL: panic-family count ({}) exceeds baseline ({})",
-                self.panic_offenders.len(),
-                self.panic_baseline
-            );
-            println!();
-            println!("Offenders:");
-            for line in self.panic_offenders.iter().take(10) {
-                println!("{line}");
-            }
-            println!(
-                "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
-            );
-        }
-        Ok(if failed { 1 } else { 0 })
-    }
-}
-
-pub(crate) fn scan_prod_unwraps_and_panics(repo_root: &Path) -> Result<ProdUnwrapsAndPanicsReport> {
-    let unwrap_re = Regex::new(r"\.unwrap\(|\.expect\(")?;
-    let panic_re = Regex::new(r"(panic!\(|todo!\(|unimplemented!\(|unreachable!\()")?;
-    let comment_re = Regex::new(r"^\s*//")?;
-    let mut unwrap_offenders = Vec::new();
-    let mut panic_offenders = Vec::new();
-
-    let sources = production_source_files_for_ci_checks(repo_root)?;
-
-    for path in sources.iter() {
-        let rel = display_path(repo_root, path);
-        let lines = read_lines(path)?;
-        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
-        for (index, line) in lines.iter().enumerate() {
-            let line_no = index + 1;
-            if line_no >= test_start {
-                continue;
-            }
-            if !comment_re.is_match(line)
-                && unwrap_re.is_match(line)
-                && !(line.contains("self.expect(")
-                    || line.contains("s.expect(")
-                    || line.contains("self.context.expect("))
-            {
-                unwrap_offenders.push(format!("{rel}:{line_no}:{line}"));
-            }
-            if panic_re.is_match(line)
-                && !comment_re.is_match(line)
-                && !is_allowlisted_prod_panic_hit(&rel, line)
-            {
-                panic_offenders.push(format!("{rel}:{line_no}:{line}"));
-            }
-        }
-    }
-
-    let unwrap_baseline = read_usize_file(&repo_root.join("ci/unwrap_prod_baseline.txt"), 0)?;
-    let panic_baseline = read_usize_file(&repo_root.join("ci/panic_prod_baseline.txt"), 0)?;
-    Ok(ProdUnwrapsAndPanicsReport {
-        unwrap_offenders,
-        panic_offenders,
-        unwrap_baseline,
-        panic_baseline,
-    })
-}
-
-fn is_allowlisted_prod_panic_hit(_rel_path: &str, line: &str) -> bool {
-    // Static LazyLock<Regex> initializers that use unreachable!() for known-good patterns
-    // are exempt regardless of which file they live in.  Two message conventions:
-    //   • "... regex failed to compile" — used in heredoc anti-pattern initializers
-    //   • "... is a known-good static pattern ..." — used in other static regex initializers
-    line.contains("regex failed to compile") || line.contains("known-good static pattern")
-}
-
 fn cmd_quick_check(repo_root: &Path) -> Result<i32> {
     println!("=== Quick CI Mirror Check ===");
     println!();
@@ -3594,62 +3478,6 @@ mod tests {
     }
 
     #[test]
-    fn allowlisted_prod_panic_hit_matches_heredoc_regex_initializers() {
-        // Line content is the discriminator — path no longer matters after the
-        // heredoc anti-patterns module moved into perl-parser.
-        assert!(is_allowlisted_prod_panic_hit(
-            "crates/perl-parser/src/heredoc_anti_patterns.rs",
-            r#"        Err(_) => unreachable!("FORMAT_PATTERN regex failed to compile"),"#
-        ));
-        assert!(is_allowlisted_prod_panic_hit(
-            r"crates\perl-parser\src\heredoc_anti_patterns.rs",
-            r#"        Err(_) => unreachable!("FORMAT_PATTERN regex failed to compile"),"#
-        ));
-        // Old path still matches (line content drives the decision)
-        assert!(is_allowlisted_prod_panic_hit(
-            "crates/perl-heredoc-anti-patterns/src/lib.rs",
-            r#"        Err(_) => unreachable!("FORMAT_PATTERN regex failed to compile"),"#
-        ));
-        // "known-good static pattern" convention used in other LazyLock<Regex> initializers
-        assert!(is_allowlisted_prod_panic_hit(
-            "crates/perl-lsp-rs/src/runtime/language/code_actions.rs",
-            r#"        Err(err) => unreachable!("GLOBAL_VAR_ASSIGNMENT_RE is a known-good static pattern: {err}"),"#
-        ));
-        // Bare unreachable!() without a qualifying message is NOT allowlisted
-        assert!(!is_allowlisted_prod_panic_hit(
-            "crates/perl-lsp-diagnostics/src/lints/ffi_checklib.rs",
-            r#"                        _ => unreachable!(),"#
-        ));
-    }
-
-    // Regression guard for issue #4245: all unreachable!() calls in the heredoc
-    // anti-patterns module must be allowlisted regardless of which file they live in.
-    #[test]
-    fn allowlisted_prod_panic_hit_all_seven_patterns_both_separators() {
-        let all_seven = [
-            r#"        Err(_) => unreachable!("FORMAT_PATTERN regex failed to compile"),"#,
-            r#"        Err(_) => unreachable!("BEGIN_BLOCK_PATTERN regex failed to compile"),"#,
-            r#"        Err(_) => unreachable!("DYNAMIC_DELIMITER_PATTERN regex failed to compile"),"#,
-            r#"        Err(_) => unreachable!("SOURCE_FILTER_PATTERN regex failed to compile"),"#,
-            r#"        Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),"#,
-            r#"        Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),"#,
-            r#"    Err(_) => unreachable!("TIE_PATTERN regex failed to compile"),"#,
-        ];
-        let forward = "crates/perl-parser/src/heredoc_anti_patterns.rs";
-        let backward = r"crates\perl-parser\src\heredoc_anti_patterns.rs";
-        for line in &all_seven {
-            assert!(
-                is_allowlisted_prod_panic_hit(forward, line),
-                "forward-slash path must allowlist: {line}"
-            );
-            assert!(
-                is_allowlisted_prod_panic_hit(backward, line),
-                "backslash path must allowlist: {line}"
-            );
-        }
-    }
-
-    #[test]
     fn quick_bench_uses_distinct_binaries_for_c_and_rust() {
         // Regression guard for issue #3204: cmd_quick_bench previously called
         // the same binary twice and reported the (meaningless) delta as a
@@ -4084,68 +3912,6 @@ mod tests {
             production.iter().any(|path| path.ends_with("real.rs")),
             "its unguarded sibling must still be scanned; got {production:?}"
         );
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    // ── cmd_check_unwraps_prod tests (#16253) ─────────────────────────────────
-    //
-    // The two scanners (unwrap/expect and panic-family) used to early-return on
-    // the first failure so the second count was hidden. A regression that
-    // lands both kinds simultaneously must surface both — a single `Ok(1)` is
-    // indistinguishable from "only unwrap failed" once the second count is
-    // never printed.
-
-    /// Build a fixture with one crate whose production code carries both an
-    /// unwrap and a panic-family macro, with both baselines set to zero so
-    /// both checks fail. The function must report both failures (exit 1, both
-    /// FAIL lines printed) rather than hiding the second behind an early
-    /// return on the first.
-    fn unwraps_prod_dual_failure_fixture(name: &str) -> Result<PathBuf> {
-        let root = std::env::temp_dir().join(format!("pch_unwraps_prod_{name}"));
-        let _ = std::fs::remove_dir_all(&root);
-        let crate_root = root.join("crates/demo");
-        std::fs::create_dir_all(crate_root.join("src"))?;
-        std::fs::create_dir_all(root.join("ci"))?;
-        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/demo\"]\n")?;
-        std::fs::write(
-            crate_root.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-        )?;
-        std::fs::write(
-            crate_root.join("src/lib.rs"),
-            "pub fn unwrap_call() { let _ = \"x\".parse::<i32>().unwrap(); }\n\
-             pub fn panic_call() { unreachable!(\"dual\"); }\n",
-        )?;
-        std::fs::write(root.join("ci/unwrap_prod_baseline.txt"), "0\n")?;
-        std::fs::write(root.join("ci/panic_prod_baseline.txt"), "0\n")?;
-        Ok(root)
-    }
-
-    #[test]
-    fn check_unwraps_prod_reports_both_failures_when_both_exceed_baseline() -> Result<()> {
-        // Regression for the early-return defect called out in #16253: when
-        // both unwrap and panic-family counts exceed their baselines, the
-        // scanner must populate both lists before the printing layer decides
-        // the exit code, so a regression that re-introduces an early return
-        // visibly empties one of the two lists.
-        let root = unwraps_prod_dual_failure_fixture("both_fail")?;
-        let report = scan_prod_unwraps_and_panics(&root)?;
-        assert_eq!(
-            report.unwrap_offenders.len(),
-            1,
-            "expected exactly one unwrap offender; got {:?}",
-            report.unwrap_offenders
-        );
-        assert_eq!(
-            report.panic_offenders.len(),
-            1,
-            "expected exactly one panic-family offender; got {:?}",
-            report.panic_offenders
-        );
-        let exit = report.print_and_exit()?;
-        assert_eq!(exit, 1, "expected exit 1 when both checks fail");
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
