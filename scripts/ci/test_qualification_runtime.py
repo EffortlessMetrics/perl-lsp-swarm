@@ -26,6 +26,7 @@ class NativeAPI:
             15368, 'Perl LSP Rust Small Result')
         self.tree = bridge.plan['tree']
         self.row = None
+        self.extra_rows = []
 
     def get(self, path):
         self.calls.append(('GET', path))
@@ -43,6 +44,9 @@ class NativeAPI:
             return dict(id=9, path='.github/workflows/qualification-rehearsal.yml', state='active')
         if path == base + '/actions/runs/123':
             return dict(self.row)
+        if path.startswith(base + '/actions/workflows/9/runs?'):
+            rows = [dict(self.row), *self.extra_rows]
+            return dict(total_count=len(rows), workflow_runs=rows)
         raise AssertionError('unexpected native read ' + path)
 
 
@@ -281,6 +285,63 @@ class RuntimeCompositionTests(unittest.TestCase):
         self.assertIsNone(manifest['check_run_id'])
         self.assertEqual((manifest['selected'], manifest['executed'], manifest['failed']), (1, 1, 0))
         self.assertEqual(len(self.imports), 1)
+
+    def test_native_entry_joins_existing_election_and_owner_ports_before_capture(self):
+        event = {'inputs': {'request': json.dumps(self.plan)}}
+        captured = []
+        def capture(environment, *, acquire_plan):
+            captured.append(acquire_plan())
+            return {'qualification_subject': {key: self.plan[key] for key in
+                    ('head', 'tree', 'base', 'control', 'request_key')}}
+        def production(plan, **ports):
+            self.assertEqual(plan, self.plan)
+            self.assertEqual(ports['selection_owner'](plan), self.selected)
+            self.assertEqual(ports['committed_owner'](plan, self.selected).disposition, 'unavailable')
+            return {'classification': 'NOT_PROVEN', 'reason': 'distinct warm proof unavailable'}
+        with mock.patch.object(runtime.admission, 'production', side_effect=production):
+            refused = self.owners.enter_native(event, capture)
+        self.assertEqual(refused['status'], 'NOT_PROVEN')
+        self.assertEqual(captured, [])
+        with mock.patch.object(runtime.admission, 'production', return_value={'classification': 'READY'}):
+            result = self.owners.enter_native(event, capture)
+        self.assertEqual(result['status'], 'READY_FOR_ALLOCATION')
+        self.assertEqual(captured, [self.plan])
+        self.assertEqual(result['result'], 'not_proven')
+        self.assertEqual((result['selected'], result['executed'], result['failed']), (0, 0, 0))
+        self.assertIsNone(result['check_run_id'])
+        self.assertFalse(result['execution_authorized'])
+        self.assertFalse(result['merge_authorized'])
+        self.assertEqual(self.imports, [])
+        self.assertTrue(all(method == 'GET' for method, _ in self.api.calls))
+
+    def test_native_duplicate_or_wrong_dispatch_never_reaches_owner_admission(self):
+        event = {'inputs': {'request': json.dumps(self.plan)}}
+        self.api.extra_rows = [dict(self.api.row, id=122)]
+        with mock.patch.object(self.owners, 'eligibility', side_effect=AssertionError('duplicate admitted')):
+            result = self.owners.enter_native(event, None)
+        self.assertEqual(result['status'], 'NOT_PROVEN')
+        self.assertEqual(result['canonical_run_id'], 122)
+        self.api.extra_rows = []
+        with mock.patch.object(self.owners, 'eligibility', side_effect=AssertionError('bad request admitted')):
+            with self.assertRaises(ValueError):
+                self.owners.enter_native({'inputs': {'request': json.dumps(dict(self.plan, tree='0' * 40))}}, None)
+
+    def test_native_attempt_or_subject_change_during_admission_never_captures(self):
+        event = {'inputs': {'request': json.dumps(self.plan)}}
+        def moved(plan):
+            self.api.row['run_attempt'] = 3
+            return runtime.Eligibility('READY', 'fixture')
+        with mock.patch.object(self.owners, 'eligibility', side_effect=moved):
+            with self.assertRaises(ValueError):
+                self.owners.enter_native(event, lambda *args, **kw: self.fail('stale capture'))
+        self.api.row['run_attempt'] = 2
+        def capture(environment, **kw):
+            self.api.row['status'] = 'completed'
+            self.api.row['conclusion'] = 'success'
+            return {}
+        with mock.patch.object(self.owners, 'eligibility', return_value=runtime.Eligibility('READY', 'fixture')):
+            with self.assertRaisesRegex(ValueError, 'in-progress'):
+                self.owners.enter_native(event, capture)
 
     def test_canonical_failure_remains_failure_and_wrong_attempt_refuses(self):
         original = self.canonical_owner(self.packet / 'rust-small-proof.json', self.plan, self.selected)

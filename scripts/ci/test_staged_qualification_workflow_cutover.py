@@ -70,6 +70,14 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             self.assertEqual(catalog.read_workflow(root, ROOTS[2]).events,
                              frozenset({'workflow_dispatch'}))
 
+    def test_root_policy_rollback_restores_exact_original_bytes(self):
+        with staged_tree() as root:
+            git(root, 'apply', '--reverse', '--check', str(PATCH))
+            git(root, 'apply', '--reverse', str(PATCH))
+            for path in (*ROOTS, POLICY):
+                self.assertEqual((root / path).read_bytes(), (ROOT / path).read_bytes(), path)
+            self.assertEqual(git(root, 'diff', '--exit-code'), '')
+
     def test_reintroduced_ready_or_synchronize_outside_ci_is_detected(self):
         for path in ROOTS[1:]:
             with self.subTest(path=path), staged_tree() as root:

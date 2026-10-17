@@ -13,7 +13,7 @@ from pathlib import Path
 from . import candidate_readiness as admission
 from . import qualification_publication as publication
 from .export_rust_small_receipt import MAX_RECEIPT_BYTES, regular_bytes
-from .request_qualification import Eligibility, Refused
+from .request_qualification import Eligibility, Refused, rehearse_event
 from .rust_small_evidence import unique_object
 from .rust_small_subject import product_subject
 
@@ -55,6 +55,46 @@ class RustSmallOwners:
         if not callable(central_capture):
             raise Refused('central capture owner missing')
         return central_capture(self.environment, acquire_plan=self.acquire)
+
+    def enter_native(self, event, central_capture):
+        """Join native election and live owner admission before context capture.
+
+        Trusted workflow code supplies this object and the central capture owner;
+        dispatch JSON cannot install either. READY_FOR_ALLOCATION is a source
+        admission result, never an allocation, product result or merge authority.
+        No callback is installed by the metadata-only workflow today.
+        """
+        elected = rehearse_event(self.adapter.api, event, self.environment)
+        plan = self.acquire()
+        if elected['request_key'] != plan['request_key']:
+            raise Refused('native entry subject moved after election')
+        result = dict(elected, status='NOT_PROVEN', context=None,
+                      execution_authorized=False, merge_authorized=False)
+        if not elected['rehearsal_elected']:
+            return dict(result, reason='duplicate native run; elected owner retains execution')
+
+        def current_attempt():
+            row = self.adapter.api.get(f'{self.adapter.root}/actions/runs/{elected["run_id"]}')
+            if (not self.adapter.matches(row, plan)
+                    or row['run_attempt'] != elected['run_attempt']
+                    or row.get('status') != 'in_progress' or row.get('conclusion') is not None):
+                raise Refused('native entry requires the current in-progress control attempt')
+
+        current_attempt()
+        decision = self.eligibility(plan)
+        self.adapter.current(plan)
+        if decision.classification != 'READY':
+            return dict(result, status=decision.classification, reason=decision.reason)
+        # Review/warm-proof acquisition may take time. Reelect with the same
+        # complete native inventory and refuse a changed attempt before capture.
+        if rehearse_event(self.adapter.api, event, self.environment) != elected:
+            raise Refused('native election changed during owner admission')
+        current_attempt()
+        context = self.capture(central_capture)
+        self.adapter.current(plan)
+        current_attempt()
+        return dict(result, status='READY_FOR_ALLOCATION', context=context,
+                    reason='native election and current owner admission joined; allocator still required')
 
     def export(self):
         from .export_rust_small_receipt import export

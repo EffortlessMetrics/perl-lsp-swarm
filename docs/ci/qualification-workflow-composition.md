@@ -7,6 +7,11 @@ closure from #18068 at `b9cdc78b78467f75efcf9946f32239a31b7c8da9`; it does not
 merge that carrier's unrelated source history. It is not an activated late qualification
 generation. No required check, protection, runner allowance or permission is changed.
 
+The exact remaining activation joins and source rollback procedure are in
+[qualification-cutover.md](qualification-cutover.md). That procedure requires
+review against the actual final combined source and fresh native observations;
+the local reversal proof does not establish runtime rollback.
+
 The actual `post-merge-status.yml` and `aggregate-ci-lane-history.yml` dispatch
 steps retain title/history metadata and no longer launch CI/RIPR/Rust Small on
 publication. Their existing native contracts and executable shell-spy regressions
@@ -62,6 +67,16 @@ wrong commands, changed policy, stale attempts and moved subjects cannot become
 success. The importer and semantic callbacks are trusted code boundaries, not
 candidate data. There is no CLI, environment flag or installed workflow that
 supplies these callbacks.
+
+`enter_native(event, central_capture)` now joins the existing exact dispatch
+validation and duplicate election to the real owner readiness boundary before
+central capture. It reacquires election, subject and the current in-progress
+native attempt around admission/capture. An unelected duplicate never reaches
+owner acquisition; missing owners retain NOT_PROVEN. A READY owner join returns
+only READY_FOR_ALLOCATION, zero execution counts and no check ID or authority to
+execute/merge. This native entry is source-level wiring, still uninstalled in the
+metadata workflow; it does not replace the selection, provenance or allocator
+owners with local fixtures.
 
 The next execution seam is `execute_proof(proof_owner)`. After the existing
 allocator admits work, trusted control code supplies its bound canonical producer

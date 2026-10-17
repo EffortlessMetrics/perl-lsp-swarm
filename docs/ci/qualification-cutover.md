@@ -1,0 +1,109 @@
+# Qualification activation and rollback
+
+Status: staged source; activation is **NOT_PROVEN**. Neither the root-trigger
+patch nor a publisher permission is enabled. This procedure does not authorize
+settings changes, a check writer, dispatch or cutover. The integration owner must
+review the final combined source and current observations before requesting that
+operation. Do not land the generated-PR dispatch removal alone while required
+producers still depend on it.
+
+## Exact remaining joins
+
+| Join | Existing source and remaining installation |
+| --- | --- |
+| Native entry | `RustSmallOwners.enter_native` reuses `rehearse_event`/`Adapter.elect`, exact current control attempt and the production readiness join before central capture. Install this in trusted control code only after the following owner adapters exist. The present `qualification-rehearsal.yml` remains metadata-only. |
+| Entry owners | Bind existing `pre_push_plan`/`ci_scope` selection with actual portfolio/policy digests and ordered commands, applicable required-result dispositions, and authenticated **distinct existing warm proof** to the typed readiness ports. A local receipt or request JSON cannot establish native provenance. Missing owner observations must refuse, not use empty applicability or copied fixture selections. Desktop owns resource admission/integration. |
+| Central producer and consumer | Land/review canonical `em-ci` hooks, export the public mirror through its existing exporter, then bind the same plan acquirer in actual capture, custody and import entrypoints. Those mains currently omit it. Preserve native S/run/attempt; checkout exact clean H and tree only for product work. Bind the admitted immutable tool and canonical owner; do not execute H with metadata or writer credentials. |
+| Failure and completion | Supply an authenticated failed-producer import path before claiming product-failure publication: the existing central importer accepts successful producers only. Connect verified proof to the existing completion builder and exact-attempt artifact. A successful control S check, incomplete run or local receipt cannot replace H evidence. |
+| Other protected producers | Adapt CI dispatch resolution, repository-contract head derivation, public-api/semver assumptions, RIPR selected subject and Rust Small to authenticated selected scope. Retain all substantive commands and all five required contexts. Resolve the native catalog's mixed RIPR schedule/qualification-root refusal through the existing owner; no blanket diagnostic exception. Rust Small evidence alone cannot satisfy Compile All Targets, conflict-marker, title or RIPR obligations. |
+| Publisher and final gate | Pending the separately requested approval, implement the reviewed narrow H/app writer and uncertain-write recovery, native check readback and stale-result invalidation. Keep `checks: write` absent until authorized. Immediately before integration rejoin exact candidate, current review/findings, required native results and current protections through the repository's final gate. |
+
+`READY_FOR_ALLOCATION` from native entry is only a successful source admission
+join. It retains zero executed counts, `not_proven`, no check ID, and false
+execution/merge authorization. The resource allocator and product execution are
+separate owner actions. Capture is refused for a duplicate, changed attempt,
+closed attempt, changed request or non-READY owner decision.
+
+## Current observation and proof limits
+
+The 2026-10-17 cloud observation read active default-branch ruleset `16664791`:
+no bypass actors, current user can never bypass, pull-request thread resolution,
+and these five checks bound to Actions integration `15368`: `Compile All Targets
+(bit-rot guard)`, `Conflict marker check`, `validate-title`, `Perl LSP Rust Small
+Result`, `ripr+ New Gap Gate`. Merge-queue ruleset `17372329` was disabled; release
+tag ruleset `21821148` was active. Classic branch-protection read returned HTTP
+403 `Resource not accessible by integration`; the branch summary is not a full
+replacement. These are observations, not desired settings or authority to alter
+them. Obtain a fresh authorized complete classic/ruleset and workflow-permission
+observation, including caller/callee token boundaries, before cutover. Preserve
+the actual native result requirements even when the local projection differs.
+
+Real local proof used S=`b77041f5a8fc7513a39e423673a35968a11f6b5b`,
+H=`877349ea9c4fb17d8bc8e5c903b152f556adde8c`, tree
+`fff84023cf0b25ccb4872c5a8f7cdd77fec0cb0f` and immutable xtask SHA256
+`ea5cf42e896f436cddc8d96707d67ee21ef83c5b11bf635999d29a8f134efcde`.
+All 10 real Rust checks and canonical verification passed; warm qualification was
+4.312 seconds after a 15m52s cold warm-up. Native API and review observations
+were fixtures, and completion correctly retained `NOT_PROVEN`/null check ID.
+These identities remain attached to that run as source evolves; they do not
+qualify a later controller or GitHub candidate. Refresh affected source proof
+and review without relabelling the older product execution.
+
+## Cutover preparation
+
+1. Record the actual pre-cutover main/source commits and generated mirror pin,
+   full workflow/policy bytes, all existing contexts/app bindings and live
+   protection/permission observations in the integration issue. Record selected
+   H/tree/B/S, run/attempt and review references. Resolve any conflicting owner
+   or writer first. Have the rollback changes reviewed against that combined
+   source, including generated-PR dispatch restoration.
+2. Prove native no-write qualification on the selected candidate using live
+   acquisition, failure handling and stale H/B/S/policy/attempt cases. Recheck
+   the current settings and independently review the composed source. Publisher
+   approval and operational cutover remain separate explicit decisions.
+3. Only after those decisions, stage one coordinated transition of native owner
+   installation and consumers, root/policy projection and generated-PR dispatch
+   removal. Verify every protected result on its actual intended subject before
+   calling the new generation operational. Keep the cache seed's intended
+   independent maintenance behavior. Stop on a stranded context or contradictory
+   subject; do not change protection to accommodate incomplete migration.
+
+## Rollback procedure for the eventual approved cutover
+
+The integration owner owns rollback. Trigger it if a required producer becomes
+unreachable, provenance/check association differs, a stale result is accepted,
+or resource admission fails to contain the selected work. Preserve evidence and
+the exact affected attempts; do not certify their result or start duplicate work.
+
+1. Stop accepting **new** staged qualification requests through the introduced
+   source entry. Keep current unrelated runs and PR18059's integration ownership
+   intact. Disposition an in-flight staged attempt explicitly as unusable for
+   integration; if cancellation or permission revocation is needed, obtain the
+   operation's authorization rather than inferring it from this runbook.
+2. Revert the coordinated cutover source through a reviewed protected PR, using
+   the recorded pre-cutover files. Restore the three ordinary workflow root event
+   sets and `.ci/policies/required-checks.toml` together. Restore the previous
+   generated-PR CI/RIPR/Rust Small dispatch behavior in `post-merge-status.yml`
+   and `aggregate-ci-lane-history.yml` if its removal was part of cutover. Restore
+   caller/mirror pins and entry/result wiring to the recorded compatible
+   generation. Preserve unrelated changes; do not force-reset main.
+3. For the unchanged staged root leaf, `git apply --reverse --check
+   .ci/staged/17903-root-triggers.patch` followed by reverse application restores
+   the four files byte-for-byte. The regression proves this only for that exact
+   leaf. If files changed during integration, produce and review a contextual
+   revert against the actual cutover commit; do not force an outdated patch.
+4. No protection setting changes are part of cutover or rollback. If a separately
+   approved publisher was introduced, restore its source/job permission grant
+   through the approved rollback scope. Do not delete historical check records
+   or artifacts. Treat earlier staged checks as historical evidence; reacquire
+   exact H/B/S, review and policy so they cannot silently qualify new work.
+5. Verify restored workflow events and indirect caller paths with the native
+   catalog, compare all mandatory contexts/app bindings and substantive commands
+   against the recorded baseline, then verify ordinary draft/Ready/update and
+   generated-PR behavior through the restored generation's selected proof. Read
+   back native runs/results and current protection; the protected final gate
+   must pass on the intended exact subject before integration resumes. A source
+   revert alone does not prove the restored runtime.
+
+The source reversal regression is local and reversible; runtime rollback remains
+unqualified until the final combined cutover source and live observations exist.
