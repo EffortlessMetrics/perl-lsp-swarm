@@ -15,9 +15,9 @@ use super::region::SourceRegion;
 pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
     regions.extend(literal_scan::scan_line_comments_and_open_literals(source));
-    let heredoc_regions = literal_scan::scan_heredoc_regions(source);
-    regions.extend(heredoc_regions.iter().copied());
     let mut lexer_regions = collect_lexer_literal_regions(source);
+    let heredoc_regions = literal_scan::scan_heredoc_regions(source, &lexer_regions);
+    regions.extend(heredoc_regions.iter().copied());
     suppress_padded_terminator_recovery(&mut lexer_regions, &heredoc_regions, source);
     regions.extend(lexer_regions);
     if let Some(marker_start) = find_data_marker_byte_lexed(source)
@@ -237,6 +237,65 @@ fn region_precedence(kind: SourceRegionKind) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbatim_pod_heredoc_example_does_not_shadow_later_heading() -> Result<(), String> {
+        let source = "=head1 DESCRIPTION\n\n    my $x = <<'EOF';\n    hello\n    EOF\n\n=head1 NAME\n\nApp::Demo\n\n=cut\n\n1;\n";
+        for source in [source.to_string(), source.replace('\n', "\r\n")] {
+            let regions = collect_regions(&source);
+            let heading = source.find("=head1 NAME").ok_or("missing NAME heading")?;
+            assert!(
+                regions
+                    .iter()
+                    .any(|r| r.kind == SourceRegionKind::Pod && r.contains_offset(heading)),
+                "real POD heading must remain POD, got: {regions:?}"
+            );
+            assert!(
+                regions.iter().all(|r| r.kind != SourceRegionKind::Heredoc),
+                "a verbatim example must not create a heredoc, got: {regions:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn real_heredoc_after_verbatim_pod_keeps_its_body() -> Result<(), String> {
+        let source = "=pod\n\n    my $example = <<'FAKE';\n    FAKE\n\n=cut\n\nmy $real = <<'REAL';\n=head1 NAME\nREAL\nprint $real;\n";
+        let regions = collect_regions(source);
+        let body = source.find("=head1 NAME").ok_or("missing real heredoc body")?;
+        let code = source.find("print $real").ok_or("missing code after heredoc")?;
+        assert!(
+            regions.iter().any(|r| r.kind == SourceRegionKind::Heredoc && r.contains_offset(body)),
+            "real heredoc body after POD must remain protected, got: {regions:?}"
+        );
+        assert!(
+            regions.iter().all(|r| !r.contains_offset(code)),
+            "code after the real terminator must resume, got: {regions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pod_directives_in_multiline_literals_do_not_hide_a_later_heredoc() -> Result<(), String> {
+        for literal in ["\"\n=head1 NAME\n=cut\n\"", "q{\n=head1 NAME\n=cut\n}"] {
+            let source =
+                format!("my $text = {literal};\nmy $real = <<'REAL';\nbody\nREAL\nprint $real;\n");
+            let regions = collect_regions(&source);
+            let body = source.find("body").ok_or("missing heredoc body")?;
+            let code = source.find("print $real").ok_or("missing code after heredoc")?;
+            assert!(
+                regions
+                    .iter()
+                    .any(|r| r.kind == SourceRegionKind::Heredoc && r.contains_offset(body)),
+                "POD-looking literal text must not hide the real heredoc, got: {regions:?}"
+            );
+            assert!(
+                regions.iter().all(|r| !r.contains_offset(code)),
+                "code after the real heredoc must resume, got: {regions:?}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn heredoc_body_region_present() -> Result<(), Box<dyn std::error::Error>> {
