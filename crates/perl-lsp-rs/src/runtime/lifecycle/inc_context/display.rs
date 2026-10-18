@@ -45,6 +45,16 @@ pub(super) fn search_display_paths(
         .collect()
 }
 
+fn root_source_label(source: &str) -> &'static str {
+    match source {
+        "use-lib-lexical" => "use lib",
+        "workspace-include-paths" => "workspace includePaths",
+        "perl5lib-env" => "PERL5LIB",
+        "interpreter-startup-inc" => "interpreter startup @INC",
+        _ => "unknown @INC source",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,15 +117,5 @@ mod tests {
             displays[0].source
         );
         Ok(())
-    }
-}
-
-fn root_source_label(source: &str) -> &'static str {
-    match source {
-        "use-lib-lexical" => "use lib",
-        "workspace-include-paths" => "workspace includePaths",
-        "perl5lib-env" => "PERL5LIB",
-        "interpreter-startup-inc" => "interpreter startup @INC",
-        _ => "unknown @INC source",
     }
 }
