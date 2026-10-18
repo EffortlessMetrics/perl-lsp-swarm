@@ -456,22 +456,33 @@ impl LspServer {
                 // Calculate actual line numbers from document content
                 let start_line = offset_to_line(doc_text, range.start_offset);
                 let end_line = offset_to_line(doc_text, range.end_offset);
-                let lsp_end_line = match lsp_inclusive_multiline_end_line(start_line, end_line) {
-                    Some(end) => Some(end),
-                    None => {
-                        // A span rejected by the inclusive filter may still
-                        // genuinely cover multiple lines when its end offset
-                        // sits at the start of its last line (heredoc bodies
-                        // end at content, not at line starts). Count the
-                        // newlines inside the span: any newline means real
-                        // multiline content that must not be dropped
-                        // (#15430 residue).
-                        let newlines = doc_text
-                            .get(range.start_offset..range.end_offset)
-                            .map(|span| span.matches('\n').count())
-                            .unwrap_or(0);
-                        (newlines >= 1).then_some(start_line + newlines)
+                let lsp_end_line = match range.kind.as_ref() {
+                    // An imports block (consecutive `use`/`require`
+                    // statements) has no closing brace: its end offset is the
+                    // end of the last import statement, so that line is
+                    // content and must fold. Brace subtraction would cut the
+                    // final import line out of the fold (#18113).
+                    Some(crate::folding::FoldingRangeKind::Imports) => {
+                        (end_line > start_line).then_some(end_line)
                     }
+                    // Brace-terminated regions end on their closing-brace
+                    // line; the inclusive filter folds up to the line before
+                    // it. A span the filter rejects may still genuinely cover
+                    // multiple lines when its end offset sits at the start of
+                    // its last line (heredoc bodies end at content, not at
+                    // line starts): count the newlines inside the span — any
+                    // newline means real multiline content that must not be
+                    // dropped (#15430 residue).
+                    _ => match lsp_inclusive_multiline_end_line(start_line, end_line) {
+                        Some(end) => Some(end),
+                        None => {
+                            let newlines = doc_text
+                                .get(range.start_offset..range.end_offset)
+                                .map(|span| span.matches('\n').count())
+                                .unwrap_or(0);
+                            (newlines >= 1).then_some(start_line + newlines)
+                        }
+                    },
                 };
                 if let Some(lsp_end_line) = lsp_end_line {
                     let mut lsp_range = json!({
@@ -888,6 +899,55 @@ mod tests {
             "heredoc folding output must contain only valid multiline ranges: {ranges:?}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block() -> Result<(), JsonRpcError> {
+        // An n-line `use`/`require` import block has no closing brace, so the
+        // last import line is content and must fold: n imports fold (0, n-1),
+        // not (0, n-2) (#18113).
+        let make = |n: usize| {
+            (0..n).map(|i| format!("use Module{i};\n")).collect::<Vec<_>>().concat()
+                + "my $x = 1;\n"
+        };
+        for (n, expected_end) in [(2usize, 1usize), (3, 2), (5, 4)] {
+            let source = make(n);
+            let ranges = folding_ranges_for_source(&source)?;
+            let import_fold = ranges.iter().find(|r| r.get("kind") == Some(&json!("imports")));
+            let fold = import_fold.ok_or_else(|| {
+                JsonRpcError::new(
+                    INTERNAL_ERROR,
+                    format!("expected an imports folding range for n={n}: {ranges:?}"),
+                )
+            })?;
+            assert_eq!(fold.get("startLine"), Some(&json!(0)));
+            assert_eq!(
+                fold.get("endLine"),
+                Some(&json!(expected_end)),
+                "{n}-import block must fold (0,{expected_end}): {ranges:?}"
+            );
+        }
+
+        // Realistic fixture: all three imports — including `use POSIX ...` —
+        // must sit inside the fold.
+        let source = "use strict;\nuse warnings;\nuse POSIX qw(floor);\nmy $x = 1;\n";
+        let ranges = folding_ranges_for_source(source)?;
+        let import_fold = ranges.iter().find(|r| r.get("kind") == Some(&json!("imports")));
+        let fold = import_fold.ok_or_else(|| {
+            JsonRpcError::new(
+                INTERNAL_ERROR,
+                format!(
+                    "expected an imports folding range for the strict/warnings/POSIX fixture: {ranges:?}"
+                ),
+            )
+        })?;
+        assert_eq!(fold.get("startLine"), Some(&json!(0)));
+        assert_eq!(
+            fold.get("endLine"),
+            Some(&json!(2)),
+            "imports fold must cover all three import lines: {ranges:?}"
+        );
         Ok(())
     }
 
