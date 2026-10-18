@@ -4882,7 +4882,7 @@ mod tests {
     fn native_require_pod_sections_rule_ignores_head1_inside_heredoc() {
         // =head1 lines in a heredoc body are string data, not POD: they must
         // not mark the file as having POD at all.
-        let source = "use strict;\nuse warnings;\nmy $doc = <<'END_DOC';\n=head1 NAME\n\nFake - payload\n\n=head1 DESCRIPTION\n\nPayload.\nEND_DOC\nprint $doc;\n1;\n";
+        let source = "use strict;\nuse warnings;\nmy $doc = <<'END_DOC';\n=head1 NAME\n\nFake - payload\nEND_DOC\nprint $doc;\n1;\n";
         let ast = parse_source(source);
         let config = CriticConfig::default();
         let ctx = CriticContext::new(source, &ast, &config);
@@ -4898,7 +4898,7 @@ mod tests {
     fn native_require_pod_sections_rule_ignores_head1_inside_data_section() {
         for marker in ["__DATA__", "__END__"] {
             let source = format!(
-                "use strict;\nuse warnings;\nprint 1;\n1;\n{marker}\n=head1 NAME\n\nFake - payload\n\n=head1 DESCRIPTION\n\nPayload.\n"
+                "use strict;\nuse warnings;\nprint 1;\n1;\n{marker}\n=head1 NAME\n\nFake - payload\n"
             );
             let ast = parse_source(&source);
             let config = CriticConfig::default();
