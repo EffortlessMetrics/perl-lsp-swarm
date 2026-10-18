@@ -13,11 +13,10 @@ use super::region::SourceRegion;
 
 /// Collect non-code regions from `source` using lexer spans plus a lifted line scanner.
 pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
-    let mut regions = Vec::new();
-    regions.extend(literal_scan::scan_line_comments_and_open_literals(source));
+    let mut regions = literal_scan::scan_line_comments_and_open_literals(source);
+    let heredoc_regions: Vec<_> =
+        regions.iter().copied().filter(|region| region.kind == SourceRegionKind::Heredoc).collect();
     let mut lexer_regions = collect_lexer_literal_regions(source);
-    let heredoc_regions = literal_scan::scan_heredoc_regions(source, &lexer_regions);
-    regions.extend(heredoc_regions.iter().copied());
     suppress_padded_terminator_recovery(&mut lexer_regions, &heredoc_regions, source);
     regions.extend(lexer_regions);
     if let Some(marker_start) = find_data_marker_byte_lexed(source)
@@ -31,7 +30,7 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
 
 /// Honor a scanner-closed heredoc when composing lexer recovery.
 ///
-/// `scan_heredoc_regions` already treats trailing spaces/tabs after the label
+/// The shared line scanner treats trailing spaces/tabs after the label
 /// as closing the body. `PerlLexer` does not: Perl 5.38.2 rejects that line
 /// (`Can't find string terminator`), and the lexer emits `UnknownRest` through
 /// EOF. Mapping that token to [`SourceRegionKind::RecoveryAmbiguous`] then
@@ -43,7 +42,7 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
 /// terminator line carries trailing spaces or tabs. Exact-terminator lexer
 /// disagreements (budget stops, `<<~` indent-prefix mismatch) keep recovery.
 ///
-/// `heredoc_regions` is produced in source order by `scan_heredoc_regions`,
+/// `heredoc_regions` is extracted in source order from the shared line scanner,
 /// including zero-length empty bodies; the first closed body that contains or
 /// abuts `region.start` and whose terminator line is padded is the owner.
 fn suppress_padded_terminator_recovery(
@@ -294,6 +293,27 @@ mod tests {
                 "code after the real heredoc must resume, got: {regions:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn pod_heading_in_a_heredoc_does_not_hide_the_next_heredoc() -> Result<(), String> {
+        let source = "my $first = <<'ONE';\n=head1 NAME\nONE\nmy $second = <<'TWO';\nsecond body\nTWO\nprint $second;\n";
+        let regions = collect_regions(source);
+        for needle in ["=head1 NAME", "second body"] {
+            let body = source.find(needle).ok_or("missing heredoc payload")?;
+            assert!(
+                regions
+                    .iter()
+                    .any(|r| r.kind == SourceRegionKind::Heredoc && r.contains_offset(body)),
+                "both real heredoc bodies must remain protected, got: {regions:?}"
+            );
+        }
+        let code = source.find("print $second").ok_or("missing resumed code")?;
+        assert!(
+            regions.iter().all(|r| !r.contains_offset(code)),
+            "a POD-looking first body must not swallow resumed code, got: {regions:?}"
+        );
         Ok(())
     }
 

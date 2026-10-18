@@ -1,7 +1,7 @@
 //! Line-oriented literal/comment scanner lifted from completion `lexical_context`.
 //!
-//! Emits line-comment regions with quote/heredoc awareness so `#` inside string
-//! literals is not classified as comment.
+//! Emits comments, POD, and heredoc regions in one pass so opaque bodies do not
+//! create boundaries belonging to another source family.
 
 use std::cmp::Ordering;
 
@@ -15,11 +15,31 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
     let mut literal_state = LiteralScanState::default();
     let mut in_pod_block = false;
     let mut pod_start: Option<usize> = None;
+    let mut active_heredoc: Option<(usize, String, bool)> = None;
+    let mut open_literal = ScanCarry::Clear;
     let mut line_start = 0usize;
 
     for raw_line in source.split_inclusive('\n') {
         let line_end = line_start + raw_line.len();
         let line = strip_line_ending(raw_line);
+
+        if let Some((body_start, label, allow_indented)) = active_heredoc.take() {
+            // Keep the existing padded-terminator recovery policy. A quoted
+            // label may itself end in whitespace, so the trimmed comparison
+            // is additive rather than replacing the exact comparison.
+            let candidate =
+                if allow_indented { line.trim_start_matches([' ', '\t']) } else { line };
+            let closes = candidate == label || candidate.trim_end_matches([' ', '\t']) == label;
+            if closes {
+                push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);
+            } else {
+                active_heredoc = Some((body_start, label, allow_indented));
+            }
+            // Neither POD directives nor quotes/comments in a real heredoc
+            // body (or its terminator line) update the code-level states.
+            line_start = line_end;
+            continue;
+        }
 
         if is_pod_end_marker(line) {
             if let Some(start) = pod_start.take() {
@@ -49,8 +69,17 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
             push_region(&mut regions, comment_start, line_end, SourceRegionKind::LineComment);
         }
 
+        let (opener, carry) = heredoc_opener_on_line_from(line, open_literal);
+        open_literal = carry;
+        if let Some((label, allow_indented)) = opener {
+            active_heredoc = Some((line_end, label, allow_indented));
+        }
         literal_state.scan_segment(source.as_bytes(), line_start, line_end);
         line_start = line_end;
+    }
+
+    if let Some((body_start, _, _)) = active_heredoc {
+        push_region(&mut regions, body_start, source.len(), SourceRegionKind::Heredoc);
     }
 
     if literal_state.is_active() {
@@ -71,64 +100,13 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
     regions
 }
 
-/// Heredoc body regions between opener line and closing delimiter line.
-/// Lexer regions are source-ordered; their POD spans exclude documentation
-/// examples without introducing another POD boundary scanner.
-pub(super) fn scan_heredoc_regions(
-    source: &str,
-    lexer_regions: &[SourceRegion],
-) -> Vec<SourceRegion> {
-    let mut regions = Vec::new();
-    let mut pod_regions =
-        lexer_regions.iter().filter(|region| region.kind == SourceRegionKind::Pod).peekable();
-    let mut active: Option<(usize, String, bool)> = None;
-    let mut line_start = 0usize;
-    // Literal state left open by the previous *code* line: a string delimiter,
-    // or a quote-like literal still being consumed. A heredoc body is not
-    // code, so this is deliberately frozen while one is being consumed.
-    let mut open_literal = ScanCarry::Clear;
-
-    for raw_line in source.split_inclusive('\n') {
-        let line_end = line_start + raw_line.len();
-        let line = strip_line_ending(raw_line);
-
-        while pod_regions.peek().is_some_and(|region| region.end <= line_start) {
-            pod_regions.next();
-        }
-
-        if let Some((body_start, label, allow_indented)) = active.take() {
-            // Trailing spaces/tabs after the delimiter still close the region.
-            // `PerlLexer` rejects that line (Perl 5.38.2 agrees); the collector
-            // consumes the padding when deciding the *region* closed so
-            // following source is not reclassified as recovery (#14864).
-            //
-            // The trimmed comparison is an *additional* way to close, never a
-            // replacement: a quoted label may itself end in whitespace
-            // (`<<"EOF "`), and trimming alone would stop that line matching.
-            let candidate =
-                if allow_indented { line.trim_start_matches([' ', '\t']) } else { line };
-            let closes = candidate == label || candidate.trim_end_matches([' ', '\t']) == label;
-            if closes {
-                push_region(&mut regions, body_start, line_start, SourceRegionKind::Heredoc);
-            } else {
-                active = Some((body_start, label, allow_indented));
-            }
-        } else if !pod_regions.peek().is_some_and(|region| region.contains_offset(line_start)) {
-            let (opener, carry) = heredoc_opener_on_line_from(line, open_literal);
-            open_literal = carry;
-            if let Some((label, allow_indented)) = opener {
-                active = Some((line_end, label, allow_indented));
-            }
-        }
-
-        line_start = line_end;
-    }
-
-    if let Some((body_start, _, _)) = active {
-        push_region(&mut regions, body_start, source.len(), SourceRegionKind::Heredoc);
-    }
-
-    regions
+/// Keep the focused heredoc tests on the same producer used by the collector.
+#[cfg(test)]
+fn scan_heredoc_regions(source: &str) -> Vec<SourceRegion> {
+    scan_line_comments_and_open_literals(source)
+        .into_iter()
+        .filter(|region| region.kind == SourceRegionKind::Heredoc)
+        .collect()
 }
 
 /// Opener on `line`, given the string delimiter (if any) left open by the
@@ -1125,7 +1103,7 @@ mod tests {
     #[test]
     fn heredoc_body_spans_opener_line_end_through_terminator_line_start() -> Result<(), String> {
         let source = "my $x = <<EOF;\nbody line\nEOF\ntail();\n";
-        let regions = scan_heredoc_regions(source, &[]);
+        let regions = scan_heredoc_regions(source);
         assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
         assert_eq!(
             regions[0].start,
@@ -1145,14 +1123,14 @@ mod tests {
         let indented = "my $x = <<~EOF;\nbody\n    EOF\ntail();\n";
         let plain = "my $x = <<EOF;\nbody\n    EOF\ntail();\n";
 
-        let indented_regions = scan_heredoc_regions(indented, &[]);
+        let indented_regions = scan_heredoc_regions(indented);
         assert_eq!(indented_regions.len(), 1, "<<~ closes on an indented terminator");
         assert!(
             indented_regions[0].end < indented.len(),
             "<<~ must close before EOF: {indented_regions:?}"
         );
 
-        let plain_regions = scan_heredoc_regions(plain, &[]);
+        let plain_regions = scan_heredoc_regions(plain);
         assert_eq!(plain_regions.len(), 1, "plain heredoc still opens a body");
         assert_eq!(
             plain_regions[0].end,
@@ -1173,7 +1151,7 @@ mod tests {
             "my $x = <<EOF;\nbody\nEOF\t\ntail();\n",
             "my $x = <<~EOF;\nbody\n    EOF \ntail();\n",
         ] {
-            let regions = scan_heredoc_regions(source, &[]);
+            let regions = scan_heredoc_regions(source);
             assert_eq!(regions.len(), 1, "one heredoc body expected in {source:?}: {regions:?}");
             assert!(
                 regions[0].end < source.len(),
@@ -1188,7 +1166,7 @@ mod tests {
     #[test]
     fn quoted_label_ending_in_whitespace_still_closes_exactly() {
         let source = "my $x = <<\"EOF \";\nbody\nEOF \ntail();\n";
-        let regions = scan_heredoc_regions(source, &[]);
+        let regions = scan_heredoc_regions(source);
         assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
         assert!(
             regions[0].end < source.len(),
@@ -1201,7 +1179,7 @@ mod tests {
     #[test]
     fn terminator_does_not_close_on_trailing_non_whitespace() {
         let source = "my $x = <<EOF;\nbody\nEOF;\ntail();\n";
-        let regions = scan_heredoc_regions(source, &[]);
+        let regions = scan_heredoc_regions(source);
         assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
         assert_eq!(
             regions[0].end,
@@ -1214,7 +1192,7 @@ mod tests {
     fn left_shift_expression_is_not_a_heredoc_opener() {
         for source in ["my $y = $x << 2;\n", "my $y = $x <<< 2;\n"] {
             assert!(
-                scan_heredoc_regions(source, &[]).is_empty(),
+                scan_heredoc_regions(source).is_empty(),
                 "a shift expression must not open a heredoc: {source:?}"
             );
         }
@@ -1869,7 +1847,7 @@ mod tests {
         );
 
         let source = "my $s = \"a << FAKE\";\nmy $x = <<REAL;\nbody\nREAL\ntail\n";
-        let regions = scan_heredoc_regions(source, &[]);
+        let regions = scan_heredoc_regions(source);
         assert_eq!(regions.len(), 1, "the next line's real opener must remain visible");
         let body_start = offset_of(source, "body").ok_or("fixture must contain a body")?;
         let terminator_start =
@@ -1902,9 +1880,9 @@ mod tests {
         // Region-level consequence of the same defect.
         let source = "my $s = \"a << EOF\";\ncode();\n";
         assert!(
-            scan_heredoc_regions(source, &[]).is_empty(),
+            scan_heredoc_regions(source).is_empty(),
             "a quoted `<<` must not open a heredoc region: {:?}",
-            scan_heredoc_regions(source, &[])
+            scan_heredoc_regions(source)
         );
     }
 
@@ -1922,7 +1900,7 @@ mod tests {
         );
         // The region-level consequence: the body must be a heredoc, not code.
         let source = "my $r = qr/it's/; print <<END if qr/don't/;\nbody\nEND\ntail();\n";
-        let regions = scan_heredoc_regions(source, &[]);
+        let regions = scan_heredoc_regions(source);
         assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
         assert!(
             regions[0].end < source.len(),
@@ -2056,9 +2034,9 @@ mod tests {
         // statement after it stays code.
         let source = "my $s = q{a <<FAKE}; print 1;\ncode();\n";
         assert!(
-            scan_heredoc_regions(source, &[]).is_empty(),
+            scan_heredoc_regions(source).is_empty(),
             "no region expected: {:?}",
-            scan_heredoc_regions(source, &[])
+            scan_heredoc_regions(source)
         );
         // The window must not swallow a real opener that follows the literal.
         assert_eq!(
@@ -2072,15 +2050,15 @@ mod tests {
     fn quote_like_literal_spanning_lines_opens_no_heredoc() {
         let source = "my $s = q{\n<<EOF\n};\ncode();\n";
         assert!(
-            scan_heredoc_regions(source, &[]).is_empty(),
+            scan_heredoc_regions(source).is_empty(),
             "a marker inside a multi-line q{{}} must not open a region: {:?}",
-            scan_heredoc_regions(source, &[])
+            scan_heredoc_regions(source)
         );
         // The carry must not blind the scan permanently. Once the literal
         // closes, a real opener on a later line is still found and its body
         // still terminates. Verified against perl: prints `body`, then `tail`.
         let resumed = "my $s = q{\n<<FAKE\n};\nprint <<EOF;\nbody\nEOF\ntail();\n";
-        let regions = scan_heredoc_regions(resumed, &[]);
+        let regions = scan_heredoc_regions(resumed);
         assert_eq!(regions.len(), 1, "exactly one real heredoc expected: {regions:?}");
         assert!(
             regions[0].end < resumed.len(),
@@ -2118,9 +2096,9 @@ mod tests {
         // rest of the file stays `Code`.
         let source = "my $s = \"a <<FAKE\"; my $r = qr/x/;\ncode();\n";
         assert!(
-            scan_heredoc_regions(source, &[]).is_empty(),
+            scan_heredoc_regions(source).is_empty(),
             "a quoted marker must open no region: {:?}",
-            scan_heredoc_regions(source, &[])
+            scan_heredoc_regions(source)
         );
     }
 
@@ -2132,9 +2110,9 @@ mod tests {
     fn multiline_string_containing_a_marker_opens_no_heredoc() {
         let source = "my $s = \"start <<EOF\nstill string\n\";\ncode();\n";
         assert!(
-            scan_heredoc_regions(source, &[]).is_empty(),
+            scan_heredoc_regions(source).is_empty(),
             "a marker inside a multi-line string must not open a region: {:?}",
-            scan_heredoc_regions(source, &[])
+            scan_heredoc_regions(source)
         );
         // Line-level view of the same fixture: the opening line leaves the
         // string open rather than reporting an opener.
@@ -2148,9 +2126,9 @@ mod tests {
         // 5.38.2: `syntax OK`, and `$s` is an ordinary 25-character string.
         let later = "my $s = \"start\nstill string <<EOF\n\";\nprint $s;\n";
         assert!(
-            scan_heredoc_regions(later, &[]).is_empty(),
+            scan_heredoc_regions(later).is_empty(),
             "a marker on a continuation line must not open a region: {:?}",
-            scan_heredoc_regions(later, &[])
+            scan_heredoc_regions(later)
         );
         // ...and the continuation line inherits it, so its content is not code.
         assert_eq!(
@@ -2166,7 +2144,7 @@ mod tests {
         // opener on a later line must still be seen, so the carry cannot be a
         // blanket suppression.
         let source = "my $s = \"start\nend\";\nmy $x = <<REAL;\nbody\nREAL\ntail();\n";
-        let regions = scan_heredoc_regions(source, &[]);
+        let regions = scan_heredoc_regions(source);
         assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
         assert!(
             regions[0].end < source.len(),
@@ -2182,7 +2160,7 @@ mod tests {
     #[test]
     fn opener_on_the_line_that_closes_a_multiline_string_is_found() {
         let source = "my $s = \"start\nend\"; print <<EOF;\nbody\nEOF\ntail();\n";
-        let regions = scan_heredoc_regions(source, &[]);
+        let regions = scan_heredoc_regions(source);
         assert_eq!(regions.len(), 1, "one heredoc body expected: {regions:?}");
         let body_start = offset_of(source, "body").ok_or("fixture must contain a body");
         assert_eq!(
