@@ -318,6 +318,25 @@ mod tests {
     }
 
     #[test]
+    fn string_closing_on_cut_line_keeps_padded_heredoc_recovery() -> Result<(), String> {
+        // The string is valid; the padded heredoc terminator uses the existing
+        // editor-recovery policy rather than claiming Perl accepts that padding.
+        let source = "my $s = \"\n=cut \";\nmy $doc = <<'EOF';\npayload\nEOF \nprint $doc;\n";
+        let regions = collect_regions(source);
+        let body = source.find("payload").ok_or("missing heredoc body")?;
+        let code = source.find("print $doc").ok_or("missing resumed code")?;
+        assert!(
+            regions.iter().any(|r| r.kind == SourceRegionKind::Heredoc && r.contains_offset(body)),
+            "a non-POD =cut line must update the carried string, got: {regions:?}"
+        );
+        assert!(
+            regions.iter().all(|r| !r.contains_offset(code)),
+            "padded-terminator recovery must leave resumed code uncovered, got: {regions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn heredoc_body_region_present() -> Result<(), Box<dyn std::error::Error>> {
         let source = "my $x = <<EOF;\nbody line\nEOF\n";
         let regions = collect_regions(source);

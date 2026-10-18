@@ -41,16 +41,13 @@ pub(super) fn scan_line_comments_and_open_literals(source: &str) -> Vec<SourceRe
             continue;
         }
 
-        if is_pod_end_marker(line) {
-            if let Some(start) = pod_start.take() {
-                push_region(&mut regions, start, line_end, SourceRegionKind::Pod);
-            }
-            in_pod_block = false;
-            line_start = line_end;
-            continue;
-        }
-
         if in_pod_block {
+            if is_pod_end_marker(line) {
+                if let Some(start) = pod_start.take() {
+                    push_region(&mut regions, start, line_end, SourceRegionKind::Pod);
+                }
+                in_pod_block = false;
+            }
             line_start = line_end;
             continue;
         }
