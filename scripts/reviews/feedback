@@ -66,7 +66,9 @@ def read_json(command, *, operation='json-read'):
         result = subprocess.run(command, check=True, capture_output=True)
     except subprocess.CalledProcessError as error:
         raise FeedbackCommandFailure(operation, command, error) from error
-    return json.loads(result.stdout.decode('utf-8'))
+    stdout = result.stdout.decode('utf-8')
+    result.stderr.decode('utf-8')  # Preserve strict decoding of successful streams.
+    return json.loads(stdout)
 
 
 def pages(repo, endpoint, *, operation='feedback-pages'):

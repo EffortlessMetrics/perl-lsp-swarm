@@ -239,6 +239,22 @@ sys.exit(int(os.environ['DIAGNOSTIC_EXIT']))
         self.assertNotIn('command_failure', result)
         self.assertNotIn('observed_head', result)
 
+    def test_successful_child_stderr_decoding_remains_strict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / 'called'
+            stub = Path(tmp) / 'child'
+            stub.write_text('''#!/usr/bin/env python3
+import sys
+from pathlib import Path
+Path(sys.argv[1]).write_text('called')
+sys.stdout.buffer.write(b'{"ok": true}')
+sys.stderr.buffer.write(b'\\xffPRIVATE_STDERR')
+''')
+            stub.chmod(0o755)
+            with self.assertRaises(UnicodeDecodeError):
+                feedback.read_json([str(stub), str(calls)])
+            self.assertEqual(calls.read_text(), 'called')
+
     def test_failure_context_survives_each_acquisition_boundary(self):
         replies = (
             {'head': {'sha': HEAD}},
