@@ -63,7 +63,7 @@ jobs:
         run: python3 -m unittest scripts/ci/test_pr_candidate_set_cache_contract.py
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -152,6 +152,10 @@ class CandidateSetCacheContractTests(unittest.TestCase):
         test_command = "        run: cargo test -p xtask --bin pr-candidate-set --locked"
         live_flag = "            --live \\"
         changes = {
+            "wrong immutable Rust action": (
+                "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8",
+                "dtolnay/rust-toolchain@" + "0" * 40,
+            ),
             "removed cache": (CACHE_BLOCK, ""),
             "floating action": (CACHE_ACTION, "uses: Swatinem/rust-cache@v2"),
             "branch action": (CACHE_ACTION, "uses: Swatinem/rust-cache@main"),
