@@ -189,6 +189,7 @@ fn unchanged_names_get_current_ranges_after_edits_and_reopen() -> Result<()> {
         "# moved\r\n\r\npackage age {\r\n    sub { 0 };\r\n        sub ub { 'ub age' }\r\n}\r\n";
     let reopened =
         "# reopened\n# same names\n\npackage age {\n  sub { 0 };\n  sub ub { 'ub age' }\n}\n";
+    let after_reopen = "# after reopen\r\n\r\n\r\n\r\npackage age {\r\n    sub { 0 };\r\n      sub ub { 'ub age' }\r\n}\r\n";
     // Literal UTF-16 coordinates, independent of the production parser/mappers.
     let shifted_gold = json!([{
         "name": "age", "kind": 2, "detail": "",
@@ -209,6 +210,17 @@ fn unchanged_names_get_current_ranges_after_edits_and_reopen() -> Result<()> {
             "name": "ub", "kind": 12, "detail": "",
             "range": range(5, 2, 5, 21),
             "selectionRange": range(5, 6, 5, 8),
+            "children": []
+        }]
+    }]);
+    let after_reopen_gold = json!([{
+        "name": "age", "kind": 2, "detail": "",
+        "range": range(4, 0, 7, 1),
+        "selectionRange": range(4, 8, 4, 11),
+        "children": [{
+            "name": "ub", "kind": 12, "detail": "",
+            "range": range(6, 6, 6, 25),
+            "selectionRange": range(6, 10, 6, 12),
             "children": []
         }]
     }]);
@@ -245,13 +257,19 @@ fn unchanged_names_get_current_ranges_after_edits_and_reopen() -> Result<()> {
         }}),
     )?;
     assert_eq!(current_outline(&mut client, &reopened_gold)?, reopened_gold, "reopen version 1");
+    // Version 2 repeats across lifetimes, but its geometry must not: a cache
+    // keyed only by URI/version/name must not reuse the pre-close selections.
     client.notify(
         "textDocument/didChange",
         json!({
             "textDocument": {"uri": URI, "version": 2},
-            "contentChanges": [{"text": shifted}]
+            "contentChanges": [{"text": after_reopen}]
         }),
     )?;
-    assert_eq!(current_outline(&mut client, &shifted_gold)?, shifted_gold, "edit after reopen");
+    assert_eq!(
+        current_outline(&mut client, &after_reopen_gold)?,
+        after_reopen_gold,
+        "edit after reopen"
+    );
     finish(&mut client)
 }
