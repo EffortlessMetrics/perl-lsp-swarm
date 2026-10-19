@@ -138,7 +138,7 @@ fn incomplete_method_prefix_filters_generic_noise_and_recovers_after_edits() -> 
         }),
     )?;
     client.notify("$/cancelRequest", json!({"id": "incomplete-eof"}))?;
-    let items = complete(&mut client, json!("incomplete-eof"), 6, 21)?;
+    let items = complete(&mut client, json!("repaired"), 6, 21)?;
     assert_edit(item(&items, "can")?, 6, 19, 21, "can()")?;
     ensure!(
         items.iter().all(|item| item["label"] == "can"),
