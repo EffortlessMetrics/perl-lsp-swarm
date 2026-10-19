@@ -9,19 +9,68 @@ concern was repaired, superseded, or refuted; that remains the invoking skill's 
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 
-def read_json(command):
-    result = subprocess.run(command, check=True, capture_output=True,
-                            text=True, encoding="utf-8")
+def stderr_diagnostic(stderr):
+    """Classify a bounded prefix without publishing arbitrary child text.
+
+    These are reported symptoms, not a transient/retryability verdict. Unknown
+    output stays opaque because URLs, headers and feedback can contain secrets.
+    """
+    text = stderr or ''
+    if isinstance(text, bytes):
+        text = text.decode('utf-8', errors='replace')
+    sample = text[:8192]
+    truncated = len(text) > len(sample)
+    for kind, pattern, summary in (
+        ('access_denied',
+         r'\b(?:forbidden|unauthorized|permission denied|access denied|'
+         r'authentication failed|resource not accessible)\b|\bHTTP\s+(?:401|403)\b',
+         'Child stderr reports an authentication or permission denial.'),
+        ('transport_error',
+         r'\b(?:timed? out|timeout|could not resolve|no such host|'
+         r'connection reset|connection refused|network is unreachable|'
+         r'temporary failure in name resolution|TLS handshake)\b',
+         'Child stderr reports a network or timeout error; retryability is unknown.'),
+    ):
+        if re.search(pattern, sample, re.IGNORECASE):
+            return {'kind': kind, 'summary': summary, 'truncated': truncated}
+    kind = 'unrecognized' if sample.strip() else 'empty'
+    summary = ('Unrecognized child stderr omitted.' if sample.strip()
+               else 'Child supplied no non-whitespace stderr in the scanned prefix.')
+    return {'kind': kind, 'summary': summary, 'truncated': truncated}
+
+
+class FeedbackCommandFailure(RuntimeError):
+    def __init__(self, operation, command, error):
+        super().__init__(operation)
+        # Describe only known command shapes, never arbitrary argv/error.cmd.
+        if command[:2] == ['gh', 'api']:
+            display = 'gh api'
+        elif len(command) > 1 and Path(command[1]).name == 'threads':
+            display = 'bash scripts/reviews/threads'
+        else:
+            display = 'child process'
+        self.diagnostic = {'operation': operation, 'command': display,
+                           'exit_code': error.returncode,
+                           'stderr': stderr_diagnostic(error.stderr)}
+
+
+def read_json(command, *, operation='json-read'):
+    try:
+        result = subprocess.run(command, check=True, capture_output=True,
+                                text=True, encoding="utf-8")
+    except subprocess.CalledProcessError as error:
+        raise FeedbackCommandFailure(operation, command, error) from error
     return json.loads(result.stdout)
 
 
-def pages(repo, endpoint):
+def pages(repo, endpoint, *, operation='feedback-pages'):
     raw = read_json(["gh", "api", "--paginate", "--slurp",
-                     f"repos/{repo}/{endpoint}?per_page=100"])
+                     f"repos/{repo}/{endpoint}?per_page=100"], operation=operation)
     if not isinstance(raw, list) or not raw or not all(isinstance(p, list) for p in raw):
         raise ValueError("expected complete slurped REST pages")
     rows = [row for page in raw for row in page]
@@ -36,22 +85,22 @@ def pages(repo, endpoint):
 
 
 def collect(pr, repo):
-    def head():
-        metadata = read_json(["gh", "api", f"repos/{repo}/pulls/{pr}"])
+    def head(operation):
+        metadata = read_json(["gh", "api", f"repos/{repo}/pulls/{pr}"], operation=operation)
         value = metadata["head"]["sha"]
         if not isinstance(value, str) or len(value) != 40:
             raise ValueError("missing PR head identity")
         return value
 
-    before = head()
+    before = head('head-before')
     threads = read_json(["bash", str(Path(__file__).with_name("threads")),
-                         str(pr), repo, "--json"])
+                         str(pr), repo, "--json"], operation='review-threads')
     if not isinstance(threads.get("threads"), list) or not isinstance(threads.get("unresolved_count"), int):
         raise ValueError("incomplete thread inventory")
-    inline = pages(repo, f"pulls/{pr}/comments")
-    comments = pages(repo, f"issues/{pr}/comments")
-    reviews = pages(repo, f"pulls/{pr}/reviews")
-    if head() != before:
+    inline = pages(repo, f"pulls/{pr}/comments", operation='inline-comments')
+    comments = pages(repo, f"issues/{pr}/comments", operation='issue-comments')
+    reviews = pages(repo, f"pulls/{pr}/reviews", operation='reviews')
+    if head('head-after') != before:
         raise ValueError("PR head moved during feedback acquisition; reacquire")
     return {
         "schema_version": "pr_feedback.v1", "pr": pr, "repo": repo,
@@ -72,12 +121,17 @@ def main():
     args = parser.parse_args()
     try:
         result = collect(args.pr, args.repo)
-    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError) as error:
+    except (FeedbackCommandFailure, subprocess.CalledProcessError,
+            OSError, ValueError, KeyError, TypeError) as error:
         # Do not echo raw API output or credentials from child diagnostics.
-        print(json.dumps({"schema_version": "pr_feedback.v1", "pr": args.pr,
-                          "repo": args.repo, "review_currentness": "NOT_PROVEN",
-                          "next_step": "repair-feedback-acquisition",
-                          "reason": type(error).__name__}))
+        result = {"schema_version": "pr_feedback.v1", "pr": args.pr,
+                  "repo": args.repo, "review_currentness": "NOT_PROVEN",
+                  "next_step": "repair-feedback-acquisition",
+                  "reason": 'CalledProcessError' if isinstance(error, FeedbackCommandFailure)
+                  else type(error).__name__}
+        if isinstance(error, FeedbackCommandFailure):
+            result['command_failure'] = error.diagnostic
+        print(json.dumps(result))
         return 2
     print(json.dumps(result))
     return 0

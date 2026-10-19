@@ -1,8 +1,10 @@
 """Offline acquisition regressions; no heuristic pretends to decide finding validity."""
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
+from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
 import tempfile
@@ -142,6 +144,126 @@ print(json.dumps(result))
         self.assertEqual(result['reviews'][0]['state'], 'COMMENTED')
         self.assertTrue(result['content_judgment_required'])
         self.assertEqual(result['review_currentness'], 'NOT_PROVEN')
+
+
+class FeedbackCommandDiagnostics(unittest.TestCase):
+    def run_cli(self, stderr):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / 'calls.jsonl'
+            stub = Path(tmp) / 'gh'
+            stub.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+with Path(os.environ['DIAGNOSTIC_CALLS']).open('a') as log:
+    log.write(json.dumps(sys.argv[1:]) + '\\n')
+sys.stdout.write('PRIVATE_STDOUT_SHOULD_NOT_ESCAPE')
+sys.stderr.write(os.environ['DIAGNOSTIC_STDERR'])
+sys.exit(7)
+''')
+            stub.chmod(0o755)
+            run = subprocess.run(
+                ['python3', str(SCRIPT), '7', 'o/r'],
+                env={**os.environ, 'PATH': tmp + os.pathsep + os.environ['PATH'],
+                     'DIAGNOSTIC_CALLS': str(calls), 'DIAGNOSTIC_STDERR': stderr},
+                text=True, capture_output=True, timeout=10,
+            )
+            invocations = [json.loads(line) for line in calls.read_text().splitlines()]
+        self.assertEqual(invocations, [['api', 'repos/o/r/pulls/7']])
+        self.assertEqual(run.returncode, 2)
+        self.assertEqual(run.stderr, '')
+        self.assertNotIn('PRIVATE_STDOUT_SHOULD_NOT_ESCAPE', run.stdout)
+        result = json.loads(run.stdout)
+        self.assertEqual(result['reason'], 'CalledProcessError')
+        self.assertEqual(result['next_step'], 'repair-feedback-acquisition')
+        self.assertEqual(result['review_currentness'], 'NOT_PROVEN')
+        self.assertNotIn('issue_comments', result)
+        self.assertIn('command_failure', result, 'child failure context was discarded')
+        self.assertEqual(result['command_failure']['operation'], 'head-before')
+        self.assertEqual(result['command_failure']['command'], 'gh api')
+        self.assertEqual(result['command_failure']['exit_code'], 7)
+        return result, run.stdout
+
+    def test_cli_reports_denial_and_transport_without_retrying(self):
+        cases = (
+            ('Get "https://api.github.com/private?token=FAKE_SECRET": Forbidden', 'access_denied'),
+            ('gh: Resource not accessible by integration (HTTP 403)', 'access_denied'),
+            ('gh: authentication failed (HTTP 401)', 'access_denied'),
+            ('net/http: TLS handshake timeout; FAKE_SECRET', 'transport_error'),
+            ('timeout while reporting Forbidden; FAKE_SECRET', 'access_denied'),
+        )
+        for stderr, expected in cases:
+            with self.subTest(stderr=stderr):
+                result, output = self.run_cli(stderr)
+                self.assertEqual(result['command_failure']['stderr']['kind'], expected)
+                self.assertFalse(result['command_failure']['stderr']['truncated'])
+                self.assertNotIn('FAKE_SECRET', output)
+                self.assertNotIn('https://api.github.com/private', output)
+
+    def test_unknown_empty_and_oversized_stderr_remain_sanitized(self):
+        cases = (
+            ('Authorization: Bearer FAKE_SECRET\n\x1b[31mPRIVATE_MESSAGE', 'unrecognized', False),
+            ('PRIVATE_MESSAGE' * 1000 + ' Forbidden FAKE_SECRET', 'unrecognized', True),
+            ('', 'empty', False),
+        )
+        for stderr, kind, truncated in cases:
+            with self.subTest(kind=kind, truncated=truncated):
+                result, output = self.run_cli(stderr)
+                self.assertEqual(result['command_failure']['stderr']['kind'], kind)
+                self.assertEqual(result['command_failure']['stderr']['truncated'], truncated)
+                self.assertLess(len(output), 2048)
+                for private in ('FAKE_SECRET', 'PRIVATE_MESSAGE', 'Authorization:', '\x1b'):
+                    self.assertNotIn(private, output)
+
+    def test_failure_context_survives_each_acquisition_boundary(self):
+        replies = (
+            {'head': {'sha': HEAD}},
+            {'threads': [], 'unresolved_count': 0},
+            [[]], [[]], [[]], {'head': {'sha': HEAD}},
+        )
+        operations = ('head-before', 'review-threads', 'inline-comments',
+                      'issue-comments', 'reviews', 'head-after')
+        for index, operation in enumerate(operations):
+            with self.subTest(operation=operation):
+                completed = [subprocess.CompletedProcess([], 0, json.dumps(row), '')
+                             for row in replies[:index]]
+                error = subprocess.CalledProcessError(
+                    19, ['UNSAFE_COMMAND', 'FAKE_SECRET'],
+                    output='PRIVATE_STDOUT', stderr='Forbidden FAKE_SECRET',
+                )
+                output = io.StringIO()
+                with patch.object(feedback.subprocess, 'run', side_effect=[*completed, error]) as run, \
+                        patch('sys.argv', ['feedback', '7', 'o/r']), redirect_stdout(output):
+                    self.assertEqual(feedback.main(), 2)
+                result = json.loads(output.getvalue())
+                self.assertIn('command_failure', result, 'child failure context was discarded')
+                failure = result['command_failure']
+                self.assertEqual(failure['operation'], operation)
+                self.assertEqual(failure['command'], 'bash scripts/reviews/threads'
+                                 if index == 1 else 'gh api')
+                self.assertEqual(failure['exit_code'], 19)
+                self.assertEqual(failure['stderr']['kind'], 'access_denied')
+                self.assertEqual(run.call_count, index + 1, 'acquisition retried or continued')
+                for private in ('UNSAFE_COMMAND', 'FAKE_SECRET', 'PRIVATE_STDOUT'):
+                    self.assertNotIn(private, output.getvalue())
+
+    def test_success_preserves_json_and_single_subprocess_execution(self):
+        command = ['gh', 'api', 'repos/o/r/pulls/7']
+        value = {'head': {'sha': HEAD}}
+        completed = subprocess.CompletedProcess(command, 0, json.dumps(value), 'PRIVATE_STDERR')
+        with patch.object(feedback.subprocess, 'run', return_value=completed) as run:
+            self.assertEqual(feedback.read_json(command), value)
+        run.assert_called_once_with(command, check=True, capture_output=True,
+                                    text=True, encoding='utf-8')
+
+    def test_other_failures_keep_the_existing_safe_envelope(self):
+        output = io.StringIO()
+        with patch.object(feedback, 'collect', side_effect=ValueError('FAKE_SECRET')), \
+                patch('sys.argv', ['feedback', '7', 'o/r']), redirect_stdout(output):
+            self.assertEqual(feedback.main(), 2)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['reason'], 'ValueError')
+        self.assertNotIn('command_failure', result)
+        self.assertNotIn('FAKE_SECRET', output.getvalue())
 
 
 class FinishingSkillScenarios(unittest.TestCase):
