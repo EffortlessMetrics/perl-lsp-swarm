@@ -61,11 +61,12 @@ class FeedbackCommandFailure(RuntimeError):
 
 def read_json(command, *, operation='json-read'):
     try:
-        result = subprocess.run(command, check=True, capture_output=True,
-                                text=True, encoding="utf-8")
+        # Preserve exit status before decoding: malformed child output must not
+        # replace a nonzero-exit diagnostic with an early UnicodeDecodeError.
+        result = subprocess.run(command, check=True, capture_output=True)
     except subprocess.CalledProcessError as error:
         raise FeedbackCommandFailure(operation, command, error) from error
-    return json.loads(result.stdout)
+    return json.loads(result.stdout.decode('utf-8'))
 
 
 def pages(repo, endpoint, *, operation='feedback-pages'):

@@ -147,7 +147,10 @@ print(json.dumps(result))
 
 
 class FeedbackCommandDiagnostics(unittest.TestCase):
-    def run_cli(self, stderr):
+    def run_cli(self, stderr, *, stdout=b'PRIVATE_STDOUT_SHOULD_NOT_ESCAPE',
+                exit_code=7, expected_reason='CalledProcessError'):
+        stderr_bytes = stderr.encode('utf-8') if isinstance(stderr, str) else stderr
+        stdout_bytes = stdout.encode('utf-8') if isinstance(stdout, str) else stdout
         with tempfile.TemporaryDirectory() as tmp:
             calls = Path(tmp) / 'calls.jsonl'
             stub = Path(tmp) / 'gh'
@@ -156,15 +159,16 @@ import json, os, sys
 from pathlib import Path
 with Path(os.environ['DIAGNOSTIC_CALLS']).open('a') as log:
     log.write(json.dumps(sys.argv[1:]) + '\\n')
-sys.stdout.write('PRIVATE_STDOUT_SHOULD_NOT_ESCAPE')
-sys.stderr.write(os.environ['DIAGNOSTIC_STDERR'])
-sys.exit(7)
+sys.stdout.buffer.write(bytes.fromhex(os.environ['DIAGNOSTIC_STDOUT_HEX']))
+sys.stderr.buffer.write(bytes.fromhex(os.environ['DIAGNOSTIC_STDERR_HEX']))
+sys.exit(int(os.environ['DIAGNOSTIC_EXIT']))
 ''')
             stub.chmod(0o755)
             run = subprocess.run(
                 ['python3', str(SCRIPT), '7', 'o/r'],
                 env={**os.environ, 'PATH': tmp + os.pathsep + os.environ['PATH'],
-                     'DIAGNOSTIC_CALLS': str(calls), 'DIAGNOSTIC_STDERR': stderr},
+                     'DIAGNOSTIC_CALLS': str(calls), 'DIAGNOSTIC_STDERR_HEX': stderr_bytes.hex(),
+                     'DIAGNOSTIC_STDOUT_HEX': stdout_bytes.hex(), 'DIAGNOSTIC_EXIT': str(exit_code)},
                 text=True, capture_output=True, timeout=10,
             )
             invocations = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -173,14 +177,15 @@ sys.exit(7)
         self.assertEqual(run.stderr, '')
         self.assertNotIn('PRIVATE_STDOUT_SHOULD_NOT_ESCAPE', run.stdout)
         result = json.loads(run.stdout)
-        self.assertEqual(result['reason'], 'CalledProcessError')
+        self.assertEqual(result['reason'], expected_reason)
         self.assertEqual(result['next_step'], 'repair-feedback-acquisition')
         self.assertEqual(result['review_currentness'], 'NOT_PROVEN')
         self.assertNotIn('issue_comments', result)
-        self.assertIn('command_failure', result, 'child failure context was discarded')
-        self.assertEqual(result['command_failure']['operation'], 'head-before')
-        self.assertEqual(result['command_failure']['command'], 'gh api')
-        self.assertEqual(result['command_failure']['exit_code'], 7)
+        if expected_reason == 'CalledProcessError':
+            self.assertIn('command_failure', result, 'child failure context was discarded')
+            self.assertEqual(result['command_failure']['operation'], 'head-before')
+            self.assertEqual(result['command_failure']['command'], 'gh api')
+            self.assertEqual(result['command_failure']['exit_code'], exit_code)
         return result, run.stdout
 
     def test_cli_reports_denial_and_transport_without_retrying(self):
@@ -214,6 +219,26 @@ sys.exit(7)
                 for private in ('FAKE_SECRET', 'PRIVATE_MESSAGE', 'Authorization:', '\x1b'):
                     self.assertNotIn(private, output)
 
+    def test_non_utf8_child_failure_keeps_context_and_sanitizes_both_streams(self):
+        for stdout, stderr, kind in (
+            (b'PRIVATE_STDOUT', b'HTTP 403 Forbidden \xff FAKE_SECRET', 'access_denied'),
+            (b'PRIVATE_STDOUT\xff', b'TLS handshake timeout FAKE_SECRET', 'transport_error'),
+            (b'PRIVATE_STDOUT\xff', b'\xff FAKE_SECRET', 'unrecognized'),
+        ):
+            with self.subTest(kind=kind):
+                result, output = self.run_cli(stderr, stdout=stdout)
+                self.assertEqual(result['command_failure']['stderr']['kind'], kind)
+                self.assertNotIn('FAKE_SECRET', output)
+                self.assertNotIn('PRIVATE_STDOUT', output)
+
+    def test_successful_child_with_invalid_utf8_json_remains_refused(self):
+        result, output = self.run_cli(
+            b'', stdout=b'{"head":{"sha":"' + b'a' * 39 + b'\xff"}}',
+            exit_code=0, expected_reason='UnicodeDecodeError',
+        )
+        self.assertNotIn('command_failure', result)
+        self.assertNotIn('observed_head', result)
+
     def test_failure_context_survives_each_acquisition_boundary(self):
         replies = (
             {'head': {'sha': HEAD}},
@@ -224,7 +249,7 @@ sys.exit(7)
                       'issue-comments', 'reviews', 'head-after')
         for index, operation in enumerate(operations):
             with self.subTest(operation=operation):
-                completed = [subprocess.CompletedProcess([], 0, json.dumps(row), '')
+                completed = [subprocess.CompletedProcess([], 0, json.dumps(row).encode('utf-8'), b'')
                              for row in replies[:index]]
                 error = subprocess.CalledProcessError(
                     19, ['UNSAFE_COMMAND', 'FAKE_SECRET'],
@@ -248,12 +273,13 @@ sys.exit(7)
 
     def test_success_preserves_json_and_single_subprocess_execution(self):
         command = ['gh', 'api', 'repos/o/r/pulls/7']
-        value = {'head': {'sha': HEAD}}
-        completed = subprocess.CompletedProcess(command, 0, json.dumps(value), 'PRIVATE_STDERR')
+        value = {'head': {'sha': HEAD}, 'message': 'café'}
+        completed = subprocess.CompletedProcess(
+            command, 0, json.dumps(value, ensure_ascii=False).encode('utf-8'), b'PRIVATE_STDERR',
+        )
         with patch.object(feedback.subprocess, 'run', return_value=completed) as run:
             self.assertEqual(feedback.read_json(command), value)
-        run.assert_called_once_with(command, check=True, capture_output=True,
-                                    text=True, encoding='utf-8')
+        run.assert_called_once_with(command, check=True, capture_output=True)
 
     def test_other_failures_keep_the_existing_safe_envelope(self):
         output = io.StringIO()
