@@ -156,42 +156,44 @@ def main() -> int:
         return 1
 
     smoke_root = Path(tempfile.mkdtemp(prefix=f"{CRATE}-package-smoke-"))
-    print(f"package smoke root: {smoke_root}")
-    safe_extract(crate_archive, smoke_root)
+    try:
+        print(f"package smoke root: {smoke_root}")
+        safe_extract(crate_archive, smoke_root)
 
-    extracted = smoke_root / f"{CRATE}-{version}"
-    if not (extracted / REQUIRED_PACKAGE_FILE).exists():
-        print(
-            f"ERROR: unpacked {CRATE} package is missing {REQUIRED_PACKAGE_FILE}",
-            file=sys.stderr,
+        extracted = smoke_root / f"{CRATE}-{version}"
+        if not (extracted / REQUIRED_PACKAGE_FILE).exists():
+            print(
+                f"ERROR: unpacked {CRATE} package is missing {REQUIRED_PACKAGE_FILE}",
+                file=sys.stderr,
+            )
+            return 1
+
+        strip_dev_dependencies(extracted / "Cargo.toml")
+        run(
+            [
+                "cargo",
+                "generate-lockfile",
+                "--manifest-path",
+                str(extracted / "Cargo.toml"),
+                *check_patch_args,
+            ],
         )
-        return 1
+        run(
+            [
+                "cargo",
+                "check",
+                "--manifest-path",
+                str(extracted / "Cargo.toml"),
+                "--lib",
+                "--locked",
+                *check_patch_args,
+            ],
+        )
 
-    strip_dev_dependencies(extracted / "Cargo.toml")
-    run(
-        [
-            "cargo",
-            "generate-lockfile",
-            "--manifest-path",
-            str(extracted / "Cargo.toml"),
-            *check_patch_args,
-        ],
-    )
-    run(
-        [
-            "cargo",
-            "check",
-            "--manifest-path",
-            str(extracted / "Cargo.toml"),
-            "--lib",
-            "--locked",
-            *check_patch_args,
-        ],
-    )
-
-    print(f"OK: {CRATE}-{version}.crate is self-contained")
-    shutil.rmtree(smoke_root, ignore_errors=True)
-    return 0
+        print(f"OK: {CRATE}-{version}.crate is self-contained")
+        return 0
+    finally:
+        shutil.rmtree(smoke_root, ignore_errors=True)
 
 
 if __name__ == "__main__":
