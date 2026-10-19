@@ -53,25 +53,17 @@ impl SemanticAnalyzer {
         }
     }
 
-    /// Byte offset at which a declaration's statement ends; a lexical is
-    /// not in scope before it (#18115).
-    fn declaration_statement_end(&self, symbol: &Symbol) -> usize {
-        self.symbol_table
-            .declaration_statement_ends
-            .get(&symbol.location.start)
-            .copied()
-            .unwrap_or(symbol.location.end)
-    }
-
-    /// Whether a lexical candidate's declaring statement has not ended at
-    /// the reference yet, so the reference cannot bind to it (#18115).
+    /// Whether a use precedes a lexical candidate's declaration token, so
+    /// it cannot bind to that candidate at all (#18115). A use inside the
+    /// declaring statement (an initializer RHS) is decided by the scope
+    /// walk instead: it binds to an outer declaration when one exists.
     fn not_yet_effective(
         &self,
         candidate: &Symbol,
         reference: &crate::symbol::SymbolReference,
     ) -> bool {
         matches!(candidate.declaration.as_deref(), Some("my" | "state"))
-            && reference.location.start < self.declaration_statement_end(candidate)
+            && reference.location.start < candidate.location.start
     }
 
     /// The declaration a use actually binds to: the first candidate the
@@ -89,8 +81,8 @@ impl SemanticAnalyzer {
                     && !self.is_shadowed_by_inner_declaration(candidate, reference)
             })
             .or_else(|| {
-                // Never resurrect a lexical whose statement has not ended:
-                // the use binds outward or to the package global instead.
+                // Never resurrect a lexical the use textually precedes:
+                // it binds outward or to the package global instead.
                 symbols
                     .iter()
                     .copied()
@@ -188,9 +180,9 @@ impl SemanticAnalyzer {
             return false;
         };
         let symbol_is_lexical = matches!(symbol.declaration.as_deref(), Some("my" | "state"));
-        // A use before the end of the lexical's own declaring statement
-        // cannot bind to it (initializer RHS, pre-declaration use): it
-        // binds to an outer declaration or the package global (#18115).
+        // A use that textually precedes the lexical's declaration token
+        // cannot bind to it: it binds to an outer declaration or the
+        // package global (#18115).
         if symbol_is_lexical && self.not_yet_effective(symbol, reference) {
             return true;
         }
