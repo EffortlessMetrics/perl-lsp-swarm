@@ -40,6 +40,18 @@ pub fn isolate(mut command: Command) -> Command {
     command
 }
 
+/// Isolate a configured duct expression that selects a foreign repository.
+///
+/// Duct applies outer environment modifiers first. Wrap the configured
+/// expression last; deliberate Git-local overrides must be inside this wrapper.
+/// Current-repository staged operations deliberately retain their context.
+pub fn isolate_duct(mut command: duct::Expression) -> duct::Expression {
+    for name in LOCAL_ENV {
+        command = command.env_remove(name);
+    }
+    command
+}
+
 pub(crate) fn command() -> Command {
     isolate(Command::new("git"))
 }
