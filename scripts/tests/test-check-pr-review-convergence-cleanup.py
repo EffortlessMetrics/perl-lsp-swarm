@@ -16,7 +16,12 @@ SUBJECT = Path(__file__).with_name("test-check-pr-review-convergence.sh").resolv
 
 
 class ConvergenceCleanup(unittest.TestCase):
-    def check_exit(self, fail_copy_at, cleanup_fails=False):
+    def check_exit(self, fail_copy_at, cleanup_fails=False, missing_jq=False):
+        executables = {}
+        for name in ("cp", "mktemp", "rm"):
+            executable = shutil.which(name)
+            self.assertIsNotNone(executable, f"ERROR: missing required dependency: {name}")
+            executables[name] = executable
         with tempfile.TemporaryDirectory(prefix="convergence-cleanup-") as outer:
             root = Path(outer)
             temporary = root / "temporary parent with spaces"
@@ -68,10 +73,10 @@ class ConvergenceCleanup(unittest.TestCase):
                 PATH=str(shim) + os.pathsep + os.environ["PATH"],
                 COPY_COUNTER=str(counter),
                 FAIL_COPY_AT=str(fail_copy_at),
-                REAL_CP=shutil.which("cp"),
+                REAL_CP=executables["cp"],
                 MKTEMP_COUNTER=str(mktemp_counter),
-                REAL_MKTEMP=shutil.which("mktemp"),
-                REAL_RM=shutil.which("rm"),
+                REAL_MKTEMP=executables["mktemp"],
+                REAL_RM=executables["rm"],
                 SUITE_TEMP=str(suite_temp),
             )
             start = time.monotonic()
@@ -80,6 +85,8 @@ class ConvergenceCleanup(unittest.TestCase):
                 text=True, timeout=30,
             )
             expected_exit = 73 if fail_copy_at else (74 if cleanup_fails else 0)
+            if missing_jq:
+                expected_exit = 1
             self.assertEqual(expected_exit, result.returncode,
                              result.stdout + result.stderr)
             remaining = [path for path in temporary.iterdir() if path != sentinel]
@@ -96,7 +103,9 @@ class ConvergenceCleanup(unittest.TestCase):
                                        for path in entry.rglob("*") if path.is_file()),
                 "summary": result.stdout.splitlines()[-1:],
             }), flush=True)
-            if fail_copy_at:
+            if missing_jq:
+                self.assertIn("ERROR: jq required", result.stdout + result.stderr)
+            elif fail_copy_at:
                 self.assertIn("injected-copy-failure", result.stderr)
                 self.assertEqual(str(fail_copy_at), counter.read_text().strip())
             else:
@@ -122,14 +131,24 @@ class ConvergenceCleanup(unittest.TestCase):
         missing_jq = ('() { if [[ "$*" == "-v jq" ]]; then return 1; fi; '
                       'builtin command "$@"; }')
         with patch.dict(os.environ, {"BASH_FUNC_command%%": missing_jq}):
-            with self.assertRaisesRegex(AssertionError, "ERROR: jq required"):
-                self.check_exit(0)
+            self.check_exit(0, missing_jq=True)
 
     def test_cleanup_failure_preserves_copy_failure(self):
         self.check_exit(1, cleanup_fails=True)
 
     def test_cleanup_failure_after_success_fails(self):
         self.check_exit(0, cleanup_fails=True)
+
+    def test_missing_required_dependencies_report_name(self):
+        which = shutil.which
+        for missing in ("cp", "mktemp", "rm"):
+            with self.subTest(dependency=missing):
+                with patch.object(shutil, "which", side_effect=lambda name:
+                                  None if name == missing else which(name)):
+                    with self.assertRaisesRegex(
+                        AssertionError, f"missing required dependency: {missing}"
+                    ):
+                        self.check_exit(0)
 
 
 if __name__ == "__main__":
