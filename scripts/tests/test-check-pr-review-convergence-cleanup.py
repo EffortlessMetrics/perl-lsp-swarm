@@ -9,13 +9,14 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 SUBJECT = Path(__file__).with_name("test-check-pr-review-convergence.sh").resolve()
 
 
 class ConvergenceCleanup(unittest.TestCase):
-    def check_exit(self, fail_copy_at):
+    def check_exit(self, fail_copy_at, cleanup_fails=False):
         with tempfile.TemporaryDirectory(prefix="convergence-cleanup-") as outer:
             root = Path(outer)
             temporary = root / "temporary parent with spaces"
@@ -26,6 +27,7 @@ class ConvergenceCleanup(unittest.TestCase):
             shim.mkdir()
             counter = root / "copy-count"
             mktemp_counter = root / "mktemp-calls"
+            suite_temp = root / "suite-temp"
             (shim / "cp").write_text(
                 '#!/usr/bin/env bash\n'
                 'count=0\n'
@@ -42,9 +44,22 @@ class ConvergenceCleanup(unittest.TestCase):
             (shim / "mktemp").write_text(
                 '#!/usr/bin/env bash\n'
                 'echo call >> "$MKTEMP_COUNTER"\n'
-                'exec "$REAL_MKTEMP" "$@"\n',
+                'created=$("$REAL_MKTEMP" "$@") || exit $?\n'
+                '[[ -f "$SUITE_TEMP" ]] || printf "%s\\n" "$created" > "$SUITE_TEMP"\n'
+                'printf "%s\\n" "$created"\n',
                 encoding="utf-8",
             )
+            if cleanup_fails:
+                (shim / "rm").write_text(
+                    '#!/usr/bin/env bash\n'
+                    'if [[ "${1:-}" == -rf && -f "$SUITE_TEMP" ]] && '
+                    '[[ "${2:-}" == "$(<"$SUITE_TEMP")" ]]; then\n'
+                    '  echo injected-cleanup-failure >&2\n'
+                    '  exit 74\n'
+                    'fi\n'
+                    'exec "$REAL_RM" "$@"\n',
+                    encoding="utf-8",
+                )
             for path in shim.iterdir():
                 path.chmod(0o755)
             env = dict(
@@ -56,18 +71,24 @@ class ConvergenceCleanup(unittest.TestCase):
                 REAL_CP=shutil.which("cp"),
                 MKTEMP_COUNTER=str(mktemp_counter),
                 REAL_MKTEMP=shutil.which("mktemp"),
+                REAL_RM=shutil.which("rm"),
+                SUITE_TEMP=str(suite_temp),
             )
             start = time.monotonic()
             result = subprocess.run(
                 ["bash", str(SUBJECT)], env=env, capture_output=True,
                 text=True, timeout=30,
             )
+            expected_exit = 73 if fail_copy_at else (74 if cleanup_fails else 0)
+            self.assertEqual(expected_exit, result.returncode,
+                             result.stdout + result.stderr)
             remaining = [path for path in temporary.iterdir() if path != sentinel]
             print(json.dumps({
                 "fail_copy_at": fail_copy_at,
                 "exit": result.returncode,
                 "wall_seconds": round(time.monotonic() - start, 3),
-                "mktemp_calls": len(mktemp_counter.read_text().splitlines()),
+                "mktemp_calls": (len(mktemp_counter.read_text().splitlines())
+                                 if mktemp_counter.is_file() else None),
                 "remaining_roots": len(remaining),
                 "remaining_files": sum(path.is_file() for entry in remaining
                                        for path in entry.rglob("*")),
@@ -75,15 +96,18 @@ class ConvergenceCleanup(unittest.TestCase):
                                        for path in entry.rglob("*") if path.is_file()),
                 "summary": result.stdout.splitlines()[-1:],
             }), flush=True)
-            self.assertEqual(73 if fail_copy_at else 0, result.returncode,
-                             result.stdout + result.stderr)
             if fail_copy_at:
                 self.assertIn("injected-copy-failure", result.stderr)
                 self.assertEqual(str(fail_copy_at), counter.read_text().strip())
             else:
                 self.assertIn("=== Results: 29 passed, 0 failed ===", result.stdout)
             self.assertEqual("preserve unrelated files\n", sentinel.read_text())
-            self.assertEqual([], remaining, "suite leaked its temporary fixtures")
+            if cleanup_fails:
+                self.assertIn("injected-cleanup-failure", result.stderr)
+                self.assertEqual([Path(suite_temp.read_text().strip())], remaining,
+                                 "cleanup refusal must retain only the owned root")
+            else:
+                self.assertEqual([], remaining, "suite leaked its temporary fixtures")
 
     def test_normal_exit(self):
         self.check_exit(0)
@@ -93,6 +117,19 @@ class ConvergenceCleanup(unittest.TestCase):
 
     def test_late_fixture_copy_failure(self):
         self.check_exit(4)
+
+    def test_missing_jq_reports_child_failure(self):
+        missing_jq = ('() { if [[ "$*" == "-v jq" ]]; then return 1; fi; '
+                      'builtin command "$@"; }')
+        with patch.dict(os.environ, {"BASH_FUNC_command%%": missing_jq}):
+            with self.assertRaisesRegex(AssertionError, "ERROR: jq required"):
+                self.check_exit(0)
+
+    def test_cleanup_failure_preserves_copy_failure(self):
+        self.check_exit(1, cleanup_fails=True)
+
+    def test_cleanup_failure_after_success_fails(self):
+        self.check_exit(0, cleanup_fails=True)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,15 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 
 # Own every fixture from the first allocation, including setup failures under -e.
 TEST_TMP="$(mktemp -d)"
-trap 'rm -rf "$TEST_TMP"' EXIT
+cleanup() {
+    local status=$? cleanup_status=0
+    rm -rf "$TEST_TMP" || cleanup_status=$?
+    if [[ "$status" -eq 0 ]]; then
+        status=$cleanup_status
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
 
 RUN_EXIT=0
 RUN_STDOUT=""
