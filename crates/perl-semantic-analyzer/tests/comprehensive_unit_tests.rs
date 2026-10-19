@@ -570,6 +570,32 @@ fn semantic_analyzer_find_all_references_from_use_binds_owning_declaration()
 }
 
 #[test]
+fn semantic_analyzer_find_all_references_excludes_pre_declaration_uses()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18115: with no outer lexical, a use before `my $x` binds to the
+    // package global, not to the not-yet-effective lexical.
+    let code = "{ print $x; my $x = 2; print $x; }";
+    let analyzer = parse_and_analyze(code);
+
+    let inner_decl = code.find("my $x").ok_or("inner $x not found")? + 3;
+    let inner_refs = analyzer.find_all_references(inner_decl, false);
+    assert_eq!(inner_refs.len(), 1, "inner $x has only the use after its declaration; got {inner_refs:?}");
+    let second_use = code.rfind("$x").ok_or("second use not found")?;
+    assert!(
+        inner_refs.iter().any(|loc| loc.start == second_use),
+        "the reported use must be the post-declaration one; got {inner_refs:?}"
+    );
+
+    let first_use = code.find("$x").ok_or("first use not found")?;
+    let refs = analyzer.find_all_references(first_use, false);
+    assert!(
+        refs.iter().all(|loc| loc.start != second_use),
+        "the pre-declaration use must not claim the lexical's later use; got {refs:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn semantic_analyzer_empty_source() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = parse_and_analyze("");
     assert!(analyzer.semantic_tokens().is_empty());

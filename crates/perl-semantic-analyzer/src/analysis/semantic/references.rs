@@ -53,6 +53,23 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Byte offset at which a declaration's statement ends; a lexical is
+    /// not in scope before it (#18115).
+    fn declaration_statement_end(&self, symbol: &Symbol) -> usize {
+        self.symbol_table
+            .declaration_statement_ends
+            .get(&symbol.location.start)
+            .copied()
+            .unwrap_or(symbol.location.end)
+    }
+
+    /// Whether a lexical candidate's declaring statement has not ended at
+    /// the reference yet, so the reference cannot bind to it (#18115).
+    fn not_yet_effective(&self, candidate: &Symbol, reference: &crate::symbol::SymbolReference) -> bool {
+        matches!(candidate.declaration.as_deref(), Some("my" | "state"))
+            && reference.location.start < self.declaration_statement_end(candidate)
+    }
+
     /// The declaration a use actually binds to: the first candidate the
     /// reference is visible from and not shadowed away from (#18115).
     pub(super) fn bound_symbol<'a>(
@@ -67,7 +84,11 @@ impl SemanticAnalyzer {
                 self.is_symbol_visible(candidate, reference.scope_id)
                     && !self.is_shadowed_by_inner_declaration(candidate, reference)
             })
-            .or_else(|| symbols.first().copied())
+            .or_else(|| {
+                // Never resurrect a lexical whose statement has not ended:
+                // the use binds outward or to the package global instead.
+                symbols.iter().copied().find(|candidate| !self.not_yet_effective(candidate, reference))
+            })
     }
 
     /// Find all references to a symbol at a given position for Navigate/Analyze workflows.
@@ -160,6 +181,12 @@ impl SemanticAnalyzer {
             return false;
         };
         let symbol_is_lexical = matches!(symbol.declaration.as_deref(), Some("my" | "state"));
+        // A use before the end of the lexical's own declaring statement
+        // cannot bind to it (initializer RHS, pre-declaration use): it
+        // binds to an outer declaration or the package global (#18115).
+        if symbol_is_lexical && self.not_yet_effective(symbol, reference) {
+            return true;
+        }
         let mut current_scope = reference.scope_id;
         loop {
             let binding = candidates
