@@ -447,6 +447,35 @@ fn test_folding_range_heredoc_boundary_end_line_gt_start_line() -> TestResult {
 }
 
 #[test]
+fn test_folding_range_heredoc_body_length_sweep_covers_last_body_line() -> TestResult {
+    // #17299: heredoc folds must cover every body line. 2-line bodies were
+    // already correct; 3+ line bodies ended one line short because the
+    // inclusive endLine conversion dropped the line containing the body
+    // span's end offset.
+    let three_line_heredoc = "my $x = <<'END';\none\ntwo\nthree\nEND\n";
+    let three_line_ranges = folding_ranges_for("file:///heredoc-three.pl", three_line_heredoc)?;
+    assert!(
+        three_line_ranges.iter().any(|range| {
+            range.get("kind").and_then(|kind| kind.as_str()) == Some("region")
+                && range_lines(range).is_some_and(|(start, end)| start == 1 && end == 3)
+        }),
+        "3-line heredoc body must fold as [1..3]: {three_line_ranges:?}"
+    );
+
+    let four_line_heredoc = "my $x = <<'END';\none\ntwo\nthree\nfour\nEND\n";
+    let four_line_ranges = folding_ranges_for("file:///heredoc-four.pl", four_line_heredoc)?;
+    assert!(
+        four_line_ranges.iter().any(|range| {
+            range.get("kind").and_then(|kind| kind.as_str()) == Some("region")
+                && range_lines(range).is_some_and(|(start, end)| start == 1 && end == 4)
+        }),
+        "4-line heredoc body must fold as [1..4]: {four_line_ranges:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_folding_range_ast_boundary_lsp_end_line_gt_start_line() -> TestResult {
     let content = "sub tiny {\n}\nsub full {\n    my $x = 1;\n}\n";
     let ranges = folding_ranges_for("file:///ast-boundary.pl", content)?;
