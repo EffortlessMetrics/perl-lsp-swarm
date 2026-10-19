@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ACTION = "codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4"
+ACTION = "codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5"
 TOKEN = "${{ secrets.CODECOV_TOKEN }}"
 CONTRACT_WORKFLOW = ROOT / ".github/workflows/workflow-contracts-advisory.yml"
 
@@ -179,6 +179,10 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
 
     def test_rejects_old_or_wrong_action(self) -> None:
         self.mutate("Upload PR-fast test results to Codecov", "uses", "codecov/test-results-action@old")
+        self.assert_rejected()
+
+    def test_rejects_wrong_immutable_action(self) -> None:
+        self.mutate("Upload PR-fast test results to Codecov", "uses", "codecov/codecov-action@" + "0" * 40)
         self.assert_rejected()
 
     def test_rejects_missing_report_type(self) -> None:
