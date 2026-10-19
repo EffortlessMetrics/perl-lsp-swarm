@@ -1459,10 +1459,15 @@ impl PullDiagnosticsProvider {
         };
 
         let offset = resolved_parse_diagnostic_offset(error, text);
-        let end_offset = text
-            .get(offset..)
-            .and_then(|suffix| suffix.chars().next())
-            .map_or(offset, |next| offset + next.len_utf8());
+        let end_offset = text.get(offset..).map_or(offset, |suffix| {
+            // CRLF is one logical separator; its CR alone projects to the
+            // same UTF-16 position as the start of the pair.
+            if suffix.starts_with("\r\n") {
+                offset + 2
+            } else {
+                suffix.chars().next().map_or(offset, |next| offset + next.len_utf8())
+            }
+        });
         let range = lsp_range_from_offsets(text, offset, end_offset);
 
         let code = parse_error_code(error);

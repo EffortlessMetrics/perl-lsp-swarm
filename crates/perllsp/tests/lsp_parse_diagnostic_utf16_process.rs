@@ -218,3 +218,69 @@ fn check_mode(mode: &str) -> Result<()> {
     ensure!(client.wait_for_exit(timeout())?.success(), "server did not exit cleanly");
     client.assert_transport_clean()
 }
+
+#[test]
+fn no_source_fatal_pull_spans_complete_line_endings() -> Result<()> {
+    for (prefix, expected) in [
+        (
+            "\n",
+            json!({
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 1, "character": 0 }
+            }),
+        ),
+        (
+            "\r\n",
+            json!({
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 1, "character": 0 }
+            }),
+        ),
+        (
+            "\r",
+            json!({
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            }),
+        ),
+    ] {
+        let mut client = start("normal")?;
+        // The 129th postfix layer exceeds the production depth limit (128),
+        // yielding a real fatal NoSource parser diagnostic pinned to byte zero.
+        let source = format!("{prefix}$x{};", "->a".repeat(129));
+        client.notify(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": URI, "languageId": "perl", "version": 1,
+                    "text": source
+                }
+            }),
+        )?;
+        let deadline = Instant::now() + timeout();
+        let range = loop {
+            let items = diagnostics(&mut client)?;
+            if let Some(range) = items
+                .iter()
+                .find(|item| {
+                    item["code"] == "PL001"
+                        && item["message"].as_str().is_some_and(|message| {
+                            message.starts_with("Nesting depth limit exceeded")
+                        })
+                })
+                .and_then(|item| item.get("range"))
+            {
+                break range.clone();
+            }
+            ensure!(Instant::now() < deadline, "fatal NoSource diagnostic missing: {items:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        ensure!(range == expected, "{prefix:?} fatal NoSource range: {range}");
+
+        ensure!(request(&mut client, "shutdown", Value::Null)?.is_null());
+        client.notify("exit", Value::Null)?;
+        ensure!(client.wait_for_exit(timeout())?.success(), "server did not exit cleanly");
+        client.assert_transport_clean()?;
+    }
+    Ok(())
+}
