@@ -3911,11 +3911,126 @@ mod tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> color_eyre::eyre::Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
-        if !output.status.success() {
-            color_eyre::eyre::bail!("git {:?} failed with status {}", args, output.status);
-        }
+        let output = crate::git_test_support::git_cmd_with_ambient(args, Some(repo), &[])
+            .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
         Ok(String::from_utf8(output.stdout)?)
+    }
+
+    const GIT_FIXTURE_CHILD: &str = "XTASK_GATE_GIT_FIXTURE_CHILD";
+    const GIT_FIXTURE_TESTS: &[&str] = &[
+        "tasks::gates::tests::isolated_repo_helper_publishes_origin_main_and_seed_commit",
+        "tasks::gates::tests::plan_gates_threads_staged_tree_oid_into_non_commit_tiers",
+        "tasks::gates::tests::is_latest_commit_compares_configured_upstream",
+    ];
+
+    // These tests call production Git plumbing as well as fixture constructors.
+    // Keep the fixture's entire consumer process hermetic: production staged
+    // checks must continue honoring the real hook's index in normal execution.
+    fn reenter_git_fixture_test(name: &str) -> Result<bool> {
+        if std::env::var(GIT_FIXTURE_CHILD).ok().as_deref() == Some(name) {
+            return Ok(false);
+        }
+        let pins = tempdir()?;
+        let git = crate::git_test_support::HermeticGit::at(pins.path())
+            .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
+        let mut child = Command::new(std::env::current_exe()?);
+        child.args(["--exact", name, "--nocapture"]).env(GIT_FIXTURE_CHILD, name);
+        git.apply_env(&mut child);
+        let output = child.output()?;
+        if !output.status.success() {
+            bail!(
+                "isolated fixture test {name} failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(true)
+    }
+
+    fn fixture_snapshot(root: &Path) -> Result<BTreeMap<std::path::PathBuf, Vec<u8>>> {
+        let mut files = BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                let path = entry.path();
+                if entry.file_type()?.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.insert(path.strip_prefix(root)?.to_path_buf(), fs::read(path)?);
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    #[test]
+    fn git_fixture_tests_preserve_hook_caller() -> Result<()> {
+        use color_eyre::eyre::ensure;
+
+        for mode in ["hook", "objects", "config"] {
+            for name in GIT_FIXTURE_TESTS {
+                let temp = tempdir()?;
+                let caller = temp.path().join("caller");
+                fs::create_dir(&caller)?;
+                run_git(&caller, &["init", "--quiet"])?;
+                run_git(&caller, &["config", "user.name", "Caller Guardian"])?;
+                run_git(&caller, &["config", "user.email", "caller@example.invalid"])?;
+                fs::write(caller.join("caller.txt"), "base\n")?;
+                run_git(&caller, &["add", "."])?;
+                run_git(&caller, &["commit", "--quiet", "-m", "caller-only commit"])?;
+                fs::write(caller.join("caller.txt"), "staged\n")?;
+                run_git(&caller, &["add", "."])?;
+                fs::write(caller.join("caller.txt"), "unstaged\n")?;
+                fs::write(caller.join("untracked.txt"), "unique content\n")?;
+                let before = fixture_snapshot(&caller)?;
+                let git_dir = caller.join(".git");
+                let pins = crate::git_test_support::HermeticGit::at(&temp.path().join("pins"))
+                    .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
+                let mut child = Command::new(std::env::current_exe()?);
+                child.args(["--exact", name, "--nocapture"]);
+                pins.apply_env(&mut child);
+                match mode {
+                    "hook" => {
+                        child
+                            .env("GIT_DIR", &git_dir)
+                            .env("GIT_COMMON_DIR", &git_dir)
+                            .env("GIT_WORK_TREE", &caller)
+                            .env("GIT_INDEX_FILE", git_dir.join("index"))
+                            .env("GIT_PREFIX", "foreign/");
+                    }
+                    "objects" => {
+                        child
+                            .env("GIT_OBJECT_DIRECTORY", git_dir.join("objects"))
+                            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", git_dir.join("objects"));
+                    }
+                    _ => {
+                        child
+                            .env("GIT_CONFIG", git_dir.join("config"))
+                            .env("GIT_CONFIG_PARAMETERS", "'user.name'='Poisoned Caller'")
+                            .env("GIT_CONFIG_COUNT", "1")
+                            .env("GIT_CONFIG_KEY_0", "core.bare")
+                            .env("GIT_CONFIG_VALUE_0", "true");
+                    }
+                }
+                let output = child.output()?;
+                ensure!(
+                    fixture_snapshot(&caller)? == before,
+                    "{mode}/{name}: caller config, identity, refs, objects, index or files changed"
+                );
+                ensure!(
+                    output.status.success(),
+                    "{mode}/{name}: fixture failed:\n{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                ensure!(
+                    String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                    "{mode}/{name}: fixture test did not run"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -4676,14 +4791,7 @@ gates:
             vec!["config", "user.name", "Test"],
             vec!["config", "core.fileMode", "false"],
         ] {
-            let status = Command::new("git")
-                .current_dir(root)
-                .args(&args)
-                .status()
-                .with_context(|| format!("failed to run git {args:?}"))?;
-            if !status.success() {
-                bail!("git {args:?} failed in isolated repo setup");
-            }
+            run_git(root, &args)?;
         }
         // Stage one file and commit so `git write-tree` returns a non-empty
         // tree and `origin/main^{commit}` resolves to a real commit. Without
@@ -4693,14 +4801,7 @@ gates:
         std::fs::write(root.join("seed.txt"), "seed\n")
             .context("failed to write seed file in isolated repo")?;
         for args in [vec!["add", "seed.txt"], vec!["commit", "--quiet", "-m", "seed"]] {
-            let status = Command::new("git")
-                .current_dir(root)
-                .args(&args)
-                .status()
-                .with_context(|| format!("failed to run git {args:?}"))?;
-            if !status.success() {
-                bail!("git {args:?} failed in isolated repo setup");
-            }
+            run_git(root, &args)?;
         }
         // Synthesize `refs/remotes/origin/main` at HEAD so `git rev-parse
         // --verify origin/main` succeeds without actually setting up a
@@ -4708,29 +4809,17 @@ gates:
         // `origin`; tests must mirror that exact shape because
         // `change_set::resolve_base_ref` only accepts explicit bases that
         // exist (issue #3985: no silent substitution).
-        let head = String::from_utf8(
-            Command::new("git")
-                .current_dir(root)
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .context("failed to run git rev-parse HEAD")?
-                .stdout,
-        )
-        .context("git rev-parse HEAD output was not UTF-8")?;
+        let head = run_git(root, &["rev-parse", "HEAD"])?;
         let head = head.trim();
-        let status = Command::new("git")
-            .current_dir(root)
-            .args(["update-ref", "refs/remotes/origin/main", head])
-            .status()
-            .context("failed to run git update-ref for origin/main")?;
-        if !status.success() {
-            bail!("git update-ref refs/remotes/origin/main failed");
-        }
+        run_git(root, &["update-ref", "refs/remotes/origin/main", head])?;
         Ok(dir)
     }
 
     #[test]
     fn plan_gates_threads_staged_tree_oid_into_non_commit_tiers() -> color_eyre::eyre::Result<()> {
+        if reenter_git_fixture_test(GIT_FIXTURE_TESTS[1])? {
+            return Ok(());
+        }
         // Regression for a deep-review P1 on PR #4016: `plan_pr_fast_gates`
         // always returns `staged_tree_oid: None` on its own (it has no
         // reason to know about `--staged`), so `--tier merge_gate/nightly
@@ -4781,47 +4870,14 @@ gates:
     #[test]
     fn isolated_repo_helper_publishes_origin_main_and_seed_commit() -> color_eyre::eyre::Result<()>
     {
+        if reenter_git_fixture_test(GIT_FIXTURE_TESTS[0])? {
+            return Ok(());
+        }
         let repo = isolated_git_repo_with_origin_main()?;
         let root = repo.path();
 
-        let head_exists = Command::new("git")
-            .current_dir(root)
-            .args(["rev-parse", "--verify", "HEAD"])
-            .status()
-            .context("failed to run git rev-parse HEAD")?
-            .success();
-        assert!(head_exists, "isolated repo must have a HEAD commit");
-
-        let origin_main_exists = Command::new("git")
-            .current_dir(root)
-            .args(["rev-parse", "--verify", "--quiet", "origin/main"])
-            .status()
-            .context("failed to run git rev-parse origin/main")?
-            .success();
-        assert!(
-            origin_main_exists,
-            "isolated repo must synthesize refs/remotes/origin/main so \
-             change_set::resolve_base_ref accepts the explicit base"
-        );
-
-        let head_oid = String::from_utf8(
-            Command::new("git")
-                .current_dir(root)
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .context("failed to run git rev-parse HEAD for OID")?
-                .stdout,
-        )
-        .context("git rev-parse HEAD output was not UTF-8")?;
-        let origin_main_oid = String::from_utf8(
-            Command::new("git")
-                .current_dir(root)
-                .args(["rev-parse", "--verify", "origin/main"])
-                .output()
-                .context("failed to run git rev-parse origin/main for OID")?
-                .stdout,
-        )
-        .context("git rev-parse origin/main output was not UTF-8")?;
+        let head_oid = run_git(root, &["rev-parse", "--verify", "HEAD"])?;
+        let origin_main_oid = run_git(root, &["rev-parse", "--verify", "origin/main"])?;
         assert_eq!(
             head_oid.trim(),
             origin_main_oid.trim(),
@@ -4836,6 +4892,7 @@ gates:
             !staged_tree.is_empty(),
             "staged_tree_oid must return a non-empty OID against the isolated repo"
         );
+        assert_eq!(staged_tree, run_git(root, &["write-tree"])?.trim());
         Ok(())
     }
 
@@ -6736,6 +6793,9 @@ gates:
 
     #[test]
     fn is_latest_commit_compares_configured_upstream() -> color_eyre::eyre::Result<()> {
+        if reenter_git_fixture_test(GIT_FIXTURE_TESTS[2])? {
+            return Ok(());
+        }
         let temp = tempdir()?;
         let upstream = temp.path().join("upstream.git");
         let repo = temp.path().join("repo");

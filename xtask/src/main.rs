@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 
 mod allocation_tracker;
 mod cli;
+#[cfg(test)]
+#[path = "../tests/git_test_support.rs"]
+mod git_test_support;
 mod tasks;
 #[cfg(test)]
 mod test_support;
