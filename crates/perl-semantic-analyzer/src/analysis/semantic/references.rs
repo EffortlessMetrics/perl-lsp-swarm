@@ -65,7 +65,11 @@ impl SemanticAnalyzer {
 
     /// Whether a lexical candidate's declaring statement has not ended at
     /// the reference yet, so the reference cannot bind to it (#18115).
-    fn not_yet_effective(&self, candidate: &Symbol, reference: &crate::symbol::SymbolReference) -> bool {
+    fn not_yet_effective(
+        &self,
+        candidate: &Symbol,
+        reference: &crate::symbol::SymbolReference,
+    ) -> bool {
         matches!(candidate.declaration.as_deref(), Some("my" | "state"))
             && reference.location.start < self.declaration_statement_end(candidate)
     }
@@ -87,7 +91,10 @@ impl SemanticAnalyzer {
             .or_else(|| {
                 // Never resurrect a lexical whose statement has not ended:
                 // the use binds outward or to the package global instead.
-                symbols.iter().copied().find(|candidate| !self.not_yet_effective(candidate, reference))
+                symbols
+                    .iter()
+                    .copied()
+                    .find(|candidate| !self.not_yet_effective(candidate, reference))
             })
     }
 

@@ -579,7 +579,11 @@ fn semantic_analyzer_find_all_references_excludes_pre_declaration_uses()
 
     let inner_decl = code.find("my $x").ok_or("inner $x not found")? + 3;
     let inner_refs = analyzer.find_all_references(inner_decl, false);
-    assert_eq!(inner_refs.len(), 1, "inner $x has only the use after its declaration; got {inner_refs:?}");
+    assert_eq!(
+        inner_refs.len(),
+        1,
+        "inner $x has only the use after its declaration; got {inner_refs:?}"
+    );
     let second_use = code.rfind("$x").ok_or("second use not found")?;
     assert!(
         inner_refs.iter().any(|loc| loc.start == second_use),
