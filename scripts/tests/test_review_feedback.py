@@ -220,7 +220,8 @@ class ThreadsShellSelection(unittest.TestCase):
     def test_threads_failure_aborts_before_rest_pages(self):
         replies = [{'head': {'sha': HEAD}},
                    subprocess.CalledProcessError(127, ['bash'])]
-        with patch.object(feedback, 'read_json', side_effect=replies) as read:
+        with patch.object(feedback, '_threads_command', return_value=['bash', 'threads']), \
+                patch.object(feedback, 'read_json', side_effect=replies) as read:
             with self.assertRaises(subprocess.CalledProcessError):
                 feedback.collect(7, 'o/r')
         self.assertEqual(len(read.call_args_list), 2)
