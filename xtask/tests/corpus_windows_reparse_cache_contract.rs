@@ -611,10 +611,7 @@ fn static_contract_rejects_structural_cache_and_permission_mutations() -> Result
         (CACHE_ACTION, "Swatinem/rust-cache@v2"),
         (CHECKOUT_ACTION, "actions/checkout@v7"),
         (TOOLCHAIN_ACTION, "dtolnay/rust-toolchain@master"),
-        (
-            TOOLCHAIN_ACTION,
-            "dtolnay/rust-toolchain@0000000000000000000000000000000000000000",
-        ),
+        (TOOLCHAIN_ACTION, "dtolnay/rust-toolchain@0000000000000000000000000000000000000000"),
         (CHECKOUT_ACTION, "./.github/actions/cache-writer"),
         (CHECKOUT_REF_LINE, "          ref: ${{ github.sha }}\n"),
         ("persist-credentials: false", "persist-credentials: true"),
