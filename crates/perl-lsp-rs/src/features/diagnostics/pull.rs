@@ -1459,7 +1459,10 @@ impl PullDiagnosticsProvider {
         };
 
         let offset = resolved_parse_diagnostic_offset(error, text);
-        let end_offset = offset.saturating_add(1).min(text.len());
+        let end_offset = text
+            .get(offset..)
+            .and_then(|suffix| suffix.chars().next())
+            .map_or(offset, |next| offset + next.len_utf8());
         let range = lsp_range_from_offsets(text, offset, end_offset);
 
         let code = parse_error_code(error);
@@ -1985,6 +1988,7 @@ mod tests {
         );
 
         assert_eq!(diagnostic.range.start, Position::new(0, 3));
+        assert_eq!(diagnostic.range.end, Position::new(0, 3));
         Ok(())
     }
 
@@ -1999,6 +2003,7 @@ mod tests {
         );
 
         assert_eq!(diagnostic.range.start, Position::new(0, 2));
+        assert_eq!(diagnostic.range.end, Position::new(0, 2));
         Ok(())
     }
 

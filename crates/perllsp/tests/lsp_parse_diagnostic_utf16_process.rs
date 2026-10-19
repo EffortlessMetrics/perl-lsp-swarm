@@ -81,6 +81,71 @@ fn residue_range(items: &[Value]) -> Result<&Value> {
         .context("parser residue diagnostic omitted its range")
 }
 
+fn wait_for_fatal_range(client: &mut RealProcessClient, line: u64) -> Result<Value> {
+    let deadline = Instant::now() + timeout();
+    loop {
+        let items = diagnostics(client)?;
+        if let Some(range) = items
+            .iter()
+            .find(|item| {
+                item["code"] == "PL001"
+                    && item.pointer("/range/start/line") == Some(&json!(line))
+                    && item.pointer("/range/start/character") == Some(&json!(5))
+            })
+            .and_then(|item| item.get("range"))
+        {
+            return Ok(range.clone());
+        }
+        ensure!(Instant::now() < deadline, "fatal parser diagnostic never appeared: {items:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn fatal_parse_error_ranges_cover_complete_unicode_scalars_in_normal_pull() -> Result<()> {
+    let mut client = start("normal")?;
+    client.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": URI, "languageId": "perl", "version": 1,
+                "text": "last 𐐀::LABEL;"
+            }
+        }),
+    )?;
+    let astral = wait_for_fatal_range(&mut client, 0)?;
+
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": URI, "version": 2 },
+            "contentChanges": [{ "text": "print \"😀\";\nlast é::LABEL;" }]
+        }),
+    )?;
+    let bmp = wait_for_fatal_range(&mut client, 1)?;
+
+    ensure!(
+        astral
+            == json!({
+                "start": { "line": 0, "character": 5 },
+                "end": { "line": 0, "character": 7 }
+            }),
+        "fatal normal-pull error must cover the astral scalar: {astral}"
+    );
+    ensure!(
+        bmp == json!({
+            "start": { "line": 1, "character": 5 },
+            "end": { "line": 1, "character": 6 }
+        }),
+        "fatal normal-pull error must cover the BMP scalar after a multiline edit: {bmp}"
+    );
+
+    ensure!(request(&mut client, "shutdown", Value::Null)?.is_null());
+    client.notify("exit", Value::Null)?;
+    ensure!(client.wait_for_exit(timeout())?.success(), "server did not exit cleanly");
+    client.assert_transport_clean()
+}
+
 #[test]
 fn parse_error_ranges_cover_astral_scalars_after_multiline_edits() -> Result<()> {
     for mode in ["normal", "syntax-only"] {
