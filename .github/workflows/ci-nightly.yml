@@ -158,7 +158,7 @@ jobs:
         save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Install just
-      uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+      uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
       with:
         tool: just
 
@@ -744,7 +744,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
@@ -798,7 +798,7 @@ jobs:
         if: |
           env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/lcov.info
@@ -1009,7 +1009,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
@@ -1047,7 +1047,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
