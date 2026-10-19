@@ -21,7 +21,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 /// Versioned closeout-request schema accepted by this verifier.
 pub const CLOSEOUT_REQUEST_SCHEMA_V1: &str = "authority_transfer_leaf_closeout_request.v1";
@@ -1039,7 +1038,7 @@ fn resolve_commit(repository: &Path, revision: &str) -> Result<Option<String>, S
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) -> Result<Option<String>, String> {
-    let output = Command::new("git")
+    let output = crate::git_environment::command()
         .args(arguments)
         .current_dir(repository)
         .output()
@@ -1522,7 +1521,7 @@ mod tests {
     }
 
     fn git_at(directory: &Path, arguments: &[&str]) -> Result<String> {
-        let output = Command::new("git")
+        let output = crate::git_environment::command()
             .args(arguments)
             .current_dir(directory)
             .output()

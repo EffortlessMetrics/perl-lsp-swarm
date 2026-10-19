@@ -746,7 +746,10 @@ mod tests {
     use color_eyre::eyre::{Result, ensure, eyre};
 
     fn git_in(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         ensure!(
             output.status.success(),
             "git {} failed: {}",

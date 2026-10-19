@@ -152,6 +152,24 @@ execution, process-tree settlement on Windows, or a smaller cloud reserve. Keep
 the default reserve and usage threshold; obtain a fresh exact-command admission
 for subsequent work.
 
+### Git context in hook-driven tests
+
+Git hooks export repository-local variables that override both a child's working
+directory and `git -C`. Fixture Git commands must use
+`xtask::git_environment::isolate(Command::new("git"))` before adding their own
+arguments or deliberate fixture overrides. Identity-pinning tests should continue
+using the stronger `HermeticGit` fixture contract in `xtask/tests/git_test_support.rs`.
+The shared Vim checkout verifier also selects its own repository through this
+boundary. See [Git's foreign-repository hook guidance](https://git-scm.com/docs/githooks).
+
+The gate runner isolates only Cargo-test-class child processes, including chained
+setup/test commands recognized by its existing classifier. The parent hook and
+current-repository staged commit checks retain their Git context and index. No
+process-global environment changes, test exclusions or watchdog changes are needed.
+The native inventory, disposable-caller probes and staged-index control guard this
+distinction. This does not qualify a shell command that never reaches its intended
+tests; inspect test-execution evidence as well as its exit status.
+
 ### Capacity policy
 
 Before allocating any directory, admission checks the nearest existing ancestor

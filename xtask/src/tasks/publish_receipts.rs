@@ -553,7 +553,7 @@ mod tests {
         let value = command_output_or_unknown_with(failing, "UNVERIFIED");
         assert_eq!(value, "UNVERIFIED");
 
-        let mut succeeding = Command::new("git");
+        let mut succeeding = xtask::git_environment::isolate(Command::new("git"));
         succeeding.args(["--version"]);
         let value = command_output_or_unknown_with(succeeding, "UNVERIFIED");
         assert!(value.starts_with("git version"), "{value}");

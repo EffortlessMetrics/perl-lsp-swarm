@@ -82,7 +82,7 @@ fn copy_tree(source: &Path, target: &Path) -> std::io::Result<()> {
 /// cannot run here — the filter has to happen as the copy is made. When Git
 /// cannot answer, fall back to the full copy, which can only over-report.
 fn copy_packet_tree(source_root: &Path, target_root: &Path) -> anyhow::Result<()> {
-    let output = std::process::Command::new("git")
+    let output = xtask::git_environment::isolate(std::process::Command::new("git"))
         .arg("-C")
         .arg(source_root)
         .args(["ls-files", "-z", "--"])

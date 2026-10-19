@@ -109,7 +109,7 @@ fn init_repo_with_two_commits(repo: &Path) -> Result<()> {
 }
 
 fn run_git<const N: usize>(repo: &Path, args: [&str; N]) -> Result<()> {
-    let output = Command::new("git")
+    let output = xtask::git_environment::isolate(Command::new("git"))
         .args(args)
         .current_dir(repo)
         .output()

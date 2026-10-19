@@ -419,7 +419,10 @@ mod tests {
     use color_eyre::eyre::{Result, ensure, eyre};
 
     fn git(root: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(root).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(root)
+            .output()?;
         if !output.status.success() {
             return Err(eyre!("git {} failed", args.join(" ")));
         }

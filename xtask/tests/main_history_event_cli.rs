@@ -185,7 +185,10 @@ fn commit_file(repository: &Path, path: &str, contents: &str, message: &str) -> 
 }
 
 fn git(repository: &Path, arguments: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(arguments).current_dir(repository).output()?;
+    let output = xtask::git_environment::isolate(Command::new("git"))
+        .args(arguments)
+        .current_dir(repository)
+        .output()?;
     if !output.status.success() {
         bail!(
             "git {} failed with status {}\nstderr:\n{}",
