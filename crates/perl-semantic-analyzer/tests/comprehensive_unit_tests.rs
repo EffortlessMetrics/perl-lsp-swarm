@@ -542,6 +542,34 @@ fn semantic_analyzer_find_all_references_respects_same_scope_redeclaration()
 }
 
 #[test]
+fn semantic_analyzer_find_all_references_from_use_binds_owning_declaration()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #18115: find-references invoked from a use must resolve to the
+    // declaration that owns that use, not the first same-name declaration.
+    let code = "my $x = 1;\nprint $x;\nmy $x = 2;\nprint $x;\n";
+    let analyzer = parse_and_analyze(code);
+
+    let second_use = code.rfind("print $x").ok_or("second use not found")? + 6;
+    let refs = analyzer.find_all_references(second_use, false);
+    assert_eq!(refs.len(), 1, "second use belongs to the second declaration; got {refs:?}");
+    assert!(
+        refs.iter().any(|loc| loc.start == second_use),
+        "the queried use itself must be reported; got {refs:?}"
+    );
+
+    let code = "my $x = 1;\n{ my $x = $x; print $x; }\n";
+    let analyzer = parse_and_analyze(code);
+    let rhs = code.find("= $x").ok_or("RHS $x not found")? + 2;
+    let refs = analyzer.find_all_references(rhs, false);
+    assert_eq!(refs.len(), 1, "the RHS use belongs to the outer declaration; got {refs:?}");
+    assert!(
+        refs.iter().any(|loc| loc.start == rhs),
+        "the queried RHS use itself must be reported; got {refs:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn semantic_analyzer_empty_source() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = parse_and_analyze("");
     assert!(analyzer.semantic_tokens().is_empty());

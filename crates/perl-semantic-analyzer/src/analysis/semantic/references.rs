@@ -53,6 +53,23 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// The declaration a use actually binds to: the first candidate the
+    /// reference is visible from and not shadowed away from (#18115).
+    pub(super) fn bound_symbol<'a>(
+        &'a self,
+        symbols: &[&'a Symbol],
+        reference: &crate::symbol::SymbolReference,
+    ) -> Option<&'a Symbol> {
+        symbols
+            .iter()
+            .copied()
+            .find(|candidate| {
+                self.is_symbol_visible(candidate, reference.scope_id)
+                    && !self.is_shadowed_by_inner_declaration(candidate, reference)
+            })
+            .or_else(|| symbols.first().copied())
+    }
+
     /// Find all references to a symbol at a given position for Navigate/Analyze workflows.
     pub fn find_all_references(
         &self,
@@ -73,9 +90,9 @@ impl SemanticAnalyzer {
                             reference.scope_id,
                             reference.kind,
                         );
-                        if let Some(first_symbol) = symbols.first() {
+                        if let Some(symbol) = self.bound_symbol(&symbols, reference) {
                             return self
-                                .find_all_references_for_symbol(first_symbol, include_declaration);
+                                .find_all_references_for_symbol(symbol, include_declaration);
                         }
                     }
                 }
@@ -169,9 +186,10 @@ impl SemanticAnalyzer {
             if let Some(binding) = binding {
                 return binding.location.start != symbol.location.start;
             }
-            if current_scope == symbol.scope_id {
-                return false;
-            }
+            // No capturing declaration has taken effect in this scope yet
+            // (the reference precedes the end of its declaring statement,
+            // as an initializer RHS does): the binding lives further out,
+            // so keep walking instead of crediting `symbol`.
             let Some(scope) = self.symbol_table.scopes.get(&current_scope) else {
                 return false;
             };
