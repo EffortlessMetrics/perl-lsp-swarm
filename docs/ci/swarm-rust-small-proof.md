@@ -18,11 +18,15 @@ by the source repository until a separate deliberate migration.
 
 ## Lane receipt
 
-`cargo run -p xtask --locked -- rust-small-proof` produces a versioned receipt
+The governed script selects
+`cargo run -p perl-rust-small-verifier --bin perl-rust-small-proof --locked`.
+This no-argument producer delegates directly to the unchanged canonical xtask owner.
+The existing `cargo run -p xtask --locked -- rust-small-proof` remains supported
+(including its optional `--receipt <path>`). Both produce a versioned receipt
 (`rust_small_proof.v1`) at `target/receipts/rust-small-proof.json`, or at
 `--receipt <path>`, after admitting the destination and establishing a clean
 candidate. The schema binds the candidate SHA, `rustc`/`cargo` versions, and
-scorecard profile/features from the pinned argv to all nine selected steps.
+scorecard profile/features from the pinned argv to all ten selected steps.
 Outcomes are `ok`, `product_failure`, `not_completed`, `instrument_failure`,
 and `not_run`.
 
@@ -89,7 +93,7 @@ artifact exclusion through the producer or verifier entry points.
 unknown fields; missing, extra, reordered, or renamed steps; argv drift;
 inconsistent census/outcome/exit-code combinations; execution after the first
 failure; and a subject differing from the clean candidate, toolchain, or
-scorecard profile. All nine steps and their typed failure rules remain the
+scorecard profile. All ten steps and their typed failure rules remain the
 canonical lane contract.
 
 **Verification checks consistency and candidate identity, not success.** A
@@ -98,4 +102,14 @@ lane passed must inspect `result`. Verification also does not establish
 latest-attempt freshness: a preflight refusal can preserve an older receipt
 for the same candidate. The #8408 route consumer owns attempt association and
 must not treat a preserved artifact as evidence that a refused invocation ran.
-This command does not change workflow routing or artifact consumption.
+The lightweight producer changes administrative bootstrap only; canonical product
+argv, order, formatter, receipt and result custody are retained. Historical run
+`38850665896` at `41964ee26d5917912a1d8f2805f48f6d50020b16` passed functionally
+in 49m26s with reusable `752fad709cf3da63a69d004af2867b0e77ad0af2`.
+Its isolated verifier took 16m55s, leaving 32m31s even if that entire cost vanished.
+Producer bootstrap was about 11m12s, and canonical execution took 18m02s after
+that bootstrap. Moving product compilation later can offset bootstrap savings;
+these intervals do not establish a future speedup or the 20-minute goal.
+Fresh composed consumer proof requires separately approved live reusable-pin
+admission and the exact reviewed combined candidate. Source preparation grants
+no runner allowance, routine-event activation, or consumer dispatch authority.

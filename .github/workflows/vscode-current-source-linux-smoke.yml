@@ -33,6 +33,9 @@ permissions:
 
 jobs:
   current-source-linux-smoke:
+    # Interim draft exclusion before runner, matrix, setup, or cache allocation.
+    # Non-draft admission is unchanged; Ready alone is not reviewed CI approval.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Current-source Linux smoke (${{ matrix.vscode_version }})
     runs-on: ubuntu-24.04
     # 30 minutes: the packaged journeys now include the crash-recovery legs

@@ -25,6 +25,9 @@ permissions:
 
 jobs:
   installed-first-hour-windows:
+    # Interim draft exclusion before runner, matrix, setup, or cache allocation.
+    # Non-draft admission is unchanged; Ready alone is not reviewed CI approval.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Installed first-hour bytes (Windows, stable)
     # Governed as vscode_installed_first_hour_windows in policy/ci-lane-whitelist.toml.
     runs-on: windows-latest

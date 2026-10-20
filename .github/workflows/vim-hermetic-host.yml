@@ -37,6 +37,9 @@ concurrency:
 
 jobs:
   hermetic-host-run:
+    # Interim draft exclusion before runner, matrix, setup, or cache allocation.
+    # Non-draft admission is unchanged; Ready alone is not reviewed CI approval.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: actual Vim + vim-lsp + perllsp / Linux x64
     runs-on: ubuntu-latest
     timeout-minutes: 150

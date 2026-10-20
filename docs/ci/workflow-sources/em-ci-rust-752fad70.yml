@@ -1,0 +1,1992 @@
+name: EM CI Rust
+
+on:
+  workflow_call:
+    outputs:
+      evidence:
+        description: Subject-bound selected proof result; missing evidence is NOT_PROVEN
+        value: ${{ jobs.result.outputs.evidence }}
+      receipt_name:
+        description: Artifact containing the exact successful result envelope
+        value: ${{ jobs.result.outputs.receipt_name }}
+    inputs:
+      force_hosted:
+        description: Use the enabled hosted route; never grants external source trusted access
+        required: false
+        default: false
+        type: boolean
+      profile:
+        description: light, standard, heavy, or large
+        required: true
+        type: string
+      script:
+        description: Repository-owned proof script
+        required: false
+        default: .ci/run.sh
+        type: string
+      result_script:
+        description: Optional repository result policy, run read-only after exact proof validation
+        required: false
+        default: ''
+        type: string
+      artifact_lane:
+        description: "Closed artifact lane: ripr, perl-rust-small or failure-diagnostics; empty when disabled"
+        required: false
+        default: ''
+        type: string
+      upload_artifacts:
+        description: Opt in to the selected bounded artifact lane
+        required: false
+        default: false
+        type: boolean
+      proof_admission:
+        description: Optional closed native-review-v1 recheck after allocation and before proof
+        required: false
+        default: ''
+        type: string
+      fetch_depth:
+        description: Checkout depth; use 0 only when the proof compares Git history
+        required: false
+        default: 1
+        type: number
+
+permissions:
+  contents: read
+
+env:
+  # The reusable workflow and image move together. Keeping this explicit lets the
+  # currently activated image enforce the same version before the replacement
+  # image carrying the ENV marker is published and activated.
+  EM_CI_RUST_VERSION: "1.98.1"
+  EM_CI_RUST_COMPATIBILITY_VERSION: "1.95.0"
+  RUSTUP_TOOLCHAIN: "1.98.1"
+
+jobs:
+  classify:
+    name: Classify trust and profile
+    # Native selection allocates no hosted coordinator on the owned path.
+    # The classifier executes only this immutable workflow's code, no checkout.
+    runs-on: >-
+      ${{ fromJSON((vars.EM_CI_GITHUB_HOSTED_ENABLED == 'true' && (inputs.force_hosted || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot')))) && '"ubuntu-24.04"' || '{"group":"em-ci-build","labels":["self-hosted","linux","x64","rust-standard"]}') }}
+    timeout-minutes: 5
+    outputs:
+      profile: ${{ steps.classify.outputs.profile }}
+      self_hosted: ${{ steps.classify.outputs.self_hosted }}
+      hosted_enabled: ${{ steps.classify.outputs.hosted_enabled }}
+      runner_image: ${{ steps.classify.outputs.runner_image }}
+    steps:
+      # This job executes only the immutable reusable-workflow source. It does not
+      # check out caller-controlled code or consume repository secrets.
+      - id: classify
+        shell: bash
+        env:
+          REQUESTED_FORCE_HOSTED: ${{ inputs.force_hosted }}
+          REQUESTED_PROFILE: ${{ inputs.profile }}
+          REQUESTED_FETCH_DEPTH: ${{ inputs.fetch_depth }}
+          REQUESTED_PROOF_ADMISSION: ${{ inputs.proof_admission }}
+          REQUESTED_RESULT_SCRIPT: ${{ inputs.result_script }}
+          REQUESTED_PROOF_SCRIPT: ${{ inputs.script }}
+          REQUESTED_UPLOAD_ARTIFACTS: ${{ inputs.upload_artifacts }}
+          REQUESTED_ARTIFACT_LANE: ${{ inputs.artifact_lane }}
+          HOSTED_ENABLED: ${{ vars.EM_CI_GITHUB_HOSTED_ENABLED }}
+          RUNNER_IMAGE: ${{ vars.EM_CI_RUNNER_IMAGE }}
+        run: |
+          set -euo pipefail
+
+          case "$REQUESTED_PROFILE" in
+            light|standard|heavy|large) ;;
+            *)
+              echo "::error::unknown EM CI profile: $REQUESTED_PROFILE"
+              exit 64
+              ;;
+          esac
+
+          case "$REQUESTED_FETCH_DEPTH" in
+            0|1) ;;
+            *)
+              echo "::error::fetch_depth must be 0 or 1"
+              exit 64
+              ;;
+          esac
+
+          case "${REQUESTED_PROOF_ADMISSION:-}" in
+            '') ;;
+            native-review-v1)
+              [[ "$GITHUB_EVENT_NAME" == pull_request && "$REQUESTED_FETCH_DEPTH" == 0 ]] || exit 64
+              ;;
+            *) exit 64 ;;
+          esac
+
+          case "$REQUESTED_UPLOAD_ARTIFACTS" in
+            true)
+              case "$REQUESTED_ARTIFACT_LANE" in
+                ripr) [[ -n "$REQUESTED_RESULT_SCRIPT" ]] || exit 64 ;;
+                perl-rust-small)
+                  [[ "$GITHUB_REPOSITORY" == EffortlessMetrics/perl-lsp-swarm &&
+                     "$REQUESTED_PROFILE" == standard && "$REQUESTED_FETCH_DEPTH" == 0 &&
+                     "$REQUESTED_PROOF_SCRIPT" == .ci/rust-standard-proof.sh &&
+                     "$REQUESTED_RESULT_SCRIPT" == .ci/rust-standard-result.sh ]] || exit 64
+                  ;;
+                failure-diagnostics) [[ -z "$REQUESTED_RESULT_SCRIPT" ]] || exit 64 ;;
+                *) exit 64 ;;
+              esac
+              ;;
+            false) [[ -z "$REQUESTED_ARTIFACT_LANE" ]] || exit 64 ;;
+            *) exit 64 ;;
+          esac
+
+          if [[ -n "${REQUESTED_RESULT_SCRIPT:-}" ]]; then
+            [[ "$REQUESTED_RESULT_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ && "$REQUESTED_RESULT_SCRIPT" != /* && "$REQUESTED_RESULT_SCRIPT" != *..* ]] || {
+              echo '::error::result_script must be a safe relative repository path'
+              exit 64
+            }
+          fi
+
+          if [[ "${HOSTED_ENABLED,,}" == true ]]; then
+            hosted_enabled=true
+          else
+            hosted_enabled=false
+          fi
+
+          case "$GITHUB_EVENT_NAME" in
+            push|merge_group|workflow_dispatch|schedule)
+              self_hosted=true
+              ;;
+            pull_request)
+              head_repo=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH")
+              author_type=$(jq -r '.pull_request.user.type // ""' "$GITHUB_EVENT_PATH")
+              if [[ "$head_repo" == "$GITHUB_REPOSITORY" && "$author_type" != Bot ]]; then
+                self_hosted=true
+              else
+                self_hosted=false
+              fi
+              ;;
+            *)
+              echo "::error::event $GITHUB_EVENT_NAME is not approved for the EM CI reusable workflow"
+              exit 64
+              ;;
+          esac
+
+          case "$REQUESTED_FORCE_HOSTED" in
+            true)
+              [[ "$hosted_enabled" == true ]] || {
+                echo '::error::forced hosted execution requires the existing hosted-enable policy'
+                exit 64
+              }
+              self_hosted=false
+              ;;
+            false) ;;
+            *) echo '::error::force_hosted must be a boolean'; exit 64 ;;
+          esac
+
+          if [[ "$hosted_enabled" == true ]]; then
+            [[ "$RUNNER_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::EM_CI_RUNNER_IMAGE must be an immutable GHCR sha256 digest reference'
+              exit 64
+            }
+          fi
+
+          {
+            echo "profile=$REQUESTED_PROFILE"
+            echo "self_hosted=$self_hosted"
+            echo "hosted_enabled=$hosted_enabled"
+            echo "runner_image=$RUNNER_IMAGE"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo '## EM CI classification'
+            echo
+            echo "- profile: \`$REQUESTED_PROFILE\`"
+            echo "- fetch_depth: \`$REQUESTED_FETCH_DEPTH\`"
+            echo "- self_hosted: \`$self_hosted\`"
+            echo "- hosted_enabled: \`$hosted_enabled\`"
+            echo "- event: \`$GITHUB_EVENT_NAME\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  light:
+    permissions: &proof_permissions
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+    name: Rust light
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'light'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-light]
+    timeout-minutes: 45
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: &proof_outputs
+      infrastructure_failure: ${{ steps.toolchain.outputs.infrastructure_failure || steps.prepare.outputs.infrastructure_failure }}
+      proof_outcome: ${{ steps.proof.outcome }}
+      proof_entered_at: ${{ steps.proof.outputs.proof_entered_at }}
+      proof_run_attempt: ${{ steps.proof.outputs.proof_run_attempt }}
+      attachment_producer: ${{ steps.artifact_prepare.outputs.producer }}
+      attachment_name: ${{ steps.artifact_prepare.outputs.name }}
+      attachment_id: ${{ steps.upload_artifacts.outputs.artifact-id }}
+    steps: &proof_steps
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        id: checkout
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ inputs.fetch_depth }}
+      - name: Verify Rust toolchain contract
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          primary=$EM_CI_RUST_VERSION
+          compat=${EM_CI_RUST_COMPATIBILITY_VERSION:-}
+          [[ "$primary" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo '::error::the reusable workflow does not expose an exact EM CI primary Rust version'
+            exit 78
+          }
+          if [[ -n "$compat" ]]; then
+            [[ "$compat" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo '::error::the reusable workflow does not expose an exact EM CI compatibility Rust version'
+              exit 78
+            }
+          fi
+
+          requested=''
+          toolchain_file=''
+          if [[ -f rust-toolchain.toml ]]; then
+            toolchain_file=rust-toolchain.toml
+          elif [[ -f rust-toolchain ]]; then
+            toolchain_file=rust-toolchain
+          fi
+          if [[ -n "$toolchain_file" ]]; then
+            if grep -Eq '^[[:space:]]*\[' "$toolchain_file"; then
+              requested=$(python3 -I - "$toolchain_file" <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+
+          path = pathlib.Path(sys.argv[1])
+          with path.open("rb") as stream:
+              data = tomllib.load(stream)
+          print(data.get("toolchain", {}).get("channel", ""))
+          PY
+              )
+            else
+              requested=$(tr -d '[:space:]' < "$toolchain_file")
+            fi
+          fi
+
+          if [[ -z "$requested" || "$requested" == "$primary" ]]; then
+            selected=$primary
+          elif [[ -n "$compat" && "$requested" == "$compat" ]]; then
+            selected=$compat
+          else
+            echo "::error::$toolchain_file requests Rust '$requested', but EM CI only supports primary ($primary) or compatibility (${compat:-none})"
+            exit 78
+          fi
+
+          # Only an approved exact toolchain that cannot execute is eligible.
+          # Repository pin/parse policy and version mismatches stay blocking.
+          # Probe outside the checkout so repository rustup configuration cannot
+          # masquerade as a runner/toolchain availability failure.
+          if ! probe_dir=$(mktemp -d "$RUNNER_TEMP/em-ci-toolchain-probe.XXXXXX"); then
+            echo 'infrastructure_failure=disposable_paths_unavailable' >> "$GITHUB_OUTPUT"
+            echo '::warning::cannot create disposable toolchain probe path; proof admission withdrawn'
+            exit 0
+          fi
+          if ! actual=$(cd "$probe_dir" && rustc +"$selected" --version | awk '{print $2}'); then
+            echo 'infrastructure_failure=toolchain_unavailable' >> "$GITHUB_OUTPUT"
+            echo '::warning::approved immutable-image toolchain cannot execute; proof admission withdrawn'
+            exit 0
+          fi
+          [[ "$actual" == "$selected" ]] || {
+            echo "::error::runner resolved Rust $actual for toolchain $selected, expected $selected"
+            exit 78
+          }
+
+          echo "RUSTUP_TOOLCHAIN=$selected" >> "$GITHUB_ENV"
+          echo "Rust toolchain selected: $selected"
+      - name: Record EM CI job context
+        if: steps.toolchain.outputs.infrastructure_failure == ''
+        shell: bash
+        env:
+          EM_CI_SELECTED_PROFILE: ${{ needs.classify.outputs.profile }}
+          EM_CI_SELF_HOSTED: ${{ env.EM_CI_EXECUTION_SELF_HOSTED }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg schema 'em-ci-job-context.v1' \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg job "$GITHUB_JOB" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg ref "$GITHUB_REF" \
+            --arg sha "$GITHUB_SHA" \
+            --arg profile "$EM_CI_SELECTED_PROFILE" \
+            --arg self_hosted "$EM_CI_SELF_HOSTED" \
+            --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schema:$schema,repository:$repository,workflow:$workflow,workflow_ref:$workflow_ref,run_id:$run_id,run_attempt:$run_attempt,job:$job,event:$event,ref:$ref,sha:$sha,profile:$profile,self_hosted:($self_hosted == "true"),admission_recorded_at:$started_at}' \
+            > "$RUNNER_TEMP/em-ci-job-context.json"
+      - name: Prepare disposable paths
+        id: prepare
+        if: steps.toolchain.outputs.infrastructure_failure == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! mkdir -p "$RUNNER_TEMP/cargo-target" "$RUNNER_TEMP/tmp"; then
+            echo 'infrastructure_failure=disposable_paths_unavailable' >> "$GITHUB_OUTPUT"
+            echo '::warning::cannot create disposable runner paths; proof admission withdrawn'
+            exit 0
+          fi
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP/tmp" >> "$GITHUB_ENV"
+      - name: Prepare canonical RIPR artifact root
+        id: artifact_prepare
+        if: inputs.upload_artifacts && (inputs.artifact_lane == 'ripr' || inputs.artifact_lane == 'perl-rust-small') && steps.toolchain.outcome == 'success' && steps.prepare.outcome == 'success' && steps.toolchain.outputs.infrastructure_failure == '' && steps.prepare.outputs.infrastructure_failure == ''
+        shell: bash
+        env:
+          ARTIFACT_LANE: ${{ inputs.artifact_lane }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+          NATIVE_OS: ${{ runner.os }}
+          NATIVE_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PYTHON'
+          import json, os, pathlib, re, stat
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def directory(path):
+              require(stat.S_ISDIR(path.lstat().st_mode), 'linked or non-directory artifact ancestor')
+
+          def prepare():
+              workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+              directory(workspace)
+              lane = os.environ.get('ARTIFACT_LANE', 'ripr')
+              require(lane in ('ripr', 'perl-rust-small'), 'unknown transport lane')
+              root = workspace
+              if lane == 'ripr':
+                  for component in ('.ci', 'artifacts', 'ripr'):
+                      root /= component
+                      try:
+                          directory(root)
+                      except FileNotFoundError:
+                          root.mkdir()
+                          directory(root)
+                  require(not any(root.iterdir()), 'artifact root is not fresh and empty')
+              job = json.loads(os.environ['NATIVE_JOB'])
+              require(type(job.get('check_run_id')) is int and job['check_run_id'] > 0, 'native producer identity missing')
+              sha = job.get('workflow_sha')
+              repository = job.get('workflow_repository')
+              path = job.get('workflow_file_path')
+              require(type(sha) is str and re.fullmatch('[0-9a-f]{40}', sha), 'defining workflow SHA missing')
+              require(repository in ('EffortlessMetrics/em-ci-workflows', 'EffortlessMetrics/em-ci') and
+                      path == '.github/workflows/rust.yml' and job.get('workflow_ref') == repository + '/' + path + '@' + sha,
+                      'defining reusable workflow must use an exact full SHA')
+              require(os.environ['NATIVE_OS'] == 'Linux' and os.environ['NATIVE_ARCH'] == 'X64', 'unsupported proof platform')
+              context_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'em-ci-job-context.json')
+              require(stat.S_ISREG(context_path.lstat().st_mode) and context_path.stat().st_nlink == 1, 'unsafe job context')
+              context = json.loads(context_path.read_text())
+              context.update(producer_check_run_id=job['check_run_id'], defining_workflow_ref=job['workflow_ref'],
+                             defining_workflow_sha=sha, defining_workflow_repository=repository,
+                             defining_workflow_path=path, runner_os=os.environ['NATIVE_OS'], runner_arch=os.environ['NATIVE_ARCH'])
+              context_path.write_text(json.dumps(context, sort_keys=True))
+              name = 'em-ci-rust-' + lane + '-' + context['profile'] + '-' + str(job['check_run_id']) + '-' + context['run_id'] + '-' + context['run_attempt']
+              if lane == 'perl-rust-small':
+                  temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+                  for parent in (temporary, *temporary.parents):
+                      directory(parent)
+                  root = temporary / name
+                  root.mkdir(mode=0o700)
+              with open(os.environ['GITHUB_ENV'], 'a') as output:
+                  output.write('EM_CI_LANE=' + lane + '\nEM_CI_ARTIFACT_DIR=' + str(root) + '\n')
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('name=' + name + '\nproducer=' + str(job['check_run_id']) + '\npath=' + str(root) + '\n')
+
+          if __name__ == '__main__':
+              prepare()
+          PYTHON
+      - name: Recheck native proof admission
+        id: admission
+        if: always() && !cancelled() && inputs.proof_admission == 'native-review-v1' && steps.checkout.outcome == 'success'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          EM_CI_ADMISSION_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PYTHON'
+          import datetime as dt, hashlib, json, os, pathlib, re, shutil, signal, stat, subprocess, tempfile, time, urllib.request
+
+          REPOSITORIES = ('EffortlessMetrics/perl-lsp-swarm', 'EffortlessMetrics/unsafe-review-swarm')
+          OWNERS = ('scripts/ci/check-pr-semantic-review-currentness.py',
+                    'scripts/ci/check-pr-review-convergence', 'scripts/ci/check-pr-review-convergence-core')
+          SHA = re.compile('[0-9a-f]{40}')
+          COORDINATOR = 'EffortlessSteven'
+
+
+          def require(ok):
+              if not ok:
+                  raise ValueError('native proof admission refused')
+
+
+          def pairs(rows):
+              value = {}
+              for key, item in rows:
+                  require(key not in value)
+                  value[key] = item
+              return value
+
+
+          def decode(raw):
+              return json.loads(raw, object_pairs_hook=pairs, parse_constant=lambda value: require(False))
+
+
+          def stamp(value):
+              return dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
+
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  raise ValueError('native metadata redirect refused')
+
+
+          class API:
+              def __init__(self, token):
+                  require(type(token) is str and token and '\n' not in token and '\r' not in token)
+                  self.token, self.calls, self.bytes = token, 0, 0
+                  self.opener = urllib.request.build_opener(NoRedirect)
+
+              def request(self, path, payload=None):
+                  self.calls += 1
+                  require(self.calls <= 40 and path.startswith(('/repos/', '/graphql')) and '..' not in path)
+                  data = None if payload is None else json.dumps(payload).encode()
+                  request = urllib.request.Request('https://api.github.com' + path, data=data, headers={
+                      'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json'})
+                  with self.opener.open(request, timeout=10) as response:
+                      require(response.status == 200)
+                      raw = response.read(1024**2 + 1)
+                  self.bytes += len(raw)
+                  require(len(raw) <= 1024**2 and self.bytes <= 16 * 1024**2)
+                  value = decode(raw)
+                  require(not (type(value) is dict and value.get('errors')))
+                  return value
+
+              def reviews(self, prefix):
+                  result = []
+                  for page in range(1, 6):
+                      batch = self.request(prefix + '/reviews?per_page=100&page=' + str(page))
+                      require(type(batch) is list)
+                      result.extend(batch)
+                      if len(batch) < 100:
+                          return result
+                  raise ValueError('review inventory exceeds bound')
+
+              def auto_merge(self, repository, pr):
+                  owner, repo = repository.split('/')
+                  query = '''query($owner:String!,$repo:String!,$pr:Int!) {
+                    repository(owner:$owner,name:$repo) { pullRequest(number:$pr) {
+                      autoMergeRequest { enabledAt enabledBy { login __typename } mergeMethod } } } }'''
+                  value = self.request('/graphql', dict(query=query, variables=dict(owner=owner, repo=repo, pr=pr)))
+                  return value['data']['repository']['pullRequest']['autoMergeRequest']
+
+              def threads(self, repository, pr):
+                  owner, repo = repository.split('/')
+                  query = '''query($owner:String!,$repo:String!,$pr:Int!,$after:String) {
+                    repository(owner:$owner,name:$repo) { pullRequest(number:$pr) {
+                      reviewThreads(first:100,after:$after) { nodes { id isResolved isOutdated comments(first:1) { totalCount } }
+                        pageInfo { hasNextPage endCursor } } } } }'''
+                  result, cursor = [], None
+                  for _ in range(5):
+                      value = self.request('/graphql', dict(query=query, variables=dict(owner=owner, repo=repo, pr=pr, after=cursor)))
+                      connection = value['data']['repository']['pullRequest']['reviewThreads']
+                      require(type(connection['nodes']) is list and type(connection['pageInfo']['hasNextPage']) is bool)
+                      for thread in connection['nodes']:
+                          require(thread['isResolved'] is True)
+                      result.extend(connection['nodes'])
+                      if not connection['pageInfo']['hasNextPage']:
+                          return result
+                      next_cursor = connection['pageInfo']['endCursor']
+                      require(type(next_cursor) is str and next_cursor and next_cursor != cursor)
+                      cursor = next_cursor
+                  raise ValueError('thread inventory exceeds bound')
+
+
+          def record(body):
+              require(type(body) is str and len(body.encode('utf-8')) <= 65536)
+              matches = re.findall(r'<!-- unsafe-review-admission-v1: (\{[^\n]*\}) -->', body)
+              require(len(matches) == 1 and body.count('<!-- unsafe-review-admission-v1:') == 1)
+              return decode(matches[0])
+
+
+          def subject(pr, repository, repository_id):
+              require(type(pr['number']) is int and pr['number'] > 0 and pr['state'] == 'open' and pr['draft'] is False)
+              for side in ('head', 'base'):
+                  require(pr[side]['repo']['full_name'] == repository and pr[side]['repo']['id'] == repository_id and
+                          type(pr[side]['sha']) is str and SHA.fullmatch(pr[side]['sha']))
+              require(pr['head']['repo']['fork'] is False and pr['base']['ref'] == 'main' and pr['user']['type'] == 'User')
+              return dict(repository=repository, pr=pr['number'], head=pr['head']['sha'], base=pr['base']['sha'])
+
+
+          def snapshot(event, env, api, now):
+              repository = env['GITHUB_REPOSITORY']
+              require(repository in REPOSITORIES and env['GITHUB_EVENT_NAME'] == 'pull_request' and env['GITHUB_RUN_ATTEMPT'] == '1')
+              require(re.fullmatch('[1-9][0-9]{0,19}', env['GITHUB_RUN_ID']) and SHA.fullmatch(env['GITHUB_SHA']))
+              require(env['GITHUB_ACTOR'] == env['GITHUB_TRIGGERING_ACTOR'] == event['sender']['login'] == COORDINATOR and
+                      event['sender']['type'] == 'User')
+              native_repository = event['repository']
+              require(native_repository['full_name'] == repository and type(native_repository['id']) is int and native_repository['id'] > 0)
+              expected = subject(event['pull_request'], repository, native_repository['id'])
+              require(env['GITHUB_REF'] == 'refs/pull/' + str(expected['pr']) + '/merge')
+              prefix = '/repos/' + repository
+              repo = api.request(prefix)
+              require(repo['id'] == native_repository['id'] and repo['full_name'] == repository and repo['private'] is False and repo['default_branch'] == 'main')
+              run = api.request(prefix + '/actions/runs/' + env['GITHUB_RUN_ID'] + '/attempts/1')
+              require(str(run['id']) == env['GITHUB_RUN_ID'] and run['run_attempt'] == 1 and run['event'] == 'pull_request' and
+                      run['repository']['id'] == repo['id'] and run['head_repository']['id'] == repo['id'] and
+                      run['head_sha'] == expected['head'] and run['status'] == 'in_progress' and run['conclusion'] is None and
+                      run['actor']['login'] == run['triggering_actor']['login'] == COORDINATOR)
+              permission = api.request(prefix + '/collaborators/' + COORDINATOR + '/permission')
+              require(permission['permission'] == 'admin' and permission['user']['login'] == COORDINATOR)
+              branch = api.request(prefix + '/branches/main')
+              require(branch['protected'] is True and branch['commit']['sha'] == expected['base'])
+              path = prefix + '/pulls/' + str(expected['pr'])
+              current = api.request(path)
+              require(subject(current, repository, repo['id']) == expected and current['mergeable'] is True and
+                      current['merge_commit_sha'] == env['GITHUB_SHA'] and not current['requested_reviewers'] and not current['requested_teams'])
+              integration = api.request(prefix + '/git/commits/' + env['GITHUB_SHA'])
+              require(integration['sha'] == env['GITHUB_SHA'] and SHA.fullmatch(integration['tree']['sha']) and
+                      [p['sha'] for p in integration['parents']] == [expected['base'], expected['head']])
+              ref = api.request(prefix + '/git/ref/pull/' + str(expected['pr']) + '/merge')
+              require(ref['object']['type'] == 'commit' and ref['object']['sha'] == env['GITHUB_SHA'])
+              action = event['action']
+              if action == 'auto_merge_enabled':
+                  native = current['auto_merge']
+                  prior = event['pull_request']['auto_merge']
+                  require(type(native) is dict and type(prior) is dict and native['enabled_by']['login'] == COORDINATOR and
+                          prior['enabled_by']['login'] == COORDINATOR and native['merge_method'] == prior['merge_method'] and
+                          native['merge_method'] in ('merge', 'squash', 'rebase'))
+                  # REST/event auto_merge has no timestamp. Use the native GraphQL
+                  # request identity and bind its enabledAt to this original run.
+                  request = api.auto_merge(repository, expected['pr'])
+                  require(type(request) is dict and request['enabledBy'] == dict(login=COORDINATOR, __typename='User') and
+                          request['mergeMethod'] == native['merge_method'].upper())
+                  require(0 <= (stamp(run['created_at']) - stamp(request['enabledAt'])).total_seconds() <= 600)
+              else:
+                  require(repository == 'EffortlessMetrics/unsafe-review-swarm' and action == 'edited')
+                  request = record(current['body'])
+                  require(current['body'] == event['pull_request']['body'])
+                  previous = event['changes']['body']['from']
+                  require(type(previous) is str and ('<!-- unsafe-review-admission-v1:' not in previous or
+                          record(previous)['request_id'] != request['request_id']))
+                  require(set(request) == set(expected) | {'integration', 'tree', 'coordinator', 'request_id', 'review_id', 'issued_at'})
+                  require(all(request[k] == v for k, v in expected.items()) and request['integration'] == env['GITHUB_SHA'] and
+                          request['tree'] == integration['tree']['sha'] and request['coordinator'] == COORDINATOR and
+                          re.fullmatch('[0-9a-f]{32}', request['request_id']) and type(request['review_id']) is int and request['review_id'] > 0)
+                  require(0 <= (stamp(event['pull_request']['updated_at']) - stamp(request['issued_at'])).total_seconds() <= 60 and
+                          0 <= (now - stamp(request['issued_at'])).total_seconds() <= 600)
+              reviews = api.reviews(path)
+              if action == 'edited':
+                  require(any(row.get('id') == request['review_id'] and row.get('commit_id') == expected['head'] and
+                              row.get('state') in ('APPROVED', 'COMMENTED') and row.get('user', {}).get('login') == COORDINATOR and
+                              stamp(row['submitted_at']) <= stamp(request['issued_at']) for row in reviews))
+              threads = api.threads(repository, expected['pr'])
+              return dict(subject=expected, integration=env['GITHUB_SHA'], tree=integration['tree']['sha'], request=request,
+                          reviews=reviews, threads=threads, actor=COORDINATOR, run=env['GITHUB_RUN_ID'], attempt='1')
+
+
+          def execute(argv, cwd, env, limit=1024**2):
+              # Bound child wall time and captured output; never print raw API/owner text.
+              with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+                  process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
+                  deadline = time.monotonic() + 90
+                  try:
+                      while process.poll() is None:
+                          require(time.monotonic() < deadline and os.fstat(out.fileno()).st_size <= limit and
+                                  os.fstat(err.fileno()).st_size <= 65536)
+                          time.sleep(0.05)
+                      require(process.returncode == 0 and os.fstat(out.fileno()).st_size <= limit and os.fstat(err.fileno()).st_size <= 65536)
+                      out.seek(0)
+                      return out.read(limit + 1)
+                  finally:
+                      if process.poll() is None:
+                          os.killpg(process.pid, signal.SIGKILL)
+                          process.wait()
+
+
+          def owner_results(semantic, convergence, expected):
+              require(semantic.get('schema_version') == 'semantic_review_currentness.v1' and semantic.get('classification') == 'REVIEW_CURRENT' and
+                      semantic.get('acquisition_mode') == 'gh_live' and semantic.get('repo') == expected['repository'] and
+                      semantic.get('pr') == expected['pr'] and semantic.get('current_head') == expected['head'])
+              require(convergence.get('schema_version') == 'convergence_core.v1' and
+                      convergence.get('wrapper_schema_version') == 'pr_review_convergence.v2' and
+                      convergence.get('pr') == expected['pr'] and convergence.get('headRefOid') == expected['head'] and
+                      convergence.get('converged') is True and convergence.get('native_review_facts_converged') is True)
+
+
+          def owners(expected, env, directory, run=execute):
+              # No candidate checkout or global/user Git configuration reaches these tools.
+              home = directory / 'home'; home.mkdir(mode=0o700)
+              objects = pathlib.Path(env['GITHUB_WORKSPACE']) / '.git/objects'
+              require(objects.is_absolute() and '\n' not in str(objects) and '\r' not in str(objects) and '..' not in objects.parts and
+                      stat.S_ISDIR(objects.lstat().st_mode) and not objects.is_symlink())
+              child = dict(PATH='/usr/local/bin:/usr/bin:/bin', HOME=str(home), XDG_CONFIG_HOME=str(home),
+                           TMPDIR=str(directory), LANG='C.UTF-8', PYTHONIOENCODING='utf-8',
+                           GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_TERMINAL_PROMPT='0',
+                           GIT_NO_REPLACE_OBJECTS='1', GH_TOKEN=env['EM_CI_ADMISSION_TOKEN'], GH_HOST='github.com', GH_PROMPT_DISABLED='1')
+              # A missing immutable-image tool is an admission refusal, never typed fallback.
+              require(all(shutil.which(tool, path=child['PATH']) for tool in ('git', 'gh', 'jq', 'bash', 'python3')))
+              root = directory / 'source'; root.mkdir(mode=0o700)
+              run(['git', 'init', '--quiet', str(root)], directory, child)
+              (root / '.git/objects/info/alternates').write_text(str(objects.resolve()) + '\n')
+              run(['git', 'config', 'core.hooksPath', '/dev/null'], root, child)
+              run(['git', 'config', 'core.attributesFile', '/dev/null'], root, child)
+              run(['git', 'remote', 'add', 'origin', 'https://github.com/' + expected['repository'] + '.git'], root, child)
+              trusted = directory / 'owners'; trusted.mkdir(mode=0o700)
+              for path in OWNERS:
+                  row = run(['git', 'ls-tree', expected['base'], '--', path], root, child, 4096).decode().strip()
+                  match = re.fullmatch(r'(100644|100755) blob ([0-9a-f]{40})\t' + re.escape(path), row)
+                  require(match)
+                  raw = run(['git', 'cat-file', 'blob', match[2]], root, child, 512 * 1024)
+                  require(hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == match[2])
+                  (trusted / pathlib.Path(path).name).write_bytes(raw)
+              semantic = decode(run(['python3', '-I', str(trusted / pathlib.Path(OWNERS[0]).name), str(expected['pr']), expected['repository'],
+                                     '--root', str(root), '--expected-head', expected['head']], root, child))
+              raw = run(['bash', str(trusted / pathlib.Path(OWNERS[1]).name), str(expected['pr']), expected['repository']], root, child).decode()
+              convergence = decode(raw[raw.index('{'):])
+              owner_results(semantic, convergence, expected)
+
+
+          def admit(event, env, api, now, invoke=owners):
+              before = snapshot(event, env, api, now)
+              temporary = pathlib.Path(env['RUNNER_TEMP'])
+              require(temporary.is_absolute() and '\n' not in str(temporary) and '..' not in temporary.parts)
+              with tempfile.TemporaryDirectory(prefix='em-ci-native-admission-', dir=temporary) as path:
+                  invoke(before['subject'], env, pathlib.Path(path))
+              # Repeat authenticated native authority after the owning checks, immediately
+              # before emitting proof-entry eligibility. These reads are not an atomic lock.
+              after = snapshot(event, env, api, dt.datetime.now(dt.timezone.utc))
+              require(before == after)
+              return dict(schema='em-ci-native-proof-admission.v1', repository=env['GITHUB_REPOSITORY'],
+                          run_id=env['GITHUB_RUN_ID'], run_attempt=env['GITHUB_RUN_ATTEMPT'], sha=env['GITHUB_SHA'],
+                          head=before['subject']['head'], base=before['subject']['base'], tree=before['tree'])
+
+
+          if __name__ == '__main__':
+              try:
+                  event_path = pathlib.Path(os.environ['GITHUB_EVENT_PATH'])
+                  require(event_path.stat().st_size <= 1024**2)
+                  event = decode(event_path.read_bytes())
+                  receipt = admit(event, os.environ, API(os.environ['EM_CI_ADMISSION_TOKEN']), dt.datetime.now(dt.timezone.utc))
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                      output.write('admitted=true\n')
+                  print(json.dumps(receipt, sort_keys=True))
+              except Exception:
+                  print('::error::native proof admission refused or unavailable')
+                  raise SystemExit(1)
+          PYTHON
+      - name: Run repository proof
+        id: proof
+        if: (inputs.proof_admission == '' || (steps.admission.outcome == 'success' && steps.admission.outputs.admitted == 'true')) && steps.toolchain.outcome == 'success' && steps.prepare.outcome == 'success' && steps.toolchain.outputs.infrastructure_failure == '' && steps.prepare.outputs.infrastructure_failure == '' && (!inputs.upload_artifacts || (inputs.artifact_lane != 'ripr' && inputs.artifact_lane != 'perl-rust-small') || steps.artifact_prepare.outcome == 'success')
+        shell: bash
+        env:
+          EM_CI_PROOF_SCRIPT: ${{ inputs.script }}
+        run: |
+          set -euo pipefail
+          [[ "$EM_CI_PROOF_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$EM_CI_PROOF_SCRIPT" != /* ]]
+          [[ "$EM_CI_PROOF_SCRIPT" != *..* ]]
+          [[ -f "$EM_CI_PROOF_SCRIPT" ]]
+          # Validate the repository-owned entry point before recording entry.
+          # The marker is immediately before execution, never path preparation.
+          entered_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          context="$RUNNER_TEMP/em-ci-job-context.json"
+          jq --arg entered_at "$entered_at" '. + {proof_started_at:$entered_at}' \
+            "$context" > "$context.entry"
+          mv -- "$context.entry" "$context"
+          echo "proof_entered_at=$entered_at" >> "$GITHUB_OUTPUT"
+          echo "proof_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          bash -- "$EM_CI_PROOF_SCRIPT"
+      - name: Verify canonical Perl product receipt
+        id: perl_semantics
+        env:
+          PERL_PACKET_DIR: ${{ steps.artifact_prepare.outputs.path }}
+        if: always() && !cancelled() && inputs.upload_artifacts && inputs.artifact_lane == 'perl-rust-small' && steps.proof.outputs.proof_entered_at != '' && (steps.proof.outcome == 'success' || steps.proof.outcome == 'failure')
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+          [[ "$EM_CI_LANE" == perl-rust-small && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          python3 -I - <<'PYTHON'
+          import hashlib, os, pathlib, re, stat, subprocess
+
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          sha = os.environ['GITHUB_SHA']
+          if not re.fullmatch('[0-9a-f]{40}', sha):
+              raise ValueError('missing immutable Perl source')
+          # Ignore caller-provided Git environment, index bits, config and replace refs.
+          git_env = dict(PATH='/usr/bin:/bin', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_NO_REPLACE_OBJECTS='1')
+          def object_bytes(kind, oid):
+              raw = subprocess.check_output(['/usr/bin/git', '--no-replace-objects', 'cat-file', kind, oid], cwd=root, env=git_env)
+              actual = hashlib.sha1(kind.encode() + b' ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+              if actual != oid:
+                  raise ValueError('immutable Perl Git object changed')
+              return raw
+
+          commit = object_bytes('commit', sha)
+          first = commit.split(b'\n', 1)[0]
+          if not re.fullmatch(b'tree [0-9a-f]{40}', first):
+              raise ValueError('invalid immutable Perl commit')
+
+          def tree(oid, directory):
+              if not stat.S_ISDIR(directory.lstat().st_mode):
+                  raise ValueError('linked Perl source directory')
+              raw = object_bytes('tree', oid)
+              cursor = 0
+              while cursor < len(raw):
+                  end = raw.index(b'\0', cursor)
+                  mode, name = raw[cursor:end].split(b' ', 1)
+                  child = raw[end + 1:end + 21]
+                  if len(child) != 20 or name in (b'', b'.', b'..', b'.git') or b'/' in name:
+                      raise ValueError('unsafe immutable Perl tree')
+                  cursor = end + 21
+                  path = directory / os.fsdecode(name)
+                  info = path.lstat()
+                  if mode == b'40000':
+                      tree(child.hex(), path)
+                      continue
+                  digest = hashlib.sha1()
+                  if mode == b'120000' and stat.S_ISLNK(info.st_mode):
+                      data = os.readlink(os.fsencode(path))
+                      digest.update(b'blob ' + str(len(data)).encode() + b'\0' + data)
+                  elif mode in (b'100644', b'100755') and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                      if bool(info.st_mode & stat.S_IXUSR) != (mode == b'100755'):
+                          raise ValueError('Perl source mode changed')
+                      digest.update(b'blob ' + str(info.st_size).encode() + b'\0')
+                      with path.open('rb') as stream:
+                          for block in iter(lambda: stream.read(1024**2), b''):
+                              digest.update(block)
+                  else:
+                      raise ValueError('Perl source type changed or unsupported submodule')
+                  if digest.digest() != child:
+                      raise ValueError('Perl source differs from immutable commit')
+
+          tree(first[5:].decode(), root)
+          PYTHON
+          git diff --quiet HEAD --
+          [[ -z "$(git ls-files --others --exclude-standard)" ]]
+          # Execute the owning validator with the proof's existing target/toolchain.
+          # No duplicated Python implementation may certify product semantics.
+          unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN EM_CI_ADMISSION_TOKEN
+          cargo run -p xtask --locked -- rust-small-proof --verify-receipt "$PERL_PACKET_DIR/rust-small-proof.json"
+      - name: Record compiler cache statistics
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          if sccache --show-stats --stats-format json > "$RUNNER_TEMP/em-ci-sccache.json" 2>/dev/null; then
+            cat "$RUNNER_TEMP/em-ci-sccache.json"
+          else
+            sccache --show-stats | tee "$RUNNER_TEMP/em-ci-sccache.txt" || true
+          fi
+      - name: Finalize EM CI job context
+        if: always()
+        shell: bash
+        env:
+          EM_CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/em-ci-job-context.json"
+          [[ -f "$context" ]] || exit 0
+          temporary="$context.tmp"
+          jq \
+            --arg status "$EM_CI_JOB_STATUS" \
+            --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '. + {job_status:$status,proof_finished_at:$finished_at}' \
+            "$context" > "$temporary"
+          mv "$temporary" "$context"
+      - name: Preserve self-hosted job evidence
+        if: always() && env.EM_CI_EXECUTION_SELF_HOSTED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir=/home/runner/_diag/em-ci-evidence
+          install -d -m 0755 "$evidence_dir"
+          for file in \
+            "$RUNNER_TEMP/em-ci-job-context.json" \
+            "$RUNNER_TEMP/em-ci-sccache.json" \
+            "$RUNNER_TEMP/em-ci-sccache.txt"
+          do
+            [[ -f "$file" ]] || continue
+            cp -- "$file" "$evidence_dir/$(basename "$file")"
+          done
+
+      - name: Validate Perl export custody
+        id: perl_package_custody
+        if: always() && !cancelled() && inputs.upload_artifacts && inputs.artifact_lane == 'perl-rust-small' && steps.proof.outputs.proof_entered_at != '' && steps.artifact_prepare.outcome == 'success'
+        shell: bash
+        env:
+          PACKET_DIR: ${{ steps.artifact_prepare.outputs.path }}
+          PACKET_CONTEXT: ${{ runner.temp }}/em-ci-job-context.json
+          PACKET_PHASE: staging
+          PROOF_OUTCOME: ${{ steps.proof.outcome }}
+        run: &validate_perl_packet |
+          set -euo pipefail
+          python3 -I - <<'PYTHON'
+          import datetime, hashlib, json, os, pathlib, re, stat, time
+
+          RECEIPT = 'rust-small-proof.json'
+          MANIFEST = 'perl-rust-small-export.json'
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def document(raw):
+              def unique(pairs):
+                  result = {}
+                  for key, value in pairs:
+                      require(key not in result, 'duplicate Perl JSON field')
+                      result[key] = value
+                  return result
+              return json.loads(raw.decode('utf-8'), object_pairs_hook=unique,
+                                parse_constant=lambda value: (_ for _ in ()).throw(ValueError('nonfinite Perl JSON')))
+
+          def read(path, maximum):
+              for parent in path.parents:
+                  require(stat.S_ISDIR(parent.lstat().st_mode), 'linked Perl custody ancestor')
+              descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              try:
+                  before = os.fstat(descriptor)
+                  require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and 0 < before.st_size <= maximum,
+                          'unsafe Perl custody member')
+                  with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+                      raw = stream.read(maximum + 1)
+                  after = os.fstat(descriptor)
+                  keys = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink')
+                  require(len(raw) == before.st_size and all(getattr(before, key) == getattr(after, key) for key in keys),
+                          'Perl custody member changed')
+                  return raw, before
+              finally:
+                  os.close(descriptor)
+
+          def validate():
+              root = pathlib.Path(os.environ['PACKET_DIR'])
+              context_path = pathlib.Path(os.environ['PACKET_CONTEXT'])
+              phase = os.environ['PACKET_PHASE']
+              require(phase in ('staging', 'imported') and root.is_absolute() and '..' not in root.parts,
+                      'invalid Perl custody phase/path')
+              for path in (root, *root.parents):
+                  require(stat.S_ISDIR(path.lstat().st_mode), 'linked Perl custody root')
+              expected_names = {RECEIPT, MANIFEST} | ({'em-ci-job-context.json'} if phase == 'imported' else set())
+              require({p.name for p in root.iterdir()} == expected_names, 'Perl custody member set mismatch')
+              require(stat.S_IMODE(root.stat().st_mode) & 0o077 == 0 and root.stat().st_uid == os.geteuid(),
+                      'Perl custody root is not private')
+              context_raw, _ = read(context_path, 16384)
+              context = document(context_raw)
+              expected = dict(schema='em-ci-job-context.v1', repository='EffortlessMetrics/perl-lsp-swarm',
+                              sha=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'],
+                              run_attempt=os.environ['GITHUB_RUN_ATTEMPT'], profile='standard',
+                              workflow=os.environ['GITHUB_WORKFLOW'], workflow_ref=os.environ['GITHUB_WORKFLOW_REF'],
+                              event=os.environ['GITHUB_EVENT_NAME'], ref=os.environ['GITHUB_REF'])
+              require(os.environ['GITHUB_REPOSITORY'] == expected['repository'] and
+                      all(type(context.get(k)) is type(v) and context[k] == v for k,v in expected.items()),
+                      'Perl producer source/run mismatch')
+              require(context.get('job') in ('standard', 'hosted', 'hosted-fallback'), 'wrong Perl producer profile')
+              entered = context['proof_started_at']
+              require(type(entered) is str and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', entered), 'missing Perl proof entry')
+              start = datetime.datetime.strptime(entered, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+              receipt_raw, receipt_info = read(root / RECEIPT, 1024**2)
+              manifest_raw, manifest_info = read(root / MANIFEST, 16384)
+              if phase == 'staging':
+                  require(all(start <= info.st_mtime <= time.time() + 2 for info in (receipt_info, manifest_info)),
+                          'stale Perl custody data')
+              receipt, manifest = document(receipt_raw), document(manifest_raw)
+              require(type(receipt) is dict and receipt.get('schema_version') == 'rust_small_proof.v1' and
+                      type(receipt.get('subject')) is dict and receipt['subject'].get('git_sha') == expected['sha'] and
+                      receipt['subject'].get('worktree_dirty') is False, 'Perl canonical receipt source/schema mismatch')
+              result = receipt.get('result')
+              require(result in ('success', 'product_failure', 'not_completed', 'instrument_failure'), 'invalid Perl product result')
+              if os.environ['PROOF_OUTCOME'] == 'success':
+                  require(result == 'success' and context.get('job_status') == 'success', 'Perl diagnostic cannot certify success')
+              keys = {'schema', 'repository', 'sha', 'run_id', 'run_attempt', 'profile', 'proof_started_at', 'result', 'member'}
+              require(type(manifest) is dict and set(manifest) == keys and manifest['schema'] == 'perl-rust-small-export.v1',
+                      'unknown Perl export schema/fields')
+              require(all(type(manifest.get(k)) is str and manifest[k] == expected[k] for k in ('repository','sha','run_id','run_attempt','profile')) and
+                      manifest['proof_started_at'] == entered and manifest['result'] == result, 'Perl export identity/outcome mismatch')
+              member = manifest['member']
+              require(type(member) is dict and set(member) == {'path', 'bytes', 'sha256'} and member['path'] == RECEIPT and
+                      type(member['bytes']) is int and member['bytes'] == len(receipt_raw) and
+                      member['sha256'] == hashlib.sha256(receipt_raw).hexdigest(), 'Perl exported bytes/digest mismatch')
+              require(len(receipt_raw) + len(manifest_raw) + len(context_raw) <= 2 * 1024**2, 'Perl packet exceeds bound')
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('validated=true\n')
+
+          if __name__ == '__main__':
+              validate()
+          PYTHON
+      - name: Validate bounded canonical RIPR package
+        id: artifact_package
+        if: always() && !cancelled() && inputs.upload_artifacts && (inputs.artifact_lane == 'ripr' || inputs.artifact_lane == 'perl-rust-small') && steps.artifact_prepare.outcome == 'success' && (inputs.artifact_lane != 'perl-rust-small' || (steps.perl_package_custody.outcome == 'success' && steps.perl_semantics.outcome == 'success'))
+        shell: bash
+        env:
+          ARTIFACT_LANE: ${{ inputs.artifact_lane }}
+          PROOF_ENTERED_AT: ${{ steps.proof.outputs.proof_entered_at }}
+          PROOF_OUTCOME: ${{ steps.proof.outcome }}
+          PRODUCER_ID: ${{ steps.artifact_prepare.outputs.producer }}
+          ARTIFACT_NAME: ${{ steps.artifact_prepare.outputs.name }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PYTHON'
+          import datetime, json, os, pathlib, stat
+
+          MAX_FILES = 512
+          MAX_BYTES = 8 * 1024**3
+          MANDATORY = (
+              'target/ripr/pr/raw-check.json', 'target/ripr/pr/repo-exposure.json',
+              'target/ripr/review/comments.json', 'target/receipts/quality/ripr-plus.json',
+              'target/receipts/quality/quality-gate-ripr.json', 'target/receipts/quality/quality-gate-ripr.md',
+              'target/xtask/impacted-evidence/latest.json', 'target/xtask/impacted-evidence/latest.md',
+              'ripr-tool-identity.txt', 'ripr-cgroup-memory.txt',
+          )
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def package():
+              # Typed pre-entry withdrawal preserves existing recovery eligibility. It
+              # neither uploads diagnostics nor makes an absent proof successful.
+              if os.environ.get('PROOF_ENTERED_AT', '') == '':
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                      output.write('upload=false\n')
+                  return
+              workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+              lane = os.environ.get('ARTIFACT_LANE', 'ripr')
+              require(lane in ('ripr', 'perl-rust-small'), 'unknown transport lane')
+              root = workspace / '.ci/artifacts/ripr' if lane == 'ripr' else pathlib.Path(os.environ['RUNNER_TEMP']) / os.environ['ARTIFACT_NAME']
+              ancestors = (workspace, workspace / '.ci', workspace / '.ci/artifacts', root) if lane == 'ripr' else (root, *root.parents)
+              for path in ancestors:
+                  require(stat.S_ISDIR(path.lstat().st_mode), 'unsafe artifact ancestor')
+              mandatory = MANDATORY if lane == 'ripr' else ('rust-small-proof.json', 'perl-rust-small-export.json')
+              maximum = MAX_BYTES if lane == 'ripr' else 2 * 1024**2
+              paths = []
+              total = 0
+              start = datetime.datetime.strptime(os.environ['PROOF_ENTERED_AT'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+              def traversal_error(error):
+                  raise error
+              for walked, children, files in os.walk(root, followlinks=False, onerror=traversal_error):
+                  walked = pathlib.Path(walked)
+                  for name in children + files:
+                      path = walked / name
+                      relative = path.relative_to(root).as_posix()
+                      require(not name.startswith('.') and 'staging' not in name.lower() and
+                              len(relative.encode('utf-8')) <= 256 and
+                              all(ord(char) >= 32 and char not in '\\:' for char in relative), 'unsafe artifact member')
+                      info = path.lstat()
+                      if name in children:
+                          require(stat.S_ISDIR(info.st_mode), 'linked artifact directory')
+                          continue
+                      require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_mtime >= start,
+                              'nonregular, linked or stale artifact member')
+                      require(relative != 'em-ci-job-context.json', 'reserved artifact context')
+                      total += info.st_size
+                      paths.append(relative)
+                      require(len(paths) < MAX_FILES and total <= maximum, 'proof package exceeds bound')
+              require(paths and total > 0, 'missing current proof diagnostics')
+              context_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'em-ci-job-context.json')
+              info = context_path.lstat()
+              require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= 65536, 'unsafe finalized context')
+              context = json.loads(context_path.read_text())
+              require(context.get('proof_started_at') == os.environ['PROOF_ENTERED_AT'] and
+                      context.get('producer_check_run_id') == int(os.environ['PRODUCER_ID']) and
+                      context.get('run_attempt') == os.environ['GITHUB_RUN_ATTEMPT'], 'context identity changed')
+              if lane == 'perl-rust-small':
+                  require(set(paths) == set(mandatory), 'Perl packet has extra or missing members')
+              if os.environ['PROOF_OUTCOME'] == 'success':
+                  require(context.get('job_status') == 'success', 'producer has no successful finalized context')
+                  require(all(name in paths and (root / name).stat().st_size > 0 for name in mandatory), 'mandatory canonical RIPR receipt missing')
+              context.update(lane=lane, artifact_name=os.environ['ARTIFACT_NAME'], file_count=len(paths), total_bytes=total)
+              raw = json.dumps(context, sort_keys=True).encode('utf-8')
+              require(len(raw) <= 65536 and total + len(raw) <= maximum, 'context-inclusive package exceeds bound')
+              with (root / 'em-ci-job-context.json').open('xb') as output:
+                  output.write(raw)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('upload=true\n')
+
+          if __name__ == '__main__':
+              package()
+          PYTHON
+      - name: Upload bounded canonical RIPR receipts
+        id: upload_artifacts
+        if: always() && !cancelled() && inputs.upload_artifacts && (inputs.artifact_lane == 'ripr' || inputs.artifact_lane == 'perl-rust-small') && steps.artifact_package.outputs.upload == 'true' && (inputs.artifact_lane != 'perl-rust-small' || steps.perl_semantics.outcome == 'success')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.artifact_prepare.outputs.name }}
+          path: ${{ steps.artifact_prepare.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Stage bounded failure diagnostics
+        id: failure_diagnostics
+        if: always() && !cancelled() && inputs.upload_artifacts && inputs.artifact_lane == 'failure-diagnostics' && steps.proof.outcome == 'failure' && steps.proof.outputs.proof_entered_at != ''
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        env:
+          PROOF_OUTCOME: ${{ steps.proof.outcome }}
+          PROOF_ENTERED_AT: ${{ steps.proof.outputs.proof_entered_at }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+          SELECTED_PROFILE: ${{ needs.classify.outputs.profile }}
+          SUMMARY_PATH: ${{ steps.proof.outputs.summary_path }}
+          METADATA_PATH: ${{ steps.proof.outputs.metadata_path }}
+          DIAGNOSTICS_PATH: ${{ steps.proof.outputs.diagnostics_path }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PYTHON'
+          import datetime, json, os, pathlib, re, stat, tempfile
+
+          COMMAND = 'cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings && '
+          TAIL = 'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked && cargo run --locked -p xtask -- check-pr'
+          COMMANDS = (COMMAND + TAIL, COMMAND + 'cargo run --locked -p xtask -- ci-test && ' + TAIL,
+                      'deterministic core suite (launch mode unavailable)')
+          STEPS = ('fmt', 'clippy', 'test', 'doc', 'check-pr')
+
+
+          def require(ok):
+              if not ok:
+                  raise ValueError('failure diagnostics rejected')
+
+
+          def object_pairs(pairs):
+              result = {}
+              for key, value in pairs:
+                  require(key not in result)
+                  result[key] = value
+              return result
+
+
+          def parse(raw):
+              return json.loads(raw.decode('utf-8'), object_pairs_hook=object_pairs,
+                                parse_constant=lambda value: require(False))
+
+
+          def read_at(directory, name, limit, start):
+              # Anchor every read to the opened staging directory. Never follow links or
+              # read a FIFO/device, including when a file is replaced during publication.
+              fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+              try:
+                  before = os.fstat(fd)
+                  require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and
+                          0 < before.st_size <= limit and before.st_mtime >= start)
+                  raw = os.read(fd, limit + 1)
+                  after = os.fstat(fd)
+                  # Reading may advance atime (not a content mutation) on Linux.
+                  fields = ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+                  require(len(raw) == before.st_size and all(getattr(before, key) == getattr(after, key) for key in fields) and after.st_nlink == 1)
+                  return raw
+              finally:
+                  os.close(fd)
+
+
+          def diagnostics(raw):
+              value = parse(raw)
+              require(type(value) is dict and set(value) == {
+                  'schema_version', 'runner', 'runner_version', 'nextest_exit', 'doctest_exit',
+                  'core_exit', 'stream_status', 'parse_reason', 'records'})
+              require(value['schema_version'] == '1.0' and value['runner'] == 'cargo-nextest' and value['runner_version'] == '0.9.143')
+              for key in ('nextest_exit', 'doctest_exit', 'core_exit'):
+                  require(type(value[key]) is int and -(2**31) <= value[key] < 2**31)
+              require(value['core_exit'] == (value['nextest_exit'] or value['doctest_exit']))
+              status = value['stream_status']
+              require(status in ('ok', 'missing_report', 'unavailable_report', 'malformed_report', 'malformed_record',
+                                 'unexpected_field', 'hostile_record', 'truncated_input', 'record_limit', 'overlong_record'))
+              reason = value['parse_reason']
+              require(reason is None or reason in ('unexpected_root', 'unknown_attribute', 'malformed_tag', 'unsupported_structure',
+                      'unknown_element', 'malformed_nesting', 'unsupported_identity', 'report_io', 'input_limit'))
+              require((reason is not None) == (status not in ('ok', 'missing_report')))
+              require(type(value['records']) is list and len(value['records']) <= 128)
+              previous = None
+              for record in value['records']:
+                  require(type(record) is dict and set(record) == {'package', 'test', 'status'} and record['status'] == 'failed')
+                  for key in ('package', 'test'):
+                      field = record[key]
+                      require(type(field) is str and 0 < len(field.encode('utf-8')) <= 256 and
+                              not any(marker in field for marker in ('-----BEGIN', 'ghp_', 'github_pat_', 'AKIA', 'eyJhbGci')))
+                  require(re.fullmatch(r'[A-Za-z0-9_-]+(?:::(?:(?:bin|bench|example)/)?[A-Za-z0-9_-]+)?', record['package']))
+                  require(all(re.fullmatch(r'(?:r#)?[A-Za-z_][A-Za-z0-9_]*', part) and part not in ('_', 'r#_')
+                              for part in record['test'].split('::')))
+                  current = (record['package'], record['test'])
+                  require(previous is None or previous < current)
+                  previous = current
+
+
+          def package():
+              # Success, cancellation and pre-proof withdrawal never publish this lane.
+              if os.environ['PROOF_OUTCOME'] != 'failure' or not os.environ['PROOF_ENTERED_AT']:
+                  return
+              summary = os.environ.get('SUMMARY_PATH', '')
+              metadata = os.environ.get('METADATA_PATH', '')
+              optional = os.environ.get('DIAGNOSTICS_PATH', '')
+              if not summary and not metadata and not optional:
+                  return
+              run = os.environ['GITHUB_RUN_ID']
+              attempt = os.environ['GITHUB_RUN_ATTEMPT']
+              sha = os.environ['GITHUB_SHA']
+              require(re.fullmatch('[1-9][0-9]{0,19}', run) and re.fullmatch('[1-9][0-9]{0,9}', attempt) and re.fullmatch('[0-9a-f]{40}', sha))
+              job = parse(os.environ['NATIVE_JOB'].encode('utf-8'))
+              profile = os.environ['SELECTED_PROFILE']
+              require(type(job) is dict and type(job.get('check_run_id')) is int and 0 < job['check_run_id'] < 2**63 and
+                      profile in ('light', 'standard', 'heavy', 'large'))
+              producer = profile + '-' + str(job['check_run_id'])
+              key = run + '-' + attempt
+              temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+              require(temporary.is_absolute() and '..' not in temporary.parts)
+              root = temporary / ('unsafe-review-core-evidence-' + key)
+              parent = pathlib.Path(summary).parent
+              require(parent.parent == root and re.fullmatch('staging-[A-Za-z0-9]+', parent.name))
+              require(summary == str(parent / 'summary.md') and metadata == str(parent / 'metadata.json') and
+                      optional in ('', str(parent / 'test-diagnostics.json')))
+              start = datetime.datetime.strptime(os.environ['PROOF_ENTERED_AT'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+              # Open the absolute chain without symlinks or lexical escapes. The final
+              # source directory is private, as is the independent publication staging.
+              fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+              try:
+                  for part in parent.parts[1:]:
+                      next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                      os.close(fd)
+                      fd = next_fd
+                  require(stat.S_IMODE(os.fstat(fd).st_mode) == 0o700 and os.fstat(fd).st_uid == os.geteuid())
+                  files = {'summary.md': read_at(fd, 'summary.md', 16384, start),
+                           'metadata.json': read_at(fd, 'metadata.json', 4096, start)}
+                  if optional:
+                      files['test-diagnostics.json'] = read_at(fd, 'test-diagnostics.json', 16385, start)
+                      diagnostics(files['test-diagnostics.json'])
+              finally:
+                  os.close(fd)
+              value = parse(files['metadata.json'])
+              require(type(value) is dict and set(value) == {'schema_version', 'commit', 'command', 'exit_code', 'failed_step', 'result_path', 'summary_path'})
+              require(value['schema_version'] == '1.0' and value['commit'] == sha and value['command'] in COMMANDS and
+                      type(value['exit_code']) is int and 1 <= value['exit_code'] <= 255 and value['failed_step'] in (*STEPS, 'unknown') and
+                      value['result_path'] == 'target/ci-core/core_exit-' + key and value['summary_path'] == summary)
+              text = files['summary.md'].decode('utf-8')
+              prefix = ('# Deterministic core-gate failure evidence\n\n- commit: `' + sha + '`\n- command: `' + value['command'] +
+                        '`\n- exit code: `' + str(value['exit_code']) + '`\n- failed step: `' + value['failed_step'] +
+                        '`\n- result path: `' + value['result_path'] + '`\n\n## Bounded allowlisted step status\n\n' +
+                        '    step_id\telapsed_seconds\texit_status\n')
+              suffix = '\n> Closed-vocabulary diagnostic only. The raw core log is not retained.\n'
+              require(text.startswith(prefix) and text.endswith(suffix))
+              rows = text[len(prefix):-len(suffix)].splitlines()
+              require(len(rows) <= 79)
+              for row in rows:
+                  require(re.fullmatch(r'    (fmt|clippy|test|doc|check-pr)\t[0-9]{1,10}\t([0-9]{1,3}|skipped)', row))
+              # Only fixed names from validated in-memory bytes can reach the uploader.
+              destination = pathlib.Path(tempfile.mkdtemp(prefix='em-ci-failure-diagnostics-', dir=temporary))
+              for name, raw in files.items():
+                  descriptor = os.open(destination / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                  with os.fdopen(descriptor, 'wb') as output:
+                      output.write(raw)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('path=' + str(destination) + '\nname=em-ci-rust-failure-diagnostics-' + producer + '-' + key + '\nupload=true\n')
+
+
+          if __name__ == '__main__':
+              try:
+                  package()
+              except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+                  # Do not echo untrusted paths, JSON, raw logs or exception text.
+                  print('::warning::bounded failure diagnostics unavailable')
+                  raise SystemExit(1)
+          PYTHON
+      - name: Upload bounded failure diagnostics
+        if: always() && !cancelled() && inputs.upload_artifacts && inputs.artifact_lane == 'failure-diagnostics' && steps.proof.outcome == 'failure' && steps.failure_diagnostics.outcome == 'success' && steps.failure_diagnostics.outputs.upload == 'true'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.failure_diagnostics.outputs.name }}
+          path: ${{ steps.failure_diagnostics.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+
+  standard:
+    permissions: *proof_permissions
+    name: Rust standard
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'standard'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-standard]
+    timeout-minutes: 75
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  heavy:
+    permissions: *proof_permissions
+    name: Rust heavy
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'heavy'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-heavy]
+    timeout-minutes: 120
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  large:
+    permissions: *proof_permissions
+    name: Rust large
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.profile == 'large'
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-large]
+    timeout-minutes: 240
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "true"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  hosted:
+    permissions: *proof_permissions
+    name: Rust hosted external
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'false' && needs.classify.outputs.hosted_enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.classify.outputs.runner_image }}
+      # GitHub-hosted job containers need root access to the mounted workspace.
+      # The same image runs as UID 1001 when it is itself the JIT runner.
+      options: --user 0
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "false"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  external-unavailable:
+    name: Rust hosted external unavailable
+    needs: classify
+    if: needs.classify.outputs.self_hosted == 'false' && needs.classify.outputs.hosted_enabled != 'true'
+    # Report policy refusal with trusted static code; external source is never checked out.
+    runs-on:
+      group: em-ci-build
+      labels: [self-hosted, linux, x64, rust-standard]
+    timeout-minutes: 5
+    steps:
+      # No checkout: external source must never fall through to the trusted fleet.
+      - name: Report unavailable external route
+        shell: bash
+        run: |
+          echo '::error::GitHub-hosted EM CI is currently disabled; external and bot pull requests cannot run on the trusted self-hosted fleet.'
+          exit 75
+
+  hosted-fallback:
+    permissions: *proof_permissions
+    name: Rust hosted pre-proof recovery
+    needs: [classify, light, standard, heavy, large]
+    # Only a positively withdrawn admission is normalized; the proof remains skipped.
+    # Queued/cancelled/failed/policy/entered jobs are never eligible.
+    # Execution timeout is not a queue-availability deadline.
+    if: >-
+      ${{ !cancelled() && needs.classify.result == 'success' &&
+          needs.classify.outputs.self_hosted == 'true' &&
+          needs.classify.outputs.hosted_enabled == 'true' &&
+          ((needs.classify.outputs.profile == 'light' && needs.light.result == 'success' && needs.light.outputs.proof_outcome == 'skipped' && (needs.light.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.light.outputs.infrastructure_failure == 'disposable_paths_unavailable')) ||
+           (needs.classify.outputs.profile == 'standard' && needs.standard.result == 'success' && needs.standard.outputs.proof_outcome == 'skipped' && (needs.standard.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.standard.outputs.infrastructure_failure == 'disposable_paths_unavailable')) ||
+           (needs.classify.outputs.profile == 'heavy' && needs.heavy.result == 'success' && needs.heavy.outputs.proof_outcome == 'skipped' && (needs.heavy.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.heavy.outputs.infrastructure_failure == 'disposable_paths_unavailable')) ||
+           (needs.classify.outputs.profile == 'large' && needs.large.result == 'success' && needs.large.outputs.proof_outcome == 'skipped' && (needs.large.outputs.infrastructure_failure == 'toolchain_unavailable' || needs.large.outputs.infrastructure_failure == 'disposable_paths_unavailable'))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.classify.outputs.runner_image }}
+      options: --user 0
+    env:
+      EM_CI_EXECUTION_SELF_HOSTED: "false"
+    outputs: *proof_outputs
+    steps: *proof_steps
+
+  repository-policy:
+    name: Rust repository result policy
+    needs: [classify, light, standard, heavy, large, hosted, hosted-fallback, external-unavailable]
+    if: always() && inputs.result_script != '' && needs.classify.result == 'success'
+    runs-on: &result_runner >-
+      ${{ fromJSON(((needs.classify.result == 'success' && needs.classify.outputs.self_hosted == 'false' && needs.classify.outputs.hosted_enabled == 'true') || (needs.classify.result == 'success' && needs.classify.outputs.self_hosted == 'true' && needs.classify.outputs.hosted_enabled == 'true' && (needs.hosted-fallback.result == 'success' || needs.hosted-fallback.result == 'failure' || (needs.hosted-fallback.result == 'cancelled' && needs.hosted-fallback.outputs.proof_entered_at != ''))) || (needs.classify.result != 'success' && (vars.EM_CI_GITHUB_HOSTED_ENABLED == 'true' && (inputs.force_hosted || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot')))))) && '"ubuntu-24.04"' || '{"group":"em-ci-build","labels":["self-hosted","linux","x64","rust-standard"]}') }}
+    # This caller-executing job has ordinary proof isolation and read-only access.
+    # The immutable aggregate below never checks out or executes caller source.
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: read
+    timeout-minutes: 35
+    steps:
+      - &evaluate_selected_proof
+        name: Evaluate selected implementation
+        id: evaluate
+        shell: bash
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          PROFILE: ${{ needs.classify.outputs.profile }}
+          SELF_HOSTED: ${{ needs.classify.outputs.self_hosted }}
+          HOSTED_ENABLED: ${{ needs.classify.outputs.hosted_enabled }}
+          LIGHT_RESULT: ${{ needs.light.result }}
+          STANDARD_RESULT: ${{ needs.standard.result }}
+          HEAVY_RESULT: ${{ needs.heavy.result }}
+          LARGE_RESULT: ${{ needs.large.result }}
+          HOSTED_RESULT: ${{ needs.hosted.result }}
+          LIGHT_INFRASTRUCTURE_FAILURE: ${{ needs.light.outputs.infrastructure_failure }}
+          LIGHT_PROOF_OUTCOME: ${{ needs.light.outputs.proof_outcome }}
+          LIGHT_PROOF_ENTERED_AT: ${{ needs.light.outputs.proof_entered_at }}
+          LIGHT_PROOF_RUN_ATTEMPT: ${{ needs.light.outputs.proof_run_attempt }}
+          STANDARD_INFRASTRUCTURE_FAILURE: ${{ needs.standard.outputs.infrastructure_failure }}
+          STANDARD_PROOF_OUTCOME: ${{ needs.standard.outputs.proof_outcome }}
+          STANDARD_PROOF_ENTERED_AT: ${{ needs.standard.outputs.proof_entered_at }}
+          STANDARD_PROOF_RUN_ATTEMPT: ${{ needs.standard.outputs.proof_run_attempt }}
+          HEAVY_INFRASTRUCTURE_FAILURE: ${{ needs.heavy.outputs.infrastructure_failure }}
+          HEAVY_PROOF_OUTCOME: ${{ needs.heavy.outputs.proof_outcome }}
+          HEAVY_PROOF_ENTERED_AT: ${{ needs.heavy.outputs.proof_entered_at }}
+          HEAVY_PROOF_RUN_ATTEMPT: ${{ needs.heavy.outputs.proof_run_attempt }}
+          LARGE_INFRASTRUCTURE_FAILURE: ${{ needs.large.outputs.infrastructure_failure }}
+          LARGE_PROOF_OUTCOME: ${{ needs.large.outputs.proof_outcome }}
+          LARGE_PROOF_ENTERED_AT: ${{ needs.large.outputs.proof_entered_at }}
+          LARGE_PROOF_RUN_ATTEMPT: ${{ needs.large.outputs.proof_run_attempt }}
+          HOSTED_INFRASTRUCTURE_FAILURE: ${{ needs.hosted.outputs.infrastructure_failure }}
+          HOSTED_PROOF_OUTCOME: ${{ needs.hosted.outputs.proof_outcome }}
+          HOSTED_PROOF_ENTERED_AT: ${{ needs.hosted.outputs.proof_entered_at }}
+          HOSTED_PROOF_RUN_ATTEMPT: ${{ needs.hosted.outputs.proof_run_attempt }}
+          HOSTED_FALLBACK_INFRASTRUCTURE_FAILURE: ${{ needs.hosted-fallback.outputs.infrastructure_failure }}
+          HOSTED_FALLBACK_PROOF_OUTCOME: ${{ needs.hosted-fallback.outputs.proof_outcome }}
+          HOSTED_FALLBACK_PROOF_ENTERED_AT: ${{ needs.hosted-fallback.outputs.proof_entered_at }}
+          HOSTED_FALLBACK_PROOF_RUN_ATTEMPT: ${{ needs.hosted-fallback.outputs.proof_run_attempt }}
+          HOSTED_FALLBACK_RESULT: ${{ needs.hosted-fallback.result }}
+          SUBJECT_REPOSITORY: ${{ github.repository }}
+          SUBJECT_SHA: ${{ github.sha }}
+          SUBJECT_RUN_ID: ${{ github.run_id }}
+          SUBJECT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EXTERNAL_UNAVAILABLE_RESULT: ${{ needs.external-unavailable.result }}
+        run: |
+          set -euo pipefail
+
+          [[ "$CLASSIFY_RESULT" == success ]] || {
+            echo "::error::classification failed: $CLASSIFY_RESULT"
+            exit 1
+          }
+
+          if [[ "$SELF_HOSTED" == false ]]; then
+            if [[ "$HOSTED_ENABLED" == true ]]; then
+              selected=$HOSTED_RESULT
+            else
+              selected=$EXTERNAL_UNAVAILABLE_RESULT
+            fi
+          else
+            case "$PROFILE" in
+              light) selected=$LIGHT_RESULT ;;
+              standard) selected=$STANDARD_RESULT ;;
+              heavy) selected=$HEAVY_RESULT ;;
+              large) selected=$LARGE_RESULT ;;
+              *) echo "::error::invalid selected profile: $PROFILE"; exit 1 ;;
+            esac
+          fi
+
+          route=self_hosted
+          if [[ "$SELF_HOSTED" == false ]]; then route=hosted; fi
+          prefix=${PROFILE^^}
+          if [[ "$SELF_HOSTED" == false ]]; then prefix=HOSTED; fi
+          reason_name=${prefix}_INFRASTRUCTURE_FAILURE
+          outcome_name=${prefix}_PROOF_OUTCOME
+          entry_name=${prefix}_PROOF_ENTERED_AT
+          attempt_name=${prefix}_PROOF_RUN_ATTEMPT
+          reason=${!reason_name:-}
+          proof_outcome=${!outcome_name:-}
+          proof_entered_at=${!entry_name:-}
+          proof_run_attempt=${!attempt_name:-}
+
+          if [[ "$HOSTED_FALLBACK_RESULT" != skipped ]]; then
+            # Recheck the exact eligibility; recovery cannot hide a proof or policy failure.
+            [[ "$SELF_HOSTED" == true && "$HOSTED_ENABLED" == true &&
+               "$selected" == success && "$proof_outcome" == skipped &&
+               -z "$proof_entered_at" ]] || exit 1
+            case "$reason" in
+              toolchain_unavailable|disposable_paths_unavailable) ;;
+              *) exit 1 ;;
+            esac
+            selected=$HOSTED_FALLBACK_RESULT
+            route=hosted_fallback
+            proof_outcome=$HOSTED_FALLBACK_PROOF_OUTCOME
+            proof_entered_at=$HOSTED_FALLBACK_PROOF_ENTERED_AT
+            proof_run_attempt=$HOSTED_FALLBACK_PROOF_RUN_ATTEMPT
+          fi
+
+          # A partial rerun must not relabel a cached proof from an older attempt.
+          [[ "$proof_run_attempt" =~ ^[1-9][0-9]*$ &&
+             "$proof_run_attempt" == "$SUBJECT_RUN_ATTEMPT" ]] || {
+            echo "::error::proof attempt does not match this result attempt; rerun all jobs"
+            exit 1
+          }
+
+          # This control step executes no caller code. Missing/failed job outputs
+          # remain blocking; callers must also require this reusable result success.
+          evidence=$(jq -cn \
+            --arg repository "$SUBJECT_REPOSITORY" --arg sha "$SUBJECT_SHA" \
+            --arg run_id "$SUBJECT_RUN_ID" --arg run_attempt "$SUBJECT_RUN_ATTEMPT" \
+            --arg profile "$PROFILE" --arg route "$route" --arg result "$selected" \
+            --arg infrastructure_failure "$reason" --arg proof_outcome "$proof_outcome" \
+            --arg proof_entered_at "$proof_entered_at" \
+            '{schema:"em-ci-rust-result.v1",repository:$repository,sha:$sha,run_id:$run_id,run_attempt:$run_attempt,profile:$profile,route:$route,result:$result,infrastructure_failure:$infrastructure_failure,proof_outcome:$proof_outcome,proof_entered_at:$proof_entered_at}')
+          echo "evidence=$evidence" >> "$GITHUB_OUTPUT"
+
+          {
+            echo '## Rust CI result'
+            echo
+            echo "- profile: \`$PROFILE\`"
+            echo "- self_hosted: \`$SELF_HOSTED\`"
+            echo "- hosted_enabled: \`$HOSTED_ENABLED\`"
+            echo "- selected_result: \`$selected\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [[ "$selected" == success && "$proof_outcome" == success && -n "$proof_entered_at" ]] || {
+            echo "::error::selected proof did not succeed: $selected"
+            exit 1
+          }
+      - name: Authenticate and import canonical RIPR receipts
+        id: import_receipts
+        if: inputs.upload_artifacts && (inputs.artifact_lane == 'ripr' || inputs.artifact_lane == 'perl-rust-small') && steps.evaluate.outcome == 'success'
+        shell: bash
+        env:
+          ARTIFACT_LANE: ${{ inputs.artifact_lane }}
+          CANONICAL_RIPR_PATHS: '["target/ripr/pr/raw-check.json","target/ripr/pr/repo-exposure.json","target/ripr/review/comments.json","target/receipts/quality/ripr-plus.json","target/receipts/quality/quality-gate-ripr.json","target/receipts/quality/quality-gate-ripr.md","target/xtask/impacted-evidence/latest.json","target/xtask/impacted-evidence/latest.md","ripr-tool-identity.txt","ripr-cgroup-memory.txt"]'
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EM_CI_EVIDENCE: ${{ steps.evaluate.outputs.evidence }}
+          SUBJECT_REPOSITORY: ${{ github.repository }}
+          SUBJECT_SHA: ${{ github.sha }}
+          SUBJECT_RUN_ID: ${{ github.run_id }}
+          SUBJECT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          SUBJECT_PROFILE: ${{ needs.classify.outputs.profile }}
+          SUBJECT_EVENT: ${{ github.event_name }}
+          SUBJECT_REF: ${{ github.ref }}
+          SUBJECT_WORKFLOW: ${{ github.workflow }}
+          SUBJECT_WORKFLOW_REF: ${{ github.workflow_ref }}
+          SUBJECT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          SUBJECT_PR_HEAD: ${{ github.event.pull_request.head.sha || '' }}
+          SUBJECT_PR_BASE: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PYTHON'
+          import datetime, hashlib, json, os, pathlib, re, stat, struct, time
+          import urllib.error, urllib.parse, urllib.request, zipfile
+
+          LANE = os.environ.get('ARTIFACT_LANE', 'ripr')
+          MAX_FILES = 512 if LANE == 'ripr' else 3
+          MAX_BYTES = 8 * 1024**3 if LANE == 'ripr' else 2 * 1024**2
+          MAX_ARCHIVE = MAX_BYTES + 1024**2 if LANE == 'ripr' else MAX_BYTES
+          MANDATORY = tuple(json.loads(os.environ['CANONICAL_RIPR_PATHS'])) if LANE == 'ripr' else ('rust-small-proof.json', 'perl-rust-small-export.json')
+          CLOCK_SKEW = datetime.timedelta(seconds=2)
+
+          def require(ok, message):
+              if not ok:
+                  raise ValueError(message)
+
+          def positive(value):
+              return type(value) is int and value > 0
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  require(key not in result, 'duplicate JSON field')
+                  result[key] = value
+              return result
+
+          def document(raw, maximum=2_000_000):
+              require(0 < len(raw) <= maximum, 'JSON document outside bound')
+              return json.loads(raw.decode('utf-8'), object_pairs_hook=unique_object)
+
+          def instant(value):
+              require(type(value) is str and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)', value), 'invalid timestamp')
+              return datetime.datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(datetime.timezone.utc)
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          class GitHub:
+              def __init__(self, repository, token):
+                  require(type(repository) is str and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) and token, 'missing API identity')
+                  self.repository, self.token = repository, token
+                  self.opener = urllib.request.build_opener(NoRedirect)
+
+              def request(self, path):
+                  require(path.startswith('actions/') or path.startswith('check-runs/') or path.startswith('git/commits/') or path.startswith('pulls/'), 'unsupported API path')
+                  return urllib.request.Request('https://api.github.com/repos/' + self.repository + '/' + path,
+                      headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
+                               'X-GitHub-Api-Version': '2026-03-10'})
+
+              def get(self, path):
+                  with self.opener.open(self.request(path), timeout=30) as response:
+                      require(response.status == 200, 'API read not successful')
+                      return document(response.read(2_000_001))
+
+              def collection(self, path, field):
+                  items, total = [], None
+                  for page in range(1, 11):
+                      separator = '&' if '?' in path else '?'
+                      body = self.get(path + separator + 'per_page=100&page=' + str(page))
+                      count, part = body.get('total_count'), body.get(field)
+                      require(type(count) is int and 0 <= count <= 1000 and type(part) is list and len(part) <= 100, 'invalid collection')
+                      require(total is None or count == total, 'collection changed during pagination')
+                      total = count
+                      items.extend(part)
+                      require(len(items) <= total and all(type(item) is dict and positive(item.get('id')) for item in items), 'invalid collection identities')
+                      require(len({item['id'] for item in items}) == len(items), 'duplicate collection identity')
+                      if len(items) == total:
+                          return items
+                      require(len(part) == 100, 'incomplete collection page')
+                  raise ValueError('incomplete collection')
+
+              def download(self, artifact, destination):
+                  require(positive(artifact.get('id')) and type(artifact.get('size_in_bytes')) is int and
+                          0 < artifact['size_in_bytes'] <= MAX_ARCHIVE and
+                          type(artifact.get('digest')) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', artifact['digest']), 'invalid archive metadata')
+                  try:
+                      with self.opener.open(self.request('actions/artifacts/' + str(artifact['id']) + '/zip'), timeout=30):
+                          raise ValueError('missing download redirect')
+                  except urllib.error.HTTPError as response:
+                      require(response.code == 302, 'missing download redirect')
+                      location = response.headers.get('Location', '')
+                  parsed = urllib.parse.urlsplit(location)
+                  require(len(location) <= 4096 and parsed.scheme == 'https' and parsed.hostname and
+                          parsed.port in (None, 443) and not parsed.username and not parsed.password and not parsed.fragment and
+                          all(ord(char) >= 32 for char in location), 'unsafe download location')
+                  count, digest, deadline = 0, hashlib.sha256(), time.monotonic() + 1200
+                  with self.opener.open(urllib.request.Request(location), timeout=30) as response, destination.open('xb') as output:
+                      require(response.status == 200, 'signed download unsuccessful')
+                      while True:
+                          require(time.monotonic() < deadline, 'archive download timeout')
+                          block = response.read(1024**2)
+                          if not block:
+                              break
+                          count += len(block)
+                          require(count <= MAX_ARCHIVE and count <= artifact['size_in_bytes'], 'archive too large')
+                          digest.update(block)
+                          output.write(block)
+                  require(count == artifact['size_in_bytes'] and 'sha256:' + digest.hexdigest() == artifact['digest'], 'archive digest/size mismatch')
+
+          def zip_directory_bound(path):
+              with path.open('rb') as stream:
+                  size = path.stat().st_size
+                  require(22 <= size <= MAX_ARCHIVE, 'archive outside bound')
+                  stream.seek(max(0, size - 65557))
+                  tail = stream.read(65557)
+                  end = tail.rfind(b'PK\x05\x06')
+                  require(end >= 0 and len(tail) - end >= 22, 'missing ZIP end')
+                  _, disk, directory_disk, disk_count, count, length, offset, comment = struct.unpack('<4s4H2LH', tail[end:end + 22])
+                  require(end + 22 + comment == len(tail) and disk == directory_disk == 0 and disk_count == count, 'split or malformed ZIP')
+                  end_offset = size - len(tail) + end
+                  sentinel = count == 65535 or length == 0xffffffff or offset == 0xffffffff
+                  locator = b''
+                  if end_offset >= 20:
+                      stream.seek(end_offset - 20)
+                      locator = stream.read(20)
+                  has_zip64 = locator.startswith(b'PK\x06\x07')
+                  require(not sentinel or has_zip64, 'ZIP64 locator missing')
+                  directory_end = end_offset
+                  if has_zip64:
+                      # Honor ZIP64 locators without classic sentinels.
+                      signature, record_disk, record_offset, disks = struct.unpack('<4sLQL', locator)
+                      require(record_disk == 0 and disks == 1 and record_offset == end_offset - 76,
+                              'invalid ZIP64 locator')
+                      stream.seek(record_offset)
+                      data = stream.read(56)
+                      require(len(data) == 56, 'truncated ZIP64 record')
+                      signature, record_length, _, _, disk, directory_disk, disk_count, count, length, offset = struct.unpack('<4sQ2H2L4Q', data)
+                      require(signature == b'PK\x06\x06' and record_length == 44 and disk == directory_disk == 0 and disk_count == count,
+                              'invalid or extensible ZIP64 directory')
+                      directory_end = record_offset
+                  require(0 < count <= MAX_FILES and 0 < length <= 1024**2 and 0 <= offset and offset + length == directory_end,
+                          'ZIP metadata exceeds bounds/extent')
+                  stream.seek(0)
+                  require(stream.read(4) == b'PK\x03\x04', 'ZIP prefix is not a file header')
+                  return count
+
+          def unpack(archive, destination):
+              require(not destination.exists() and not destination.is_symlink(), 'import root already exists')
+              count = zip_directory_bound(archive)
+              destination.mkdir(mode=0o700)
+              require(stat.S_ISDIR(destination.lstat().st_mode), 'unsafe import root')
+              total, names = 0, set()
+              with zipfile.ZipFile(archive) as zipped:
+                  require(len(zipped.infolist()) == count, 'ZIP member count mismatch')
+                  for member in zipped.infolist():
+                      name = member.filename
+                      parts = name.split('/')
+                      require(member.orig_filename == name and len(name.encode('utf-8')) <= 256 and
+                              all(part and part not in ('.', '..') and not part.startswith('.') and 'staging' not in part.lower() for part in parts) and
+                              all(ord(char) >= 32 and char not in '\\:' for char in name), 'unsafe ZIP member path')
+                      require(not member.is_dir() and not member.flag_bits & 1 and
+                              stat.S_IFMT(member.external_attr >> 16) in (0, stat.S_IFREG), 'encrypted or nonregular ZIP member')
+                      require(name not in names and 0 <= member.file_size <= MAX_BYTES - total, 'duplicate or oversized ZIP member')
+                      names.add(name)
+                      target = destination.joinpath(*parts)
+                      parent = destination
+                      for part in parts[:-1]:
+                          parent /= part
+                          if not parent.exists():
+                              parent.mkdir()
+                          require(stat.S_ISDIR(parent.lstat().st_mode), 'unsafe extraction ancestor')
+                      actual = 0
+                      with zipped.open(member) as source, target.open('xb') as output:
+                          while True:
+                              block = source.read(min(1024**2, MAX_BYTES - total + 1))
+                              if not block:
+                                  break
+                              actual += len(block)
+                              total += len(block)
+                              require(total <= MAX_BYTES and actual <= member.file_size, 'expanded archive exceeds bound')
+                              output.write(block)
+                      require(actual == member.file_size and stat.S_ISREG(target.lstat().st_mode), 'truncated ZIP member')
+              require('em-ci-job-context.json' in names and all(name in names and (destination / name).stat().st_size > 0 for name in MANDATORY),
+                      'missing canonical RIPR evidence')
+              context_path = destination / 'em-ci-job-context.json'
+              require(context_path.stat().st_size <= 65536, 'context exceeds bound')
+              context = document(context_path.read_bytes(), 65536)
+              require(type(context.get('file_count')) is int and context['file_count'] == len(names) - 1 and
+                      type(context.get('total_bytes')) is int and context['total_bytes'] == total - context_path.stat().st_size,
+                      'context count mismatch')
+              return context
+
+          def native_job(jobs, check_id, repository, attempt):
+              url = 'https://api.github.com/repos/' + repository + '/check-runs/' + str(check_id)
+              matches = [job for job in jobs if job.get('check_run_url') == url]
+              require(positive(check_id) and len(matches) == 1 and positive(matches[0].get('id')) and
+                      type(matches[0].get('run_attempt')) is int and matches[0]['run_attempt'] == attempt, 'producer absent or ambiguous')
+              return matches[0]
+
+          def import_proof(api, subject, evidence, needs, defining, temporary):
+              require(LANE in ('ripr', 'perl-rust-small'), 'unknown lane')
+              repository, run_id, attempt = subject['repository'], int(subject['run_id']), int(subject['run_attempt'])
+              require(run_id > 0 and attempt > 0 and re.fullmatch('[0-9a-f]{40}', subject['sha']), 'invalid selected subject')
+              key = subject['profile'] if evidence['route'] == 'self_hosted' else {'hosted': 'hosted', 'hosted_fallback': 'hosted-fallback'}.get(evidence['route'])
+              require(evidence.get('schema') == 'em-ci-rust-result.v1' and key in needs and needs[key]['result'] == 'success' and evidence['result'] == evidence['proof_outcome'] == 'success' and
+                      all(evidence[k] == subject[k] for k in ('repository', 'sha', 'run_id', 'run_attempt', 'profile')), 'selected proof mismatch/failure')
+              selected = needs[key]['outputs']
+              require(selected.get('proof_run_attempt') == subject['run_attempt'] and selected.get('proof_entered_at') == evidence['proof_entered_at'], 'cached proof attempt')
+              require(all(type(selected.get(field)) is str and re.fullmatch('[1-9][0-9]*', selected[field])
+                          for field in ('attachment_producer', 'attachment_id')), 'missing attachment identity')
+              producer_id, artifact_id = int(selected['attachment_producer']), int(selected['attachment_id'])
+              name = 'em-ci-rust-' + LANE + '-' + subject['profile'] + '-' + str(producer_id) + '-' + subject['run_id'] + '-' + subject['run_attempt']
+              require(selected['attachment_name'] == name, 'wrong selected artifact name')
+              run_path = 'actions/runs/' + str(run_id) + '/attempts/' + str(attempt)
+              latest = api.get('actions/runs/' + str(run_id))
+              require(positive(latest.get('id')) and latest['id'] == run_id and type(latest.get('run_attempt')) is int and
+                      latest['run_attempt'] == attempt, 'stale run attempt')
+              run = api.get(run_path)
+              base, head = run['repository'], run['head_repository']
+              require(positive(run.get('id')) and run.get('id') == run_id and type(run.get('run_attempt')) is int and run['run_attempt'] == attempt and
+                      run.get('event') == subject['event'] and base['full_name'] == repository and
+                      positive(base['id']) and positive(head['id']), 'native run subject mismatch')
+              native_head = subject['pr_head'] if subject['event'] == 'pull_request' else subject['sha']
+              require(run['head_sha'] == native_head, 'native head mismatch')
+              if subject['event'] == 'pull_request':
+                  require(re.fullmatch('[1-9][0-9]*', subject['pr_number']) and
+                          subject['ref'] == 'refs/pull/' + subject['pr_number'] + '/merge', 'invalid PR event identity')
+                  pull = api.get('pulls/' + subject['pr_number'])
+                  require(positive(pull.get('number')) and str(pull['number']) == subject['pr_number'] and
+                          pull['head']['sha'] == subject['pr_head'] and
+                          pull['base']['repo']['full_name'] == repository and pull['base']['repo']['id'] == base['id'] and
+                          all(pull['head']['repo'][k] == head[k] for k in ('id', 'full_name')),
+                          'native PR model mismatch')
+                  associations = run.get('pull_requests', [])
+                  require(type(associations) is list, 'invalid native PR associations')
+                  matching = [item for item in associations if str(item['number']) == subject['pr_number']]
+                  require(len(matching) <= 1 and (not matching or matching[0]['head']['sha'] == subject['pr_head']),
+                          'contradictory native PR association')
+                  commit = api.get('git/commits/' + subject['sha'])
+                  require(commit['sha'] == subject['sha'] and [p['sha'] for p in commit['parents']] == [subject['pr_base'], subject['pr_head']],
+                          'evaluated PR merge is not the exact event join')
+              require((head['full_name'] == repository and head['id'] == base['id']) or
+                      (subject['event'] == 'pull_request' and key == 'hosted'), 'wrong source repository/route')
+              sha, workflow_repository, workflow_path = defining['workflow_sha'], defining['workflow_repository'], defining['workflow_file_path']
+              require(re.fullmatch('[0-9a-f]{40}', sha) and workflow_repository in ('EffortlessMetrics/em-ci-workflows', 'EffortlessMetrics/em-ci') and
+                      workflow_path == '.github/workflows/rust.yml' and defining['workflow_ref'] == workflow_repository + '/' + workflow_path + '@' + sha,
+                      'defining workflow mismatch')
+              references = [item for item in run.get('referenced_workflows', []) if item.get('path') == defining['workflow_ref'] and item.get('sha') == sha]
+              require(len(references) == 1, 'workflow absent or ambiguous')
+              jobs = api.collection(run_path + '/jobs', 'jobs')
+              producer = native_job(jobs, producer_id, repository, attempt)
+              policy = native_job(jobs, defining['check_run_id'], repository, attempt)
+              require(positive(producer.get('run_id')) and producer['run_id'] == run_id and
+                      positive(policy.get('run_id')) and policy['run_id'] == run_id, 'wrong native job run')
+              suffix = ' / Rust repository result policy'
+              require(policy['name'].endswith(suffix), 'wrong native policy job')
+              prefix = policy['name'][:-len(suffix)]
+              title = 'Rust hosted external' if key == 'hosted' else 'Rust hosted pre-proof recovery' if key == 'hosted-fallback' else 'Rust ' + key
+              require(producer['name'] == prefix + ' / ' + title and producer.get('status') == 'completed' and
+                      producer.get('conclusion') == 'success' and producer['head_sha'] == native_head, 'wrong call instance or failed producer')
+              if evidence['route'] == 'self_hosted':
+                  labels = producer.get('labels')
+                  require(type(labels) is list and all(type(label) is str for label in labels) and
+                          {'self-hosted', 'linux', 'x64', 'rust-' + subject['profile']}.issubset(labels) and
+                          not {'windows', 'arm64', 'macOS'}.intersection(labels) and
+                          producer.get('runner_group_name') == 'em-ci-build' and positive(producer.get('runner_group_id')),
+                          'producer route/platform mismatch')
+              check = api.get('check-runs/' + str(producer_id))
+              require(check.get('id') == producer_id and check.get('app', {}).get('id') == 15368 and check.get('status') == 'completed' and
+                      check.get('conclusion') == 'success' and check.get('head_sha') == native_head, 'producer check failed')
+              steps = [step for step in producer['steps'] if step['name'] == 'Run repository proof']
+              require(len(steps) == 1 and steps[0]['conclusion'] == 'success', 'proof step absent/failed')
+              artifacts_path = 'actions/runs/' + str(run_id) + '/artifacts?name=' + urllib.parse.quote(name, safe='')
+              artifacts = api.collection(artifacts_path, 'artifacts')
+              matches = [item for item in artifacts if item.get('name') == name]
+              require(len(matches) == 1 and matches[0]['id'] == artifact_id, 'attachment identity mismatch')
+              artifact = matches[0]
+              native = artifact.get('workflow_run', {})
+              require(artifact.get('expired') is False and native.get('id') == run_id and native.get('head_sha') == native_head and
+                      native.get('repository_id') == base['id'] and native.get('head_repository_id') == head['id'],
+                      'artifact native subject mismatch')
+              require(instant(producer['started_at']) <= instant(artifact['created_at']) <= instant(artifact['updated_at']) <= instant(producer['completed_at']),
+                      'attachment outside producer lifetime')
+              again = api.collection(artifacts_path, 'artifacts')
+              require([item for item in again if item.get('name') == name] == [artifact], 'artifact collection changed')
+              require(stat.S_ISDIR(temporary.lstat().st_mode) and not (temporary / ('em-ci-' + LANE + '-import')).exists(), 'unsafe or stale import workspace')
+              directory = temporary / ('em-ci-' + LANE + '-import')
+              directory.mkdir(mode=0o700)
+              archive = directory / 'proof.zip'
+              api.download(artifact, archive)
+              context = unpack(archive, directory / 'receipts')
+              expected = {k: subject[k] for k in ('repository', 'workflow_ref', 'workflow', 'run_id',
+                  'run_attempt', 'event', 'ref', 'sha', 'profile')}
+              expected.update(schema='em-ci-job-context.v1', job=key,
+                  self_hosted=evidence['route'] == 'self_hosted', proof_started_at=evidence['proof_entered_at'],
+                  job_status='success', lane=LANE, artifact_name=name, producer_check_run_id=producer_id,
+                  defining_workflow_ref=defining['workflow_ref'], defining_workflow_sha=sha,
+                  defining_workflow_repository=workflow_repository, defining_workflow_path=workflow_path,
+                  runner_os='Linux', runner_arch='X64')
+              require(set(context) == set(expected) | {'admission_recorded_at', 'proof_finished_at', 'file_count', 'total_bytes'} and
+                      all(type(context.get(k)) is type(v) and context[k] == v for k, v in expected.items()), 'context mismatch')
+              local = [instant(context[k]) for k in ('admission_recorded_at', 'proof_started_at', 'proof_finished_at')]
+              native = [instant(producer['started_at']), instant(steps[0]['started_at']),
+                        instant(steps[0]['completed_at']), instant(artifact['created_at'])]
+              require(sorted(native) == native and sorted(local) == local and
+                      all(start - CLOCK_SKEW <= value <= end + CLOCK_SKEW
+                          for value, start, end in zip(local, native, native[1:])), 'invalid proof generation timing')
+              return directory / 'receipts'
+
+          def main():
+              subject = {key: os.environ['SUBJECT_' + key.upper()] for key in
+                  ('repository', 'sha', 'run_id', 'run_attempt', 'profile', 'event', 'ref', 'workflow', 'workflow_ref', 'pr_number', 'pr_head', 'pr_base')}
+              directory = import_proof(GitHub(subject['repository'], os.environ['GH_TOKEN']), subject,
+                  document(os.environ['EM_CI_EVIDENCE'].encode()), document(os.environ['NEEDS_JSON'].encode()),
+                  document(os.environ['NATIVE_JOB'].encode()), pathlib.Path(os.environ['RUNNER_TEMP']))
+              with open(os.environ['GITHUB_ENV'], 'a') as output:
+                  output.write('EM_CI_ARTIFACT_DIR=' + str(directory) + '\nEM_CI_LANE=' + LANE + '\n')
+
+          if __name__ == '__main__':
+              main()
+          PYTHON
+      - name: Validate imported Perl custody
+        id: perl_import_custody
+        if: inputs.upload_artifacts && inputs.artifact_lane == 'perl-rust-small' && steps.import_receipts.outcome == 'success'
+        shell: bash
+        env:
+          PACKET_DIR: ${{ env.EM_CI_ARTIFACT_DIR }}
+          PACKET_CONTEXT: ${{ env.EM_CI_ARTIFACT_DIR }}/em-ci-job-context.json
+          PACKET_PHASE: imported
+          PROOF_OUTCOME: success
+        run: *validate_perl_packet
+      - name: Prepare Perl policy verifier toolchain
+        id: perl_policy_toolchain
+        if: inputs.upload_artifacts && inputs.artifact_lane == 'perl-rust-small' && steps.perl_import_custody.outcome == 'success'
+        shell: bash
+        env:
+          POLICY_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN EM_CI_ADMISSION_TOKEN
+          compatibility="$EM_CI_RUST_COMPATIBILITY_VERSION"
+          [[ "$compatibility" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          probe=$(mktemp -d "$RUNNER_TEMP/perl-policy-toolchain.XXXXXX")
+          trap 'rmdir -- "$probe"' EXIT
+          cd "$probe"
+          probe_toolchain() {
+            local version
+            version=$(RUSTUP_AUTO_INSTALL=0 rustc +"$compatibility" --version) || return
+            [[ "$version" == "rustc $compatibility "* ]]
+          }
+          if ! probe_toolchain; then
+            # Native runner identity is independent of hosted feature enablement.
+            # Owned images never install at runtime.
+            [[ "$POLICY_RUNNER_ENVIRONMENT" == github-hosted ]] || {
+              echo '::error::immutable runner lacks the approved Perl verifier toolchain'
+              exit 78
+            }
+            rustup toolchain install "$compatibility" --profile minimal --no-self-update
+            probe_toolchain
+          fi
+          echo 'prepared=true' >> "$GITHUB_OUTPUT"
+      - name: Checkout exact result-policy source
+        if: inputs.result_script != '' && steps.evaluate.outcome == 'success'
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify imported canonical Perl receipt
+        id: perl_import_semantics
+        if: inputs.upload_artifacts && inputs.artifact_lane == 'perl-rust-small' && steps.perl_import_custody.outcome == 'success' && steps.perl_policy_toolchain.outputs.prepared == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN EM_CI_ADMISSION_TOKEN
+          unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" && "$EM_CI_LANE" == perl-rust-small ]]
+          python3 -I - <<'PYTHON'
+          import hashlib, os, pathlib, re, stat, subprocess
+
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          sha = os.environ['GITHUB_SHA']
+          if not re.fullmatch('[0-9a-f]{40}', sha):
+              raise ValueError('missing immutable Perl source')
+          # Ignore caller-provided Git environment, index bits, config and replace refs.
+          git_env = dict(PATH='/usr/bin:/bin', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_NO_REPLACE_OBJECTS='1')
+          def object_bytes(kind, oid):
+              raw = subprocess.check_output(['/usr/bin/git', '--no-replace-objects', 'cat-file', kind, oid], cwd=root, env=git_env)
+              actual = hashlib.sha1(kind.encode() + b' ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+              if actual != oid:
+                  raise ValueError('immutable Perl Git object changed')
+              return raw
+
+          commit = object_bytes('commit', sha)
+          first = commit.split(b'\n', 1)[0]
+          if not re.fullmatch(b'tree [0-9a-f]{40}', first):
+              raise ValueError('invalid immutable Perl commit')
+
+          def tree(oid, directory):
+              if not stat.S_ISDIR(directory.lstat().st_mode):
+                  raise ValueError('linked Perl source directory')
+              raw = object_bytes('tree', oid)
+              cursor = 0
+              while cursor < len(raw):
+                  end = raw.index(b'\0', cursor)
+                  mode, name = raw[cursor:end].split(b' ', 1)
+                  child = raw[end + 1:end + 21]
+                  if len(child) != 20 or name in (b'', b'.', b'..', b'.git') or b'/' in name:
+                      raise ValueError('unsafe immutable Perl tree')
+                  cursor = end + 21
+                  path = directory / os.fsdecode(name)
+                  info = path.lstat()
+                  if mode == b'40000':
+                      tree(child.hex(), path)
+                      continue
+                  digest = hashlib.sha1()
+                  if mode == b'120000' and stat.S_ISLNK(info.st_mode):
+                      data = os.readlink(os.fsencode(path))
+                      digest.update(b'blob ' + str(len(data)).encode() + b'\0' + data)
+                  elif mode in (b'100644', b'100755') and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                      if bool(info.st_mode & stat.S_IXUSR) != (mode == b'100755'):
+                          raise ValueError('Perl source mode changed')
+                      digest.update(b'blob ' + str(info.st_size).encode() + b'\0')
+                      with path.open('rb') as stream:
+                          for block in iter(lambda: stream.read(1024**2), b''):
+                              digest.update(block)
+                  else:
+                      raise ValueError('Perl source type changed or unsupported submodule')
+                  if digest.digest() != child:
+                      raise ValueError('Perl source differs from immutable commit')
+
+          tree(first[5:].decode(), root)
+          PYTHON
+          git diff --quiet HEAD --
+          [[ -z "$(git ls-files --others --exclude-standard)" ]]
+          # Receipt verification only. No product suite is rerun. A cold xtask
+          # build must fit the existing policy envelope; refusal remains blocking.
+          RUSTUP_TOOLCHAIN="$EM_CI_RUST_COMPATIBILITY_VERSION" RUSTUP_AUTO_INSTALL=0 CARGO_BUILD_JOBS=2 \
+            CARGO_TARGET_DIR="$RUNNER_TEMP/perl-receipt-validator-target" \
+            cargo run -p xtask --locked -- rust-small-proof --verify-receipt "$EM_CI_ARTIFACT_DIR/rust-small-proof.json"
+      - name: Run repository result policy
+        if: inputs.result_script != '' && steps.evaluate.outcome == 'success' && (!inputs.upload_artifacts || (steps.import_receipts.outcome == 'success' && (inputs.artifact_lane != 'perl-rust-small' || (steps.perl_import_custody.outcome == 'success' && steps.perl_import_semantics.outcome == 'success'))))
+        env:
+          EM_CI_RESULT_SCRIPT: ${{ inputs.result_script }}
+          EM_CI_EVIDENCE: ${{ steps.evaluate.outputs.evidence }}
+          EM_CI_SELECTED_PROOF_RESULT: ${{ steps.evaluate.outcome }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$EM_CI_RESULT_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$EM_CI_RESULT_SCRIPT" != /* && "$EM_CI_RESULT_SCRIPT" != *..* ]]
+          [[ -f "$EM_CI_RESULT_SCRIPT" ]]
+          bash -- "$EM_CI_RESULT_SCRIPT"
+
+  result:
+    name: Rust CI / Required
+    needs: [classify, light, standard, heavy, large, hosted, hosted-fallback, external-unavailable, repository-policy]
+    if: always()
+    runs-on: *result_runner
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      evidence: ${{ job.status == 'success' && steps.upload_receipt.outcome == 'success' && steps.evaluate.outputs.evidence || '' }}
+      receipt_name: ${{ job.status == 'success' && steps.upload_receipt.outcome == 'success' && steps.receipt.outputs.name || '' }}
+    steps:
+      - *evaluate_selected_proof
+      - name: Require configured repository policy success
+        id: policy_result
+        env:
+          RESULT_SCRIPT: ${{ inputs.result_script }}
+          POLICY_RESULT: ${{ needs.repository-policy.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$RESULT_SCRIPT" ]]; then
+            [[ "$POLICY_RESULT" == success ]] || {
+              echo "::error::repository result policy did not succeed: $POLICY_RESULT"
+              exit 1
+            }
+          else
+            [[ "$POLICY_RESULT" == skipped ]] || exit 1
+          fi
+      - name: Preserve exact result receipt
+        id: receipt
+        env:
+          EM_CI_EVIDENCE: ${{ steps.evaluate.outputs.evidence }}
+          EM_CI_JOB_CONTEXT: ${{ toJSON(job) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PYTHON'
+          import json, os, pathlib
+          evidence = json.loads(os.environ['EM_CI_EVIDENCE'])
+          context = json.loads(os.environ['EM_CI_JOB_CONTEXT'])
+          job_id = context['check_run_id']
+          assert type(job_id) is int and job_id > 0, 'native result job identity missing'
+          assert evidence['repository'] == os.environ['GITHUB_REPOSITORY']
+          assert evidence['sha'] == os.environ['GITHUB_SHA']
+          assert evidence['run_id'] == os.environ['GITHUB_RUN_ID']
+          assert evidence['run_attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+          name = 'em-ci-rust-result-' + evidence['run_id'] + '-' + evidence['run_attempt'] + '-' + str(job_id)
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'em-ci-result.json').write_text(json.dumps(evidence, sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('name=' + name + '\n')
+          PYTHON
+      - name: Upload exact result receipt
+        id: upload_receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: ${{ runner.temp }}/em-ci-result.json
+          if-no-files-found: error
+          retention-days: 7

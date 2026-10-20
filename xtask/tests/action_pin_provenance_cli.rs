@@ -346,6 +346,72 @@ fn custom_ledger_contradiction_reports_selected_path_and_real_line() -> Result<(
     Ok(())
 }
 
+#[test]
+fn governed_rust_caller_requires_exact_reviewed_historical_projection() -> Result<()> {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).parent().context("workspace root")?;
+    let caller = std::fs::read_to_string(source.join(".github/workflows/em-ci-routed-rust.yml"))?;
+    let uses = caller
+        .lines()
+        .find(|line| {
+            line.contains("uses: EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@")
+        })
+        .context("governed Rust caller")?
+        .trim();
+    let ledger = std::fs::read_to_string(source.join(".ci/policies/action-pin-provenance.toml"))?;
+    let sha = "d69e3c9cbc55ee8c5d084facfe18432cd4c28618";
+    let projection = "main (2026-10-16)";
+    assert!(uses.contains(sha) && uses.ends_with(projection));
+    assert!(ledger.contains(&format!("value = '{projection}'")));
+
+    // Exercise the production CLI and checked-in inputs. The controls reproduce
+    // the failed native run and reject plausible but unreviewed coordinates.
+    for (name, candidate, expected) in [
+        ("reviewed", uses.to_owned(), None),
+        (
+            "original_prose",
+            uses.replace(projection, "isolated owned policy and aggregate"),
+            Some("ACTION_PROVENANCE_NOT_PROVEN"),
+        ),
+        (
+            "wrong_date",
+            uses.replace(projection, "main (2026-10-14)"),
+            Some("ACTION_PROVENANCE_NOT_PROVEN"),
+        ),
+        (
+            "unknown_sha",
+            uses.replace(sha, "1111111111111111111111111111111111111111"),
+            Some("ACTION_PROVENANCE_NOT_PROVEN"),
+        ),
+        ("mutable_ref", uses.replace(sha, "main"), Some("MUTABLE_OR_UNSUPPORTED_ACTION_REF")),
+    ] {
+        let fixture = tempfile::tempdir()?;
+        std::fs::create_dir_all(fixture.path().join(".github/workflows"))?;
+        std::fs::create_dir_all(fixture.path().join(".ci/policies"))?;
+        std::fs::write(
+            fixture.path().join(".github/workflows/caller.yml"),
+            format!(
+                "name: provenance\non: workflow_dispatch\njobs:\n  governed:\n    {candidate}\n"
+            ),
+        )?;
+        std::fs::write(fixture.path().join(".ci/policies/action-pin-provenance.toml"), &ledger)?;
+        let output = run_cli(
+            fixture.path(),
+            None,
+            None,
+            &["--strict-all"],
+            &fixture.path().join("receipt.json"),
+        )?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(code) = expected {
+            assert_eq!(output.status.code(), Some(1), "{name}: {stderr}");
+            assert!(stderr.contains(code), "{name}: {stderr}");
+        } else {
+            assert!(output.status.success(), "{name}: {stderr}");
+        }
+    }
+    Ok(())
+}
+
 fn run_cli(
     repository: &Path,
     merge_base: Option<&str>,

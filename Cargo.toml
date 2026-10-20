@@ -103,6 +103,7 @@ members = [
     "crates/perl-workspace-core",
     "crates/perl-tree-sitter-compat",
     "xtask",
+    "crates/perl-rust-small-verifier",
 ]
 
 exclude = [
