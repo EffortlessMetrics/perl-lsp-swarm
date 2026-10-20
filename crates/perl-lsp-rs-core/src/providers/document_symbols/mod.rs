@@ -105,11 +105,15 @@ fn is_container(symbol: &Symbol) -> bool {
 }
 
 /// A framework namespace symbol synthesized by the extractor at an import
-/// or call site (`declaration: framework=<Name>`, e.g. the `EV` class from
-/// `use EV`). It declares no package region: it must not terminate the
-/// enclosing statement package's extent or absorb following symbols.
+/// or call site (e.g. the `EV` class from `use EV`, or the
+/// `Plack::Middleware::*` package from `enable 'Session'`). The extractor
+/// marks these with a `framework=<Name>` declaration or attribute; real
+/// package/class/role declarations carry neither. A synthesized symbol
+/// declares no package region: it must not terminate the enclosing
+/// statement package's extent or absorb following symbols.
 fn is_synthesized_framework(symbol: &Symbol) -> bool {
     symbol.declaration.as_deref().is_some_and(|d| d.starts_with("framework="))
+        || symbol.attributes.iter().any(|a| a.starts_with("framework="))
 }
 
 /// Extent of a namespace container, as byte offsets.
@@ -962,6 +966,40 @@ mod tests {
             1,
             "helper once: {names:?}"
         );
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    /// Review regression (#18184): the Plack middleware package
+    /// synthesized by `enable 'Session'` carries its framework marker in
+    /// attributes, not declaration. It must not steal P's members either.
+    #[test]
+    fn document_symbols_plack_enable_does_not_steal_package_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package P;\nuse Plack::Builder;\nbuilder {\n    enable 'Session';\n};\nsub helper { 1 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let package = result.symbols.iter().find(|s| s.name == "P").ok_or("no P")?;
+        assert!(
+            child_names(package).contains(&"helper"),
+            "helper must stay under P: {:?}",
+            result.symbols
+        );
+        let names = tree_names(&result.symbols);
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "helper").count(),
+            1,
+            "helper once: {names:?}"
+        );
+        for symbol in &result.symbols {
+            if symbol.name == "Plack::Middleware::Session" {
+                assert!(
+                    symbol.children.iter().all(|c| c.name != "helper"),
+                    "synthetic middleware must not own helper: {:?}",
+                    symbol.children
+                );
+            }
+        }
         assert_ranges_contained(&result.symbols);
         Ok(())
     }
