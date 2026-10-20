@@ -336,8 +336,10 @@ fn keep_callable_declaration(
 pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
     // Emit one canonical URI spelling per document (#18112): producers spell
     // the drive letter differently, and dedup keys on the canonical form but
-    // previously emitted the original strings. `uri_key` passes non-file
-    // URIs (untitled:, git:, ...) through unchanged.
+    // previously emitted the original strings. The relied-on `uri_key`
+    // behavior is drive-letter canonicalization; the non-file URIs producers
+    // actually emit (untitled:, git:) pass through byte-identical, as pinned
+    // by `finalize_preserves_untitled_and_non_file_uris`.
     for location in locations.iter_mut() {
         if let Some(uri) = location.get("uri").and_then(Value::as_str).map(str::to_owned) {
             if let Some(obj) = location.as_object_mut() {
@@ -366,17 +368,20 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
         seen_start = start_id;
         collapsed.push(location);
     }
-    // Containment (#18112): the index's full call-expression span for
-    // `$self->foo` (7:11-21) starts before the text scan's name token
-    // (7:18-21), so same-start collapse cannot see the pair. Within one
-    // canonical URI and one line span, drop any range that strictly
-    // contains another range, keeping the narrowest. The line-span
-    // restriction preserves multi-line ranges that merely enclose a
+    // Anchored containment (#18112): the index's full call-expression span
+    // for `$self->foo` (7:11-21) starts before the text scan's name token
+    // (7:18-21), so same-start collapse cannot see the pair. Drop a range
+    // only when another range inside it is anchored to it as its own name
+    // token: same canonical URI, same line span, strictly inside, and
+    // sharing the start (plain `foo(...)` wrappers) or the end (bare
+    // `$x->foo` wrappers). Bare containment is not enough: in an
+    // index-only answer (non-open file, deadline path) nested calls are
+    // wrappers all the way down, and a declaration span legitimately
+    // contains its body's calls, so an unanchored contained range is a
+    // distinct occurrence, never a duplicate. The line-span restriction
+    // additionally preserves multi-line ranges that merely enclose a
     // token (a whole-sub declaration span is a distinct entry, per
     // `dedupe_collapses_identical_ranges_across_json_key_order`).
-    // Distinct nested occurrences (the two name tokens of
-    // `$x->foo->foo()` or `foo(foo())`) contain nothing and survive;
-    // only wrapper spans that contain a kept range are dropped.
     let ids: Vec<Option<CanonicalLocationId>> =
         collapsed.iter().map(canonical_location_id).collect();
     let mut kept: Vec<Value> = Vec::with_capacity(collapsed.len());
@@ -385,7 +390,7 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
             kept.push(location);
             continue;
         };
-        let strictly_contains_other = ids.iter().enumerate().any(|(other_index, other)| {
+        let contains_own_name_token = ids.iter().enumerate().any(|(other_index, other)| {
             other_index != index
                 && other.as_ref().is_some_and(|inner| {
                     inner.uri == outer.uri
@@ -399,9 +404,13 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
                             < (inner.start_line, inner.start_character)
                             || (outer.end_line, outer.end_character)
                                 > (inner.end_line, inner.end_character))
+                        && ((inner.start_line, inner.start_character)
+                            == (outer.start_line, outer.start_character)
+                            || (inner.end_line, inner.end_character)
+                                == (outer.end_line, outer.end_character))
                 })
         });
-        if !strictly_contains_other {
+        if !contains_own_name_token {
             kept.push(location);
         }
     }
@@ -1216,6 +1225,73 @@ mod tests {
         Ok(())
     }
 
+    /// #18112 guard: an index-only answer (non-open file, deadline path)
+    /// holds call-expression wrappers only. `foo(foo())` then finalizes
+    /// from the two wrappers alone, and bare containment must not eat the
+    /// outer genuine call: neither wrapper is the other's name token.
+    #[test]
+    fn index_only_nested_call_spans_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // foo(foo()) : outer call 0-10, inner call 4-9, no name tokens
+        let locations = vec![mk(0, 10), mk(4, 9)];
+        let out = finalize_reference_locations(locations, 10);
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 10), (4, 9)] {
+            return Err(format!("both index-only nested calls must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: with includeDeclaration, a one-line
+    /// `sub foo { return foo(); }` puts the whole-sub declaration span
+    /// (0-21) around the recursive call span (9-20) on one line. The
+    /// declaration is a distinct entry, not the call's wrapper, so both
+    /// must survive.
+    #[test]
+    fn declaration_span_and_contained_call_both_survive_containment_dedup()
+    -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        let locations = vec![mk(0, 21), mk(9, 20)];
+        let out = finalize_reference_locations(locations, 10);
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 21), (9, 20)] {
+            return Err(format!("declaration and contained call must both survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
     /// #18112: every finalized location in one file must carry the canonical
     /// URI spelling (lowercase drive letter, path case preserved), even when
     /// the producers disagreed on drive case.
@@ -1317,8 +1393,12 @@ mod tests {
         Ok(())
     }
 
-    /// #18112 guard: `foo(foo())` nests two genuine occurrences; only the
-    /// call-expression wrappers are dropped.
+    /// #18112 guard: `foo(foo())` nests two genuine occurrences. This
+    /// guards the same-start collapse (each wrapper shares its start with
+    /// its name token); the containment pass itself is discriminated by
+    /// `contained_call_span_and_name_token_collapse_to_the_name_token`,
+    /// `index_only_nested_call_spans_both_survive_containment_dedup`, and
+    /// `declaration_span_and_contained_call_both_survive_containment_dedup`.
     #[test]
     fn nested_call_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
         let mk = |start: u64, end: u64| {
