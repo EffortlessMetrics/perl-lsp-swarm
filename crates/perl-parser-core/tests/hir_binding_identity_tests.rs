@@ -310,6 +310,14 @@ fn package_top_level_declarations_are_visible_to_program_root_occurrences() {
     assert!(reads.iter().all(|o| o.binding.is_some() && o.kind == VariableKind::Lexical));
     assert_ne!(reads[0].binding, reads[1].binding, "each package region owns its declaration");
 
+    // A label on the package statement is transparent to the switch.
+    let labelled = lower("LBL: package P;\nmy $z = 1;\nprint $z;\n");
+    let read = must_some(
+        occurrences(&labelled).into_iter().find(|o| o.name == "z" && o.access == AccessMode::Read),
+    );
+    assert!(read.binding.is_some(), "labelled package-top-level `my` resolves from program root");
+    assert_eq!(read.kind, VariableKind::Lexical);
+
     // The switch is block-scoped: after the block ends, the outer
     // resolution scope applies again.
     let blocked = lower("my $y = 1;\n{ package P; my $y = 2; print $y; }\nprint $y;\n");

@@ -4558,6 +4558,13 @@ impl<'a> BodyBuilder2<'a> {
     /// switch never leaks past the block the declaration appears in.
     /// Block-form packages own their block and switch nothing here.
     fn switch_to_package_scope(&mut self, node: &Node) {
+        // Labels and expression-statement wrappers are transparent here:
+        // `LABEL: package P;` opens the package scope just the same.
+        let node = match &node.kind {
+            NodeKind::LabeledStatement { statement, .. } => statement.as_ref(),
+            NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+            _ => node,
+        };
         if !matches!(&node.kind, NodeKind::Package { block: None, .. }) {
             return;
         }
