@@ -957,6 +957,10 @@ impl LspServer {
                                     })
                                     .collect();
                                 let locations = finalize_reference_locations(locations, cap);
+                                self.check_references_cancellation(
+                                    typed_request_id.as_ref(),
+                                    &mut fallback_receipt,
+                                )?;
                                 return Ok((
                                     Some(Value::Array(locations)),
                                     ReferencesAnsweringTier::SemanticAnalyzer,
