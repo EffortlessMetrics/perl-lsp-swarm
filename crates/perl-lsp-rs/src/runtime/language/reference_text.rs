@@ -341,10 +341,10 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
     // actually emit (untitled:, git:) pass through byte-identical, as pinned
     // by `finalize_preserves_untitled_and_non_file_uris`.
     for location in locations.iter_mut() {
-        if let Some(obj) = location.as_object_mut() {
-            if let Some(Value::String(uri)) = obj.get_mut("uri") {
-                *uri = perl_uri::uri_key(uri);
-            }
+        if let Some(Value::String(uri)) =
+            location.as_object_mut().and_then(|obj| obj.get_mut("uri"))
+        {
+            *uri = perl_uri::uri_key(uri);
         }
     }
     locations.sort_by_key(canonical_location_id);
