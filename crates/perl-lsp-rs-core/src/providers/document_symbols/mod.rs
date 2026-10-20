@@ -1526,6 +1526,24 @@ mod tests {
     }
 
     #[test]
+    fn moose_has_same_name_explicit_reader_collapses_to_attribute() {
+        // An explicit reader named exactly like the attribute is the same
+        // callable the default accessor would mint, at the same span; the
+        // outline keeps the single attribute entry (#18111).
+        for source in [
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro', reader => 'name');\n",
+            "package Widget;\nuse Moose;\nhas name => (is => 'bare', reader => 'name');\n",
+        ] {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            let flat = flatten_names(&result.symbols);
+            let named: Vec<_> = flat.iter().filter(|s| s.name == "name").collect();
+            assert_eq!(named.len(), 1, "exactly one `name` for {source:?}: {flat:?}");
+            assert_eq!(named[0].kind, 7, "kept entry is the attribute for {source:?}");
+        }
+    }
+
+    #[test]
     fn moose_has_plus_explicit_sub_same_name_different_span_kept() {
         let source =
             "package Widget;\nuse Moose;\nhas name => (is => 'ro');\nsub name { return 1; }\n";
