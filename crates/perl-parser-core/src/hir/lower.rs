@@ -4007,13 +4007,12 @@ impl<'a> BodyBuilder2<'a> {
     /// `lower_nested_block`), two same-spelling lexicals declared in nested
     /// scopes of one body resolve to their own bindings.
     ///
-    /// The known package-root boundary remains separate from position-aware
-    /// binding lookup (#14173). The walk only ascends. A `package NAME;`
-    /// statement opens a *child* scope, while the program-root body still
-    /// starts at the file scope, so declarations made at package top level
-    /// are not visible to program-root occurrences and resolve to `None`.
-    /// The pre-existing `VariableKind` fallback already mis-reported such a
-    /// `my` as `Package`.
+    /// The walk only ascends. A statement-form `package NAME;` opens a
+    /// *child* scope, so statement sequences re-point `start_scope` at it
+    /// for the rest of the enclosing block (see
+    /// [`switch_to_package_scope`](Self::switch_to_package_scope)), which
+    /// makes declarations at package top level visible to the occurrences
+    /// that follow them (#14173).
     ///
     /// The walk itself is the shared [`resolve_binding_in_scope_graph`], the
     /// same lookup the first pass uses, so the two views cannot answer
@@ -4539,11 +4538,46 @@ impl<'a> BodyBuilder2<'a> {
             self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
             for statement in statements {
                 block.stmts.push(self.lower_statement(statement));
+                self.switch_to_package_scope(statement);
             }
             self.enclosing_label_stack.pop();
             self.start_scope = previous_scope;
         } else {
             block.stmts.push(self.lower_statement(node));
+            self.switch_to_package_scope(node);
+        }
+    }
+
+    /// A statement-form `package NAME;` opens the package scope for the
+    /// rest of the enclosing block in Perl, and the first pass records the
+    /// following declarations in that scope. Point the body's resolution
+    /// scope at it so program-root and block sequences see those
+    /// declarations instead of resolving them as package globals (#14173).
+    /// The caller's sequence owns the previous scope and restores it when
+    /// the block ends (`lower_nested_block`, labelled blocks), so the
+    /// switch never leaks past the block the declaration appears in.
+    /// Block-form packages own their block and switch nothing here.
+    fn switch_to_package_scope(&mut self, node: &Node) {
+        // Labels and expression-statement wrappers are transparent here:
+        // `LABEL: package P;` opens the package scope just the same.
+        let node = match &node.kind {
+            NodeKind::LabeledStatement { statement, .. } => statement.as_ref(),
+            NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+            _ => node,
+        };
+        if !matches!(&node.kind, NodeKind::Package { block: None, .. }) {
+            return;
+        }
+        if let Some(scope) = self
+            .scope_graph
+            .scopes
+            .iter()
+            .find(|frame| {
+                frame.kind == ScopeKind::Package && frame.range.start == node.location.start
+            })
+            .map(|frame| frame.id)
+        {
+            self.start_scope = scope;
         }
     }
 

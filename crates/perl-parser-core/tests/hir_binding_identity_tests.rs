@@ -273,37 +273,64 @@ fn our_and_my_of_the_same_spelling_remain_distinct_bindings() {
     );
 }
 
-/// Known boundary, not a claim of correctness: `package NAME;` opens a child
-/// scope, but the program-root body still starts at the file scope and the
-/// resolution walk only ascends. Declarations made at package top level are
-/// therefore invisible to program-root occurrences.
-///
-/// This behaviour is pre-existing — the previous `VariableKind` walk was
-/// identical, and already mis-reported the `my` read below as `Package`.
-/// Threading identity only makes the gap visible as `None`. Pinned here so the
-/// boundary is explicit and a future fix trips this test instead of silently
-/// changing consumer-visible classification. Tracked by #14173.
+/// A `my` declared at package top level resolves from program-root
+/// occurrences (#14173): a statement-form `package NAME;` re-points the
+/// body resolution scope at the package scope for the rest of the
+/// enclosing block, where the first pass recorded the declaration.
 #[test]
-fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() {
+fn package_top_level_declarations_are_visible_to_program_root_occurrences() {
     let lexical = lower("package P;\nmy $lex = 1;\nprint $lex;\n");
     let read = must_some(
         occurrences(&lexical).into_iter().find(|o| o.name == "lex" && o.access == AccessMode::Read),
     );
-    assert_eq!(read.binding, None, "package-top-level `my` is not resolvable from program root");
+    assert!(read.binding.is_some(), "package-top-level `my` resolves from program root");
     assert_eq!(
         read.kind,
-        VariableKind::Package,
-        "pre-existing misclassification preserved: a package-top-level `my` read reports Package"
+        VariableKind::Lexical,
+        "a package-top-level `my` read reports Lexical, not Package"
     );
 
-    // Without the `package` statement the very same code resolves correctly,
-    // which isolates the cause to package-scope descent rather than to `my`.
+    // Without the `package` statement the very same code resolves the same
+    // way, which isolates the earlier gap to package-scope descent.
     let plain = lower("my $lex = 1;\nprint $lex;\n");
     let read = must_some(
         occurrences(&plain).into_iter().find(|o| o.name == "lex" && o.access == AccessMode::Read),
     );
     assert!(read.binding.is_some(), "file-scope `my` resolves to its binding");
     assert_eq!(read.kind, VariableKind::Lexical);
+
+    // A second package switches the resolution scope again: each read
+    // binds to the declaration in its own package region.
+    let two = lower("package A;\nmy $x = 1;\nprint $x;\npackage B;\nmy $x = 2;\nprint $x;\n");
+    let reads: Vec<_> = occurrences(&two)
+        .into_iter()
+        .filter(|o| o.name == "x" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected one read per package region");
+    assert!(reads.iter().all(|o| o.binding.is_some() && o.kind == VariableKind::Lexical));
+    assert_ne!(reads[0].binding, reads[1].binding, "each package region owns its declaration");
+
+    // A label on the package statement is transparent to the switch.
+    let labelled = lower("LBL: package P;\nmy $z = 1;\nprint $z;\n");
+    let read = must_some(
+        occurrences(&labelled).into_iter().find(|o| o.name == "z" && o.access == AccessMode::Read),
+    );
+    assert!(read.binding.is_some(), "labelled package-top-level `my` resolves from program root");
+    assert_eq!(read.kind, VariableKind::Lexical);
+
+    // The switch is block-scoped: after the block ends, the outer
+    // resolution scope applies again.
+    let blocked = lower("my $y = 1;\n{ package P; my $y = 2; print $y; }\nprint $y;\n");
+    let reads: Vec<_> = occurrences(&blocked)
+        .into_iter()
+        .filter(|o| o.name == "y" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected in-block and post-block reads");
+    assert!(reads.iter().all(|o| o.binding.is_some()));
+    assert_ne!(
+        reads[0].binding, reads[1].binding,
+        "the in-block read binds the block package's declaration, the post-block read the outer one"
+    );
 }
 
 /// A declaration must name the binding it *introduces*, which plain visibility
