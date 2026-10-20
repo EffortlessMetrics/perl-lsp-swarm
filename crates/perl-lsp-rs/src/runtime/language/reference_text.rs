@@ -341,9 +341,9 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
     // actually emit (untitled:, git:) pass through byte-identical, as pinned
     // by `finalize_preserves_untitled_and_non_file_uris`.
     for location in locations.iter_mut() {
-        if let Some(uri) = location.get("uri").and_then(Value::as_str).map(str::to_owned) {
-            if let Some(obj) = location.as_object_mut() {
-                obj.insert("uri".to_owned(), Value::String(perl_uri::uri_key(&uri)));
+        if let Some(obj) = location.as_object_mut() {
+            if let Some(Value::String(uri)) = obj.get_mut("uri") {
+                *uri = perl_uri::uri_key(uri);
             }
         }
     }
@@ -384,33 +384,48 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
     // `dedupe_collapses_identical_ranges_across_json_key_order`).
     let ids: Vec<Option<CanonicalLocationId>> =
         collapsed.iter().map(canonical_location_id).collect();
+    // A containment match must share the canonical URI and the line span,
+    // so compare only within those groups: a symbol with thousands of
+    // references stays near-linear instead of costing a quadratic scan
+    // over unrelated files and lines.
+    let mut groups: std::collections::HashMap<(&str, u64, u64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (index, id) in ids.iter().enumerate() {
+        if let Some(id) = id {
+            groups.entry((id.uri.as_str(), id.start_line, id.end_line)).or_default().push(index);
+        }
+    }
+    let mut dropped = vec![false; collapsed.len()];
+    for members in groups.values() {
+        for &index in members {
+            let Some(outer) = &ids[index] else {
+                continue;
+            };
+            let contains_own_name_token = members.iter().any(|&other_index| {
+                other_index != index
+                    && ids[other_index].as_ref().is_some_and(|inner| {
+                        (outer.start_line, outer.start_character)
+                            <= (inner.start_line, inner.start_character)
+                            && (outer.end_line, outer.end_character)
+                                >= (inner.end_line, inner.end_character)
+                            && ((outer.start_line, outer.start_character)
+                                < (inner.start_line, inner.start_character)
+                                || (outer.end_line, outer.end_character)
+                                    > (inner.end_line, inner.end_character))
+                            && ((inner.start_line, inner.start_character)
+                                == (outer.start_line, outer.start_character)
+                                || (inner.end_line, inner.end_character)
+                                    == (outer.end_line, outer.end_character))
+                    })
+            });
+            if contains_own_name_token {
+                dropped[index] = true;
+            }
+        }
+    }
     let mut kept: Vec<Value> = Vec::with_capacity(collapsed.len());
     for (index, location) in collapsed.into_iter().enumerate() {
-        let Some(outer) = &ids[index] else {
-            kept.push(location);
-            continue;
-        };
-        let contains_own_name_token = ids.iter().enumerate().any(|(other_index, other)| {
-            other_index != index
-                && other.as_ref().is_some_and(|inner| {
-                    inner.uri == outer.uri
-                        && outer.start_line == inner.start_line
-                        && outer.end_line == inner.end_line
-                        && (outer.start_line, outer.start_character)
-                            <= (inner.start_line, inner.start_character)
-                        && (outer.end_line, outer.end_character)
-                            >= (inner.end_line, inner.end_character)
-                        && ((outer.start_line, outer.start_character)
-                            < (inner.start_line, inner.start_character)
-                            || (outer.end_line, outer.end_character)
-                                > (inner.end_line, inner.end_character))
-                        && ((inner.start_line, inner.start_character)
-                            == (outer.start_line, outer.start_character)
-                            || (inner.end_line, inner.end_character)
-                                == (outer.end_line, outer.end_character))
-                })
-        });
-        if !contains_own_name_token {
+        if !dropped[index] {
             kept.push(location);
         }
     }
@@ -1288,6 +1303,44 @@ mod tests {
             .collect::<Result<_, _>>()?;
         if spans != vec![(0, 21), (9, 20)] {
             return Err(format!("declaration and contained call must both survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: a common symbol can finalize thousands of mostly
+    /// unrelated locations (one contained pair per file across many
+    /// files). Every genuine location must survive, each wrapper must
+    /// still collapse to its name token, and the grouped pass must not
+    /// turn the count quadratic in practice.
+    #[test]
+    fn finalize_many_unrelated_locations_all_survive() -> Result<(), Box<dyn Error>> {
+        let mut locations: Vec<Value> = Vec::new();
+        for file in 0..200u64 {
+            for line in 0..25u64 {
+                locations.push(json!({
+                    "uri": format!("file:///mod{file}.pl"),
+                    "range": {
+                        "start": {"line": line, "character": 4},
+                        "end": {"line": line, "character": 7},
+                    },
+                }));
+            }
+            // One contained wrapper pair on line 0 of each file: the
+            // wrapper (2-7) end-anchors to the line-0 name token (4-7).
+            locations.push(json!({
+                "uri": format!("file:///mod{file}.pl"),
+                "range": {
+                    "start": {"line": 0, "character": 2},
+                    "end": {"line": 0, "character": 7},
+                },
+            }));
+        }
+        let out = finalize_reference_locations(locations, 10_000);
+        // 200 files * 25 tokens; each wrapper (2-7) is dropped in favor
+        // of its end-anchored name token already in the set, so the
+        // count stays 5000 rather than growing to 5200.
+        if out.len() != 5000 {
+            return Err(format!("all genuine locations must survive, got {}", out.len()).into());
         }
         Ok(())
     }
