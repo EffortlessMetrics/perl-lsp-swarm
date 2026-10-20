@@ -875,6 +875,83 @@ impl LspServer {
                     let workspace_index_stale_for_any_open_document =
                         self.workspace_index_stale_for_any_open_document();
 
+                    // #18175: when the analyzer resolves the cursor to a lexical
+                    // (`my`/`state`), its shadow-aware same-file answer is exact
+                    // and complete: a lexical cannot be referenced from another
+                    // file, while the name-only tiers below return every
+                    // same-name occurrence when shadowing makes entity
+                    // resolution decline. Answer here instead.
+                    {
+                        let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
+                        // Only shadowed names need this: with a single lexical
+                        // of the name, the existing tiers already answer
+                        // exactly and their contracts stand.
+                        let lexical = analyzer.find_definition(offset).is_some_and(|symbol| {
+                            if !matches!(symbol.declaration.as_deref(), Some("my" | "state")) {
+                                return false;
+                            }
+                            // Shadowing needs nested scopes: same-name lexicals
+                            // in sibling subroutines never shadow each other.
+                            let table = analyzer.symbol_table();
+                            let on_chain = |mut scope: usize, target: usize| loop {
+                                if scope == target {
+                                    break true;
+                                }
+                                match table.scopes.get(&scope).and_then(|s| s.parent) {
+                                    Some(parent) => scope = parent,
+                                    None => break false,
+                                }
+                            };
+                            table.symbols.get(&symbol.name).is_some_and(|candidates| {
+                                candidates.iter().any(|candidate| {
+                                    candidate.location.start != symbol.location.start
+                                        && matches!(
+                                            candidate.declaration.as_deref(),
+                                            Some("my" | "state")
+                                        )
+                                        && (on_chain(candidate.scope_id, symbol.scope_id)
+                                            || on_chain(symbol.scope_id, candidate.scope_id))
+                                })
+                            })
+                        });
+                        if lexical {
+                            let references =
+                                analyzer.find_all_references(offset, include_declaration);
+                            let locations: Vec<Value> = references
+                                .iter()
+                                .map(|loc| {
+                                    let (start_line, start_char) =
+                                        self.offset_to_pos16(doc, loc.start);
+                                    let (end_line, end_char) = self.offset_to_pos16(doc, loc.end);
+                                    json!({
+                                        "uri": uri,
+                                        "range": {
+                                            "start": {
+                                                "line": start_line,
+                                                "character": start_char,
+                                            },
+                                            "end": {
+                                                "line": end_line,
+                                                "character": end_char,
+                                            },
+                                        },
+                                    })
+                                })
+                                .collect();
+                            let locations = finalize_reference_locations(locations, cap);
+                            return Ok((
+                                Some(Value::Array(locations)),
+                                ReferencesAnsweringTier::SemanticAnalyzer,
+                                observed_index_state,
+                                0,
+                                0,
+                                start.elapsed().as_micros(),
+                                source_backed_attempt.clone(),
+                                fallback_receipt.clone(),
+                            ));
+                        }
+                    }
+
                     // Check index state and use appropriate search strategy
                     #[cfg(feature = "workspace")]
                     {
@@ -4687,6 +4764,58 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), ghost.len(), "no duplicated (uri, range): {ghost:?}");
 
+        Ok(())
+    }
+
+    #[test]
+    fn references_shadowed_lexical_uses_analyzer_answer_18175() -> Result<(), Box<dyn Error>> {
+        // #18175: with two same-name lexicals, entity resolution declines and
+        // the name-only tiers returned every occurrence for either query.
+        // The handler must answer from the shadow-aware analyzer instead:
+        // outer query keeps only its own uses, inner query only its use.
+        let server = crate::runtime::LspServer::default();
+        let uri = "file:///probe-shadow.pl";
+        let text = "my $x = 1;\nprint $x;\n{ my $x = 2; print $x; }\nprint $x;\n";
+        server.test_apply_did_open(uri, text, 1)?;
+
+        let outer = server
+            .test_handle_references(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 0, "character": 3 },
+                "context": { "includeDeclaration": false }
+            })))?
+            .ok_or("missing references result")?;
+        let Value::Array(outer_locations) = &outer else {
+            return Err(format!("references payload was not an array: {outer}").into());
+        };
+        assert_eq!(
+            outer_locations.len(),
+            2,
+            "outer $x has exactly its 2 uses outside the block; got {outer}"
+        );
+        assert!(
+            outer_locations
+                .iter()
+                .all(|loc| loc.pointer("/range/start/line").and_then(Value::as_u64) != Some(2)),
+            "no location may point into the shadowing block; got {outer}"
+        );
+
+        let inner = server
+            .test_handle_references(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 7 },
+                "context": { "includeDeclaration": false }
+            })))?
+            .ok_or("missing references result 2")?;
+        let Value::Array(inner_locations) = &inner else {
+            return Err(format!("references payload was not an array: {inner}").into());
+        };
+        assert_eq!(inner_locations.len(), 1, "inner $x has exactly its 1 use; got {inner}");
+        assert_eq!(
+            inner_locations[0].pointer("/range/start/line").and_then(Value::as_u64),
+            Some(2),
+            "the inner use is on line 2; got {inner}"
+        );
         Ok(())
     }
 }
