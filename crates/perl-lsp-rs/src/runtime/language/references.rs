@@ -1135,7 +1135,8 @@ impl LspServer {
                                             "References: deadline exceeded before text search"
                                         );
                                         let index_count = workspace_locations.len();
-                                        workspace_locations.truncate(cap);
+                                        let workspace_locations =
+                                            finalize_reference_locations(workspace_locations, cap);
                                         return Ok((
                                             Some(to_json_array(&workspace_locations)),
                                             ReferencesAnsweringTier::WorkspaceExact,

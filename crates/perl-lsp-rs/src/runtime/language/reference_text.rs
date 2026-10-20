@@ -334,6 +334,17 @@ fn keep_callable_declaration(
 /// narrowest range per (canonical URI, start) — the name token, never a
 /// distinct occurrence.
 pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
+    // Emit one canonical URI spelling per document (#18112): producers spell
+    // the drive letter differently, and dedup keys on the canonical form but
+    // previously emitted the original strings. `uri_key` passes non-file
+    // URIs (untitled:, git:, ...) through unchanged.
+    for location in locations.iter_mut() {
+        if let Some(uri) = location.get("uri").and_then(Value::as_str).map(str::to_owned) {
+            if let Some(obj) = location.as_object_mut() {
+                obj.insert("uri".to_owned(), Value::String(perl_uri::uri_key(&uri)));
+            }
+        }
+    }
     locations.sort_by_key(canonical_location_id);
     locations.dedup_by(|left, right| {
         match (canonical_location_id(left), canonical_location_id(right)) {
@@ -355,7 +366,46 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
         seen_start = start_id;
         collapsed.push(location);
     }
-    *locations = collapsed;
+    // Containment (#18112): the index's full call-expression span for
+    // `$self->foo` (7:11-21) starts before the text scan's name token
+    // (7:18-21), so same-start collapse cannot see the pair. Within one
+    // canonical URI and one line span, drop any range that strictly
+    // contains another range, keeping the narrowest. The line-span
+    // restriction preserves multi-line ranges that merely enclose a
+    // token (a whole-sub declaration span is a distinct entry, per
+    // `dedupe_collapses_identical_ranges_across_json_key_order`).
+    // Distinct nested occurrences (the two name tokens of
+    // `$x->foo->foo()` or `foo(foo())`) contain nothing and survive;
+    // only wrapper spans that contain a kept range are dropped.
+    let ids: Vec<Option<CanonicalLocationId>> =
+        collapsed.iter().map(canonical_location_id).collect();
+    let mut kept: Vec<Value> = Vec::with_capacity(collapsed.len());
+    for (index, location) in collapsed.into_iter().enumerate() {
+        let Some(outer) = &ids[index] else {
+            kept.push(location);
+            continue;
+        };
+        let strictly_contains_other = ids.iter().enumerate().any(|(other_index, other)| {
+            other_index != index
+                && other.as_ref().is_some_and(|inner| {
+                    inner.uri == outer.uri
+                        && outer.start_line == inner.start_line
+                        && outer.end_line == inner.end_line
+                        && (outer.start_line, outer.start_character)
+                            <= (inner.start_line, inner.start_character)
+                        && (outer.end_line, outer.end_character)
+                            >= (inner.end_line, inner.end_character)
+                        && ((outer.start_line, outer.start_character)
+                            < (inner.start_line, inner.start_character)
+                            || (outer.end_line, outer.end_character)
+                                > (inner.end_line, inner.end_character))
+                })
+        });
+        if !strictly_contains_other {
+            kept.push(location);
+        }
+    }
+    *locations = kept;
 }
 
 /// Deduplicate, then enforce the result cap so duplicates cannot consume it.
@@ -1126,6 +1176,177 @@ mod tests {
         let out = finalize_reference_locations(locations, 10);
         if out.len() != 1 {
             return Err(format!("drive-case spellings are one location, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112: the index stores the full `$self->foo` call-expression span
+    /// under the bare method name while the text scan emits the name token;
+    /// the pair has different starts but one contains the other, so both
+    /// survive exact and same-start dedup. The contained pair must answer
+    /// once, as the name token.
+    #[test]
+    fn contained_call_span_and_name_token_collapse_to_the_name_token() -> Result<(), Box<dyn Error>>
+    {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/a.pl",
+                "range": {
+                    "start": {"line": 7, "character": 11},
+                    "end": {"line": 7, "character": 21},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/a.pl",
+                "range": {
+                    "start": {"line": 7, "character": 18},
+                    "end": {"line": 7, "character": 21},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 1 {
+            return Err(format!("contained pair must answer once, got {out:?}").into());
+        }
+        let start = out[0]["range"]["start"]["character"].as_u64().ok_or("missing start")?;
+        let end = out[0]["range"]["end"]["character"].as_u64().ok_or("missing end")?;
+        if (start, end) != (18, 21) {
+            return Err(format!("the name token must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112: every finalized location in one file must carry the canonical
+    /// URI spelling (lowercase drive letter, path case preserved), even when
+    /// the producers disagreed on drive case.
+    #[test]
+    fn finalize_emits_canonical_uri_for_all_locations_in_a_file() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/Dir/a.pl",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/Dir/a.pl",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 3},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("distinct ranges must both survive, got {out:?}").into());
+        }
+        for loc in &out {
+            let uri = loc["uri"].as_str().ok_or("missing uri")?;
+            if uri != "file:///f:/Dir/a.pl" {
+                return Err(format!("uri must be canonical lowercase-drive: {out:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// #18112 preservation: `uri_key` passes non-file URIs through unchanged,
+    /// so canonical emission must not rewrite them.
+    #[test]
+    fn finalize_preserves_untitled_and_non_file_uris() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "untitled:Untitled-1",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+            json!({
+                "uri": "git:/Dir/a.pl?ref=HEAD",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("distinct URIs must both survive, got {out:?}").into());
+        }
+        let mut uris: Vec<&str> = out.iter().filter_map(|loc| loc["uri"].as_str()).collect();
+        uris.sort_unstable();
+        if uris != vec!["git:/Dir/a.pl?ref=HEAD", "untitled:Untitled-1"] {
+            return Err(format!("non-file URIs must pass through byte-identical: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: `$x->foo->foo()` nests two genuine occurrences. The
+    /// full-expression and inner-call spans contain name tokens, but the
+    /// two name tokens are distinct occurrences and must both survive.
+    #[test]
+    fn chained_method_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // $x->foo->foo() : full 0-14, inner call 0-7, tokens 4-7 and 9-12
+        let locations = vec![mk(0, 14), mk(0, 7), mk(4, 7), mk(9, 12)];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("two chained occurrences must survive, got {out:?}").into());
+        }
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(4, 7), (9, 12)] {
+            return Err(format!("the two name tokens must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: `foo(foo())` nests two genuine occurrences; only the
+    /// call-expression wrappers are dropped.
+    #[test]
+    fn nested_call_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // foo(foo()) : outer 0-10, inner 4-9, tokens 0-3 and 4-7
+        let locations = vec![mk(0, 10), mk(4, 9), mk(0, 3), mk(4, 7)];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("two nested occurrences must survive, got {out:?}").into());
+        }
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 3), (4, 7)] {
+            return Err(format!("the two name tokens must survive: {out:?}").into());
         }
         Ok(())
     }
