@@ -1304,7 +1304,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::Foreach { variable, continue_block, .. } => {
+            NodeKind::Foreach { variable, list, body, continue_block } => {
                 let label = self.pending_label.take();
                 self.push_item(
                     node,
@@ -1320,7 +1320,30 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // A `foreach my $i` iterator is loop-private in Perl: it
+                // shadows an outer same-spelling lexical for the loop's
+                // extent only (#14173). Record it in a scope opened for the
+                // whole loop (parent of the body block's own scope), so
+                // body and `continue` reads resolve to it while reads after
+                // the loop keep resolving outward. The list is evaluated
+                // outside that scope, so visit it first in the enclosing
+                // scope. Non-lexical iterators keep the enclosing scope.
+                let lexical_iterator = matches!(
+                    &variable.kind,
+                    NodeKind::VariableDeclaration { declarator, .. } if declarator == "my"
+                );
+                if lexical_iterator {
+                    self.visit(list, confidence);
+                    self.enter_scope(ScopeKind::Block, node.location, self.package_context.clone());
+                    self.visit(variable, confidence);
+                    self.visit(body, confidence);
+                    if let Some(continue_block) = continue_block {
+                        self.visit(continue_block, confidence);
+                    }
+                    self.exit_scope();
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::LabeledStatement { label, statement } => {
                 let previous = self.pending_label.replace(label.clone());

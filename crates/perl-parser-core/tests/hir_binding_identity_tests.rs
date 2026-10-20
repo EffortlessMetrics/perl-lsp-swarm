@@ -362,33 +362,24 @@ fn self_referential_initializer_reads_the_outer_binding() {
     assert_eq!(rhs.binding, Some(outer), "the initializer must read the outer binding");
 }
 
-/// Known boundary, not a claim of correctness: a `foreach my $i` iterator is
-/// recorded in the *enclosing* scope rather than a loop-private one, so it does
-/// not shadow an outer `my $i` the way Perl does.
-///
-/// Declarations still separate correctly (each names the binding at its own
-/// span), but reads are visibility-resolved and so collapse onto the loop's
-/// binding — including the read *after* the loop, which Perl would bind to the
-/// outer `my $i`.
-///
-/// This is a scope-graph modelling gap in pass 1, which this slice does not
-/// touch — threading identity only makes it observable. Pinned so the boundary
-/// is explicit and a future scope fix trips this test. Tracked by #14173.
+/// A `foreach my $i` iterator occupies a loop-private scope (#14173): it
+/// shadows an outer same-spelling lexical inside the loop only, and the read
+/// after the loop binds to the outer declaration again.
 #[test]
-fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
+fn foreach_iterator_opens_a_loop_private_scope_and_shadows() {
     let source = "sub f { my $i = 9; foreach my $i (1,2) { print $i; } print $i; }\n";
     let file = lower(source);
 
     let bindings: Vec<_> =
         file.scope_graph.bindings.iter().filter(|b| b.name == "i").map(|b| b.scope_id).collect();
     assert_eq!(bindings.len(), 2, "expected an outer `my $i` and a foreach `my $i`");
-    assert_eq!(
+    assert_ne!(
         bindings[0], bindings[1],
-        "the foreach iterator currently shares the enclosing scope rather than opening its own"
+        "the foreach iterator must open its own loop-private scope"
     );
 
-    // Reads collapse onto the loop binding, because they are visibility-resolved
-    // and the iterator never left the enclosing scope.
+    // The in-loop read binds to the iterator; the post-loop read binds to the
+    // outer `my $i`, so the two reads carry distinct identities.
     let read_ids: std::collections::BTreeSet<HirBindingId> = occurrences(&file)
         .into_iter()
         .filter(|o| o.name == "i" && o.access == AccessMode::Read)
@@ -396,10 +387,17 @@ fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
         .collect();
     assert_eq!(
         read_ids.len(),
-        1,
-        "known boundary: the post-loop read should bind to the outer `my $i` but does not; \
-         found {read_ids:?}"
+        2,
+        "in-loop and post-loop reads must bind to distinct declarations; found {read_ids:?}"
     );
+    let reads: Vec<_> = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "i" && o.access == AccessMode::Read)
+        .collect();
+    let binding_ids: Vec<HirBindingId> =
+        file.scope_graph.bindings.iter().filter(|b| b.name == "i").map(|b| b.id).collect();
+    assert_eq!(reads[0].binding, Some(binding_ids[1]), "in-loop read binds to the iterator");
+    assert_eq!(reads[1].binding, Some(binding_ids[0]), "post-loop read binds to the outer `my $i`");
 }
 
 /// Signature parameters resolve to their `StorageClass::Parameter` bindings.
