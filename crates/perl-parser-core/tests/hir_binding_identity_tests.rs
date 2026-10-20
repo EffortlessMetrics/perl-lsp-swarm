@@ -398,6 +398,20 @@ fn foreach_iterator_opens_a_loop_private_scope_and_shadows() {
         file.scope_graph.bindings.iter().filter(|b| b.name == "i").map(|b| b.id).collect();
     assert_eq!(reads[0].binding, Some(binding_ids[1]), "in-loop read binds to the iterator");
     assert_eq!(reads[1].binding, Some(binding_ids[0]), "post-loop read binds to the outer `my $i`");
+
+    // A `state` iterator is loop-private the same way.
+    let file = lower(
+        "use feature 'state';\nsub f { my $i = 9; foreach state $i (1,2) { print $i; } print $i; }\n",
+    );
+    let reads: Vec<_> = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "i" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected in-loop and post-loop reads for the state iterator");
+    assert_ne!(
+        reads[0].binding, reads[1].binding,
+        "state iterator must shadow only inside the loop"
+    );
 }
 
 /// Signature parameters resolve to their `StorageClass::Parameter` bindings.
