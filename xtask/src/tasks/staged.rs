@@ -197,6 +197,9 @@ pub fn list_staged_entries(root: &Path, tree_oid: &str) -> Result<Vec<StagedEntr
 /// `HEAD` — the files that are actually part of this commit. This is the
 /// scoping input every per-file commit-tier check should use so cost stays
 /// proportional to the staged change, not the whole repo.
+/// Renames are represented as removal plus addition (`--no-renames`) so
+/// path-routed checks see both sides, including Rust/Cargo/policy paths
+/// renamed to an otherwise irrelevant extension.
 ///
 /// `--diff-filter=ACDMRT`: **includes** `D` (deleted) and `T` (type-changed,
 /// e.g. a file replaced by a symlink) — issue #4031 item 5. The prior
@@ -218,11 +221,15 @@ pub fn staged_diff_paths(root: &Path, tree_oid: Option<&str>) -> Result<Vec<Stri
     let raw = match tree_oid {
         Some(oid) => {
             let base = diff_base(root)?;
-            run_git_ok(root, &["diff", "--name-only", "--diff-filter=ACDMRT", "-z", &base, oid])?
+            run_git_ok(
+                root,
+                &["diff", "--no-renames", "--name-only", "--diff-filter=ACDMRT", "-z", &base, oid],
+            )?
         }
-        None => {
-            run_git_ok(root, &["diff", "--cached", "--name-only", "--diff-filter=ACDMRT", "-z"])?
-        }
+        None => run_git_ok(
+            root,
+            &["diff", "--cached", "--no-renames", "--name-only", "--diff-filter=ACDMRT", "-z"],
+        )?,
     };
     Ok(raw.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
