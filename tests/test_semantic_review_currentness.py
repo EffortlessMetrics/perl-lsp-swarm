@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import re
+import shlex
 import unittest
 from pathlib import Path
 
@@ -166,6 +167,27 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
             assert "--emit-marker" in text
             assert "semantic-review:v1" in text
             assert "COMMENTED` review is only a GitHub fact" in text
+
+    def test_codex_review_examples_bind_the_examined_sha(self) -> None:
+        text = (ROOT / ".agents/skills/review-pr/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        blocks = re.findall(r"```(bash|powershell)\n(.*?)```", text, re.DOTALL)
+        for language, command, flag in (
+            ("bash", "scripts/reviews/inline", "--commit"),
+            ("powershell", "/mnt/h/path/to/repo/scripts/reviews/inline", "--commit"),
+            ("bash", "scripts/ci/check-pr-semantic-review-currentness.py", "--expected-head"),
+        ):
+            with self.subTest(language=language, command=command):
+                examples = [
+                    shlex.split(body.replace("\\\n", " "))
+                    for lang, body in blocks
+                    if lang == language and command in body
+                ]
+                self.assertEqual(1, len(examples), "expected one command example")
+                args = examples[0]
+                self.assertEqual(1, args.count(flag), f"{command} must bind {flag}")
+                self.assertEqual("<reviewed-sha>", args[args.index(flag) + 1])
 
     def test_shared_contract_defines_durable_semantic_review_record(self) -> None:
         text = " ".join(
