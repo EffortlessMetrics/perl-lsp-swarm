@@ -448,8 +448,8 @@ fn symbol_name_range(
         SymbolKind::Class | SymbolKind::Role => &[symbol.kind, SymbolKind::Package],
         _ => &[symbol.kind],
     };
-    for lookup_kind in lookup_kinds {
-        let key = (*lookup_kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
+    for &lookup_kind in lookup_kinds {
+        let key = (lookup_kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
         if let Some(declaration) = declaration_names.get(&key) {
             let declaration = (*declaration)?;
             let (start, end) = declaration.anchor_span?;
@@ -1304,7 +1304,15 @@ mod tests {
         // package as Class/Role, but the outline selection must stay on the
         // declared name (chars 8-11), not slide into the `package` keyword
         // (chars 4-7, the first substring occurrence of "age").
-        for module in ["Moo", "Moose", "Moo::Role", "Moose::Role", "Role::Tiny", "Class::Tiny"] {
+        // (framework module, expected wire kind: Class = 5, Role = 8)
+        for (module, expected_kind) in [
+            ("Moo", 5),
+            ("Moose", 5),
+            ("Moo::Role", 8),
+            ("Moose::Role", 8),
+            ("Role::Tiny", 8),
+            ("Class::Tiny", 5),
+        ] {
             let source = format!("package age {{ use {module}; }}");
             let ast = must(Parser::new(&source).parse());
             let result = source_backed_document_symbols_from_ast(&ast, &source);
@@ -1320,10 +1328,9 @@ mod tests {
                 (0, 11),
                 "{module}: selection must end after the declared name"
             );
-            assert!(
-                matches!(symbol.kind, 5 | 8),
-                "{module}: wire kind stays Class/Role, got {}",
-                symbol.kind
+            assert_eq!(
+                symbol.kind, expected_kind,
+                "{module}: wire kind stays the reclassified Class/Role kind"
             );
         }
         Ok(())
