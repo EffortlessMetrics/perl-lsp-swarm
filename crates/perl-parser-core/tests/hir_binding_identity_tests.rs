@@ -408,9 +408,31 @@ fn foreach_iterator_opens_a_loop_private_scope_and_shadows() {
         .filter(|o| o.name == "i" && o.access == AccessMode::Read)
         .collect();
     assert_eq!(reads.len(), 2, "expected in-loop and post-loop reads for the state iterator");
-    assert_ne!(
-        reads[0].binding, reads[1].binding,
-        "state iterator must shadow only inside the loop"
+    let binding_ids: Vec<HirBindingId> =
+        file.scope_graph.bindings.iter().filter(|b| b.name == "i").map(|b| b.id).collect();
+    assert_eq!(binding_ids.len(), 2, "expected outer and iterator bindings");
+    assert_eq!(reads[0].binding, Some(binding_ids[1]), "in-loop read binds to the iterator");
+    assert_eq!(
+        reads[1].binding,
+        Some(binding_ids[0]),
+        "post-loop read binds to the outer declaration"
+    );
+
+    // A list iterator `my ($k, $v)` is loop-private the same way.
+    let file = lower("sub f { my $k = 9; foreach my ($k, $v) (a => 1) { print $k; } print $k; }\n");
+    let reads: Vec<_> = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "k" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected in-loop and post-loop reads for the list iterator");
+    let binding_ids: Vec<HirBindingId> =
+        file.scope_graph.bindings.iter().filter(|b| b.name == "k").map(|b| b.id).collect();
+    assert_eq!(binding_ids.len(), 2, "expected outer and iterator bindings for $k");
+    assert_eq!(reads[0].binding, Some(binding_ids[1]), "in-loop read binds to the list iterator");
+    assert_eq!(
+        reads[1].binding,
+        Some(binding_ids[0]),
+        "post-loop read binds to the outer declaration"
     );
 }
 

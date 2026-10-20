@@ -1333,6 +1333,7 @@ impl Lowerer {
                 let lexical_iterator = matches!(
                     &variable.kind,
                     NodeKind::VariableDeclaration { declarator, .. }
+                    | NodeKind::VariableListDeclaration { declarator, .. }
                         if matches!(declarator.as_str(), "my" | "state")
                 );
                 if lexical_iterator {
