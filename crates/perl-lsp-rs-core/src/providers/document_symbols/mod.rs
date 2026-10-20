@@ -17,7 +17,7 @@ use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, summarize_identities,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// LSP-compatible document symbol produced from source-backed compiler facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +261,30 @@ fn source_backed_document_symbols_from_table(
             b.scope_id,
         ))
     });
+
+    // #18111: a `has` attribute and its synthesized same-name accessor share
+    // (name, span, scope); keep only the attribute in the outline. Accessors
+    // with a distinct name/span and explicit subs are unaffected. The symbol
+    // table itself is untouched, so definition/hover still see the accessor.
+    {
+        let attribute_keys: HashSet<(String, usize, usize, usize)> = all_symbols
+            .iter()
+            .filter(|s| s.declaration.as_deref() == Some("has") && s.kind == SymbolKind::scalar())
+            .map(|s| (s.name.clone(), s.location.start, s.location.end, s.scope_id))
+            .collect();
+        if !attribute_keys.is_empty() {
+            all_symbols.retain(|s| {
+                !(s.declaration.as_deref() == Some("has")
+                    && s.kind == SymbolKind::Subroutine
+                    && attribute_keys.contains(&(
+                        s.name.clone(),
+                        s.location.start,
+                        s.location.end,
+                        s.scope_id,
+                    )))
+            });
+        }
+    }
 
     let extents = namespace_extents(&all_symbols, symbol_table, source);
 
@@ -1459,6 +1483,97 @@ mod tests {
             check_children_ranges(&child.children)?;
         }
         Ok(())
+    }
+
+    fn flatten_names(symbols: &[DocumentSymbol]) -> Vec<&DocumentSymbol> {
+        let mut out = Vec::new();
+        for s in symbols {
+            out.push(s);
+            out.extend(flatten_names(&s.children));
+        }
+        out
+    }
+
+    #[test]
+    fn moose_has_attribute_not_duplicated_as_accessor() {
+        let source = "package Widget;\nuse Moose;\nhas name => (is => 'ro', isa => 'Str');\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        let named: Vec<_> = flat.iter().filter(|s| s.name == "name").collect();
+        assert_eq!(named.len(), 1, "expected exactly one `name`, got: {flat:?}");
+        assert_eq!(named[0].kind, 7, "kept symbol must be the attribute (Field)");
+        assert!(
+            named[0].detail.contains("is=ro") && named[0].detail.contains("isa=Str"),
+            "attribute detail preserved, got: {:?}",
+            named[0].detail
+        );
+    }
+
+    #[test]
+    fn moose_has_explicit_reader_kept() {
+        let source =
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro', reader => 'get_name');\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(flat.iter().filter(|s| s.name == "name").count(), 1);
+        assert_eq!(
+            flat.iter().filter(|s| s.name == "get_name").count(),
+            1,
+            "explicit reader kept: {flat:?}"
+        );
+    }
+
+    #[test]
+    fn moose_has_same_name_explicit_reader_collapses_to_attribute() {
+        // An explicit reader named exactly like the attribute is the same
+        // callable the default accessor would mint, at the same span; the
+        // outline keeps the single attribute entry (#18111).
+        for source in [
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro', reader => 'name');\n",
+            "package Widget;\nuse Moose;\nhas name => (is => 'bare', reader => 'name');\n",
+        ] {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            let flat = flatten_names(&result.symbols);
+            let named: Vec<_> = flat.iter().filter(|s| s.name == "name").collect();
+            assert_eq!(named.len(), 1, "exactly one `name` for {source:?}: {flat:?}");
+            assert_eq!(named[0].kind, 7, "kept entry is the attribute for {source:?}");
+        }
+    }
+
+    #[test]
+    fn moose_has_plus_explicit_sub_same_name_different_span_kept() {
+        let source =
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro');\nsub name { return 1; }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(
+            flat.iter().filter(|s| s.name == "name").count(),
+            2,
+            "attribute + explicit sub kept: {flat:?}"
+        );
+    }
+
+    #[test]
+    fn moose_has_list_keeps_both_attributes() {
+        let source = "package Widget;\nuse Moose;\nhas [qw(a b)] => (is => 'ro');\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(flat.iter().filter(|s| s.name == "a").count(), 1, "{flat:?}");
+        assert_eq!(flat.iter().filter(|s| s.name == "b").count(), 1, "{flat:?}");
+    }
+
+    #[test]
+    fn duplicate_name_at_different_spans_kept() {
+        let source = "sub name { return 1; }\nsub name { return 2; }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(flat.iter().filter(|s| s.name == "name").count(), 2, "{flat:?}");
     }
 
     #[test]
