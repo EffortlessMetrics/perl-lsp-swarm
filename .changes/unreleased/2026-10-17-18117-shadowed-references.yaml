@@ -1,7 +1,7 @@
 project: product
 component: LSP server
 kind: Fixed
-body: "Find-references and rename for a variable no longer include uses that belong to a different variable declared with the same name inside a nested block. Previously, renaming an outer `my $x` would also rewrite uses of an inner `my $x`, silently changing code that refers to another variable."
+body: "Analyzer find-references for a variable no longer includes uses that belong to a different variable declared with the same name inside a nested block. Previously, querying an outer `my $x` also returned uses of an inner `my $x`."
 time: 2026-10-17T00:00:00Z
 custom:
   PR: "18117"

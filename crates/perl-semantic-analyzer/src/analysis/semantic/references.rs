@@ -254,3 +254,73 @@ impl SemanticAnalyzer {
         symbol.scope_id == 0
     }
 }
+
+#[cfg(test)]
+#[expect(
+    clippy::panic,
+    reason = "test setup: literal sources must parse and contain the named token"
+)]
+mod tests {
+    use super::super::SemanticAnalyzer;
+    use crate::parser::Parser;
+
+    fn analyze(code: &str) -> SemanticAnalyzer {
+        let mut parser = Parser::new(code);
+        let ast = parser.parse().unwrap_or_else(|e| panic!("parse failed: {e}"));
+        SemanticAnalyzer::analyze_with_source(&ast, code)
+    }
+
+    #[test]
+    fn find_all_references_excludes_shadowed_inner_uses() {
+        let code = "my $x = 1;\nprint $x;\n{ my $x = 2; print $x; }\nprint $x;\n";
+        let analyzer = analyze(code);
+        let outer_decl = code.find("$x").unwrap_or_else(|| panic!("outer $x"));
+        let outer_refs = analyzer.find_all_references(outer_decl, false);
+        assert_eq!(outer_refs.len(), 2, "outer uses only; got {outer_refs:?}");
+        let inner_decl = code.find("my $x = 2").unwrap_or_else(|| panic!("inner")) + 3;
+        let inner_refs = analyzer.find_all_references(inner_decl, false);
+        assert_eq!(inner_refs.len(), 1, "inner use only; got {inner_refs:?}");
+    }
+
+    #[test]
+    fn find_all_references_includes_initializer_rhs_of_shadowing_decl() {
+        let code = "my $x = 1;\n{ my $x = $x; print $x; }\n";
+        let analyzer = analyze(code);
+        let outer_decl = code.find("$x").unwrap_or_else(|| panic!("outer $x"));
+        let outer_refs = analyzer.find_all_references(outer_decl, false);
+        assert_eq!(outer_refs.len(), 1, "only RHS use; got {outer_refs:?}");
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        assert!(outer_refs.iter().any(|loc| loc.start == rhs));
+    }
+
+    #[test]
+    fn find_all_references_respects_same_scope_redeclaration() {
+        let code = "my $x = 1;\nprint $x;\nmy $x = 2;\nprint $x;\n";
+        let analyzer = analyze(code);
+        let first_decl = code.find("$x").unwrap_or_else(|| panic!("first"));
+        assert_eq!(analyzer.find_all_references(first_decl, false).len(), 1);
+        let second_decl = code.rfind("my $x").unwrap_or_else(|| panic!("second")) + 3;
+        assert_eq!(analyzer.find_all_references(second_decl, false).len(), 1);
+    }
+
+    #[test]
+    fn find_all_references_from_use_binds_owning_declaration() {
+        let code = "my $x = 1;\nprint $x;\nmy $x = 2;\nprint $x;\n";
+        let analyzer = analyze(code);
+        let second_use = code.rfind("print $x").unwrap_or_else(|| panic!("use")) + 6;
+        let refs = analyzer.find_all_references(second_use, false);
+        assert_eq!(refs.len(), 1, "second declaration only; got {refs:?}");
+        assert!(refs.iter().any(|loc| loc.start == second_use));
+    }
+
+    #[test]
+    fn find_all_references_excludes_pre_declaration_uses() {
+        let code = "{ print $x; my $x = 2; print $x; }";
+        let analyzer = analyze(code);
+        let inner_decl = code.find("my $x").unwrap_or_else(|| panic!("decl")) + 3;
+        let inner_refs = analyzer.find_all_references(inner_decl, false);
+        assert_eq!(inner_refs.len(), 1, "post-declaration only; got {inner_refs:?}");
+        let second_use = code.rfind("$x").unwrap_or_else(|| panic!("second use"));
+        assert!(inner_refs.iter().any(|loc| loc.start == second_use));
+    }
+}
