@@ -320,14 +320,12 @@ pub struct HirVariable {
     /// here. Resolution walks the enclosing scope chain by name; it is not yet
     /// position-sensitive within a scope, so the binding named here is the
     /// scope-chain resolution, which differs from the binding Perl would see
-    /// in four documented cases (tracked by #14173):
+    /// in three documented cases (tracked by #14173):
     ///
     /// - self-referential initializer: in `my $x = $x` the read resolves to the
     ///   binding being declared, not the outer one;
     /// - same-scope redeclaration: a read between `my $x = 1;` and `my $x = 2;`
     ///   resolves to the later declaration;
-    /// - `foreach my $i` iterator: recorded in the enclosing scope rather than a
-    ///   loop-private one, so a post-loop read of `$i` captures the loop binding;
     /// - package-scope descent: declarations at `package NAME;` top level are
     ///   `None` when resolved from the program root.
     ///

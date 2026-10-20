@@ -8,9 +8,66 @@ concern was repaired, superseded, or refuted; that remains the invoking skill's 
 """
 import argparse
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+
+
+def _is_windows():
+    return os.name == "nt"
+
+
+def _threads_script():
+    return Path(__file__).resolve().with_name("threads").as_posix()
+
+
+def _is_windows_shim(candidate):
+    parts = {part.lower() for part in Path(candidate).parts}
+    return bool(parts & {"system32", "syswow64", "windowsapps"})
+
+
+def _bash_candidates():
+    candidates = []
+    git = shutil.which("git")
+    if git:
+        git_path = Path(git)
+        for root in (git_path.parent, git_path.parent.parent,
+                     git_path.parent.parent.parent):
+            candidates.extend((root / "bin" / "bash.exe",
+                               root / "usr" / "bin" / "bash.exe",
+                               root / "bash.exe"))
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        base = os.environ.get(variable)
+        if base:
+            candidates.extend((Path(base) / "Git" / "bin" / "bash.exe",
+                               Path(base) / "Git" / "usr" / "bin" / "bash.exe"))
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
+def _bash_executable():
+    if not _is_windows():
+        return "bash"
+    for candidate in _bash_candidates():
+        if candidate.is_file() and not _is_windows_shim(candidate):
+            return str(candidate)
+    on_path = shutil.which("bash")
+    if on_path and Path(on_path).is_file() and not _is_windows_shim(on_path):
+        return on_path
+    raise OSError("Git Bash not found; install Git for Windows or place its "
+                  "bash.exe on PATH (the Windows System32 bash is the WSL shim)")
+
+
+def _threads_command(pr, repo):
+    return [_bash_executable(), _threads_script(), str(pr), repo, "--json"]
 
 
 def read_json(command):
@@ -44,8 +101,7 @@ def collect(pr, repo):
         return value
 
     before = head()
-    threads = read_json(["bash", str(Path(__file__).with_name("threads")),
-                         str(pr), repo, "--json"])
+    threads = read_json(_threads_command(pr, repo))
     if not isinstance(threads.get("threads"), list) or not isinstance(threads.get("unresolved_count"), int):
         raise ValueError("incomplete thread inventory")
     inline = pages(repo, f"pulls/{pr}/comments")

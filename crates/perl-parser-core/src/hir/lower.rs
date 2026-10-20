@@ -1304,7 +1304,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::Foreach { variable, continue_block, .. } => {
+            NodeKind::Foreach { variable, list, body, continue_block } => {
                 let label = self.pending_label.take();
                 self.push_item(
                     node,
@@ -1320,7 +1320,40 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // A `foreach my $i` iterator is loop-private in Perl: it
+                // shadows an outer same-spelling lexical for the loop's
+                // extent only (#14173). Record it in a scope opened for the
+                // whole loop (parent of the body block's own scope), so
+                // body and `continue` reads resolve to it while reads after
+                // the loop keep resolving outward. The list is evaluated
+                // outside that scope: visit it with the loop scope popped,
+                // which also keeps HIR items in source order (iterator
+                // declaration first, then the list). Non-lexical iterators
+                // keep the enclosing scope.
+                let lexical_iterator = matches!(
+                    &variable.kind,
+                    NodeKind::VariableDeclaration { declarator, .. }
+                    | NodeKind::VariableListDeclaration { declarator, .. }
+                        if matches!(declarator.as_str(), "my" | "state")
+                );
+                if lexical_iterator {
+                    let loop_scope = self.enter_scope(
+                        ScopeKind::Block,
+                        node.location,
+                        self.package_context.clone(),
+                    );
+                    self.visit(variable, confidence);
+                    self.scope_stack.pop();
+                    self.visit(list, confidence);
+                    self.scope_stack.push(loop_scope);
+                    self.visit(body, confidence);
+                    if let Some(continue_block) = continue_block {
+                        self.visit(continue_block, confidence);
+                    }
+                    self.exit_scope();
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::LabeledStatement { label, statement } => {
                 let previous = self.pending_label.replace(label.clone());
