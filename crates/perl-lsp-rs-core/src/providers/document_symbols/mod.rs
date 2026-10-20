@@ -330,6 +330,12 @@ fn source_backed_document_symbols_from_table(
             if parent.extent.0 > node_start || node_start >= parent.extent.1 {
                 continue;
             }
+            if !node_container && node.end > parent.extent.1 {
+                // A leaf that starts inside but extends past the candidate
+                // parent is not contained by it; leave it for a wider
+                // container or the top level instead of misparenting it.
+                continue;
+            }
             if node_container {
                 if parent.extent.0 > node_extent.0 || node_extent.1 > parent.extent.1 {
                     continue;
