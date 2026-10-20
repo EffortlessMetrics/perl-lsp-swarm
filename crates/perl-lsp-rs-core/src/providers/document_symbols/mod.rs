@@ -7,7 +7,7 @@
 
 use perl_parser_core::ast::Node;
 use perl_position_tracking::WireRange;
-use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolExtractor, SymbolKind, SymbolTable};
+use perl_semantic_analyzer::symbol::{ScopeKind, Symbol, SymbolExtractor, SymbolKind, SymbolTable};
 use perl_semantic_facts::{
     AnchorId, Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind,
     ProviderFactTrace, ProviderFallbackState, ProviderSurface,
@@ -17,7 +17,7 @@ use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, summarize_identities,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// LSP-compatible document symbol produced from source-backed compiler facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,123 +95,272 @@ pub fn source_backed_document_symbols_from_ast(
     source_backed_document_symbols_from_table(&symbol_table, source, &declaration_names)
 }
 
+fn is_namespace_container(symbol: &Symbol) -> bool {
+    matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role)
+}
+
+fn is_container(symbol: &Symbol) -> bool {
+    is_namespace_container(symbol) || symbol.kind == SymbolKind::Subroutine
+}
+
+/// Extent of a namespace container, as byte offsets.
+///
+/// A block-form package/class has a `ScopeKind::Package` scope whose
+/// location starts at the declaration; that scope location already covers
+/// the whole `package Foo { ... }` / `class Foo { ... }` construct, so it is
+/// the extent. Statement-form packages create no scope, so their extent is
+/// derived from the sorted namespace starts: it runs from the declaration
+/// to the next namespace container declared in the same enclosing scope
+/// (`scope_id`), or to the end of that enclosing scope (global scope has
+/// end 0, which falls back to EOF).
+fn namespace_extents(
+    symbols: &[Symbol],
+    symbol_table: &SymbolTable,
+    source: &str,
+) -> Vec<(usize, usize)> {
+    let mut extents: Vec<(usize, usize)> =
+        symbols.iter().map(|s| (s.location.start, s.location.end)).collect();
+    let namespace: Vec<usize> = symbols
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| is_namespace_container(s))
+        .map(|(idx, _)| idx)
+        .collect();
+    // A block-form container does not terminate an enclosing statement
+    // package: after `package Inner { ... }` the outer package resumes.
+    let block_extents: Vec<Option<usize>> = namespace
+        .iter()
+        .map(|&idx| {
+            let start = symbols[idx].location.start;
+            symbol_table
+                .scopes
+                .values()
+                .filter(|scope| {
+                    scope.kind == ScopeKind::Package
+                        && scope.location.start == start
+                        && scope.location.end > start
+                })
+                .map(|scope| scope.location.end)
+                .max()
+        })
+        .collect();
+    for (position, &idx) in namespace.iter().enumerate() {
+        let symbol = &symbols[idx];
+        let start = symbol.location.start;
+        if let Some(block_end) = block_extents[position] {
+            extents[idx] = (start, block_end.max(symbol.location.end).min(source.len()));
+            continue;
+        }
+        let enclosing_end = symbol_table
+            .scopes
+            .get(&symbol.scope_id)
+            .map(|scope| scope.location.end)
+            .filter(|end| *end > start)
+            .unwrap_or(source.len());
+        let next_same_level = namespace
+            .iter()
+            .enumerate()
+            .filter(|(other_position, _)| block_extents[*other_position].is_none())
+            .map(|(_, &other)| other)
+            .filter(|&other| other != idx)
+            .filter(|&other| {
+                symbols[other].scope_id == symbol.scope_id && symbols[other].location.start > start
+            })
+            .map(|other| symbols[other].location.start)
+            .min()
+            .unwrap_or(enclosing_end);
+        let end = enclosing_end.min(next_same_level).max(symbol.location.end).min(source.len());
+        extents[idx] = (start, end);
+    }
+    extents
+}
+
+struct PendingSymbol {
+    document_symbol: DocumentSymbol,
+    start: usize,
+    end: usize,
+    extent: (usize, usize),
+    container: bool,
+}
+
+fn sort_pending_indices(indices: &mut [usize], pending: &[Option<PendingSymbol>]) {
+    indices.sort_by(|&a, &b| {
+        let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
+            return std::cmp::Ordering::Equal;
+        };
+        (
+            left.document_symbol.sort_priority,
+            left.start,
+            left.end,
+            left.document_symbol.name.as_str(),
+        )
+            .cmp(&(
+                right.document_symbol.sort_priority,
+                right.start,
+                right.end,
+                right.document_symbol.name.as_str(),
+            ))
+    });
+}
+
+fn assemble_document_symbol(
+    index: usize,
+    pending: &mut [Option<PendingSymbol>],
+    children_by_parent: &[Vec<usize>],
+) -> Option<DocumentSymbol> {
+    let mut node = pending[index].take()?;
+    let mut child_indices = children_by_parent[index].clone();
+    sort_pending_indices(&mut child_indices, pending);
+    let mut children = Vec::new();
+    for child_index in child_indices {
+        if let Some(child) = assemble_document_symbol(child_index, pending, children_by_parent) {
+            children.push(child);
+        }
+    }
+    node.document_symbol.children = children;
+    Some(node.document_symbol)
+}
+
 fn source_backed_document_symbols_from_table(
     symbol_table: &SymbolTable,
     source: &str,
     declaration_names: &DeclarationNames<'_>,
 ) -> DocumentSymbolLiveResult {
-    let mut symbols_by_scope: HashMap<ScopeId, Vec<Symbol>> = HashMap::new();
-    for symbols in symbol_table.symbols.values() {
-        for symbol in symbols {
-            if is_source_backed(symbol, source) {
-                symbols_by_scope.entry(symbol.scope_id).or_default().push(symbol.clone());
-            }
-        }
-    }
+    let mut all_symbols: Vec<Symbol> = symbol_table
+        .symbols
+        .values()
+        .flat_map(|symbols| symbols.iter().cloned())
+        .filter(|symbol| is_source_backed(symbol, source))
+        .collect();
+    all_symbols.sort_by(|a, b| {
+        (a.location.start, a.location.end, a.name.as_str(), a.scope_id).cmp(&(
+            b.location.start,
+            b.location.end,
+            b.name.as_str(),
+            b.scope_id,
+        ))
+    });
 
-    let empty_vec = Vec::new();
-    let global_symbols = symbols_by_scope.get(&0).unwrap_or(&empty_vec);
-    let mut raw = Vec::new();
+    let extents = namespace_extents(&all_symbols, symbol_table, source);
+
     let mut fact_traces = Vec::new();
-
-    for symbol in global_symbols {
+    let mut pending: Vec<Option<PendingSymbol>> = Vec::new();
+    for (symbol, extent) in all_symbols.iter().zip(extents.iter()) {
+        let range_override = if is_namespace_container(symbol) { Some(*extent) } else { None };
         if let Some(document_symbol) = source_backed_document_symbol(
             symbol,
-            symbol_table,
-            &symbols_by_scope,
             source,
             declaration_names,
             &mut fact_traces,
+            range_override,
         ) {
-            raw.push(document_symbol);
+            pending.push(Some(PendingSymbol {
+                document_symbol,
+                start: symbol.location.start,
+                end: symbol.location.end,
+                extent: *extent,
+                container: is_container(symbol),
+            }));
+        } else {
+            // Keep indices aligned with the extent/parent computation.
+            pending.push(None);
         }
     }
 
-    // De-duplicate: a symbol that was collected as a child of some container must
-    // not also appear at the top level.  Without this guard, a `package Foo;`
-    // statement at byte offset 0 matches the global scope (also start=0) in the
-    // children-search, causing every global-scope sibling to appear BOTH as a
-    // child of `Foo` AND as a flat top-level entry — the duplication bug in #1519.
-    // We identify duplicates by (line, character) of the symbol's start position,
-    // which is unique within a source file.
-    let child_starts: HashSet<(u32, u32)> = raw
+    // Containers in a deterministic order for tie-breaking equal extents.
+    let mut containers: Vec<usize> = pending
         .iter()
-        .flat_map(|sym| sym.children.iter())
-        .map(|c| (c.range.start.line, c.range.start.character))
+        .enumerate()
+        .filter(|(_, node)| node.as_ref().is_some_and(|node| node.container))
+        .map(|(idx, _)| idx)
         .collect();
-    let output: Vec<DocumentSymbol> = raw
-        .into_iter()
-        .filter(|sym| !child_starts.contains(&(sym.range.start.line, sym.range.start.character)))
-        .collect();
+    containers.sort_by(|&a, &b| {
+        let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
+            return std::cmp::Ordering::Equal;
+        };
+        (left.extent.0, std::cmp::Reverse(left.extent.1), left.document_symbol.name.as_str()).cmp(
+            &(
+                right.extent.0,
+                std::cmp::Reverse(right.extent.1),
+                right.document_symbol.name.as_str(),
+            ),
+        )
+    });
+    let mut container_rank: Vec<Option<usize>> = vec![None; pending.len()];
+    for (rank, idx) in containers.iter().enumerate() {
+        container_rank[*idx] = Some(rank);
+    }
+
+    // Parent each symbol under the innermost container containing it.
+    // Containers must be fully contained by their parent (with an earlier
+    // rank breaking equal-extent ties) so the result is a forest.
+    let mut children_by_parent: Vec<Vec<usize>> = vec![Vec::new(); pending.len()];
+    let mut roots: Vec<usize> = Vec::new();
+    for index in 0..pending.len() {
+        let Some(node) = &pending[index] else { continue };
+        let (node_start, node_extent, node_container) = (node.start, node.extent, node.container);
+        let mut best: Option<usize> = None;
+        let mut best_key: Option<(usize, std::cmp::Reverse<usize>, usize)> = None;
+        for &candidate in &containers {
+            if candidate == index {
+                continue;
+            }
+            let Some(parent) = &pending[candidate] else { continue };
+            if parent.extent.0 > node_start || node_start >= parent.extent.1 {
+                continue;
+            }
+            if node_container {
+                if parent.extent.0 > node_extent.0 || node_extent.1 > parent.extent.1 {
+                    continue;
+                }
+                if parent.extent == node_extent && container_rank[candidate] > container_rank[index]
+                {
+                    continue;
+                }
+            }
+            let key = (
+                parent.extent.1 - parent.extent.0,
+                std::cmp::Reverse(parent.extent.0),
+                container_rank[candidate].unwrap_or(usize::MAX),
+            );
+            if best_key.is_none_or(|current| key < current) {
+                best_key = Some(key);
+                best = Some(candidate);
+            }
+        }
+        match best {
+            Some(parent) => children_by_parent[parent].push(index),
+            None => roots.push(index),
+        }
+    }
+
+    // Top level stays in source order; only children use the priority sort.
+    roots.sort_by(|&a, &b| {
+        let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
+            return std::cmp::Ordering::Equal;
+        };
+        (left.start, left.end, left.document_symbol.name.as_str()).cmp(&(
+            right.start,
+            right.end,
+            right.document_symbol.name.as_str(),
+        ))
+    });
+    let mut output = Vec::new();
+    for root in roots {
+        if let Some(symbol) = assemble_document_symbol(root, &mut pending, &children_by_parent) {
+            output.push(symbol);
+        }
+    }
 
     DocumentSymbolLiveResult { symbols: output, fact_traces }
 }
 
 fn source_backed_document_symbol(
     symbol: &Symbol,
-    symbol_table: &SymbolTable,
-    symbols_by_scope: &HashMap<ScopeId, Vec<Symbol>>,
     source: &str,
     declaration_names: &DeclarationNames<'_>,
     fact_traces: &mut Vec<ProviderFactTrace>,
-) -> Option<DocumentSymbol> {
-    if !is_source_backed(symbol, source) {
-        return None;
-    }
-    let selection_range = symbol_name_range(source, symbol, declaration_names)?;
-
-    let mut children = Vec::new();
-    if symbol.kind == SymbolKind::Package
-        || symbol.kind == SymbolKind::Class
-        || symbol.kind == SymbolKind::Subroutine
-    {
-        for (scope_id, scope) in &symbol_table.scopes {
-            if scope.location.start == symbol.location.start {
-                if let Some(child_symbols) = symbols_by_scope.get(scope_id) {
-                    for child in child_symbols {
-                        if child.location == symbol.location
-                            && child.kind == symbol.kind
-                            && child.name == symbol.name
-                        {
-                            continue;
-                        }
-                        if let Some(child_symbol) =
-                            source_backed_leaf_symbol(child, source, declaration_names, fact_traces)
-                        {
-                            children.push((
-                                document_symbol_priority(child),
-                                child.location.start,
-                                child.location.end,
-                                child_symbol,
-                            ));
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    children.sort_by_key(|(priority, start, end, _)| (*priority, *start, *end));
-    let children = children.into_iter().map(|(_, _, _, child)| child).collect();
-
-    fact_traces.push(source_backed_trace());
-    Some(DocumentSymbol {
-        name: document_symbol_name(symbol),
-        detail: document_symbol_detail(symbol),
-        kind: document_symbol_kind(symbol),
-        range: symbol_range(source, symbol),
-        selection_range,
-        children,
-        sort_priority: document_symbol_priority(symbol),
-    })
-}
-
-fn source_backed_leaf_symbol(
-    symbol: &Symbol,
-    source: &str,
-    declaration_names: &DeclarationNames<'_>,
-    fact_traces: &mut Vec<ProviderFactTrace>,
+    range_override: Option<(usize, usize)>,
 ) -> Option<DocumentSymbol> {
     if !is_source_backed(symbol, source) {
         return None;
@@ -223,7 +372,9 @@ fn source_backed_leaf_symbol(
         name: document_symbol_name(symbol),
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
-        range: symbol_range(source, symbol),
+        range: range_override
+            .map(|(start, end)| WireRange::from_byte_offsets(source, start, end))
+            .unwrap_or_else(|| symbol_range(source, symbol)),
         selection_range,
         children: Vec::new(),
         sort_priority: document_symbol_priority(symbol),
@@ -620,6 +771,148 @@ mod tests {
             "greet must carry source-backed range: {:?}",
             greet
         );
+        Ok(())
+    }
+
+    fn tree_names(symbols: &[DocumentSymbol]) -> Vec<String> {
+        let mut names = Vec::new();
+        for sym in symbols {
+            names.push(sym.name.clone());
+            names.extend(tree_names(&sym.children));
+        }
+        names
+    }
+
+    fn top_names(symbols: &[DocumentSymbol]) -> Vec<&str> {
+        symbols.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    fn child_names(symbol: &DocumentSymbol) -> Vec<&str> {
+        symbol.children.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    fn assert_ranges_contained(symbols: &[DocumentSymbol]) {
+        for sym in symbols {
+            for child in &sym.children {
+                let parent_start = (sym.range.start.line, sym.range.start.character);
+                let parent_end = (sym.range.end.line, sym.range.end.character);
+                let child_start = (child.range.start.line, child.range.start.character);
+                let child_end = (child.range.end.line, child.range.end.character);
+                assert!(
+                    parent_start <= child_start && child_end <= parent_end,
+                    "child {} {:?} must be contained in parent {} {:?}",
+                    child.name,
+                    child.range,
+                    sym.name,
+                    sym.range
+                );
+            }
+            assert_ranges_contained(&sym.children);
+        }
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_multiple_statement_packages()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Alpha;\nsub a_fn { 1 }\npackage Beta;\nsub b_fn { 2 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["Alpha", "Beta"], "tree: {:?}", result.symbols);
+        let alpha = result.symbols.iter().find(|s| s.name == "Alpha").ok_or("no Alpha")?;
+        let beta = result.symbols.iter().find(|s| s.name == "Beta").ok_or("no Beta")?;
+        assert_eq!(child_names(alpha), vec!["a_fn"]);
+        assert_eq!(child_names(beta), vec!["b_fn"]);
+        let names = tree_names(&result.symbols);
+        for expected in ["Alpha", "Beta", "a_fn", "b_fn"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == expected).count(),
+                1,
+                "{expected} once: {names:?}"
+            );
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_nested_block_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Outer;\nsub outer_fn { 1 }\n{\n    package Inner;\n    sub inner_fn { 2 }\n}\nsub outer_fn2 { 3 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["Outer"], "tree: {:?}", result.symbols);
+        let outer = result.symbols.iter().find(|s| s.name == "Outer").ok_or("no Outer")?;
+        assert_eq!(
+            child_names(outer),
+            vec!["Inner", "outer_fn", "outer_fn2"],
+            "outer children: {:?}",
+            outer.children
+        );
+        let inner = outer.children.iter().find(|s| s.name == "Inner").ok_or("no Inner")?;
+        assert_eq!(child_names(inner), vec!["inner_fn"]);
+        let names = tree_names(&result.symbols);
+        for expected in ["Outer", "Inner", "outer_fn", "inner_fn", "outer_fn2"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == expected).count(),
+                1,
+                "{expected} once: {names:?}"
+            );
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_role_container() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "package Speakable;\nuse Moose::Role;\nrequires 'speak';\nsub helper { 1 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["Speakable"], "tree: {:?}", result.symbols);
+        let role = result.symbols.iter().find(|s| s.name == "Speakable").ok_or("no Speakable")?;
+        let children = child_names(role);
+        assert!(
+            children.contains(&"helper"),
+            "helper under Speakable: {children:?} tree {:?}",
+            result.symbols
+        );
+        // `requires 'speak'` may be represented under its bare name if at all.
+        let names = tree_names(&result.symbols);
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "helper").count(),
+            1,
+            "helper once: {names:?}"
+        );
+        if names.iter().any(|n| n == "speak") {
+            assert!(children.contains(&"speak"), "speak under Speakable: {children:?}");
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_symbols_before_first_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub early { 1 }\npackage Later;\nsub later_fn { 2 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(
+            top_names(&result.symbols),
+            vec!["early", "Later"],
+            "tree: {:?}",
+            result.symbols
+        );
+        let later = result.symbols.iter().find(|s| s.name == "Later").ok_or("no Later")?;
+        assert_eq!(child_names(later), vec!["later_fn"]);
+        let names = tree_names(&result.symbols);
+        for expected in ["early", "Later", "later_fn"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == expected).count(),
+                1,
+                "{expected} once: {names:?}"
+            );
+        }
+        assert_ranges_contained(&result.symbols);
         Ok(())
     }
 
