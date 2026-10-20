@@ -187,7 +187,24 @@ impl SemanticAnalyzer {
             return true;
         }
         let mut current_scope = reference.scope_id;
+        // True when the reference sits inside a lexical's declaring
+        // statement on the chain (its initializer): with no outer binding
+        // it binds to the package global, never to that lexical.
+        let mut in_declaring_statement = false;
         loop {
+            in_declaring_statement |= candidates.iter().any(|candidate| {
+                candidate.kind == symbol.kind
+                    && candidate.scope_id == current_scope
+                    && matches!(candidate.declaration.as_deref(), Some("my" | "state"))
+                    && candidate.location.start <= reference.location.start
+                    && reference.location.start
+                        < self
+                            .symbol_table
+                            .declaration_statement_ends
+                            .get(&candidate.location.start)
+                            .copied()
+                            .unwrap_or(candidate.location.end)
+            });
             let binding = candidates
                 .iter()
                 .filter(|candidate| {
@@ -195,7 +212,14 @@ impl SemanticAnalyzer {
                         && candidate.scope_id == current_scope
                         && match candidate.declaration.as_deref() {
                             Some("my" | "state") => true,
-                            Some("our") => symbol_is_lexical,
+                            // `our` captures a lexical query (it rebinds the
+                            // name to the package variable), and it always
+                            // owns uses when it is the queried declaration
+                            // itself: an outer `my` does not bind through it.
+                            Some("our") => {
+                                symbol_is_lexical
+                                    || candidate.location.start == symbol.location.start
+                            }
                             _ => false,
                         }
                 })
@@ -217,10 +241,10 @@ impl SemanticAnalyzer {
             // as an initializer RHS does): the binding lives further out,
             // so keep walking instead of crediting `symbol`.
             let Some(scope) = self.symbol_table.scopes.get(&current_scope) else {
-                return false;
+                return in_declaring_statement && symbol_is_lexical;
             };
             let Some(parent) = scope.parent else {
-                return false;
+                return in_declaring_statement && symbol_is_lexical;
             };
             current_scope = parent;
         }
@@ -311,6 +335,33 @@ mod tests {
         let refs = analyzer.find_all_references(second_use, false);
         assert_eq!(refs.len(), 1, "second declaration only; got {refs:?}");
         assert!(refs.iter().any(|loc| loc.start == second_use));
+    }
+
+    #[test]
+    fn find_all_references_initializer_without_outer_binds_global() {
+        // No outer lexical: the RHS of `my $x = $x` is the package global,
+        // so the inner declaration owns only the later use.
+        let code = "{ my $x = $x; print $x; }";
+        let analyzer = analyze(code);
+        let inner_decl = code.find("my $x").unwrap_or_else(|| panic!("decl")) + 3;
+        let inner_refs = analyzer.find_all_references(inner_decl, false);
+        assert_eq!(inner_refs.len(), 1, "only print use; got {inner_refs:?}");
+        let print_use = code.rfind("$x").unwrap_or_else(|| panic!("print use"));
+        assert!(inner_refs.iter().any(|loc| loc.start == print_use));
+    }
+
+    #[test]
+    fn find_all_references_our_declaration_owns_its_uses() {
+        // An inner `our $x` rebinds the name to the package variable: its
+        // uses are not the outer lexical's, and they are the `our`'s.
+        let code = "my $x = 1;\n{ our $x; print $x; }\nprint $x;\n";
+        let analyzer = analyze(code);
+        let our_decl = code.find("our $x").unwrap_or_else(|| panic!("our decl")) + 4;
+        let our_refs = analyzer.find_all_references(our_decl, false);
+        assert_eq!(our_refs.len(), 1, "only block use; got {our_refs:?}");
+        let outer_decl = code.find("$x").unwrap_or_else(|| panic!("outer"));
+        let outer_refs = analyzer.find_all_references(outer_decl, false);
+        assert_eq!(outer_refs.len(), 1, "only final use; got {outer_refs:?}");
     }
 
     #[test]
