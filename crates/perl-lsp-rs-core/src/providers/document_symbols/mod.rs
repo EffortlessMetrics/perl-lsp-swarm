@@ -17,7 +17,7 @@ use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, summarize_identities,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// LSP-compatible document symbol produced from source-backed compiler facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,7 +267,7 @@ fn source_backed_document_symbols_from_table(
     // with a distinct name/span and explicit subs are unaffected. The symbol
     // table itself is untouched, so definition/hover still see the accessor.
     {
-        let attribute_keys: HashSet<(String, usize, usize, ScopeId)> = all_symbols
+        let attribute_keys: HashSet<(String, usize, usize, usize)> = all_symbols
             .iter()
             .filter(|s| s.declaration.as_deref() == Some("has") && s.kind == SymbolKind::scalar())
             .map(|s| (s.name.clone(), s.location.start, s.location.end, s.scope_id))
