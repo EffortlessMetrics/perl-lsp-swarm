@@ -180,7 +180,7 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         ):
             with self.subTest(language=language, command=command):
                 examples = [
-                    shlex.split(body.replace("\\\n", " "))
+                    shlex.split(body.replace("\\\n", " "), comments=True)
                     for lang, body in blocks
                     if lang == language and command in body
                 ]
