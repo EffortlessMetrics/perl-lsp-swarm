@@ -100,7 +100,16 @@ fn is_namespace_container(symbol: &Symbol) -> bool {
 }
 
 fn is_container(symbol: &Symbol) -> bool {
-    is_namespace_container(symbol) || symbol.kind == SymbolKind::Subroutine
+    is_namespace_container(symbol)
+        || matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method)
+}
+
+/// A framework namespace symbol synthesized by the extractor at an import
+/// or call site (`declaration: framework=<Name>`, e.g. the `EV` class from
+/// `use EV`). It declares no package region: it must not terminate the
+/// enclosing statement package's extent or absorb following symbols.
+fn is_synthesized_framework(symbol: &Symbol) -> bool {
+    symbol.declaration.as_deref().is_some_and(|d| d.starts_with("framework="))
 }
 
 /// Extent of a namespace container, as byte offsets.
@@ -147,6 +156,13 @@ fn namespace_extents(
     for (position, &idx) in namespace.iter().enumerate() {
         let symbol = &symbols[idx];
         let start = symbol.location.start;
+        if is_synthesized_framework(symbol) {
+            // Synthesized framework namespaces own only their import/call
+            // span; they are not region boundaries (handled by the
+            // next_same_level filter below as well).
+            extents[idx] = (start, symbol.location.end.min(source.len()));
+            continue;
+        }
         if let Some(block_end) = block_extents[position] {
             extents[idx] = (start, block_end.max(symbol.location.end).min(source.len()));
             continue;
@@ -163,6 +179,7 @@ fn namespace_extents(
             .filter(|(other_position, _)| block_extents[*other_position].is_none())
             .map(|(_, &other)| other)
             .filter(|&other| other != idx)
+            .filter(|&other| !is_synthesized_framework(&symbols[other]))
             .filter(|&other| {
                 symbols[other].scope_id == symbol.scope_id && symbols[other].location.start > start
             })
@@ -912,6 +929,70 @@ mod tests {
                 "{expected} once: {names:?}"
             );
         }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    /// Review regression (#18184): `use EV` synthesizes a framework class
+    /// symbol at the import site. It declares no package region, so it
+    /// must not end P's extent or absorb the following sub.
+    #[test]
+    fn document_symbols_framework_import_does_not_steal_package_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package P;\nuse EV;\nsub helper { 1 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let package = result.symbols.iter().find(|s| s.name == "P").ok_or("no P")?;
+        assert!(
+            child_names(package).contains(&"helper"),
+            "helper must stay under P: {:?}",
+            result.symbols
+        );
+        assert!(
+            !child_names(package).contains(&"EV") || {
+                let ev = package.children.iter().find(|s| s.name == "EV").ok_or("EV vanished")?;
+                ev.children.is_empty()
+            },
+            "synthetic EV under P must own nothing: {:?}",
+            result.symbols
+        );
+        let names = tree_names(&result.symbols);
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "helper").count(),
+            1,
+            "helper once: {names:?}"
+        );
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    /// Review regression (#18184): locals of a `method` belong under the
+    /// method, not beside it as class members.
+    #[test]
+    fn document_symbols_method_locals_nest_under_method() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source =
+            "class C {\n    method f {\n        my $x = 1;\n    }\n    method g {\n    }\n}\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["C"], "tree: {:?}", result.symbols);
+        let class = result.symbols.iter().find(|s| s.name == "C").ok_or("no C")?;
+        let children = child_names(class);
+        assert!(children.contains(&"f"), "f under C: {children:?}");
+        assert!(children.contains(&"g"), "g under C: {children:?}");
+        assert!(
+            !children.iter().any(|name| name.contains('x')),
+            "no local directly under C: {children:?}"
+        );
+        let method = class.children.iter().find(|s| s.name == "f").ok_or("no f")?;
+        let locals = child_names(method);
+        assert!(
+            locals.iter().any(|name| name.contains('x')),
+            "local under f: {locals:?} tree {:?}",
+            result.symbols
+        );
+        let names = tree_names(&result.symbols);
+        assert_eq!(names.iter().filter(|n| n.contains('x')).count(), 1, "local once: {names:?}");
         assert_ranges_contained(&result.symbols);
         Ok(())
     }
