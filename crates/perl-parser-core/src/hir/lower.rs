@@ -4236,6 +4236,14 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_stmt(HirStmt::Block(block_id), range)
             }
 
+            // A block-form package executes its statements in the package's
+            // lexical block. Keep them reachable through the same structured
+            // block path as a bare block, including nested loops and bindings.
+            NodeKind::Package { block: Some(block), .. } => {
+                let block_id = self.lower_nested_block(block);
+                self.alloc_stmt(HirStmt::Block(block_id), range)
+            }
+
             NodeKind::LoopControl { op, label } => {
                 let verb = loop_control_kind(op);
                 let (resolved_target, resolution) = self.resolve_loop_control(label.as_deref());
@@ -4579,11 +4587,14 @@ impl<'a> BodyBuilder2<'a> {
     fn switch_to_package_scope(&mut self, node: &Node) {
         // Labels and expression-statement wrappers are transparent here:
         // `LABEL: package P;` opens the package scope just the same.
-        let node = match &node.kind {
-            NodeKind::LabeledStatement { statement, .. } => statement.as_ref(),
-            NodeKind::ExpressionStatement { expression } => expression.as_ref(),
-            _ => node,
-        };
+        let mut node = node;
+        loop {
+            node = match &node.kind {
+                NodeKind::LabeledStatement { statement, .. } => statement.as_ref(),
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                _ => break,
+            };
+        }
         if !matches!(&node.kind, NodeKind::Package { block: None, .. }) {
             return;
         }
