@@ -23,3 +23,17 @@ sub strdefault ($x = "a:b") { }
 sub argsattr ($$) :attr(1,2) :lvalue { }
 sub meth :method { }
 sub labelled { BODY: goto BODY; }
+sub regexparen ($r = /a(b/) { }
+sub regexclose ($r = /a)b/) { }
+sub regexclass ($r = /[)]/) { }
+sub regexqr ($r = qr/a(b/) { }
+sub regexqrbrace ($r = qr{ab)c}) { }
+sub regexqrclass ($r = qr/[)]/) { }
+sub regexmempty ($r = m//) { }
+sub regexmparen ($r = m/a(b/) { }
+sub regexsub ($r = s/a(b/c/) { }
+sub regexattr ($r = /a(b/) : lvalue { }
+sub divdefault ($x = $a / 2) { }
+sub divnospace ($x = $a/$b) { }
+sub nestedparen ($x = foo(1, (2))) { }
+sub afterregex ($y) { }

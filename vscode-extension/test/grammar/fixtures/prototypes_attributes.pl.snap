@@ -257,4 +257,182 @@
 #             ^^^^^^^^ source.perl
 #                     ^^^^ source.perl keyword.control.perl
 #                         ^^^^^^^^^ source.perl
+>sub regexparen ($r = /a(b/) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl meta.declaration.subroutine.perl
+#                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^^ source.perl meta.declaration.subroutine.perl
+#                    ^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                      ^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                         ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl
+#                            ^^^^ source.perl
+>sub regexclose ($r = /a)b/) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl meta.declaration.subroutine.perl
+#                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^^ source.perl meta.declaration.subroutine.perl
+#                    ^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                      ^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                         ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl
+#                            ^^^^ source.perl
+>sub regexclass ($r = /[)]/) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl meta.declaration.subroutine.perl
+#                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^^ source.perl meta.declaration.subroutine.perl
+#                    ^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                      ^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                         ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl
+#                            ^^^^ source.perl
+>sub regexqr ($r = qr/a(b/) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#            ^ source.perl meta.declaration.subroutine.perl
+#             ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#               ^^^ source.perl meta.declaration.subroutine.perl
+#                  ^^ source.perl meta.declaration.subroutine.perl string.regexp.perl keyword.other.perl
+#                    ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                     ^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                        ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                         ^ source.perl meta.declaration.subroutine.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^^^^ source.perl
+>sub regexqrbrace ($r = qr{ab)c}) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                 ^ source.perl meta.declaration.subroutine.perl
+#                  ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                    ^^^ source.perl meta.declaration.subroutine.perl
+#                       ^^ source.perl meta.declaration.subroutine.perl string.regexp.perl keyword.other.perl
+#                         ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                          ^^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                              ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                               ^ source.perl meta.declaration.subroutine.perl
+#                                ^ source.perl meta.declaration.subroutine.perl
+#                                 ^^^^ source.perl
+>sub regexqrclass ($r = qr/[)]/) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                 ^ source.perl meta.declaration.subroutine.perl
+#                  ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                    ^^^ source.perl meta.declaration.subroutine.perl
+#                       ^^ source.perl meta.declaration.subroutine.perl string.regexp.perl keyword.other.perl
+#                         ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                          ^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                             ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                              ^ source.perl meta.declaration.subroutine.perl
+#                               ^ source.perl meta.declaration.subroutine.perl
+#                                ^^^^ source.perl
+>sub regexmempty ($r = m//) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                ^ source.perl meta.declaration.subroutine.perl
+#                 ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                   ^^^ source.perl meta.declaration.subroutine.perl
+#                      ^ source.perl meta.declaration.subroutine.perl string.regexp.perl keyword.other.perl
+#                       ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                        ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                         ^ source.perl meta.declaration.subroutine.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^^^^ source.perl
+>sub regexmparen ($r = m/a(b/) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                ^ source.perl meta.declaration.subroutine.perl
+#                 ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                   ^^^ source.perl meta.declaration.subroutine.perl
+#                      ^ source.perl meta.declaration.subroutine.perl string.regexp.perl keyword.other.perl
+#                       ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                        ^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                           ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                            ^ source.perl meta.declaration.subroutine.perl
+#                             ^ source.perl meta.declaration.subroutine.perl
+#                              ^^^^ source.perl
+>sub regexsub ($r = s/a(b/c/) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#             ^ source.perl meta.declaration.subroutine.perl
+#              ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                ^^^ source.perl meta.declaration.subroutine.perl
+#                   ^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl keyword.other.perl
+#                    ^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl
+#                     ^^^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl
+#                        ^^ source.perl meta.declaration.subroutine.perl string.regexp.replace.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl
+#                            ^ source.perl meta.declaration.subroutine.perl
+#                             ^^^^ source.perl
+>sub regexattr ($r = /a(b/) : lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#              ^ source.perl meta.declaration.subroutine.perl
+#               ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                 ^^ source.perl meta.declaration.subroutine.perl
+#                   ^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                     ^^^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                        ^ source.perl meta.declaration.subroutine.perl string.regexp.perl
+#                         ^ source.perl meta.declaration.subroutine.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                            ^ source.perl meta.declaration.subroutine.perl
+#                             ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                   ^ source.perl meta.declaration.subroutine.perl
+#                                    ^^^^ source.perl
+>sub divdefault ($x = $a / 2) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl meta.declaration.subroutine.perl
+#                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^^^ source.perl meta.declaration.subroutine.perl
+#                     ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                       ^^^ source.perl meta.declaration.subroutine.perl
+#                          ^ source.perl meta.declaration.subroutine.perl constant.numeric.integer.perl
+#                           ^ source.perl meta.declaration.subroutine.perl
+#                            ^ source.perl meta.declaration.subroutine.perl
+#                             ^^^^ source.perl
+>sub divnospace ($x = $a/$b) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl meta.declaration.subroutine.perl
+#                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^^^ source.perl meta.declaration.subroutine.perl
+#                     ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                       ^ source.perl meta.declaration.subroutine.perl
+#                        ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl
+#                            ^^^^ source.perl
+>sub nestedparen ($x = foo(1, (2))) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                ^ source.perl meta.declaration.subroutine.perl
+#                 ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                   ^^^^^^ source.perl meta.declaration.subroutine.perl
+#                         ^ source.perl meta.declaration.subroutine.perl
+#                          ^ source.perl meta.declaration.subroutine.perl constant.numeric.integer.perl
+#                           ^^ source.perl meta.declaration.subroutine.perl
+#                             ^ source.perl meta.declaration.subroutine.perl
+#                              ^ source.perl meta.declaration.subroutine.perl constant.numeric.integer.perl
+#                               ^ source.perl meta.declaration.subroutine.perl
+#                                ^ source.perl meta.declaration.subroutine.perl
+#                                 ^ source.perl meta.declaration.subroutine.perl
+#                                  ^ source.perl meta.declaration.subroutine.perl
+#                                   ^^^^ source.perl
+>sub afterregex ($y) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl meta.declaration.subroutine.perl
+#                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^ source.perl meta.declaration.subroutine.perl
+#                   ^ source.perl meta.declaration.subroutine.perl
+#                    ^^^^ source.perl
 >
