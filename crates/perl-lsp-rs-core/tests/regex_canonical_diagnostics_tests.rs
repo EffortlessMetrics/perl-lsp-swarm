@@ -91,8 +91,10 @@ fn with_code<'a>(diagnostics: &'a [Diagnostic], code: &str) -> Vec<&'a Diagnosti
 ///
 /// Membership is exact, never a prefix test: `PL1000` and `PL100` are different
 /// codes in different categories, and `starts_with` would conflate them.
-const CANONICAL_REGEX_CODES: [&str; 9] =
-    ["PL609", "PL1000", "PL1001", "PL1002", "PL1003", "PL1004", "PL1005", "PL1006", "PL1007"];
+const CANONICAL_REGEX_CODES: [&str; 10] = [
+    "PL609", "PL1000", "PL1001", "PL1002", "PL1003", "PL1004", "PL1005", "PL1006", "PL1007",
+    "PL1008",
+];
 
 /// Whether `code` is one the canonical projection can publish, by exact membership.
 fn is_canonical_regex_code(code: &str) -> bool {
@@ -450,6 +452,29 @@ fn an_unknown_modifier_is_reported_where_nothing_was_reported_before() {
     // finding, it does not gate or suppress anything else.
     assert_eq!(with_code(&legacy, "PL100").len(), with_code(&canonical, "PL100").len());
     assert_eq!(with_code(&legacy, "PL102").len(), with_code(&canonical, "PL102").len());
+}
+
+/// Issue #16608 class (1): a quantifier with no preceding atom is published
+/// canonically as PL1008 (Error), naming the quantifier byte itself, and the
+/// compatibility path names the same bytes through the parser error.
+#[test]
+fn quantifier_follows_nothing_is_published_as_pl1008() {
+    use perl_lsp_rs_core::providers::diagnostics::DiagnosticSeverity;
+
+    let source = "my $s = 'x';\nmy $m = $s =~ /*abc/;\n";
+    let diagnostics = canonical_diagnostics(source);
+    let published = with_code(&diagnostics, "PL1008");
+    assert_eq!(published.len(), 1, "exactly one PL1008: {diagnostics:#?}");
+    assert_eq!(published[0].severity, DiagnosticSeverity::Error);
+    assert!(published[0].message.contains("Quantifier follows nothing"));
+    let (start, end) = published[0].range;
+    assert_eq!(&source[start..end], "*", "PL1008 must name the quantifier itself");
+
+    // Compatibility path: same finding through the legacy parser error.
+    let legacy = compatibility_diagnostics(source);
+    let legacy_published = with_code(&legacy, "PL1008");
+    assert_eq!(legacy_published.len(), 1, "legacy path also publishes PL1008: {legacy:#?}");
+    assert_eq!(legacy_published[0].range, published[0].range);
 }
 
 /// A clean pattern publishes nothing. Without this, every assertion above could be

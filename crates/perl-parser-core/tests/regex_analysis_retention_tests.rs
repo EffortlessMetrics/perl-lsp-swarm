@@ -164,6 +164,71 @@ fn nested_quantifier_advisory_selects_the_outer_quantifier() -> Result<(), Box<d
 }
 
 #[test]
+fn quantifier_follows_nothing_is_blocking_in_retained_analysis() -> Result<(), Box<dyn Error>> {
+    // Issue #16608 class (1): perl rejects each of these with
+    // `Quantifier follows nothing in regex`; the retained scan must too.
+    for (source, needle) in [
+        ("my $s = 'x'; my $m = $s =~ /*abc/;", "*abc"),
+        ("my $s = 'x'; my $m = $s =~ /+abc/;", "+abc"),
+        ("my $s = 'x'; my $m = $s =~ /a|*b/;", "*b"),
+        ("my $s = 'x'; my $m = $s =~ /(?:*a)/;", "*a"),
+        ("my $r = qr/*abc/;", "*abc"),
+        ("my $r = qr{*abc};", "*abc"),
+        ("my $s = 'x'; $s =~ m{*abc};", "*abc"),
+        ("my $s = 'x'; $s =~ s/*abc/x/;", "*abc"),
+    ] {
+        let output = parse_source_with_regex_analysis(source);
+        let expected = source.find(needle).ok_or("needle not found")?;
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.location() == Some(expected)
+                    && diagnostic.blocks_clean_parse()
+                    && diagnostic.to_string().contains("Quantifier follows nothing in regex")
+            }),
+            "{source:?} must carry a blocking quantifier-follows-nothing diagnostic at {expected}, got {:?}",
+            output.diagnostics
+        );
+        let record = output.regex_analysis.records.first().ok_or("missing regex record")?;
+        let pattern = record.pattern.as_ref().ok_or("missing pattern analysis")?;
+        assert!(
+            pattern.structural.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code
+                    == perl_regex::validator::RegexDiagnosticCode::QuantifierFollowsNothing
+            }),
+            "{source:?} retained analysis must carry the typed code"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn quantifier_follows_nothing_guards_valid_patterns_in_retained_analysis()
+-> Result<(), Box<dyn Error>> {
+    // Verified against perl 5.42: every source below compiles clean.
+    for source in [
+        "my $s = 'x'; my $m = $s =~ /[*+?]/;",
+        "my $s = 'x'; my $m = $s =~ /a*?b/;",
+        "my $s = 'x'; my $m = $s =~ /a*+b/;",
+        "my $s = 'x'; my $m = $s =~ /(?:a|b)*c/;",
+        "my $s = 'x'; my $m = $s =~ /{2}abc/;",
+        "my $s = 'x'; my $m = $s =~ /\\*abc/;",
+        "my $s = 'x'; my $m = $s =~ /(*COMMIT)a/;",
+        "my $s = 'x'; my $m = $s =~ s/a/*b/;",
+    ] {
+        let output = parse_source_with_regex_analysis(source);
+        assert!(
+            !output
+                .diagnostics
+                .iter()
+                .any(|d| d.to_string().contains("Quantifier follows nothing")),
+            "{source:?} must not be flagged, got {:?}",
+            output.diagnostics
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn fresh_and_prelexed_entry_points_retain_identical_tables() -> Result<(), Box<dyn Error>> {
     let source = r"my $rx = qr{(?<id>\d+)}i; my $ok = /(?<x>a)\k<x>/;";
     let fresh = parse_source_with_regex_analysis(source);

@@ -42,8 +42,11 @@ impl<'a> Parser<'a> {
         let pattern_start = geometry.pattern.range.start;
         let has_embedded_code = validator.find_code_execution(pattern, pattern_start).is_some();
         let nested_quantifier = validator.find_nested_quantifier(pattern, pattern_start);
+        let quantifier_follows_nothing =
+            validator.find_quantifier_follows_nothing(pattern, pattern_start);
 
-        if !has_embedded_code && nested_quantifier.is_none() {
+        if !has_embedded_code && nested_quantifier.is_none() && quantifier_follows_nothing.is_none()
+        {
             validator.validate(pattern, pattern_start).map_err(|error| match error {
                 crate::engine::regex_validator::RegexError::Syntax { message, offset } => {
                     ParseError::syntax(message, offset)
@@ -53,6 +56,9 @@ impl<'a> Parser<'a> {
 
         if let Some(finding) = nested_quantifier {
             self.record_error(ParseError::nested_quantifier_advisory(finding.offset));
+        }
+        if let Some(finding) = quantifier_follows_nothing {
+            self.record_error(ParseError::quantifier_follows_nothing_error(finding.offset));
         }
 
         Ok(has_embedded_code)

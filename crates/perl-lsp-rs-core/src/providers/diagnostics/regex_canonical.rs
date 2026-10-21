@@ -242,6 +242,9 @@ fn structural_code(code: RegexDiagnosticCode) -> Option<DiagnosticCode> {
             Some(DiagnosticCode::SecurityEmbeddedRegexCode)
         }
         RegexDiagnosticCode::NestedQuantifierRisk => Some(DiagnosticCode::RegexBacktrackingRisk),
+        RegexDiagnosticCode::QuantifierFollowsNothing => {
+            Some(DiagnosticCode::RegexQuantifierFollowsNothing)
+        }
         RegexDiagnosticCode::UnicodePropertyLimit
         | RegexDiagnosticCode::LookbehindNestingLimit
         | RegexDiagnosticCode::BranchResetNestingLimit

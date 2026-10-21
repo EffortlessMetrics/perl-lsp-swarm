@@ -165,6 +165,112 @@ fn dynamic_and_policy_completeness_remain_distinct() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn quantifier_follows_nothing_is_syntax_at_pattern_start_after_pipe_and_after_group_open()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    // (source pattern, offset of the offending quantifier) verified against perl 5.42.
+    for (pattern, offset) in [
+        ("*abc", 0usize),
+        ("+abc", 0),
+        ("?abc", 0),
+        ("a|*b", 2),
+        ("a|?b", 2),
+        ("|*b", 1),
+        ("(?:*a)", 3),
+        ("(?|*a)", 3),
+        ("(?=*a)", 3),
+        ("(?<n>*a)", 5),
+        ("(a|*b)", 3),
+        ("(?i:*a)", 4),
+        ("(?#c)*a", 5),
+        ("(?i)*a", 4),
+    ] {
+        let analysis = validator.analyze(pattern);
+        assert_eq!(
+            analysis.facts.quantifier_follows_nothing.len(),
+            1,
+            "{pattern:?} must report exactly one follows-nothing quantifier"
+        );
+        assert_eq!(analysis.facts.quantifier_follows_nothing[0].start, offset, "{pattern:?}");
+        let diagnostic = analysis
+            .diagnostics
+            .iter()
+            .find(|d| d.code == RegexDiagnosticCode::QuantifierFollowsNothing)
+            .ok_or("missing quantifier-follows-nothing diagnostic")?;
+        assert_eq!(diagnostic.class, RegexDiagnosticClass::Syntax);
+        assert_eq!(diagnostic.code.as_str(), "quantifier_follows_nothing");
+        assert_eq!(diagnostic.message(), "Quantifier follows nothing in regex");
+        assert_eq!(diagnostic.range.start, offset);
+    }
+    Ok(())
+}
+
+#[test]
+fn quantifier_follows_nothing_guards_valid_quantifier_positions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    // Every pattern below compiles under perl 5.42; none may be flagged.
+    for pattern in [
+        "abc",
+        "a*",
+        "a+?",
+        "a?+",
+        "a*+b",
+        "(?:a)*",
+        "(a|b)+",
+        "[*+?]",
+        "[a*]+",
+        r"\*abc",
+        r"a\*b",
+        r"\Q*abc\E",
+        "{2}abc",
+        "{2,3}abc",
+        "a|{2}b",
+        "a{2}",
+        "a{2,3}?",
+        "^*",
+        r"\b*a",
+        "(*COMMIT)a",
+        "(*FAIL)",
+        "a**",
+        "a*?+",
+        "a(?#c)*b",
+        r"\Qa\E*",
+        "$x*",
+        "(?=a)*b",
+    ] {
+        let analysis = validator.analyze(pattern);
+        assert!(
+            analysis.facts.quantifier_follows_nothing.is_empty(),
+            "{pattern:?} must not be flagged, got {:?}",
+            analysis.diagnostics
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn quantifier_follows_nothing_finder_projects_to_absolute_offset()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    let finding = validator
+        .find_quantifier_follows_nothing("a|*b", 20)
+        .ok_or("expected quantifier-follows-nothing finding")?;
+    assert_eq!(finding.offset, 22);
+    assert_eq!(finding.message, "Quantifier follows nothing in regex");
+    assert!(validator.find_quantifier_follows_nothing("a*b", 20).is_none());
+    // `validate` surfaces it as a syntax error for compatibility callers.
+    let error = validator.validate("*abc", 10).err().ok_or("expected validate error")?;
+    match error {
+        RegexError::Syntax { message, offset } => {
+            assert!(message.contains("Quantifier follows nothing"), "{message}");
+            assert_eq!(offset, 10);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn typed_analysis_projects_current_scanner_findings() -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,

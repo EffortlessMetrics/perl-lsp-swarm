@@ -7,7 +7,7 @@
 
 use perl_diagnostics::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticSeverity};
 
-const REGEX_ANALYSIS_BLOCK: [(DiagnosticCode, &str, DiagnosticSeverity); 8] = [
+const REGEX_ANALYSIS_BLOCK: [(DiagnosticCode, &str, DiagnosticSeverity); 9] = [
     (DiagnosticCode::RegexBacktrackingRisk, "PL1000", DiagnosticSeverity::Warning),
     (DiagnosticCode::RegexAnalysisLimit, "PL1001", DiagnosticSeverity::Information),
     (DiagnosticCode::RegexModifierInvalid, "PL1002", DiagnosticSeverity::Error),
@@ -16,6 +16,7 @@ const REGEX_ANALYSIS_BLOCK: [(DiagnosticCode, &str, DiagnosticSeverity); 8] = [
     (DiagnosticCode::RegexCaptureInvalid, "PL1005", DiagnosticSeverity::Error),
     (DiagnosticCode::RegexCaptureUnavailable, "PL1006", DiagnosticSeverity::Warning),
     (DiagnosticCode::RegexAnalysisIncomplete, "PL1007", DiagnosticSeverity::Information),
+    (DiagnosticCode::RegexQuantifierFollowsNothing, "PL1008", DiagnosticSeverity::Error),
 ];
 
 /// A published code is a compatibility surface: clients store it in suppression

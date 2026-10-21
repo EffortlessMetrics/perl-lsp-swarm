@@ -6,6 +6,7 @@ mod code_execution;
 mod complexity;
 mod config;
 mod nested_quantifier;
+mod quantifier_follows_nothing;
 
 #[cfg(test)]
 mod analysis_contract_tests;
@@ -130,6 +131,19 @@ impl RegexValidator {
         self.analyze(pattern).facts.nested_quantifiers.first().map(|range| RegexFinding {
             offset: start_pos.saturating_add(range.start),
             message: "Nested quantifiers may cause catastrophic backtracking",
+        })
+    }
+
+    /// Locate the first quantifier that follows nothing, with `start_pos`
+    /// folded into the finding's offset.
+    pub fn find_quantifier_follows_nothing(
+        &self,
+        pattern: &str,
+        start_pos: usize,
+    ) -> Option<RegexFinding> {
+        self.analyze(pattern).facts.quantifier_follows_nothing.first().map(|range| RegexFinding {
+            offset: start_pos.saturating_add(range.start),
+            message: "Quantifier follows nothing in regex",
         })
     }
 }
