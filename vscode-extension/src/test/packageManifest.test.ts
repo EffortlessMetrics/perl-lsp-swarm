@@ -113,30 +113,14 @@ describe('first-run demo content (#16591)', () => {
     // unpinned as before, so assert the *content* names the real module dir.
     for (const root of [sourceRoot, bundledRoot]) {
       const config = fs.readFileSync(path.join(root, '.perl-lsp.toml'), 'utf8');
-      // Drop comment lines and scope the lookup to the `[perl]` table, so a
-      // commented-out example or a key misplaced under another table cannot
-      // satisfy this assertion.
-      const uncommented = config.split(/\r?\n/).filter((line) => !/^\s*#/.test(line));
-      const perlHeader = uncommented.findIndex((line) => line.trim() === '[perl]');
-      expect(perlHeader).toBeGreaterThanOrEqual(0);
-      const nextHeader = uncommented.findIndex(
-        (line, index) => index > perlHeader && /^\s*\[[^\]]*\]\s*$/.test(line),
-      );
-      const perlBody = uncommented
-        .slice(perlHeader + 1, nextHeader === -1 ? uncommented.length : nextHeader)
-        .join('\n');
-      // Pin the section to its exact valid-TOML form. A permissive parse
-      // (strip quotes, drop empties, `toContain`) would also accept configs
-      // the server rejects — e.g. an unquoted entry (`include_paths = [lib]`)
-      // makes the whole file a TOML syntax error, so the server warns and
-      // skips it, and demo resolution would silently regress to unpinned
-      // defaults while this assertion stayed green. Blank lines are dropped
-      // because they are valid TOML anywhere; anything else must match.
-      const perlEntries = perlBody
+      // Pin the whole uncommented, nonblank document to its fixed TOML form.
+      // A textual `[perl]` table inside a multiline string must not satisfy
+      // this assertion, and malformed syntax must not fall back to defaults.
+      const entries = config
         .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-      expect(perlEntries).toEqual(['include_paths = ["lib"]']);
+        .map((line) => line.replace(/^[ \t]+|[ \t]+$/g, ''))
+        .filter((line) => line.length > 0 && !line.startsWith('#'));
+      expect(entries).toEqual(['[perl]', 'include_paths = ["lib"]']);
       // And that directory is the one holding the demo's modules.
       expect(fs.existsSync(path.join(root, 'lib', 'Utils.pm'))).toBe(true);
     }
