@@ -4894,6 +4894,46 @@ mod tests {
         Ok(())
     }
 
+    /// #18212: the shipped `printfh` body carries a literal Perl `\n`.
+    /// Both capability branches must keep it intact: snippet clients get
+    /// the authored body (format 2), plain-text clients get the literal
+    /// fallback (format 1) in both `insertText` and the authoritative
+    /// `textEdit.newText`, replacing exactly the typed prefix.
+    #[test]
+    fn printfh_snippet_keeps_literal_backslash_on_both_capability_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let snippet = serialized_completion("printfh", 7, "printfh", true)?;
+        assert_eq!(snippet.get("insertTextFormat").and_then(Value::as_i64), Some(2));
+        assert_eq!(
+            snippet.get("insertText").and_then(Value::as_str),
+            Some("print ${1:\\$fh} ${0:\"data\\n\"};")
+        );
+        assert_eq!(
+            snippet.pointer("/textEdit/newText").and_then(Value::as_str),
+            Some("print ${1:\\$fh} ${0:\"data\\n\"};")
+        );
+
+        let plain = serialized_completion("printfh", 7, "printfh", false)?;
+        assert_eq!(plain.get("insertTextFormat").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            plain.get("insertText").and_then(Value::as_str),
+            Some("print $fh \"data\\n\";"),
+            "plain-text clients must receive the literal Perl escape, not `datan`"
+        );
+        assert_eq!(
+            plain.pointer("/textEdit/newText").and_then(Value::as_str),
+            Some("print $fh \"data\\n\";")
+        );
+        assert_eq!(plain.pointer("/textEdit/range/start/line").and_then(Value::as_i64), Some(0));
+        assert_eq!(
+            plain.pointer("/textEdit/range/start/character").and_then(Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(plain.pointer("/textEdit/range/end/character").and_then(Value::as_i64), Some(7));
+
+        Ok(())
+    }
+
     /// #4956: `submethod`'s body spelled literal Perl `$self` as a snippet
     /// variable, so VS Code inserted an editable `self` placeholder and other
     /// clients could insert nothing.
