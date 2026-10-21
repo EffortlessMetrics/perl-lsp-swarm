@@ -105,7 +105,8 @@ impl DiagnosticCode {
             | Self::RegexModifierUnavailable
             | Self::RegexCaptureInvalid
             | Self::RegexCaptureUnavailable
-            | Self::RegexAnalysisIncomplete => DiagnosticCategory::RegexAnalysis,
+            | Self::RegexAnalysisIncomplete
+            | Self::RegexUnterminatedQuoteLike => DiagnosticCategory::RegexAnalysis,
 
             Self::DeprecatedDefined | Self::DeprecatedArrayBase => DiagnosticCategory::Deprecated,
 

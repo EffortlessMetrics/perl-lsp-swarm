@@ -1547,6 +1547,29 @@ impl ParseError {
         }
     }
 
+    /// Create the blocking error for an unterminated quote-like operator.
+    ///
+    /// The message mirrors perl 5.42 for the operator family: `m`/`qr` report
+    /// a search pattern, `s` a substitution pattern, `tr`/`y` a transliteration
+    /// pattern, and every other quote-like operator (`q`, `qq`, `qx`, `qw`)
+    /// reports the missing string terminator named by `closing_delimiter`.
+    /// `location` is the byte offset of the operator start.
+    pub fn unterminated_quote_like_error(
+        operator: &str,
+        closing_delimiter: char,
+        location: usize,
+    ) -> Self {
+        let message = match operator {
+            "m" | "qr" => "Search pattern not terminated".to_string(),
+            "s" => "Substitution pattern not terminated".to_string(),
+            "tr" | "y" => "Transliteration pattern not terminated".to_string(),
+            _ => {
+                format!("Can't find string terminator \"{closing_delimiter}\" anywhere before EOF")
+            }
+        };
+        Self::SyntaxError { message, location }
+    }
+
     /// Classify whether this diagnostic blocks a clean parser/compiler receipt.
     #[must_use]
     pub fn severity(&self) -> ParseDiagnosticSeverity {

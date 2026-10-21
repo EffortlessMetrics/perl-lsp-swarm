@@ -260,6 +260,9 @@ define_diagnostic_codes! {
     /// Static regex analysis could not complete for this pattern, so its
     /// findings are partial rather than exhaustive
     RegexAnalysisIncomplete => "PL1007",
+    /// A quote-like operator (`m`, `qr`, `q`, `qq`, `qx`, `qw`, `s`, `tr`, `y`)
+    /// has no closing delimiter before end of file
+    RegexUnterminatedQuoteLike => "PL1008",
 }
 
 /// Error returned when text is not a registered built-in diagnostic code.

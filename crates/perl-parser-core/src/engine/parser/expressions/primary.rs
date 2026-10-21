@@ -248,6 +248,22 @@ impl<'a> Parser<'a> {
 
             TokenKind::Regex => {
                 let token = self.advance_token()?;
+                if let Some(error) = Self::unterminated_quote_like_error(&token) {
+                    self.record_error(error);
+                    let (pattern, modifiers) =
+                        quote_parser::extract_regex_family_geometry(&token.text, token.start())
+                            .map(|geometry| (geometry.pattern.text, geometry.modifiers.text))
+                            .unwrap_or_default();
+                    return self.charge_node(
+                        NodeKind::Regex {
+                            pattern,
+                            replacement: None,
+                            modifiers,
+                            has_embedded_code: false,
+                        },
+                        SourceLocation { start: token.start(), end: token.end() },
+                    );
+                }
                 // Strict validation that rejects unknown modifier letters (#14980),
                 // matching the contract `s///` and `tr///` already expose via
                 // `extract_substitution_parts_strict` / `extract_transliteration_parts_strict`.
@@ -407,6 +423,9 @@ impl<'a> Parser<'a> {
 
             TokenKind::QuoteCommand => {
                 let token = self.advance_token()?;
+                if let Some(error) = Self::unterminated_quote_like_error(&token) {
+                    self.record_error(error);
+                }
                 // qx/backticks - for now treat as a string
                 self.charge_node(
                     NodeKind::String { value: token.text.to_string(), interpolated: true },

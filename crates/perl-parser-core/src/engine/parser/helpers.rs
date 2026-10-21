@@ -1130,9 +1130,80 @@ impl<'a> Parser<'a> {
     ///
     /// At any other token, returns `Err(ParseError::UnexpectedToken)` so the
     /// caller can propagate or handle it.
+    /// Build the terminator diagnostic for an unterminated quote-like token.
+    ///
+    /// Returns `None` for closed tokens and for tokens that are not
+    /// quote-like operators, so legit uses (a closed `m/foo/` list element,
+    /// a plain string) never reach the recovery in `expect_closing_delimiter`.
+    fn unterminated_quote_like_error(token: &Token) -> Option<ParseError> {
+        let text = token.text.as_ref();
+        match token.kind() {
+            TokenKind::Regex | TokenKind::Substitution | TokenKind::Transliteration => {
+                let geometry = quote_parser::extract_regex_family_geometry(text, token.start())?;
+                let body = if !geometry.pattern.is_closed() {
+                    &geometry.pattern
+                } else {
+                    geometry.replacement.as_ref().filter(|replacement| !replacement.is_closed())?
+                };
+                let relative = body.opening_delimiter_range.start.checked_sub(token.start())?;
+                let open = text.get(relative..)?.chars().next()?;
+                let operator = match geometry.operator {
+                    quote_parser::RegexFamilyOperator::BareMatch => "m",
+                    quote_parser::RegexFamilyOperator::Match => "m",
+                    quote_parser::RegexFamilyOperator::QuoteRegex => "qr",
+                    quote_parser::RegexFamilyOperator::Substitution => "s",
+                    quote_parser::RegexFamilyOperator::Transliteration => "tr",
+                    quote_parser::RegexFamilyOperator::TransliterationAlias => "y",
+                };
+                Some(ParseError::unterminated_quote_like_error(
+                    operator,
+                    quote_parser::get_closing_delimiter(open),
+                    token.start(),
+                ))
+            }
+            TokenKind::QuoteSingle
+            | TokenKind::QuoteDouble
+            | TokenKind::QuoteWords
+            | TokenKind::QuoteCommand => {
+                let operator = if text.starts_with("qq") {
+                    "qq"
+                } else if text.starts_with("qw") {
+                    "qw"
+                } else if text.starts_with("qx") {
+                    "qx"
+                } else if text.starts_with('q') {
+                    "q"
+                } else {
+                    return None;
+                };
+                if quote_parser::parse_quote_operator_content(text, operator).is_some() {
+                    return None;
+                }
+                let (open, _) = quote_parser::quote_operator_open_and_content(text, operator)?;
+                Some(ParseError::unterminated_quote_like_error(
+                    operator,
+                    quote_parser::get_closing_delimiter(open),
+                    token.start(),
+                ))
+            }
+            _ => None,
+        }
+    }
+
     fn expect_closing_delimiter(&mut self, kind: TokenKind) -> ParseResult<()> {
         if self.peek_kind() == Some(kind) {
             self.consume_token()?;
+            return Ok(());
+        }
+        // An unterminated quote-like token after a term already spans to
+        // EOF, so the missing closer cannot be its fault: name the
+        // unterminated operator, consume the token, and recover with an
+        // inserted closer instead of a misleading expected-closer error.
+        let unterminated = self.tokens.peek().ok().and_then(Self::unterminated_quote_like_error);
+        if let Some(error) = unterminated {
+            self.record_error(error);
+            self.consume_token()?;
+            self.record_inserted_closer(kind);
             return Ok(());
         }
         if self.is_delimiter_recovery_point() {
