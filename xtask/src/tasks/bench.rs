@@ -81,19 +81,25 @@ fn validate_output_path(output_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Keep the LSP targets selected now that their Criterion dependency is opt-in.
+fn cargo_bench_args(name: Option<&str>) -> Vec<&str> {
+    let mut args = vec!["bench"];
+    if matches!(name, None | Some("rope_performance_benchmark" | "lsp_stdio_roundtrip_benchmark")) {
+        args.extend(["--features", "perl-lsp-rs/benchmarks"]);
+    }
+    if let Some(bench_name) = name {
+        args.extend(["--bench", bench_name]);
+    }
+    args
+}
+
 pub fn run(name: Option<String>, save: bool, output: Option<PathBuf>) -> Result<()> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {wide_msg}")?);
 
     spinner.set_message("Running benchmarks");
 
-    // Build arguments for cargo bench
-    let mut args = vec!["bench"];
-
-    if let Some(bench_name) = &name {
-        args.push("--bench");
-        args.push(bench_name);
-    }
+    let args = cargo_bench_args(name.as_deref());
 
     // Execute benchmarks and capture output
     let result = cmd("cargo", &args)
@@ -269,6 +275,47 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn cargo_bench_args_broad_retains_lsp_targets() {
+        assert_eq!(cargo_bench_args(None), ["bench", "--features", "perl-lsp-rs/benchmarks"]);
+    }
+
+    #[test]
+    fn cargo_bench_args_rope_enables_required_feature() {
+        assert_eq!(
+            cargo_bench_args(Some("rope_performance_benchmark")),
+            [
+                "bench",
+                "--features",
+                "perl-lsp-rs/benchmarks",
+                "--bench",
+                "rope_performance_benchmark"
+            ]
+        );
+    }
+
+    #[test]
+    fn cargo_bench_args_stdio_enables_required_feature() {
+        assert_eq!(
+            cargo_bench_args(Some("lsp_stdio_roundtrip_benchmark")),
+            [
+                "bench",
+                "--features",
+                "perl-lsp-rs/benchmarks",
+                "--bench",
+                "lsp_stdio_roundtrip_benchmark"
+            ]
+        );
+    }
+
+    #[test]
+    fn cargo_bench_args_unrelated_name_keeps_default_features() {
+        assert_eq!(
+            cargo_bench_args(Some("parser_benchmark")),
+            ["bench", "--bench", "parser_benchmark"]
+        );
+    }
 
     #[test]
     fn test_validate_output_path_valid_extensions() {

@@ -113,7 +113,7 @@ cargo bench -p perl-dap
 
 **Rope performance:**
 ```bash
-cargo bench -p perl-lsp-rs --bench rope_performance_benchmark
+cargo bench -p perl-lsp-rs --features benchmarks --bench rope_performance_benchmark
 ```
 
 **RIPR facts packet:**
