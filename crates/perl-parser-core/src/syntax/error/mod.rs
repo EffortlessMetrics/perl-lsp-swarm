@@ -1763,7 +1763,8 @@ impl ParseError {
         match self {
             Self::UnexpectedEof => ParseDiagnosticAnchor::EndOfInput,
             Self::InvalidSignatureParameter { range, .. }
-            | Self::InvalidSignatureOrdering { range, .. } => {
+            | Self::InvalidSignatureOrdering { range, .. }
+            | Self::CatchVariableRedeclaration { range, .. } => {
                 ParseDiagnosticAnchor::Exact(range.start)
             }
             Self::UnexpectedToken { location, .. }

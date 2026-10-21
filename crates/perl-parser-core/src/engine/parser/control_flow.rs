@@ -759,13 +759,21 @@ impl<'a> Parser<'a> {
                     Some(TokenKind::My | TokenKind::Our | TokenKind::State)
                 ) {
                     let keyword_token = self.consume_token()?;
-                    self.record_error(ParseError::CatchVariableRedeclaration {
-                        keyword: keyword_token.text.to_string(),
-                        range: SourceLocation {
-                            start: keyword_token.start(),
-                            end: keyword_token.end(),
-                        },
-                    });
+                    // Only a keyword actually followed by a variable is a
+                    // redeclaration; `catch (my)` has no variable to
+                    // redeclare and stays on the ordinary malformed-head
+                    // path instead of claiming one was present.
+                    let variable_follows = self.peek_kind() == Some(TokenKind::ScalarSigil)
+                        || self.tokens.peek()?.text.starts_with('$');
+                    if variable_follows {
+                        self.record_error(ParseError::CatchVariableRedeclaration {
+                            keyword: keyword_token.text.to_string(),
+                            range: SourceLocation {
+                                start: keyword_token.start(),
+                                end: keyword_token.end(),
+                            },
+                        });
+                    }
                 }
                 let var_name = if self.peek_kind() == Some(TokenKind::ScalarSigil)
                     || self.tokens.peek()?.text.starts_with('$')

@@ -93,6 +93,17 @@ fn whitespace_and_comment_variations_still_diagnose() {
 }
 
 #[test]
+fn keyword_without_a_variable_is_not_a_redeclaration() {
+    let source = "try { die } catch (my) { print 1 }\n";
+    let (ast, errors) = parse(source);
+    assert!(
+        redeclarations(&errors).is_empty(),
+        "`catch (my)` has no variable to redeclare: {errors:?}"
+    );
+    assert_eq!(catch_bindings(&ast), vec![None]);
+}
+
+#[test]
 fn declarators_in_the_catch_body_are_not_head_diagnostics() {
     let source = "try { die } catch ($e) { my $x = $e; our $y; state $z = 1 }\n";
     let (_ast, errors) = parse(source);
