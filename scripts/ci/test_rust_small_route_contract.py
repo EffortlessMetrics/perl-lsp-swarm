@@ -5,7 +5,7 @@ Every required Rust Small route (`rust-small-cx53`, `rust-small-cx43`,
 `rust-small-github`, `rust-small-fallback`) must invoke exactly one shared,
 candidate/toolchain/profile-honest command:
 
-    cargo run -p xtask --locked -- rust-small-proof
+    cargo run -p xtask --profile agent --locked -- rust-small-proof
 
 The semantic step list (fetch, workspace check, parser smokes, LSP smoke,
 references scorecard census + execution, diff hygiene) lives in the xtask task
@@ -42,7 +42,7 @@ RUST_SMALL_LANE_JOBS = (
     "rust-small-fallback",
 )
 RUST_SMALL_RESULT_JOB = "rust-small-result"
-CANONICAL_INVOCATION = "cargo run -p xtask --locked -- rust-small-proof"
+CANONICAL_INVOCATION = "cargo run -p xtask --profile agent --locked -- rust-small-proof"
 CONTRACT_TEST_FILE = "scripts/ci/test_rust_small_route_contract.py"
 
 # Inline fragments whose presence in an active (non-comment) line of a lane job
@@ -61,6 +61,8 @@ LEGACY_INLINE_FRAGMENTS = (
 
 # Per-site field mutations that each independently prove the pin is red-first.
 INVOCATION_MUTATIONS = (
+    ("profile missing", CANONICAL_INVOCATION.replace(" --profile agent", "")),
+    ("profile changed", CANONICAL_INVOCATION.replace("--profile agent", "--profile dev")),
     ("argument drift (--locked dropped)", CANONICAL_INVOCATION.replace(" --locked", "")),
     ("commented out", f"# {CANONICAL_INVOCATION}"),
     ("echo decoy", f'echo "{CANONICAL_INVOCATION}"'),

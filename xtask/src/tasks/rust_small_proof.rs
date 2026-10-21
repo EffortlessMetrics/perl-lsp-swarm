@@ -1598,7 +1598,7 @@ tests::gamma: test
     #[test]
     fn a_failed_lane_records_the_untouched_remainder_as_not_run() {
         // The receipt of a lane that stopped at step 2 must still carry all
-        // nine steps: omission and non-execution have to stay distinguishable.
+        // ten steps: omission and non-execution have to stay distinguishable.
         let mut recorder = Recorder::new();
         recorder.record(
             "fetch locked inputs",
@@ -1608,7 +1608,7 @@ tests::gamma: test
         );
         recorder.record(
             "workspace compile check",
-            argv("cargo", &["check", "--workspace", "--locked"]),
+            argv("cargo", &["check", "--workspace", "--locked", "--profile", "agent"]),
             StepOutcome::ProductFailure,
             Some(101),
         );
@@ -2202,7 +2202,7 @@ tests::gamma: test
         );
         recorder.record(
             "workspace compile check",
-            argv("cargo", &["check", "--workspace", "--locked"]),
+            argv("cargo", &["check", "--workspace", "--locked", "--profile", "agent"]),
             StepOutcome::ProductFailure,
             Some(101),
         );
