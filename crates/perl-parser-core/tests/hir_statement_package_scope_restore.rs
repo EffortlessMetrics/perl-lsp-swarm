@@ -28,6 +28,10 @@ fn assert_restored(source: &str) -> HirFile {
     let reference =
         must_some(file.scope_graph.references.iter().find(|r| r.range.start == read_start));
     assert_eq!(reference.resolved_binding, Some(declaration.id));
+    // Both the declaration and its read live in the file scope again.
+    let file_scope = file.scope_graph.scopes[0].id;
+    assert_eq!(declaration.scope_id, file_scope);
+    assert_eq!(reference.scope_id, file_scope);
     let owner = must_some(file.scope_graph.scopes.get(declaration.scope_id.index() as usize));
     assert_ne!(owner.package_context.as_deref(), Some("Q"));
     file
