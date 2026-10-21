@@ -58,11 +58,13 @@
 #                ^^ source.perl
 >sub signed ($x, $y) { return $x; }
 #^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
-#   ^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#   ^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#           ^ source.perl meta.declaration.subroutine.perl
 #            ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
 #              ^^ source.perl meta.declaration.subroutine.perl
 #                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
-#                  ^^ source.perl meta.declaration.subroutine.perl
+#                  ^ source.perl meta.declaration.subroutine.perl
+#                   ^ source.perl meta.declaration.subroutine.perl
 #                    ^^ source.perl
 #                      ^^^^^^ source.perl support.function.builtin.perl
 #                            ^ source.perl
@@ -111,4 +113,148 @@
 #                             ^^ source.perl
 ># sub commented ($$) :lvalue
 #^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.perl comment.line.number-sign.perl
+>sub Foo::Bar ($$) : lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#             ^^^^ source.perl meta.declaration.subroutine.perl variable.parameter.prototype.perl
+#                 ^ source.perl meta.declaration.subroutine.perl
+#                  ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                   ^ source.perl meta.declaration.subroutine.perl
+#                    ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^^^^ source.perl
+>sub Foo::Bar::baz : lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                  ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                   ^ source.perl meta.declaration.subroutine.perl
+#                    ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^^^^ source.perl
+>sub ternary ($x = $a ? 1 : 2) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#            ^ source.perl meta.declaration.subroutine.perl
+#             ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#               ^^^ source.perl meta.declaration.subroutine.perl
+#                  ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                    ^^^ source.perl meta.declaration.subroutine.perl
+#                       ^ source.perl meta.declaration.subroutine.perl constant.numeric.integer.perl
+#                        ^^^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl constant.numeric.integer.perl
+#                            ^ source.perl meta.declaration.subroutine.perl
+#                             ^ source.perl meta.declaration.subroutine.perl
+#                              ^^^^ source.perl
+>sub ternarybare ($x = $a ? 1 : FALLBACK) : lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                ^ source.perl meta.declaration.subroutine.perl
+#                 ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                   ^^^ source.perl meta.declaration.subroutine.perl
+#                      ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                        ^^^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl constant.numeric.integer.perl
+#                            ^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                                       ^ source.perl meta.declaration.subroutine.perl
+#                                        ^ source.perl meta.declaration.subroutine.perl
+#                                         ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                          ^ source.perl meta.declaration.subroutine.perl
+#                                           ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                                 ^ source.perl meta.declaration.subroutine.perl
+#                                                  ^^^^ source.perl
+>sub ternaryword ($x = $a ? $b : $c) : lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                ^ source.perl meta.declaration.subroutine.perl
+#                 ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                   ^^^ source.perl meta.declaration.subroutine.perl
+#                      ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                        ^^^ source.perl meta.declaration.subroutine.perl
+#                           ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                             ^^^ source.perl meta.declaration.subroutine.perl
+#                                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                                  ^ source.perl meta.declaration.subroutine.perl
+#                                   ^ source.perl meta.declaration.subroutine.perl
+#                                    ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                     ^ source.perl meta.declaration.subroutine.perl
+#                                      ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                            ^ source.perl meta.declaration.subroutine.perl
+#                                             ^^^^ source.perl
+>sub nsdefault ($x = Foo::Bar->new) : lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#              ^ source.perl meta.declaration.subroutine.perl
+#               ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                 ^^^^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                                 ^ source.perl meta.declaration.subroutine.perl
+#                                  ^ source.perl meta.declaration.subroutine.perl
+#                                   ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                    ^ source.perl meta.declaration.subroutine.perl
+#                                     ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                           ^ source.perl meta.declaration.subroutine.perl
+#                                            ^^^^ source.perl
+>sub hashkey ($hash{key}) { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#            ^ source.perl meta.declaration.subroutine.perl
+#             ^^^^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^^^^^ source.perl meta.declaration.subroutine.perl
+#                       ^ source.perl meta.declaration.subroutine.perl
+#                        ^ source.perl meta.declaration.subroutine.perl
+#                         ^^^^ source.perl
+>sub hashdefault ($opt = { mode => 'fast' }) : lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                ^ source.perl meta.declaration.subroutine.perl
+#                 ^^^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                     ^^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#                                  ^ source.perl meta.declaration.subroutine.perl string.quoted.single.perl
+#                                   ^^^^ source.perl meta.declaration.subroutine.perl string.quoted.single.perl
+#                                       ^ source.perl meta.declaration.subroutine.perl string.quoted.single.perl
+#                                        ^^ source.perl meta.declaration.subroutine.perl
+#                                          ^ source.perl meta.declaration.subroutine.perl
+#                                           ^ source.perl meta.declaration.subroutine.perl
+#                                            ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                             ^ source.perl meta.declaration.subroutine.perl
+#                                              ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                                    ^ source.perl meta.declaration.subroutine.perl
+#                                                     ^^^^ source.perl
+>sub strdefault ($x = "a:b") { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#               ^ source.perl meta.declaration.subroutine.perl
+#                ^^ source.perl meta.declaration.subroutine.perl variable.other.scalar.perl
+#                  ^^^ source.perl meta.declaration.subroutine.perl
+#                     ^ source.perl meta.declaration.subroutine.perl string.quoted.double.perl
+#                      ^^^ source.perl meta.declaration.subroutine.perl string.quoted.double.perl
+#                         ^ source.perl meta.declaration.subroutine.perl string.quoted.double.perl
+#                          ^ source.perl meta.declaration.subroutine.perl
+#                           ^ source.perl meta.declaration.subroutine.perl
+#                            ^^^^ source.perl
+>sub argsattr ($$) :attr(1,2) :lvalue { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#             ^^^^ source.perl meta.declaration.subroutine.perl variable.parameter.prototype.perl
+#                 ^ source.perl meta.declaration.subroutine.perl
+#                  ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                   ^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                       ^^^^^ source.perl meta.declaration.subroutine.perl
+#                            ^ source.perl meta.declaration.subroutine.perl
+#                             ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                              ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                                    ^ source.perl meta.declaration.subroutine.perl
+#                                     ^^^^ source.perl
+>sub meth :method { }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^ source.perl meta.declaration.subroutine.perl
+#         ^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#          ^^^^^^ source.perl meta.declaration.subroutine.perl entity.other.attribute-name.perl
+#                ^ source.perl meta.declaration.subroutine.perl
+#                 ^^^^ source.perl
+>sub labelled { BODY: goto BODY; }
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^^^^ source.perl meta.declaration.subroutine.perl
+#             ^^^^^^^^ source.perl
+#                     ^^^^ source.perl keyword.control.perl
+#                         ^^^^^^^^^ source.perl
 >
