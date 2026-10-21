@@ -1593,6 +1593,61 @@ fn context_rows() -> Vec<MatrixRow> {
     ] {
         rows.push(prototype_word_row(id, family, word));
     }
+    // Signature defaults are expressions: quote-like operators inside them
+    // keep their quote tokens even though the lexer window is the same
+    // parenthesised region (#13919 review control).
+    rows.push(row(
+        "q.signature_default_quote",
+        OperatorFamily::Q,
+        Spelling::Attached,
+        DelimiterFamily::PairedBrace,
+        SourceContext::Signature,
+        "sub f($x = q{hello}) { }",
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "f"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, "$x"),
+            spec(ExpectedKind::Operator, "="),
+            spec(ExpectedKind::QuoteSingle, "q{hello}"),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("signature default expressions keep quote operators (#13919)"),
+        &[Axis::SubroutineName],
+    ));
+    rows.push(row(
+        "m.signature_default_match",
+        OperatorFamily::M,
+        Spelling::Attached,
+        DelimiterFamily::UnpairedSlash,
+        SourceContext::Signature,
+        "sub f($x = m/ab/) { }",
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "f"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, "$x"),
+            spec(ExpectedKind::Operator, "="),
+            spec(ExpectedKind::RegexMatch, "m/ab/"),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("signature default expressions keep quote operators (#13919)"),
+        &[Axis::SubroutineName],
+    ));
     rows.push(row(
         "q.signature_scalar_not_quote",
         OperatorFamily::Q,
@@ -1658,8 +1713,7 @@ fn hash_key(
 }
 
 fn prototype_word_row(id: &'static str, operator: OperatorFamily, word: &'static str) -> MatrixRow {
-    let source: &'static str =
-        Box::leak(format!("sub named({word}) {{ 1 }}").into_boxed_str());
+    let source: &'static str = Box::leak(format!("sub named({word}) {{ 1 }}").into_boxed_str());
     row(
         id,
         operator,

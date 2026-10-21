@@ -2045,6 +2045,19 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth > 0 && matches!(next, ',' | '}' | ';')
     }
 
+    /// While the post-`sub` parenthesised window is open, a quote-like word
+    /// whose would-be delimiter is a prototype payload character or a window
+    /// terminator is prototype text, not an operator (#13919). A genuine
+    /// quote delimiter (`{`, `/`, `'`, ...) still opens the operator, which
+    /// keeps signature default expressions (`sub f($x = q{hello})`) intact:
+    /// payload words are only ever followed by payload or terminator
+    /// characters, never by a quote delimiter.
+    #[inline]
+    fn prototype_payload_candidate(&self, candidate: char) -> bool {
+        self.in_prototype
+            && matches!(candidate, ')' | ';' | ',' | '$' | '@' | '%' | '&' | '*' | '\\' | '+' | '_')
+    }
+
     /// q-family quote words still open inside subscripts (`@h{qw/a b/}`).
     /// `m` opens only when the next char is a real delimiter, not a key
     /// boundary (`$h{m}` vs `$h->{scalar m/foo/}`). `s`/`tr`/`y` use the
@@ -2080,7 +2093,6 @@ impl<'a> PerlLexer<'a> {
             let follows_sigil_prefix = self.immediately_follows_sigil_prefix(start);
             if !follows_sigil_prefix
                 && !self.after_arrow
-                && !self.in_prototype
                 && ch == 's'
                 && self.peek_char(1) == Some('\'')
             {
@@ -2088,7 +2100,6 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_substitution(start);
             } else if !follows_sigil_prefix
                 && !self.after_arrow
-                && !self.in_prototype
                 && ch == 'y'
                 && self.peek_char(1) == Some('\'')
             {
@@ -2096,7 +2107,6 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_transliteration(start);
             } else if !follows_sigil_prefix
                 && !self.after_arrow
-                && !self.in_prototype
                 && ch == 't'
                 && self.peek_char(1) == Some('r')
                 && self.peek_char(2) == Some('\'')
@@ -2161,12 +2171,9 @@ impl<'a> PerlLexer<'a> {
 
             // Check for substitution/transliteration operators
             // Skip if after '->'  -- these are method names, not operators.
-            // Inside a prototype the spelling is payload text, never an
-            // operator (#13919).
             if !self.after_sub
                 && !self.after_arrow
                 && !follows_sigil_prefix
-                && !self.in_prototype
                 && matches!(text, "s" | "tr" | "y")
             {
                 let (candidate, char_after_next, has_gap) =
@@ -2185,6 +2192,7 @@ impl<'a> PerlLexer<'a> {
                         && !is_fat_arrow
                         && !is_filetest_s
                         && !self.hash_subscript_bare_key_boundary(next)
+                        && !self.prototype_payload_candidate(next)
                         && !substitution_disallows_whitespace
                         && (!has_gap
                             || is_paired_delim
@@ -2214,8 +2222,7 @@ impl<'a> PerlLexer<'a> {
             // Quote-like spellings inside a prototype are payload text:
             // they must surface as identifiers so the parser classifies the
             // parenthesised text as a prototype, not a signature (#13919).
-            let prototype_quote_word =
-                self.in_prototype && quote_handler::is_quote_operator(text);
+            let prototype_quote_word = self.in_prototype && quote_handler::is_quote_operator(text);
             let token_type = if is_keyword_fast(text) && !prototype_quote_word {
                 // Check for special keywords that affect lexer mode
                 match text {
@@ -2244,7 +2251,6 @@ impl<'a> PerlLexer<'a> {
                     op if !self.after_sub
                         && !self.after_arrow
                         && !follows_sigil_prefix
-                        && !self.in_prototype
                         && quote_handler::is_quote_operator(op)
                         && self.quote_operator_word_opens_here(op) =>
                     {
@@ -2292,6 +2298,7 @@ impl<'a> PerlLexer<'a> {
                                 && !is_fat_arrow
                                 && !is_filetest_s
                                 && !is_hash_subscript_bare_key_boundary
+                                && !self.prototype_payload_candidate(next)
                                     && (!has_gap
                                         || is_paired_delim
                                         || is_quote_char
