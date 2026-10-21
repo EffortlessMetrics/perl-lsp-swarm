@@ -333,7 +333,7 @@ fn word_suffix_end(source: &str, position: usize) -> usize {
     let Some(rest) = source.get(position..) else { return position };
     let mut end = position;
     for (offset, ch) in rest.char_indices() {
-        if !is_completion_identifier_char(ch) {
+        if !(ch.is_alphanumeric() || ch == '_') {
             break;
         }
         end = position + offset + ch.len_utf8();

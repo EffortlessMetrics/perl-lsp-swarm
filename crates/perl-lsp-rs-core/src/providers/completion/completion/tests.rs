@@ -463,13 +463,41 @@ fn test_in_file_function_completion_mid_token_replaces_whole_token()
 }
 
 #[test]
-fn word_suffix_end_stops_at_non_ascii_identifier_char() {
-    // Suffix scanning must agree with `is_completion_identifier_char`
-    // (ASCII), not Unicode alphanumeric: `é` is not part of the token.
-    let source = "register\u{e9}rest";
-    assert_eq!(word_suffix_end(source, 3), 3 + "ister".len());
+fn word_suffix_end_covers_unicode_identifier_suffix() {
+    // Suffix scanning must match the Unicode prefix scan in `word_prefix`
+    // (`is_alphanumeric` + `_`): `é` is part of the token, so a cursor
+    // after `caf` in `café` must extend over the whole token.
+    let source = "caf\u{e9}";
+    assert_eq!(word_suffix_end(source, 3), source.len());
     assert_eq!(word_suffix_end(source, source.len()), source.len());
-    assert_eq!(word_suffix_end(source, 0), "register".len());
+    assert_eq!(word_suffix_end(source, 0), source.len());
+    // The scan still stops at a non-identifier boundary.
+    let spaced = "caf\u{e9} rest";
+    assert_eq!(word_suffix_end(spaced, 3), "caf\u{e9}".len());
+}
+
+/// Mid-token in-file function completion for a Unicode name must replace
+/// the whole token; otherwise applying `café()` after `caf` leaves a
+/// stray `é` (#18123).
+#[test]
+fn test_in_file_function_completion_unicode_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "sub caf\u{e9} { }\ncaf\u{e9};\n";
+    let cursor = code.rfind("caf\u{e9};").ok_or("call site missing")? + 3; // after `caf`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "caf\u{e9}")
+        .ok_or("café in-file function completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "caf\u{e9}", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(applied, "sub caf\u{e9} { }\ncaf\u{e9}();\n");
+    Ok(())
 }
 
 #[test]
