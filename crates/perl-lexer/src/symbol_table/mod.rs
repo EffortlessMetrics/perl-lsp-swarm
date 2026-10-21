@@ -387,6 +387,11 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             break;
         }
 
+        // While the guard is armed, a code line ending in a bare `/` is the
+        // close of the possible body it was guarding, not a fresh undecided
+        // opener: it must not re-arm the guard, or the genuine POD opener
+        // after a closed multiline bare regex would be refused (#17441).
+        let was_armed = state.possible_bare_regex_body;
         let ends_with_bare_slash = scan_code_line(
             input,
             line_start,
@@ -396,8 +401,10 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             &mut nullaries,
             hints,
         );
-        state.possible_bare_regex_body =
-            ends_with_bare_slash && state.quote == QuoteState::Code && state.quote_like.is_none();
+        state.possible_bare_regex_body = ends_with_bare_slash
+            && !was_armed
+            && state.quote == QuoteState::Code
+            && state.quote_like.is_none();
         line_start = next_line_start;
     }
 
@@ -1366,6 +1373,35 @@ mod tests {
             "my $r = /\n=cut\n/;\nsub real { }\nreal /x/;\n",
             &["real"],
             &[],
+        );
+    }
+
+    #[test]
+    fn regex_closing_line_does_not_rearm_the_pod_guard() {
+        // #17441: the line that closes a multiline bare regex also ends in
+        // a bare `/`, but it is the close of the possible body, not a fresh
+        // undecided opener. It must not re-arm the guard: the genuine
+        // `=pod` after it opens POD, so `fake` stays off the table and its
+        // later slash keeps the undeclared-name division path. (Custom
+        // assertions: the fixture contains a genuine RegexMatch token, so
+        // the shared helper's stream-wide no-regex check cannot apply; the
+        // slash checks are scoped to the appended site.)
+        let source = "my $r = /\nfoo/\n=pod\nsub fake { }\n=cut\nfake / 2;\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("fake"), "leaked unknown sub \"fake\" from {source:?}");
+
+        let with_slash = format!("{source}fake /x/;\n");
+        let tokens = tokens_with_table(&with_slash, LocalSymbolTable::scan_subs(&with_slash));
+        let site = source.len();
+        assert!(
+            tokens.iter().any(|t| t.start >= site && matches!(t.token_type, TokenType::Division)),
+            "fake lost the division path at its slash site; tokens: {tokens:?}"
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| t.start >= site && matches!(t.token_type, TokenType::RegexMatch)),
+            "fake took the regex path at its slash site; tokens: {tokens:?}"
         );
     }
 
