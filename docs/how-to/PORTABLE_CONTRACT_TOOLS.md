@@ -79,21 +79,21 @@ Outside Nix, this Bash recipe activates the official
 [gh 2.101.0 release](https://github.com/cli/cli/releases/tag/v2.101.0) for the
 current **Linux amd64** session. The SHA-256 is the Linux amd64 archive row in
 the release's [official checksums](https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_checksums.txt).
-Verification must succeed before extraction and execution.
+Verification must succeed before extraction and execution. The command chain
+stops on failure without changing the current shell's options.
 
 ```bash
-set -euo pipefail
-gh_review_dir="$(mktemp -d)"
+gh_review_dir="$(mktemp -d)" &&
 curl --fail --location \
   https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_amd64.tar.gz \
-  --output "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz"
+  --output "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz" &&
 printf '%s  %s\n' \
   '9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8' \
-  "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz" | sha256sum --check --strict -
+  "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz" | sha256sum --check --strict - &&
 tar -xzf "$gh_review_dir/gh_2.101.0_linux_amd64.tar.gz" \
-  -C "$gh_review_dir" gh_2.101.0_linux_amd64/bin/gh
-export PATH="$gh_review_dir/gh_2.101.0_linux_amd64/bin:$PATH"
-command -v gh
+  -C "$gh_review_dir" gh_2.101.0_linux_amd64/bin/gh &&
+export PATH="$gh_review_dir/gh_2.101.0_linux_amd64/bin:$PATH" &&
+command -v gh &&
 gh --version
 ```
 
