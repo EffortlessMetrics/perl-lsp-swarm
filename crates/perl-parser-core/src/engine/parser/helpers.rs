@@ -1130,13 +1130,6 @@ impl<'a> Parser<'a> {
         match token.kind() {
             TokenKind::Regex | TokenKind::Substitution | TokenKind::Transliteration => {
                 let geometry = quote_parser::extract_regex_family_geometry(text, token.start())?;
-                let body = if !geometry.pattern.is_closed() {
-                    &geometry.pattern
-                } else {
-                    geometry.replacement.as_ref().filter(|replacement| !replacement.is_closed())?
-                };
-                let relative = body.opening_delimiter_range.start.checked_sub(token.start())?;
-                let open = text.get(relative..)?.chars().next()?;
                 let operator = match geometry.operator {
                     quote_parser::RegexFamilyOperator::BareMatch => "m",
                     quote_parser::RegexFamilyOperator::Match => "m",
@@ -1145,10 +1138,35 @@ impl<'a> Parser<'a> {
                     quote_parser::RegexFamilyOperator::Transliteration => "tr",
                     quote_parser::RegexFamilyOperator::TransliterationAlias => "y",
                 };
+                // The unclosed body decides the message: an unclosed first
+                // body is the pattern; an unclosed or absent second body of
+                // `s`/`tr`/`y` is the replacement (perl names the
+                // replacement in both cases). A closed one-body `m`/`qr`
+                // has `replacement: None` legitimately and stays silent.
+                let (body, is_replacement) = if !geometry.pattern.is_closed() {
+                    (&geometry.pattern, false)
+                } else if let Some(replacement) = geometry.replacement.as_ref() {
+                    if replacement.is_closed() {
+                        return None;
+                    }
+                    (replacement, true)
+                } else if matches!(
+                    geometry.operator,
+                    quote_parser::RegexFamilyOperator::Substitution
+                        | quote_parser::RegexFamilyOperator::Transliteration
+                        | quote_parser::RegexFamilyOperator::TransliterationAlias
+                ) {
+                    (&geometry.pattern, true)
+                } else {
+                    return None;
+                };
+                let relative = body.opening_delimiter_range.start.checked_sub(token.start())?;
+                let open = text.get(relative..)?.chars().next()?;
                 Some(ParseError::unterminated_quote_like_error(
                     operator,
                     quote_parser::get_closing_delimiter(open),
                     token.start(),
+                    is_replacement,
                 ))
             }
             TokenKind::QuoteSingle
@@ -1174,10 +1192,33 @@ impl<'a> Parser<'a> {
                     operator,
                     quote_parser::get_closing_delimiter(open),
                     token.start(),
+                    false,
                 ))
             }
             _ => None,
         }
+    }
+
+    /// Terminator diagnostic for a term-position `s`/`tr` token whose
+    /// unclosed body opens with a paired delimiter (`s{foo}{bar`).
+    ///
+    /// Unpaired bodies keep the strict primary-arm diagnostic that
+    /// existing tests own (`$x =~ s/foo/;`), so this returns `None` for
+    /// them and for absent replacements.
+    fn unterminated_paired_quote_like_error(token: &Token) -> Option<ParseError> {
+        let text = token.text.as_ref();
+        let geometry = quote_parser::extract_regex_family_geometry(text, token.start())?;
+        let body = if !geometry.pattern.is_closed() {
+            &geometry.pattern
+        } else {
+            geometry.replacement.as_ref().filter(|replacement| !replacement.is_closed())?
+        };
+        let relative = body.opening_delimiter_range.start.checked_sub(token.start())?;
+        let open = text.get(relative..)?.chars().next()?;
+        if quote_parser::get_closing_delimiter(open) == open {
+            return None;
+        }
+        Self::unterminated_quote_like_error(token)
     }
 
     /// Expect a closing delimiter, recovering gracefully if missing.
@@ -1205,7 +1246,9 @@ impl<'a> Parser<'a> {
         // follows, infer the closer at EOF or another recovery boundary,
         // and otherwise synchronize forward to this frame's closer (leaving
         // an outer frame's closer unconsumed) so bounded content cannot
-        // strand a later valid closer as a stray token.
+        // strand a later valid closer as a stray token. Synchronization
+        // stops at the first later statement without consuming it, so a
+        // declaration after a bounded `qw(...)` survives in the AST.
         let unterminated = self.tokens.peek().ok().and_then(Self::unterminated_quote_like_error);
         if let Some(error) = unterminated {
             self.record_error(error);
@@ -1226,6 +1269,15 @@ impl<'a> Parser<'a> {
                         return Ok(());
                     }
                     _ => {
+                        // A later statement is not bounded quote-like
+                        // content: infer this frame's closer and leave the
+                        // statement for the enclosing program parser so its
+                        // declarations and references survive in the AST.
+                        if self.is_delimiter_recovery_point() {
+                            self.record_inserted_closer(kind);
+                            self.deferred_orphan_closers.push(kind);
+                            return Ok(());
+                        }
                         self.consume_token()?;
                         skipped += 1;
                         if skipped >= 100 {
@@ -1246,6 +1298,20 @@ impl<'a> Parser<'a> {
             self.peek_kind().map(|k| k.display_name()).unwrap_or("end of input"),
             pos,
         ))
+    }
+
+    /// Consume the current token when it is the real closer for a frame
+    /// whose closer was already inferred at a later statement boundary.
+    fn consume_deferred_orphan_closer(&mut self) -> ParseResult<bool> {
+        let Some(kind) = self.peek_kind() else { return Ok(false) };
+        let Some(position) =
+            self.deferred_orphan_closers.iter().rposition(|&pending| pending == kind)
+        else {
+            return Ok(false);
+        };
+        self.deferred_orphan_closers.remove(position);
+        self.consume_token()?;
+        Ok(true)
     }
 
     fn record_inserted_closer(&mut self, kind: TokenKind) {

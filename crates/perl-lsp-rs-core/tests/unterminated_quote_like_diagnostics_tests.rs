@@ -75,6 +75,35 @@ fn unterminated_q_after_term_publishes_pl1008_at_operator() {
 }
 
 #[test]
+fn missing_s_replacement_after_term_publishes_pl1008_replacement() {
+    let source = "my @x = ['a' s{foo}];";
+    let diagnostics = compatibility_diagnostics(source);
+    assert_no_cascade(&diagnostics);
+    let published = with_code(&diagnostics, "PL1008");
+    assert_eq!(published.len(), 1, "exactly one PL1008 expected: {diagnostics:#?}");
+    assert!(
+        published[0].message.contains("Substitution replacement not terminated"),
+        "message must name the replacement: {:?}",
+        published[0].message
+    );
+    assert_eq!(published[0].range.0, source.find("s{foo}").unwrap_or(0));
+}
+
+#[test]
+fn unclosed_tr_replacement_publishes_pl1008_replacement() {
+    let source = "my $x = tr{foo}{bar;";
+    let diagnostics = compatibility_diagnostics(source);
+    assert_no_cascade(&diagnostics);
+    let published = with_code(&diagnostics, "PL1008");
+    assert_eq!(published.len(), 1, "exactly one PL1008 expected: {diagnostics:#?}");
+    assert!(
+        published[0].message.contains("Transliteration replacement not terminated"),
+        "message must name the replacement: {:?}",
+        published[0].message
+    );
+}
+
+#[test]
 fn closed_regex_list_element_publishes_no_pl1008() {
     let source = "my @x = ['a', m/foo/];";
     let diagnostics = compatibility_diagnostics(source);

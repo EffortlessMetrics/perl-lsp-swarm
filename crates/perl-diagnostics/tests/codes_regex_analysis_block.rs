@@ -28,6 +28,8 @@ fn unterminated_quote_like_messages_map_to_pl1008() {
         "Can't find string terminator \"]\" anywhere before EOF",
         "Substitution pattern not terminated",
         "Transliteration pattern not terminated",
+        "Substitution replacement not terminated",
+        "Transliteration replacement not terminated",
     ] {
         assert_eq!(
             DiagnosticCode::from_message(message),

@@ -6,7 +6,18 @@
 //! for the enclosing bracket.
 
 use perl_parser_core::error::ParseError;
-use perl_parser_core::{Parser, TokenKind, TokenStream};
+use perl_parser_core::{NodeKind, Parser, TokenKind, TokenStream};
+
+fn collect_var_names(node: &perl_parser_core::Node, out: &mut Vec<String>) {
+    if let NodeKind::VariableDeclaration { variable, .. } = &node.kind
+        && let NodeKind::Variable { name, .. } = &variable.kind
+    {
+        out.push(name.clone());
+    }
+    for child in node.children() {
+        collect_var_names(child, out);
+    }
+}
 
 fn diagnostics(source: &str) -> Vec<ParseError> {
     Parser::new(source).parse_with_recovery().diagnostics
@@ -233,6 +244,101 @@ fn bounded_qw_after_term_recovers_to_real_bracket() {
         "Can't find string terminator \")\" anywhere before EOF",
         source.find("qw").unwrap_or(0),
     );
+}
+
+#[test]
+fn bounded_qw_after_term_preserves_later_declaration() {
+    // The `qw(` token stops before `my`; the later declaration is a real
+    // statement, not qw content, and must survive in the AST.
+    let source = "my @x = ['a' qw(foo bar\nmy $y = 1;];";
+    assert_terminator(
+        source,
+        "Can't find string terminator \")\" anywhere before EOF",
+        source.find("qw").unwrap_or(0),
+    );
+    let output = Parser::new(source).parse_with_recovery();
+    let mut vars = Vec::new();
+    collect_var_names(&output.ast, &mut vars);
+    assert!(vars.contains(&"y".to_string()), "$y must survive recovery, got vars {vars:?}");
+    assert!(vars.contains(&"x".to_string()), "$x/@x must survive recovery, got vars {vars:?}");
+}
+
+#[test]
+fn missing_s_replacement_after_term_names_replacement() {
+    let source = "my @x = ['a' s{foo}];";
+    assert_terminator(
+        source,
+        "Substitution replacement not terminated",
+        source.find("s{foo}").unwrap_or(0),
+    );
+}
+
+#[test]
+fn missing_tr_replacement_after_term_names_replacement() {
+    let source = "my @x = ['a' tr{foo}];";
+    assert_terminator(
+        source,
+        "Transliteration replacement not terminated",
+        source.find("tr{foo}").unwrap_or(0),
+    );
+}
+
+#[test]
+fn missing_s_replacement_at_eof_names_replacement() {
+    let source = "my @x = ['a' s{foo}";
+    assert_terminator(
+        source,
+        "Substitution replacement not terminated",
+        source.find("s{foo}").unwrap_or(0),
+    );
+}
+
+#[test]
+fn missing_tr_replacement_at_eof_names_replacement() {
+    let source = "my @x = ['a' tr{foo}";
+    assert_terminator(
+        source,
+        "Transliteration replacement not terminated",
+        source.find("tr{foo}").unwrap_or(0),
+    );
+}
+
+#[test]
+fn unclosed_s_replacement_names_replacement_not_pattern() {
+    let source = "my $x = s{foo}{bar;";
+    assert_terminator(
+        source,
+        "Substitution replacement not terminated",
+        source.find("s{foo}").unwrap_or(0),
+    );
+}
+
+#[test]
+fn unclosed_tr_replacement_names_replacement_not_pattern() {
+    let source = "my $x = tr{foo}{bar;";
+    assert_terminator(
+        source,
+        "Transliteration replacement not terminated",
+        source.find("tr{foo}").unwrap_or(0),
+    );
+}
+
+#[test]
+fn unclosed_s_replacement_after_term_names_replacement() {
+    let source = "my @x = ['a' s{foo}{bar];";
+    assert_terminator(
+        source,
+        "Substitution replacement not terminated",
+        source.find("s{foo}").unwrap_or(0),
+    );
+}
+
+#[test]
+fn closed_s_and_tr_after_term_stay_clean() {
+    assert_no_blocking("my @x = ['a', s{foo}{bar}];");
+    assert_no_blocking("my @x = ['a', tr{a}{b}];");
+    assert_no_blocking("my $x = s/foo/bar/;");
+    assert_no_blocking("my $x = tr/a/b/;");
 }
 
 #[test]

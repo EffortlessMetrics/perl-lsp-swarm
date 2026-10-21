@@ -535,7 +535,9 @@ impl DiagnosticCode {
         if contains_diagnostic_phrase(&msg_lower, "search pattern not terminated")
             || contains_diagnostic_phrase(&msg_lower, "can't find string terminator")
             || contains_diagnostic_phrase(&msg_lower, "substitution pattern not terminated")
+            || contains_diagnostic_phrase(&msg_lower, "substitution replacement not terminated")
             || contains_diagnostic_phrase(&msg_lower, "transliteration pattern not terminated")
+            || contains_diagnostic_phrase(&msg_lower, "transliteration replacement not terminated")
         {
             Some(Self::RegexUnterminatedQuoteLike)
         } else if contains_diagnostic_phrase(

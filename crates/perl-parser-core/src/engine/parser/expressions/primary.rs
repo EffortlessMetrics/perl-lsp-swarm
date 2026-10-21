@@ -435,6 +435,38 @@ impl<'a> Parser<'a> {
 
             TokenKind::Substitution => {
                 let token = self.advance_token()?;
+                if let Some(error) = Self::unterminated_paired_quote_like_error(&token) {
+                    self.record_error(error);
+                    let (pattern, replacement, modifiers) =
+                        quote_parser::extract_regex_family_geometry(&token.text, token.start())
+                            .map(|geometry| {
+                                (
+                                    geometry.pattern.text,
+                                    geometry
+                                        .replacement
+                                        .map(|replacement| replacement.text)
+                                        .unwrap_or_default(),
+                                    geometry.modifiers.text,
+                                )
+                            })
+                            .unwrap_or_default();
+                    let has_embedded_code = modifiers.contains('e');
+                    let charged_operand = self.charge_node(
+                        NodeKind::Identifier { name: String::from("$_") },
+                        SourceLocation { start: token.start(), end: token.start() },
+                    )?;
+                    return self.charge_node(
+                        NodeKind::Substitution {
+                            expr: Box::new(charged_operand),
+                            pattern,
+                            replacement,
+                            modifiers,
+                            has_embedded_code,
+                            negated: false,
+                        },
+                        SourceLocation { start: token.start(), end: token.end() },
+                    );
+                }
                 // Use strict validation that rejects invalid modifiers
                 let (pattern, replacement, modifiers) =
                     quote_parser::extract_substitution_parts_strict(&token.text).map_err(
@@ -499,6 +531,36 @@ impl<'a> Parser<'a> {
 
             TokenKind::Transliteration => {
                 let token = self.advance_token()?;
+                if let Some(error) = Self::unterminated_paired_quote_like_error(&token) {
+                    self.record_error(error);
+                    let (search, replace, modifiers) =
+                        quote_parser::extract_regex_family_geometry(&token.text, token.start())
+                            .map(|geometry| {
+                                (
+                                    geometry.pattern.text,
+                                    geometry
+                                        .replacement
+                                        .map(|replacement| replacement.text)
+                                        .unwrap_or_default(),
+                                    geometry.modifiers.text,
+                                )
+                            })
+                            .unwrap_or_default();
+                    let charged_operand = self.charge_node(
+                        NodeKind::Identifier { name: String::from("$_") },
+                        SourceLocation { start: token.start(), end: token.start() },
+                    )?;
+                    return self.charge_node(
+                        NodeKind::Transliteration {
+                            expr: Box::new(charged_operand),
+                            search,
+                            replace,
+                            modifiers,
+                            negated: false,
+                        },
+                        SourceLocation { start: token.start(), end: token.end() },
+                    );
+                }
                 let (search, replace, modifiers) =
                     quote_parser::extract_transliteration_parts_strict(&token.text).map_err(
                         |e| {
