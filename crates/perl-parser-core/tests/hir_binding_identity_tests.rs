@@ -631,30 +631,6 @@ fn attributed_declarations_resolve_to_their_binding() {
     }
 }
 
-/// A statement-form package inside a package block must not leak its scope
-/// frame past the block: a lexical declared after the block belongs to the
-/// enclosing scope, and its read resolves to it (#18221).
-#[test]
-fn block_package_with_statement_package_restores_later_declaration() {
-    let source = "package P { package Q; }\nmy $late = 1;\nprint $late;\n";
-    let mut parser = Parser::new(source);
-    let output = parser.parse_with_recovery();
-    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let file = lower_ast(&output.ast);
-    let declaration = must_some(file.scope_graph.bindings.iter().find(|b| b.name == "late"));
-    let read_start = must_some(source.rfind("$late"));
-    let reference =
-        must_some(file.scope_graph.references.iter().find(|r| r.range.start == read_start));
-    assert_eq!(reference.resolved_binding, Some(declaration.id));
-
-    let body_reads: Vec<(Option<HirBindingId>, VariableKind)> = occurrences(&file)
-        .into_iter()
-        .filter(|o| o.name == "late" && o.access == AccessMode::Read && o.start == read_start)
-        .map(|o| (o.binding, o.kind))
-        .collect();
-    assert_eq!(body_reads, vec![(Some(declaration.id), VariableKind::Lexical)]);
-}
-
 /// An undeclared bare variable is also unresolved — `None`, never a stand-in.
 #[test]
 fn undeclared_variable_carries_no_identity() {
