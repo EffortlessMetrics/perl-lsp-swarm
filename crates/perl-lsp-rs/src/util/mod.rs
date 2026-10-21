@@ -463,28 +463,26 @@ pub fn extract_module_reference_extended(text: &str, cursor_pos: usize) -> Optio
 pub fn position_to_offset(content: &str, line: u32, character: u32) -> Option<usize> {
     let mut cur_line = 0u32;
     let mut col_utf16 = 0u32;
-    let mut prev_was_cr = false;
+    let mut chars = content.char_indices().peekable();
 
-    for (byte_idx, ch) in content.char_indices() {
+    while let Some((byte_idx, ch)) = chars.next() {
         // Check if we've reached the target position
         if cur_line == line && col_utf16 == character {
             return Some(byte_idx);
         }
 
-        // Handle line endings and character counting
+        // Handle line endings and character counting. Lines are
+        // LF-delimited: a CRLF pair is one separator whose row start is
+        // after the LF, and a bare CR is ordinary content (#17925).
         match ch {
             '\n' => {
-                if !prev_was_cr {
-                    // Standalone \n
-                    cur_line += 1;
-                    col_utf16 = 0;
-                }
-                // If prev_was_cr, this \n is part of CRLF and we already incremented the line
-            }
-            '\r' => {
-                // Always increment line on \r (whether solo or part of CRLF)
                 cur_line += 1;
                 col_utf16 = 0;
+            }
+            '\r' if chars.peek().is_some_and(|(_, next)| *next == '\n') => {
+                // CR half of a CRLF pair: not a position of its own and
+                // not content. The LF consumed next advances the row, so
+                // column zero of the next row resolves after both bytes.
             }
             _ => {
                 // Regular character - only count UTF-16 units on target line
@@ -493,8 +491,6 @@ pub fn position_to_offset(content: &str, line: u32, character: u32) -> Option<us
                 }
             }
         }
-
-        prev_was_cr = ch == '\r';
     }
 
     // Handle end of file position
@@ -614,6 +610,39 @@ mod tests {
         assert_eq!(byte_to_utf16_col(line, 0), 0);
         assert_eq!(byte_to_utf16_col(line, 1), 1);
         assert_eq!(byte_to_utf16_col(line, 5), 3);
+    }
+
+    #[test]
+    fn position_to_offset_crlf_row_start_is_after_separator() {
+        // #17925: the next row starts after the complete CRLF separator,
+        // not on its LF byte.
+        assert_eq!(position_to_offset("a\r\nb", 1, 0), Some(3));
+        assert_eq!(position_to_offset("a\r\nb", 1, 1), Some(4));
+        // A terminal CRLF leaves an empty final row starting at EOF.
+        assert_eq!(position_to_offset("a\r\n", 1, 0), Some(3));
+        // Non-BMP before the CRLF does not shift the boundary.
+        assert_eq!(position_to_offset("😀\r\nx", 1, 0), Some(6));
+        assert_eq!(position_to_offset("😀\r\nx", 1, 1), Some(7));
+    }
+
+    #[test]
+    fn position_to_offset_bare_cr_is_content() {
+        // #17925: lines are LF-delimited; a bare CR is ordinary content.
+        assert_eq!(position_to_offset("a\rb", 0, 2), Some(2));
+        assert_eq!(position_to_offset("a\rb", 0, 3), Some(3));
+        assert_eq!(position_to_offset("a\rb", 1, 0), None);
+    }
+
+    #[test]
+    fn position_to_offset_refusals_and_lf_controls() {
+        assert_eq!(position_to_offset("", 0, 0), Some(0));
+        assert_eq!(position_to_offset("ab\ncd", 1, 0), Some(3));
+        assert_eq!(position_to_offset("ab\n", 1, 0), Some(3));
+        // Invalid row/column and surrogate-interior requests refuse.
+        assert_eq!(position_to_offset("ab", 1, 0), None);
+        assert_eq!(position_to_offset("ab", 0, 3), None);
+        assert_eq!(position_to_offset("😀", 0, 1), None);
+        assert_eq!(position_to_offset("😀", 0, 2), Some(4));
     }
 
     #[test]
