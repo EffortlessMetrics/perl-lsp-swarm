@@ -125,24 +125,24 @@ fn require_extract_variable_edit(result: &Value, target_uri: &str) -> TestResult
     // Both current providers use the generic refactor.extract kind, including
     // subroutine extraction. Match their variable titles without requiring a
     // future typed-kind change or accepting a subroutine-only response.
-    let action = actions
+    let valid_action = actions
         .iter()
-        .find(|action| {
+        .filter(|action| {
             action["title"].as_str().is_some_and(|title| {
                 title == "Extract variable"
                     || title == "Extract to variable"
                     || (title.starts_with("Extract '") && title.ends_with("' to variable"))
             })
         })
-        .ok_or_else(|| format!("Should return an Extract variable action; got {result}"))?;
-    if action.get("disabled").is_some_and(|disabled| !disabled.is_null()) {
-        return Err(format!("Extract variable action should be enabled; got {action}").into());
-    }
-    let edit =
-        action.get("edit").ok_or("Extract variable action should include a workspace edit")?;
-    if !workspace_edit_has_text_edits(edit, target_uri) {
+        .any(|action| {
+            action.get("disabled").is_none_or(Value::is_null)
+                && action
+                    .get("edit")
+                    .is_some_and(|edit| workspace_edit_has_text_edits(edit, target_uri))
+        });
+    if !valid_action {
         return Err(format!(
-            "Extract variable action should include at least one well-formed text edit for {target_uri}; got {edit}"
+            "Should return an enabled Extract variable action with at least one well-formed text edit for {target_uri}; got {result}"
         )
         .into());
     }
@@ -226,6 +226,15 @@ fn extract_variable_response_requires_action_and_target_edit() -> TestResult {
             require_extract_variable_edit(&result, target_uri).is_err(),
             "{case} must not satisfy the extract-variable behavioral oracle: {result}"
         );
+        // Invalid matching actions must not hide a later valid variable edit.
+        if let Some(actions) = result.as_array() {
+            let mut with_valid_action = actions.clone();
+            with_valid_action.push(action(
+                "Extract variable",
+                json!({"changes": {(target_uri): [text_edit.clone()]}}),
+            ));
+            require_extract_variable_edit(&Value::Array(with_valid_action), target_uri)?;
+        }
     }
     Ok(())
 }
