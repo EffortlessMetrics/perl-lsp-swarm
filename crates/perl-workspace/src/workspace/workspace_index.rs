@@ -8645,7 +8645,7 @@ sub call_on_other {
         let index = WorkspaceIndex::new();
         let uri = "file:///P.pm";
         let code = "package P;\nsub foo { return 1; }\nsub caller {\n    my $cb = \\&foo;\n    my $result_ref = \\&foo();\n    foo();\n    return $cb;\n}\n1;\n";
-        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+        must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
 
         let key = SymbolKey {
             pkg: Arc::from("P"),
