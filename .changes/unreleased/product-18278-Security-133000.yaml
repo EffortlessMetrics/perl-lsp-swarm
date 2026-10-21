@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Security
+body: "The xtask Vim host toolchain's archive extraction no longer admits an entry name that resolves outside the extraction destination on Windows. The path guard used Path::is_absolute, which is false for a rooted-but-prefixless name such as /etc/x, while Path::join still resolves that name against the drive root; the admission predicate is now Path::has_root and the resolved target is asserted to stay inside the destination. The symlink rejection also now runs before the directory branch, so a symlink-mode entry whose name ends in a separator can no longer be admitted as a directory and skip the rejection. The file is additionally admitted to the Windows CI scope, because the proof for that guard only discriminates on Windows."
+time: 2026-10-21T13:30:00Z
+custom:
+  PR: "18278"
+  Slug: xtask-archive-entry-path-containment
+  Breaking: "no"
