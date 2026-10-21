@@ -497,13 +497,14 @@ fn detect_source_filter(
 struct RegexHeredocDetector;
 
 /// A heredoc declaration: `<<EOF`, `<<'EOF'`, `<<"EOF"`, ``<<`CMD` ``,
-/// `<<\EOF`, and the `<<~` indented forms. A bare or backslash delimiter must
-/// be adjacent to `<<` — whitespace before an unquoted word makes it a left
-/// shift, not a heredoc — while the quoted forms may be separated. Perl has no
-/// `<<-` heredoc; that spelling is shell and is deliberately not matched.
+/// `<<\EOF`, the digit-led forms `<<123` / `<<123abc`, and the `<<~` indented
+/// forms. A bare or backslash delimiter must be adjacent to `<<` — whitespace
+/// before an unquoted word makes it a left shift, not a heredoc — while the
+/// quoted forms may be separated. Perl has no `<<-` heredoc; that spelling is
+/// shell and is deliberately not matched.
 static HEREDOC_DECL_PATTERN: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
-        r#"<<(~?)(?:\s*'([^'\n]*)'|\s*"([^"\n]*)"|\s*`([^`\n]*)`|\\([A-Za-z_]\w*)|([A-Za-z_]\w*))"#,
+        r#"<<(~?)(?:\s*'([^'\n]*)'|\s*"([^"\n]*)"|\s*`([^`\n]*)`|\\([A-Za-z_]\w*)|([A-Za-z_]\w*)|([0-9]\w*))"#,
     )
 });
 
@@ -532,6 +533,14 @@ static HEREDOC_DECL_PATTERN: LazyLock<Result<Regex, regex::Error>> = LazyLock::n
 /// backstops the rest, since an unmatched operand masks nothing.
 fn heredoc_is_in_term_position(code: &str, start: usize, braces: &HashMap<usize, usize>) -> bool {
     let prefix = code[..start].trim_end();
+    // A postfix `++`/`--` completes its operand, so a following `<<` shifts
+    // it: verified on perl 5.42, `$v++ << 3` yields `8` for `$v = 1`, and
+    // `$v++ <<FOO` shifts by the numified bareword rather than opening a
+    // heredoc. Without this the trailing `+`/`-` reads as a binary operator
+    // still awaiting its right operand.
+    if prefix.ends_with("++") || prefix.ends_with("--") {
+        return false;
+    }
     let Some(previous) = prefix.chars().next_back() else {
         return true; // start of file: nothing to shift
     };
@@ -704,7 +713,7 @@ fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
                 return None;
             }
             let indented = capture.get(1).is_some_and(|tilde| !tilde.as_str().is_empty());
-            let delimiter = (2..=6).find_map(|group| capture.get(group))?.as_str();
+            let delimiter = (2..=7).find_map(|group| capture.get(group))?.as_str();
             (!delimiter.is_empty()).then_some((whole.start(), indented, delimiter))
         })
         .collect();
@@ -852,7 +861,7 @@ fn blank_ranges(scan_code: &str, ranges: &[(usize, usize)]) -> String {
 ///
 /// Candidates come from the two existing declaration shapes:
 /// [`HEREDOC_DECL_PATTERN`] for the literal spellings (`<<EOF`, `<<'EOF'`,
-/// `<<"EOF"`, `<<\EOF`, and the `<<~` forms) and
+/// `<<"EOF"`, `<<\EOF`, `<<123`, and the `<<~` forms) and
 /// [`DYNAMIC_DELIMITER_PATTERN`] for the dynamic spellings (`<<$var`,
 /// `<<${expr}`). Every candidate must also sit in term position, so a shift
 /// whose operand merely spells like a delimiter (`1<<FOO`, `$y<<FOO`) is
