@@ -2203,7 +2203,7 @@ dependencies = [
 name = "perl-subprocess-runtime"
 version = "0.17.0"
 dependencies = [
- "perl-tdd-support",
+ "perl-test-must",
 ]
 
 [[package]]
