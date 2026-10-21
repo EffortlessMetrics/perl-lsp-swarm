@@ -504,12 +504,21 @@ mod tests {
 
         for item in &items {
             let fallback = must_some(item.insert_text_format.plain_fallback());
+            // Literal Perl escapes (the `\n` in printfh) are literal text
+            // and must survive (#18212); what must not survive is snippet
+            // machinery: placeholder braces and tab stops.
             assert!(
-                !fallback.contains("${") && !fallback.contains("$0") && !fallback.contains('\\'),
+                !fallback.contains("${") && !fallback.contains("$0"),
                 "`{}` fallback is not literal text: {fallback}",
                 item.label
             );
         }
+        let printfh = must_some(items.iter().find(|i| i.label == "printfh"));
+        assert_eq!(
+            printfh.insert_text_format.plain_fallback(),
+            Some("print $fh \"data\\n\";"),
+            "printfh fallback must keep its literal Perl escape"
+        );
     }
 
     /// The reported case, pinned end to end.
