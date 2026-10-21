@@ -3964,11 +3964,30 @@ impl<'a> BodyBuilder2<'a> {
     /// [`HirRegexTarget::DefaultTopic`] so that an implicit topic stays
     /// distinguishable from an explicitly written `$_ =~ /x/`.
     fn lower_regex_target(&mut self, expr: &Node) -> HirRegexTarget {
+        self.lower_regex_target_with_access(expr, false)
+    }
+
+    /// Lower a regex-family target, marking a mutated place target as
+    /// read-modify-write (#14639). A mutating `s///` or `tr///` (no `/r`)
+    /// reads its target, transforms it, and writes it back, which is the
+    /// same occurrence shape as compound assignment; the occurrence must
+    /// say so, or write queries cannot see the reassignment. `/r` forms
+    /// and non-place targets stay plain reads: `/r` provably does not
+    /// write, and a non-place target is not a valid lvalue in Perl.
+    fn lower_regex_target_mutating(&mut self, expr: &Node, mutates: bool) -> HirRegexTarget {
+        self.lower_regex_target_with_access(expr, mutates)
+    }
+
+    fn lower_regex_target_with_access(&mut self, expr: &Node, rmw: bool) -> HirRegexTarget {
         if is_synthesized_default_topic(expr) {
             return HirRegexTarget::DefaultTopic;
         }
         let (kind, ast_kind) = classify_regex_target(expr);
-        let id = self.lower_expr(expr);
+        let id = if rmw && kind == RegexTargetKind::Place {
+            self.lower_expr_as_place(expr, AccessMode::ReadModifyWrite)
+        } else {
+            self.lower_expr(expr)
+        };
         HirRegexTarget::Bound { expr: id, kind, ast_kind }
     }
 
@@ -5000,7 +5019,7 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::Substitution { expr, modifiers, has_embedded_code, negated, .. } => {
-                let target = self.lower_regex_target(expr);
+                let target = self.lower_regex_target_mutating(expr, !modifiers.contains('r'));
                 self.alloc_expr(
                     HirExpr::Substitution(HirSubstitution {
                         target,
@@ -5020,7 +5039,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::Transliteration { expr, modifiers, negated, .. } => {
                 // tr/// is a character-list operator, not a regex: it carries
                 // no analysis anchor and must never reach pattern analysis.
-                let target = self.lower_regex_target(expr);
+                let target = self.lower_regex_target_mutating(expr, !modifiers.contains('r'));
                 self.alloc_expr(
                     HirExpr::Transliteration(HirTransliteration {
                         target,
