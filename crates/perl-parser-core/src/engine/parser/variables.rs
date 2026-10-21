@@ -2380,11 +2380,18 @@ mod inline_expression_tests {
         // the outer source, not byte 5 (inside the line-1 comment).
         let source = "# 💖\nmy $value = *{last FOO::BAR};";
         assert_eq!(source.find("FOO::BAR"), Some(26));
+        // The outer parse surfaces the adopted failure as its own error:
+        // its location must be the outer byte, not the inner offset.
         let mut parser = Parser::new(source);
-        let _ = parser.parse();
-        let locations: Vec<usize> = parser.errors().iter().filter_map(|e| e.location()).collect();
-        if locations.contains(&26) {
-            return Ok(());
+        match parser.parse() {
+            Err(error) => {
+                assert_eq!(error.location(), Some(26), "outer error must point at FOO::BAR")
+            }
+            Ok(_) => {
+                let locations: Vec<usize> =
+                    parser.errors().iter().filter_map(|e| e.location()).collect();
+                assert!(locations.contains(&26), "outer diagnostics lack byte 26: {locations:?}");
+            }
         }
         // The adoption seam itself must also carry outer coordinates.
         match parse_inline_expression(
@@ -2394,7 +2401,7 @@ mod inline_expression_tests {
         ) {
             Err(failure) if failure.error.location() == Some(26) => Ok(()),
             Err(failure) => Err(format!(
-                "expected outer byte 26, got {:?} (outer diagnostics: {locations:?})",
+                "expected outer byte 26 at the adoption seam, got {:?}",
                 failure.error.location()
             )
             .into()),
