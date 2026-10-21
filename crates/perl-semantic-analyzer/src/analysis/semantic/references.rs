@@ -66,6 +66,27 @@ impl SemanticAnalyzer {
             && reference.location.start < candidate.location.start
     }
 
+    /// Whether a use sits inside a lexical candidate's own declaring
+    /// statement (an initializer RHS), so it cannot bind to that candidate
+    /// either: it binds to an outer declaration or the package global.
+    fn inside_declaring_statement(
+        &self,
+        candidate: &Symbol,
+        reference: &crate::symbol::SymbolReference,
+    ) -> bool {
+        if !matches!(candidate.declaration.as_deref(), Some("my" | "state")) {
+            return false;
+        }
+        let statement_end = self
+            .symbol_table
+            .declaration_statement_ends
+            .get(&candidate.location.start)
+            .copied()
+            .unwrap_or(candidate.location.end);
+        candidate.location.start <= reference.location.start
+            && reference.location.start < statement_end
+    }
+
     /// The declaration a use actually binds to: the first candidate the
     /// reference is visible from and not shadowed away from (#18115).
     pub(super) fn bound_symbol<'a>(
@@ -81,12 +102,14 @@ impl SemanticAnalyzer {
                     && !self.is_shadowed_by_inner_declaration(candidate, reference)
             })
             .or_else(|| {
-                // Never resurrect a lexical the use textually precedes:
-                // it binds outward or to the package global instead.
-                symbols
-                    .iter()
-                    .copied()
-                    .find(|candidate| !self.not_yet_effective(candidate, reference))
+                // Never resurrect a lexical the use textually precedes or
+                // whose own declaring statement contains the use (an
+                // initializer RHS): it binds outward or to the package
+                // global instead.
+                symbols.iter().copied().find(|candidate| {
+                    !self.not_yet_effective(candidate, reference)
+                        && !self.inside_declaring_statement(candidate, reference)
+                })
             })
     }
 
@@ -348,6 +371,33 @@ mod tests {
         assert_eq!(inner_refs.len(), 1, "only print use; got {inner_refs:?}");
         let print_use = code.rfind("$x").unwrap_or_else(|| panic!("print use"));
         assert!(inner_refs.iter().any(|loc| loc.start == print_use));
+    }
+
+    #[test]
+    fn find_all_references_from_initializer_rhs_without_outer_does_not_bind_inner() {
+        // Querying the RHS itself: with no outer lexical it binds to the
+        // package global, so it must not resolve to the inner declaration
+        // or collect that declaration's later use.
+        let code = "{ my $x = $x; print $x; }";
+        let analyzer = analyze(code);
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        let refs = analyzer.find_all_references(rhs, false);
+        let print_use = code.rfind("$x").unwrap_or_else(|| panic!("print use"));
+        assert!(
+            !refs.iter().any(|loc| loc.start == print_use),
+            "RHS must not bind to the inner lexical; got {refs:?}"
+        );
+        assert!(refs.is_empty(), "RHS binds the package global; got {refs:?}");
+    }
+
+    #[test]
+    fn find_all_references_from_initializer_rhs_binds_outer() {
+        let code = "my $x = 1;\n{ my $x = $x; print $x; }\n";
+        let analyzer = analyze(code);
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        let refs = analyzer.find_all_references(rhs, false);
+        assert_eq!(refs.len(), 1, "outer RHS only; got {refs:?}");
+        assert!(refs.iter().any(|loc| loc.start == rhs));
     }
 
     #[test]
