@@ -380,6 +380,16 @@ fn unconditional_tests(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn facade_contract_uses_libtest(manifest: &str) -> bool {
+    let manifest: toml::Value = toml::from_str(manifest).expect("parse facade manifest");
+    manifest.get("test").and_then(toml::Value::as_array).is_none_or(|targets| {
+        targets.iter().all(|target| {
+            target.get("name").and_then(toml::Value::as_str) != Some("core_facade_contract")
+                || target.get("harness").and_then(toml::Value::as_bool) != Some(false)
+        })
+    })
+}
+
 #[test]
 fn moved_core_facade_tests_remain_unconditionally_selected() {
     let root = repo_root();
@@ -387,6 +397,11 @@ fn moved_core_facade_tests_remain_unconditionally_selected() {
     let source = fs::read_to_string(&path).expect("read facade-owned contract");
     let expected: BTreeSet<_> = CORE_FACADE_TESTS.iter().map(|name| name.to_string()).collect();
     assert!(expected.is_subset(&unconditional_tests(&source)), "all ten migrated tests must run");
+    // Cargo metadata's `test: true` does not mean libtest is enabled:
+    // harness=false can run an empty main while ignoring every #[test].
+    let manifest = fs::read_to_string(root.join("crates/perl-lsp-rs/Cargo.toml"))
+        .expect("read facade manifest");
+    assert!(facade_contract_uses_libtest(&manifest), "the moved tests require the libtest harness");
 
     // Cargo discovery is the selection authority used by the existing required
     // unit_routed_full `cargo test --tests` gate. No feature opt-in is allowed.
@@ -428,4 +443,14 @@ fn migrated_test_selection_guard_rejects_disabled_proof() {
     }
     assert!(unconditional_tests(&format!("#![cfg(feature = \"hidden\")]\n{test}")).is_empty());
     assert!(unconditional_tests("fn facade_contract() {}\n").is_empty());
+}
+
+#[test]
+fn migrated_test_selection_guard_rejects_disabled_harness() {
+    assert!(facade_contract_uses_libtest("[package]\nname = 'perl-lsp-rs'\n"));
+    let target = "[[test]]\nname = 'core_facade_contract'\n";
+    assert!(facade_contract_uses_libtest(target));
+    assert!(facade_contract_uses_libtest(&format!("{target}harness = true\n")));
+    assert!(!facade_contract_uses_libtest(&format!("{target}harness = false\n")));
+    assert!(facade_contract_uses_libtest("[[test]]\nname = 'unrelated'\nharness = false\n"));
 }
