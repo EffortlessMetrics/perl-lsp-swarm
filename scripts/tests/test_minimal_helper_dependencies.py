@@ -10,18 +10,22 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def resolved_test_dependencies(package):
-    result = subprocess.run(
-        [
-            "cargo", "tree", "--manifest-path", str(ROOT / "Cargo.toml"),
-            "-p", package, "--locked", "--offline", "--edges", "normal,build,dev",
-            "--prefix", "none", "--format", "{p}",
-        ],
-        cwd=ROOT,
-        env=dict(os.environ, RUSTUP_AUTO_INSTALL="0"),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "cargo", "tree", "--manifest-path", str(ROOT / "Cargo.toml"),
+                "-p", package, "--locked", "--offline", "--edges", "normal,build,dev",
+                "--prefix", "none", "--format", "{p}",
+            ],
+            cwd=ROOT,
+            env=dict(os.environ, RUSTUP_AUTO_INSTALL="0"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"cargo tree failed for {package}:\n{error.stderr}") from error
     return {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
 
 
