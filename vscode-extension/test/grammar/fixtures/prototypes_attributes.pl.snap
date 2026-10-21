@@ -99,11 +99,12 @@
 #     ^ source.perl
 #      ^ source.perl keyword.operator.assignment.perl
 #       ^^ source.perl
-#         ^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
-#            ^^^^ source.perl meta.declaration.subroutine.perl
-#                ^ source.perl meta.declaration.subroutine.perl constant.numeric.integer.perl
-#                 ^ source.perl meta.declaration.subroutine.perl
-#                  ^^ source.perl
+#         ^^^ source.perl keyword.other.perl
+#            ^ source.perl
+#             ^^ source.perl keyword.operator.fat-comma.perl
+#               ^ source.perl
+#                ^ source.perl constant.numeric.integer.perl
+#                 ^^^ source.perl
 >print "sub fake ($$) :lvalue";
 #^^^^^ source.perl support.function.builtin.perl
 #     ^ source.perl

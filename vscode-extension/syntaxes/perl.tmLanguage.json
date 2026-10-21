@@ -194,7 +194,7 @@
         },
         "subroutine-declaration": {
             "name": "meta.declaration.subroutine.perl",
-            "begin": "(?<!->)\\b(sub)\\b",
+            "begin": "(?<!->)(?<!\\{)\\b(sub)\\b(?!\\s*(?:=>|\\}))",
             "beginCaptures": {
                 "1": {
                     "name": "keyword.other.perl"
