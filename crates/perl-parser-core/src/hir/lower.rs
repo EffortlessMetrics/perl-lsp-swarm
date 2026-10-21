@@ -1603,6 +1603,11 @@ impl Lowerer {
         match self.bareword_context {
             BarewordContext::ModuleRequest => BarewordRole::ModuleRequest,
             BarewordContext::MethodReceiver => BarewordRole::MethodReceiver,
+            // A sigil-prefixed indirect receiver (`new $class`) is a dynamic
+            // constructor target, not a static class bareword (#15031).
+            BarewordContext::IndirectObject if is_sigil_prefixed(name) => {
+                BarewordRole::DynamicIndirectObject
+            }
             BarewordContext::IndirectObject => BarewordRole::IndirectObject,
             BarewordContext::HashKey => BarewordRole::HashKey,
             BarewordContext::Expression if name.contains("::") => BarewordRole::QualifiedName,
@@ -3010,9 +3015,9 @@ fn is_sigil_prefixed(value: &str) -> bool {
 /// and an earlier revision that relied on it was wrong: `new $class` is a legal
 /// dynamic indirect constructor whose receiver arrives here as a real
 /// `Identifier { name: "$class" }` spanning the characters the author typed.
-/// Discarding that would drop a source-backed fact. (Whether such a receiver
-/// should be classified as a *bareword* at all is a separate defect, #15031;
-/// this predicate deliberately leaves that behavior unchanged.)
+/// Discarding that would drop a source-backed fact. (Such a receiver is
+/// still recorded; `classify_bareword` gives it the distinct
+/// `DynamicIndirectObject` role rather than the static one, #15031.)
 ///
 /// The sigil test is defence in depth rather than a proven discriminator. A finite
 /// probe over malformed and recovery-path inputs found no zero-width
