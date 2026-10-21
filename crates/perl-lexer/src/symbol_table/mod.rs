@@ -407,7 +407,7 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             hints,
         );
         state.possible_bare_regex_body = scan.trailing_bare_slash
-            && (!was_armed || scan.bare_slashes % 2 == 0)
+            && (!was_armed || scan.bare_slashes.is_multiple_of(2))
             && state.quote == QuoteState::Code
             && state.quote_like.is_none();
         line_start = next_line_start;
