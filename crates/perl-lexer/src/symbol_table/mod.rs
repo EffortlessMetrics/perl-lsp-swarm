@@ -391,9 +391,11 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
         // close of the possible body it was guarding, not a fresh undecided
         // opener: it must not re-arm the guard, or the genuine POD opener
         // after a closed multiline bare regex would be refused (#17441).
-        // The exception is a line that closes the body and then opens a
-        // fresh bare regex: with at least two code-state bare slashes, the
-        // trailing one is the new opener and the guard stays armed.
+        // Bare slashes on the line toggle the open/closed state seeded
+        // from the armed state, so the guard survives the line exactly
+        // when an even number of code-state bare slashes leaves the
+        // trailing slash as a fresh opener: closer + opener stays armed,
+        // while closer + a complete regex (`closer /.../`) disarms.
         let was_armed = state.possible_bare_regex_body;
         let scan = scan_code_line(
             input,
@@ -405,7 +407,7 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             hints,
         );
         state.possible_bare_regex_body = scan.trailing_bare_slash
-            && (!was_armed || scan.bare_slashes >= 2)
+            && (!was_armed || scan.bare_slashes % 2 == 0)
             && state.quote == QuoteState::Code
             && state.quote_like.is_none();
         line_start = next_line_start;
@@ -1430,6 +1432,18 @@ mod tests {
         // after the second pattern stays on the table.
         let source = "my $a = /\nfoo/; my $b = /\n=pod\n/;\nsub real { }\n";
         let table = LocalSymbolTable::scan_subs(source);
+        assert!(table.is_known_sub("real"), "`real` missing from {source:?}");
+    }
+
+    #[test]
+    fn complete_regex_after_closer_disarms_the_pod_guard() {
+        // A line that closes the guarded body and then contains a complete
+        // bare regex ends in a closer, not an opener (three bare slashes):
+        // the guard disarms, so the genuine `=pod` after it opens POD and
+        // `fake` stays off the table.
+        let source = "my $a = /\nfoo/ . /bar/\n=pod\nsub fake { }\n=cut\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("fake"), "leaked unknown sub \"fake\" from {source:?}");
         assert!(table.is_known_sub("real"), "`real` missing from {source:?}");
     }
 
