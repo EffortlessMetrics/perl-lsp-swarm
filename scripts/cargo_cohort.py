@@ -1115,7 +1115,8 @@ class Cohort:
             alias = group['remaining'][0]
             os.unlink(alias['path'].name, dir_fd=alias['parent'])
             group['remaining'].pop(0)
-            current = facts(os.fstat(group['fd']))
+            held = os.fstat(group['fd'])
+            current = facts(held)
             previous = group['identity']
             if current[:4] != previous[:4] or current[5] != previous[5] or current[-1] != previous[-1] - 1:
                 raise Denied('alias inode changed beyond this owned unlink')
@@ -1124,7 +1125,16 @@ class Cohort:
             removed.append(alias['path'])
             # Unlink and receipt append are not transactional. Failure stops the
             # group and preserves remaining aliases; prior removals stay removed.
-            self._persist(self._receipt_stream, {'event': 'reclaimed', 'path': str(alias['path'])})
+            # Removing the final name does not free an inode while this
+            # captured descriptor remains open. Record the existing fstat
+            # observation, not a claim of reclaimed space or a peak bound.
+            # No extra scan, persist/fsync, close or lifecycle step is added.
+            self._persist(self._receipt_stream, {
+                'event': 'reclaimed', 'path': str(alias['path']),
+                'held_inode': {'device': held.st_dev, 'inode': held.st_ino,
+                               'allocated_bytes': held.st_blocks * 512,
+                               'link_count': held.st_nlink, 'descriptor_held': True,
+                               'open_unlinked_bytes': held.st_blocks * 512 if held.st_nlink == 0 else 0}})
         del self.records[path]
         return removed
 
