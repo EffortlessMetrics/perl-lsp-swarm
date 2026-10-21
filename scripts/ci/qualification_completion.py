@@ -32,7 +32,7 @@ def build(adapter, proof: VerifiedQualification, *, check_run_id=None):
         raise Refused('completion native H/app/check/run/attempt association mismatch')
     adapter.current(plan)
     run = adapter.api.get(f'{adapter.root}/actions/runs/{proof.run_id}')
-    if (not adapter.matches(run, plan) or run['run_attempt'] != proof.run_attempt
+    if (not adapter.matches(run, plan, run_id=proof.run_id) or run['run_attempt'] != proof.run_attempt
             or run.get('status') != 'in_progress' or run.get('conclusion') is not None):
         raise Refused('completion native control attempt moved during readback')
     manifest.update(result=proof.result, check_run_id=check_run_id)
