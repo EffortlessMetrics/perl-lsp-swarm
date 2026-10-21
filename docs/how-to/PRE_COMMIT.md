@@ -46,7 +46,8 @@ coverage; gate-policy changes need selection and receipt coverage. Reuse current
 and admit expensive checks for their actual workload during the coding session.
 
 This advice uses the captured staged tree, ignores unstaged edits, and survives in the
-existing `AgentReceipt.advisories`. Docs-only changes receive no semantic-check coaching.
+existing `AgentReceipt.advisories` and the default hook’s human-readable summary.
+Docs-only changes receive no semantic-check coaching.
 The advisory does not infer a test suite from filenames or launch tests or a compiler.
 Pre-push and CI retain their existing proof responsibilities.
 

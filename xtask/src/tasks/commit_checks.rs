@@ -272,13 +272,13 @@ fn staged_tree_identity_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
     let semantic_paths: Vec<&str> = changed
         .iter()
         .map(String::as_str)
-        .filter(|path| {
+        .filter(|&path| {
             path.ends_with(".rs")
                 || matches!(
                     Path::new(path).file_name().and_then(|name| name.to_str()),
                     Some("Cargo.toml" | "Cargo.lock")
                 )
-                || *path == ".ci/gate-policy.yaml"
+                || path == ".ci/gate-policy.yaml"
         })
         .collect();
     let what_remains = if semantic_paths.is_empty() {
