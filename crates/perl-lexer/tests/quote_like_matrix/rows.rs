@@ -1648,6 +1648,66 @@ fn context_rows() -> Vec<MatrixRow> {
         Some("signature default expressions keep quote operators (#13919)"),
         &[Axis::SubroutineName],
     ));
+    for (id, family, delim, kind, word, quoted) in [
+        (
+            "qq.signature_default_quote",
+            OperatorFamily::Qq,
+            DelimiterFamily::PairedBrace,
+            ExpectedKind::QuoteDouble,
+            "qq",
+            "qq{hello}",
+        ),
+        (
+            "qw.signature_default_quote",
+            OperatorFamily::Qw,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::QuoteWords,
+            "qw",
+            "qw/a b/",
+        ),
+        (
+            "qx.signature_default_quote",
+            OperatorFamily::Qx,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::QuoteCommand,
+            "qx",
+            "qx/ls/",
+        ),
+        (
+            "qr.signature_default_quote",
+            OperatorFamily::Qr,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::QuoteRegex,
+            "qr",
+            "qr/ab/",
+        ),
+        (
+            "s.signature_default_substitution",
+            OperatorFamily::S,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::Substitution,
+            "s",
+            "s/a/b/",
+        ),
+        (
+            "tr.signature_default_transliteration",
+            OperatorFamily::Tr,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::Transliteration,
+            "tr",
+            "tr/a/b/",
+        ),
+        (
+            "y.signature_default_transliteration",
+            OperatorFamily::Y,
+            DelimiterFamily::UnpairedSlash,
+            ExpectedKind::Transliteration,
+            "y",
+            "y/a/b/",
+        ),
+    ] {
+        rows.push(signature_default_row(id, family, delim, kind, word, quoted));
+    }
     rows.push(row(
         "q.signature_scalar_not_quote",
         OperatorFamily::Q,
@@ -1737,6 +1797,44 @@ fn prototype_word_row(id: &'static str, operator: OperatorFamily, word: &'static
         Disposition::Clean,
         OracleExpectation::Skip,
         Some("prototype payload is preserved as an identifier for parser validation (#13919)"),
+        &[Axis::SubroutineName],
+    )
+}
+
+fn signature_default_row(
+    id: &'static str,
+    operator: OperatorFamily,
+    delimiter: DelimiterFamily,
+    kind: ExpectedKind,
+    word: &'static str,
+    quoted: &'static str,
+) -> MatrixRow {
+    let source: &'static str = Box::leak(format!("sub f($x = {quoted}) {{ }}").into_boxed_str());
+    let _ = word;
+    row(
+        id,
+        operator,
+        Spelling::Attached,
+        delimiter,
+        SourceContext::Signature,
+        source,
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "f"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, "$x"),
+            spec(ExpectedKind::Operator, "="),
+            spec(kind, quoted),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("signature default expressions keep quote operators (#13919)"),
         &[Axis::SubroutineName],
     )
 }

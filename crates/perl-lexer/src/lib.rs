@@ -2222,8 +2222,7 @@ impl<'a> PerlLexer<'a> {
             // Quote-like spellings inside a prototype are payload text:
             // they must surface as identifiers so the parser classifies the
             // parenthesised text as a prototype, not a signature (#13919).
-            let prototype_quote_word = self.in_prototype && quote_handler::is_quote_operator(text);
-            let token_type = if is_keyword_fast(text) && !prototype_quote_word {
+            let token_type = if is_keyword_fast(text) {
                 // Check for special keywords that affect lexer mode
                 match text {
                     "if" | "unless" | "while" | "until" | "for" | "foreach" | "grep" | "map"
