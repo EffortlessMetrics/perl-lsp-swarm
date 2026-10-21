@@ -402,6 +402,76 @@ fn test_workspace_method_completion_mid_token_replaces_whole_token()
     Ok(())
 }
 
+/// Mid-token in-file method completion must replace the whole method token.
+/// The in-file producer (`add_method_completions`, sort tier `1_`) wins the
+/// label dedup over the workspace producer, so its range must also extend to
+/// `suffix_end`; otherwise applying it duplicates the suffix (#18123).
+#[test]
+fn test_in_file_method_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub register { }\nmy $self = bless {}, 'Foo';\n$self->register;\nmy $obj = bless {}, 'Foo';\n$obj->register;\n";
+    for receiver in ["$self->register", "$obj->register"] {
+        let cursor = code.find(receiver).ok_or("call site missing")?
+            + receiver.find("->").ok_or("arrow missing")?
+            + 2
+            + 3;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new(&ast);
+        let completions = provider.get_completions(code, cursor);
+        let item = completions
+            .iter()
+            .find(|c| c.label == "register")
+            .ok_or("register in-file method completion missing")?;
+        let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+        assert_eq!(
+            &code[start..end],
+            "register",
+            "edit must cover the whole method token for {receiver}"
+        );
+        let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+        let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+        assert!(
+            !applied.contains("register()ister"),
+            "applied edit must not duplicate the suffix for {receiver}: {applied}"
+        );
+    }
+    Ok(())
+}
+
+/// Mid-token in-file function completion must replace the whole token, for
+/// the same dedup reason as the method case (#18123).
+#[test]
+fn test_in_file_function_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub register { }\nregister;\n";
+    let cursor = code.rfind("register;").ok_or("call site missing")? + 3; // after `reg`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "register")
+        .ok_or("register in-file function completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "register", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(applied, "package Foo;\nsub register { }\nregister();\n");
+    Ok(())
+}
+
+#[test]
+fn word_suffix_end_stops_at_non_ascii_identifier_char() {
+    // Suffix scanning must agree with `is_completion_identifier_char`
+    // (ASCII), not Unicode alphanumeric: `é` is not part of the token.
+    let source = "register\u{e9}rest";
+    assert_eq!(word_suffix_end(source, 3), 3 + "ister".len());
+    assert_eq!(word_suffix_end(source, source.len()), source.len());
+    assert_eq!(word_suffix_end(source, 0), "register".len());
+}
+
 #[test]
 fn dash_trigger_after_multibyte_receiver_keeps_char_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
