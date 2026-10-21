@@ -173,6 +173,8 @@ impl Lowerer {
                     } else {
                         ScopeKind::Block
                     };
+                let enclosing_stack_len = self.scope_stack.len();
+                let enclosing_package = self.package_context.clone();
                 let scope_id =
                     self.enter_scope(scope_kind, node.location, self.package_context.clone());
                 self.push_item(
@@ -186,7 +188,26 @@ impl Lowerer {
                 for statement in statements {
                     self.visit(statement, confidence);
                 }
+                // Statement-form packages push a scope frame that outlives
+                // their own visit; it ends with this block. Reap only those
+                // package frames (other visitors pair their own exits) and
+                // restore the enclosing package context, or the package
+                // frame leaks and enclosing exits pop the wrong frames
+                // (#18221).
+                while self.scope_stack.len() > enclosing_stack_len + 1 {
+                    let top = self.current_scope();
+                    let top_is_package = self
+                        .scope_graph
+                        .scopes
+                        .get(top.index() as usize)
+                        .is_some_and(|frame| frame.kind == ScopeKind::Package);
+                    if !top_is_package {
+                        break;
+                    }
+                    self.exit_scope();
+                }
                 self.exit_scope();
+                self.package_context = enclosing_package;
             }
             NodeKind::Package { name, name_span, block } => {
                 let package_scope =
