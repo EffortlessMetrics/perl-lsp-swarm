@@ -64,8 +64,8 @@ Falsifiers first (S2): these are written red before any positive path.
 
 | # | Scenario | Kind | Test name | Invariant discharged |
 |---|---|---|---|---|
-| F1 | exact call + input `101` on a 100 boundary emits `Distinguishes` | negative | `f1_above_boundary_is_not_distinguishes` | no false `Distinguishes` |
-| F2 | exact call + input `100` emits `SameOutcome` | negative | `f2_boundary_input_is_not_same_outcome` | no false `SameOutcome` |
+| F1 | exact call + input `101` on a 100 boundary (`>=`→`>`) must be exactly `SameOutcome`, never `Distinguishes` | negative | `f1_above_boundary_is_not_distinguishes` | no false `Distinguishes`; asserts the exact positive result so an all-`Unknown` stub fails |
+| F2 | exact call + input `100` on the same boundary must be exactly `Distinguishes`, never `SameOutcome` | negative | `f2_boundary_input_is_not_same_outcome` | no false `SameOutcome`; asserts the exact positive result so an all-`Unknown` stub fails |
 | F3 | activation `Possible` treated as participation | negative | `f3_activation_possible_is_not_participation` | planes separate |
 | F4 | activation `Impossible` rewritten as `SameOutcome` | negative | `f4_activation_impossible_is_not_same_outcome` | planes separate |
 | F5 | one member of a mixed finite set makes the row exact | adversarial | `f5_mixed_set_never_first_member_exact` | whole-set rule |

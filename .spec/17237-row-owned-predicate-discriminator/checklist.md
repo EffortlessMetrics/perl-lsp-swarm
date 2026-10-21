@@ -50,7 +50,7 @@ Anything not on this list is not read.
 
 ### Step B1: Falsifiers first
 - **File:** `crates/perl-ripr-facts/tests/discriminator_participation.rs` (CREATE)
-- **Change:** F1–F10 from acceptance §Test-Grid, red against a stub that returns `Unknown`
+- **Change:** F1–F10 and H1–H3 from acceptance §Test-Grid. Red criterion, by kind: tests whose correct result is an exact participation (F1 expects `SameOutcome` for input 101, F2 expects `Distinguishes` for input 100) must fail against a stub that always returns `Unknown`. Guards whose correct result is `Unknown` (F3–F5, F8, F9, H2, H3) or a static prohibition (F10) pass against that stub by design, so they are shown red against a targeted faulty implementation or fixture mutation that commits the named error (for example: take the first member of a mixed set; read activation `Possible` as participation).
 - **Verify:** `cargo test -p perl-ripr-facts --all-targets --locked discriminator`
 
 ### Step B2: Fact type and identity
