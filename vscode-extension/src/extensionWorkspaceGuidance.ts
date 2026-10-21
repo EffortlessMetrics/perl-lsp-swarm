@@ -866,7 +866,7 @@ function serverAdvertisesAiActivation(client: {
   // the client never registers an inline completion provider, so no Enable
   // prompt.
   const provider = record.inlineCompletionProvider;
-  return provider !== undefined && provider !== false;
+  return provider !== undefined && provider !== false && provider !== null;
 }
 
 export async function suggestAiCompletionIfSupported(

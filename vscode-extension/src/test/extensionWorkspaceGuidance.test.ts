@@ -1475,6 +1475,7 @@ test('no journey when the server cannot display inline completions (#16585 revie
   for (const capabilities of [
     { experimental: { perlAiCompletionActivation: true } },
     { inlineCompletionProvider: false, experimental: { perlAiCompletionActivation: true } },
+    { inlineCompletionProvider: null, experimental: { perlAiCompletionActivation: true } },
   ]) {
     (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
       get: jest.fn(() => false),
