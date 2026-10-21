@@ -1250,13 +1250,12 @@ impl BodyLowerer {
             if let Some(HirExpr::Variable(v)) = body.expr(*expr)
                 && v.access == AccessMode::ReadModifyWrite
             {
+                // No source range means fail-closed, as in `lower_expr`:
+                // emit nothing rather than a Modify anchored at offset 0.
+                let Some(range) = body.source_map.expr_ranges.get(expr.0 as usize).copied() else {
+                    return;
+                };
                 let v = v.clone();
-                let range = body
-                    .source_map
-                    .expr_ranges
-                    .get(expr.0 as usize)
-                    .copied()
-                    .unwrap_or(crate::SourceLocation { start: 0, end: 0 });
                 self.lower_variable_modify(&v, op_text.to_string(), range, file);
                 return;
             }
