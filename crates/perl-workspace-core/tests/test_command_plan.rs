@@ -2356,13 +2356,10 @@ fn rejects_a_candidate_with_an_absolute_argv_element() -> Result<(), FixtureErro
     Ok(())
 }
 
-/// The absolute-path check is the load-bearing boundary guard for argv. When
-/// only the argv changes (and the fingerprint is recomputed to match), the
-/// validator reaches the absolute-path predicate directly. This pins that the
-/// absolute-path guard fires when it can, separate from the fingerprint
-/// mismatch that catches the same tamper when the fingerprint is left stale.
+/// Wire corruption with an unchanged fingerprint is refused. The module-local
+/// recomputed-identity control separately exercises the absolute-path predicate.
 #[test]
-fn absolute_path_in_argv_is_caught_when_fingerprint_is_recomputed() -> Result<(), FixtureError> {
+fn absolute_path_tamper_with_stale_fingerprint_is_refused() -> Result<(), FixtureError> {
     let (builder, _) = base_builder();
     let tool_input = accepted_input("tool.prove");
     let snapshot = builder
@@ -2373,13 +2370,7 @@ fn absolute_path_in_argv_is_caught_when_fingerprint_is_recomputed() -> Result<()
     let candidate = plan.candidates.first_mut().ok_or(FixtureError::Missing("candidate"))?;
     candidate.argv.push("/etc/passwd".to_string());
 
-    // The plan is now internally inconsistent: the stored fingerprint was
-    // computed without the absolute argv element, so validate() refuses on
-    // `FingerprintMismatch`. The semantic point this test pins is "the
-    // deserializer refuses a wire form containing an absolute path", not
-    // "the deserializer names the absolute-path predicate" — both answers
-    // are honest and either could fire depending on what else the tamper
-    // touched.
+    assert_eq!(plan.validate(), Err(TestCommandPlanValidationError::FingerprintMismatch));
     let encoded = serde_json::to_string(&plan)?;
     let decoded: Result<TestCommandPlan, _> = serde_json::from_str(&encoded);
     assert!(
@@ -2398,26 +2389,36 @@ fn absolute_path_in_argv_is_caught_when_fingerprint_is_recomputed() -> Result<()
 /// flags (`-l`, `-b`) and round-trips through `validate()` unchanged. The
 /// absolute-path check above is the load-bearing boundary guard for argv;
 /// the option-shaped invariant is owned by the construction path (see
-/// `TestRootArguments` and the planning-side argv guard at line 1267 of
-/// `test_command.rs`).
+/// `TestRootArguments` and the planning-side argv guard in `test_command.rs`).
 #[test]
 fn option_shaped_flags_round_trip_through_validate() -> Result<(), FixtureError> {
     let (builder, _) = base_builder();
     let tool_input = accepted_input("tool.prove");
+    let blib_input = accepted_input("include.blib");
     let snapshot = builder
         .with_input(tool_input.clone())
+        .with_input(blib_input.clone())
         .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .with_include_entry(IncludeEntry::new(
+            IncludeEntryRole::BlibLib,
+            path("/ws/blib/lib"),
+            blib_input.id.clone(),
+            0,
+        ))
         .build()?;
     let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
-    for candidate in &plan.candidates {
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    assert_eq!(prove.len(), 2, "both source and blib controls must be exercised");
+    for expected_flag in ["-l", "-b"] {
         assert!(
-            candidate.argv.iter().any(|argument| argument.starts_with('-')),
-            "the construction emits runner flags like `-l`; the validator must not reject them"
+            prove.iter().any(|candidate| candidate.argv.iter().any(|arg| arg == expected_flag))
         );
     }
-    let result = plan.validate();
-    assert!(result.is_ok(), "flags in argv must round-trip through validate(); got {result:?}");
+    let encoded = serde_json::to_string(&plan)?;
+    let decoded: TestCommandPlan = serde_json::from_str(&encoded)?;
+    assert_eq!(decoded, plan);
+    assert_eq!(decoded.validate(), Ok(()));
     Ok(())
 }
 
