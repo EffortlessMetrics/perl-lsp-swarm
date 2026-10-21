@@ -37,9 +37,18 @@ CASES = {'perl-dap': {'owner': 'dap_smoke_e2e.rs',
                         'explicit_pin_tests::absolute_candidate_missing_on_disk_fails_closed': ['test']}}}
 
 
+def registration_text(text):
+    # Ignore line-comment trivia without treating // inside Rust strings as a
+    # comment. Block comments are outside this fixed graph and rejected below.
+    tokens = r'''r(?P<hashes>\#{0,16})".*?"(?P=hashes)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])'|//[^\n]*'''
+    text = re.sub(tokens, lambda m: '' if m[0].startswith('//') else m[0], text, flags=re.S)
+    return '\n'.join(line.rstrip() for line in text.splitlines() if line.strip()) + '\n'
+
+
 def check_ownership(sources, package):
     contract = CASES[package]
     owner = contract['owner']
+    sources = {path: registration_text(text) for path, text in sources.items()}
     for path, text in sources.items():
         if re.search(r'(?:#\[\s*path\s*=\s*|include!\s*\(\s*)[r#]*"[^"]*common_self_tests', text):
             raise AssertionError(f'{package}: aliased self-test registration: {path}')
@@ -201,6 +210,20 @@ class CommonSelfTestOwnershipTests(unittest.TestCase):
                 sources[path] = '/*\n' + sources[path] + '\n*/\n'
                 with self.assertRaisesRegex(AssertionError, 'block comments require registration review'):
                     check_ownership(sources, package)
+
+    def test_comments_cannot_hide_disabling_attributes(self):
+        for package, contract in CASES.items():
+            for child in contract['modules']:
+                for case_attribute in [False, True]:
+                    for comment in [' // explanation', '\n// explanation\n']:
+                        sources = self.sources(package)
+                        path = 'common_self_tests/' + child
+                        anchor = '    #[test]' if case_attribute else '#[cfg(test)]'
+                        indent = '    ' if case_attribute else ''
+                        sources[path] = sources[path].replace(
+                            anchor, indent + '#[cfg(any())]' + comment + '\n' + anchor, 1)
+                        with self.assertRaisesRegex(AssertionError, 'registration attributes|identity/cfg/ignore'):
+                            check_ownership(sources, package)
 
 
 if __name__ == '__main__':
