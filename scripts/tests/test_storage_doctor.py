@@ -450,6 +450,94 @@ class DescriptorInventoryTests(unittest.TestCase):
         self.assertFalse(result["fingerprints_complete"])
         self.assertGreater(result["combined"]["observed_apparent_bytes"], 3)
 
+    def test_failed_fingerprint_reads_share_one_content_budget(self):
+        accepted = self.paths["target"] / "agent/.fingerprint/good/lib.json"
+        accepted.parent.mkdir(parents=True)
+        accepted.write_bytes(b"{}")
+        growing = [self.paths["build"] / f"triple/custom/.fingerprint/unit-{index}/lib.json"
+                   for index in range(4)]
+        for path in growing:
+            path.parent.mkdir(parents=True)
+        real_open, real_fdopen = os.open, os.fdopen
+        for allowance, grown_size, read_error in ((64, 66, False), (8, 3, False), (8, 3, True)):
+            with self.subTest(allowance=allowance, grown_size=grown_size, read_error=read_error):
+                for path in growing:
+                    path.write_bytes(b"{}")
+                opened_paths, read_sizes = {}, []
+
+                def open_file(path, *args, **kwargs):
+                    descriptor = real_open(path, *args, **kwargs)
+                    opened_paths[descriptor] = Path(path)
+                    return descriptor
+
+                class GrowingReader:
+                    def __init__(self, stream, path):
+                        self.stream, self.path = stream, path
+
+                    def fileno(self):
+                        return self.stream.fileno()
+
+                    def read(self, size):
+                        # Actual growth after the truthful opened-file stat,
+                        # immediately before the real bounded content read.
+                        if self.path in growing:
+                            self.path.write_bytes(b"{}" + b" " * (grown_size - 2))
+                        raw = self.stream.read(size)
+                        read_sizes.append(len(raw))
+                        if read_error and self.path in growing:
+                            raise OSError("SENSITIVE partial read failure")
+                        return raw
+
+                @contextmanager
+                def fdopen(descriptor, *args, **kwargs):
+                    with real_fdopen(descriptor, *args, **kwargs) as stream:
+                        yield GrowingReader(stream, opened_paths[descriptor])
+
+                with mock.patch.object(self.observer.os, "open", open_file), mock.patch.object(self.observer.os, "fdopen", fdopen):
+                    result = self.observer.inventory(self.paths, max_fingerprint_bytes=allowance)
+                self.assertGreater(sum(read_sizes), len(b"{}"))
+                self.assertLessEqual(sum(read_sizes), allowance + 1)
+                self.assertLess(len(read_sizes), len(growing) + 1)
+                self.assertEqual(result["status"], "NOT_PROVEN")
+                self.assertFalse(result["fingerprints_complete"])
+                self.assertFalse(result["inventory_complete"])
+                self.assertIn("entry_changed", result["resources"]["build"]["reasons"])
+                self.assertIsNone(result["resources"]["build"]["apparent_bytes"])
+                self.assertIsNone(result["combined"]["apparent_bytes"])
+                self.assertEqual(len(result["fingerprints"]), 1)
+                self.assertEqual(result["fingerprints"][0]["resource"], "target")
+                self.assertIn("fingerprint_unavailable_or_clipped", result["fingerprint_reasons"])
+                self.assertGreater(result["combined"]["observed_apparent_bytes"], 0)
+                self.assertNotIn("SENSITIVE", json.dumps(result))
+
+    def test_short_fingerprint_read_cannot_claim_complete_content(self):
+        payload = self.paths["build"] / "agent/.fingerprint/unit/lib.json"
+        payload.parent.mkdir(parents=True)
+        payload.write_bytes(b"{}    ")
+        real_fdopen = os.fdopen
+
+        class ShortReader:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def read(self, size):
+                return self.stream.read(min(size, 2))
+
+        @contextmanager
+        def fdopen(*args, **kwargs):
+            with real_fdopen(*args, **kwargs) as stream:
+                yield ShortReader(stream)
+
+        with mock.patch.object(self.observer.os, "fdopen", fdopen):
+            result = self.observer.inventory(self.paths)
+        self.assertFalse(result["fingerprints_complete"])
+        self.assertEqual(result["fingerprints"], [])
+        self.assertTrue(result["inventory_complete"])
+        self.assertEqual(result["combined"]["apparent_bytes"], 6)
+
     def test_unreadable_disappearing_and_zero_identity_never_report_empty_success(self):
         real_scandir = os.scandir
         def denied(path):

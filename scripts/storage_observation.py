@@ -66,7 +66,7 @@ def linked(metadata):
         getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
-def read_file(path, limit, *, descriptor=False):
+def read_file(path, limit, *, descriptor=False, charge_bytes=None):
     # Reuse admission's native path rules, including every link/junction ancestor.
     path = native_path(str(path))
     before = path.lstat()
@@ -77,16 +77,25 @@ def read_file(path, limit, *, descriptor=False):
     if before.st_size > limit:
         raise Unknown("input_clipped")
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
-    with os.fdopen(os.open(path, flags), "rb") as stream:
+    with os.fdopen(os.open(path, flags), "rb", buffering=0) as stream:
         opened = os.fstat(stream.fileno())
         # Windows path stat and handle stat can expose different change-time
         # fields. Compare their common identity/size/mtime, then compare each
         # API's full facts against itself before and after the read.
         if facts(opened)[:4] != facts(before)[:4]:
             raise Unknown("file_changed")
-        raw = stream.read(limit + 1)
+        raw = None
+        try:
+            raw = stream.read(limit + 1)
+        finally:
+            # Charge before stability/overflow validation. A failed read with
+            # an unknown partial count consumes its full request conservatively.
+            if charge_bytes is not None:
+                charge_bytes(limit + 1 if raw is None else len(raw))
         if facts(os.fstat(stream.fileno())) != facts(opened):
             raise Unknown("file_changed")
+        if len(raw) != opened.st_size:
+            raise Unknown("incomplete_file_read")
     if len(raw) > limit or facts(path.lstat()) != facts(before):
         raise Unknown("file_changed_or_clipped")
     return raw
@@ -166,6 +175,11 @@ def inventory(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
     combined = {}
     entries = 0
     fingerprint_bytes = 0
+
+    def charge_fingerprint_bytes(count):
+        nonlocal fingerprint_bytes
+        fingerprint_bytes += count
+
     deadline = time.monotonic() + max_seconds
     fingerprint_reasons = set()
     for name in RESOURCE_NAMES:
@@ -220,12 +234,13 @@ def inventory(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
                         errors.add("entry_changed")
                 elif (name in ("target", "build") and ".fingerprint" in path.relative_to(root).parts
                       and path.suffix == ".json"):
-                    if len(record["fingerprints"]) >= max_fingerprints:
+                    if (len(record["fingerprints"]) >= max_fingerprints
+                            or fingerprint_bytes >= max_fingerprint_bytes):
                         fingerprint_reasons.add("fingerprints_clipped")
                         continue
                     try:
-                        raw = read_file(path, max_fingerprint_bytes - fingerprint_bytes)
-                        fingerprint_bytes += len(raw)
+                        raw = read_file(path, max_fingerprint_bytes - fingerprint_bytes,
+                                        charge_bytes=charge_fingerprint_bytes)
                         data = decode(raw)
                         if not isinstance(data, dict):
                             raise Unknown("fingerprint_not_object")
@@ -239,6 +254,9 @@ def inventory(paths, *, max_entries=MAX_ENTRIES, max_depth=MAX_DEPTH,
                             "sha256": digest(raw), "hashes": hashes})
                     except (OSError, Denied, Unknown, ValueError):
                         fingerprint_reasons.add("fingerprint_unavailable_or_clipped")
+                    finally:
+                        if facts(path.lstat()) != facts(metadata):
+                            errors.add("entry_changed")
             except FileNotFoundError:
                 errors.add("missing_or_changed_entry")
             except (OSError, Denied, Unknown, ValueError):
