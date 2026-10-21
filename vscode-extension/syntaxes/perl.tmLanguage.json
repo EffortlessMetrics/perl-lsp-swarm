@@ -207,13 +207,36 @@
                 },
                 {
                     "name": "variable.parameter.prototype.perl",
-                    "match": "\\(\\s*(?:(?:[\\$@%_&+\\-\\*\\\\;]|\\[[\\$@%\\s]+\\])\\s*)*\\)"
+                    "match": "\\(\\s*(?:(?:[\\$@%_&+\\-\\*\\\\;]|\\[[\\$@%&*\\s]+\\])\\s*)*\\)"
                 },
                 {
                     "include": "#subroutine-signature"
                 },
                 {
-                    "match": "(?<!:)(:)(?!:)\\s*([A-Za-z_]\\w*)(\\([^)]*\\))?",
+                    "begin": "(?<!:)(:)(?!:)\\s*([A-Za-z_]\\w*)\\s*(\\()",
+                    "beginCaptures": {
+                        "1": {
+                            "name": "entity.other.attribute-name.perl"
+                        },
+                        "2": {
+                            "name": "entity.other.attribute-name.perl"
+                        }
+                    },
+                    "end": "\\)",
+                    "patterns": [
+                        {
+                            "include": "#comments"
+                        },
+                        {
+                            "include": "#strings"
+                        },
+                        {
+                            "include": "#subroutine-attribute-argument"
+                        }
+                    ]
+                },
+                {
+                    "match": "(?<!:)(:)(?!:)\\s*([A-Za-z_]\\w*)",
                     "captures": {
                         "1": {
                             "name": "entity.other.attribute-name.perl"
@@ -228,6 +251,21 @@
                 },
                 {
                     "include": "#numbers"
+                }
+            ]
+        },
+        "subroutine-attribute-argument": {
+            "begin": "\\(",
+            "end": "\\)",
+            "patterns": [
+                {
+                    "include": "#subroutine-attribute-argument"
+                },
+                {
+                    "include": "#comments"
+                },
+                {
+                    "include": "#strings"
                 }
             ]
         },

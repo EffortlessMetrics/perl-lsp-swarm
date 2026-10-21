@@ -106,6 +106,7 @@
 
 use perl_lexer::{PerlLexer, StringPart, TokenType};
 use perl_parser_core::ast::{Node, NodeKind};
+use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
@@ -317,34 +318,79 @@ fn loop_control_label_offsets(
 /// source text in order. An attribute is painted only when its base name
 /// is found preceded (allowing whitespace) by a single `:` or, for
 /// colon-less continuations, directly after the previous attribute; any
-/// mismatch fails closed and paints nothing for that attribute.
+/// mismatch fails closed and paints nothing for that attribute. Candidates
+/// inside parentheses (signature/prototype/attribute arguments), inside
+/// non-code regions (comments, strings, regexes), or after the header end
+/// are not attributes and are skipped by a whole UTF-8 char. Every scan
+/// step is charged to `traversal`.
 fn attribute_name_spans(
     text: &str,
     node_start: usize,
     node_end: usize,
     attributes: &[String],
-) -> Vec<(usize, usize)> {
+    source_regions: &SourceRegionIndex,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<Vec<(usize, usize)>, TraversalStop> {
     let mut spans = Vec::new();
     let Some(node_text) = text.get(node_start..node_end) else {
-        return spans;
+        return Ok(spans);
     };
+    // Attributes live only in the header: before the body `{` or the
+    // forward-declaration `;` at paren depth zero. Scanning the whole node
+    // would let signature defaults, comments, strings, and body text that
+    // merely spell an attribute name win over the real attribute. Compute
+    // the header limit and the paren depth at each header offset in one
+    // metered pass, ignoring delimiters inside non-code regions.
+    let mut paren_depth_at = vec![0usize; node_text.len().saturating_add(1)];
+    let mut depth = 0usize;
+    let mut header_end = node_text.len();
+    for (offset, ch) in node_text.char_indices() {
+        traversal.admit_work()?;
+        paren_depth_at[offset] = depth;
+        if source_regions.kind_at_offset(node_start.saturating_add(offset))
+            != SourceRegionKind::Code
+        {
+            continue;
+        }
+        match ch {
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            '{' | ';' if depth == 0 => {
+                header_end = offset;
+                break;
+            }
+            _ => {}
+        }
+    }
     let mut cursor = 0usize;
     for (index, attribute) in attributes.iter().enumerate() {
         let base = attribute.split('(').next().unwrap_or("");
         if base.is_empty() {
             continue;
         }
+        traversal.admit_work()?;
         let mut search_from = cursor;
         let mut located: Option<(usize, usize)> = None;
-        while search_from < node_text.len() {
-            let Some(relative) = node_text[search_from..].find(base) else {
+        while search_from < header_end {
+            let Some(relative) = node_text[search_from..header_end].find(base) else {
                 break;
             };
+            traversal.admit_work()?;
             let name_start = search_from + relative;
             let name_end = name_start + base.len();
+            // Advance by a whole char: `name_start + 1` can land inside a
+            // multibyte char (e.g. `sub é :é`) and panic the next slice.
+            let advance = node_text[name_start..].chars().next().map_or(1, |ch| ch.len_utf8());
+            let in_code = source_regions.kind_at_offset(node_start.saturating_add(name_start))
+                == SourceRegionKind::Code;
+            let inside_parens = paren_depth_at.get(name_start).copied().unwrap_or(0) > 0;
+            if !in_code || inside_parens {
+                search_from = name_start + advance;
+                continue;
+            }
             let following = node_text[name_end..].chars().next();
             if following.is_some_and(|c| c.is_alphanumeric() || c == '_') {
-                search_from = name_start + 1;
+                search_from = name_start + advance;
                 continue;
             }
             let before = node_text[..name_start].trim_end();
@@ -355,7 +401,7 @@ fn attribute_name_spans(
                     .get(cursor..name_start)
                     .is_some_and(|between| between.trim().is_empty());
             if !colon_preceded && !continuation {
-                search_from = name_start + 1;
+                search_from = name_start + advance;
                 continue;
             }
             located = Some((name_start, name_end));
@@ -374,6 +420,7 @@ fn attribute_name_spans(
                 let mut escaped = false;
                 let mut closed_at: Option<usize> = None;
                 for (offset, ch) in node_text[cursor + paren_offset..].char_indices() {
+                    traversal.admit_work()?;
                     if escaped {
                         escaped = false;
                         continue;
@@ -398,7 +445,7 @@ fn attribute_name_spans(
             }
         }
     }
-    spans
+    Ok(spans)
 }
 
 /// Locate the method-name span of a `MethodCall` node by scanning forward from the
@@ -1312,6 +1359,8 @@ pub fn collect_semantic_tokens_controlled(
     // 2a-ii) Collect assignment LHS spans to apply the "modification" modifier (bit 7)
     let assignment_spans = controlled_value!(assignment_lhs_spans(ast, &mut traversal));
 
+    let source_regions = SourceRegionIndex::build(text);
+
     // 2b) AST overlays: package/sub/variable with precise spans where available
     controlled_value!(walk_ast_full_controlled_with_state(
         ast,
@@ -1322,9 +1371,14 @@ pub fn collect_semantic_tokens_controlled(
             if let NodeKind::Subroutine { attributes, .. } = &node.kind
                 && !attributes.is_empty()
             {
-                for (attr_start, attr_end) in
-                    attribute_name_spans(text, node.location.start, node.location.end, attributes)
-                {
+                for (attr_start, attr_end) in attribute_name_spans(
+                    text,
+                    node.location.start,
+                    node.location.end,
+                    attributes,
+                    &source_regions,
+                    traversal,
+                )? {
                     push_line_contained_segments(
                         text,
                         attr_start,
@@ -4106,6 +4160,60 @@ print "ok" foreach @ys;
         assert_eq!(painted_tokens(with_proto, "modifier")?, vec!["prototype"]);
         assert_eq!(painted_tokens(with_proto, "parameter")?, vec!["($$)"]);
         Ok(())
+    }
+
+    #[test]
+    fn unicode_attribute_scan_does_not_split_chars() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(painted_tokens("sub é :é { }", "modifier")?, vec!["é"]);
+        assert_eq!(painted_tokens("sub café :lvalue { }", "modifier")?, vec!["lvalue"]);
+        Ok(())
+    }
+
+    #[test]
+    fn attribute_in_comment_or_signature_default_is_not_painted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let modifier_type = *legend().map.get("modifier").ok_or("modifier missing")?;
+        for source in [
+            "sub f # :lvalue\n:lvalue { }",
+            "sub f ($x = $a ? 1 : lvalue) :lvalue { }",
+            "sub f ($x = \":lvalue\") :lvalue { }",
+            "sub f ($x = $a ? 1 : lvalue, $y = 2) :lvalue { }",
+        ] {
+            let modifiers: Vec<(u32, u32, u32)> = absolute_tokens(source)?
+                .into_iter()
+                .filter(|t| t.3 == modifier_type)
+                .map(|t| (t.0, t.1, t.2))
+                .collect();
+            assert_eq!(modifiers.len(), 1, "source: {source}");
+            let expected_char = u32::try_from(source.rfind("lvalue").ok_or("lvalue missing")?)
+                .map_err(|_| "offset overflow")?;
+            // Single-line cases check the column; the comment case is on line 1.
+            if source.starts_with("sub f #") {
+                assert_eq!(modifiers[0], (1, 1, 6), "source: {source}");
+            } else {
+                assert_eq!(modifiers[0].1, expected_char, "source: {source}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn attribute_scan_is_metered_by_traversal_budget() {
+        let source = "sub f ($x = lvalue) :lvalue { }";
+        let regions = SourceRegionIndex::build(source);
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(3));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let result = attribute_name_spans(
+            source,
+            0,
+            source.len(),
+            &["lvalue".to_string()],
+            &regions,
+            &mut traversal,
+        );
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, 3);
     }
 
     #[test]

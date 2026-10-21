@@ -37,3 +37,8 @@ sub divdefault ($x = $a / 2) { }
 sub divnospace ($x = $a/$b) { }
 sub nestedparen ($x = foo(1, (2))) { }
 sub afterregex ($y) { }
+sub grouped ([$@%&*]) { }
+sub myref (\[$@%&*]) { }
+sub nestedattr :attr(foo(1) :other) { }
+sub nestedattr2 :attr(foo(1, bar(2)) :other) :lvalue { }
+my $hsub = $h{sub};
