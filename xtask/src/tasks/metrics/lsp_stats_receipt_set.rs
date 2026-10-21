@@ -89,7 +89,7 @@ impl AdmittedLegacyUxReceiptSet {
                 ReceiptFamily::UnrelatedJson => 2,
             }]);
         }
-        format!("{:x}", hash.finalize())
+        hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     pub(super) fn describe(&self) -> String {
