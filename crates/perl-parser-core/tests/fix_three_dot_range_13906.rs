@@ -161,6 +161,33 @@ fn unparenthesized_mixed_range_chains_are_rejected() {
 }
 
 #[test]
+fn adjacent_ellipsis_is_not_a_range_endpoint() {
+    // Perl rejects a second `...` where the range endpoint belongs; it is
+    // not a yada-yada operand of the range.
+    assert_rejected("$a ... ...;");
+    assert_rejected("$a .. ...;");
+}
+
+#[test]
+fn builtin_left_operands_keep_the_three_dot_operator() {
+    // Nullary/optional-argument builtins end at the infix boundary, so the
+    // range operator survives after them (Perl: `shift ... 3` is a range
+    // whose left side is the shift call).
+    for source in ["shift ... 3;", "my $x = shift ... 3;", "my $y = ref $a ... 3;"] {
+        assert_clean_parse(source);
+        let ast = parse(source);
+        let binary = must_some(first_binary(&ast));
+        let (op, _, _) = must_some(binary_parts(binary));
+        assert_eq!(
+            op,
+            "...",
+            "builtin range must keep its operator for `{source}`:\n{}",
+            ast.to_sexp()
+        );
+    }
+}
+
+#[test]
 fn parenthesized_three_dot_nesting_is_accepted() {
     assert_nested_binary("my $x = ($a ... $b) ... $c;", "...", NestedSide::Left, "...");
     assert_nested_binary("my $x = $a ... ($b ... $c);", "...", NestedSide::Right, "...");

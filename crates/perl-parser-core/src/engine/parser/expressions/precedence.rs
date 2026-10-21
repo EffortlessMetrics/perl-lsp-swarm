@@ -684,7 +684,12 @@ impl<'a> Parser<'a> {
         // admitting `Ellipsis` here only affects infix position (#13906).
         if matches!(self.peek_kind(), Some(TokenKind::Range | TokenKind::Ellipsis)) {
             let op_token = self.advance_token()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+            // A second `...` where the endpoint belongs is not a yada-yada
+            // operand: Perl rejects it, so record the endpoint as missing
+            // instead of publishing a clean range (#13906).
+            let right = if self.peek_kind() == Some(TokenKind::Ellipsis) {
+                self.record_missing_infix_rhs(op_token.start())
+            } else if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_or()?
