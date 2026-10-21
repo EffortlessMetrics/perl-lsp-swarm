@@ -15,10 +15,8 @@
 //!
 //! An implementation that groups by body + name must fail these fixtures.
 //!
-//! Fixtures nest through `if` blocks rather than bare `{ ... }` blocks: bare
-//! blocks are not lowered into the body arena at all on current `main` (they
-//! fall through to an opaque statement), which is a separate body-lowering
-//! coverage gap tracked by #14173 and not this slice's claim.
+//! Fixtures cover nested blocks and the package/foreach compositions from
+//! #14173, checking exact binding identities and body-to-PIR reachability.
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
@@ -658,4 +656,86 @@ fn variable_kind_classification_is_unchanged() {
     for occ in &package {
         assert_eq!(occ.kind, VariableKind::Package, "`our $g` occurrences remain package: {occ:?}");
     }
+}
+
+/// Compare each read with the exact declaration it must see, in source order.
+/// In particular, `Some(binding)` alone cannot detect iterator leakage.
+fn assert_package_foreach_reads(source: &str, expected: &[usize]) {
+    let output = Parser::new(source).parse_with_recovery();
+    assert!(output.diagnostics.is_empty(), "fixture must parse cleanly: {:?}", output.diagnostics);
+    let file = lower_ast(&output.ast);
+    let mut bindings: Vec<_> = file.scope_graph.bindings.iter().filter(|b| b.name == "i").collect();
+    bindings.sort_by_key(|b| b.range.start);
+    assert_eq!(bindings.len(), expected.iter().max().map_or(0, |index| index + 1));
+    let reads: Vec<_> = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "i" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), expected.len(), "every expected read must reach body HIR: {source}");
+    for (read, &index) in reads.iter().zip(expected) {
+        assert_eq!(
+            read.binding,
+            Some(bindings[index].id),
+            "wrong declaration at {}: {source}",
+            read.start
+        );
+        assert_eq!(read.kind, VariableKind::Lexical, "lexical read at {}: {source}", read.start);
+    }
+    // Traverse the production body-to-PIR consumer as well: orphan arena
+    // occurrences cannot supply the reads that this extractor reports.
+    let receipt = perl_parser_core::pir::extract_lexical_facts(&file);
+    assert_eq!(receipt.total_read_count, expected.len(), "PIR must retain every read: {source}");
+    let mut pir_read_starts: Vec<_> = receipt
+        .bodies
+        .iter()
+        .flat_map(|body| &body.facts)
+        .filter(|fact| fact.role == perl_parser_core::pir::LexicalRole::Read)
+        .map(|fact| must_some(fact.source_anchor.range).start)
+        .collect();
+    pir_read_starts.sort_unstable();
+    assert_eq!(pir_read_starts, reads.iter().map(|read| read.start).collect::<Vec<_>>());
+}
+
+#[test]
+fn package_foreach_list_body_continue_and_after_use_exact_bindings() {
+    for package in ["package P;", "LBL: package P;"] {
+        let source = format!(
+            "{package} my $i=9; print $i; foreach my $i ($i) {{ print $i; }} continue {{ print $i; }} print $i;"
+        );
+        assert_package_foreach_reads(&source, &[0, 0, 1, 1, 0]);
+    }
+}
+
+#[test]
+fn multiply_labelled_package_foreach_uses_exact_bindings() {
+    assert_package_foreach_reads(
+        "A: B: package P; my $i=9; print $i; foreach my $i ($i) { print $i; } continue { print $i; } print $i;",
+        &[0, 0, 1, 1, 0],
+    );
+}
+
+#[test]
+fn package_switch_in_foreach_body_restores_continue_and_outer_bindings() {
+    assert_package_foreach_reads(
+        "package P; my $i=9; foreach my $i (1) { LBL: package Q; my $i=2; print $i; } continue { print $i; } print $i;",
+        &[2, 1, 0],
+    );
+}
+
+#[test]
+fn package_foreach_inside_bare_block_restores_outer_binding() {
+    for label in ["", "BLK:"] {
+        let source = format!(
+            "my $i=9; {label} {{ LBL: package P; my $i=8; foreach my $i ($i) {{ print $i; }} print $i; }} print $i;"
+        );
+        assert_package_foreach_reads(&source, &[1, 2, 1, 0]);
+    }
+}
+
+#[test]
+fn block_form_package_foreach_restores_outer_binding() {
+    assert_package_foreach_reads(
+        "my $i=9; package P { my $i=8; foreach my $i ($i) { print $i; } print $i; } print $i;",
+        &[1, 2, 1, 0],
+    );
 }
