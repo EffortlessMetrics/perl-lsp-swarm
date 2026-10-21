@@ -607,7 +607,7 @@ impl LspServer {
                         config.include_paths.clone(),
                         config.use_system_inc,
                         config.use_perl5lib,
-                        config.perl5lib_precedence,
+                        config.perl5lib_precedence.clone(),
                     ),
                 )
             })
@@ -629,7 +629,7 @@ impl LspServer {
                     config.include_paths.clone(),
                     config.use_system_inc,
                     config.use_perl5lib,
-                    config.perl5lib_precedence,
+                    config.perl5lib_precedence.clone(),
                 ))
         });
         drop(init_options_perl);
