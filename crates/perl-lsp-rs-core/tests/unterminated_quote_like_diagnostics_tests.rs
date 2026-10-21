@@ -17,10 +17,32 @@ fn with_code<'a>(diagnostics: &'a [Diagnostic], code: &str) -> Vec<&'a Diagnosti
     diagnostics.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some(code)).collect()
 }
 
+/// Total published set: exactly one PL1008 terminator plus, at most,
+/// PL001 inferred-closer recovery notes. Any other published diagnostic
+/// (an expected-'}' / expected-statement cascade at EOF) fails here even
+/// when the PL1008 count itself is right.
+fn assert_no_cascade(diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        let is_recovery_note = diagnostic.code.as_deref() == Some("PL001")
+            && diagnostic.message.contains("Inferred a missing closing delimiter");
+        let is_terminator = diagnostic.code.as_deref() == Some("PL1008");
+        assert!(
+            is_recovery_note || is_terminator,
+            "unexpected published diagnostic beyond terminator + recovery notes: {diagnostic:?}"
+        );
+        assert!(
+            !diagnostic.message.contains("expected '}'")
+                && !diagnostic.message.contains("expected statement"),
+            "no expected-closer/statement cascade may be published: {diagnostic:?}"
+        );
+    }
+}
+
 #[test]
 fn unterminated_m_after_term_publishes_pl1008_at_operator() {
     let source = "my @x = @{['a'm]};";
     let diagnostics = compatibility_diagnostics(source);
+    assert_no_cascade(&diagnostics);
     let published = with_code(&diagnostics, "PL1008");
     assert_eq!(published.len(), 1, "exactly one PL1008 expected: {diagnostics:#?}");
     assert_eq!(published[0].severity, DiagnosticSeverity::Error);
@@ -41,6 +63,7 @@ fn unterminated_m_after_term_publishes_pl1008_at_operator() {
 fn unterminated_q_after_term_publishes_pl1008_at_operator() {
     let source = "my @x = @{['a'q]};";
     let diagnostics = compatibility_diagnostics(source);
+    assert_no_cascade(&diagnostics);
     let published = with_code(&diagnostics, "PL1008");
     assert_eq!(published.len(), 1, "exactly one PL1008 expected: {diagnostics:#?}");
     assert!(

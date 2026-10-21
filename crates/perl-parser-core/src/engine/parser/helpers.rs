@@ -1120,16 +1120,6 @@ impl<'a> Parser<'a> {
         Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos })
     }
 
-    /// Expect a closing delimiter, recovering gracefully if missing.
-    ///
-    /// At strong followers (`;`, `}`, `{`, statement keywords, or EOF) the
-    /// missing closer is inferred rather than returned as an error:
-    /// - Emits `ParseError::Recovered { site, kind: InsertedCloser, location }` so
-    ///   callers can count recoveries and gate LSP features by confidence.
-    /// - Returns `Ok(())` to allow parsing to continue.
-    ///
-    /// At any other token, returns `Err(ParseError::UnexpectedToken)` so the
-    /// caller can propagate or handle it.
     /// Build the terminator diagnostic for an unterminated quote-like token.
     ///
     /// Returns `None` for closed tokens and for tokens that are not
@@ -1190,21 +1180,61 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Expect a closing delimiter, recovering gracefully if missing.
+    ///
+    /// At strong followers (`;`, `}`, `{`, statement keywords, or EOF) the
+    /// missing closer is inferred rather than returned as an error:
+    /// - Emits `ParseError::Recovered { site, kind: InsertedCloser, location }` so
+    ///   callers can count recoveries and gate LSP features by confidence.
+    /// - Returns `Ok(())` to allow parsing to continue.
+    ///
+    /// At any other token, returns `Err(ParseError::UnexpectedToken)` so the
+    /// caller can propagate or handle it.
     fn expect_closing_delimiter(&mut self, kind: TokenKind) -> ParseResult<()> {
         if self.peek_kind() == Some(kind) {
             self.consume_token()?;
             return Ok(());
         }
-        // An unterminated quote-like token after a term already spans to
-        // EOF, so the missing closer cannot be its fault: name the
-        // unterminated operator, consume the token, and recover with an
-        // inserted closer instead of a misleading expected-closer error.
+        // An unterminated quote-like token after a term is not evidence that
+        // this closer is missing: the operator itself is unterminated, so
+        // name it and consume the token instead of emitting a misleading
+        // expected-closer error. The token's extent varies by kind: regex
+        // tokens such as `m]};` run to EOF, while `qw(...)` and friends may
+        // stop at the end of the line, leaving real source (including this
+        // frame's own closer) still ahead. Consume a real closer when one
+        // follows, infer the closer at EOF or another recovery boundary,
+        // and otherwise synchronize forward to this frame's closer (leaving
+        // an outer frame's closer unconsumed) so bounded content cannot
+        // strand a later valid closer as a stray token.
         let unterminated = self.tokens.peek().ok().and_then(Self::unterminated_quote_like_error);
         if let Some(error) = unterminated {
             self.record_error(error);
             self.consume_token()?;
-            self.record_inserted_closer(kind);
-            return Ok(());
+            let mut skipped = 0;
+            loop {
+                match self.peek_kind() {
+                    Some(next) if next == kind => {
+                        self.consume_token()?;
+                        return Ok(());
+                    }
+                    Some(TokenKind::Eof) | None => {
+                        self.record_inserted_closer(kind);
+                        return Ok(());
+                    }
+                    Some(next) if next.is_close_delimiter() => {
+                        self.record_inserted_closer(kind);
+                        return Ok(());
+                    }
+                    _ => {
+                        self.consume_token()?;
+                        skipped += 1;
+                        if skipped >= 100 {
+                            self.record_inserted_closer(kind);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
         if self.is_delimiter_recovery_point() {
             self.record_inserted_closer(kind);

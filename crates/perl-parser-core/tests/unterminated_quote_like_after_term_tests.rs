@@ -30,10 +30,34 @@ fn assert_terminator(source: &str, expected_message: &str, operator_start: usize
         Some(operator_start),
         "terminator diagnostic must anchor at the operator start for {source:?}"
     );
+    // Total blocking set: beyond `Recovered` recovery notes, the terminator
+    // diagnostic must be the ONLY diagnostic. Any extra blocking diagnostic
+    // (an `UnexpectedToken` cascade such as expected-'}' or expected-statement
+    // at EOF) fails here even when the terminator count itself is right.
+    let blocking: Vec<&ParseError> = diagnostics
+        .iter()
+        .filter(|diagnostic| !matches!(diagnostic, ParseError::Recovered { .. }))
+        .collect();
+    assert_eq!(
+        blocking.len(),
+        1,
+        "expected exactly one non-recovered diagnostic for {source:?}, got {diagnostics:?}"
+    );
+    assert_eq!(
+        blocking[0].to_string(),
+        diagnostic.to_string(),
+        "the sole non-recovered diagnostic must be the terminator for {source:?}"
+    );
     for diagnostic in &diagnostics {
+        assert!(
+            !matches!(diagnostic, ParseError::UnexpectedToken { .. }),
+            "no UnexpectedToken cascade may be emitted for {source:?}: {diagnostic:?}"
+        );
         let text = diagnostic.to_string();
         assert!(
-            !text.contains("expected ']'") && !text.contains("expected ')'"),
+            !text.contains("expected ']'")
+                && !text.contains("expected ')'")
+                && !text.contains("expected '}'"),
             "misleading expected-closer diagnostic must not be emitted for {source:?}: {text}"
         );
         assert!(
@@ -191,4 +215,32 @@ fn fat_arrow_keys_stay_clean() {
 #[test]
 fn closed_qw_stays_clean() {
     assert_no_blocking("my @w = qw/a b/;");
+}
+
+#[test]
+fn arrow_hash_key_named_m_stays_clean() {
+    assert_no_blocking("my $z = $h->{m};");
+}
+
+#[test]
+fn bounded_qw_after_term_recovers_to_real_bracket() {
+    // `qw(` stops at the newline, so the array's real `]` is still ahead.
+    // Recovery must reach that `]` instead of closing the array early and
+    // stranding the `]` as a trailing expected-statement cascade.
+    let source = "my @x = ['a' qw(foo bar\nmy $y = 1;];";
+    assert_terminator(
+        source,
+        "Can't find string terminator \")\" anywhere before EOF",
+        source.find("qw").unwrap_or(0),
+    );
+}
+
+#[test]
+fn bounded_qw_after_term_bare_array_recovers_to_real_bracket() {
+    let source = "['a' qw(foo bar\nmy $y = 1;];";
+    assert_terminator(
+        source,
+        "Can't find string terminator \")\" anywhere before EOF",
+        source.find("qw").unwrap_or(0),
+    );
 }

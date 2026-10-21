@@ -522,7 +522,7 @@ impl<'a> Parser<'a> {
             };
 
             self.consume_deref_body_terminators()?;
-            self.expect(TokenKind::RightBrace)?;
+            self.expect_closing_delimiter(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
             if folded {
@@ -629,7 +629,7 @@ impl<'a> Parser<'a> {
             };
 
             self.consume_deref_body_terminators()?;
-            self.expect(TokenKind::RightBrace)?;
+            self.expect_closing_delimiter(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
             if folded {
@@ -668,7 +668,7 @@ impl<'a> Parser<'a> {
                 && is_simple_scalar_name(inner_name)
                 && self.peek_kind() == Some(TokenKind::RightBrace)
             {
-                self.expect(TokenKind::RightBrace)?;
+                self.expect_closing_delimiter(TokenKind::RightBrace)?;
                 let end = self.previous_position();
                 return self.charge_node(
                     NodeKind::Variable { sigil: "$".to_string(), name: inner_name.to_string() },
@@ -695,7 +695,7 @@ impl<'a> Parser<'a> {
             }
 
             self.consume_deref_body_terminators()?;
-            self.expect(TokenKind::RightBrace)?;
+            self.expect_closing_delimiter(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
             let op = format!("{}{{}}", sigil);
@@ -727,7 +727,7 @@ impl<'a> Parser<'a> {
                 self.advance_token()?; // consume {
                 let inner = self.parse_expression()?;
                 self.consume_deref_body_terminators()?;
-                self.expect(TokenKind::RightBrace)?;
+                self.expect_closing_delimiter(TokenKind::RightBrace)?;
                 let brace_end = self.previous_position();
                 return self.charge_node(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
@@ -1259,7 +1259,7 @@ impl<'a> Parser<'a> {
                                 // $#{expr} — last index of dereferenced array via block
                                 self.advance_token()?; // consume {
                                 let inner = self.parse_expression()?;
-                                self.expect(TokenKind::RightBrace)?;
+                                self.expect_closing_delimiter(TokenKind::RightBrace)?;
                                 let end = self.previous_position();
                                 let node = self.charge_node(
                                     NodeKind::Unary {
@@ -1316,7 +1316,7 @@ impl<'a> Parser<'a> {
             self.advance_token()?; // consume {
             let body_start = self.current_position();
             let expr = self.parse_deref_body_expression(body_start)?;
-            self.expect(TokenKind::RightBrace)?;
+            self.expect_closing_delimiter(TokenKind::RightBrace)?;
             let end = self.previous_position();
             if self.peek_kind() == Some(TokenKind::Assign) {
                 // Slice the braced source text (including the braces) so the
@@ -1355,7 +1355,7 @@ impl<'a> Parser<'a> {
             };
 
             self.consume_deref_body_terminators()?;
-            self.expect(TokenKind::RightBrace)?;
+            self.expect_closing_delimiter(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
             if folded {
@@ -1443,7 +1443,7 @@ impl<'a> Parser<'a> {
     fn parse_code_dereference(&mut self, start: usize) -> ParseResult<Node> {
         let inner_expr = self.parse_expression()?;
         self.consume_deref_body_terminators()?;
-        self.expect(TokenKind::RightBrace)?;
+        self.expect_closing_delimiter(TokenKind::RightBrace)?;
         let deref_end = self.previous_position();
         let deref_node = self.charge_node(
             NodeKind::Unary { op: "&{}".to_string(), operand: Box::new(inner_expr) },
