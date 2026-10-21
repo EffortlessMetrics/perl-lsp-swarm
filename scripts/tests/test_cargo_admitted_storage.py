@@ -163,6 +163,20 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(caught.exception.details["additional_free_bytes_needed"],
                          caught.exception.details["pct_shortfall_bytes"])
 
+    def test_percent_ceiling_exact_boundary_reports_one_byte_remedy(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        # Exactly 85% used: gate denies, and the remedy must be 1 byte, not 0.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib, 150*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], {})
+        self.assertEqual(caught.exception.details["additional_free_bytes_needed"], 1)
+        # Freeing the reported amount makes the same gate pass.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib - 1, 150*gib + 1)):
+            report = safe.check_capacity([self.slot], {})
+        self.assertIn("destinations", report)
+
     def test_absolute_floor_still_names_headroom_with_positive_shortfall(self):
         from collections import namedtuple
         Usage = namedtuple("Usage", "total used free")

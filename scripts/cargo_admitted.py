@@ -801,7 +801,9 @@ def check_capacity(paths, env, budget=None):
                          + " used_pct=" + str(row["used_pct"]), row)
         if policy == "percent" and ceiling is not None and used_pct >= ceiling:
             required_free_for_pct = usage.total * (100 - ceiling) / 100
-            additional_free_needed = max(0, math.ceil(required_free_for_pct - usage.free))
+            # Admission requires used_pct strictly below the ceiling, so the
+            # smallest passing free target is one byte past the threshold.
+            additional_free_needed = math.floor(required_free_for_pct) + 1 - usage.free
             row["used_pct"] = used_pct
             row["max_used_pct"] = ceiling
             row["required_free_bytes_for_pct"] = required_free_for_pct
