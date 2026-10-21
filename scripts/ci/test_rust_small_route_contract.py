@@ -29,6 +29,7 @@ claim owns its placement and this file does not move it.
 
 from __future__ import annotations
 
+import shlex
 import unittest
 from pathlib import Path
 
@@ -63,6 +64,9 @@ LEGACY_INLINE_FRAGMENTS = (
 INVOCATION_MUTATIONS = (
     ("profile missing", CANONICAL_INVOCATION.replace(" --profile agent", "")),
     ("profile changed", CANONICAL_INVOCATION.replace("--profile agent", "--profile dev")),
+    ("release profile", CANONICAL_INVOCATION.replace("--profile agent", "--profile release")),
+    ("profile forwarded to xtask", "cargo run -p xtask --locked -- rust-small-proof --profile agent"),
+    ("cached debug executable substituted", "target/debug/xtask rust-small-proof"),
     ("argument drift (--locked dropped)", CANONICAL_INVOCATION.replace(" --locked", "")),
     ("commented out", f"# {CANONICAL_INVOCATION}"),
     ("echo decoy", f'echo "{CANONICAL_INVOCATION}"'),
@@ -220,6 +224,17 @@ class RustSmallRouteContractTests(unittest.TestCase):
             self.assertEqual(len(occurrences), 1, f"{job_id}: {occurrences}")
             seen.add(occurrences[0])
         self.assertEqual(seen, {CANONICAL_INVOCATION})
+
+    def test_bootstrap_profile_and_executable_selection_are_pinned(self) -> None:
+        # A shared-constant edit plus matching workflow edits must not silently
+        # restore a different profile or forward Cargo's flag to xtask.
+        args = shlex.split(CANONICAL_INVOCATION)
+        separator = args.index("--")
+        self.assertEqual(
+            args[:separator],
+            ["cargo", "run", "-p", "xtask", "--profile", "agent", "--locked"],
+        )
+        self.assertEqual(args[separator + 1 :], ["rust-small-proof"])
 
     # ── red-first per-site pins: any single mutated copy fails, named ───────
 
