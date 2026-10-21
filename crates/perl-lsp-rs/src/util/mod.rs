@@ -529,9 +529,9 @@ pub fn offset_to_position(content: &str, offset: usize) -> Position {
                     col_utf16 = 0;
                     byte_pos += 2; // \r + \n
                 } else {
-                    // Solo \r - treat as line ending
-                    line += 1;
-                    col_utf16 = 0;
+                    // Solo \r is ordinary content under the LF-delimited
+                    // contract (#17925): one UTF-16 column, same row.
+                    col_utf16 += 1;
                     byte_pos += ch.len_utf8();
                 }
             }
@@ -643,6 +643,24 @@ mod tests {
         assert_eq!(position_to_offset("ab", 0, 3), None);
         assert_eq!(position_to_offset("😀", 0, 1), None);
         assert_eq!(position_to_offset("😀", 0, 2), Some(4));
+    }
+
+    #[test]
+    fn offset_to_position_bare_cr_is_content() {
+        // The reverse converter must share the LF-delimited contract: a
+        // bare CR is one UTF-16 column on the same row, never a row break,
+        // or ranges after it shift rows against position_to_offset.
+        assert_eq!(offset_to_position("a\rb", 0), Position { line: 0, character: 0 });
+        assert_eq!(offset_to_position("a\rb", 1), Position { line: 0, character: 1 });
+        assert_eq!(offset_to_position("a\rb", 2), Position { line: 0, character: 2 });
+        assert_eq!(offset_to_position("a\rb", 3), Position { line: 0, character: 3 });
+        for off in 0..=3usize {
+            let pos = offset_to_position("a\rb", off);
+            assert_eq!(position_to_offset("a\rb", pos.line, pos.character), Some(off));
+        }
+        // CRLF handling stays a single separator.
+        assert_eq!(offset_to_position("a\r\nb", 2), Position { line: 0, character: 1 });
+        assert_eq!(offset_to_position("a\r\nb", 3), Position { line: 1, character: 0 });
     }
 
     #[test]
