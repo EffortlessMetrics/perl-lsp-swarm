@@ -35,6 +35,8 @@ impl LspServer {
         let mut table = "**Regex Pattern**\n\n".to_string();
         table.push_str("| Token | Meaning |\n|-------|-------|\n");
         for (tok, desc) in &entries {
+            // Table cell separators must be escaped even inside a code span.
+            let tok = tok.replace('|', r"\|");
             table.push_str(&format!("| `{}` | {} |\n", tok, desc));
         }
 
@@ -503,5 +505,65 @@ impl LspServer {
             _ => return (tok, desc),
         };
         (tok, format!("{}{}", desc, suffix))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LspServer, SourceRegionIndex};
+    use perl_tdd_support::must_some;
+
+    #[test]
+    fn regex_hover_escapes_pipe_tokens_in_table_cells() {
+        let cases = [
+            ("my $re = qr/foo|bar/;", "foo|bar", "| `\\| ` | Alternation (OR) |"),
+            (
+                "my $re = qr{[a|b]+};",
+                "[a|b]",
+                "| `[a\\|b]` | Character class, one or more (greedy) |",
+            ),
+            ("my $note = '😀'; my $re = qr{[α|β]};", "[α|β]", "| `[α\\|β]` | Character class |"),
+            (r"my $re = qr{[\|]};", r"[\|]", r"| `[\\|]` | Character class |"),
+            (
+                "my $re = qr{(?|foo)};",
+                "(?|",
+                "| `(?\\|` | Branch reset group — resets capture numbering per branch |",
+            ),
+            (
+                r"my $re = qr{\d+};",
+                r"\d+",
+                r"| `\d` | Any decimal digit (0-9), one or more (greedy) |",
+            ),
+        ];
+        for (text, needle, expected_row) in cases {
+            let index = SourceRegionIndex::build(text);
+            let offset = must_some(text.find(needle));
+            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index)));
+            let markdown = must_some(card["contents"]["value"].as_str());
+            let expected = format!(
+                "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n{expected_row}\n"
+            );
+            assert_eq!(markdown, expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn regex_hover_pipe_rendering_keeps_source_region_refusals() {
+        for text in [
+            "# qr{[a|b]}\n",
+            "my $help = 'qr{[a|b]}';",
+            "=pod\nqr{[a|b]}\n=cut\n",
+            "my $help = <<'DOC';\nqr{[a|b]}\nDOC\n",
+        ] {
+            let index = SourceRegionIndex::build(text);
+            let offset = must_some(text.find("[a|b]"));
+            assert!(
+                LspServer::extract_regex_hover(text, offset, Some(&index)).is_none(),
+                "{text:?}"
+            );
+        }
+        let text = "my $re = qr{[a|b]};";
+        let offset = must_some(text.find("[a|b]"));
+        assert!(LspServer::extract_regex_hover(text, offset, None).is_none());
     }
 }
