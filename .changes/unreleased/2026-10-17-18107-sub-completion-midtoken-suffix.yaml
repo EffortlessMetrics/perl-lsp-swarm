@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Accepting a subroutine or constant completion with the cursor in the middle of a name no longer duplicates the rest of the name. Previously the completion replaced only the typed prefix, so completing `proc` inside `process_data` produced `process_data()ess_data`; the edit now replaces the whole token."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18107"
+  Slug: sub-completion-midtoken-suffix
+  Breaking: "no"

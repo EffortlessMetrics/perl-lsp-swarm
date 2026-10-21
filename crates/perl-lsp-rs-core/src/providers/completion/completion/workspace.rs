@@ -3557,6 +3557,7 @@ mod union_receiver_method_completion_tests {
             current_package: "main".to_string(),
             prefix: source.to_string(),
             prefix_start: 0,
+            suffix_end: position,
             cursor_scope_id: 0,
         }
     }

@@ -91,6 +91,7 @@ mod tests {
             current_package: "main".to_string(),
             prefix: prefix.to_string(),
             prefix_start: 0,
+            suffix_end: prefix.len(),
             cursor_scope_id: 0,
         }
     }
