@@ -13,8 +13,8 @@ the contract for that PR, not work done here.
 - **Change:** fact meaning, identity, ten falsifiers, input contract
 - **Verify:** `git diff --check`; the three files exist; acceptance has the six required sections
 
-### Step A2: Record the decision on the issues
-- Comment on #17237 linking this bundle; comment on #7435 with the §Input contract below.
+### Step A2 (external action, not a file change): record the decision on the issues
+- Comment on #17237 linking this bundle; comment on #7435 with the §Input contract below. Done outside the diff and not part of S1–S3.
 
 ## Blockers for Phase B
 
@@ -59,8 +59,8 @@ Anything not on this list is not read.
 - **Verify:** `cargo check -p perl-ripr-facts`
 
 ### Step B3: Evaluator over canonical facts
-- **Change:** old/new evaluation for `>=`↔`>`/`<=`↔`<` and `==`↔`!=` over literal or canonical finite scalar values; whole-set rule; `Unknown` otherwise
-- **Depends on:** B2, #7435, #9285
+- **Change:** the exporter projects an evaluation result; it does not own the evaluator. Old/new predicate evaluation for `>=`↔`>`/`<=`↔`<` and `==`↔`!=` over literal or canonical finite scalar values lives in `perl-semantic-analyzer` (the issue's verification list names its `predicate` tests), consumed through canonical facts. Whole-set rule; `Unknown` otherwise
+- **Depends on:** B2, #7435, #9285, and the semantic-analyzer evaluation seam (to be named by the implementing PR; if none exists the PR adds it there, not in `perl-ripr-facts`)
 - **Verify:** F1, F2, F5 green
 
 ### Step B4: v2 projection
@@ -75,11 +75,11 @@ Anything not on this list is not read.
 
 Files IN scope for this PR: `.spec/17237-row-owned-predicate-discriminator/`.
 Files OUT of scope: all crates, schema, generated artifacts, the existing
-`discriminators` array in `emitter/relations.rs`, and any ripr-swarm file.
+`is_args` collector in `emitter/relations.rs`, and any ripr-swarm file.
 
 ## Flags for the Phase B builder
 
-- Do not extend the existing `discriminators` array; it is test-side expected values.
+- Do not build the fact from the retained `is_args` collector in `emitter/relations.rs`; it is test-side expected values, and no wire array carries it.
 - Do not reuse `behavior_hint_for_hunk` / `extract_discriminator` (added-line text scan) as the old/new evaluator.
 - The admitted-set cap value is a builder decision; over cap must be `Unknown`.
 - Whether `Scoped` is emitted in the first cohort or only reserved is a builder decision; reserving it is acceptable, silently mapping it to `Distinguishes` is not.

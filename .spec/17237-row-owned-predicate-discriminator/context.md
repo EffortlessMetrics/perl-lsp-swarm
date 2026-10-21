@@ -42,11 +42,15 @@ finding-wide discriminator onto every related test would be false.
   `missing_discriminator` is always `null` in this slice. That is the
   change-plane (#9285) heuristic. It is not a canonical predicate fact and must
   not be reused as this fact's old/new evaluator.
-- `emit_relations_and_discriminators` in `emitter/relations.rs` already emits a
-  `discriminators` array, built from `is(...)` arguments (`collect_is_args`).
-  Those are **test-side expected values**, not predicate participation. Name
-  clash is the main review hazard: this spec calls the new fact
-  *participation* and never extends that array.
+- `emitter/relations.rs` collects parser-backed `is(...)` argument pairs
+  (`collect_is_args` into `is_args`). Those are **test-side expected values**,
+  not predicate participation. No wire array carries them:
+  `emit_relations_and_discriminators` returns only relations and limitations,
+  `is_args` is `#[allow(dead_code)]` and read only by tests since #5064, and
+  `schemas/ripr-perl-facts-v1.schema.json` has no `discriminators` key. The
+  field's doc says it is retained as input for "the discriminator work", so the
+  name clash is the review hazard: this spec calls the new fact *participation*
+  and does not build it from `is_args`.
 - No canonical call argument→parameter binding, parameter entity, or value
   witness exists in code: #7435, #10238, #7423, #10244, #5242 are all open, and
   `grep ParameterEntityId|CallArgumentBinding crates` finds nothing.
@@ -70,7 +74,7 @@ private evaluator, which this issue forbids. Hence spec first.
 - **Implement a literal-only evaluator in the exporter now.** Rejected: that is
   falsifier 10 (a private predicate evaluator / text scan in the RIPR exporter)
   and a second argument binder.
-- **Extend the existing `discriminators` array.** Rejected: it is test-side
+- **Build it from the retained `is_args` collector.** Rejected: it is test-side
   expected values keyed by assertion, not row-owned predicate participation.
 - **Derive `SameOutcome` from generic activation.** Rejected: falsifiers 3 and 4.
 - **Wait for all authorities before writing anything.** Rejected: the semantics
