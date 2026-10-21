@@ -1612,6 +1612,64 @@ mod tests {
     }
 
     #[test]
+    fn versionless_signed_plain_sub_inside_class_does_not_emit_signature_pl900() {
+        // A plain `sub` (not `method`) inside a class body is parsed as
+        // `NodeKind::Subroutine`, so only the `class_ranges` skip in
+        // `check_undeclared_signatures` keeps it silent; class implies
+        // signatures for its members.
+        let diags = version_compat_diags("class Foo { sub helper ($x) { $x } }\n");
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+            "signed plain sub inside class must emit no PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_block_scoped_use_v5_36_suppresses_signature_pl900() {
+        let diags = version_compat_diags("{ use v5.36; sub f ($x) { $x } }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "block-scoped v5.36 bundle must suppress the versionless PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_feature_bundle_5_36_suppresses_signature_pl900() {
+        let diags = version_compat_diags("use feature ':5.36';\nsub f ($x) { $x }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "the ':5.36' feature bundle must suppress the versionless PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_experimental_signatures_suppresses_signature_pl900() {
+        let diags = version_compat_diags("use experimental 'signatures';\nsub f ($x) { $x }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "use experimental 'signatures' must suppress the versionless PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_no_feature_signatures_after_enable_re_enables_signature_pl900() {
+        let diags = version_compat_diags(
+            "use feature 'signatures';\nno feature 'signatures';\nsub f ($x) { $x }\n",
+        );
+        let sig_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("PL900") && d.message.contains("subroutine signatures")
+            })
+            .collect();
+        assert_eq!(
+            sig_diags.len(),
+            1,
+            "no feature 'signatures' after enabling must re-enable exactly one PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
     fn versionless_other_constructs_stay_silent() {
         // The carve-out covers only signatures; every other arm keeps its
         // undeclared-version silence.
