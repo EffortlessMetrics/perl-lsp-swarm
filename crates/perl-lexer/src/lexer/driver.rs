@@ -17,6 +17,7 @@ impl<'a> PerlLexer<'a> {
             delimiter_stack: Vec::new(),
             in_prototype: false,
             prototype_depth: 0,
+            prototype_signature_seen: false,
             after_sub: false,
             after_arrow: false,
             hash_brace_depth: 0,

@@ -1705,6 +1705,24 @@ fn context_rows() -> Vec<MatrixRow> {
             "y",
             "y/a/b/",
         ),
+        // Delimiters drawn from the prototype payload alphabet are still
+        // operators once the window has shown signature evidence.
+        (
+            "q-dollar.signature_default_quote",
+            OperatorFamily::Q,
+            DelimiterFamily::UnpairedOther,
+            ExpectedKind::QuoteSingle,
+            "q",
+            "q$hello$",
+        ),
+        (
+            "q-at.signature_default_quote",
+            OperatorFamily::Q,
+            DelimiterFamily::UnpairedOther,
+            ExpectedKind::QuoteSingle,
+            "q",
+            "q@hello@",
+        ),
     ] {
         rows.push(signature_default_row(id, family, delim, kind, word, quoted));
     }
