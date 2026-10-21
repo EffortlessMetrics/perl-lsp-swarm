@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17985,
-  "reason": "Accept the measured 114-byte package.json growth for the truthful native-only critic-engine description and its review-driven correction in #17985; all 30 package members and the emitted extension bundle remain otherwise unchanged.",
-  "base_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
-  "candidate_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
-  "base_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f",
-  "candidate_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423"
+  "owner_issue": 18098,
+  "reason": "Accept the measured +624-byte package growth (package.json +1, out/extension.js +623) that landed on main without a transition, red-flagging every PR's current-source smoke with size_only/transition_required since 2026-10-17T05:20Z; see #18098 and the #14718 recurrence class.",
+  "base_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
+  "candidate_baseline_file_sha256": "2dad5d6bd84763a238e9bae3c5e02b62b4a0b7943cf953a6e647d0c3831a1c05",
+  "base_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423",
+  "candidate_inventory_sha256": "ae53a0a0c938fd41f0486a8a49bc63faf66ac13d048a11c608a028b1b6d9ca98"
 }
