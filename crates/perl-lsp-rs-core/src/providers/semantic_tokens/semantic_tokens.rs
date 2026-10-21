@@ -310,6 +310,97 @@ fn loop_control_label_offsets(
     None
 }
 
+/// Locate the source spans of `Subroutine` attribute names.
+///
+/// Attributes are stored as bare strings (`"lvalue"`, `"isa(Foo::Bar)"`)
+/// with no spans, so the name span is recovered by scanning the node's
+/// source text in order. An attribute is painted only when its base name
+/// is found preceded (allowing whitespace) by a single `:` or, for
+/// colon-less continuations, directly after the previous attribute; any
+/// mismatch fails closed and paints nothing for that attribute.
+fn attribute_name_spans(
+    text: &str,
+    node_start: usize,
+    node_end: usize,
+    attributes: &[String],
+) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let Some(node_text) = text.get(node_start..node_end) else {
+        return spans;
+    };
+    let mut cursor = 0usize;
+    for (index, attribute) in attributes.iter().enumerate() {
+        let base = attribute.split('(').next().unwrap_or("");
+        if base.is_empty() {
+            continue;
+        }
+        let mut search_from = cursor;
+        let mut located: Option<(usize, usize)> = None;
+        while search_from < node_text.len() {
+            let Some(relative) = node_text[search_from..].find(base) else {
+                break;
+            };
+            let name_start = search_from + relative;
+            let name_end = name_start + base.len();
+            let following = node_text[name_end..].chars().next();
+            if following.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                search_from = name_start + 1;
+                continue;
+            }
+            let before = node_text[..name_start].trim_end();
+            let colon_preceded =
+                before.ends_with(':') && !before[..before.len().saturating_sub(1)].ends_with(':');
+            let continuation = index > 0
+                && node_text
+                    .get(cursor..name_start)
+                    .is_some_and(|between| between.trim().is_empty());
+            if !colon_preceded && !continuation {
+                search_from = name_start + 1;
+                continue;
+            }
+            located = Some((name_start, name_end));
+            break;
+        }
+        let Some((name_start, name_end)) = located else {
+            continue;
+        };
+        spans.push((node_start + name_start, node_start + name_end));
+        cursor = name_end;
+        if attribute.contains('(') {
+            let after_name = &node_text[cursor..];
+            let paren_offset = after_name.len() - after_name.trim_start().len();
+            if after_name[paren_offset..].starts_with('(') {
+                let mut depth = 0usize;
+                let mut escaped = false;
+                let mut closed_at: Option<usize> = None;
+                for (offset, ch) in node_text[cursor + paren_offset..].char_indices() {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    match ch {
+                        '\\' => escaped = true,
+                        '(' => depth += 1,
+                        ')' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                closed_at = Some(cursor + paren_offset + offset + ch.len_utf8());
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                match closed_at {
+                    Some(end) => cursor = end,
+                    None => break,
+                }
+            }
+        }
+    }
+    spans
+}
+
 /// Locate the method-name span of a `MethodCall` node by scanning forward from the
 /// receiver's end.
 ///
@@ -1226,6 +1317,26 @@ pub fn collect_semantic_tokens_controlled(
         ast,
         &mut traversal,
         &mut |node, traversal| {
+            // Subroutine attributes have no AST spans; paint each located
+            // name before the name arms below so anonymous subs are covered.
+            if let NodeKind::Subroutine { attributes, .. } = &node.kind
+                && !attributes.is_empty()
+            {
+                for (attr_start, attr_end) in
+                    attribute_name_spans(text, node.location.start, node.location.end, attributes)
+                {
+                    push_line_contained_segments(
+                        text,
+                        attr_start,
+                        attr_end,
+                        to_pos16,
+                        kind_idx(&leg, "modifier"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
+                }
+            }
             // For nodes with name_span, use the precise span for better highlighting
             match &node.kind {
                 NodeKind::Package { name_span, .. } => {
@@ -1425,6 +1536,19 @@ pub fn collect_semantic_tokens_controlled(
                             )?;
                         }
                     }
+                    return Ok(true);
+                }
+                NodeKind::Prototype { .. } => {
+                    push_line_contained_segments(
+                        text,
+                        node.location.start,
+                        node.location.end,
+                        to_pos16,
+                        kind_idx(&leg, "parameter"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                        traversal,
+                    )?;
                     return Ok(true);
                 }
                 _ => {}
@@ -3863,6 +3987,140 @@ print "ok" foreach @ys;
             &mut traversal,
         );
         anyhow::ensure!(result.is_ok() && out.is_empty(), "valid empty span must succeed");
+        Ok(())
+    }
+
+    fn absolute_tokens(
+        source: &str,
+    ) -> Result<Vec<(u32, u32, u32, u32, u32)>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let mut out = Vec::new();
+        for [delta_line, delta_character, length, token_type, modifiers] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                character = character.saturating_add(delta_character);
+            } else {
+                line = line.saturating_add(delta_line);
+                character = delta_character;
+            }
+            out.push((line, character, length, token_type, modifiers));
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn prototype_paints_as_parameter_with_exact_span() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub reindex ($$) : lvalue { $_[0] }";
+        // keyword=13, function=7, parameter=12, operator=19, modifier=14,
+        // variable=11, number=17 per legend().
+        assert_eq!(
+            absolute_tokens(source)?,
+            vec![
+                (0, 0, 3, 13, 0),
+                (0, 4, 7, 7, 3),
+                (0, 12, 4, 12, 1),
+                (0, 17, 1, 19, 0),
+                (0, 19, 6, 14, 1),
+                (0, 28, 2, 11, 1536),
+                (0, 31, 1, 17, 0),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prototype_variants_paint_whole() -> Result<(), Box<dyn std::error::Error>> {
+        let cases: &[(&str, &str)] = &[
+            ("sub a () { }", "()"),
+            ("sub b ($;@) { }", "($;@)"),
+            ("sub c (\\@) { }", "(\\@)"),
+            ("sub d (&;$) { }", "(&;$)"),
+            ("sub e ($_) { }", "($_)"),
+            ("sub f ($$);", "($$)"),
+            ("my sub g ($$) { }", "($$)"),
+            ("my $s = sub ($$) { $_[0] };", "($$)"),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(
+                painted_tokens(source, "parameter")?,
+                vec![expected.to_string()],
+                "source: {source}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn signature_is_not_a_prototype() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub foo ($x, $y) { }";
+        assert!(painted_tokens(source, "parameter")?.is_empty());
+        assert_eq!(painted_tokens(source, "variable")?, vec!["$x", "$y"]);
+        Ok(())
+    }
+
+    #[test]
+    fn prototype_interior_has_no_variable_token() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(painted_tokens("sub reindex ($$) : lvalue { $_[0] }", "variable")?, vec!["$_"]);
+        assert!(painted_tokens("sub s ($;@) { }", "variable")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pid_outside_prototype_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub reindex ($$) : lvalue { $_[0] }\nmy $pid = $$;";
+        assert!(absolute_tokens(source)?.contains(&(1, 10, 2, 11, 1536)));
+        Ok(())
+    }
+
+    #[test]
+    fn sub_attributes_paint_modifier_names_only() -> Result<(), Box<dyn std::error::Error>> {
+        let cases: &[(&str, Vec<&str>)] = &[
+            ("sub f :lvalue { }", vec!["lvalue"]),
+            ("sub f ($$) :lvalue:locked { }", vec!["lvalue", "locked"]),
+            ("sub f ($$) :lvalue locked { }", vec!["lvalue", "locked"]),
+            ("sub f ($$) : lvalue { }", vec!["lvalue"]),
+            ("sub k :isa(Foo::Bar) :lvalue { }", vec!["isa", "lvalue"]),
+            ("sub m :custom(arg:with:colons) { }", vec!["custom"]),
+            ("sub n :lvalue :lvalue { }", vec!["lvalue", "lvalue"]),
+            ("my $s = sub ($$) :lvalue { 1 };", vec!["lvalue"]),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(&painted_tokens(source, "modifier")?, expected, "source: {source}");
+        }
+        // Duplicate attributes resolve to distinct spans.
+        let modifier_type = *legend().map.get("modifier").ok_or("modifier missing")?;
+        let spans: Vec<(u32, u32)> = absolute_tokens("sub n :lvalue :lvalue { }")?
+            .into_iter()
+            .filter(|t| t.3 == modifier_type)
+            .map(|t| (t.1, t.2))
+            .collect();
+        assert_eq!(spans.len(), 2);
+        assert_ne!(spans[0].0, spans[1].0);
+        // :prototype($$) paints the attribute name and the real prototype;
+        // the $$ inside the attribute argument stays unpainted.
+        let with_proto = "sub j :prototype($$) ($$) { }";
+        assert_eq!(painted_tokens(with_proto, "modifier")?, vec!["prototype"]);
+        assert_eq!(painted_tokens(with_proto, "parameter")?, vec!["($$)"]);
+        Ok(())
+    }
+
+    #[test]
+    fn leading_attribute_argument_is_not_a_prototype() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub foo :lvalue ($;@) { }";
+        assert!(painted_tokens(source, "parameter")?.is_empty());
+        assert_eq!(painted_tokens(source, "modifier")?, vec!["lvalue"]);
+        Ok(())
+    }
+
+    #[test]
+    fn modern_declaration_attributes_not_painted_here() -> Result<(), Box<dyn std::error::Error>> {
+        for source in ["method bar ($z) :lvalue { }", "field $y :param;", "my $x :shared;"] {
+            assert!(painted_tokens(source, "modifier")?.is_empty(), "source: {source}");
+        }
         Ok(())
     }
 

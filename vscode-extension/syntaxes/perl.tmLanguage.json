@@ -16,6 +16,9 @@
             "include": "#numbers"
         },
         {
+            "include": "#subroutine-declaration"
+        },
+        {
             "include": "#variables"
         },
         {
@@ -186,6 +189,42 @@
                 {
                     "name": "constant.numeric.integer.perl",
                     "match": "\\b\\d[\\d_]*\\b"
+                }
+            ]
+        },
+        "subroutine-declaration": {
+            "name": "meta.declaration.subroutine.perl",
+            "begin": "(?<!->)\\b(sub)\\b",
+            "beginCaptures": {
+                "1": {
+                    "name": "keyword.other.perl"
+                }
+            },
+            "end": "(?=[{;])",
+            "patterns": [
+                {
+                    "include": "#comments"
+                },
+                {
+                    "name": "variable.parameter.prototype.perl",
+                    "match": "\\(\\s*(?:(?:[\\$@%_&+\\-\\*\\\\;]|\\[[\\$@%\\s]+\\])\\s*)*\\)"
+                },
+                {
+                    "match": "(:)\\s*([A-Za-z_]\\w*)(\\([^)]*\\))?",
+                    "captures": {
+                        "1": {
+                            "name": "entity.other.attribute-name.perl"
+                        },
+                        "2": {
+                            "name": "entity.other.attribute-name.perl"
+                        }
+                    }
+                },
+                {
+                    "include": "#variables"
+                },
+                {
+                    "include": "#numbers"
                 }
             ]
         },
