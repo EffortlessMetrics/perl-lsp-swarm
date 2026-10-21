@@ -1,4 +1,4 @@
-"""Synthetic qualification consumer prototype. No execution or lifecycle authority."""
+"""Synthetic qualification and observed-report checks; no lifecycle authority."""
 import argparse
 import collections
 import hashlib
@@ -62,6 +62,244 @@ def ordinary_outcome_consistent(row):
             and all(number(value, True) for value in footer.values()), 'ordinary typed footer counts')
     require(identical(footer, counts) and row['footer_consistent'] is True, 'ordinary footer/outcome counts')
     require(row['failed'] == [] and counts['failed'] == 0 and row['footer_status'] == 'ok', 'ordinary failed outcomes')
+
+
+def check_report_closure(report, route, expected_owner, expected_resources, *, require_product=True):
+    b = report['terminal_owner_binding']
+    require(b['verified'] is True and b['operation'] == ('test' if route == 'ordinary' else 'run'), 'terminal operation')
+    require(identical(b['descriptor'], expected_owner), 'terminal owner')
+    require(identical(b['descriptor']['resources'], expected_resources), 'owner resources')
+    for key in ('lease', 'lease_identity', 'lease_marker', 'marker_identity'):
+        require(identical(b['descriptor'][key], b['settlement'][key]), 'original owner ' + key)
+    for key in ('lease_identity', 'marker_identity'):
+        identity = b['descriptor'][key]
+        require(isinstance(identity, list) and len(identity) == 2 and all(number(x, True) for x in identity), 'typed owner inode')
+    require(closed(b['settlement']) and identical(report['outer_settlement'], b['settlement']), 'terminal closure')
+    require(b['current_lease_and_marker_absent'] is True, 'lease absence')
+    # A timed-out original owner can prove kernel closure without producing
+    # a normal product receipt. Synthetic callers keep the historic requirement.
+    if require_product or b.get('product') is not None:
+        require(b['product']['lease'] == b['descriptor']['lease'], 'product owner')
+        require(type(b['product']['exit_code']) is int and b['product']['exit_code'] == report['storage']['command_status'], 'product status')
+
+
+def check_report_execution(report, route, closure_status, inner_receipts_complete, expected_packages):
+    status = report['storage']['command_status']
+    require(type(status) is int, 'typed command status')
+    if status != 0:
+        raise EvidenceError('nonzero command status ' + str(status))
+    require(closure_status == 'PASS', 'closure unproven')
+    require(inner_receipts_complete is True, 'missing inner receipt')
+    require(report['terminal_owner_binding']['settlement']['cancelled'] is False, 'cancelled owner')
+    require(report['expected_packages'] == expected_packages and report['package_inventory_verified'] is True, 'package inventory')
+    for field in ('unit_inventory_complete', 'observed_case_inventory_complete', 'case_inventory_complete', 'case_execution_successful', 'case_receipts_successful_and_settled'):
+        require(report[field] is True, field)
+    require(report['receipt_errors'] == [], 'receipt errors')
+    outcomes = report['case_outcomes']
+    require(isinstance(outcomes, dict) and bool(outcomes), 'nonempty case outcomes map')
+    for row in outcomes.values():
+        require(isinstance(row, dict), 'case outcome row object')
+        require(isinstance(row['cases'], list) and isinstance(row['ignored'], list), 'case outcome row lists')
+        require(all(isinstance(name, str) for name in row['cases'] + row['ignored']), 'case outcome row identities')
+        if route == 'ordinary':
+            ordinary_outcome_consistent(row)
+
+
+def check_report_inventory(report, units, expected_packages, inventory_binding=None, synthetic_features=None):
+    cases = report['case_outcomes']
+    require(isinstance(units, dict) and bool(units) and set(cases) == set(units), 'unit/case population')
+    identities = []
+    for key in units:
+        identity = json.loads(key)
+        require(isinstance(identity, list) and len(identity) == 4, 'canonical unit identity shape')
+        require(all(isinstance(identity[i], str) and bool(identity[i]) for i in (0, 1, 3)) and isinstance(identity[2], list) and bool(identity[2]) and all(isinstance(x, str) for x in identity[2]), 'canonical unit identity types')
+        require(key == json.dumps(identity, separators=(',', ':')), 'canonical serialized unit key')
+        source_path = PurePosixPath(identity[3])
+        require(not source_path.is_absolute() and source_path.as_posix() == identity[3]
+                and '..' not in source_path.parts and bool(source_path.parts), 'relative canonical unit source path')
+        identities.append(identity[0])
+    require(set(identities) == set(expected_packages), 'unit packages')
+    require(identical(report['unit_count_by_package'], dict(collections.Counter(identities))), 'unit count by package contradicts projection')
+    for key, unit in units.items():
+        require(isinstance(unit.get('features'), list) and isinstance(unit.get('profile'), dict), 'unit features/profile')
+        if synthetic_features is not None:
+            require(unit['features'] == synthetic_features and unit['profile'].get('test') is True, 'synthetic unit configuration applicability')
+        else:
+            # Cargo resolves features per package/unit. Do not impose the toy
+            # fixture's global feature list on delivered compiler projections.
+            require(all(isinstance(feature, str) and bool(feature) for feature in unit['features'])
+                    and unit['features'] == sorted(set(unit['features'])), 'canonical unit features')
+            require(unit['profile'].get('test') is True, 'observed test unit profile')
+        row = cases[key]
+        require(isinstance(row['cases'], list) and isinstance(row['ignored'], list), 'case lists')
+        require(all(isinstance(x, str) for x in row['cases'] + row['ignored']), 'case identities')
+        require(collections.Counter(row['ignored']) <= collections.Counter(row['cases']), 'ignored multiplicity')
+    projection = {key: {field: row[field] for field in ('cases', 'ignored')} for key, row in cases.items()}
+    require(report['units_sha256'] == digest(units), 'unit hash')
+    if inventory_binding is not None:
+        require(report['units_sha256'] == inventory_binding['units_sha256'], 'unit hash')
+    require(report['cases_sha256'] == digest(projection), 'case hash')
+    if inventory_binding is not None:
+        require(report['cases_sha256'] == inventory_binding['cases_sha256'], 'case hash')
+    for field, count in (('unit_count', len(units)), ('observed_case_targets', len(cases)), ('case_count', sum(len(x['cases']) for x in cases.values())), ('ignored_count', sum(len(x['ignored']) for x in cases.values()))):
+        require(type(report[field]) is int and report[field] == count, field)
+    return projection
+
+
+def check_sampled_allocations(report):
+    s = report['storage']
+    require(number(s['sampled_peak_allocated_bytes'], True) and number(s['retained_allocated_bytes'], True) and s['retained_allocated_bytes'] <= s['sampled_peak_allocated_bytes'], 'typed allocated bytes/retained peak')
+    # This attribution is diagnostic, not a savings denominator or
+    # reserve authority. Absence is permitted; present facts must
+    # not contradict the same retained observation.
+    retained = report.get('retained_by_root')
+    if retained is not None:
+        require(isinstance(retained, list), 'retained attribution list')
+        for row in retained:
+            require(isinstance(row, dict) and isinstance(row.get('root'), str)
+                    and Path(row['root']).is_absolute() and number(row.get('allocated_bytes'), True), 'typed retained attribution')
+        require(sum(row['allocated_bytes'] for row in retained) == s['retained_allocated_bytes'], 'retained attribution total')
+
+
+OBSERVED_PLANES = ('execution', 'inventory', 'storage', 'reserve', 'closure')
+OBSERVED_MISSING_AUTHORITY = (
+    'candidate_source_attempt_attestation', 'requested_experiment_cells',
+    'whole_envelope_accounting_through_packaging', 'supported_reserve_basis',
+    'policy_clock_mapping', 'component_qualification',
+)
+REPORT_ERRORS = (EvidenceError, KeyError, TypeError, ValueError, AttributeError, OverflowError)
+
+
+def evaluate_observed_report(report, unit_projection, *, expected_packages=PACKAGES):
+    """Check delivered report consistency, not its source/attempt authenticity.
+
+    The caller owns acquisition and artifact/attempt binding. PASS here names an
+    observed plane only: sampled storage is neither whole-envelope accounting nor
+    a capacity bound, and observed reserve is not a justified reserve policy.
+    No input flag, synthetic attestation or invented clock can promote this
+    function to production qualification.
+    """
+    result = {'scope': 'observed-report-consistency',
+              'production_qualification': 'NOT_PROVEN',
+              'planes': {name: 'NOT_PROVEN' for name in OBSERVED_PLANES},
+              'reasons': [], 'missing_authority': list(OBSERVED_MISSING_AUTHORITY)}
+    verdicts = result['planes']
+
+    def plane(name, check):
+        try:
+            check()
+            verdicts[name] = 'PASS'
+        except REPORT_ERRORS as error:
+            verdicts[name] = 'NOT_PROVEN' if isinstance(error, KeyError) else 'REFUSED'
+            result['reasons'].append(name + ': ' + str(error))
+
+    try:
+        require(isinstance(report, dict), 'report object')
+        require(report['mode'] in ('ordinary', 'cohort'), 'report mode')
+        require(isinstance(expected_packages, (list, tuple)) and bool(expected_packages)
+                and all(isinstance(name, str) and bool(name) for name in expected_packages)
+                and len(set(expected_packages)) == len(expected_packages), 'expected packages')
+        route = report['mode']
+    except REPORT_ERRORS as error:
+        result['reasons'].append('report: ' + str(error))
+        return result
+
+    def closure():
+        binding = report['terminal_owner_binding']
+        descriptor = binding['descriptor']
+        require(isinstance(descriptor, dict), 'owner descriptor')
+        for key in ('lease', 'lease_marker'):
+            require(isinstance(descriptor[key], str) and Path(descriptor[key]).is_absolute(), 'owner path')
+        resources = descriptor['resources']
+        require(isinstance(resources, dict) and set(resources) == {'target', 'build', 'cargo_home', 'temp'}
+                and all(isinstance(value, str) and Path(value).is_absolute() for value in resources.values()), 'owner resources')
+        check_report_closure(report, route, descriptor, resources, require_product=False)
+    plane('closure', closure)
+    def execution():
+        if report['storage']['command_status'] == 0 and report['terminal_owner_binding'].get('product') is None:
+            raise KeyError('normal_product_receipt')
+        check_report_execution(report, route, verdicts['closure'],
+                               report['case_receipts_successful_and_settled'], list(expected_packages))
+    plane('execution', execution)
+    storage = report.get('storage')
+    status = storage.get('command_status') if isinstance(storage, dict) else None
+    if type(status) is int and status != 0:
+        verdicts['execution'] = 'REFUSED' if status == 75 else 'FAILED'
+
+    def inventory():
+        if report.get('package_inventory_verified') is not True:
+            raise KeyError('captured_Cargo_package_inventory')
+        if unit_projection is None:
+            raise KeyError('producer_canonical_unit_projection')
+        json.dumps(unit_projection, allow_nan=False)
+        check_report_inventory(report, unit_projection, expected_packages)
+    plane('inventory', inventory)
+
+    def sampled_storage():
+        s = report['storage']
+        require(s['kind'] == 'summary' and s['peak_is_bound'] is False, 'terminal sampled storage summary')
+        require(report['measurement_valid'] is True and s['measurement_complete'] is True, 'measurement validity')
+        require(s['worker_failure'] is None, 'observer failure')
+        check_sampled_allocations(report)
+        require(number(report['max_sample_gap_seconds']), 'sample gap')
+        require(type(s['sample_count']) is int and s['sample_count'] >= 2, 'sample count')
+        require(number(s['command_elapsed_seconds']) and number(s['elapsed_seconds'])
+                and s['elapsed_seconds'] >= s['command_elapsed_seconds'], 'summary elapsed clocks')
+        require(number(report['vanished_entries'], True) and report['vanished_entries'] == 0, 'vanished entries')
+    plane('storage', sampled_storage)
+
+    def reserve():
+        require(verdicts['storage'] == 'PASS', 'valid measurement required')
+        require(report['observed_reserve_preserved'] is True
+                and report['storage']['observed_reserve_preserved'] is True, 'reserve loss')
+        available = report['minimum_free_bytes']
+        require(isinstance(available, dict) and bool(available)
+                and all(isinstance(key, str) and bool(key) and number(value, True)
+                        for key, value in available.items()), 'typed filesystem free bytes')
+    plane('reserve', reserve)
+    return result
+
+
+def compare_observed_reports(reports, unit_projections, *, expected_packages=PACKAGES):
+    """Compare complete delivered projections without inventing missing authority."""
+    result = {'scope': 'observed-report-comparison',
+              'production_qualification': 'NOT_PROVEN', 'equivalence': 'NOT_PROVEN',
+              'routes': {}, 'reasons': [], 'missing_authority': list(OBSERVED_MISSING_AUTHORITY)}
+    if not isinstance(reports, dict) or not isinstance(unit_projections, dict):
+        result['reasons'].append('report and unit projection mappings required')
+        return result
+    for route in ('ordinary', 'cohort'):
+        if route not in reports or route not in unit_projections:
+            result['reasons'].append(route + ': delivered report or unit projection unavailable')
+            continue
+        result['routes'][route] = evaluate_observed_report(
+            reports[route], unit_projections[route], expected_packages=expected_packages)
+    if len(result['routes']) != 2:
+        return result
+    try:
+        for route in ('ordinary', 'cohort'):
+            require(reports[route]['mode'] == route, 'comparison route identity')
+        a, b = reports['ordinary'], reports['cohort']
+        require(isinstance(a['head'], str) and re.fullmatch(r'[0-9a-f]{40}', a['head']) is not None
+                and a['head'] == b['head'], 'comparison observed source head')
+        # Compare independently recomputed projections, not equal counts or
+        # unvalidated digest fields. Per-unit feature/profile differences matter.
+        require(identical(unit_projections['ordinary'], unit_projections['cohort']), 'unit projections differ')
+        cases = [{key: {field: row[field] for field in ('cases', 'ignored')}
+                  for key, row in reports[route]['case_outcomes'].items()}
+                 for route in ('ordinary', 'cohort')]
+        require(identical(cases[0], cases[1]), 'case projections differ')
+        if all(result['routes'][route]['planes'][plane] == 'PASS'
+               for route in ('ordinary', 'cohort') for plane in ('execution', 'inventory')):
+            result['equivalence'] = 'PASS'
+    except REPORT_ERRORS as error:
+        result['equivalence'] = 'NOT_PROVEN' if isinstance(error, KeyError) else 'REFUSED'
+        result['reasons'].append('equivalence: ' + str(error))
+    # Never turn a known invalid projection into mere absence because execution
+    # is independently missing or failed.
+    if any(row['planes']['inventory'] == 'REFUSED' for row in result['routes'].values()):
+        result['equivalence'] = 'REFUSED'
+    return result
 
 
 def evaluate(document):
@@ -148,73 +386,16 @@ def evaluate(document):
                     continue
                 plane('component', lambda: require(p['component_qualified'] is True, 'component evidence'))
                 def closure():
-                    b = r['terminal_owner_binding']
-                    require(b['verified'] is True and b['operation'] == ('test' if route == 'ordinary' else 'run'), 'terminal operation')
-                    require(identical(b['descriptor'], p['bindings']['owner']), 'terminal owner')
-                    require(identical(b['descriptor']['resources'], p['bindings']['resources']), 'owner resources')
-                    for key in ('lease', 'lease_identity', 'lease_marker', 'marker_identity'):
-                        require(identical(b['descriptor'][key], b['settlement'][key]), 'original owner ' + key)
-                    for key in ('lease_identity', 'marker_identity'):
-                        identity = b['descriptor'][key]
-                        require(isinstance(identity, list) and len(identity) == 2 and all(number(x, True) for x in identity), 'typed owner inode')
-                    require(closed(b['settlement']) and identical(r['outer_settlement'], b['settlement']), 'terminal closure')
-                    require(b['current_lease_and_marker_absent'] is True, 'lease absence')
-                    require(b['product']['lease'] == b['descriptor']['lease'], 'product owner')
-                    require(type(b['product']['exit_code']) is int and b['product']['exit_code'] == r['storage']['command_status'], 'product status')
+                    check_report_closure(r, route, p['bindings']['owner'], p['bindings']['resources'])
                 plane('closure', closure)
                 def execution():
-                    status = r['storage']['command_status']
-                    require(type(status) is int, 'typed command status')
-                    if status != 0:
-                        v['execution'] = 'REFUSED' if status == 75 else 'FAILED'
-                        raise EvidenceError('nonzero command status ' + str(status))
-                    require(v['closure'] == 'PASS', 'closure unproven')
-                    require(p['inner_receipts_complete'] is True, 'missing inner receipt')
-                    require(r['terminal_owner_binding']['settlement']['cancelled'] is False, 'cancelled owner')
-                    require(r['expected_packages'] == PACKAGES and r['package_inventory_verified'] is True, 'package inventory')
-                    for field in ('unit_inventory_complete', 'observed_case_inventory_complete', 'case_inventory_complete', 'case_execution_successful', 'case_receipts_successful_and_settled'):
-                        require(r[field] is True, field)
-                    require(r['receipt_errors'] == [], 'receipt errors')
-                    outcomes = r['case_outcomes']
-                    require(isinstance(outcomes, dict) and bool(outcomes), 'nonempty case outcomes map')
-                    for row in outcomes.values():
-                        require(isinstance(row, dict), 'case outcome row object')
-                        require(isinstance(row['cases'], list) and isinstance(row['ignored'], list), 'case outcome row lists')
-                        require(all(isinstance(name, str) for name in row['cases'] + row['ignored']), 'case outcome row identities')
-                        if route == 'ordinary':
-                            ordinary_outcome_consistent(row)
+                    check_report_execution(r, route, v['closure'], p['inner_receipts_complete'], PACKAGES)
                 plane('execution', execution)
                 status = r.get('storage', {}).get('command_status')
                 if type(status) is int and status != 0:
                     v['execution'] = 'REFUSED' if status == 75 else 'FAILED'
                 def inventory():
-                    units = p['unit_projection']
-                    cases = r['case_outcomes']
-                    require(isinstance(units, dict) and bool(units) and set(cases) == set(units), 'unit/case population')
-                    identities = []
-                    for key in units:
-                        identity = json.loads(key)
-                        require(isinstance(identity, list) and len(identity) == 4, 'canonical unit identity shape')
-                        require(all(isinstance(identity[i], str) and bool(identity[i]) for i in (0, 1, 3)) and isinstance(identity[2], list) and bool(identity[2]) and all(isinstance(x, str) for x in identity[2]), 'canonical unit identity types')
-                        require(key == json.dumps(identity, separators=(',', ':')), 'canonical serialized unit key')
-                        source_path = PurePosixPath(identity[3])
-                        require(not source_path.is_absolute() and source_path.as_posix() == identity[3]
-                                and '..' not in source_path.parts and bool(source_path.parts), 'relative canonical unit source path')
-                        identities.append(identity[0])
-                    require(set(identities) == set(PACKAGES), 'unit packages')
-                    require(identical(r['unit_count_by_package'], dict(collections.Counter(identities))), 'unit count by package contradicts projection')
-                    for key, unit in units.items():
-                        require(isinstance(unit.get('features'), list) and isinstance(unit.get('profile'), dict), 'unit features/profile')
-                        require(unit['features'] == p['bindings']['configuration']['features'] and unit['profile'].get('test') is True, 'synthetic unit configuration applicability')
-                        row = cases[key]
-                        require(isinstance(row['cases'], list) and isinstance(row['ignored'], list), 'case lists')
-                        require(all(isinstance(x, str) for x in row['cases'] + row['ignored']), 'case identities')
-                        require(collections.Counter(row['ignored']) <= collections.Counter(row['cases']), 'ignored multiplicity')
-                    projection = {key: {field: row[field] for field in ('cases', 'ignored')} for key, row in cases.items()}
-                    require(r['units_sha256'] == digest(units) == p['bindings']['inventory']['units_sha256'], 'unit hash')
-                    require(r['cases_sha256'] == digest(projection) == p['bindings']['inventory']['cases_sha256'], 'case hash')
-                    for field, count in (('unit_count', len(units)), ('observed_case_targets', len(cases)), ('case_count', sum(len(x['cases']) for x in cases.values())), ('ignored_count', sum(len(x['ignored']) for x in cases.values()))):
-                        require(type(r[field]) is int and r[field] == count, field)
+                    check_report_inventory(r, p['unit_projection'], PACKAGES, p['bindings']['inventory'], p['bindings']['configuration']['features'])
                 plane('equivalence', inventory)
                 def storage():
                     s = r['storage']; m = p['measurement']
@@ -224,17 +405,7 @@ def evaluate(document):
                     require(identical(m['binding'], p['bindings']), 'measurement source/attempt binding')
                     require(m['resources'] == p['bindings']['resources'] and m['whole_envelope_through_packaging'] is True, 'measurement envelope')
                     require(m['accounting_complete'] is True and m['limitations_recorded'] is True, 'accounting/limitations')
-                    require(number(s['sampled_peak_allocated_bytes'], True) and number(s['retained_allocated_bytes'], True) and s['retained_allocated_bytes'] <= s['sampled_peak_allocated_bytes'], 'typed allocated bytes/retained peak')
-                    # This attribution is diagnostic, not a savings denominator or
-                    # reserve authority. Absence is permitted; present facts must
-                    # not contradict the same retained observation.
-                    retained = r.get('retained_by_root')
-                    if retained is not None:
-                        require(isinstance(retained, list), 'retained attribution list')
-                        for row in retained:
-                            require(isinstance(row, dict) and isinstance(row.get('root'), str)
-                                    and Path(row['root']).is_absolute() and number(row.get('allocated_bytes'), True), 'typed retained attribution')
-                        require(sum(row['allocated_bytes'] for row in retained) == s['retained_allocated_bytes'], 'retained attribution total')
+                    check_sampled_allocations(r)
                     require(number(r['max_sample_gap_seconds']) and number(m['maximum_gap_seconds']) and r['max_sample_gap_seconds'] <= m['maximum_gap_seconds'], 'sample gap')
                     require(type(m['sample_count']) is int and m['sample_count'] >= 2, 'sample count')
                     require(type(s['sample_count']) is int and s['sample_count'] == m['sample_count'], 'summary sample count')

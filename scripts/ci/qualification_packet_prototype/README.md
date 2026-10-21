@@ -117,6 +117,17 @@ Production integration requires authoritative requested cells, source/run/attemp
 artifact attestation, applicable unit projection and policy-clock receipts, real
 inner/outer receipts and whole-envelope measurements through packaging. These
 must come through the existing #17623/#17654/#17655/#17666 owners and retained-packet
-join. This prototype adds no real packet adapter, protected check, retry, gate
-activation or cleanup path. Changelog, product migration and release changes are
+join. The synthetic entry point adds no production packet authority, protected check,
++retry, gate activation or cleanup path. Changelog, product migration and release changes are
 not applicable to this isolated developer proof.
+
+## Retained real-packet diagnostic extension (#17897)
+
+`retained_packet.py` now consumes delivered campaign archives and saved API
+records, using shared report checks in this evaluator. See
+[the field mapping and remaining authorities](REAL_PACKET_MAPPING.md).
+The synthetic entry point and its ceiling above are unchanged. The real adapter
+also remains diagnostic: byte consistency, original outcomes and independent
+closure are inspectable, but production qualification requires the missing
+execution-time source/attempt, requested-cell, full accounting and clock joins.
+No production gate, workflow or admission behavior is activated by this addition.
