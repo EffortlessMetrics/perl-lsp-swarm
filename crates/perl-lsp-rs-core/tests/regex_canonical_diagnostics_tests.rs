@@ -477,6 +477,31 @@ fn quantifier_follows_nothing_is_published_as_pl1008() {
     assert_eq!(legacy_published[0].range, published[0].range);
 }
 
+/// Count divergence between the two publication paths, pinned deliberately:
+/// the canonical projection publishes every retained finding, while the
+/// compatibility path (the parser's legacy per-operator scan, fed by the
+/// first-only `find_quantifier_follows_nothing` finder) records one error per
+/// regex body. This mirrors the nested-quantifier contract, whose finder is
+/// likewise first-only while the retained facts keep every finding. Aligning
+/// the legacy count would change shipped parser-error behavior for every
+/// multi-finding pattern, which is outside the PL1008 claim.
+#[test]
+fn quantifier_follows_nothing_count_divergence_is_pinned() {
+    let source = "my $s = 'x';\nmy $m = $s =~ /*a|*b/;\n";
+
+    let canonical = canonical_diagnostics(source);
+    let published = with_code(&canonical, "PL1008");
+    assert_eq!(published.len(), 2, "canonical path publishes every finding: {canonical:#?}");
+
+    let legacy = compatibility_diagnostics(source);
+    let legacy_published = with_code(&legacy, "PL1008");
+    assert_eq!(legacy_published.len(), 1, "legacy path publishes the first only: {legacy:#?}");
+    assert_eq!(
+        legacy_published[0].range, published[0].range,
+        "both paths must agree on the first finding's bytes"
+    );
+}
+
 /// A clean pattern publishes nothing. Without this, every assertion above could be
 /// satisfied by a projection that reports on all regexes.
 #[test]

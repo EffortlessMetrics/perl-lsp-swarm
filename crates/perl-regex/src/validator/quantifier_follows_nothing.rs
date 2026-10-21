@@ -51,18 +51,25 @@ pub(crate) fn find_quantifiers_following_nothing(
                     }
                 }
             }
+            RegexEventKind::QuotedLiteral { .. } => {
+                // An empty `\Q\E` quotes zero characters, so it is not a
+                // quantifiable atom: perl rejects `\Q\E*a` with
+                // "Quantifier follows nothing" (verified against perl 5.42).
+                let text = pattern.get(event.range.start..event.range.end);
+                last_atom = if text == Some(r"\Q\E") { LastAtom::Nothing } else { LastAtom::Atom };
+            }
             RegexEventKind::Atom
             | RegexEventKind::Escape
-            | RegexEventKind::QuotedLiteral { .. }
             | RegexEventKind::CharacterClass { .. }
             | RegexEventKind::UnicodeProperty { .. }
             | RegexEventKind::Interpolation { .. } => {
                 last_atom = LastAtom::Atom;
             }
-            RegexEventKind::Comment(_) => {}
-            RegexEventKind::ModeChange
-            | RegexEventKind::Alternation
-            | RegexEventKind::Malformed(_) => {
+            // A malformed construct (e.g. an unmatched `)`) is reported on its
+            // own; it does not erase the preceding atom. Perl reports only
+            // "Unmatched )" for `a)**b`, never a follows-nothing quantifier.
+            RegexEventKind::Comment(_) | RegexEventKind::Malformed(_) => {}
+            RegexEventKind::ModeChange | RegexEventKind::Alternation => {
                 last_atom = LastAtom::Nothing;
             }
         }

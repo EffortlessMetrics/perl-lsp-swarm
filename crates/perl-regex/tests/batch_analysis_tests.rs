@@ -271,6 +271,59 @@ fn quantifier_follows_nothing_finder_projects_to_absolute_offset()
 }
 
 #[test]
+fn empty_quoted_literal_is_not_a_quantifiable_atom() -> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    // Verified against perl 5.42: `qr/\Q\E*a/` fails to compile with
+    // "Quantifier follows nothing in regex". An empty `\Q\E` quotes zero
+    // characters, so the quantifier after it follows nothing.
+    let analysis = validator.analyze(r"\Q\E*a");
+    assert_eq!(analysis.facts.quantifier_follows_nothing.len(), 1, "{analysis:?}");
+    assert_eq!(analysis.facts.quantifier_follows_nothing[0].start, 4);
+
+    // A non-empty quoted literal remains a quantifiable atom.
+    let analysis = validator.analyze(r"\Qa\E*");
+    assert!(analysis.facts.quantifier_follows_nothing.is_empty(), "{analysis:?}");
+    Ok(())
+}
+
+#[test]
+fn malformed_group_close_does_not_erase_the_preceding_atom()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    // Verified against perl 5.42: `a)**b` reports only "Unmatched )". The
+    // malformed close must not reset the preceding atom, or the quantifiers
+    // after it would be spuriously flagged as following nothing.
+    let analysis = validator.analyze("a)**b");
+    assert!(analysis.facts.quantifier_follows_nothing.is_empty(), "{analysis:?}");
+    // The stream still records the pattern as malformed; only the spurious
+    // follows-nothing finding is gone.
+    assert!(analysis.malformed, "{analysis:?}");
+    Ok(())
+}
+
+#[test]
+fn quantifier_follows_nothing_finder_reports_first_while_facts_keep_all()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Divergence pin, mirroring the nested-quantifier contract
+    // (`find_nested_quantifier` is likewise first-only while
+    // `facts.nested_quantifiers` keeps every finding): the typed analysis
+    // retains both follows-nothing quantifiers in `*a|*b`, and the
+    // compatibility finder projects only the first, exactly as the parser's
+    // legacy per-operator scan records one error per regex body.
+    let validator = RegexValidator::new();
+    let analysis = validator.analyze("*a|*b");
+    let starts: Vec<usize> =
+        analysis.facts.quantifier_follows_nothing.iter().map(|range| range.start).collect();
+    assert_eq!(starts, vec![0, 3]);
+
+    let finding = validator
+        .find_quantifier_follows_nothing("*a|*b", 20)
+        .ok_or("expected quantifier-follows-nothing finding")?;
+    assert_eq!(finding.offset, 20);
+    Ok(())
+}
+
+#[test]
 fn typed_analysis_projects_current_scanner_findings() -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::with_config(RegexValidationConfig {
         max_nesting: 10,

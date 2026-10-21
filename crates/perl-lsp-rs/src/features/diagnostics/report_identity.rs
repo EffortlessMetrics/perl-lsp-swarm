@@ -59,7 +59,10 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 // subjects, so without this bump a client holding a pre-change ID could be told
 // `unchanged` and keep diagnostics that predate every one of those. The cost is one
 // `full` report per document after upgrade, which is what the pin is for.
-const RULE_CATALOG_SCHEMA_VERSION: u32 = 2;
+// Bumped to 3 by #16608: `PL1008` (quantifier follows nothing) is a new catalog
+// identity, so a pre-change client could otherwise be told `unchanged` and never
+// receive it. Same cost as the #7024 bump: one `full` report per document.
+const RULE_CATALOG_SCHEMA_VERSION: u32 = 3;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
@@ -595,6 +598,14 @@ mod tests {
             return format!("C:{path_or_uri}");
         }
         path_or_uri.to_string()
+    }
+
+    #[test]
+    fn rule_catalog_schema_version_pins_the_pl1008_bump() {
+        // #16608 added PL1008 to the built-in catalog; the pin must stay at 3
+        // (see the bump comment on the constant) or pre-change clients could
+        // be told `unchanged` and never receive the new diagnostic.
+        assert_eq!(RULE_CATALOG_SCHEMA_VERSION, 3);
     }
 
     #[test]
