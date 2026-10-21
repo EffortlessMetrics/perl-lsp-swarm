@@ -1411,6 +1411,7 @@ pub fn perl_parser_core::hir::AssignMode::clone(&self) -> perl_parser_core::hir:
 pub fn perl_parser_core::hir::AssignMode::eq(&self, other: &perl_parser_core::hir::AssignMode) -> bool
 pub fn perl_parser_core::hir::AssignMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::hir::BarewordRole
+pub perl_parser_core::hir::BarewordRole::DynamicIndirectObject
 pub perl_parser_core::hir::BarewordRole::Expression
 pub perl_parser_core::hir::BarewordRole::HashKey
 pub perl_parser_core::hir::BarewordRole::IndirectObject
