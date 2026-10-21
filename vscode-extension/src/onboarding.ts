@@ -198,15 +198,18 @@ export class OnboardingManager {
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.outputChannel.appendLine(`[onboarding] perltidy not found: ${msg}`);
+      this.outputChannel.appendLine(`[onboarding] perltidy check failed: ${msg}`);
       return {
         label,
         ok: false,
         status: HealthCheckStatus.Warning,
         detail:
-          'perltidy not found. Native formatting is the default and does not ' +
-          'require perltidy; install it only for the external/compatibility ' +
-          'formatter mode. Install via: cpanm Perl::Tidy',
+          (isSpawnNotFound(err)
+            ? 'The perltidy check could not start because a required command was not found. '
+            : 'The perltidy check failed. ') +
+          'Check the Output panel for details and run `perltidy --version` in a terminal to diagnose PATH, permissions, or tool configuration. ' +
+          'Native formatting is the default and does not require perltidy. ' +
+          'If perltidy is not installed and you need external/compatibility formatting, install it via: cpanm Perl::Tidy',
       };
     }
   }
