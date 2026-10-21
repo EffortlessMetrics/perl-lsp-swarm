@@ -12,10 +12,12 @@
 //!    `PL900` warnings for those not covered by the effective feature set.
 //!
 //! When no version is declared at all, the check emits nothing, with one
-//! exception: subroutine signatures still warn, because a signature without
-//! the `signatures` feature does not compile on any Perl. Every other arm
-//! stays silent without a declared version, since undeclared version is
-//! ambiguous (the file may be targeting the system Perl).
+//! exception: subroutine signatures still warn, because without the
+//! `signatures` feature the parenthesised list is parsed as a prototype,
+//! so the intended parameters are never bound as a signature on any Perl.
+//! Every other arm stays silent without a declared version, since
+//! undeclared version is ambiguous (the file may be targeting the
+//! system Perl).
 //!
 //! # Perl 5.42 feature-gating
 //!
@@ -253,8 +255,9 @@ pub(crate) fn check_version_compat_with_pragma_map(
         None => {
             let Some(project_version) = project_version else {
                 // No declared version anywhere: only the signatures arm is
-                // carved out of the silence, since a signature without the
-                // feature fails on every Perl. All other arms stay silent.
+                // carved out of the silence, since without the feature the
+                // list is a prototype and binds no signature parameters.
+                // All other arms stay silent.
                 check_undeclared_signatures(node, pragma_map, diagnostics);
                 return;
             };
@@ -619,34 +622,33 @@ pub(crate) fn check_version_compat_with_pragma_map(
 /// Versionless signatures check: the one PL900 arm that runs without any
 /// declared version.
 ///
-/// A subroutine signature without the `signatures` feature is a syntax
-/// error on every Perl release, so silence here would approve code that
-/// cannot compile anywhere. All other constructs stay silent without a
-/// declared version. Method declarations are skipped: methods live under
-/// `class`, which implies signatures, and the parser emits them as
-/// `NodeKind::Method`, never as signed subroutines. A signed subroutine
-/// nested inside a class body is likewise skipped.
+/// Without the `signatures` feature, Perl parses the parenthesised list
+/// after `sub NAME` as a prototype, not as a signature: verified on
+/// perl 5.42, `sub foo ($x) { return $_[0] }` is `syntax OK` with
+/// `prototype(\&foo)` equal to `$x`, the named parameter is never bound,
+/// `use strict` rejects the unbound `$x` in the body, and calls can fail
+/// prototype arity checks. Silence would therefore approve code whose
+/// intended signature silently does not take effect. The claim is
+/// deliberately narrower than "does not compile": the declaration alone
+/// can compile as a (possibly malformed) prototype. All other
+/// constructs stay silent without a declared version.
+///
+/// Method declarations are skipped by node kind, not by containment:
+/// the parser emits them as `NodeKind::Method`, and `class` enables
+/// method signatures. An ordinary `sub` nested in a class body is not
+/// covered by that: verified on perl 5.42, `use feature 'class';`
+/// alone leaves `class Foo { sub helper ($x) { ... } }` with prototype
+/// `$x`, while adding `use feature 'signatures';` makes `helper` a
+/// real signature. Plain signed subs inside classes therefore warn
+/// unless the lexical `signatures` feature is enabled.
 fn check_undeclared_signatures(
     node: &Node,
     pragma_map: &[(std::ops::Range<usize>, PragmaState)],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let mut class_ranges: Vec<(usize, usize)> = Vec::new();
-    walk_node(node, &mut |n| {
-        if matches!(&n.kind, NodeKind::Class { .. }) {
-            class_ranges.push((n.location.start, n.location.end));
-        }
-    });
-
     let mut pragma_cursor = PragmaQueryCursor::new();
     walk_node(node, &mut |n| {
         if !matches!(&n.kind, NodeKind::Subroutine { signature: Some(_), .. }) {
-            return;
-        }
-        if class_ranges
-            .iter()
-            .any(|&(start, end)| n.location.start >= start && n.location.end <= end)
-        {
             return;
         }
         let pragma_state = pragma_cursor.state_for_offset(pragma_map, n.location.start);
@@ -1504,10 +1506,11 @@ mod tests {
     // Versionless signatures carve-out (issue #16611)
     //
     // With no `use VERSION` and no project `[perl].version`, every PL900 arm
-    // stays silent except subroutine signatures: a signature without the
-    // feature is a syntax error on every Perl, so silence would approve code
-    // that compiles nowhere. The remediation must not reference a declared
-    // version, because there is none.
+    // stays silent except subroutine signatures: without the feature the
+    // list is parsed as a prototype and binds no signature parameters, so
+    // silence would approve a signature that never takes effect. The
+    // remediation must not reference a declared version, because there
+    // is none.
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -1612,15 +1615,59 @@ mod tests {
     }
 
     #[test]
-    fn versionless_signed_plain_sub_inside_class_does_not_emit_signature_pl900() {
+    fn versionless_signed_plain_sub_inside_class_emits_signature_pl900() {
         // A plain `sub` (not `method`) inside a class body is parsed as
-        // `NodeKind::Subroutine`, so only the `class_ranges` skip in
-        // `check_undeclared_signatures` keeps it silent; class implies
-        // signatures for its members.
-        let diags = version_compat_diags("class Foo { sub helper ($x) { $x } }\n");
+        // `NodeKind::Subroutine`. `class` enables method signatures only;
+        // verified on perl 5.42, without `signatures` the helper keeps
+        // prototype `$x` and binds no parameter, so it must warn.
+        let diags =
+            version_compat_diags("use feature 'class';\nclass Foo { sub helper ($x) { $x } }\n");
+        let sig_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("PL900") && d.message.contains("subroutine signatures")
+            })
+            .collect();
+        assert_eq!(
+            sig_diags.len(),
+            1,
+            "signed plain sub inside class without signatures must emit exactly one PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_signed_plain_sub_inside_class_with_signatures_is_silent() {
+        let diags = version_compat_diags(
+            "use feature 'class';\nuse feature 'signatures';\nclass Foo { sub helper ($x) { $x } }\n",
+        );
         assert!(
-            diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
-            "signed plain sub inside class must emit no PL900: {diags:#?}"
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "signatures feature must suppress the class-contained plain-sub PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_single_param_signature_still_warns_despite_prototype_parse() {
+        // Narrower-contract pin: on perl 5.42 `sub foo ($x) {...}` without
+        // the feature compiles as prototype `$x` (`perl -c` syntax OK), so
+        // this is not a "compiles nowhere" case. It still warns because
+        // the intended signature parameter is never bound.
+        let diags = version_compat_diags("sub foo ($x) { $x }\n");
+        let sig_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("PL900") && d.message.contains("subroutine signatures")
+            })
+            .collect();
+        assert_eq!(
+            sig_diags.len(),
+            1,
+            "single-param signature shape must emit exactly one PL900 despite prototype parsing: {diags:#?}"
+        );
+        assert_eq!(
+            sig_diags[0].severity,
+            DiagnosticSeverity::Warning,
+            "prototype-parsable signature PL900 must stay a Warning, not an error"
         );
     }
 
