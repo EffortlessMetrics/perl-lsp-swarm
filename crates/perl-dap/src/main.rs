@@ -190,6 +190,11 @@ fn parse_peer_connect_spec(spec: &str) -> Result<(String, u16), String> {
 /// Names the offending spec and the expected `HOST[:PORT]` format.
 fn parse_listen_bind(spec: &str) -> Result<(String, u16), String> {
     let spec = spec.trim();
+    // Tuple-based address resolution takes an IPv6 host without URL-style
+    // brackets. Normalize only the listen host; dial specs retain their brackets.
+    let unbracket_host = |host: &str| {
+        host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host).to_owned()
+    };
     if spec.is_empty() {
         return Ok(("127.0.0.1".to_string(), 0));
     }
@@ -197,11 +202,11 @@ fn parse_listen_bind(spec: &str) -> Result<(String, u16), String> {
     // ephemeral port; splitting it at its last colon would misread `1]` as a
     // port and fail startup on a documented bare-host form.
     if spec.ends_with(']') {
-        return Ok((spec.to_string(), 0));
+        return Ok((unbracket_host(spec), 0));
     }
     match spec.rsplit_once(':') {
         Some((host, port)) if !host.is_empty() => match port.trim().parse::<u16>() {
-            Ok(port) => Ok((host.to_string(), port)),
+            Ok(port) => Ok((unbracket_host(host), port)),
             Err(_) => Err(format!(
                 "invalid --external-peer-listen spec '{spec}': PORT must be numeric 0-65535 \
                  when given; expected HOST[:PORT], where a bare HOST or empty value binds an \
@@ -913,13 +918,53 @@ mod tests {
     fn listen_ephemeral_fallback_forms_survive_spec_validation() {
         assert_eq!(must(parse_listen_bind("")), ("127.0.0.1".to_owned(), 0));
         assert_eq!(must(parse_listen_bind("localhost")), ("localhost".to_owned(), 0));
-        assert_eq!(must(parse_listen_bind("[::1]")), ("[::1]".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("[::1]")), ("::1".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("[::1]:5000")), ("::1".to_owned(), 5000));
         assert_eq!(must(parse_listen_bind("127.0.0.1:5000")), ("127.0.0.1".to_owned(), 5000));
     }
 
     #[test]
+    fn listen_bracketed_ipv6_specs_reach_the_loopback_listener() {
+        use super::{
+            ControlMode, ExternalPeerLaunchConfig, PeerRendezvousMode,
+            prepare_mirror_listen_session,
+        };
+        use std::net::{IpAddr, Ipv6Addr, TcpStream};
+        use std::time::Duration;
+
+        for spec in ["[::1]", "[::1]:0"] {
+            let (host, port) = must(parse_listen_bind(spec));
+            let config = ExternalPeerLaunchConfig {
+                mode: PeerRendezvousMode::Listen,
+                control: ControlMode::Mirror,
+                host,
+                port,
+                ..ExternalPeerLaunchConfig::default()
+            };
+            let (listener, endpoint, _bridge) = must_with(
+                prepare_mirror_listen_session(&config),
+                "a bracketed IPv6 listen spec must reach the real listener setup",
+            );
+            assert_eq!(endpoint.addr.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST), "{spec}");
+            assert_ne!(endpoint.addr.port(), 0, "{spec}");
+            assert_eq!(must(listener.local_addr()), endpoint.addr, "{spec}");
+            let _peer = must_with(
+                TcpStream::connect_timeout(&endpoint.addr, Duration::from_secs(1)),
+                "the advertised IPv6 loopback endpoint must accept a connection",
+            );
+        }
+    }
+
+    #[test]
     fn listen_explicit_unparseable_port_is_a_startup_error_naming_the_format() {
-        for spec in ["127.0.0.1:notaport", "127.0.0.1:1364O", "127.0.0.1:", "127.0.0.1:70000"] {
+        for spec in [
+            "127.0.0.1:notaport",
+            "127.0.0.1:1364O",
+            "127.0.0.1:",
+            "127.0.0.1:70000",
+            "[::1]:notaport",
+            "[::1]:70000",
+        ] {
             let error = must_err_with(
                 parse_listen_bind(spec),
                 "an explicit-but-unparseable port must fail startup instead of binding ephemeral (#16556)",
