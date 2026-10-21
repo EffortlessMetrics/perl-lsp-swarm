@@ -461,18 +461,31 @@ fn symbol_name_range(
     symbol: &Symbol,
     declaration_names: &DeclarationNames<'_>,
 ) -> Option<WireRange> {
-    let key = (symbol.kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
-    if let Some(declaration) = declaration_names.get(&key) {
-        let declaration = (*declaration)?;
-        let (start, end) = declaration.anchor_span?;
-        if start >= end
-            || start < declaration.full_span.0
-            || end > declaration.full_span.1
-            || source.get(start..end).is_none()
-        {
-            return None;
+    // The compatibility extractor reclassifies a framework `package` as
+    // Class or Role, while its canonical declaration record stays Package
+    // (#17924). A reclassified namespace therefore retries the Package key
+    // with the same exact name and full span; the fail-closed handling of a
+    // present record (conflicting/missing/invalid anchor) is unchanged.
+    // Native class/role declarations have no Package record at the same
+    // span, so they still take the compatibility path below.
+    let lookup_kinds: &[SymbolKind] = match symbol.kind {
+        SymbolKind::Class | SymbolKind::Role => &[symbol.kind, SymbolKind::Package],
+        _ => &[symbol.kind],
+    };
+    for &lookup_kind in lookup_kinds {
+        let key = (lookup_kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
+        if let Some(declaration) = declaration_names.get(&key) {
+            let declaration = (*declaration)?;
+            let (start, end) = declaration.anchor_span?;
+            if start >= end
+                || start < declaration.full_span.0
+                || end > declaration.full_span.1
+                || source.get(start..end).is_none()
+            {
+                return None;
+            }
+            return Some(WireRange::from_byte_offsets(source, start, end));
         }
-        return Some(WireRange::from_byte_offsets(source, start, end));
     }
     // Compatibility for unported declaration families and synthesized symbols
     // (phasers, typeglob callables, framework members, etc.). This bounded slice
@@ -1293,6 +1306,72 @@ mod tests {
             range_char_span
         );
 
+        Ok(())
+    }
+
+    fn find_named<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+        for symbol in symbols {
+            if symbol.name == name {
+                return Some(symbol);
+            }
+            if let Some(found) = find_named(&symbol.children, name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn framework_package_name_selection_keeps_package_anchor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #17924: the compatibility extractor reclassifies a framework
+        // package as Class/Role, but the outline selection must stay on the
+        // declared name (chars 8-11), not slide into the `package` keyword
+        // (chars 4-7, the first substring occurrence of "age").
+        // (framework module, expected wire kind: Class = 5, Role = 8)
+        for (module, expected_kind) in [
+            ("Moo", 5),
+            ("Moose", 5),
+            ("Moo::Role", 8),
+            ("Moose::Role", 8),
+            ("Role::Tiny", 8),
+            ("Class::Tiny", 5),
+        ] {
+            let source = format!("package age {{ use {module}; }}");
+            let ast = must(Parser::new(&source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, &source);
+            let symbol = find_named(&result.symbols, "age")
+                .ok_or_else(|| format!("expected 'age' symbol for {module}"))?;
+            assert_eq!(
+                (symbol.selection_range.start.line, symbol.selection_range.start.character),
+                (0, 8),
+                "{module}: selection must start at the declared name"
+            );
+            assert_eq!(
+                (symbol.selection_range.end.line, symbol.selection_range.end.character),
+                (0, 11),
+                "{module}: selection must end after the declared name"
+            );
+            assert_eq!(
+                symbol.kind, expected_kind,
+                "{module}: wire kind stays the reclassified Class/Role kind"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn plain_package_name_selection_keeps_package_anchor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "package age;";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let symbol = find_named(&result.symbols, "age").ok_or("expected 'age' package symbol")?;
+        assert_eq!(
+            (symbol.selection_range.start.character, symbol.selection_range.end.character),
+            (8, 11)
+        );
+        assert_eq!(symbol.kind, 2, "plain package keeps Module kind");
         Ok(())
     }
 
