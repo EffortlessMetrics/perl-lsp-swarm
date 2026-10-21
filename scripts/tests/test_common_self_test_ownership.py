@@ -10,6 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = {'perl-dap': {'owner': 'dap_smoke_e2e.rs',
+              'modules': ['mod.rs'],
               'cases': {'launch_argument_tests::launch_arguments_preserve_exact_pinned_interpreter': ['test'],
                         'explicit_pin_tests::pinned_identity_decodes_rendered_dap_string': ['test'],
                         'explicit_pin_tests::pinned_identity_decodes_perl_debugger_ordinal': ['test'],
@@ -39,12 +40,25 @@ CASES = {'perl-dap': {'owner': 'dap_smoke_e2e.rs',
 def check_ownership(sources, package):
     contract = CASES[package]
     owner = contract['owner']
+    for path, text in sources.items():
+        if re.search(r'(?:#\[\s*path\s*=\s*|include!\s*\(\s*)[r#]*"[^"]*common_self_tests', text):
+            raise AssertionError(f'{package}: aliased self-test registration: {path}')
+        if path == owner or path.startswith('common_self_tests/'):
+            if re.search(r'(?m)^#!\[cfg(?:_attr)?\b', text):
+                raise AssertionError(f'{package}: conditional owner/module file: {path}')
     if '\nmod common;\nmod common_self_tests;\n' not in sources.get(owner, ''):
         raise AssertionError(f'{package}: missing unconditional owner registration')
     registrations = [path for path, text in sources.items()
                      if re.search(r'(?m)^\s*mod common_self_tests\s*;', text)]
     if registrations != [owner]:
         raise AssertionError(f'{package}: duplicate owner registration: {registrations}')
+    for child in contract['modules']:
+        if child != 'mod.rs':
+            declaration = re.search(r'(?m)^mod ' + re.escape(Path(child).stem) + r';$', sources['common_self_tests/mod.rs'])
+            if declaration is None:
+                raise AssertionError(f'{package}: missing child registration: {child}')
+            if sources['common_self_tests/mod.rs'][:declaration.start()].rstrip().endswith(']'):
+                raise AssertionError(f'{package}: conditional child registration: {child}')
     for path, text in sources.items():
         if path.startswith('common/') and re.search(r'(?m)^\s*#\[(?:test|tokio::test)', text):
             raise AssertionError(f'{package}: duplicate self-test in {path}')
@@ -53,6 +67,8 @@ def check_ownership(sources, package):
         if not path.startswith('common_self_tests/'):
             continue
         for block in re.finditer(r'(?ms)^#\[cfg\(test\)\]\nmod (\w+) \{\n(.*?)^\}', text):
+            if text[:block.start()].rstrip().endswith(']'):
+                raise AssertionError(f'{package}: unexpected module registration attributes in {path}')
             prefix = '' if path == 'common_self_tests/mod.rs' else Path(path).stem + '::'
             for case in re.finditer(r'(?m)^((?:    #\[[^\n]*\]\n)+)    fn (\w+)\(', block[2]):
                 if '#[test]' not in case[1]:
@@ -88,9 +104,21 @@ class CommonSelfTestOwnershipTests(unittest.TestCase):
     def test_duplicate_module_is_rejected(self):
         for package in CASES:
             sources = self.sources(package)
-            sources['common/mod.rs'] += '\n#[cfg(test)]\nmod restored {\n    #[test]\n    fn duplicate() {}\n}\n'
+            restored = re.search(r'(?ms)^#\[cfg\(test\)\]\nmod \w+ \{\n.*?^\}',
+                                 sources['common_self_tests/mod.rs'])[0]
+            sources['common/mod.rs'] += '\n' + restored + '\n'
             with self.assertRaisesRegex(AssertionError, 'duplicate self-test'):
                 check_ownership(sources, package)
+
+    def test_omitted_child_is_rejected(self):
+        for package, contract in CASES.items():
+            for child in contract['modules']:
+                if child == 'mod.rs':
+                    continue
+                sources = self.sources(package)
+                sources['common_self_tests/mod.rs'] = sources['common_self_tests/mod.rs'].replace(f'mod {Path(child).stem};', '')
+                with self.assertRaisesRegex(AssertionError, 'missing child registration'):
+                    check_ownership(sources, package)
 
     def test_missing_case_is_rejected(self):
         for package in CASES:
@@ -106,6 +134,38 @@ class CommonSelfTestOwnershipTests(unittest.TestCase):
             sources['unrelated.rs'] = 'mod common_self_tests;\n'
             with self.assertRaisesRegex(AssertionError, 'duplicate owner'):
                 check_ownership(sources, package)
+
+    def test_aliased_duplicate_is_rejected(self):
+        for package in CASES:
+            for declaration in [
+                '#[path = "../common_self_tests/mod.rs"]\nmod duplicate;',
+                'include!("../common_self_tests/mod.rs");',
+            ]:
+                sources = self.sources(package)
+                sources['common/mod.rs'] += '\n' + declaration + '\n'
+                with self.assertRaisesRegex(AssertionError, 'aliased self-test registration'):
+                    check_ownership(sources, package)
+
+    def test_conditional_module_is_rejected(self):
+        for package, contract in CASES.items():
+            for path in [contract['owner'], 'common_self_tests/mod.rs']:
+                sources = self.sources(package)
+                sources[path] = '#![cfg(unix)]\n' + sources[path]
+                with self.assertRaisesRegex(AssertionError, 'conditional owner/module file'):
+                    check_ownership(sources, package)
+            sources = self.sources(package)
+            sources['common_self_tests/mod.rs'] = sources['common_self_tests/mod.rs'].replace(
+                '#[cfg(test)]', '#[cfg(unix)]\n#[cfg(test)]', 1)
+            with self.assertRaisesRegex(AssertionError, 'unexpected module registration attributes'):
+                check_ownership(sources, package)
+            for child in contract['modules']:
+                if child == 'mod.rs':
+                    continue
+                sources = self.sources(package)
+                sources['common_self_tests/mod.rs'] = sources['common_self_tests/mod.rs'].replace(
+                    f'mod {Path(child).stem};', f'#[cfg(unix)]\nmod {Path(child).stem};')
+                with self.assertRaisesRegex(AssertionError, 'conditional child registration'):
+                    check_ownership(sources, package)
 
     def test_platform_or_ignore_drift_is_rejected(self):
         for package in CASES:

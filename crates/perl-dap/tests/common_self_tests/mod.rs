@@ -1,7 +1,9 @@
 //! Shared-helper self-tests, registered only by `dap_smoke_e2e`.
 
+#[cfg(unix)]
+use crate::common::decode_evaluate_path;
 use crate::common::{
-    DebuggeePerl, ProbeFailure, assert_pinned_identity, decode_evaluate_path, launch_arguments,
+    DebuggeePerl, ProbeFailure, assert_pinned_identity, launch_arguments,
     normalize_explicit_debuggee_pin, resolve_debuggee_candidate,
     resolve_debuggee_perl_uncached_with,
 };
