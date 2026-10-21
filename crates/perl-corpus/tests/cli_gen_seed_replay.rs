@@ -1,4 +1,4 @@
-use perl_tdd_support::must_with;
+use perl_tdd_support::{must_some_with, must_with};
 use std::process::{Command, Output};
 
 fn run_gen(args: &[&str]) -> Output {
@@ -9,7 +9,10 @@ fn run_gen(args: &[&str]) -> Output {
 }
 
 fn stdout(output: &Output) -> String {
-    must_with(String::from_utf8(output.stdout.clone()), "perl-corpus stdout should be UTF-8")
+    must_with(
+        std::str::from_utf8(&output.stdout).map(|s| s.to_string()),
+        "perl-corpus stdout should be UTF-8",
+    )
 }
 
 fn body_without_seed_header(output: &Output) -> String {
@@ -69,6 +72,12 @@ fn gen_program_fixed_seed_replays_identically() {
     assert!(stdout(&first).contains("(seed: 42)"));
     assert!(stdout(&first).contains("# Program (3 statements)"));
     assert_eq!(stdout(&first), stdout(&second));
+    let expected = perl_corpus::generate_perl_code_with_seed(3, 42);
+    let text = stdout(&first);
+    let marker = "# Program (3 statements)\n";
+    let (_, body) =
+        must_some_with(text.split_once(marker), "CLI output should contain program marker");
+    assert_eq!(body, format!("{expected}\n"));
 }
 
 #[test]
