@@ -309,6 +309,17 @@ impl RenameProvider {
                 if self.is_in_shadowed_scope(ref_scope, &shadowing_scopes) {
                     continue;
                 }
+                // A use inside the target lexical's own declaring statement
+                // (its initializer RHS) binds outward, not to that lexical
+                // (#18115), so it is not renamed with it.
+                if self.is_inside_target_declaring_statement(
+                    reference,
+                    &old_name,
+                    kind,
+                    declaration_scope_id,
+                ) {
+                    continue;
+                }
                 edits.push(TextEdit {
                     location: adjust_location_for_sigil(reference.location, kind),
                     new_text: new_name.to_string(),
@@ -329,6 +340,47 @@ impl RenameProvider {
         edits.dedup();
 
         RenameResult { edits, is_valid: true, error: None }
+    }
+
+    /// Whether `reference` sits inside the declaring statement of a
+    /// `my`/`state` declaration of the same name and kind in the target
+    /// declaration scope, with no earlier same-scope declaration already in
+    /// effect there. Such a use (an initializer RHS) binds to an outer
+    /// declaration or the package global, never to that lexical (#18115).
+    fn is_inside_target_declaring_statement(
+        &self,
+        reference: &perl_semantic_analyzer::symbol::SymbolReference,
+        name: &str,
+        kind: SymbolKind,
+        declaration_scope_id: ScopeId,
+    ) -> bool {
+        let Some(symbols) = self.symbol_table.symbols.get(name) else {
+            return false;
+        };
+        let statement_end = |start: usize, end: usize| {
+            self.symbol_table.declaration_statement_ends.get(&start).copied().unwrap_or(end)
+        };
+        let inside = symbols.iter().any(|candidate| {
+            candidate.kind == kind
+                && candidate.scope_id == declaration_scope_id
+                && matches!(candidate.declaration.as_deref(), Some("my" | "state"))
+                && candidate.location.start <= reference.location.start
+                && reference.location.start
+                    < statement_end(candidate.location.start, candidate.location.end)
+        });
+        if !inside {
+            return false;
+        }
+        // An earlier same-scope declaration whose statement has ended owns
+        // the use instead (a later redeclaration's initializer), and this
+        // rename covers that declaration too.
+        !symbols.iter().any(|candidate| {
+            candidate.kind == kind
+                && candidate.scope_id == declaration_scope_id
+                && matches!(candidate.declaration.as_deref(), Some("my" | "state"))
+                && statement_end(candidate.location.start, candidate.location.end)
+                    <= reference.location.start
+        })
     }
 
     /// Check if the Variable at `offset` is the left child of a subscript
@@ -684,6 +736,23 @@ mod tests {
         let new_code = apply_rename_edits(code, &result.edits);
         assert!(new_code.contains("$bar"));
         assert!(!new_code.contains("$foo"));
+    }
+
+    #[test]
+    fn test_scoped_rename_initializer_rhs_binds_outward() {
+        // The RHS of `my $value = $value` is not the new lexical (#18115):
+        // renaming the lexical must leave it alone while still renaming
+        // the declaration and its later uses.
+        let code = "sub run { my $value = $value; print $value; }";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let pos = must_some(code.find("$value")) + 1;
+        let result = provider.scoped_rename(pos, "renamed", &RenameOptions::default());
+        assert!(result.is_valid);
+        assert_eq!(result.edits.len(), 2, "declaration and later use only: {:?}", result.edits);
+        let new_code = apply_rename_edits(code, &result.edits);
+        assert_eq!(new_code, "sub run { my $renamed = $value; print $renamed; }");
     }
 
     #[test]
