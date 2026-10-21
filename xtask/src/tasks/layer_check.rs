@@ -67,6 +67,8 @@ const LAYER_RULES: &[LayerRule] = &[
 /// Walk the workspace declarations supplied by `cargo metadata --no-deps`.
 /// This is a structural rule across all target/feature profiles, not a claim
 /// about the resolved registry dependency graph.
+/// A host-filtered `resolve.nodes` graph can omit a target-conditioned helper
+/// back edge, so declarations remain the authority at every hop.
 fn core_host_paths(packages: &[serde_json::Value]) -> Vec<String> {
     const CORE: &str = "perl-lsp-rs-core";
     const HOSTS: &[&str] = &["perl-lsp-rs", "perllsp"];
@@ -244,6 +246,51 @@ mod tests {
                 )]
             );
             assert!(run_with_metadata(Some(json!({"packages": packages}))).is_err());
+        }
+    }
+
+    #[test]
+    fn core_rejects_declared_transitive_back_edges_absent_from_host_resolution() {
+        for target in ["cfg(unix)", "cfg(windows)"] {
+            for kind in [None, Some("build")] {
+                let mut metadata = json!({
+                    "packages": [
+                        {"name": "perl-lsp-rs-core", "dependencies": [
+                            {"name": "fixture", "kind": "dev"}
+                        ]},
+                        {"name": "fixture", "dependencies": [
+                            {"name": "perl-lsp-rs", "rename": "host_alias",
+                             "kind": kind, "target": target}
+                        ]},
+                        {"name": "unrelated", "dependencies": [
+                            {"name": "perl-lsp-rs", "rename": "other_host_alias",
+                             "kind": kind, "target": target}
+                        ]}
+                    ],
+                    // A host-filtered query can retain core -> fixture while
+                    // hiding fixture -> host on this platform. The declaration
+                    // still violates the cross-platform core boundary.
+                    "resolve": {"nodes": [
+                        {"id": "perl-lsp-rs-core", "deps": [{"pkg": "fixture"}]},
+                        {"id": "fixture", "deps": []}
+                    ]}
+                });
+                assert_eq!(
+                    core_host_paths(metadata["packages"].as_array().unwrap()),
+                    [format!(
+                        "perl-lsp-rs-core -[dev]-> fixture -[{}]-> perl-lsp-rs",
+                        kind.unwrap_or("normal")
+                    )]
+                );
+                assert!(run_with_metadata(Some(metadata.clone())).is_err());
+
+                // Removing only the reachable declaration must restore a pass.
+                // The unrelated workspace member keeps the same target-specific
+                // host edge; scanning all packages without reachability is wrong.
+                metadata["packages"][1]["dependencies"] = json!([]);
+                assert!(core_host_paths(metadata["packages"].as_array().unwrap()).is_empty());
+                assert!(run_with_metadata(Some(metadata)).is_ok());
+            }
         }
     }
 
