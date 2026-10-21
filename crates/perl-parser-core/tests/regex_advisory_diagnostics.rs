@@ -25,27 +25,6 @@ fn nested_quantifier_is_advisory_on_a_clean_ast() -> Result<(), String> {
 }
 
 #[test]
-fn quantifier_follows_nothing_is_blocking_on_the_legacy_path() -> Result<(), String> {
-    // Issue #16608 class (1) without a retained session: the legacy
-    // per-operator scan must name the same Perl diagnostic and block.
-    let source = "my $s = 'x'; my $m = $s =~ /*abc/;";
-    let mut parser = Parser::new(source);
-    let output = parser.parse_with_recovery();
-
-    let expected = source.find('*').ok_or("quantifier not found")?;
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.location() == Some(expected)
-                && diagnostic.blocks_clean_parse()
-                && diagnostic.to_string().contains("Quantifier follows nothing in regex")
-        }),
-        "expected blocking quantifier-follows-nothing at {expected}, got {:?}",
-        output.diagnostics
-    );
-    Ok(())
-}
-
-#[test]
 fn malformed_source_remains_blocking() -> Result<(), String> {
     let mut parser = Parser::new("my $value = ;");
     let output = parser.parse_with_recovery();

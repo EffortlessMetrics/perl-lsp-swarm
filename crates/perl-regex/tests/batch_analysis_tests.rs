@@ -283,6 +283,62 @@ fn empty_quoted_literal_is_not_a_quantifiable_atom() -> Result<(), Box<dyn std::
     // A non-empty quoted literal remains a quantifiable atom.
     let analysis = validator.analyze(r"\Qa\E*");
     assert!(analysis.facts.quantifier_follows_nothing.is_empty(), "{analysis:?}");
+
+    // An empty `\Q\E` preserves the preceding atom: perl accepts
+    // `qr/a\Q\E*/` (`*` repeats `a`) and `qr/x\Q\E*y/`.
+    for pattern in [r"a\Q\E*", r"x\Q\E*y", r"(?:a\Q\E*)", r"a\Q\E{2}"] {
+        let analysis = validator.analyze(pattern);
+        assert!(
+            analysis.facts.quantifier_follows_nothing.is_empty(),
+            "{pattern:?} must not be flagged, got {analysis:?}"
+        );
+    }
+    // At a branch start the empty span creates no atom.
+    for (pattern, offset) in [(r"\Q\E*a", 4usize), (r"a|\Q\E*b", 6), (r"(?:\Q\E*a)", 7)] {
+        let analysis = validator.analyze(pattern);
+        assert_eq!(
+            analysis.facts.quantifier_follows_nothing.len(),
+            1,
+            "{pattern:?} got {analysis:?}"
+        );
+        assert_eq!(analysis.facts.quantifier_follows_nothing[0].start, offset, "{pattern:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn conditional_condition_closer_does_not_authorize_a_quantifier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+    // Verified against perl 5.42: each rejects with
+    // "Quantifier follows nothing in regex" at the marked offset.
+    for (pattern, offset) in [
+        ("(?(?=a)*b|c)", 7usize),
+        ("(?(?!a)*b|c)", 7),
+        ("(?(?<=a)*b|c)", 8),
+        ("(?(1)*b|c)", 5),
+        ("(?(?{1})*b|c)", 8),
+        ("(?(?=a)|*b)", 8),
+        ("(?(?=a)b|*c)", 9),
+    ] {
+        let analysis = validator.analyze(pattern);
+        assert_eq!(
+            analysis.facts.quantifier_follows_nothing.len(),
+            1,
+            "{pattern:?} must report one finding, got {analysis:?}"
+        );
+        assert_eq!(analysis.facts.quantifier_follows_nothing[0].start, offset, "{pattern:?}");
+    }
+    // Branch content and a quantified conditional/lookahead remain valid.
+    for pattern in
+        ["(?(?=a)b*c)", "(?(?=a)b|c)*d", "(?(?=a)(?:b)*c|d)", "(?(1)b*c)", "(?=a)*b", "((?=a))*b"]
+    {
+        let analysis = validator.analyze(pattern);
+        assert!(
+            analysis.facts.quantifier_follows_nothing.is_empty(),
+            "{pattern:?} must not be flagged, got {analysis:?}"
+        );
+    }
     Ok(())
 }
 
