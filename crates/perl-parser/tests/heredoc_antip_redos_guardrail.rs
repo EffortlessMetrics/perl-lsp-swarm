@@ -630,6 +630,71 @@ fn antip_eval_keyword_is_not_matched_as_an_identifier_suffix() {
 }
 
 #[test]
+fn antip_left_shift_in_regex_code_block_is_not_a_heredoc() {
+    // PL804 (#13836): `<<` is also Perl's left-shift operator. A shift inside
+    // a `(?{ ... })` block declares no heredoc, on one line or several.
+    for (label, code) in [
+        ("single-line shift by a literal", "m/a(?{ $v = 1 << 3 })c/;\n"),
+        ("multi-line shift by a literal", "m/a(?{\n    $v = 1 << 3;\n})c/;\n"),
+        ("shift by a variable", "m/a(?{ $v = $y << 2 })c/;\n"),
+        ("spelled-out shift operand", "m/a(?{ $v = 1<<FOO })c/;\n"),
+        ("postponed block shift", "m/a(??{ $v = 1 << 3 })c/;\n"),
+    ] {
+        assert!(
+            !has_regex_code_block(code),
+            "{label}: a left shift must not be reported as PL804; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Positive controls: every heredoc spelling still fires.
+    for (label, code) in [
+        ("dynamic delimiter", "m/a(?{ print <<$var; })c/;\n"),
+        ("indented heredoc", "qr/x(?{ print <<~EOF;\nbody\nEOF\n})/;\n"),
+        ("spaced double-quoted heredoc", "qr/x(?{ print << \"EOF\";\nbody\nEOF\n})/;\n"),
+        ("single-quoted heredoc", "m/a(?{ print <<'EOF'; })c/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: a heredoc must still be reported as PL804; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_left_shift_in_eval_string_is_not_a_heredoc() {
+    // PL805 (#13836): the eval twin of the regex-code-block shift.
+    for (label, code) in [
+        ("single-line shift by a literal", "eval '$v = 1 << 3;';\n"),
+        ("multi-line shift by a literal", "eval '$v = 1 << 3;\n$v = 2 << 4;';\n"),
+        ("shift by a variable", "eval '$v = $y << 2;';\n"),
+        ("spelled-out shift operand", "eval '$v = 1<<FOO;';\n"),
+        ("double-quoted eval shift", "eval \"$v = 1 << 3;\";\n"),
+    ] {
+        assert!(
+            !has_eval_string(code),
+            "{label}: a left shift must not be reported as PL805; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Positive controls: every heredoc spelling still fires.
+    for (label, code) in [
+        ("dynamic delimiter", "eval 'print <<$var;';\n"),
+        ("indented heredoc", "eval 'print <<~EOF;\nbody\nEOF\n';\n"),
+        ("spaced double-quoted heredoc", "eval 'print << \"EOF\";\nbody\nEOF\n';\n"),
+        ("bare heredoc", "eval 'print <<EOF;';\n"),
+    ] {
+        assert!(
+            has_eval_string(code),
+            "{label}: a heredoc must still be reported as PL805; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn antip_multiline_left_shift_is_not_a_dynamic_delimiter() {
     // `1 << ${...}` is a left shift of a scalar dereference, not a heredoc.
     // Keeping the dynamic-delimiter newline horizon keeps this out.

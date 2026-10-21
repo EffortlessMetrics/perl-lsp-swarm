@@ -848,7 +848,75 @@ fn blank_ranges(scan_code: &str, ranges: &[(usize, usize)]) -> String {
     String::from_utf8(bytes).unwrap_or_else(|_| scan_code.to_string())
 }
 
-fn regex_code_block_matches(scan_code: &str) -> Vec<usize> {
+/// Whether `text` contains a heredoc declaration rather than a left shift.
+///
+/// Candidates come from the two existing declaration shapes:
+/// [`HEREDOC_DECL_PATTERN`] for the literal spellings (`<<EOF`, `<<'EOF'`,
+/// `<<"EOF"`, `<<\EOF`, and the `<<~` forms) and
+/// [`DYNAMIC_DELIMITER_PATTERN`] for the dynamic spellings (`<<$var`,
+/// `<<${expr}`). Every candidate must also sit in term position, so a shift
+/// whose operand merely spells like a delimiter (`1<<FOO`, `$y<<FOO`) is
+/// rejected by the same rule the body mask uses (#13836).
+fn contains_heredoc_declaration(text: &str) -> bool {
+    any_heredoc_declaration_in(text, declaration_starts(text))
+}
+
+/// Candidate `<<` starts in `text` whose following spelling is a heredoc
+/// delimiter, before the term-position filter is applied.
+fn declaration_starts(text: &str) -> Vec<usize> {
+    let mut starts: Vec<usize> = Vec::new();
+    if let Some(pattern) = compiled(&HEREDOC_DECL_PATTERN) {
+        starts.extend(pattern.captures_iter(text).filter_map(|cap| cap.get(0).map(|m| m.start())));
+    }
+    if let Some(pattern) = compiled(&DYNAMIC_DELIMITER_PATTERN) {
+        starts.extend(pattern.captures_iter(text).filter_map(|cap| cap.get(0).map(|m| m.start())));
+    }
+    starts
+}
+
+fn any_heredoc_declaration_in(text: &str, starts: Vec<usize>) -> bool {
+    if starts.is_empty() {
+        return false;
+    }
+
+    let wanted: HashSet<usize> = starts
+        .iter()
+        .filter_map(|&at| {
+            let prefix = text[..at].trim_end();
+            prefix.as_bytes().last().filter(|&&byte| byte == b'}').map(|_| prefix.len() - 1)
+        })
+        .collect();
+    let braces = matching_open_braces(text, &wanted);
+
+    starts.iter().any(|&at| heredoc_is_in_term_position(text, at, &braces))
+}
+
+/// Heredoc presence in a regex code block whose masked view is `scan_text`.
+///
+/// The mask blanks quoted delimiters and heredoc bodies, so the declaration
+/// spelling cannot be read from `scan_text` alone. `source_text` is the same
+/// byte range of the original source: a candidate counts only when its `<<`
+/// survives in the masked view (so heredoc body text and string or comment
+/// contents cannot fabricate one) and its spelling and term position in the
+/// original are a declaration.
+fn masked_contains_heredoc_declaration(scan_text: &str, source_text: &str) -> bool {
+    let starts: Vec<usize> = declaration_starts(source_text)
+        .into_iter()
+        .filter(|&at| scan_text.get(at..at + 2) == Some("<<"))
+        .collect();
+    any_heredoc_declaration_in(source_text, starts)
+}
+
+/// The quoted string content of an [`EVAL_HEREDOC_PATTERN`] match, without
+/// its delimiting quotes.
+fn eval_string_content(match_text: &str) -> Option<&str> {
+    let start = match_text.find(['\'', '"'])?;
+    let quote = match_text.as_bytes()[start] as char;
+    let end = match_text.rfind(quote)?;
+    (end > start).then(|| &match_text[start + 1..end])
+}
+
+fn regex_code_block_matches(scan_code: &str, source_code: &str) -> Vec<usize> {
     let mut matches = Vec::new();
     let mut search_from = 0;
 
@@ -875,7 +943,10 @@ fn regex_code_block_matches(scan_code: &str) -> Vec<usize> {
             break;
         };
 
-        if scan_code[opening_brace + 1..closing_brace].contains("<<") {
+        if masked_contains_heredoc_declaration(
+            &scan_code[opening_brace + 1..closing_brace],
+            &source_code[opening_brace + 1..closing_brace],
+        ) {
             matches.push(start);
         }
 
@@ -912,7 +983,7 @@ impl PatternDetector for RegexHeredocDetector {
         // all seven detectors, unchanged (#14352).
         let masked = mask_non_code_regions(code);
         let scan_code = blank_ranges(&masked, &heredoc_body_ranges(code, &masked));
-        regex_code_block_matches(&scan_code)
+        regex_code_block_matches(&scan_code, code)
             .into_iter()
             .map(|start| {
                 let location = location_from_start(line_starts, offset, start);
@@ -1025,6 +1096,16 @@ impl PatternDetector for EvalHeredocDetector {
             if let Some(match_pos) = cap.get(0) {
                 let start = match_pos.start();
                 if !eval_match_is_builtin(&scan_code, start) {
+                    continue;
+                }
+                // The pattern admits any `<<` in the string; only a heredoc
+                // declaration, not a left shift, is PL805 (#13836). Term
+                // position is judged inside the string, which is the code
+                // `eval` will run, rather than in the surrounding source.
+                let Some(content) = eval_string_content(match_pos.as_str()) else {
+                    continue;
+                };
+                if !contains_heredoc_declaration(content) {
                     continue;
                 }
 
