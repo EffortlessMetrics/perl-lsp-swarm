@@ -261,6 +261,7 @@ pub(crate) fn check_version_compat_with_pragma_map(
         }
     };
 
+    let class_ranges = collect_class_ranges(node);
     let mut pragma_cursor = PragmaQueryCursor::new();
 
     // Second pass: walk AST for version-gated constructs.
@@ -552,9 +553,13 @@ pub(crate) fn check_version_compat_with_pragma_map(
                 }
             }
 
-            // Subroutine with a signature — requires v5.20
+            // Subroutine with a signature — requires v5.20.
+            // A signed plain sub inside a class body is skipped: `class`
+            // implies signatures for its members, so Perl compiles it with
+            // only `use feature 'class'`.
             NodeKind::Subroutine { signature: Some(_), .. }
-                if !pragma_state.has_feature("signatures") =>
+                if !pragma_state.has_feature("signatures")
+                    && !is_inside_class_ranges(&class_ranges, n) =>
             {
                 let min = feature_min_version("signatures");
                 diagnostics.push(make_diagnostic(
@@ -619,6 +624,27 @@ fn contains_source_version_declaration(node: &Node) -> bool {
         }
     });
     found
+}
+
+/// Byte ranges of every `class` block in the file.
+///
+/// Shared by the signatures arms: a signed plain sub inside a class body
+/// compiles with only `use feature 'class'`, because `class` implies
+/// signatures for its members.
+fn collect_class_ranges(node: &Node) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    walk_node(node, &mut |n| {
+        if matches!(&n.kind, NodeKind::Class { .. }) {
+            ranges.push((n.location.start, n.location.end));
+        }
+    });
+    ranges
+}
+
+fn is_inside_class_ranges(class_ranges: &[(usize, usize)], node: &Node) -> bool {
+    class_ranges
+        .iter()
+        .any(|&(start, end)| node.location.start >= start && node.location.end <= end)
 }
 
 fn looks_like_source_version(module: &str) -> bool {
@@ -1384,6 +1410,38 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.message.contains("subroutine signatures")),
             "v5.20 without explicit signatures feature should emit PL900 for signature subs"
+        );
+    }
+
+    #[test]
+    fn declared_version_signed_plain_sub_inside_class_does_not_emit_signature_pl900() {
+        // Perl compiles a signed plain sub inside a class body with only
+        // `use feature 'class'` (class implies signatures for its members),
+        // so the declared-version signatures arm must not warn on it. The
+        // `class` construct itself may still warn on v5.20; only the
+        // signatures diagnostic is in scope here.
+        let diags = version_compat_diags("use v5.20;\nclass Foo { sub bar ($x) { $x } }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "signed plain sub inside class must not emit a signatures PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn declared_version_signed_sub_outside_class_still_warns() {
+        let diags = version_compat_diags("use v5.20;\nclass Foo { }\nsub bar ($x) { $x }\n");
+        assert!(
+            diags.iter().any(|d| d.message.contains("subroutine signatures")),
+            "signed sub outside a class must still emit a signatures PL900 on v5.20: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn declared_version_method_inside_class_does_not_emit_signature_pl900() {
+        let diags = version_compat_diags("use v5.20;\nclass Foo { method bar ($x) { $x } }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "method inside class must not emit a signatures PL900: {diags:#?}"
         );
     }
 
