@@ -173,18 +173,98 @@ fn test_range_formatting_block_tail_comment_is_refused_3_17() -> TestResult {
     Ok(())
 }
 
+fn apply_json_edits(source: &str, edits: &[serde_json::Value]) -> String {
+    let offset = |line: u64, character: u64| -> usize {
+        let mut off = 0;
+        for (index, text) in source.split_inclusive('\n').enumerate() {
+            if index as u64 == line {
+                let body = text.strip_suffix('\n').unwrap_or(text);
+                let body = body.strip_suffix('\r').unwrap_or(body);
+                let mut units = 0u64;
+                for (byte, ch) in body.char_indices() {
+                    if units >= character {
+                        return off + byte;
+                    }
+                    units += ch.len_utf16() as u64;
+                }
+                return off + body.len();
+            }
+            off += text.len();
+        }
+        source.len()
+    };
+    let mut spans: Vec<(usize, usize, String)> = edits
+        .iter()
+        .map(|edit| {
+            let range = &edit["range"];
+            let start = offset(
+                range["start"]["line"].as_u64().unwrap_or(0),
+                range["start"]["character"].as_u64().unwrap_or(0),
+            );
+            let end = offset(
+                range["end"]["line"].as_u64().unwrap_or(0),
+                range["end"]["character"].as_u64().unwrap_or(0),
+            );
+            (start, end, edit["newText"].as_str().unwrap_or("").to_string())
+        })
+        .collect();
+    spans.sort_by_key(|span| span.0);
+    let mut out = String::new();
+    let mut cursor = 0;
+    for (start, end, text) in spans {
+        out.push_str(&source[cursor..start]);
+        out.push_str(&text);
+        cursor = end;
+    }
+    out.push_str(&source[cursor..]);
+    out
+}
+
 #[test]
-fn test_formatting_returns_no_edits_for_literal_preserve_regions_3_17() -> TestResult {
-    for (uri, source) in [
-        ("file:///regex-format.pl", "my $matched = $text =~ /needle/i;   \n"),
-        ("file:///substitution-format.pl", "$text =~ s/foo/bar/g;   \n"),
-        ("file:///transliteration-format.pl", "$text =~ tr/a-z/A-Z/;   \n"),
-        ("file:///quote-like-format.pl", "my @words = qw(alpha beta gamma);   \n"),
-        ("file:///heredoc-format.pl", "print <<'EOF';   \nraw { text }\nEOF\n"),
-        ("file:///data-format.pl", "my $x = 1;   \n__DATA__\nraw fixture bytes\n"),
-        ("file:///end-format.pl", "my $x = 1;   \n__END__\nraw fixture bytes\n"),
-        ("file:///format-body-format.pl", "format STDOUT =\n@<<<<\n$name\n.\nwrite;   \n"),
-        ("file:///pod-format.pl", "=pod\n\n=head1 NAME   \n\n=cut\n\nmy $x = 1;   \n"),
+fn test_formatting_preserves_literal_regions_byte_exact_3_17() -> TestResult {
+    // #17708: preserved regions stay byte-exact after applying the edits.
+    for (uri, source, preserved) in [
+        (
+            "file:///regex-format.pl",
+            "my $matched = $text =~ /needle/i;   \n",
+            "my $matched = $text =~ /needle/i;",
+        ),
+        ("file:///substitution-format.pl", "$text =~ s/foo/bar/g;   \n", "$text =~ s/foo/bar/g;"),
+        (
+            "file:///transliteration-format.pl",
+            "$text =~ tr/a-z/A-Z/;   \n",
+            "$text =~ tr/a-z/A-Z/;",
+        ),
+        (
+            "file:///quote-like-format.pl",
+            "my @words = qw(alpha beta gamma);   \n",
+            "my @words = qw(alpha beta gamma);",
+        ),
+        (
+            "file:///heredoc-format.pl",
+            "print <<'EOF';   \nraw { text }\nEOF\n",
+            "raw { text }\nEOF\n",
+        ),
+        (
+            "file:///data-format.pl",
+            "my $x = 1;   \n__DATA__\nraw fixture bytes\n",
+            "__DATA__\nraw fixture bytes\n",
+        ),
+        (
+            "file:///end-format.pl",
+            "my $x = 1;   \n__END__\nraw fixture bytes\n",
+            "__END__\nraw fixture bytes\n",
+        ),
+        (
+            "file:///format-body-format.pl",
+            "format STDOUT =\n@<<<<\n$name\n.\nwrite;   \n",
+            "format STDOUT =\n@<<<<\n$name\n.\n",
+        ),
+        (
+            "file:///pod-format.pl",
+            "=pod\n\n=head1 NAME   \n\n=cut\n\nmy $x = 1;   \n",
+            "=head1 NAME\n",
+        ),
     ] {
         let mut harness = LspHarness::new();
         harness.initialize(None)?;
@@ -204,7 +284,12 @@ fn test_formatting_returns_no_edits_for_literal_preserve_regions_3_17() -> TestR
         )?;
 
         let edits = result.as_array().ok_or("formatting should return an edit array")?;
-        assert!(edits.is_empty(), "literal-preserve source should not produce edits: {source:?}");
+        let formatted = apply_json_edits(source, edits);
+        assert!(
+            formatted.contains(preserved),
+            "preserved region must stay byte-exact: {preserved:?} in {formatted:?} (source {source:?})"
+        );
+        harness.shutdown_gracefully();
     }
     Ok(())
 }

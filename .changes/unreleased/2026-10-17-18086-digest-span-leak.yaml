@@ -1,0 +1,9 @@
+project: product
+component: Tooling
+kind: Fixed
+body: "The completion-candidate ledger digest no longer moves on comment-only, newline-only, or other position-only edits. Inline span byte ranges in the stripped-AST rendering are blanked before hashing, so the ledger gate stays green unless the shipped producer surface actually changes."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18086"
+  Slug: digest-span-leak
+  Breaking: "no"
