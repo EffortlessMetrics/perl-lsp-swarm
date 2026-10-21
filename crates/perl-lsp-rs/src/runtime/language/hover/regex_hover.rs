@@ -48,18 +48,18 @@ impl LspServer {
         }))
     }
 
-    /// Escape pipes for a Markdown table cell. A pipe already preceded by an
-    /// odd run of backslashes is already escaped; adding another would make
-    /// the run even and the pipe a live delimiter again.
+    /// Escape a token for a Markdown table cell. Double every original
+    /// backslash, then escape each pipe with one backslash. Decoding
+    /// (`\\` -> `\`, `\|` -> `|`) therefore recovers the source spelling,
+    /// and every pipe is preceded by an odd run so it cannot delimit.
     fn escape_table_token(tok: &str) -> String {
-        let mut out = String::with_capacity(tok.len());
-        let mut backslashes = 0usize;
+        let mut out = String::with_capacity(tok.len() * 2);
         for ch in tok.chars() {
-            if ch == '|' && backslashes % 2 == 0 {
-                out.push('\\');
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '|' => out.push_str("\\|"),
+                _ => out.push(ch),
             }
-            out.push(ch);
-            backslashes = if ch == '\\' { backslashes + 1 } else { 0 };
         }
         out
     }
@@ -539,7 +539,8 @@ mod tests {
                 "| `[a\\|b]` | Character class, one or more (greedy) |",
             ),
             ("my $note = '😀'; my $re = qr{[α|β]};", "[α|β]", "| `[α\\|β]` | Character class |"),
-            (r"my $re = qr{[\|]};", r"[\|]", r"| `[\|]` | Character class |"),
+            (r"my $re = qr{[\|]};", r"[\|]", r"| `[\\\|]` | Character class |"),
+            (r"my $re = qr{[\\|]};", r"[\\|]", r"| `[\\\\\|]` | Character class |"),
             (
                 "my $re = qr{(?|foo)};",
                 "(?|",
@@ -548,7 +549,7 @@ mod tests {
             (
                 r"my $re = qr{\d+};",
                 r"\d+",
-                r"| `\d` | Any decimal digit (0-9), one or more (greedy) |",
+                r"| `\\d` | Any decimal digit (0-9), one or more (greedy) |",
             ),
         ];
         for (text, needle, expected_row) in cases {
@@ -565,25 +566,47 @@ mod tests {
 
     #[test]
     fn regex_hover_escaped_pipe_row_has_two_cells() {
-        // Split each data row on unescaped pipes: a correctly escaped token
-        // yields exactly the two intended cells, never a phantom third.
-        for (text, needle) in
-            [("my $re = qr/foo|bar/;", "foo|bar"), (r"my $re = qr{[\|]};", r"[\|]")]
-        {
+        // Independent oracle: parse a real DATA row (not the separator) by
+        // consuming escape pairs (`\\`, `\|`) as literals and splitting on
+        // bare pipes. Decoded cells must show the source token spelling and
+        // the intact Meaning cell. Written inline; does not reuse the encoder.
+        let cases = [
+            ("my $re = qr/foo|bar/;", "foo|bar", "`| `", "Alternation (OR)"),
+            ("my $re = qr{[a|b]};", "[a|b]", "`[a|b]`", "Character class"),
+            (r"my $re = qr{[\|]};", r"[\|]", r"`[\|]`", "Character class"),
+            (r"my $re = qr{[\\|]};", r"[\\|]", r"`[\\|]`", "Character class"),
+        ];
+        for (text, needle, expected_token_cell, expected_meaning) in cases {
             let index = SourceRegionIndex::build(text);
             let offset = must_some(text.find(needle));
             let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index)));
             let markdown = must_some(card["contents"]["value"].as_str());
-            let row = must_some(markdown.lines().nth(3));
-            let mut cells = 0usize;
-            let mut backslashes = 0usize;
-            for ch in row.chars() {
-                if ch == '|' && backslashes % 2 == 0 {
-                    cells += 1;
+            // Data rows start with "| `"; header/separator rows do not.
+            let row = must_some(markdown.lines().find(|l| l.starts_with("| `")));
+            let mut cells: Vec<String> = Vec::new();
+            let mut cell = String::new();
+            let mut chars = row.chars();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\\' => match chars.next() {
+                        Some('\\') => cell.push('\\'),
+                        Some('|') => cell.push('|'),
+                        Some(other) => {
+                            cell.push('\\');
+                            cell.push(other);
+                        }
+                        None => cell.push('\\'),
+                    },
+                    '|' => {
+                        cells.push(std::mem::take(&mut cell));
+                    }
+                    _ => cell.push(ch),
                 }
-                backslashes = if ch == '\\' { backslashes + 1 } else { 0 };
             }
-            assert_eq!(cells, 3, "{text:?} row {row:?}");
+            cells.push(cell);
+            assert_eq!(cells.len(), 4, "{text:?} row {row:?} cells {cells:?}");
+            assert_eq!(cells[1].trim(), expected_token_cell, "{text:?} row {row:?}");
+            assert_eq!(cells[2].trim(), expected_meaning, "{text:?} row {row:?}");
         }
     }
 
