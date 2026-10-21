@@ -466,7 +466,10 @@ def report(evidence, mode, root, expected_head=None):
     result['measurement_valid'] = (result['storage'].get('measurement_complete') is True
                                    and not any(row.get('valid') is False for row in storage))
     result['observed_reserve_preserved'] = result['storage'].get('observed_reserve_preserved') is True
+    # Export the exact observed map already hashed below. Partial or opaque
+    # units remain diagnostic; existing completeness/authority fields govern use.
     result.update(unit_count=len(unit_rows), unit_inventory_complete=complete,
+                  unit_projection=unit_rows,
                   units_sha256=digest(unit_rows), cases_sha256=digest({key: {field: row[field] for field in ('cases', 'ignored')} for key, row in case_rows.items()}),
                   case_outcomes=case_rows,
                   observed_case_targets=len(case_rows),
