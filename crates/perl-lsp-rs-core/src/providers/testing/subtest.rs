@@ -91,8 +91,8 @@ pub fn subtest_document_symbols(subtests: &[DiscoveredSubtest]) -> Vec<DocumentS
 ///   being floated to the root.
 ///
 /// Name, kind, detail, and selection-range conventions are exactly those of
-/// [`subtest_document_symbols`]; sibling order follows assembler priority and
-/// then source position.
+/// [`subtest_document_symbols`]. Roots stay in source order; nested siblings
+/// follow assembler priority and then source position.
 pub fn nest_subtest_symbols_in_outline(
     outline: &mut Vec<DocumentSymbol>,
     subtests: &[DiscoveredSubtest],
@@ -100,7 +100,13 @@ pub fn nest_subtest_symbols_in_outline(
 ) {
     for symbol in subtest_document_symbols(subtests) {
         let Some(path) = find_owner_path(outline, &symbol.range, source) else {
-            insert_by_source_position(outline, symbol);
+            // The assembler orders roots by source position, independently of
+            // semantic priority. Preserve that order and all existing ties.
+            let start = (symbol.range.start.line, symbol.range.start.character);
+            let position = outline.partition_point(|root| {
+                (root.range.start.line, root.range.start.character) <= start
+            });
+            outline.insert(position, symbol);
             continue;
         };
         let mut cursor: &mut Vec<DocumentSymbol> = &mut *outline;
@@ -410,3 +416,6 @@ fn structural_children(node: &Node) -> Vec<&Node> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod root_order_tests;
