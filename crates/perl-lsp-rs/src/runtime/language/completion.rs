@@ -4951,10 +4951,11 @@ mod tests {
                         "`{}` has a defective snippet body: {defects:?}",
                         item.label
                     );
+                    // Literal Perl escapes (printfh's `\n`) are literal
+                    // text and must survive (#18212); snippet machinery
+                    // (placeholder braces, tab stops) must not.
                     assert!(
-                        !plain_fallback.contains("${")
-                            && !plain_fallback.contains("$0")
-                            && !plain_fallback.contains('\\'),
+                        !plain_fallback.contains("${") && !plain_fallback.contains("$0"),
                         "`{}` has a fallback that is not literal text: {plain_fallback}",
                         item.label
                     );
