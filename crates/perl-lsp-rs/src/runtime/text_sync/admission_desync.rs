@@ -3,8 +3,8 @@
 //! `textDocument/didOpen` and `textDocument/didChange` are notifications: when
 //! the pre-dispatch admission gate
 //! (`perl_lsp_rs_core::runtime::input_validation::validate_request_admission`)
-//! rejects an over-ceiling frame, the refusal is a *silent* drop — the client
-//! is never told, and a document that was already stored keeps its predecessor
+//! rejects an over-ceiling frame, the refusal used to be a *silent* drop: the
+//! client was never told, and a document that was already stored kept its predecessor
 //! text as if it were current. A subsequent `textDocument/formatting` then
 //! formats that stale snapshot and returns edits whose ranges cover only the
 //! stale extent; applied by the real client to its actual (larger) buffer,
@@ -27,7 +27,12 @@
 //!    effective ceiling, so the user learns why formatting and diagnostics
 //!    stopped for that file.
 //!
-//! "Once per episode" is derived from the document's own
+//! A rejected first `didOpen` has no stored document and therefore no episode
+//! latch. It produces a bounded warning for that distinct open attempt (#16653).
+//! Later unassociated sync refusals go to `window/logMessage`, avoiding one
+//! popup per keystroke while still leaving a client-visible refusal.
+//!
+//! "Once per episode" for stored documents is derived from the document's own
 //! `full_sync_required` transition — no separate latch to miss a recovery
 //! point. A second rejected sync while already desynchronized is silent
 //! (`mark_full_sync_required` is idempotent there too); recovery through an
@@ -47,6 +52,23 @@ fn mib(bytes: usize) -> String {
     format!("{:.1}", bytes as f64 / (1_048_576.0))
 }
 
+/// Keep an unvalidated URI from turning a refusal into an oversized UI message.
+fn display_uri(uri: &str) -> String {
+    let mut chars = uri.chars();
+    let prefix: String = chars
+        .by_ref()
+        .take(120)
+        .map(|character| if character.is_control() { '?' } else { character })
+        .collect();
+    if chars.next().is_some() { format!("{prefix}…") } else { prefix }
+}
+
+enum RejectionDisposition {
+    NoDocument,
+    Unchanged,
+    EnteredDesync,
+}
+
 impl LspServer {
     /// Record a text-sync notification that admission rejected before dispatch.
     ///
@@ -64,10 +86,8 @@ impl LspServer {
     /// caller already receives the typed `InvalidRequest` response and a
     /// window message would only duplicate it.
     ///
-    /// A rejection for a URI with no stored document has nothing to
-    /// invalidate — formatting would already refuse with `Document not open` —
-    /// so only the tracing log covers that case; surfacing it to the client
-    /// belongs to #7417's contract.
+    /// A rejected first `didOpen` has no stored document to invalidate, but
+    /// must still tell the client that the buffer was never opened (#16653).
     pub(crate) fn mark_text_sync_admission_rejected(
         &self,
         method: &str,
@@ -90,13 +110,19 @@ impl LspServer {
                 method,
                 "Text-sync admission rejected without a textDocument.uri; nothing to invalidate"
             );
+            if notify_client {
+                self.report_unstored_sync_refusal(
+                    method,
+                    &format!("{method} was rejected before its document could be identified; no text was synchronized"),
+                );
+            }
             return;
         };
 
-        let marked = {
+        let disposition = {
             let mut documents = self.documents.lock();
             match self.get_document_mut(&mut documents, uri) {
-                None => false,
+                None => RejectionDisposition::NoDocument,
                 Some(doc) => {
                     let incoming_version_i64 =
                         params.pointer("/textDocument/version").and_then(Value::as_i64);
@@ -119,7 +145,7 @@ impl LspServer {
                         None => false,
                     };
                     if admitted_handler_would_ignore {
-                        false
+                        RejectionDisposition::Unchanged
                     } else {
                         // Record the dropped frame's version watermark exactly
                         // as the in-dispatcher violation path does — also while
@@ -133,23 +159,38 @@ impl LspServer {
                             // Already desynchronized: the generation bump and
                             // the episode's client message already happened;
                             // only the watermark above still matters.
-                            false
+                            RejectionDisposition::Unchanged
                         } else {
                             doc.mark_full_sync_required();
-                            true
+                            RejectionDisposition::EnteredDesync
                         }
                     }
                 }
             }
         };
         // Drop the document lock before any outbound notification work.
-        if !marked {
-            tracing::debug!(
-                uri,
-                method,
-                "Text-sync admission rejected; document absent or already marked desynchronized"
-            );
-            return;
+        match disposition {
+            RejectionDisposition::NoDocument => {
+                tracing::debug!(
+                    uri,
+                    method,
+                    "Text-sync admission rejected for an unopened document"
+                );
+                if notify_client {
+                    let ceiling = text_sync_params_ceiling();
+                    self.report_unstored_sync_refusal(
+                        method,
+                        &format!(
+                            "{method} for {} was rejected at the {ceiling}-byte text-sync limit; \
+                             the document was not opened. Reopen or resend it below the limit",
+                            display_uri(uri)
+                        ),
+                    );
+                }
+                return;
+            }
+            RejectionDisposition::Unchanged => return,
+            RejectionDisposition::EnteredDesync => {}
         }
         tracing::warn!(
             uri,
@@ -163,12 +204,24 @@ impl LspServer {
         self.show_message_or_log(
             MessageType::Warning,
             &format!(
-                "{uri}: document exceeds the {ceiling}-byte ({} MiB) text-sync limit; the last change was \
+                "{}: document exceeds the {ceiling}-byte ({} MiB) text-sync limit; the last change was \
                  not applied, and formatting and diagnostics are paused for this file until it is \
                  reopened or fully resent below the limit",
+                display_uri(uri),
                 mib(ceiling)
             ),
         );
+    }
+
+    /// First-open refusal needs user attention. Later notifications for a
+    /// document we never opened can repeat on every edit, so log those to the
+    /// client without repeating a popup.
+    fn report_unstored_sync_refusal(&self, method: &str, message: &str) {
+        if method == "textDocument/didOpen" {
+            self.show_message_or_log(MessageType::Warning, message);
+        } else if let Err(error) = self.log_message(MessageType::Warning, message) {
+            tracing::warn!(%error, %message, "Failed to report refused text sync to client log");
+        }
     }
 }
 
@@ -177,6 +230,16 @@ mod tests {
     use super::*;
     use crate::runtime::JsonRpcRequest;
     use serde_json::json;
+
+    #[test]
+    fn refusal_message_uri_is_bounded_and_single_line() {
+        let uri = format!("file:///\n{}", "x".repeat(3_000_000));
+        let shown = display_uri(&uri);
+        assert!(shown.starts_with("file:///?"));
+        assert!(shown.ends_with('…'));
+        assert!(shown.chars().count() <= 121);
+        assert!(!shown.contains('\n'));
+    }
 
     /// didOpen a small document, then run an over-ceiling didChange through
     /// the real preflight and require the document to fail closed.
@@ -457,7 +520,7 @@ mod tests {
             "textDocument": { "uri": uri },
             "options": { "tabSize": 4, "insertSpaces": true },
         })))?;
-        if !formatting.as_ref().and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()) {
+        if formatting.as_ref().and_then(Value::as_array).is_none_or(|edits| edits.is_empty()) {
             return Err("formatting must remain available after a rejected textless save".into());
         }
 
@@ -499,7 +562,7 @@ mod tests {
             "textDocument": { "uri": uri },
             "options": { "tabSize": 4, "insertSpaces": true },
         })))?;
-        if !recovered.as_ref().and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()) {
+        if recovered.as_ref().and_then(Value::as_array).is_none_or(|edits| edits.is_empty()) {
             return Err("admitted full replacement must restore formatting edits".into());
         }
         drop(server);

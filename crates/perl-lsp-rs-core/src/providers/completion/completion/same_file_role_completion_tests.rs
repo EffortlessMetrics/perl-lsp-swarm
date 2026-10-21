@@ -116,6 +116,28 @@ package main;
 my $other = bless {}, 'Other';
 $other->"#;
 
+/// #16983: a resolved receiver must not inherit document-resident members of
+/// packages it neither is nor composes. `Other` reaches neither `User` nor the
+/// `Printable` role that only `User` composes, yet both packages live in the
+/// same current document as the completion request.
+const NON_RECEIVER_PACKAGE_SOURCE: &str = r#"package Printable;
+use Moo::Role;
+sub stringify { "ok" }
+
+package User;
+use Moo;
+with 'Printable';
+
+package User;
+sub extra_method { 2 }
+
+package Other;
+sub other_method { 1 }
+
+package main;
+my $other = bless {}, 'Other';
+$other->"#;
+
 fn completions_for(source: &str, index: Arc<WorkspaceIndex>) -> Vec<CompletionItem> {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
@@ -129,7 +151,9 @@ fn empty_index() -> Arc<WorkspaceIndex> {
 
 fn indexed_source(source: &str) -> Arc<WorkspaceIndex> {
     let index = Arc::new(WorkspaceIndex::new());
-    must(index.index_file(must(Url::parse("file:///workspace/User.pm")), source.to_string()));
+    must(
+        index.index_initial_file(must(Url::parse("file:///workspace/User.pm")), source.to_string()),
+    );
     index
 }
 
@@ -312,6 +336,52 @@ fn unrelated_empty_index_file_does_not_receive_other_package_role_methods() {
     assert!(
         !completions.iter().any(|item| item.label == "stringify"),
         "unrelated empty-index file must not receive another package's role methods; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
+fn resolved_receiver_does_not_offer_non_receiver_package_members() {
+    let completions = completions_for(NON_RECEIVER_PACKAGE_SOURCE, empty_index());
+    assert!(
+        completions.iter().any(|item| item.label == "other_method"),
+        "the resolved receiver's own method must stay offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "stringify"),
+        "a role method of a package the receiver does not compose must not be offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "extra_method"),
+        "another document-resident package's method must not be offered for this receiver; got {:?}",
+        labels(&completions)
+    );
+}
+
+/// #16983 review: a symbol-table entry groups same-name definitions across
+/// packages and kinds (variables are keyed without their sigil), so a callable
+/// in a foreign package must not license a non-callable same-named symbol in
+/// the receiver's package. `Other` cannot call `run`, so the admission
+/// predicate must require one symbol that is simultaneously callable and
+/// receiver-resident.
+const CROSS_PACKAGE_KIND_COLLISION_SOURCE: &str = r#"package User;
+sub run { 1 }
+
+package Other;
+our $run;
+
+package main;
+my $other = bless {}, 'Other';
+$other->"#;
+
+#[test]
+fn callable_definition_must_share_the_receiver_package() {
+    let completions = completions_for(CROSS_PACKAGE_KIND_COLLISION_SOURCE, empty_index());
+    assert!(
+        !completions.iter().any(|item| item.label == "run"),
+        "a callable run in User must not license Other's same-named non-callable $run for receiver Other; got {:?}",
         labels(&completions)
     );
 }

@@ -516,11 +516,7 @@ fn optional_sha_value(value: Option<&str>) -> Value {
 }
 
 fn repo_root() -> Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| eyre!("failed to resolve repository root from {}", manifest_dir.display()))
+    crate::utils::project_root()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1302,6 +1298,83 @@ fn require_freshness_handoff(repo: &Path) -> Result<()> {
     validate_freshness_handoff(&PathBuf::from(path), &token, repo)
 }
 
+/// Versioned PR integration-delta identity. Event provenance remains A/H;
+/// analysis compares the authenticated first parent P with evaluated E.
+/// Absence of explicit H preserves ordinary commit-range behavior.
+pub(crate) fn pr_comparison_subject(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    pr_head: Option<&str>,
+) -> Result<Option<Value>> {
+    let Some(pr_head) = pr_head else { return Ok(None) };
+    let event_base = revision_sha(repo, base)?;
+    let evaluated = revision_sha(repo, head)?;
+    let raw_head = revision_sha(repo, pr_head)?;
+    if pr_head != raw_head || revision_sha(repo, "HEAD")? != evaluated {
+        bail!("RIPR comparison NOT_PROVEN: exact raw H and evaluated checkout E are required");
+    }
+    if !run_git_output(repo, &["status", "--porcelain", "--untracked-files=all"])?.trim().is_empty()
+    {
+        bail!("RIPR comparison NOT_PROVEN: evaluated checkout has uncommitted source");
+    }
+    let header = run_git_output(repo, &["cat-file", "commit", &evaluated])?;
+    let parents = header
+        .split("\n\n")
+        .next()
+        .unwrap_or("")
+        .lines()
+        .filter_map(|line| line.strip_prefix("parent "))
+        .collect::<Vec<_>>();
+    if parents.len() != 2 || parents[1] != raw_head {
+        bail!(
+            "RIPR comparison NOT_PROVEN: evaluated integration must have exactly two parents and second parent H"
+        );
+    }
+    let comparison_base = revision_sha(repo, parents[0])?;
+    let ancestry = run_git_output(repo, &["merge-base", &event_base, &comparison_base])?;
+    if ancestry.trim() != event_base {
+        bail!("RIPR comparison NOT_PROVEN: event base is not an ancestor of integration parent P");
+    }
+    let tree = run_git_output(repo, &["rev-parse", &format!("{evaluated}^{{tree}}")])?;
+    Ok(Some(json!({"schema_version":"ripr-pr-comparison.v1", "event_base_sha":event_base,
+        "pr_head_sha":raw_head, "comparison_base_sha":comparison_base,
+        "evaluated_sha":evaluated, "evaluated_tree_sha":tree.trim()})))
+}
+
+pub(crate) fn validate_comparison_subject(packet: &Value, expected: Option<&Value>) -> Result<()> {
+    if packet.get("comparison_subject") != expected {
+        bail!("RIPR comparison subject is absent, stale or contradictory");
+    }
+    Ok(())
+}
+
+fn raw_check_digest(repo: &Path) -> Result<String> {
+    let mut input = fs::File::open(repo.join(PR_RAW_CHECK_JSON))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn evidence_diff(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    pr_head: Option<&str>,
+) -> Result<CommittedDiffReceipt> {
+    let subject = pr_comparison_subject(repo, base, head, pr_head)?;
+    let comparison_base =
+        subject.as_ref().and_then(|s| s["comparison_base_sha"].as_str()).unwrap_or(base);
+    resolve_committed_diff(repo, comparison_base, head)
+}
+
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // Invalidate before revision, diff, or producer work. Once clearing succeeds,
     // later failures cannot expose earlier copies to the always-run validator
@@ -1317,7 +1390,10 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    let diff_receipt =
+        evidence_diff(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
     // Stream raw check output straight into the artifact path without buffering it in memory
@@ -1359,7 +1435,17 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         attribution,
         production_surface.as_ref(),
     )?;
-    let packet = pr_evidence_packet_from_summary(
+    if pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?
+        != subject
+    {
+        bail!("RIPR comparison changed during analysis");
+    }
+    if let Some(subject) = subject.as_ref()
+        && ingestion.analysis_base.as_ref() != Some(&subject["comparison_base_sha"])
+    {
+        bail!("RIPR raw producer comparison base differs from authenticated P");
+    }
+    let mut packet = pr_evidence_packet_from_summary(
         options,
         &ingestion,
         &base_sha,
@@ -1371,6 +1457,10 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
             production_surface: production_surface.as_ref(),
         },
     );
+    if let Some(subject) = subject {
+        packet["comparison_subject"] = subject;
+        packet["analysis_sha256"] = json!(raw_check_digest(repo)?);
+    }
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
     write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
@@ -1389,7 +1479,10 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
-    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    let diff_receipt =
+        evidence_diff(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
     let changed_file_count = diff_receipt.entries.len();
     let committed_diff_text = fs::read_to_string(repo.join(PR_DIFF_RECEIPT))
         .with_context(|| format!("missing or unreadable {PR_DIFF_RECEIPT}"))?;
@@ -1402,6 +1495,12 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         .with_context(|| format!("missing or unreadable {PR_EVIDENCE_JSON}"))?;
     let packet: Value =
         serde_json::from_str(&text).with_context(|| format!("{PR_EVIDENCE_JSON} is invalid"))?;
+    validate_comparison_subject(&packet, subject.as_ref())?;
+    if subject.is_some()
+        && packet["analysis_sha256"].as_str() != Some(raw_check_digest(repo)?.as_str())
+    {
+        bail!("RIPR raw analysis differs from the current PR evidence");
+    }
     validate_pr_evidence_packet(
         &packet,
         options,
@@ -1426,16 +1525,28 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff = repo.join(PR_DIFF).display().to_string();
     let root = command_root_arg(repo, &options.root)?;
+    let mut args = vec![
+        "check".to_string(),
+        "--root".to_string(),
+        root,
+        "--diff".to_string(),
+        diff,
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    if let Some(subject) =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?
+    {
+        args.extend([
+            "--base".to_string(),
+            subject["comparison_base_sha"]
+                .as_str()
+                .ok_or_else(|| eyre!("missing comparison base"))?
+                .to_string(),
+        ]);
+    }
     run_ripr_streaming_to_file(
-        &[
-            "check".to_string(),
-            "--root".to_string(),
-            root,
-            "--diff".to_string(),
-            diff,
-            "--format".to_string(),
-            "json".to_string(),
-        ],
+        &args,
         &repo.join(PR_RAW_CHECK_JSON),
         &repo.join(RIPR_STDOUT_STAGING_DIR),
     )
@@ -2058,6 +2169,7 @@ fn wait_within_cap(
 /// blobs, which this does bound.
 #[derive(Debug)]
 struct RiprCheckIngestion {
+    analysis_base: Option<Value>,
     summary_counts: RiprPrSummaryCounts,
     /// Mirrors `check_value.get("summary").and_then(Value::as_object).is_some()`:
     /// a `summary` key that is not an object still counts as absent.
@@ -2089,6 +2201,7 @@ fn ripr_check_ingestion_from_file(
     validate_check_summary_counts(check_summary)?;
     validate_check_findings_array(payload.findings_is_array)?;
     Ok(RiprCheckIngestion {
+        analysis_base: payload.base,
         summary_counts: ripr_summary_counts_merge(
             ripr_summary_counts_seed(check_summary),
             buckets,
@@ -4300,6 +4413,7 @@ fn pr_evidence_packet_with_count(
     pr_evidence_packet_from_summary(
         options,
         &RiprCheckIngestion {
+            analysis_base: check_value.get("base").cloned(),
             summary_counts: summary,
             check_summary_present: check_summary.is_some(),
         },
@@ -4638,6 +4752,7 @@ fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result
     if let Some(pr_head_sha) = &options.pr_head_sha {
         verify_revision(repo, pr_head_sha)?;
     }
+    pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
     let root = command_root_arg(repo, &options.root)?;
     if current_pr_evidence_has_no_severe_gaps(repo, options)? {
         write_clean_review_comments(repo, options, &root)?;
@@ -4673,27 +4788,52 @@ fn run_ripr_review_comments(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let out_arg = out.display().to_string();
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    let comparison_base =
+        subject.as_ref().and_then(|s| s["comparison_base_sha"].as_str()).unwrap_or(&options.base);
     run_ripr_with_timeout(
         &[
             "review-comments".to_string(),
             "--root".to_string(),
             root.to_string(),
             "--base".to_string(),
-            options.base.clone(),
+            comparison_base.to_string(),
             "--head".to_string(),
             options.head.clone(),
             "--out".to_string(),
             out_arg,
         ],
         options.timeout_seconds,
-    )
-    .map(|_| ())
+    )?;
+    let mut packet: Value = serde_json::from_str(&fs::read_to_string(&out)?)?;
+    if packet.get("base").and_then(Value::as_str) != Some(comparison_base)
+        || packet.get("head").and_then(Value::as_str) != Some(options.head.as_str())
+    {
+        bail!("RIPR guidance producer comparison differs from requested scope");
+    }
+    packet["base"] = json!(options.base);
+    write_text(&out, &format_json(&packet)?)
 }
 
 fn current_pr_evidence_has_no_severe_gaps(
     repo: &Path,
     options: &ReviewCommentsOptions,
 ) -> Result<bool> {
+    if options.pr_head_sha.is_some()
+        && check_pr_evidence(
+            repo,
+            &PrEvidenceOptions {
+                root: options.root.clone(),
+                base: options.base.clone(),
+                head: options.head.clone(),
+                pr_head_sha: options.pr_head_sha.clone(),
+            },
+        )
+        .is_err()
+    {
+        return Ok(false);
+    }
     let path = repo.join(PR_EVIDENCE_JSON);
     let Ok(text) = fs::read_to_string(&path) else {
         return Ok(false);
@@ -4715,6 +4855,11 @@ fn current_pr_evidence_has_no_severe_gaps(
     {
         return Ok(false);
     }
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    if validate_comparison_subject(&packet, subject.as_ref()).is_err() {
+        return Ok(false);
+    }
     Ok(packet.pointer("/summary/severe_gaps").and_then(Value::as_u64) == Some(0))
 }
 
@@ -4727,6 +4872,9 @@ fn validate_review_comments(
         .with_context(|| format!("missing or unreadable {REVIEW_COMMENTS_JSON}"))?;
     let packet: Value = serde_json::from_str(&text)
         .with_context(|| format!("{REVIEW_COMMENTS_JSON} is not valid JSON"))?;
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    validate_comparison_subject(&packet, subject.as_ref())?;
     let mut violations = Vec::new();
     expect_string(&packet, "schema_version", "0.1", &mut violations);
     expect_string(&packet, "tool", "ripr", &mut violations);
@@ -4784,6 +4932,11 @@ fn stamp_review_comments_receipt(repo: &Path, options: &ReviewCommentsOptions) -
     let Some(object) = packet.as_object_mut() else {
         bail!("{REVIEW_COMMENTS_JSON} is not a JSON object");
     };
+    if let Some(subject) =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?
+    {
+        object.insert("comparison_subject".to_string(), subject);
+    }
     object.insert("base_sha".to_string(), json!(revision_sha(repo, &options.base)?));
     object.insert("head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
     object.insert("pr_head_sha".to_string(), optional_sha_value(options.pr_head_sha.as_deref()));
@@ -4931,6 +5084,22 @@ fn fallback_guidance_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
 ) -> Result<Option<(Vec<Value>, usize)>> {
+    let subject =
+        pr_comparison_subject(repo, &options.base, &options.head, options.pr_head_sha.as_deref())?;
+    if subject.is_some()
+        && check_pr_evidence(
+            repo,
+            &PrEvidenceOptions {
+                root: options.root.clone(),
+                base: options.base.clone(),
+                head: options.head.clone(),
+                pr_head_sha: options.pr_head_sha.clone(),
+            },
+        )
+        .is_err()
+    {
+        return Ok(None);
+    }
     let Ok(suppressions) = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))
     else {
         return Ok(None);
@@ -4941,7 +5110,8 @@ fn fallback_guidance_comments(
     // fail-closed. The non-production filter (#12267 review repair) applies
     // here too, with the same precedence as the counted set, so truncated
     // fallback guidance cannot fill up with seams the count already dropped.
-    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head).ok();
+    let diff_receipt =
+        evidence_diff(repo, &options.base, &options.head, options.pr_head_sha.as_deref()).ok();
     let metadata = crate::tasks::ci_scope::load_metadata(repo).ok();
     let attribution = diff_receipt
         .as_ref()
@@ -4980,7 +5150,14 @@ fn fallback_guidance_comments(
         },
     );
     let Ok(payload) = payload else { return Ok(None) };
-    if payload.base.as_ref().and_then(Value::as_str) != Some(options.base.as_str()) {
+    if payload.base.as_ref().and_then(Value::as_str)
+        != Some(
+            subject
+                .as_ref()
+                .and_then(|s| s["comparison_base_sha"].as_str())
+                .unwrap_or(&options.base),
+        )
+    {
         return Ok(None);
     }
     // `finish` already returns the bounded, sorted, path/line-unique set; no
@@ -6397,6 +6574,7 @@ mod tests {
     use super::*;
 
     use color_eyre::eyre::ContextCompat;
+    use perl_tdd_support::must_err_with;
 
     // ---------------------------------------------------------------------
     // #9113: RIPR 0.9.0 → 0.10.0 consumer migration.
@@ -6498,7 +6676,7 @@ mod tests {
         validate_check_summary_counts(summary)?;
         validate_check_findings_array(payload.findings_is_array)?;
         color_eyre::eyre::ensure!(findings.len() == 3, "scalar and null findings must survive");
-        let first = findings.get(0).context("first streamed finding")?;
+        let first = findings.first().context("first streamed finding")?;
         let second = findings.get(1).context("second streamed finding")?;
         let third = findings.get(2).context("third streamed finding")?;
         color_eyre::eyre::ensure!(second == &json!("scalar-finding"));
@@ -6658,15 +6836,12 @@ mod tests {
         // "0.10 does not move the number the required check acts on".
         let (old_counts, new_counts) = (counts_for(&old), counts_for(&new));
         color_eyre::eyre::ensure!(
-            ((
-                old_counts.weakly_exposed,
-                old_counts.reachable_unrevealed,
-                old_counts.no_static_path
-            )) == ((
-                new_counts.weakly_exposed,
-                new_counts.reachable_unrevealed,
-                new_counts.no_static_path
-            )),
+            (old_counts.weakly_exposed, old_counts.reachable_unrevealed, old_counts.no_static_path)
+                == (
+                    new_counts.weakly_exposed,
+                    new_counts.reachable_unrevealed,
+                    new_counts.no_static_path
+                ),
             "the reviewed bump must not change the actionable counts for identical input"
         );
         Ok(())
@@ -7035,8 +7210,10 @@ mod tests {
             ("[\"weakly_exposed\", \"call_deletion\"]", "call_deletion"),
         ] {
             let policy_path = policy_with_classification(dir.path(), Some(classification))?;
-            let error = read_ripr_suppression_rules(dir.path(), &policy_path)
-                .expect_err("an unmatchable classification must fail the load");
+            let error = must_err_with(
+                read_ripr_suppression_rules(dir.path(), &policy_path),
+                "an unmatchable classification must fail the load",
+            );
             let message = format!("{error:#}");
             color_eyre::eyre::ensure!(
                 message.contains("row") && message.contains(offending),
@@ -11410,7 +11587,7 @@ paths = ["archive/["]
 
     fn attribution_for(metadata: &Value, changed: &[&str]) -> Result<AttributionScope> {
         let changed = changed.iter().map(|path| path.to_string()).collect::<Vec<_>>();
-        Ok(dependency_attribution_scope(metadata, &changed)?)
+        dependency_attribution_scope(metadata, &changed)
     }
 
     /// #6766 reproduction (#11690): a new module in a low-fan-in crate must not
@@ -13168,7 +13345,10 @@ esac
                 p.set_mode(0o755);
                 fs::set_permissions(&fail, p)?;
             }
-            let err = run_output(&fail.display().to_string(), &[]).unwrap_err();
+            let err = must_err_with(
+                run_output(&fail.display().to_string(), &[]),
+                "failing command must surface an error",
+            );
             let msg = format!("{err:#}");
             assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
             assert!(msg.contains("status"), "exit status must appear in error: {msg}");
@@ -13254,7 +13434,7 @@ esac
         let script = write_large_output_script(tmp.path(), TARGET_BYTES)?;
 
         let result =
-            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_mins(2))?;
 
         assert_eq!(
             result.len(),
@@ -13275,7 +13455,7 @@ esac
         let script = write_noisy_stderr_script(tmp.path(), 4 * MAX_RIPR_STDERR_BYTES)?;
 
         let result =
-            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_mins(2))?;
 
         assert_eq!(result.trim(), "ok", "stdout result must be captured verbatim");
         Ok(())
@@ -13294,9 +13474,10 @@ esac
                 p.set_mode(0o755);
                 fs::set_permissions(&fail, p)?;
             }
-            let err =
-                run_output_with_timeout(&fail.display().to_string(), &[], Duration::from_secs(60))
-                    .unwrap_err();
+            let err = must_err_with(
+                run_output_with_timeout(&fail.display().to_string(), &[], Duration::from_mins(1)),
+                "timed failing command must surface an error",
+            );
             let msg = format!("{err:#}");
             assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
             assert!(msg.contains("status"), "exit status must appear in error: {msg}");
@@ -14220,7 +14401,7 @@ paths = ["archive/**"]
                 serde_json::from_str::<Value>(payload).is_err(),
                 "{name}: DOM oracle must reject this payload"
             );
-            let err = streamed.unwrap_err();
+            let err = must_err_with(streamed, "invalid streamed payload must fail ingestion");
             let message = format!("{err:#}");
             assert!(
                 message.contains("ripr check output was not valid JSON"),
@@ -14317,7 +14498,7 @@ paths = ["archive/**"]
 
     impl Read for PanickingStderrReader {
         fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-            panic!("injected stderr drain panic")
+            std::panic::resume_unwind(Box::new("injected stderr drain panic"))
         }
     }
 
@@ -14510,7 +14691,7 @@ paths = ["archive/**"]
             "RIPR workflow has no evidence upload paths"
         );
         color_eyre::eyre::ensure!(
-            upload_paths.iter().any(|path| *path == "target/ripr/pr/**"),
+            upload_paths.contains(&"target/ripr/pr/**"),
             "RIPR evidence uploads must retain target/ripr/pr/**: {upload_paths:?}"
         );
         for path in &upload_paths {
@@ -14603,7 +14784,10 @@ paths = ["archive/**"]
             pr_head_sha: None,
         };
 
-        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let err = must_err_with(
+            run_ripr_check(&repo, &options),
+            "failing ripr run must surface an error",
+        );
         let message = format!("{err:#}");
 
         assert!(message.contains("status"), "exit status must still appear: {message}");
@@ -14644,7 +14828,10 @@ paths = ["archive/**"]
             pr_head_sha: None,
         };
 
-        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let err = must_err_with(
+            run_ripr_check(&repo, &options),
+            "failing ripr run must surface an error",
+        );
         let message = format!("{err:#}");
         assert!(message.contains("status"), "exit status must appear: {message}");
         assert!(
@@ -15003,7 +15190,7 @@ paths = ["archive/**"]
             "refusal must name the override that raises the cap: {message}"
         );
         color_eyre::eyre::ensure!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < Duration::from_mins(1),
             "the producer was waited out instead of terminated at the cap"
         );
 
@@ -15053,7 +15240,7 @@ paths = ["archive/**"]
             "refusal must name the cap it enforced: {message}"
         );
         color_eyre::eyre::ensure!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < Duration::from_mins(1),
             "drain.join blocked on a descendant that still held stderr"
         );
         color_eyre::eyre::ensure!(
@@ -15098,7 +15285,7 @@ paths = ["archive/**"]
         run_ripr_check(&repo, &pr_evidence_options())?;
 
         color_eyre::eyre::ensure!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < Duration::from_mins(1),
             "the join hung on a descendant that outlived its producer"
         );
         assert_eq!(
@@ -15176,11 +15363,11 @@ paths = ["archive/**"]
     fn staged_payload_cap_default_sits_between_the_payloads_measured_on_12999() {
         const INGESTED_PAYLOAD_BYTES: u64 = 4_606_060_928;
         const LANE_KILLING_PAYLOAD_BYTES: u64 = 10_385_110_266;
-        assert!(
+        const _: () = assert!(
             MAX_RIPR_RAW_CHECK_BYTES > INGESTED_PAYLOAD_BYTES,
             "the default cap must not refuse a payload measured completing ingestion"
         );
-        assert!(
+        const _: () = assert!(
             MAX_RIPR_RAW_CHECK_BYTES < LANE_KILLING_PAYLOAD_BYTES,
             "the default cap must refuse the payload measured killing the lane"
         );

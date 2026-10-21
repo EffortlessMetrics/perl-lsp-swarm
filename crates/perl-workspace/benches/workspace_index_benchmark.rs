@@ -1,11 +1,19 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use perl_tdd_support::must;
-use perl_workspace::workspace_index::WorkspaceIndex;
+use perl_tdd_support::{must, must_some};
+use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome, WorkspaceIndex};
 use std::fs;
 use std::hint::black_box;
+use std::num::NonZeroU32;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
+
+// Shared cold scan+index sampler for the `index_real_corpus` group
+// (issue #17159, matrix row 5). Also included by the receipt test via
+// `#[path]`, so the module stays lint-clean under both target lint sets.
+#[path = "support/index_real_corpus.rs"]
+mod index_real_corpus;
 
 /// Sample Perl code representing a typical module
 const SAMPLE_MODULE: &str = r#"
@@ -681,46 +689,10 @@ fn bench_resource_limit_enforcement(c: &mut Criterion) {
     });
 }
 
-/// Generate a realistic Perl module with ~10 symbols for scale benchmarks.
-fn generate_module(index: usize) -> String {
-    format!(
-        r#"package Gen::Module{idx};
-use strict;
-use warnings;
-
-our $VERSION = '1.00';
-
-sub new {{
-    my $class = shift;
-    return bless {{}}, $class;
-}}
-
-sub method_a_{idx} {{
-    my ($self, $x) = @_;
-    return $x + {idx};
-}}
-
-sub method_b_{idx} {{
-    my ($self, $y) = @_;
-    return $y * {idx};
-}}
-
-sub method_c_{idx} {{
-    my ($self) = @_;
-    return "{idx}";
-}}
-
-sub _private_{idx} {{
-    return {idx};
-}}
-
-1;
-"#,
-        idx = index
-    )
-}
-
 /// Benchmark batch indexing 1000 files (CPAN-scale workload).
+///
+/// `generate_module` lives in `index_real_corpus` so the real-corpus slice
+/// (issue #17159) shares the exact same synthetic shape.
 fn bench_batch_index_1000_files(c: &mut Criterion) {
     c.bench_function("batch index 1000 files", |b| {
         b.iter_batched(
@@ -728,7 +700,7 @@ fn bench_batch_index_1000_files(c: &mut Criterion) {
                 let files: Vec<(Url, String)> = (0..1000)
                     .map(|i| {
                         let uri = must(Url::parse(&format!("file:///lib/Gen/Module{}.pm", i)));
-                        (uri, generate_module(i))
+                        (uri, index_real_corpus::generate_module(i))
                     })
                     .collect();
                 (WorkspaceIndex::new(), files)
@@ -749,7 +721,7 @@ fn bench_symbol_lookup_at_scale(c: &mut Criterion) {
     let files: Vec<(Url, String)> = (0..1000)
         .map(|i| {
             let uri = must(Url::parse(&format!("file:///lib/Gen/Module{}.pm", i)));
-            (uri, generate_module(i))
+            (uri, index_real_corpus::generate_module(i))
         })
         .collect();
     let _errors = index.index_files_batch(files);
@@ -772,7 +744,7 @@ fn bench_search_symbols_at_scale(c: &mut Criterion) {
     let files: Vec<(Url, String)> = (0..1000)
         .map(|i| {
             let uri = must(Url::parse(&format!("file:///lib/Gen/Module{}.pm", i)));
-            (uri, generate_module(i))
+            (uri, index_real_corpus::generate_module(i))
         })
         .collect();
     let _errors = index.index_files_batch(files);
@@ -785,27 +757,125 @@ fn bench_search_symbols_at_scale(c: &mut Criterion) {
     });
 }
 
-/// Benchmark incremental update at scale (re-index 1 file in 1000-file workspace).
-fn bench_incremental_update_at_scale(c: &mut Criterion) {
+fn populated_update_workspace() -> (WorkspaceIndex, Url) {
     let index = WorkspaceIndex::new();
     let files: Vec<(Url, String)> = (0..1000)
         .map(|i| {
             let uri = must(Url::parse(&format!("file:///lib/Gen/Module{}.pm", i)));
-            (uri, generate_module(i))
+            (uri, index_real_corpus::generate_module(i))
         })
         .collect();
-    let _errors = index.index_files_batch(files);
+    let errors = index.index_initial_files_batch(files);
+    assert!(errors.is_empty(), "update benchmark setup failed: {errors:?}");
+    assert_eq!(index.file_count(), 1000);
 
     let update_uri = must(Url::parse("file:///lib/Gen/Module500.pm"));
+    (index, update_uri)
+}
 
-    c.bench_function("incremental update at 1000-file scale", |b| {
-        b.iter(|| {
-            let updated =
-                "package Gen::Module500;\nsub updated_method { return 42; }\n1;\n".to_string();
-            index.index_file(update_uri.clone(), updated).ok();
-            black_box(&index);
+/// Time only the live commit. Input ownership and the publication oracle stay
+/// outside the timer, though the oracle still affects between-iteration caches.
+fn checked_workspace_update(
+    index: &WorkspaceIndex,
+    uri: &Url,
+    variant: &(String, &str, &str),
+    generation: &mut u32,
+    expected_outcome: SourceCommitOutcome,
+) -> Duration {
+    *generation = must_some(generation.checked_add(1));
+    // DocumentStore uses i32 versions; exhaustion must refuse the benchmark.
+    assert!(*generation <= i32::MAX as u32, "update benchmark generation exhausted");
+    let commit = SourceCommit::new(must_some(NonZeroU32::new(*generation)));
+    let candidate_uri = uri.clone();
+    let candidate_source = variant.0.clone();
+
+    let start = Instant::now();
+    let outcome = index.index_live_file(candidate_uri, candidate_source, commit);
+    let elapsed = start.elapsed();
+
+    assert_eq!(outcome, expected_outcome);
+    assert_eq!(index.file_count(), 1000);
+    assert_eq!(index.indexed_generation(uri.as_str()), Some(*generation));
+    let document = must_some(index.document_store().get(uri.as_str()));
+    assert_eq!(document.text(), variant.0.as_str());
+    let definition = must_some(index.find_definition(variant.1));
+    assert_eq!(definition.uri, uri.as_str());
+    assert!(index.find_definition(variant.2).is_none(), "obsolete declaration survived update");
+    elapsed
+}
+
+/// Live workspace commit latency, excluding caller-side source preparation and
+/// editor processing. These cases replace the old mostly-NoOp "incremental
+/// update" timing; its historical numbers are not real-edit baselines.
+fn bench_incremental_update_at_scale(c: &mut Criterion) {
+    let module = index_real_corpus::generate_module(500);
+    assert!(module.contains("sub method_a_500 "));
+    let variants = [
+        (
+            module.replace("method_a_500", "edited_a_500"),
+            "Gen::Module500::edited_a_500",
+            "Gen::Module500::edited_b_500",
+        ),
+        (
+            module.replace("method_a_500", "edited_b_500"),
+            "Gen::Module500::edited_b_500",
+            "Gen::Module500::edited_a_500",
+        ),
+    ];
+
+    for (name, changes_content) in [
+        ("accepted real update at 1000-file scale", true),
+        ("unchanged live commit at 1000-file scale", false),
+    ] {
+        // Each case owns an independently populated index.
+        let (index, update_uri) = populated_update_workspace();
+        let mut generation = 0;
+        // Preflight both edit directions and the unchanged-content control.
+        // None of this fixture validation contributes to Criterion's duration.
+        for variant in [0, 1, 0] {
+            checked_workspace_update(
+                &index,
+                &update_uri,
+                &variants[variant],
+                &mut generation,
+                SourceCommitOutcome::Accepted,
+            );
+        }
+        assert!(index.find_definition("Gen::Module500::method_a_500").is_none());
+        checked_workspace_update(
+            &index,
+            &update_uri,
+            &variants[0],
+            &mut generation,
+            SourceCommitOutcome::NoOp,
+        );
+
+        // Preserve accepted state across warmup and sampling callbacks.
+        let mut active_variant = 0;
+        c.bench_function(name, |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    let next_variant =
+                        if changes_content { 1 - active_variant } else { active_variant };
+                    let expected = if changes_content {
+                        SourceCommitOutcome::Accepted
+                    } else {
+                        SourceCommitOutcome::NoOp
+                    };
+                    elapsed += checked_workspace_update(
+                        &index,
+                        &update_uri,
+                        &variants[next_variant],
+                        &mut generation,
+                        expected,
+                    );
+                    active_variant = next_variant;
+                }
+                elapsed
+            });
         });
-    });
+    }
 }
 
 /// Generate a dense Perl module with ~100 symbols for CPAN-scale 500K-symbol testing.
@@ -838,7 +908,7 @@ fn bench_batch_index_10k_files_sparse(c: &mut Criterion) {
                 (0..10_000)
                     .map(|i| {
                         let uri = must(Url::parse(&format!("file:///lib/Gen/Sparse{}.pm", i)));
-                        (uri, generate_module(i))
+                        (uri, index_real_corpus::generate_module(i))
                     })
                     .collect::<Vec<_>>()
             },
@@ -905,6 +975,102 @@ fn bench_symbol_lookup_at_500k_scale(c: &mut Criterion) {
     });
 }
 
+/// Benchmark slice #5 (issue #17159, benchmark matrix row 5): cold scan+index
+/// wallclock on a real corpus.
+///
+/// One COLD sample = stage a fresh corpus copy into a `TempDir` (no `.git`,
+/// so discovery exercises its `WalkDir` fallback against the corpus rather
+/// than the host repository index), then time, in production startup order,
+/// discovery + per-file read/admit/decode/`index_file` with a fresh
+/// `WorkspaceIndex`. See `index_real_corpus` for the precise contract.
+///
+/// The real skeletons are skipped with a diagnostic when
+/// `test_corpus/real_projects` is absent (matrix: "skip if absent"); the
+/// deterministic synthetic 400-file tree never skips.
+fn bench_index_real_corpus(c: &mut Criterion) {
+    let mut group = c.benchmark_group("index_real_corpus");
+    // A cold sample copies up to 400 files and re-parses every one of them;
+    // the default 100-sample criterion run would dominate wall time.
+    group.sample_size(10);
+
+    let projects = index_real_corpus::real_corpus_projects();
+    if projects.is_empty() {
+        // Diagnostic for the bench operator; benches are not the LSP server's
+        // stdio transport, so the workspace print_stderr deny is relaxed here.
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!(
+                "index_real_corpus: {} absent; skipping real-corpus entries (synthetic entry still runs)",
+                index_real_corpus::REAL_PROJECTS_RELATIVE
+            );
+        }
+    }
+
+    for project in &projects {
+        let Some(name) = project.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let source_root = project.clone();
+        group.bench_function(format!("real_corpus/{name}"), |b| {
+            b.iter_batched(
+                || {
+                    // Setup (untimed): fresh corpus copy per sample. The fresh
+                    // WorkspaceIndex is created inside `cold_scan_index`,
+                    // before its timer starts.
+                    let temp_dir = must(TempDir::new());
+                    must(index_real_corpus::stage_copy(&source_root, temp_dir.path()));
+                    temp_dir
+                },
+                |temp_dir| {
+                    // A failed cold sample invalidates the run: surface it via
+                    // the bench's house `must` diagnostic, then reject any
+                    // sample whose admitted files did not all index cleanly
+                    // (the same `indexed_predicate_holds` guard the receipt
+                    // test applies) so a partial index never becomes a
+                    // published timing.
+                    let sample = must(index_real_corpus::cold_scan_index(temp_dir.path()));
+                    assert!(
+                        sample.indexed_predicate_holds(),
+                        "indexed predicate failed: {sample:?}"
+                    );
+                    black_box(sample);
+                    // Return the tree so Criterion drops it AFTER the timing
+                    // boundary: `iter_batched` drops the routine's output only
+                    // past `measurement.end` (criterion 0.8.2), so tree
+                    // deletion never lands inside the recorded cold sample.
+                    temp_dir
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Deterministic synthetic on-disk tree, never skipped: 40 package dirs x
+    // 10 modules = 400 files from the shared generator.
+    group.bench_function("real_corpus/synthetic_400_files", |b| {
+        b.iter_batched(
+            || {
+                let temp_dir = must(TempDir::new());
+                must(index_real_corpus::write_synthetic_tree(temp_dir.path()));
+                temp_dir
+            },
+            |temp_dir| {
+                let sample = must(index_real_corpus::cold_scan_index(temp_dir.path()));
+                // Same rejection guard as the real-corpus case: a sample with
+                // indexing errors or an empty index is invalid, not faster.
+                assert!(sample.indexed_predicate_holds(), "indexed predicate failed: {sample:?}");
+                black_box(sample);
+                // Returned so the tree drops after the timing boundary (see
+                // the real-corpus case above), not inside the recorded sample.
+                temp_dir
+            },
+            BatchSize::PerIteration,
+        );
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_initial_index_small_workspace,
@@ -926,5 +1092,6 @@ criterion_group!(
     bench_batch_index_10k_files_sparse,
     bench_batch_index_5k_files_dense,
     bench_symbol_lookup_at_500k_scale,
+    bench_index_real_corpus,
 );
 criterion_main!(benches);

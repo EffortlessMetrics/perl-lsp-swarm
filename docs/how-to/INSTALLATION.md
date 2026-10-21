@@ -41,11 +41,13 @@ perllsp --doctor
 The repository maintains the installer logic at
 [`scripts/install.sh`](../../scripts/install.sh). The root
 [`install.sh`](../../install.sh) is only a bootstrap and argument-compatibility
-wrapper: as a convenience it also accepts the two most common settings as
-positionals — `bash install.sh <version> <install-dir>` is equivalent to
-`VERSION=<version> INSTALL_DIR=<install-dir> bash install.sh` (explicit
-environment variables win when both are given). The canonical script itself
-takes flags only and rejects any other positional.
+wrapper. Both the wrapper and [`scripts/install.sh`](../../scripts/install.sh)
+accept the two most common settings as fixed-slot positionals —
+`bash install.sh <version> <install-dir>` is equivalent to
+`VERSION=<version> INSTALL_DIR=<install-dir> bash install.sh`. Explicit
+environment variables win the matching slot and do not shift a later
+positional. A third positional fails closed. Remaining flags
+(`--print-target`, `--with-claude`, `--help`) are unchanged.
 
 From a clone, the wrapper executes the sibling `scripts/install.sh` directly:
 
@@ -167,6 +169,11 @@ the debug adapter is skipped without an error. If you need the
 debugger, use a release archive instead — the archives ship both binaries — or
 build `perl-dap` yourself from a clone with
 `cargo build -p perl-dap --release`.
+
+In source mode, `VERSION=latest` (the default) selects crates.io's latest
+`perllsp` without querying GitHub Releases. The installer verifies the staged
+binary's version before promotion and reports that registry version on completion.
+An explicit `VERSION=vX.Y.Z` still requires that exact registry version.
 
 ## macOS and Linux manual archive
 

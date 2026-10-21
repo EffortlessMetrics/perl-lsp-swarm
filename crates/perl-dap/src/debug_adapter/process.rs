@@ -2,14 +2,13 @@
 
 use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
-    Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
-    DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE,
-    LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read, RestartArguments, ResumeMode, Source,
-    StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
-    Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    Arc, BufRead, BufReader, Child, DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState,
+    DisconnectArguments, Duration, EngineBreakpointHitOutcome, Instant,
+    LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE, LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read,
+    RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig, TcpAttachSession,
+    TerminateArguments, TerminationState, Value, Write, ansi_escape_re, catalog_has_feature,
+    context_re, debug_session_terminate_wait_ms, die_suffix_re, error_re, exception_re, json,
+    lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -559,6 +558,43 @@ impl DebugAdapter {
         }
 
         if let Some(args) = arguments {
+            // Reject malformed argv before retaining configuration or touching
+            // interpreter, authority, or process state (#17733). Every accepted
+            // string remains one argument; silently dropping entries changes
+            // the program the client asked us to debug.
+            let perl_args = match Self::parse_launch_script_args(&args) {
+                Ok(args) => args,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+
+            // Reject malformed typed options before retaining configuration
+            // or touching process state (#18027), for the same reason as argv
+            // above: silently coercing them changes what the client asked for
+            // while the launch response still reports success.
+            let (stop_on_entry, debuggee_timeout_secs, env_overrides) =
+                match Self::parse_launch_typed_options(&args) {
+                    Ok(options) => options,
+                    Err(message) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(message),
+                        };
+                    }
+                };
+
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -710,36 +746,9 @@ impl DebugAdapter {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
-            let perl_args = args
-                .get("args")
-                .and_then(|a| a.as_array())
-                .map(|arr| {
-                    arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
-
-            // Wall-clock timeout for the perl -d debuggee process (#4640).
-            // 0 (the default) disables the watchdog so legitimate long-running
-            // debug sessions (e.g. a server paused at a breakpoint for minutes)
-            // are not interrupted.  A positive value kills the debuggee after
-            // the specified number of seconds of wall-clock time.
-            let debuggee_timeout_secs =
-                args.get("debuggeeTimeoutSeconds").and_then(|v| v.as_u64()).unwrap_or(0);
-
-            let env_overrides = args
-                .get("env")
-                .and_then(Value::as_object)
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .filter_map(|(key, value)| {
-                            value.as_str().map(|value| (key.clone(), value.to_string()))
-                        })
-                        .collect::<HashMap<String, String>>()
-                })
-                .unwrap_or_default();
+            // `stop_on_entry`, `debuggee_timeout_secs` (the #4640 watchdog;
+            // 0 disables it), and `env_overrides` were admitted without
+            // coercion by `parse_launch_typed_options` above (#18027).
 
             // Launch Perl debugger
             let launch_result = self.launch_debugger(
@@ -813,6 +822,72 @@ impl DebugAdapter {
                 ),
             }
         }
+    }
+
+    /// Admit the optional script argv without coercion or payload-bearing errors.
+    fn parse_launch_script_args(args: &Value) -> Result<Vec<String>, String> {
+        let values = match args.get("args") {
+            None | Some(Value::Null) => return Ok(Vec::new()),
+            Some(Value::Array(values)) => values,
+            Some(_) => return Err("Invalid launch args: expected an array of strings".to_string()),
+        };
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("Invalid launch args[{index}]: expected a string"))
+            })
+            .collect()
+    }
+
+    /// Read `stopOnEntry` without coercion (#18027): absent or null means
+    /// false; any other non-boolean is a typed refusal, never a silent false.
+    fn typed_stop_on_entry(args: &Value) -> Result<bool, String> {
+        match args.get("stopOnEntry") {
+            None | Some(Value::Null) => Ok(false),
+            Some(value) => {
+                value.as_bool().ok_or_else(|| "Invalid stopOnEntry: expected a boolean".to_string())
+            }
+        }
+    }
+
+    /// Admit the typed launch options without coercion (#18027), following
+    /// the `parse_launch_script_args` precedent: a present-but-wrong-typed
+    /// value fails the request instead of silently changing behavior.
+    /// Error text names options and, for `env`, the offending key only;
+    /// values are never echoed.
+    fn parse_launch_typed_options(
+        args: &Value,
+    ) -> Result<(bool, u64, std::collections::HashMap<String, String>), String> {
+        let stop_on_entry = Self::typed_stop_on_entry(args)?;
+        let debuggee_timeout_secs = match args.get("debuggeeTimeoutSeconds") {
+            None | Some(Value::Null) => 0,
+            Some(value) => value.as_u64().ok_or_else(|| {
+                "Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string()
+            })?,
+        };
+        let env_overrides = match args.get("env") {
+            None | Some(Value::Null) => std::collections::HashMap::new(),
+            Some(Value::Object(entries)) => {
+                let mut map = std::collections::HashMap::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let value = value.as_str().ok_or_else(|| {
+                        format!("Invalid env value for '{key}': expected a string")
+                    })?;
+                    map.insert(key.clone(), value.to_string());
+                }
+                map
+            }
+            Some(_) => {
+                return Err(
+                    "Invalid env: expected an object mapping names to string values".to_string()
+                );
+            }
+        };
+        Ok((stop_on_entry, debuggee_timeout_secs, env_overrides))
     }
 
     /// Resolve the Perl interpreter for a debug launch from its `launch.json`
@@ -2756,7 +2831,20 @@ impl DebugAdapter {
             }
 
             // Extract host and port for TCP attachment.
-            let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
+            let host = match args.get("host") {
+                None | Some(Value::Null) => "localhost",
+                Some(Value::String(host)) => host.as_str(),
+                Some(_) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some("Invalid host: expected a string".to_string()),
+                    };
+                }
+            };
             let normalized_host = host.trim();
             let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
             if raw_port > 65535 {
@@ -2775,7 +2863,21 @@ impl DebugAdapter {
                 .or_else(|| args.get("timeoutMs"))
                 .and_then(|t| t.as_u64())
                 .map(Self::u64_to_u32_saturating);
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+            // #18027: a present-but-non-boolean stopOnEntry is a typed
+            // refusal here too, never a silent false.
+            let stop_on_entry = match Self::typed_stop_on_entry(&args) {
+                Ok(value) => value,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
 
             // TCP attachment mode (IMPLEMENTED)
             let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
@@ -3200,10 +3302,18 @@ impl DebugAdapter {
             let pid = process.id();
             match signal::kill(Pid::from_raw(Self::u32_to_i32_saturating(pid)), Signal::SIGTERM) {
                 Ok(()) => {
+                    // The SIGTERM grace period keeps the production budget:
+                    // it precedes kill(), so a test child that ignores
+                    // SIGTERM would otherwise consume the elevated
+                    // confirmation budget here and push the whole cleanup
+                    // past the cleanup-driving tests' 2s response deadlines
+                    // (CodeRabbit follow-up on #17173). Only the final
+                    // kill-confirmation wait below is elevated in test
+                    // builds.
                     if let outcome @ ChildExitOutcome::Exited =
                         Self::wait_for_child_exit_with_outcome(
                             process,
-                            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                            Duration::from_millis(super::DEBUG_SESSION_TERMINATE_WAIT_MS),
                         )
                     {
                         // #15538: the direct child exited gracefully, but the
@@ -3228,7 +3338,7 @@ impl DebugAdapter {
         }
         Self::wait_for_child_exit_with_outcome(
             process,
-            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+            Duration::from_millis(debug_session_terminate_wait_ms()),
         )
     }
 
@@ -3860,11 +3970,126 @@ mod tests {
         .expect("test authority resolution")
     }
 
+    /// #18027: wrong-typed launch options refuse with a typed message;
+    /// absent and well-typed options keep their exact current meaning.
+    #[test]
+    fn launch_typed_options_refuse_wrong_types_without_coercion() {
+        let parse = |args: Value| DebugAdapter::parse_launch_typed_options(&args);
+
+        assert_eq!(
+            parse(json!({ "stopOnEntry": "true" })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "stopOnEntry": 1 })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": "30" })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": -5 })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "env": ["A=1"] })).map_err(|e| e),
+            Err("Invalid env: expected an object mapping names to string values".to_string())
+        );
+        let env_err = parse(json!({ "env": { "SECRET_TOKEN": 42 } })).unwrap_err();
+        assert!(env_err.contains("SECRET_TOKEN"), "error names the key: {env_err}");
+        assert!(!env_err.contains("42"), "error must not echo the value: {env_err}");
+
+        let (stop, timeout, env) = parse(json!({})).expect("absent options admit defaults");
+        assert!(!stop && timeout == 0 && env.is_empty());
+        let (stop, timeout, env) = parse(json!({
+            "stopOnEntry": true,
+            "debuggeeTimeoutSeconds": 30,
+            "env": { "A": "1" }
+        }))
+        .expect("well-typed options admit");
+        assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
+    }
+
+    /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
+    /// any session is created or connected.
+    #[test]
+    fn attach_refuses_string_stop_on_entry_before_connecting() {
+        let adapter = DebugAdapter::new();
+        let message = adapter.handle_attach(
+            1,
+            7,
+            Some(json!({ "host": "127.0.0.1", "port": 13603, "stopOnEntry": "true" })),
+        );
+        match message {
+            DapMessage::Response { success, message, .. } => {
+                assert!(!success, "malformed attach stopOnEntry must fail");
+                assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
+            }
+            other => panic!("expected failed attach response, got {other:?}"),
+        }
+        assert!(
+            lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
+            "no TCP session may be created for a refused attach"
+        );
+    }
+
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {
         match response {
             super::DapMessage::Response { success, message, .. } if !success => message,
             _ => None,
         }
+    }
+
+    #[test]
+    fn malformed_launch_args_preserve_configuration_and_authority() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+        let accepted = json!({"program": "retained.pl", "args": ["retained"]});
+        *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args") =
+            Some(accepted.clone());
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(root.path().to_path_buf());
+        let (_, receipt) = adapter.begin_authority_session().ok_or("authority session")?;
+
+        for (invalid, field) in [
+            (json!("private-payload"), "args"),
+            (json!(["valid", 17]), "args[1]"),
+            (json!([null, "valid"]), "args[0]"),
+        ] {
+            let response = adapter.handle_launch(
+                2,
+                9,
+                Some(json!({
+                    "program": root.path().join("missing.pl"),
+                    "perlPath": root.path().join("missing").join("perl"),
+                    "workspaceRoot": root.path().join("missing-root"),
+                    "args": invalid
+                })),
+            );
+            let message = launch_failure_message(response).ok_or("malformed argv was accepted")?;
+            assert!(message.contains(field), "early field-specific refusal: {message}");
+            assert!(!message.contains("private-payload"), "payload leaked: {message}");
+            assert_eq!(
+                *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args"),
+                Some(accepted.clone()),
+                "rejected argv must not replace retained configuration"
+            );
+            assert_eq!(
+                *lock_or_recover(&adapter.workspace_root, "test.workspace_root"),
+                Some(root.path().to_path_buf()),
+                "rejected argv must not mutate workspace state"
+            );
+            assert_eq!(
+                adapter.last_authority_receipt().map(|current| current.session_generation),
+                Some(receipt.session_generation),
+                "rejected argv must not consume a session generation"
+            );
+            assert!(lock_or_recover(&adapter.session, "test.session").is_none());
+        }
+        Ok(())
     }
 
     #[test]
@@ -6950,36 +7175,54 @@ mod tests {
         Ok(())
     }
 
-    /// Call-presence observer for the fast-path seam in
-    /// `terminate_child_process_with_outcome`: a live child must be observed
-    /// by the zero-wait call as not-exited (fast path rejected) and then
-    /// reaped through the kill path, surfacing `Exited` (#15740,
-    /// ripr gaps 41a2480a/41b34a0a).
+    /// An `Exited` outcome for an initially live child must agree with an
+    /// independent OS exit observation, not just the helper's return value
+    /// (#15740, #17557). This does not prescribe the internal signal sequence.
     #[test]
-    fn terminate_child_process_with_outcome_call_presence_observer() -> Result<(), String> {
+    fn terminate_child_process_with_outcome_reports_real_exit() -> Result<(), String> {
         use std::process::{Command, Stdio};
 
         // Spawn a long-running child that outlives the zero-wait probe.
         #[cfg(windows)]
-        let mut child = Command::new("ping")
+        let child = Command::new("ping")
             .args(["-n", "30", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
         #[cfg(not(windows))]
-        let mut child = Command::new("sleep")
+        let child = Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
 
-        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        // Keep early errors and unwinding from abandoning the exact owned child.
+        // Cleanup must not rely on the production helper being tested.
+        struct TestChild(std::process::Child);
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut owned = TestChild(child);
+        if let Some(status) = owned.0.try_wait().map_err(|e| format!("initial child poll: {e}"))? {
+            return Err(format!("fixture must still be running before termination, got {status}"));
+        }
+
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut owned.0);
         if !matches!(outcome, super::ChildExitOutcome::Exited) {
             return Err(format!(
-                "live child must be reaped through the kill path as Exited, got {outcome:?}"
+                "termination must report Exited for the live child, got {outcome:?}"
             ));
         }
-        Ok(())
+        // Observe before the guard cleans up: otherwise false success could
+        // pass merely because the test itself terminated the child.
+        match owned.0.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("reported Exited while its owned child is still running".to_string()),
+            Err(e) => Err(format!("error polling child after termination: {e}")),
+        }
     }
 
     /// Exact error-variant test for the `PollError` arm of the outcome
@@ -7129,19 +7372,28 @@ mod tests {
                 .to_string());
         }
 
-        // Verify the process was actually killed by the watchdog.
-        std::thread::sleep(Duration::from_millis(200));
-        let process_exited = adapter
-            .session
-            .lock()
-            .map_err(|_| "session lock poisoned".to_string())?
-            .as_mut()
-            .and_then(|s| s.process.try_wait().ok().flatten())
-            .is_some();
-        if !process_exited {
-            return Err(
-                "debuggee process is still alive after watchdog should have killed it".to_string()
-            );
+        // Verify the process was actually killed by the watchdog. #17173:
+        // poll instead of a fixed 200ms sleep — TerminateProcess initiation
+        // and the terminated event are not the same moment as the OS-level
+        // exit becoming visible, and under suite load a single early check
+        // raced the kill it was meant to verify.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let process_exited = adapter
+                .session
+                .lock()
+                .map_err(|_| "session lock poisoned".to_string())?
+                .as_mut()
+                .and_then(|s| s.process.try_wait().ok().flatten())
+                .is_some();
+            if process_exited {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("debuggee process is still alive after watchdog should have killed it"
+                    .to_string());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         Ok(())

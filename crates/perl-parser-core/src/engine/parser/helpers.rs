@@ -724,8 +724,14 @@ impl<'a> Parser<'a> {
         if saw_fat_arrow && elements.len().is_multiple_of(2) {
             // Convert to HashLiteral
             let mut pairs = Vec::with_capacity(elements.len() / 2);
-            for chunk in elements.chunks(2) {
-                pairs.push((chunk[0].clone(), chunk[1].clone()));
+            let mut elements = elements.into_iter();
+            while let Some(key) = elements.next() {
+                // The even-length branch guarantees a value for every key.
+                // Move the owned nodes: cloning here recopies nested ASTs at
+                // every enclosing fat-arrow list.
+                if let Some(value) = elements.next() {
+                    pairs.push((key, value));
+                }
             }
             self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
@@ -1450,6 +1456,10 @@ impl<'a> Parser<'a> {
     /// reading is the sole valid Perl parse, #16373) and must NOT be a string
     /// comparison operator (`eq`, `ne`, `lt`, `gt`, etc.) or a keyword token.
     fn looks_like_bare_call(&mut self, name: &str) -> bool {
+        // A sort comparator names a sub; it is never a call site.
+        if self.in_sort_comparator {
+            return false;
+        }
         if self.peek_kind().is_some_and(|kind| {
             matches!(kind, TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
         }) {
@@ -1588,9 +1598,16 @@ impl<'a> Parser<'a> {
                 if next_text.contains("::") {
                     // Qualified name — check that the following token is `->`, `(`,
                     // or another explicit argument in a list-operator style call.
+                    // A comma, fat arrow, or closing paren also proves the
+                    // qualified name sits in argument position: upstream
+                    // t/comp/parser.t has `is CORE::print::foo, 43, ...`,
+                    // where the qualified bareword is the first list item.
                     if let Ok(third) = self.tokens.peek_second() {
                         return third.kind() == TokenKind::Arrow
+                            || third.kind() == TokenKind::Comma
                             || third.kind() == TokenKind::LeftParen
+                            || third.kind() == TokenKind::FatArrow
+                            || third.kind() == TokenKind::RightParen
                             || Self::is_sigil_argument_start(third.kind(), third.text.as_ref());
                     }
                     return false;

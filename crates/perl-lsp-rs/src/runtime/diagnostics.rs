@@ -928,7 +928,8 @@ impl LspServer {
                 gen_at_snapshot,
                 "Skipping diagnostic publish (document instance replaced before sink boundary)"
             ),
-            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+            | PushDiagnosticsCommitOutcome::RejectedSupersededPhase => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
@@ -1174,7 +1175,8 @@ impl LspServer {
                 gen_at_snapshot,
                 "Skipping syntax-only diagnostic publish (document gone or replaced)"
             ),
-            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+            | PushDiagnosticsCommitOutcome::RejectedSupersededPhase => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
@@ -1319,13 +1321,14 @@ impl LspServer {
         // between the snapshot above and this send could publish stale-N
         // errors after N+1 acceptance, or onto a reopened instance of the
         // same URI.
-        let identity = PushDiagnosticIdentity::for_document(
+        let mut identity = PushDiagnosticIdentity::for_document(
             &normalized_uri,
             &generation,
             gen_at_snapshot,
             self.workspace_identity_generation.load(Ordering::SeqCst),
         )
         .with_folder_config_generation(config_generation_at_snapshot);
+        identity.parse_errors_only = true;
         let payload = json!({
             "uri": uri,
             "version": version,
@@ -1349,7 +1352,8 @@ impl LspServer {
                 "Skipping fast parse-error publish (document instance replaced before \
                  sink boundary)"
             ),
-            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration => tracing::debug!(
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+            | PushDiagnosticsCommitOutcome::RejectedSupersededPhase => tracing::debug!(
                 uri = %normalized_uri,
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
@@ -1426,6 +1430,17 @@ impl LspServer {
         let uri: Uri =
             uri_str.parse().map_err(|_| invalid_params("Invalid URI in textDocument.uri"))?;
 
+        // Desynchronized document (#17752): a rejected ranged didChange left
+        // retained last-good text that no longer claims currentness. Pull
+        // diagnostics must not reparse that predecessor or mint a reusable
+        // resultId from it; only an explicit full resync restores analysis.
+        {
+            let documents = self.documents.lock();
+            if self.get_document(&documents, uri_str).is_some_and(|doc| doc.full_sync_required()) {
+                return Ok(Some(Self::empty_full_diagnostic_report()));
+            }
+        }
+
         // Syntax-only short-circuit for pull diagnostics. Mirrors the
         // push-path gate in `publish_diagnostics`.
         if self.runtime_tuning.diagnostic_mode
@@ -1493,6 +1508,13 @@ impl LspServer {
         };
 
         if let Some((doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)) = doc_snapshot {
+            // A rejected change leaves last-good text for recovery, not current
+            // editor-buffer truth. Do not let the provider's reparse fallback
+            // resurrect its diagnostics or mint a reusable result ID (#17752).
+            if doc.full_sync_required() {
+                return Ok(Some(Self::empty_full_diagnostic_report()));
+            }
+
             // Coarse workDoneProgress for the full pull-diagnostics path, which
             // may analyze many native rules over large trees. Initialized
             // here (after the document-existence check) so that immediately-
@@ -1704,13 +1726,19 @@ impl LspServer {
         // Incoming client URIs are normalized to the same canonical keys the
         // handler emits, so an unchanged folder keeps its cached report valid
         // regardless of drive-letter/legacy spelling in the echo (#14862).
-        let previous_result_ids: Vec<(String, String)> = if let Some(params) = &params {
+        // An entry with a usable URI but a missing/non-string `value` is
+        // malformed, but dropping it entirely would also drop the URI from
+        // the tombstone pass below: a closed document would then keep its
+        // stale diagnostics forever (#17332). Keep the URI with no reusable
+        // ID so it can still be tombstoned, and simply never matches
+        // `unchanged` for a still-open document.
+        let previous_result_ids: Vec<(String, Option<String>)> = if let Some(params) = &params {
             if let Some(ids) = params["previousResultIds"].as_array() {
                 ids.iter()
                     .filter_map(|item| {
                         let uri = item["uri"].as_str()?;
-                        let id = item["value"].as_str()?;
-                        Some((self.normalize_uri_key(uri), id.to_string()))
+                        let id = item["value"].as_str().map(|value| value.to_string());
+                        Some((self.normalize_uri_key(uri), id))
                     })
                     .collect()
             } else {
@@ -1808,10 +1836,55 @@ impl LspServer {
             }
 
             // Check if we have a previous result ID for this document
-            let prev_id =
-                previous_result_ids.iter().find(|(u, _)| u == uri_str).map(|(_, id)| id.clone());
+            let prev_id = previous_result_ids
+                .iter()
+                .find(|(u, _)| u == uri_str)
+                .and_then(|(_, id)| id.clone());
 
             let Some(parsed) = doc.current_parsed() else { continue };
+
+            // Syntax-only short-circuit for workspace pull. Mirrors the
+            // push-path gate in `publish_diagnostics` and the document-pull
+            // gate above: report parse errors (plus canonical regex
+            // findings) only, and skip the semantic / critic /
+            // module-resolution stack, so a latency harness measuring
+            // `workspace/diagnostic` sees the same reduced subject as the
+            // other two transports (#17332). No resultId is minted: an ID
+            // computed under the reduced subject must not be reusable as
+            // `unchanged` under the full subject.
+            if self.runtime_tuning.diagnostic_mode
+                == perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly
+            {
+                if generation.load(std::sync::atomic::Ordering::SeqCst) != *gen_at_snapshot {
+                    continue;
+                }
+                if doc.full_sync_required() {
+                    items.push(json!({
+                        "uri": uri_str,
+                        "version": doc.version,
+                        "kind": "full",
+                        "items": []
+                    }));
+                    continue;
+                }
+                let parse_errors = parsed.parse_errors_arc();
+                let regex_analysis = parsed.regex_analysis().cloned();
+                let syntax_items = Self::syntax_only_lsp_diagnostics(
+                    &parse_errors,
+                    regex_analysis.as_deref(),
+                    &doc.text,
+                    &doc.line_starts,
+                    markup_message_support,
+                );
+                items.push(json!({
+                    "uri": uri_str,
+                    "version": doc.version,
+                    "kind": "full",
+                    "items": syntax_items
+                }));
+                continue;
+            }
+
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
                 // `workspace/diagnostic` is a third production evaluation route
@@ -2240,6 +2313,29 @@ impl LspServer {
                 }
 
                 items.push(report);
+            }
+        }
+
+        // Tombstones for vanished documents (#17332): a URI the client still
+        // holds a previous result ID for, but which is no longer in the
+        // open-document snapshot (closed or deleted), would otherwise get no
+        // row at all and the client would keep its stale diagnostics forever.
+        // Emit a full report with empty items and a null version (there is no
+        // live document version) and no resultId, so the client replaces the
+        // file's diagnostics with none and drops the stale ID. Documents
+        // still in the snapshot -- including ones skipped above while a newer
+        // generation settles -- are never tombstoned.
+        let snapshot_uris: std::collections::HashSet<&str> =
+            docs_snapshot.iter().map(|(uri, ..)| uri.as_str()).collect();
+        let mut tombstoned: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (uri, _previous_id) in &previous_result_ids {
+            if !snapshot_uris.contains(uri.as_str()) && tombstoned.insert(uri.as_str()) {
+                items.push(json!({
+                    "uri": uri,
+                    "version": Value::Null,
+                    "kind": "full",
+                    "items": []
+                }));
             }
         }
 
@@ -3048,6 +3144,200 @@ mod tests {
             item["resultId"].as_str(),
             Some(document_result_id.as_str()),
             "unchanged report must echo the reused result ID"
+        );
+        Ok(())
+    }
+
+    /// A URI the client still holds a result ID for, but which is no longer
+    /// in the open-document snapshot (closed/deleted), must get a full
+    /// empty-items row so the client clears its stale diagnostics (#17332).
+    /// A still-open unchanged document must keep its `unchanged` reuse.
+    #[test]
+    fn workspace_pull_emits_empty_full_row_for_closed_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("tombstone-project");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        let survivor_file = folder.join("survivor.pl");
+        let closed_file = folder.join("closed.pl");
+        let survivor_uri = url::Url::from_file_path(&survivor_file)
+            .map_err(|()| "failed to build survivor URI")?
+            .to_string();
+        let closed_uri = url::Url::from_file_path(&closed_file)
+            .map_err(|()| "failed to build closed URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+        let (server, _) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        let source = "sub f ($x) { return $x; }\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": survivor_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": closed_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+
+        // Emitted URIs use the server's canonical (normalized) key spelling.
+        let survivor_key = server.normalize_uri_key(&survivor_uri);
+        let closed_key = server.normalize_uri_key(&closed_uri);
+        let first = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("first workspace diagnostic response missing")?;
+        let first_items = first["items"].as_array().ok_or("first items must be an array")?;
+        let result_id_for = |uri: &str| -> Result<String, Box<dyn std::error::Error>> {
+            first_items
+                .iter()
+                .find(|item| item["uri"].as_str() == Some(uri))
+                .and_then(|item| item["resultId"].as_str())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    format!("first pull must mint a result ID for {uri}: {first}").into()
+                })
+        };
+        let survivor_id = result_id_for(&survivor_key)?;
+        let closed_id = result_id_for(&closed_key)?;
+
+        // Baseline: with nothing changed, both open documents reuse their IDs.
+        let reuse = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": survivor_uri, "value": survivor_id},
+                    {"uri": closed_uri, "value": closed_id}
+                ]
+            })))?
+            .ok_or("reuse workspace diagnostic response missing")?;
+        let reuse_items = reuse["items"].as_array().ok_or("reuse items must be an array")?;
+        for (key, id) in [(&survivor_key, &survivor_id), (&closed_key, &closed_id)] {
+            let row = reuse_items
+                .iter()
+                .find(|item| item["uri"].as_str() == Some(key.as_str()))
+                .ok_or_else(|| format!("reuse pull must contain {key}: {reuse}"))?;
+            assert_eq!(
+                row["kind"], "unchanged",
+                "unchanged open document must keep resultId reuse: {reuse}"
+            );
+            assert_eq!(row["resultId"].as_str(), Some(id.as_str()));
+        }
+
+        server.test_apply_did_close(&closed_uri)?;
+
+        // The closed URI is listed twice: duplicates must not duplicate the row.
+        let second = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": survivor_uri, "value": survivor_id},
+                    {"uri": closed_uri, "value": closed_id},
+                    {"uri": closed_uri, "value": closed_id}
+                ]
+            })))?
+            .ok_or("second workspace diagnostic response missing")?;
+        let items = second["items"].as_array().ok_or("second items must be an array")?;
+        let rows_for = |uri: &str| {
+            items.iter().filter(|item| item["uri"].as_str() == Some(uri)).collect::<Vec<_>>()
+        };
+        let survivor_rows = rows_for(&survivor_key);
+        assert_eq!(survivor_rows.len(), 1, "survivor must appear once: {second}");
+        // Closing a sibling may legitimately advance workspace facts and
+        // re-mint the survivor's identity, so it may be `full` here; it must
+        // never receive the empty tombstone while it is still open.
+        assert!(
+            survivor_rows[0]["kind"] == "unchanged"
+                || survivor_rows[0]["items"].as_array().is_some_and(|diag| !diag.is_empty()),
+            "still-open survivor must not be tombstoned: {second}"
+        );
+        let closed_rows = rows_for(&closed_key);
+        assert_eq!(
+            closed_rows.len(),
+            1,
+            "closed document must get exactly one tombstone row so stale diagnostics clear: {second}"
+        );
+        assert_eq!(
+            closed_rows[0]["kind"], "full",
+            "tombstone must be a full report, not unchanged: {second}"
+        );
+        assert_eq!(
+            closed_rows[0]["items"].as_array().map(Vec::len),
+            Some(0),
+            "tombstone must carry empty items so the client clears the file: {second}"
+        );
+        Ok(())
+    }
+
+    /// A malformed `previousResultIds` entry (missing or non-string
+    /// `value`) must not silently drop its URI: a closed document still
+    /// needs its empty tombstone row, and a still-open document must fall
+    /// back to a full report rather than `unchanged` (#17332).
+    #[test]
+    fn workspace_pull_tombstones_closed_document_with_malformed_previous_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("malformed-previous-id-project");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        let survivor_uri = url::Url::from_file_path(folder.join("survivor.pl"))
+            .map_err(|()| "failed to build survivor URI")?
+            .to_string();
+        let closed_uri = url::Url::from_file_path(folder.join("closed.pl"))
+            .map_err(|()| "failed to build closed URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+        let (server, _) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        let source = "sub f ($x) { return $x; }\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": survivor_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": closed_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        server.test_apply_did_close(&closed_uri)?;
+
+        let survivor_key = server.normalize_uri_key(&survivor_uri);
+        let closed_key = server.normalize_uri_key(&closed_uri);
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": survivor_uri, "value": 42},
+                    {"uri": closed_uri}
+                ]
+            })))?
+            .ok_or("workspace diagnostic response missing")?;
+        let items = report["items"].as_array().ok_or("items must be an array")?;
+        let rows_for = |uri: &str| {
+            items.iter().filter(|item| item["uri"].as_str() == Some(uri)).collect::<Vec<_>>()
+        };
+
+        let closed_rows = rows_for(&closed_key);
+        assert_eq!(
+            closed_rows.len(),
+            1,
+            "closed document with malformed previous ID must still be tombstoned: {report}"
+        );
+        assert_eq!(closed_rows[0]["kind"], "full");
+        assert_eq!(closed_rows[0]["items"].as_array().map(Vec::len), Some(0));
+
+        let survivor_rows = rows_for(&survivor_key);
+        assert_eq!(survivor_rows.len(), 1, "survivor must appear once: {report}");
+        assert_eq!(
+            survivor_rows[0]["kind"], "full",
+            "still-open document with malformed previous ID must not reuse it as unchanged: {report}"
+        );
+        assert!(
+            survivor_rows[0]["items"].as_array().is_some_and(|diag| !diag.is_empty()),
+            "still-open survivor must get its real diagnostics, not a tombstone: {report}"
         );
         Ok(())
     }
@@ -6904,6 +7194,89 @@ print $x;
             .unwrap_or_default();
         assert!(!items.is_empty(), "syntax-only pull must report parse errors; got {items:?}");
         items
+    }
+
+    /// Workspace pull must honor SyntaxOnly exactly like push and
+    /// document pull (#17332): parse errors survive, the semantic /
+    /// module-resolution stack does not run, and no reusable resultId is
+    /// minted under the reduced subject.
+    #[test]
+    fn workspace_pull_syntax_only_reports_parse_errors_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let server = message_union_server(tuning, false);
+        let broken_uri = message_union_uri("17332_ws_syntax_only_broken.pl");
+        let missing_uri = message_union_uri("17332_ws_syntax_only_missing.pl");
+        server.test_apply_did_open(&broken_uri, MESSAGE_UNION_PARSE_ERROR_DOCUMENT, 1)?;
+        server.test_apply_did_open(
+            &missing_uri,
+            "use strict;\nuse Local::Missing;\nprint Local::Missing::helper(), \"\\n\";\n",
+            1,
+        )?;
+
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({ "previousResultIds": [] })))?
+            .ok_or("syntax-only workspace pull response missing")?;
+        let rows = report["items"].as_array().ok_or("workspace pull items missing")?;
+        let row_for = |uri: &str| {
+            rows.iter().find(|row| {
+                row["uri"].as_str().is_some_and(|u| {
+                    u == uri || server.normalize_uri_key(u) == server.normalize_uri_key(uri)
+                })
+            })
+        };
+        let codes_for = |row: &Value| -> Vec<String> {
+            row["items"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item["code"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let broken_row = row_for(&broken_uri).ok_or("broken document row missing")?;
+        assert_eq!(broken_row["kind"], "full");
+        assert!(
+            codes_for(broken_row).iter().any(|code| code == DiagnosticCode::ParseError.as_str()),
+            "syntax-only workspace pull must keep parse errors: {broken_row}"
+        );
+
+        let missing_row = row_for(&missing_uri).ok_or("missing-module document row missing")?;
+        assert_eq!(missing_row["kind"], "full");
+        assert!(
+            missing_row.get("resultId").is_none(),
+            "syntax-only workspace pull must not mint a reusable resultId: {missing_row}"
+        );
+        let missing_codes = codes_for(missing_row);
+        assert!(
+            !missing_codes.iter().any(|code| code == "PL701"),
+            "syntax-only workspace pull must skip module resolution: {missing_row}"
+        );
+
+        // Control: the same fixture under normal tuning does emit PL701, so
+        // the absence above is the gate and not a dead fixture.
+        let control = message_union_server(
+            perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults(),
+            false,
+        );
+        let control_uri = message_union_uri("17332_ws_syntax_only_missing.pl");
+        control.test_apply_did_open(
+            &control_uri,
+            "use strict;\nuse Local::Missing;\nprint Local::Missing::helper(), \"\\n\";\n",
+            1,
+        )?;
+        let control_report = control
+            .handle_workspace_diagnostic(Some(json!({ "previousResultIds": [] })))?
+            .ok_or("control workspace pull response missing")?;
+        assert!(
+            control_report.to_string().contains("PL701"),
+            "control workspace pull must emit PL701: {control_report}"
+        );
+        Ok(())
     }
 
     /// Syntax-only mode must still publish canonical regex findings (#7024).

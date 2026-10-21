@@ -17,7 +17,7 @@ pub fn run_benchmarks(
     category: Option<String>,
 ) -> Result<()> {
     let root = project_root()?;
-    let script = root.join("benchmarks").join("scripts").join("run-benchmarks.sh");
+    let script = Path::new("benchmarks").join("scripts").join("run-benchmarks.sh");
 
     let mut args: Vec<String> = Vec::new();
     if let Some(output_file) = output {
@@ -33,15 +33,15 @@ pub fn run_benchmarks(
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run_script(&script, &arg_refs, "benchmarks runner")
+    run_script(&root, &script, &arg_refs, "benchmarks runner")
 }
 
 pub fn compare_benchmarks(fail_on_regression: bool) -> Result<()> {
     let root = project_root()?;
-    let script = root.join("benchmarks").join("scripts").join("compare.sh");
+    let script = Path::new("benchmarks").join("scripts").join("compare.sh");
 
     let args = if fail_on_regression { vec!["--fail-on-regression"] } else { Vec::<&str>::new() };
-    run_script(&script, &args, "benchmark comparison")
+    run_script(&root, &script, &args, "benchmark comparison")
 }
 
 pub fn format_benchmarks(receipt: bool, markdown: bool) -> Result<()> {
@@ -565,10 +565,74 @@ fn load_json(path: &Path) -> Result<Value> {
     serde_json::from_str(&content).with_context(|| format!("Invalid JSON in {}", path.display()))
 }
 
-fn run_script(script: &Path, args: &[&str], label: &str) -> Result<()> {
-    let status = Command::new("bash")
-        .arg(script)
+/// Bash treats backslashes as escapes, so a native Windows script path must
+/// be rendered with the forward slashes Git Bash resolves (`E:/...`).
+/// No-op on other platforms (#17217).
+fn bash_script_arg(script: &Path) -> String {
+    let text = script.to_string_lossy().into_owned();
+    if cfg!(windows) { text.replace('\\', "/") } else { text }
+}
+
+/// Windows-native `bash` (Git Bash): PATH `bash` on Windows often resolves to
+/// the WSL launcher, which cannot see Windows paths and runs a foreign
+/// toolchain. Probe the standard install roots first (launch-context
+/// independent: `where.exe` fails under an MSYS-mangled colon-separated
+/// PATH), then derive from `git.exe` for custom installs (#17217).
+#[cfg(windows)]
+fn windows_bash() -> Option<PathBuf> {
+    for root_env in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(root_env) {
+            let bash = PathBuf::from(root).join("Git").join("bin").join("bash.exe");
+            if bash.is_file() {
+                return Some(bash);
+            }
+        }
+    }
+    let output = Command::new("where.exe").arg("git.exe").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    // Check every hit: an early result may lack bash while a later one has
+    // it, and only fall back to PATH bash once all candidates fail.
+    for git_exe in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        for root in git_install_roots(Path::new(git_exe)) {
+            let bash = root.join("bin").join("bash.exe");
+            if bash.is_file() {
+                return Some(bash);
+            }
+        }
+    }
+    None
+}
+
+/// Candidate install roots for a `git.exe` path: `cmd/git.exe` nests two
+/// levels below the root, `mingw64/bin/git.exe` three. Both layouts are
+/// probed so custom installs resolve instead of falling back to PATH bash.
+#[cfg(windows)]
+fn git_install_roots(git_exe: &Path) -> Vec<PathBuf> {
+    let cmd_root = git_exe.parent().and_then(Path::parent);
+    let mingw_root = cmd_root.and_then(Path::parent);
+    [cmd_root, mingw_root].into_iter().flatten().map(Path::to_path_buf).collect()
+}
+
+fn bash_program() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(bash) = windows_bash() {
+        return bash;
+    }
+    PathBuf::from("bash")
+}
+
+fn run_script(root: &Path, script: &Path, args: &[&str], label: &str) -> Result<()> {
+    // The script path stays relative with forward slashes and the child is
+    // anchored at the repo root, so no backslash-bearing absolute path
+    // reaches the shell; on Windows the shell itself is Git Bash resolved
+    // beside git.exe rather than whatever `bash` is first on PATH (#17217).
+    let status = Command::new(bash_program())
+        .arg(bash_script_arg(script))
         .args(args)
+        .current_dir(root)
         .status()
         .with_context(|| format!("failed to execute {}", label))?;
 
@@ -598,6 +662,70 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn bash_script_arg_uses_forward_slashes_on_windows() {
+        let arg = bash_script_arg(Path::new("E:\\repo\\benchmarks\\scripts\\run-benchmarks.sh"));
+        if cfg!(windows) {
+            assert_eq!(arg, "E:/repo/benchmarks/scripts/run-benchmarks.sh");
+        } else {
+            assert_eq!(arg, "E:\\repo\\benchmarks\\scripts\\run-benchmarks.sh");
+        }
+    }
+
+    #[test]
+    fn bash_script_arg_leaves_relative_paths_untouched() {
+        let arg = bash_script_arg(Path::new("benchmarks/scripts/run-benchmarks.sh"));
+        assert_eq!(arg, "benchmarks/scripts/run-benchmarks.sh");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_install_roots_covers_cmd_and_mingw64_layouts() {
+        let roots = git_install_roots(Path::new("C:\\Tools\\Git\\cmd\\git.exe"));
+        assert_eq!(roots.first(), Some(&PathBuf::from("C:\\Tools\\Git")));
+        let roots = git_install_roots(Path::new("C:\\Tools\\Git\\mingw64\\bin\\git.exe"));
+        assert!(
+            roots.contains(&PathBuf::from("C:\\Tools\\Git")),
+            "mingw64 layout must probe the install root: {roots:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_bash_resolves_beside_git_or_falls_back() -> Result<()> {
+        match windows_bash() {
+            Some(bash) => {
+                assert!(bash.is_file(), "resolved bash must exist: {}", bash.display());
+                assert!(
+                    bash.ends_with(Path::new("bin").join("bash.exe")),
+                    "resolved bash must be Git's bin\\bash.exe: {}",
+                    bash.display()
+                );
+            }
+            None => {
+                // No Git Bash installed: the documented PATH fallback applies.
+                assert_eq!(bash_program(), PathBuf::from("bash"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bash_program_prefers_a_real_shell() {
+        let program = bash_program();
+        // Compile-time gates: `cfg!(windows)` would still compile the
+        // `windows_bash()` call on Linux, where the function does not exist.
+        #[cfg(windows)]
+        match windows_bash() {
+            Some(_) => {
+                assert!(program.is_file(), "bash program must exist: {}", program.display())
+            }
+            None => assert_eq!(program, PathBuf::from("bash")),
+        }
+        #[cfg(not(windows))]
+        assert_eq!(program, PathBuf::from("bash"));
+    }
 
     #[test]
     fn parse_criterion_identity_handles_new_layout() {

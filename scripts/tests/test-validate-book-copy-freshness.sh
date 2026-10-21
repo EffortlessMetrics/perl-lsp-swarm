@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-test for scripts/ci/validate_book_copy_freshness.sh (#16544):
 #   1. the checker passes on a fresh tree;
-#   2. the checker fails when a committed copy is artificially drifted.
+#   2. the checker fails when a committed copy or canonical source drifts.
 # The drift mutation is a scratch edit restored before exit; it is never
 # staged or committed.
 set -euo pipefail
@@ -51,20 +51,46 @@ if ! bash "$CHECKER" > /dev/null; then
     exit 1
 fi
 
-# 2. Artificial drift fails.
-target="$REPO_ROOT/book/src/user-guides/debugging.md"
-backup="$(mktemp)"
-cp "$target" "$backup"
+# 2. A stale committed projection fails.
+book_target="$REPO_ROOT/book/src/reference/editor-setup-canonical.md"
+# 3. A non-link canonical edit fails until the projection is regenerated.
+source_target="$REPO_ROOT/docs/how-to/EDITOR_SETUP.md"
+book_backup=""
+source_backup=""
+book_saved=0
+source_saved=0
 restore() {
-    cp "$backup" "$target"
-    rm -f "$backup"
-    cleanup_generated
+    local result=0
+    if [ "$book_saved" -eq 1 ]; then
+        cp "$book_backup" "$book_target" || result=1
+    fi
+    if [ "$source_saved" -eq 1 ]; then
+        cp "$source_backup" "$source_target" || result=1
+    fi
+    if [ -n "$book_backup" ]; then rm -f "$book_backup" || result=1; fi
+    if [ -n "$source_backup" ]; then rm -f "$source_backup" || result=1; fi
+    cleanup_generated || result=1
+    return "$result"
 }
 trap restore EXIT
 
-printf '\nArtificial drift for the freshness-check self-test.\n' >> "$target"
+book_backup="$(mktemp)" || { echo "FAIL: cannot create book backup" >&2; exit 1; }
+cp "$book_target" "$book_backup"
+book_saved=1
+source_backup="$(mktemp)" || { echo "FAIL: cannot create canonical backup" >&2; exit 1; }
+cp "$source_target" "$source_backup"
+source_saved=1
+
+printf '\nArtificial drift for the freshness-check self-test.\n' >> "$book_target"
 if bash "$CHECKER" > /dev/null 2>&1; then
-    echo "FAIL: checker passed despite artificial drift" >&2
+    echo "FAIL: checker passed despite committed projection drift" >&2
+    exit 1
+fi
+cp "$book_backup" "$book_target"
+
+printf '\nArtificial canonical drift for the freshness-check self-test.\n' >> "$source_target"
+if bash "$CHECKER" > /dev/null 2>&1; then
+    echo "FAIL: checker passed despite canonical source drift" >&2
     exit 1
 fi
 

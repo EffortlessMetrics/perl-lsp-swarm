@@ -80,13 +80,24 @@ replace it with an invented lifecycle.
 | Dynamic bounded task graph | Ultracode when useful |
 | Coupled specialists needing lateral communication | Agent Team when useful |
 | Distinct claims | Distinct root-held frames; separate writers/worktrees where needed |
-| Unchanged remote wait | No live agent; claim frame is `IN_FLIGHT` |
+| Genuine out-of-window remote wait | Release unnecessary agents; retain the `IN_FLIGHT` frame |
 
 Delegate when expected evidence gain, context preservation, parallel elapsed-time gain,
 changed source/oracle/tool/environment, recovery value, or avoided CI cost exceeds
 cold-start, briefing, duplicate research, resource contention, join, and
 correlated-failure costs. Stop adding agents when another result cannot change a
 decision.
+
+## Ordinary qualification continuity
+
+Apply #3390's current same-owner rule and the shared development method's
+late-qualification boundary. Keep the useful owning lead through ordinary in-window
+CI wait, result inspection, separate final judgment, authorized protected merge and
+landing read-back. Remote-wait release guidance applies to unnecessary
+child contexts and genuine interruption/capacity/window limits; it does not mandate
+ending a useful lead session. Use supported waits/events or bounded checks, never a
+polling child or scheduled monitor. Missing actual request capability is a producer
+blocker, not an accepted run. No routine queue or auto-merge is introduced.
 
 ## Programme continuity
 

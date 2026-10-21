@@ -10,9 +10,12 @@
 
 use super::super::{DocumentHighlightProvider, LspServer, Value, json};
 use super::reference_text::{
-    TextReferenceQuery, finalize_reference_locations, search_document_texts_for_references,
+    TextReferenceQuery, callable_declarations, finalize_reference_locations, normalized_text_query,
+    search_document_texts_with_declarations, shrink_declaration_span_to_name_span,
 };
-use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
+use crate::protocol::{
+    JsonRpcError, JsonRpcId, REQUEST_CANCELLED, REQUEST_FAILED, req_position, req_uri,
+};
 use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::token_under_cursor;
@@ -511,8 +514,12 @@ impl LspServer {
         let Some(context) = context else {
             return;
         };
-        let result_count = lsp_location_count(result);
-        let (decision, reason) = if result_count == 0 {
+        let deadline_exhausted = fallback_receipt.deadline_exhausted;
+        let candidate_count = lsp_location_count(result);
+        let result_count = if deadline_exhausted { 0 } else { candidate_count };
+        let (decision, reason) = if deadline_exhausted {
+            ("blocked", "reference_search_deadline_exceeded")
+        } else if result_count == 0 {
             ("fallback", "no_result")
         } else {
             ("acted", "live_provider_result")
@@ -553,12 +560,14 @@ impl LspServer {
                 index_state
             }
         };
-        let fallback_state = tier.fallback_state(result_count);
+        let fallback_state =
+            if deadline_exhausted { "request_failed" } else { tier.fallback_state(result_count) };
         // Confidence is high only when the semantic source-backed tier answered.
-        let confidence = if tier.is_source_backed() { "high" } else { "low" };
+        let confidence =
+            if !deadline_exhausted && tier.is_source_backed() { "high" } else { "low" };
         // source_backed_result_count is the total result count only for source-backed answers
         let source_backed_result_count: usize =
-            if tier.is_source_backed() { result_count } else { 0 };
+            if !deadline_exhausted && tier.is_source_backed() { result_count } else { 0 };
 
         let SourceBackedReceiptFields {
             attempted: source_backed_attempted,
@@ -589,20 +598,21 @@ impl LspServer {
             "character": context.character,
             "include_declaration": context.include_declaration,
             "result_count": result_count,
-            "index_result_count": index_result_count,
-            "text_result_count": text_result_count,
+            "index_result_count": if deadline_exhausted { 0 } else { index_result_count },
+            "text_result_count": if deadline_exhausted { 0 } else { text_result_count },
+            "terminal_outcome": if deadline_exhausted { "request_failed_deadline" } else { "result" },
             "source_backed_result_count": source_backed_result_count,
-            "fact_source": tier.fact_source(),
+            "fact_source": if deadline_exhausted { "provider_runtime" } else { tier.fact_source() },
             "confidence": confidence,
-            "freshness": tier.freshness(index_state),
-            "source_backed": tier.is_source_backed(),
-            "source_backed_state": tier.source_backed_state(),
-            "answering_tier": tier.as_str(),
+            "freshness": if deadline_exhausted { "unknown" } else { tier.freshness(index_state) },
+            "source_backed": !deadline_exhausted && tier.is_source_backed(),
+            "source_backed_state": if deadline_exhausted { "not_returned" } else { tier.source_backed_state() },
+            "answering_tier": if deadline_exhausted { "none" } else { tier.as_str() },
             "index_state": index_state,
             "latency_us": latency_us,
             "fallback_state": fallback_state,
             "dynamic_boundary": false,
-            "trace_only_no_live_behavior_change": true,
+            "trace_only_no_live_behavior_change": !deadline_exhausted,
             "source_backed_attempted": source_backed_attempted,
             "source_backed_outcome": source_backed_outcome,
             "source_backed_decline_stage": source_backed_decline_stage,
@@ -618,8 +628,18 @@ impl LspServer {
             "cancellation_observed": fallback_receipt.cancellation_observed,
             "fallback_completeness": fallback_receipt.fallback_completeness,
             "fallback_reason": fallback_receipt.fallback_reason,
-            "claim_boundary": "records existing references response only; no broader live references cutover"
+            "claim_boundary": if fallback_receipt.deadline_exhausted {
+                "deadline-truncated references fail the request; no broader live references cutover"
+            } else {
+                "records existing references response only; no broader live references cutover"
+            }
         });
+        if deadline_exhausted && let Some(object) = receipt.as_object_mut() {
+            object.insert("discarded_candidate_count".to_owned(), json!(candidate_count));
+            object.insert("discarded_index_candidate_count".to_owned(), json!(index_result_count));
+            object.insert("discarded_text_candidate_count".to_owned(), json!(text_result_count));
+            object.insert("discarded_candidate_tier".to_owned(), json!(tier.as_str()));
+        }
         if let Some(request_id) = request_id
             && let Some(object) = receipt.as_object_mut()
         {
@@ -669,7 +689,7 @@ impl LspServer {
                 return Err(error);
             }
         };
-        let outcome = self.handle_references_inner(params, request_id);
+        let outcome = self.handle_references_inner(params, request_id, reference_search_deadline());
         let (
             result,
             tier,
@@ -698,6 +718,14 @@ impl LspServer {
             source_backed_attempt.as_ref(),
             &fallback_receipt,
         );
+        if fallback_receipt.deadline_exhausted {
+            return Err(JsonRpcError {
+                code: REQUEST_FAILED,
+                message: "Reference search deadline exceeded before the result was complete"
+                    .to_owned(),
+                data: None,
+            });
+        }
         Ok(result)
     }
 
@@ -715,6 +743,7 @@ impl LspServer {
         &self,
         params: Option<Value>,
         request_id: Option<&Value>,
+        deadline: std::time::Duration,
     ) -> Result<
         (
             Option<Value>,
@@ -729,7 +758,6 @@ impl LspServer {
         JsonRpcError,
     > {
         let start = Instant::now();
-        let deadline = reference_search_deadline();
         let cap = references_cap();
         let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
         let mut fallback_receipt = ReferenceTextFallbackReceipt::default();
@@ -866,6 +894,26 @@ impl LspServer {
                         observed_index_state = index_state;
                         let workspace_symbol_key =
                             symbol_key.as_ref().map(super::to_workspace_symbol_key);
+                        // A fallback caller package is not an import origin or a
+                        // receiver type. Restrict declaration identity only when
+                        // the clean cursor AST supplies a declaration or explicit
+                        // namespace; preserve other inclusion candidates.
+                        let text_package_known = parsed
+                            .as_ref()
+                            .is_some_and(|parsed| parsed.parse_errors().is_empty())
+                            && crate::declaration::find_node_at_offset(ast, offset).is_some_and(
+                                |node| match &node.kind {
+                                    perl_parser::ast::NodeKind::Subroutine {
+                                        name: Some(_),
+                                        ..
+                                    } => true,
+                                    perl_parser::ast::NodeKind::FunctionCall { name, .. }
+                                    | perl_parser::ast::NodeKind::AmperCall { name, .. } => {
+                                        name.contains("::")
+                                    }
+                                    _ => false,
+                                },
+                            );
 
                         // #1849: a cursor on a package-prefix component of a
                         // fully-qualified sub name -- `Foo`, or the `::`, in
@@ -1006,13 +1054,57 @@ impl LspServer {
 
                                     tracing::debug!(key = ?symbol_key, "Looking for references");
 
+                                    // Snapshot before the index queries: the declaration
+                                    // entry the index returns shrinks to its name token
+                                    // against the declaring document's open text so both
+                                    // tiers share one location identity (#17242).
+                                    // Snapshot only (uri, text) to minimize cloning
+                                    // overhead - we don't need AST, rope, or other
+                                    // DocumentState fields for text search.
+                                    // Re-acquires a fresh, brief documents-map lock only at
+                                    // this point of use (#3396 off-lock provider
+                                    // consumption) -- the outer lock was already dropped
+                                    // after fetching `doc` above.
+                                    //
+                                    // `uri`'s own entry is pinned to `doc.text` (the exact
+                                    // generation captured in `doc_owned` above) rather than
+                                    // whatever is live now -- see the identical rationale on
+                                    // the pre-#17242 placement of this snapshot below.
+                                    let docs_snapshot = self.bounded_open_document_snapshot(
+                                        uri,
+                                        &doc.text,
+                                        &fallback_budget,
+                                        &mut fallback_receipt,
+                                        typed_request_id.as_ref(),
+                                    )?;
+
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
+
                                     // Try to find references using the symbol key
                                     let mut all_refs = index.find_refs(symbol_key);
 
-                                    // Add the definition if includeDeclaration is true
+                                    // Add the definition if includeDeclaration is true,
+                                    // narrowed to the declaration's name token so it shares
+                                    // occurrence identity with the text tier's declaration
+                                    // entry (#17242).
                                     if include_declaration
-                                        && let Some(def) = index.find_def(symbol_key)
+                                        && let Some(mut def) = index.find_def(symbol_key)
                                     {
+                                        let doc_refs: Vec<(&str, &str)> = docs_snapshot
+                                            .iter()
+                                            .map(|(doc_uri, doc_text)| {
+                                                (doc_uri.as_str(), doc_text.as_str())
+                                            })
+                                            .collect();
+                                        shrink_declaration_span_to_name_span(
+                                            &mut def,
+                                            &doc_refs,
+                                            symbol_key.name.as_ref(),
+                                            symbol_key.sigil,
+                                        );
                                         all_refs.push(def);
                                     }
 
@@ -1034,11 +1126,17 @@ impl LspServer {
 
                                     // Check deadline before text search
                                     if start.elapsed() >= deadline {
+                                        fallback_receipt.deadline_exhausted = true;
+                                        fallback_receipt.fallback_completeness = "partial";
+                                        fallback_receipt.fallback_reason = Some(
+                                            "reference_scan_deadline_before_text_search".to_owned(),
+                                        );
                                         tracing::debug!(
-                                            "References: deadline exceeded, returning partial results"
+                                            "References: deadline exceeded before text search"
                                         );
                                         let index_count = workspace_locations.len();
-                                        workspace_locations.truncate(cap);
+                                        let workspace_locations =
+                                            finalize_reference_locations(workspace_locations, cap);
                                         return Ok((
                                             Some(to_json_array(&workspace_locations)),
                                             ReferencesAnsweringTier::WorkspaceExact,
@@ -1052,33 +1150,9 @@ impl LspServer {
                                     }
 
                                     // Enhanced fallback: always search for both qualified and unqualified references
-                                    // Snapshot only (uri, text) to minimize cloning overhead - we don't need
-                                    // AST, rope, or other DocumentState fields for text search.
-                                    // Re-acquires a fresh, brief documents-map lock only at this
-                                    // point of use (#3396 off-lock provider consumption) -- the
-                                    // outer lock was already dropped after fetching `doc` above.
-                                    //
-                                    // `uri`'s own entry is pinned to `doc.text` (the exact
-                                    // generation captured in `doc_owned` above) rather than
-                                    // whatever is live now -- `symbol_name`/`package_name` below
-                                    // were derived from that same capture's AST, so searching them
-                                    // against a *fresher* re-read of `uri` (if a `didChange` raced
-                                    // in between the two lock acquisitions) would pair a
-                                    // generation-N identity with generation-N+1 text for the same
-                                    // document. Every other open document is unaffected by this and
-                                    // still gets the freshest available read.
-                                    let docs_snapshot = self.bounded_open_document_snapshot(
-                                        uri,
-                                        &doc.text,
-                                        &fallback_budget,
-                                        &mut fallback_receipt,
-                                        typed_request_id.as_ref(),
-                                    )?;
-
-                                    self.check_references_cancellation(
-                                        typed_request_id.as_ref(),
-                                        &mut fallback_receipt,
-                                    )?;
+                                    // The snapshot was taken above, before the index queries, so
+                                    // the declaration entry could shrink against the declaring
+                                    // document's open text (#17242).
                                     if start.elapsed() >= deadline {
                                         fallback_receipt.deadline_exhausted = true;
                                         fallback_receipt.fallback_completeness = "partial";
@@ -1100,18 +1174,22 @@ impl LspServer {
                                         // index hits. Scan past `cap` by the current index size so
                                         // index+text duplicates cannot exhaust the budget before
                                         // merge (#16638).
-                                        search_document_texts_for_references(
-                                            docs_snapshot.iter().map(|(doc_uri, doc_text)| {
-                                                (doc_uri.as_str(), doc_text.as_str())
-                                            }),
+                                        self.search_open_document_references(
+                                            &docs_snapshot,
                                             TextReferenceQuery {
                                                 needle: symbol_key.name.as_ref(),
+                                                package: text_package_known
+                                                    .then_some(symbol_key.pkg.as_ref()),
                                                 sigil: symbol_key.sigil,
                                                 include_declaration,
                                             },
                                             cap.saturating_add(index_count),
                                         )
                                     };
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
 
                                     // Combine workspace index results with text search results.
                                     // Capture counts BEFORE extending so classify_combined_tier
@@ -1152,7 +1230,14 @@ impl LspServer {
                                         symbol_key.name.to_string()
                                     };
 
-                                    let refs = index.find_references(&symbol_name);
+                                    let mut refs = index.find_references(&symbol_name);
+                                    if !include_declaration {
+                                        // Unlike find_refs, the compatibility query includes
+                                        // definitions. An unused callable must stay empty after
+                                        // its text declaration has been excluded.
+                                        let declarations = index.find_defs(symbol_key);
+                                        refs.retain(|location| !declarations.contains(location));
+                                    }
                                     if !refs.is_empty() {
                                         // Cap results before conversion
                                         let capped_refs: Vec<_> =
@@ -1163,15 +1248,22 @@ impl LspServer {
                                             cap,
                                             "Found references via find_references"
                                         );
-                                        // Convert internal Locations to LSP Locations
-                                        let lsp_locations =
+                                        // Convert internal Locations to LSP Locations,
+                                        // through the same occurrence-identity finalizer as
+                                        // every other tier (#17242).
+                                        let lsp_locations = finalize_reference_locations(
                                             crate::workspace_index::lsp_adapter::to_lsp_locations(
                                                 capped_refs,
-                                            );
+                                            )
+                                            .into_iter()
+                                            .map(|loc| json!(loc))
+                                            .collect(),
+                                            cap,
+                                        );
                                         if !lsp_locations.is_empty() {
                                             let result_count = lsp_locations.len();
                                             return Ok((
-                                                Some(to_json_array(&lsp_locations)),
+                                                Some(Value::Array(lsp_locations)),
                                                 ReferencesAnsweringTier::WorkspaceExact,
                                                 index_state,
                                                 result_count,
@@ -1239,58 +1331,10 @@ impl LspServer {
                                                     kind: crate::workspace_index::SymKind::Sub,
                                                 };
 
-                                                // Search for all references to this qualified symbol
-                                                let mut all_refs = Vec::new();
-
-                                                // Find references via symbol key
-                                                let refs = index.find_refs(&key);
-                                                all_refs.extend(refs);
-
-                                                // Also try with qualified name
-                                                let symbol_name = format!("{}::{}", pkg, name);
-                                                let alt_refs = index.find_references(&symbol_name);
-                                                all_refs.extend(alt_refs);
-
-                                                // Add definition if includeDeclaration is true
-                                                if include_declaration
-                                                    && let Some(def) = index.find_def(&key)
-                                                {
-                                                    all_refs.push(def);
-                                                }
-
-                                                if !all_refs.is_empty() {
-                                                    // Cap results
-                                                    let capped_refs: Vec<_> =
-                                                        all_refs.into_iter().take(cap).collect();
-                                                    // Convert internal Locations to LSP Locations
-                                                    let lsp_locations =
-                                                    crate::workspace_index::lsp_adapter::to_lsp_locations(capped_refs);
-                                                    if !lsp_locations.is_empty() {
-                                                        let result_count = lsp_locations.len();
-                                                        return Ok((
-                                                            Some(to_json_array(&lsp_locations)),
-                                                            ReferencesAnsweringTier::WorkspaceExact,
-                                                            index_state,
-                                                            result_count,
-                                                            0,
-                                                            start.elapsed().as_micros(),
-                                                            source_backed_attempt.clone(),
-                                                            fallback_receipt.clone(),
-                                                        ));
-                                                    }
-                                                }
-
-                                                // Fallback: scan open documents for qualified name references
-                                                // Snapshot only (uri, text) to minimize cloning overhead.
-                                                // Re-acquires a fresh, brief documents-map lock only at
-                                                // this point of use (#3396 off-lock provider consumption).
-                                                //
-                                                // `uri`'s own entry is pinned to `doc.text` (the
-                                                // generation captured in `doc_owned` above) -- see
-                                                // the identical rationale on the enhanced-fallback
-                                                // snapshot above: `qualified_name` was derived from
-                                                // that same capture, so this document must not be
-                                                // re-read at a fresher generation for this search.
+                                                // Search for all references to this qualified symbol.
+                                                // The snapshot is taken first so the declaration
+                                                // entry can shrink to its name token against the
+                                                // declaring document's open text (#17242).
                                                 let docs_snapshot = self
                                                     .bounded_open_document_snapshot(
                                                         uri,
@@ -1304,6 +1348,79 @@ impl LspServer {
                                                     typed_request_id.as_ref(),
                                                     &mut fallback_receipt,
                                                 )?;
+
+                                                let mut all_refs = Vec::new();
+
+                                                // Find references via symbol key
+                                                let refs = index.find_refs(&key);
+                                                all_refs.extend(refs);
+
+                                                // Also try with qualified name
+                                                let symbol_name = format!("{}::{}", pkg, name);
+                                                let alt_refs = index.find_references(&symbol_name);
+                                                all_refs.extend(alt_refs);
+
+                                                // The compatibility query includes definitions.
+                                                // Exclude them from the union before adding the
+                                                // name anchors under includeDeclaration.
+                                                let declarations = index.find_defs(&key);
+                                                all_refs.retain(|location| {
+                                                    !declarations.contains(location)
+                                                });
+
+                                                // Add definitions if includeDeclaration is true,
+                                                // narrowed to each declaration's name token so they
+                                                // share occurrence identity with the text tier
+                                                // (#17242).
+                                                if include_declaration {
+                                                    let doc_refs: Vec<(&str, &str)> = docs_snapshot
+                                                        .iter()
+                                                        .map(|(doc_uri, doc_text)| {
+                                                            (doc_uri.as_str(), doc_text.as_str())
+                                                        })
+                                                        .collect();
+                                                    for mut def in declarations {
+                                                        shrink_declaration_span_to_name_span(
+                                                            &mut def, &doc_refs, &name, None,
+                                                        );
+                                                        all_refs.push(def);
+                                                    }
+                                                }
+
+                                                if !all_refs.is_empty() {
+                                                    // Cap results, then run the same
+                                                    // occurrence-identity finalizer as every other
+                                                    // tier (#17242): this path concatenates three
+                                                    // producers (key refs, qualified-name refs,
+                                                    // declaration) whose shapes overlap.
+                                                    let capped_refs: Vec<_> =
+                                                        all_refs.into_iter().take(cap).collect();
+                                                    let lsp_locations = finalize_reference_locations(
+                                                        crate::workspace_index::lsp_adapter::to_lsp_locations(capped_refs)
+                                                            .into_iter()
+                                                            .map(|loc| json!(loc))
+                                                            .collect(),
+                                                        cap,
+                                                    );
+                                                    if !lsp_locations.is_empty() {
+                                                        let result_count = lsp_locations.len();
+                                                        return Ok((
+                                                            Some(Value::Array(lsp_locations)),
+                                                            ReferencesAnsweringTier::WorkspaceExact,
+                                                            index_state,
+                                                            result_count,
+                                                            0,
+                                                            start.elapsed().as_micros(),
+                                                            source_backed_attempt.clone(),
+                                                            fallback_receipt.clone(),
+                                                        ));
+                                                    }
+                                                }
+
+                                                // Fallback: scan open documents for qualified name references
+                                                // (the snapshot above serves this scan; `qualified_name`
+                                                // was derived from `doc.text`, so `uri`'s pinned entry
+                                                // matches the generation the key came from).
                                                 if start.elapsed() >= deadline {
                                                     fallback_receipt.deadline_exhausted = true;
                                                     fallback_receipt.fallback_completeness =
@@ -1315,23 +1432,32 @@ impl LspServer {
                                                     continue;
                                                 }
                                                 let qualified_name = format!("{}::{}", pkg, name);
-                                                let all_locations =
-                                                    search_document_texts_for_references(
-                                                        docs_snapshot.iter().map(
-                                                            |(doc_uri, doc_text)| {
-                                                                (
-                                                                    doc_uri.as_str(),
-                                                                    doc_text.as_str(),
-                                                                )
-                                                            },
-                                                        ),
+                                                if start.elapsed() >= deadline {
+                                                    fallback_receipt.deadline_exhausted = true;
+                                                    fallback_receipt.fallback_completeness =
+                                                        "partial";
+                                                    fallback_receipt.fallback_reason = Some(
+                                                        "reference_scan_deadline_during_search"
+                                                            .to_owned(),
+                                                    );
+                                                    continue;
+                                                }
+                                                let all_locations = self
+                                                    .search_open_document_references(
+                                                        &docs_snapshot,
                                                         TextReferenceQuery {
                                                             needle: &qualified_name,
+                                                            package: text_package_known
+                                                                .then_some(pkg.as_str()),
                                                             sigil: None,
                                                             include_declaration,
                                                         },
                                                         cap,
                                                     );
+                                                self.check_references_cancellation(
+                                                    typed_request_id.as_ref(),
+                                                    &mut fallback_receipt,
+                                                )?;
 
                                                 if !all_locations.is_empty() {
                                                     let text_count = all_locations.len();
@@ -1364,17 +1490,63 @@ impl LspServer {
                                     let mut partial_refs = index.find_refs(symbol_key);
 
                                     if include_declaration
-                                        && let Some(def) = index.find_def(symbol_key)
+                                        && let Some(mut def) = index.find_def(symbol_key)
                                     {
+                                        // Shrink the declaration entry to its name token
+                                        // against the declaring document's open text so it
+                                        // shares occurrence identity with the text tier
+                                        // (#17242).
+                                        let docs_snapshot = self.bounded_open_document_snapshot(
+                                            uri,
+                                            &doc.text,
+                                            &fallback_budget,
+                                            &mut fallback_receipt,
+                                            typed_request_id.as_ref(),
+                                        )?;
+                                        self.check_references_cancellation(
+                                            typed_request_id.as_ref(),
+                                            &mut fallback_receipt,
+                                        )?;
+                                        let doc_refs: Vec<(&str, &str)> = docs_snapshot
+                                            .iter()
+                                            .map(|(doc_uri, doc_text)| {
+                                                (doc_uri.as_str(), doc_text.as_str())
+                                            })
+                                            .collect();
+                                        shrink_declaration_span_to_name_span(
+                                            &mut def,
+                                            &doc_refs,
+                                            symbol_key.name.as_ref(),
+                                            symbol_key.sigil,
+                                        );
                                         partial_refs.push(def);
                                     }
 
                                     if !partial_refs.is_empty() {
-                                        let lsp_locations =
+                                        // The same occurrence-identity finalizer as every
+                                        // other tier (#17242).
+                                        let lsp_locations = finalize_reference_locations(
                                             crate::workspace_index::lsp_adapter::to_lsp_locations(
                                                 partial_refs.into_iter().take(cap),
-                                            );
+                                            )
+                                            .into_iter()
+                                            .map(|loc| json!(loc))
+                                            .collect(),
+                                            cap,
+                                        );
                                         if !lsp_locations.is_empty() {
+                                            self.check_references_cancellation(
+                                                typed_request_id.as_ref(),
+                                                &mut fallback_receipt,
+                                            )?;
+                                            if start.elapsed() >= deadline {
+                                                fallback_receipt.deadline_exhausted = true;
+                                                fallback_receipt.fallback_completeness = "partial";
+                                                fallback_receipt.fallback_reason = Some(
+                                                    "reference_scan_deadline_before_partial_index_result"
+                                                        .to_owned(),
+                                                );
+                                            }
                                             tracing::debug!(
                                                 count = lsp_locations.len(),
                                                 elapsed = ?start.elapsed(),
@@ -1382,7 +1554,7 @@ impl LspServer {
                                             );
                                             let result_count = lsp_locations.len();
                                             return Ok((
-                                                Some(to_json_array(&lsp_locations)),
+                                                Some(Value::Array(lsp_locations)),
                                                 ReferencesAnsweringTier::PartialIndex,
                                                 index_state,
                                                 result_count,
@@ -1414,12 +1586,14 @@ impl LspServer {
                                         &mut fallback_receipt,
                                         typed_request_id.as_ref(),
                                     )?;
-                                    let open_doc_locations = search_document_texts_for_references(
-                                        docs_snapshot.iter().map(|(doc_uri, doc_text)| {
-                                            (doc_uri.as_str(), doc_text.as_str())
-                                        }),
+                                    let open_doc_locations = self.search_open_document_references(
+                                        &docs_snapshot,
                                         TextReferenceQuery {
                                             needle: &needle,
+                                            package: workspace_symbol_key
+                                                .as_ref()
+                                                .filter(|_| text_package_known)
+                                                .map(|key| key.pkg.as_ref()),
                                             sigil: workspace_symbol_key
                                                 .as_ref()
                                                 .and_then(|key| key.sigil),
@@ -1427,6 +1601,10 @@ impl LspServer {
                                         },
                                         cap,
                                     );
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
                                     if !open_doc_locations.is_empty() {
                                         tracing::debug!(
                                             count = open_doc_locations.len(),
@@ -1517,6 +1695,52 @@ impl LspServer {
         ))
     }
 
+    fn search_open_document_references(
+        &self,
+        documents: &[(String, String)],
+        query: TextReferenceQuery<'_>,
+        cap: usize,
+    ) -> Vec<Value> {
+        if matches!(normalized_text_query(query.needle, query.sigil).1, Some('$' | '@' | '%')) {
+            return search_document_texts_with_declarations(
+                documents.iter().map(|(uri, text)| (uri.as_str(), text.as_str(), &[][..])),
+                query,
+                cap,
+            );
+        }
+        // Clone current parse authority under a short lock, then project off-lock.
+        // Equality binds metadata to the already-budgeted text snapshot. A stale,
+        // unavailable or erroneous parse is not inferred from workspace readiness.
+        let parsed: Vec<_> = {
+            let open = self.documents_guard();
+            documents
+                .iter()
+                .map(|(uri, text)| {
+                    self.get_document(&open, uri).and_then(|doc| doc.current_parsed()).filter(
+                        |parsed| parsed.source() == text && parsed.parse_errors().is_empty(),
+                    )
+                })
+                .collect()
+        };
+        let declarations: Vec<_> = parsed
+            .iter()
+            .map(|parsed| {
+                parsed
+                    .as_ref()
+                    .and_then(|parsed| parsed.ast())
+                    .map(|ast| callable_declarations(ast))
+                    .unwrap_or_default()
+            })
+            .collect();
+        search_document_texts_with_declarations(
+            documents.iter().zip(&declarations).map(|((uri, text), declarations)| {
+                (uri.as_str(), text.as_str(), declarations.as_slice())
+            }),
+            query,
+            cap,
+        )
+    }
+
     fn bounded_open_document_snapshot(
         &self,
         current_uri: &str,
@@ -1525,13 +1749,32 @@ impl LspServer {
         receipt: &mut ReferenceTextFallbackReceipt,
         request_id: Option<&JsonRpcId>,
     ) -> Result<Vec<(String, String)>, JsonRpcError> {
+        self.bounded_open_document_snapshot_with_deadline_check(
+            current_uri,
+            current_text,
+            budget,
+            receipt,
+            request_id,
+            &mut || Instant::now() >= budget.deadline,
+        )
+    }
+
+    fn bounded_open_document_snapshot_with_deadline_check(
+        &self,
+        current_uri: &str,
+        current_text: &str,
+        budget: &ReferenceTextFallbackBudget,
+        receipt: &mut ReferenceTextFallbackReceipt,
+        request_id: Option<&JsonRpcId>,
+        deadline_expired: &mut impl FnMut() -> bool,
+    ) -> Result<Vec<(String, String)>, JsonRpcError> {
         receipt.fallback_completeness = "partial";
         receipt.fallback_reason = Some("bounded_open_document_text_scan".to_owned());
         receipt.scan_budget_documents = budget.max_documents;
         receipt.scan_budget_bytes = budget.max_bytes;
 
         self.check_references_cancellation(request_id, receipt)?;
-        if Instant::now() >= budget.deadline {
+        if deadline_expired() {
             receipt.deadline_exhausted = true;
             receipt.fallback_reason = Some("reference_scan_deadline_before_snapshot".to_owned());
             return Ok(Vec::new());
@@ -1558,7 +1801,7 @@ impl LspServer {
                     continue;
                 }
                 self.check_references_cancellation(request_id, receipt)?;
-                if Instant::now() >= budget.deadline {
+                if deadline_expired() {
                     receipt.deadline_exhausted = true;
                     receipt.fallback_reason =
                         Some("reference_scan_deadline_during_snapshot".to_owned());
@@ -1593,7 +1836,7 @@ impl LspServer {
 
         for document_uri in candidates {
             self.check_references_cancellation(request_id, receipt)?;
-            if Instant::now() >= budget.deadline {
+            if deadline_expired() {
                 receipt.deadline_exhausted = true;
                 receipt.fallback_reason =
                     Some("reference_scan_deadline_during_snapshot".to_owned());
@@ -1845,10 +2088,16 @@ impl LspServer {
             }
         }
 
+        // #17247: one batched pass resolves every occurrence's wire location;
+        // the per-occurrence single-anchor lookup scanned the whole shard map
+        // per result and made references latency quadratic in workspace size.
+        let occurrence_anchor_ids: Vec<AnchorId> =
+            occurrences.iter().map(|occurrence| occurrence.anchor_id).collect();
+        let wire_locations = workspace_index.semantic_anchor_wire_locations(&occurrence_anchor_ids);
+
         let mut locations = Vec::with_capacity(occurrences.len() + 1);
         for occurrence in occurrences {
-            let Some(wire_location) =
-                workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)
+            let Some(wire_location) = wire_locations.get(&occurrence.anchor_id).cloned().flatten()
             else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
@@ -2152,9 +2401,14 @@ impl LspServer {
             &mut receipt,
             typed_request_id.as_ref(),
         )?;
-        let out = search_document_texts_for_references(
-            docs_snapshot.iter().map(|(doc_uri, doc_text)| (doc_uri.as_str(), doc_text.as_str())),
-            TextReferenceQuery { needle: &needle, sigil: None, include_declaration: true },
+        let out = self.search_open_document_references(
+            &docs_snapshot,
+            TextReferenceQuery {
+                needle: &needle,
+                sigil: None,
+                include_declaration: true,
+                package: None,
+            },
             references_cap(),
         );
 
@@ -2641,7 +2895,184 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn reference_text_declaration_authority_requires_current_matching_clean_parse()
+    -> Result<(), Box<dyn Error>> {
+        let output = std::sync::Arc::new(parking_lot::Mutex::new(
+            Box::new(std::io::sink()) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let uri = "file:///C:/declaration-authority.pl";
+        let source = "package Outer;\nsub mark {}\n";
+        server.test_apply_did_open(uri, source, 1)?;
+        let query = TextReferenceQuery {
+            needle: "mark",
+            sigil: None,
+            package: Some("Outer"),
+            include_declaration: false,
+        };
+        let clean = vec![(uri.to_owned(), source.to_owned())];
+        assert!(server.search_open_document_references(&clean, query, 10).is_empty());
+        // A different source must not borrow the open buffer's old byte anchors.
+        let different = vec![(uri.to_owned(), format!("\n{source}"))];
+        assert_eq!(server.search_open_document_references(&different, query, 10).len(), 1);
+        let broken_uri = "file:///broken-declaration.pl";
+        let broken = "package Outer;\nsub mark {\n";
+        server.test_apply_did_open(broken_uri, broken, 1)?;
+        {
+            let documents = server.documents_guard();
+            let parsed = documents
+                .get(broken_uri)
+                .and_then(|doc| doc.current_parsed())
+                .ok_or("missing current parse")?;
+            assert!(!parsed.parse_errors().is_empty());
+        }
+        let broken_docs = vec![(broken_uri.to_owned(), broken.to_owned())];
+        assert_eq!(server.search_open_document_references(&broken_docs, query, 10).len(), 1);
+        Ok(())
+    }
+
     // ── Handler trace tests (--lib reachable) ────────────────────────────
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn partial_index_result_marks_zero_deadline_before_success() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use perl_workspace::workspace_index::{
+            IndexCoordinator, SourceCommit, SourceCommitOutcome,
+        };
+        use std::num::NonZeroU32;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let mut server = LspServer::default();
+        let uri = "file:///partial-index-deadline.pl";
+        let text = "my $target = 1;\n$target++;\nprint $target;\n";
+        server.test_apply_did_open(uri, text, 1)?;
+
+        // didOpen promotes the normal coordinator to Ready in this unit-test
+        // environment. Replace it after open with a seeded Building coordinator
+        // so the partial index has real matches and passes the stale-index gate.
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let generation = {
+            let documents = server.documents.lock();
+            documents
+                .values()
+                .next()
+                .and_then(|doc| NonZeroU32::new(doc.current_generation()))
+                .ok_or("opened document has no accepted generation")?
+        };
+        let commit = coordinator.index().index_live_file(
+            url::Url::parse(uri)?,
+            text.to_owned(),
+            SourceCommit::new(generation),
+        );
+        assert_eq!(commit, SourceCommitOutcome::Accepted);
+        server.index_coordinator = Some(coordinator);
+        assert!(matches!(route_index_access(server.coordinator()), IndexAccessMode::Partial(_)));
+
+        let outcome = server.handle_references_inner(
+            Some(json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+            Duration::ZERO,
+        )?;
+        assert_eq!(outcome.1, ReferencesAnsweringTier::PartialIndex);
+        assert_eq!(outcome.2, "partial");
+        assert!(outcome.3 > 0, "seeded partial index must have candidate references");
+        assert!(outcome.7.deadline_exhausted);
+        assert_eq!(
+            outcome.7.fallback_reason.as_deref(),
+            Some("reference_scan_deadline_before_partial_index_result")
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_marks_deadline_before_scan() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///deadline-before-snapshot.pl";
+        server.test_apply_did_open(current_uri, "my $target = 1;", 1)?;
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 128,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: Instant::now(),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot(
+            current_uri,
+            "my $target = 1;",
+            &budget,
+            &mut receipt,
+            None,
+        )?;
+        if !snapshot.is_empty()
+            || !receipt.deadline_exhausted
+            || receipt.budget_exhausted
+            || receipt.fallback_completeness != "partial"
+        {
+            return Err(format!("deadline-only snapshot was not recorded: {receipt:?}").into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_marks_deadline_during_scan() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///deadline-during-snapshot.pl";
+        server.test_apply_did_open(current_uri, "my $target = 1;", 1)?;
+        server.test_apply_did_open("file:///other-deadline.pl", "$target++;", 1)?;
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 128,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut checks = 0;
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot_with_deadline_check(
+            current_uri,
+            "my $target = 1;",
+            &budget,
+            &mut receipt,
+            None,
+            &mut || {
+                checks += 1;
+                checks > 1
+            },
+        )?;
+        if snapshot.len() != 1
+            || checks != 2
+            || !receipt.deadline_exhausted
+            || receipt.budget_exhausted
+            || receipt.scanned_documents != 1
+            || receipt.fallback_reason.as_deref() != Some("reference_scan_deadline_during_snapshot")
+        {
+            return Err(format!("mid-snapshot deadline was not recorded: {receipt:?}").into());
+        }
+        Ok(())
+    }
 
     #[cfg(feature = "workspace")]
     #[test]
@@ -3055,7 +3486,7 @@ mod tests {
                 latency_us,
                 source_backed_attempt,
                 fallback_receipt,
-            ) = server.handle_references_inner(Some(params), None)?;
+            ) = server.handle_references_inner(Some(params), None, reference_search_deadline())?;
 
             assert_eq!(index_state, "full", "the request must route through the full index first");
             server
@@ -3103,6 +3534,7 @@ mod tests {
                 "context": {"includeDeclaration": true}
             })),
             None,
+            reference_search_deadline(),
         )?;
         assert_eq!(indexed.2, "full");
         assert!(
@@ -4036,6 +4468,225 @@ mod tests {
         // and the `?` propagation path (line 960) in
         // `live_source_backed_reference_locations`.
         let _result = server.test_handle_references(Some(params))?;
+
+        Ok(())
+    }
+
+    /// #17157: references anchored at a `package` declaration must resolve the
+    /// same symbol identity as a usage-anchored query and return the full
+    /// cross-file usage set, not only the declaration.
+    ///
+    /// The declaration cursor previously resolved to no workspace symbol key
+    /// at all (`symbol_at_cursor` had no `Package` arm), so every workspace
+    /// tier was skipped and the same-file analyzer answered with the single
+    /// declaration location. The same symbol queried from `use Animal` in any
+    /// open consumer returns the whole set — position-asymmetric by anchor.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn references_at_a_package_declaration_return_the_usage_anchored_set()
+    -> Result<(), Box<dyn Error>> {
+        let server = crate::runtime::LspServer::default();
+        let animal_uri = "file:///F:/nav17157/lib/Animal.pm";
+        let dog_uri = "file:///F:/nav17157/lib/Dog.pm";
+        let main_uri = "file:///F:/nav17157/main.pl";
+        let animal_text =
+            "package Animal;\nsub new { bless {}, $_[0] }\nsub name { 'animal' }\n1;\n";
+        let dog_text = "package Dog;\nuse strict; use warnings;\nuse Animal;\n\nsub fetch {\n    my $self = Animal->new();\n    return $self;\n}\n\n1;\n";
+        let main_text = "use lib 'lib';\nuse Animal;\nuse Dog;\n\nmy $generic = Animal->new();\nprint Animal::name(), \"\\n\";\n";
+
+        server.test_apply_did_open(animal_uri, animal_text, 1)?;
+        server.test_apply_did_open(dog_uri, dog_text, 1)?;
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        for (uri, text) in [(animal_uri, animal_text), (dog_uri, dog_text), (main_uri, main_text)] {
+            server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+
+        let locations_for = |uri: &str,
+                             line: u32,
+                             character: u32|
+         -> Result<Vec<(String, u64, u64, u64, u64)>, Box<dyn Error>> {
+            let (result, ..) = server.handle_references_inner(
+                Some(json!({
+                    "textDocument": {"uri": uri},
+                    "position": {"line": line, "character": character},
+                    "context": {"includeDeclaration": true}
+                })),
+                None,
+                reference_search_deadline(),
+            )?;
+            let locations = result
+                .ok_or("missing references result")?
+                .as_array()
+                .ok_or("references result is not an array")?
+                .iter()
+                .map(|location| {
+                    Ok((
+                        perl_uri::uri_key(location["uri"].as_str().ok_or("missing uri")?),
+                        location["range"]["start"]["line"].as_u64().ok_or("start line")?,
+                        location["range"]["start"]["character"]
+                            .as_u64()
+                            .ok_or("start character")?,
+                        location["range"]["end"]["line"].as_u64().ok_or("end line")?,
+                        location["range"]["end"]["character"].as_u64().ok_or("end character")?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+            Ok(locations)
+        };
+
+        // Cursor on the package name in `package Animal;` (line 0, char 8).
+        let from_declaration = locations_for(animal_uri, 0, 8)?;
+        assert!(
+            !from_declaration.is_empty(),
+            "a declaration-anchored package query must not answer empty"
+        );
+        // The same symbol from a usage cursor: `use Animal;` in main.pl (line
+        // 1, char 4).
+        let from_usage = locations_for(main_uri, 1, 4)?;
+        assert!(
+            !from_usage.is_empty(),
+            "the usage anchor must resolve the package on this fixture"
+        );
+
+        let mut sorted_declaration = from_declaration.clone();
+        sorted_declaration.sort();
+        let mut sorted_usage = from_usage.clone();
+        sorted_usage.sort();
+        assert_eq!(
+            sorted_declaration, sorted_usage,
+            "declaration- and usage-anchored queries must answer with the same location set"
+        );
+
+        // Recall: the set spans the declaration and consumers in at least two
+        // other files.
+        let declaring = perl_uri::uri_key(animal_uri);
+        let cross_file_files: std::collections::BTreeSet<String> = from_declaration
+            .iter()
+            .filter(|(uri, ..)| *uri != declaring)
+            .map(|(uri, ..)| uri.clone())
+            .collect();
+        assert!(
+            cross_file_files.len() >= 2,
+            "declaration-anchored references must reach every consumer file; got {from_declaration:?}"
+        );
+        let includes_declaration =
+            from_declaration.iter().any(|(uri, line, ..)| *uri == declaring && *line == 0);
+        assert!(
+            includes_declaration,
+            "includeDeclaration=true must keep the declaration itself; got {from_declaration:?}"
+        );
+
+        Ok(())
+    }
+
+    /// #17242: references must not duplicate locations across tiers.
+    ///
+    /// Two residual shapes after #16638 (whose repro was same-file): a
+    /// cross-file defined sub answered each call twice (the index's
+    /// call-expression span plus the text scan's name token) and carried the
+    /// declaration twice (the whole defining span plus the name token, under
+    /// two URI spellings); an unresolved sub answered each call site three
+    /// times. One occurrence must answer once.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn references_collapse_cross_file_and_unresolved_occurrence_duplicates()
+    -> Result<(), Box<dyn Error>> {
+        let server = crate::runtime::LspServer::default();
+        let xlib_uri = "file:///F:/nav17242/xlib.pl";
+        let xmain_uri = "file:///F:/nav17242/xmain.pl";
+        let ghost_uri = "file:///F:/nav17242/ghost.pl";
+        let xlib_text = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nsub cross_target {\n    my ($x) = @_;\n    return $x + 1;\n}\n\n1;\n";
+        let xmain_text = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nmy $a = cross_target(1);\nmy $b = cross_target(2);\nmy $c = cross_target(3);\nmy $d = cross_target(4);\nmy $e = cross_target(5);\nmy $f = cross_target(6);\n\nprint \"done\\n\";\n";
+        let ghost_text = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nmy $a = ghost_call(1);\nmy $b = ghost_call(2);\nmy $c = ghost_call(3);\nmy $d = ghost_call(4);\nmy $e = ghost_call(5);\nmy $f = ghost_call(6);\n\nprint \"done\\n\";\n";
+
+        server.test_apply_did_open(xlib_uri, xlib_text, 1)?;
+        server.test_apply_did_open(xmain_uri, xmain_text, 1)?;
+        server.test_apply_did_open(ghost_uri, ghost_text, 1)?;
+        for (uri, text) in [(xlib_uri, xlib_text), (xmain_uri, xmain_text), (ghost_uri, ghost_text)]
+        {
+            server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        }
+        server.test_simulate_indexing_complete();
+
+        let canonical_locations =
+            |result: Option<Value>| -> Result<Vec<(String, u64, u64, u64, u64)>, Box<dyn Error>> {
+                result
+                    .ok_or("missing references result")?
+                    .as_array()
+                    .ok_or("references result is not an array")?
+                    .iter()
+                    .map(|location| {
+                        Ok((
+                            perl_uri::uri_key(location["uri"].as_str().ok_or("missing uri")?),
+                            location["range"]["start"]["line"].as_u64().ok_or("start line")?,
+                            location["range"]["start"]["character"]
+                                .as_u64()
+                                .ok_or("start character")?,
+                            location["range"]["end"]["line"].as_u64().ok_or("end line")?,
+                            location["range"]["end"]["character"]
+                                .as_u64()
+                                .ok_or("end character")?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Box<dyn Error>>>()
+            };
+
+        // Case 1: cross-file defined sub — 1 definition + 6 calls in another
+        // open file, queried from a call site.
+        let (result, ..) = server.handle_references_inner(
+            Some(json!({
+                "textDocument": {"uri": xmain_uri},
+                "position": {"line": 4, "character": 9},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+            reference_search_deadline(),
+        )?;
+        let cross = canonical_locations(result)?;
+        assert_eq!(cross.len(), 7, "1 definition + 6 calls must answer 7 locations; got {cross:?}");
+        let mut unique = cross.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), cross.len(), "no duplicated (uri, range): {cross:?}");
+        let mut per_call_line_counts: std::collections::BTreeMap<u64, usize> =
+            std::collections::BTreeMap::new();
+        for (uri, line, ..) in &cross {
+            if uri.ends_with("xmain.pl") {
+                *per_call_line_counts.entry(*line).or_default() += 1;
+            }
+        }
+        for (line, count) in per_call_line_counts {
+            assert_eq!(count, 1, "call line {line} must answer one location, not name+call spans");
+        }
+        let declaration_entries: Vec<_> =
+            cross.iter().filter(|(uri, ..)| uri.ends_with("xlib.pl")).collect();
+        assert_eq!(
+            declaration_entries.len(),
+            1,
+            "the declaration must answer once, not as span+name under two URI spellings: {declaration_entries:?}"
+        );
+
+        // Case 2: unresolved sub — 6 call sites, no declaration anywhere.
+        let (result, ..) = server.handle_references_inner(
+            Some(json!({
+                "textDocument": {"uri": ghost_uri},
+                "position": {"line": 4, "character": 9},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+            reference_search_deadline(),
+        )?;
+        let ghost = canonical_locations(result)?;
+        assert_eq!(
+            ghost.len(),
+            6,
+            "6 unresolved call sites must answer 6 locations, not 18; got {ghost:?}"
+        );
+        let mut unique = ghost.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ghost.len(), "no duplicated (uri, range): {ghost:?}");
 
         Ok(())
     }

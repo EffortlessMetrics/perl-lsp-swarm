@@ -844,16 +844,31 @@ impl<'a> PerlLexer<'a> {
                     // Check if this starts a POD section (=pod, =head, =over, etc.)
                     // Use byte-safe checks — avoid slicing &str at arbitrary byte positions
                     let remaining = &self.input_bytes[self.position..];
-                    if remaining.starts_with(b"=pod")
-                        || remaining.starts_with(b"=head")
-                        || remaining.starts_with(b"=over")
-                        || remaining.starts_with(b"=item")
-                        || remaining.starts_with(b"=back")
-                        || remaining.starts_with(b"=begin")
-                        || remaining.starts_with(b"=end")
-                        || remaining.starts_with(b"=for")
-                        || remaining.starts_with(b"=encoding")
-                    {
+                    // Standard commands always start POD at a line start. Other
+                    // `=<letter>` words (e.g. Pod::Weaver's `=construct`) start POD only
+                    // where a statement is expected; after a term, `\n=shift;` is an
+                    // assignment continuation. Pod::Weaver-style commands follow a blank
+                    // line, so a blank line also counts as statement-start context.
+                    // `=cut` only ends an active POD block; a stray one never opens POD.
+                    let known = [
+                        &b"=pod"[..],
+                        b"=head",
+                        b"=over",
+                        b"=item",
+                        b"=back",
+                        b"=begin",
+                        b"=end",
+                        b"=for",
+                        b"=encoding",
+                    ]
+                    .iter()
+                    .any(|c| remaining.starts_with(c));
+                    let generic_pod = !known
+                        && !remaining.starts_with(b"=cut")
+                        && remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
+                        && (self.pod_after_blank_line() || self.pod_after_statement_end())
+                        && self.pod_has_later_cut();
+                    if known || generic_pod {
                         // Scan forward for \n=cut (end of POD block)
                         let search_start = self.position;
                         let mut found_cut = false;
@@ -1714,9 +1729,55 @@ impl<'a> PerlLexer<'a> {
                         }
                     }
                 }
-                // Parse regular variable name
+                // Legacy package separator with an empty first segment:
+                // `$'b` is `$main::b`, not the `$'` postmatch variable.
+                // Real Perl decides by what follows the apostrophe: an
+                // identifier start opens a package segment (verified
+                // against perl 5.42.2: `$main::b = 42; print $'b` prints
+                // 42, while bare `$'` after a match stays postmatch).
                 else if let Some(ch) = self.current_char() {
-                    if is_perl_identifier_start(ch) {
+                    if ch == '\''
+                        && matches!(sigil, '$' | '@' | '%' | '*')
+                        && self.apostrophe_starts_legacy_package_segment(self.position)
+                    {
+                        self.advance(); // consume '
+                        while let Some(ch) = self.current_char() {
+                            if ch == '\'' {
+                                // A further separator is consumed only
+                                // when another segment follows it; otherwise
+                                // the apostrophe opens a string in Perl.
+                                if self.apostrophe_starts_legacy_package_segment(self.position) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            } else if is_perl_identifier_continue(ch) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        // Handle package-qualified segments like Foo::bar.
+                        // A trailing apostrophe needs the same segment gate
+                        // as above: without an identifier start after it,
+                        // it opens a string instead of joining the name.
+                        while self.current_char() == Some(':') && self.peek_char(1) == Some(':') {
+                            self.advance();
+                            self.advance();
+                            while let Some(ch) = self.current_char() {
+                                if ch == '\''
+                                    && !self.apostrophe_starts_legacy_package_segment(self.position)
+                                {
+                                    break;
+                                }
+                                if is_perl_identifier_continue(ch) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    } else if is_perl_identifier_start(ch) {
                         while let Some(ch) = self.current_char() {
                             if is_perl_identifier_continue(ch) {
                                 self.advance();
@@ -2389,9 +2450,10 @@ impl<'a> PerlLexer<'a> {
                     // Switch back to normal mode
                     self.mode = LexerMode::ExpectTerm;
 
+                    let body: Arc<str> = Arc::from(body);
                     return Some(Token {
-                        token_type: TokenType::FormatBody(Arc::from(body.clone())),
-                        text: Arc::from(body),
+                        token_type: TokenType::FormatBody(Arc::clone(&body)),
+                        text: body,
                         start,
                         end: self.position,
                     });
@@ -4481,3 +4543,103 @@ mod checkpoint_impl;
 mod test_format_debug;
 #[cfg(test)]
 mod tests;
+
+impl PerlLexer<'_> {
+    /// True at the start of input or when the previous physical line is blank
+    /// (empty or whitespace-only).
+    fn pod_after_blank_line(&self) -> bool {
+        let b = self.input_bytes;
+        let pos = self.position;
+        if pos == 0 {
+            return true;
+        }
+        // Start of the previous physical line.
+        let mut end = pos - 1; // line terminator before `=`
+        if b[end] == b'\n' && end > 0 && b[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let start = b[..end].iter().rposition(|c| matches!(c, b'\n' | b'\r')).map_or(0, |i| i + 1);
+        b[start..end].iter().all(|c| matches!(c, b' ' | b'\t' | 0x0c))
+    }
+
+    /// True when the last significant byte before the cursor (ignoring whitespace and
+    /// line comments) is `;` or `{`, or when nothing precedes it.
+    fn pod_after_statement_end(&self) -> bool {
+        let b = self.input_bytes;
+        let mut end = self.position;
+        loop {
+            let start =
+                b[..end].iter().rposition(|c| matches!(c, b'\n' | b'\r')).map_or(0, |i| i + 1);
+            let mut line = &b[start..end];
+            // Cut a line comment. A `#` starts one anywhere outside a quote-like construct
+            // except directly after `$` (`$#array`, `$#{expr}`, `$#$ref`).
+            if let Some(h) = line
+                .iter()
+                .enumerate()
+                .position(|(i, c)| *c == b'#' && (i == 0 || line[i - 1] != b'$'))
+            {
+                // Strip only when the prefix cannot hold a string/regex/quote-like opener;
+                // when ambiguous the `#` may be code or a comment, so report not-a-statement-end
+                // (the safe side: code is never dropped).
+                if Self::may_open_quote_like(&line[..h]) {
+                    return false;
+                }
+                line = &line[..h];
+            }
+            if let Some(last) = line.iter().rev().find(|c| !c.is_ascii_whitespace()) {
+                return matches!(last, b';' | b'{');
+            }
+            if start == 0 {
+                return true;
+            }
+            end = start - 1;
+        }
+    }
+
+    /// Conservative: true if `prefix` has a quote or `/` character, or a quote-like
+    /// operator word (`q qq qw qr m s tr y`) followed by a delimiter.
+    fn may_open_quote_like(prefix: &[u8]) -> bool {
+        if prefix.iter().any(|c| matches!(c, b'"' | b'\'' | b'`' | b'/')) {
+            return true;
+        }
+        let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        prefix.iter().enumerate().any(|(i, &c)| {
+            // Only a word start can begin an operator word; skipping the rest keeps
+            // the scan linear in the prefix length.
+            if !is_word(c) || (i > 0 && is_word(prefix[i - 1])) {
+                return false;
+            }
+            let mut j = i;
+            while j < prefix.len() && is_word(prefix[j]) {
+                j += 1;
+            }
+            let word = &prefix[i..j];
+            matches!(word, b"q" | b"qq" | b"qw" | b"qr" | b"m" | b"s" | b"tr" | b"y")
+                && prefix.get(j).is_none_or(|d| {
+                    !d.is_ascii_whitespace()
+                        && !is_word(*d)
+                        && *d != b','
+                        && *d != b';'
+                        && *d != b')'
+                })
+        })
+    }
+
+    /// True when a line-start `=cut` exists at or after the cursor. The result is memoized so
+    /// many candidates cost one scan.
+    fn pod_has_later_cut(&mut self) -> bool {
+        let pos = self.position;
+        if let Some((from, found)) = self.pod_cut_cache
+            && from <= pos
+            && found.is_none_or(|f| f >= pos)
+        {
+            return found.is_some();
+        }
+        let b = self.input_bytes;
+        let found = (pos..b.len()).find(|&i| {
+            (i == 0 || matches!(b[i - 1], b'\n' | b'\r')) && b[i..].starts_with(b"=cut")
+        });
+        self.pod_cut_cache = Some((pos, found));
+        found.is_some()
+    }
+}
