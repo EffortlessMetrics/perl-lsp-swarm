@@ -589,14 +589,15 @@ impl LspServer {
         let mut folders = self.workspace_folders.lock();
         // Snapshot every resolution-relevant effective setting a pulled
         // payload can change, not just include paths: `useSystemInc`,
-        // `usePerl5lib`, and `perl5libPrecedence` also change what the
-        // resolver probes, so a flip in any of them must refresh
-        // diagnostics exactly like an include-path change (#17444).
+        // `usePerl5lib`, `perl5libPrecedence`, and `resolutionTimeout`
+        // also change what the resolver probes or how long it may run,
+        // so a flip in any of them must refresh diagnostics exactly like
+        // an include-path change (#17444).
         // `perlPath`/`perlArgs` are deliberately not honoured from
         // workspace-supplied settings, so they cannot change here.
         let previous_resolution_settings: HashMap<
             String,
-            (Vec<String>, bool, bool, Perl5LibPrecedence),
+            (Vec<String>, bool, bool, Perl5LibPrecedence, u64),
         > = folders
             .iter()
             .map(|folder| {
@@ -608,6 +609,7 @@ impl LspServer {
                         config.use_system_inc,
                         config.use_perl5lib,
                         config.perl5lib_precedence.clone(),
+                        config.resolution_timeout_ms,
                     ),
                 )
             })
@@ -630,6 +632,7 @@ impl LspServer {
                     config.use_system_inc,
                     config.use_perl5lib,
                     config.perl5lib_precedence.clone(),
+                    config.resolution_timeout_ms,
                 ))
         });
         drop(init_options_perl);
@@ -4973,7 +4976,7 @@ mod tests {
         // #17444: a pulled `useSystemInc` flip with identical include paths
         // must invalidate workspace identity so diagnostics refresh; the
         // include-paths-only gate left published diagnostics stale.
-        let (server, _output) = server_with_output_capture();
+        let (server, output) = server_with_output_capture();
         let temp = tempfile::tempdir()?;
         let uri = url::Url::from_directory_path(temp.path())
             .map_err(|_| "failed to create folder URI")?
@@ -4984,6 +4987,23 @@ mod tests {
             .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
         server.client_capabilities.lock().workspace_configuration_support = true;
         server.initialized.store(true, Ordering::Release);
+        let doc = url::Url::from_file_path(temp.path().join("main.pl"))
+            .map_err(|_| "invalid document URI")?
+            .to_string();
+        server.test_apply_did_open(&doc, "use FolderScopedOnlyA;\n", 1)?;
+        server.publish_diagnostics(&doc);
+        let publications_for_doc = |messages: &[Value]| {
+            messages
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("textDocument/publishDiagnostics")
+                        && message.pointer("/params/uri").and_then(Value::as_str)
+                            == Some(doc.as_str())
+                })
+                .count()
+        };
+        let initial_publications = publications_for_doc(&output.messages()?);
 
         let pull = |payload: serde_json::Value| -> Result<(), Box<dyn std::error::Error>> {
             server.request_workspace_configuration_for_folders();
@@ -5008,6 +5028,19 @@ mod tests {
             after_flip > before,
             "pulled useSystemInc flip must invalidate identity: before={before}, after={after_flip}"
         );
+        // The flip must also republish diagnostics for open documents on
+        // the push path; identity invalidation alone would leave stale
+        // PL701 publications on screen.
+        let refresh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if publications_for_doc(&output.messages()?) > initial_publications {
+                break;
+            }
+            if std::time::Instant::now() >= refresh_deadline {
+                return Err("pulled toggle flip did not republish open-document diagnostics".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         // Control: re-pulling the identical payload changes nothing, so no
         // further invalidation may fire.
