@@ -11,8 +11,11 @@
 //! 3. Second pass (via walker): detect version-gated AST constructs and emit
 //!    `PL900` warnings for those not covered by the effective feature set.
 //!
-//! When no version is declared at all, the check emits nothing — undeclared
-//! version is ambiguous (the file may be targeting the system Perl).
+//! When no version is declared at all, the check emits nothing, with one
+//! exception: subroutine signatures still warn, because a signature without
+//! the `signatures` feature does not compile on any Perl. Every other arm
+//! stays silent without a declared version, since undeclared version is
+//! ambiguous (the file may be targeting the system Perl).
 //!
 //! # Perl 5.42 feature-gating
 //!
@@ -249,6 +252,10 @@ pub(crate) fn check_version_compat_with_pragma_map(
         None if source_version_declared => return,
         None => {
             let Some(project_version) = project_version else {
+                // No declared version anywhere: only the signatures arm is
+                // carved out of the silence, since a signature without the
+                // feature fails on every Perl. All other arms stay silent.
+                check_undeclared_signatures(node, pragma_map, diagnostics);
                 return;
             };
             if contains_source_version_declaration(node) {
@@ -606,6 +613,70 @@ pub(crate) fn check_version_compat_with_pragma_map(
                 ));
             }
         }
+    }
+}
+
+/// Versionless signatures check: the one PL900 arm that runs without any
+/// declared version.
+///
+/// A subroutine signature without the `signatures` feature is a syntax
+/// error on every Perl release, so silence here would approve code that
+/// cannot compile anywhere. All other constructs stay silent without a
+/// declared version. Method declarations are skipped: methods live under
+/// `class`, which implies signatures, and the parser emits them as
+/// `NodeKind::Method`, never as signed subroutines. A signed subroutine
+/// nested inside a class body is likewise skipped.
+fn check_undeclared_signatures(
+    node: &Node,
+    pragma_map: &[(std::ops::Range<usize>, PragmaState)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut class_ranges: Vec<(usize, usize)> = Vec::new();
+    walk_node(node, &mut |n| {
+        if matches!(&n.kind, NodeKind::Class { .. }) {
+            class_ranges.push((n.location.start, n.location.end));
+        }
+    });
+
+    let mut pragma_cursor = PragmaQueryCursor::new();
+    walk_node(node, &mut |n| {
+        if !matches!(&n.kind, NodeKind::Subroutine { signature: Some(_), .. }) {
+            return;
+        }
+        if class_ranges
+            .iter()
+            .any(|&(start, end)| n.location.start >= start && n.location.end <= end)
+        {
+            return;
+        }
+        let pragma_state = pragma_cursor.state_for_offset(pragma_map, n.location.start);
+        if pragma_state.has_feature("signatures") {
+            return;
+        }
+        diagnostics.push(make_undeclared_signatures_diagnostic(n));
+    });
+}
+
+/// Build the PL900 warning for a signature in a file with no declared
+/// version. The wording must not reference a declared version, because
+/// there is none to update.
+fn make_undeclared_signatures_diagnostic(node: &Node) -> Diagnostic {
+    Diagnostic {
+        range: (node.location.start, node.location.end),
+        severity: DiagnosticSeverity::Warning,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message: "'subroutine signatures' requires the 'signatures' feature, which is not \
+                  enabled (no Perl version declared)"
+            .to_string(),
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(
+            "Add 'use feature \"signatures\";' or add 'use v5.36;' (or later) to enable \
+             subroutine signatures"
+                .to_string(),
+        ),
+        fixable: false,
+        critic_observation: None,
     }
 }
 
@@ -1426,6 +1497,128 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.message.contains("subroutine signatures")),
             "eval STRING should not be treated as compile-time signatures enablement"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Versionless signatures carve-out (issue #16611)
+    //
+    // With no `use VERSION` and no project `[perl].version`, every PL900 arm
+    // stays silent except subroutine signatures: a signature without the
+    // feature is a syntax error on every Perl, so silence would approve code
+    // that compiles nowhere. The remediation must not reference a declared
+    // version, because there is none.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn versionless_signature_sub_emits_pl900_warning_without_declared_version_wording() {
+        let diags = version_compat_diags("sub add ($x, $y) { return $x + $y; }\n");
+        let sig_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("PL900") && d.message.contains("subroutine signatures")
+            })
+            .collect();
+        assert_eq!(
+            sig_diags.len(),
+            1,
+            "a versionless signature sub must emit exactly one PL900: {diags:#?}"
+        );
+        let d = sig_diags[0];
+        assert_eq!(
+            d.severity,
+            DiagnosticSeverity::Warning,
+            "versionless signatures PL900 must be Warning"
+        );
+        assert!(
+            !d.message.contains("declared version is"),
+            "versionless wording must not reference a declared version: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("target from project"),
+            "versionless diagnostic must not carry the project-version suffix: {}",
+            d.message
+        );
+        let suggestion = must_some_with(d.suggestion.as_deref(), "must have a suggestion");
+        assert!(
+            suggestion.contains("signatures"),
+            "suggestion must name the signatures remediation: {suggestion}"
+        );
+        assert!(
+            suggestion.contains("v5.36"),
+            "suggestion must offer the v5.36 version route: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains("target from project"),
+            "suggestion must not carry the project-version suffix: {suggestion}"
+        );
+        assert!(
+            !suggestion.contains("Update 'use "),
+            "suggestion must not tell the author to update a version they never declared: \
+             {suggestion}"
+        );
+    }
+
+    #[test]
+    fn versionless_signature_with_explicit_feature_is_silent() {
+        let diags =
+            version_compat_diags("use feature 'signatures';\nsub add ($x, $y) { $x + $y }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "explicit signatures feature must suppress the versionless PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_signature_with_use_v5_36_is_silent() {
+        let diags = version_compat_diags("use v5.36;\nsub add ($x, $y) { $x + $y }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "the v5.36 bundle must suppress the versionless PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_prototype_does_not_emit_signature_pl900() {
+        // `($$)` is a prototype, not a signature: the parser leaves
+        // `signature` unset, so the carve-out must stay silent.
+        let diags = version_compat_diags("sub add ($$) { return $_[0] + $_[1]; }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "prototypes must not be reported as signatures: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_signature_before_later_feature_still_warns() {
+        // Lexical ordering: a `use feature` after the sub cannot enable the
+        // signature that precedes it.
+        let diags =
+            version_compat_diags("sub add ($x, $y) { $x + $y }\nuse feature 'signatures';\n");
+        assert!(
+            diags.iter().any(|d| d.message.contains("subroutine signatures")),
+            "a later use feature must not suppress an earlier signature: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_method_in_class_does_not_emit_signature_pl900() {
+        let diags = version_compat_diags("class Foo { method bar ($x) { $x } }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "method signatures under class imply signatures and must not warn: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn versionless_other_constructs_stay_silent() {
+        // The carve-out covers only signatures; every other arm keeps its
+        // undeclared-version silence.
+        let diags = version_compat_diags("say 'hi';\nmy $r = [];\nmy @a = $r->@*;\n");
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+            "non-signature constructs must stay silent without a version: {diags:#?}"
         );
     }
 
