@@ -87,7 +87,11 @@ def check_ownership(sources, package):
         if re.search(r'(?:#\[\s*path\s*=\s*|include!\s*\(\s*)[r#]*"[^"]*common_self_tests', text):
             raise AssertionError(f'{package}: aliased self-test registration: {path}')
         if path == owner or path.startswith('common_self_tests/'):
-            if re.search(r'(?m)^#!\[cfg(?:_attr)?\b', text):
+            # This fixed module graph has no block comments. Fail closed if a
+            # wrapper could make the regex inventory see commented-out tests.
+            if '/*' in text or '*/' in text:
+                raise AssertionError(f'{package}: block comments require registration review: {path}')
+            if re.search(r'(?m)^\s*#!\[cfg(?:_attr)?\b', text):
                 raise AssertionError(f'{package}: conditional owner/module file: {path}')
     if '\nmod common;\nmod common_self_tests;\n' not in sources.get(owner, ''):
         raise AssertionError(f'{package}: missing unconditional owner registration')
@@ -218,6 +222,27 @@ class CommonSelfTestOwnershipTests(unittest.TestCase):
                             if p.startswith('common_self_tests/') and '    #[cfg(unix)]' in t)
                 sources[path] = re.sub(r'(?m)^    #\[cfg\(unix\)\]$', '    ' + replacement, sources[path], count=1)
                 with self.assertRaisesRegex(AssertionError, 'identity/cfg/ignore set changed'):
+                    check_ownership(sources, package)
+
+    def test_inner_cfg_cannot_disable_a_moved_module(self):
+        for package, contract in CASES.items():
+            for child in contract['modules']:
+                for attribute in ['#![cfg(any())]', '#![cfg_attr(test, cfg(any()))]']:
+                    sources = self.sources(package)
+                    path = 'common_self_tests/' + child
+                    sources[path] = re.sub(
+                        r'(mod \w+ \{\n)', r'\1    ' + attribute + '\n',
+                        sources[path], count=1)
+                    with self.assertRaisesRegex(AssertionError, 'conditional owner/module file'):
+                        check_ownership(sources, package)
+
+    def test_commented_module_is_rejected(self):
+        for package, contract in CASES.items():
+            for child in contract['modules']:
+                sources = self.sources(package)
+                path = 'common_self_tests/' + child
+                sources[path] = '/*\n' + sources[path] + '\n*/\n'
+                with self.assertRaisesRegex(AssertionError, 'block comments require registration review'):
                     check_ownership(sources, package)
 
 
