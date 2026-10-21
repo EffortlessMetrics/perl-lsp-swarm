@@ -28,7 +28,7 @@ path = "src/lib.rs"
 [dependencies]
 perl-dap = { workspace = true }
 # perl-incremental-parsing absorbed into perl-parser::incremental (Wave 4-Completion)
-perl-parser = { workspace = true, features = ["test-performance"] }
+perl-parser = { workspace = true }
 # (perl-lsp-providers absorbed into perl-lsp-rs-core::providers::lsp_compat — Wave G1b)
 # (perl-lsp-formatting absorbed into perl-lsp-rs-core::providers::formatting — Wave G1b)
 # perl-lsp-uri absorbed into perl-lsp-rs-core::uri (Wave G3 step 3)
@@ -49,7 +49,7 @@ perl-diagnostics = { workspace = true }
 # (perl-lsp-semantic-tokens absorbed into perl-lsp-rs-core::providers::semantic_tokens — Wave G1b)
 # Provider crates absorbed into perl-lsp-rs-core (Wave G1a)
 # perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser (Wave G3 step 7)
-perl-lsp-rs-core = { workspace = true, features = ["lsp-compat", "ai-provider"] }
+perl-lsp-rs-core = { workspace = true, default-features = true, features = ["lsp-compat", "ai-provider"] }
 # perl-lsp-performance absorbed into perl-lsp-rs-core::performance (Wave G3 step 5)
 perl-lsp-perltidy = { workspace = true }
 perl-position-tracking = { workspace = true, features = ["lsp-compat"] }
@@ -120,6 +120,9 @@ dap-phase3 = []  # DAP non-regression tests; no external runtime implementation 
 utf16-complete = ["perl-parser/utf16-complete"]  # Complete UTF-16 round-trip support
 
 [dev-dependencies]
+# Test builds only: turns on the core crate's proof-only native-critic rebuild
+# counter (#7286). A production build of `perl-lsp-rs` links core without it.
+perl-lsp-rs-core = { workspace = true, default-features = true, features = ["test-instrumentation"] }
 assert_cmd = "2.2.2"
 chrono = "0.4.43"
 unicode-ident = "1.0.22"
@@ -132,6 +135,9 @@ proptest.workspace = true
 parking_lot.workspace = true
 criterion.workspace = true
 perl-corpus = { workspace = true }
+# LSP stdio round-trip bench reuses the UX harness client (spawn + framing +
+# event substrate) against the real perllsp binary instead of reinventing it.
+perl-lsp-ux-tests.workspace = true
 static_assertions.workspace = true
 sha2.workspace = true
 toml = "1.1.2"
@@ -146,4 +152,8 @@ tracing-subscriber = "0.3.22"
 
 [[bench]]
 name = "rope_performance_benchmark"
+harness = false
+
+[[bench]]
+name = "lsp_stdio_roundtrip_benchmark"
 harness = false

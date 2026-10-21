@@ -83,8 +83,8 @@ fn test_rapid_did_change_resolves_to_latest() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-/// Send interleaved incremental edits to verify generation counter handles
-/// partial-document changes without state corruption.
+/// Send sequential full-document edits to verify generation counter handles
+/// successive replacements without state corruption.
 #[test]
 fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
@@ -109,7 +109,7 @@ fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error
         }),
     );
 
-    // Incremental edit v2: change "hello" to "world" on line 1
+    // Full-document edit v2: change "hello" to "world" on line 1
     send_notification(
         &server,
         json!({
@@ -118,17 +118,13 @@ fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error
             "params": {
                 "textDocument": { "uri": uri, "version": 2 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 1, "character": 11 },
-                        "end": { "line": 1, "character": 16 }
-                    },
-                    "text": "world"
+                    "text": "sub hello {\n    print \"world\";\n}\n"
                 }]
             }
         }),
     );
 
-    // Incremental edit v3: change sub name from "hello" to "greet"
+    // Full-document edit v3: change sub name from "hello" to "greet"
     send_notification(
         &server,
         json!({
@@ -137,11 +133,7 @@ fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error
             "params": {
                 "textDocument": { "uri": uri, "version": 3 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 0, "character": 4 },
-                        "end": { "line": 0, "character": 9 }
-                    },
-                    "text": "greet"
+                    "text": "sub greet {\n    print \"world\";\n}\n"
                 }]
             }
         }),
@@ -162,7 +154,7 @@ fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error
 
     assert!(
         response.get("error").is_none(),
-        "documentSymbol after incremental edits should not error: {response:?}"
+        "documentSymbol after full-document edits should not error: {response:?}"
     );
 
     // If we got symbols back, verify the sub name reflects the latest edit
@@ -173,7 +165,7 @@ fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error
         let name = first.get("name").and_then(|n| n.as_str()).unwrap_or("");
         assert_eq!(
             name, "greet",
-            "Symbol name should reflect the latest incremental edit, got: {name}"
+            "Symbol name should reflect the latest full-document edit, got: {name}"
         );
     }
 

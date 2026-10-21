@@ -103,6 +103,11 @@ impl LspServer {
                 }
             }
 
+            // Closing hands project metadata authority back to disk (or to
+            // definite absence for an unsaved metadata file). The open buffer
+            // has been evicted and no document/folder lock is held here.
+            self.refresh_metadata_for_document_uri(uri);
+
             // Notify coordinator that cleanup is complete
             #[cfg(feature = "workspace")]
             if let Some(coordinator) = self.coordinator() {
@@ -155,13 +160,33 @@ impl LspServer {
                 let replacement = {
                     let documents = self.documents.lock();
                     self.get_document(&documents, &normalized_uri).and_then(|doc| {
-                        (doc.text.as_str() != saved_text)
+                        // Identical-text is a no-op only while the buffer is
+                        // already synchronized. After a Full-sync violation the
+                        // retained predecessor still equals the saved snapshot,
+                        // but current answers stay closed until an admitted
+                        // full replacement recovers the document.
+                        (doc.full_sync_required() || doc.text.as_str() != saved_text)
                             .then(|| (saved_text.to_owned(), doc.version))
                     })
                 };
                 if let Some((saved_text, version)) = replacement {
                     tracing::debug!(uri, "didSave text differs from in-memory buffer; reconciling");
-                    return self.handle_did_save_text_replacement(uri, &saved_text, version);
+                    let result = self.handle_did_save_text_replacement(uri, &saved_text, version);
+                    // didSave is a notification: an unstorable replacement can
+                    // return Ok while marking Full-sync required. Refresh only
+                    // when the saved text became the current admitted buffer.
+                    if result.is_ok() {
+                        let accepted = {
+                            let documents = self.documents_guard();
+                            self.get_document(&documents, &normalized_uri).is_some_and(|doc| {
+                                !doc.full_sync_required() && doc.text_str() == saved_text.as_str()
+                            })
+                        };
+                        if accepted {
+                            self.refresh_metadata_for_document_uri(uri);
+                        }
+                    }
+                    return result;
                 }
             }
 
@@ -188,6 +213,12 @@ impl LspServer {
                 let doc_info = {
                     let documents = self.documents_guard();
                     self.get_document(&documents, &normalized_uri).and_then(|d| {
+                        // A didSave without includeText cannot recover Full-sync.
+                        // Predecessor `text_str` stays evidence only; generation-only
+                        // index admission must not republish it as current.
+                        if d.full_sync_required() {
+                            return None;
+                        }
                         let doc_gen_val = NonZeroU32::new(d.current_generation())?;
                         let needs_commit = backing_transition.is_some()
                             || self.coordinator().is_some_and(|coordinator| {

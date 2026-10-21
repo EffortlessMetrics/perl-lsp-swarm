@@ -80,3 +80,43 @@ describe('package manifest demo project command (#1635)', () => {
     expect(fs.existsSync(path.join(demoRoot, 'lib', 'Database.pm'))).toBe(true);
   });
 });
+
+describe('first-run demo content (#16591)', () => {
+  const repoRoot = path.resolve(__dirname, '../../..');
+  const sourceRoot = path.join(repoRoot, 'demo_workspace');
+  const bundledRoot = path.join(repoRoot, 'vscode-extension', 'assets', 'demo-project');
+
+  function filesUnder(root: string, directory = ''): string[] {
+    return fs.readdirSync(path.join(root, directory), { withFileTypes: true }).flatMap((entry) => {
+      const relativePath = path.join(directory, entry.name);
+      return entry.isDirectory() ? filesUnder(root, relativePath) : [relativePath];
+    });
+  }
+
+  test('bundled demo has exactly the same files and bytes as the source demo', () => {
+    const sourceFiles = filesUnder(sourceRoot).sort();
+    expect(sourceFiles).toEqual(
+      ['README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl']
+        .map((file) => path.normalize(file))
+        .sort(),
+    );
+    expect(filesUnder(bundledRoot).sort()).toEqual(sourceFiles);
+    for (const file of sourceFiles) {
+      expect(fs.readFileSync(path.join(bundledRoot, file))).toEqual(
+        fs.readFileSync(path.join(sourceRoot, file)),
+      );
+    }
+  });
+
+  test('default walkthrough calls the project functions and has no deliberate dead routines', () => {
+    const main = fs.readFileSync(path.join(sourceRoot, 'main.pl'), 'utf8');
+    const utils = fs.readFileSync(path.join(sourceRoot, 'lib', 'Utils.pm'), 'utf8');
+    const database = fs.readFileSync(path.join(sourceRoot, 'lib', 'Database.pm'), 'utf8');
+    expect(main).toContain('Utils::load_data()');
+    expect(main).toContain('Utils::process_data($data)');
+    expect(main).toContain('Database::save($summary)');
+    expect(utils).not.toMatch(/sub\s+unused_helper\b/);
+    expect(database).not.toMatch(/sub\s+(?:connect|unused_query)\b/);
+    expect(database).not.toMatch(/require\s+DBI\b/);
+  });
+});

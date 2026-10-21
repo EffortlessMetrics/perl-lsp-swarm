@@ -1,0 +1,9 @@
+project: product
+component: Toolchain integrity
+kind: Added
+body: "Added a workflow-contract test that pins the `--paginate`, `filter=all`, `per_page`, and `external_id` properties of the ripr-liveness dedup read, so the advisory `ripr+ liveness` reporter cannot regress to re-posting duplicate check runs past page one."
+time: 2026-09-21T00:00:00Z
+custom:
+  PR: "16133"
+  Slug: ripr-liveness-dedup-contract
+  Breaking: "no"

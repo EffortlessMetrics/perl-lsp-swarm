@@ -1,7 +1,8 @@
 #![deny(clippy::map_err_ignore)]
 
 use perl_lsp_perltidy::native::{
-    FormatContext, FormatDisposition, FormatReasonCode, FormatRequestTarget,
+    FormatContext, FormatDisposition, FormatIdentity, FormatReasonCode, FormatRequestTarget,
+    NativePipelineCounters,
 };
 use perl_lsp_perltidy::{FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange};
 use perl_parser_core::SourceRegionIndex;
@@ -33,6 +34,65 @@ fn typed_document_formatting_ignores_marker_text_inside_string_and_comment() {
     assert_eq!(typed.outcome.reason, FormatReasonCode::Applied);
     assert_eq!(typed.result.formatted, "my $x = \"<<EOF\"; # docs <<NOTE\n");
     assert!(typed.result.diagnostics.is_empty());
+}
+
+#[test]
+fn document_preservation_and_marker_shielding_share_typed_outcomes() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig::default();
+    let context = FormatContext::new(Some("mixed-preservation.pl".to_string()), Some(7));
+
+    for (source, preserved, second_pass) in [
+        (
+            "my$s=\"<<FAKE\"; # docs <<NOTE\nmy $text = <<'EOF';\n  keep { <<RAW } exactly\nEOF\nmy$x=1;\n",
+            "\n  keep { <<RAW } exactly\nEOF\n",
+            // The engine preserves heredoc bytes but does not yet admit the
+            // opener in its supported no-change envelope. Keep that boundary.
+            (FormatDisposition::Refused, FormatReasonCode::UnsupportedSyntax),
+        ),
+        (
+            "my$s=\"<<FAKE\"; # docs <<NOTE\nmy $matched = $text =~ /needle/i;\nmy$x=1;\n",
+            "my $matched = $text =~ /needle/i;\n",
+            (FormatDisposition::NoChange, FormatReasonCode::AlreadyFormattedPreservingLiterals),
+        ),
+    ] {
+        let mut input = source.to_string();
+        for (disposition, reason) in
+            [(FormatDisposition::Applied, FormatReasonCode::AppliedPreservingLiterals), second_pass]
+        {
+            let compat = formatter.format_document(&input, &config);
+            let typed = formatter.format_document_typed(&input, &config, &context);
+            let mut counters = NativePipelineCounters::default();
+            let counted = formatter.format_document_typed_with_counters(
+                &input,
+                &config,
+                &context,
+                &mut counters,
+            );
+
+            assert_eq!(typed.outcome.disposition, disposition);
+            assert_eq!(typed.outcome.reason, reason);
+            assert_eq!(typed.outcome.target, FormatRequestTarget::Document);
+            assert_eq!(
+                typed.outcome.identity,
+                FormatIdentity::for_request(&input, &config, &context)
+            );
+            assert_eq!(counted.outcome, typed.outcome);
+            assert_eq!(counted.result, typed.result);
+            assert_eq!(compat, typed.result);
+            assert!(typed.result.diagnostics.is_empty());
+            assert_eq!(counters.pipeline_invocations, 1);
+            assert!(typed.result.formatted.contains("\"<<FAKE\"; # docs <<NOTE\n"));
+            assert!(typed.result.formatted.contains(preserved));
+            assert!(typed.result.formatted.contains("my $x = 1;\n"));
+            if disposition != FormatDisposition::Applied {
+                assert_eq!(typed.result.formatted, input);
+                assert!(!typed.result.changed);
+                assert!(typed.result.edits.is_empty());
+            }
+            input = typed.result.formatted;
+        }
+    }
 }
 
 #[test]
@@ -564,7 +624,28 @@ fn unclosed_heredoc_body_remains_owned_by_parse_gate() {
     let body = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
 
     let result = formatter.format_range(source, body, &FormatConfig::default());
+    let typed = formatter.format_range_typed(
+        source,
+        body,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
 
+    assert_eq!(result.formatted, source);
+    assert!(!result.changed);
+    assert!(result.edits.is_empty());
+    assert_eq!(typed.result, result);
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code.as_str(),
+            "native.format.parse_error" | "native.format.parse_incomplete"
+        )
+    }));
+    assert!(matches!(
+        (typed.outcome.disposition, typed.outcome.reason),
+        (FormatDisposition::Refused, FormatReasonCode::SourceParseError)
+            | (FormatDisposition::FailedOrNotProven, FormatReasonCode::InstrumentFailure)
+    ));
     assert!(
         result
             .diagnostics

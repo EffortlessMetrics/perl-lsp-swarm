@@ -3,6 +3,8 @@
 //! Replays a VS Code mock-debug-style request stream and verifies the adapter
 //! returns spec-shaped responses across the command surface.
 
+mod common;
+
 use anyhow::{Result, anyhow};
 use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
@@ -167,6 +169,9 @@ fn vscode_mock_debug_surface_conformance() -> Result<()> {
         let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
+        // These fixtures replay reference-client request streams (including
+        // launch) to check response shapes, not launch-authority semantics.
+        common::install_unbounded_test_authority(&adapter);
         let mut prev_response_seq = 0_i64;
 
         for (idx, request) in requests.iter().enumerate() {

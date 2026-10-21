@@ -116,33 +116,39 @@ impl NativeFormatter {
         context: &FormatContext,
         counters: &mut NativePipelineCounters,
     ) -> TypedFormatResult {
-        let engine = implementation::NativeFormatter::new();
-        if matches!(config.mode, FormatterMode::Off) {
-            return engine.format_document_typed_with_counters(source, config, context, counters);
-        }
-
-        let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
-            return engine.format_document_typed_with_counters(source, config, context, counters);
-        };
-        let source_identity = FormatIdentity::for_request(source, config, context);
-        // The sanitized attempt may be discarded when restoration fails, so it
-        // records in scratch counters; only the attempt whose result is
-        // returned merges into the caller's collector (one pipeline per
-        // public request, NPC-003).
-        let mut attempt = NativePipelineCounters::default();
-        let typed = engine.format_document_typed_with_counters(
-            &sanitized.text,
-            config,
-            context,
-            &mut attempt,
-        );
-        match restore_typed_result(source, &sanitized, source_identity, typed) {
-            Some(result) => {
-                merge_counters(counters, &attempt);
-                result
+        with_selected_attempt_counters(counters, |counters| {
+            let engine = implementation::NativeFormatter::new();
+            if matches!(config.mode, FormatterMode::Off) {
+                return engine
+                    .format_document_typed_with_counters(source, config, context, counters);
             }
-            None => engine.format_document_typed_with_counters(source, config, context, counters),
-        }
+
+            let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
+                return engine
+                    .format_document_typed_with_counters(source, config, context, counters);
+            };
+            let source_identity = FormatIdentity::for_request(source, config, context);
+            // The sanitized attempt may be discarded when restoration fails, so it
+            // records in scratch counters; only the attempt whose result is
+            // returned merges into the caller's collector (one pipeline per
+            // public request, NPC-003).
+            let mut attempt = NativePipelineCounters::default();
+            let typed = engine.format_document_typed_with_counters(
+                &sanitized.text,
+                config,
+                context,
+                &mut attempt,
+            );
+            match restore_typed_result(source, &sanitized, source_identity, typed) {
+                Some(result) => {
+                    merge_counters(counters, &attempt);
+                    result
+                }
+                None => {
+                    engine.format_document_typed_with_counters(source, config, context, counters)
+                }
+            }
+        })
     }
 
     /// Format one range with pipeline counters, preserving the range-level
@@ -156,67 +162,85 @@ impl NativeFormatter {
         context: &FormatContext,
         counters: &mut NativePipelineCounters,
     ) -> TypedFormatResult {
-        let engine = implementation::NativeFormatter::new();
-        if matches!(config.mode, FormatterMode::Off) {
-            return engine
-                .format_range_typed_with_counters(source, range, config, context, counters);
-        }
-
-        if valid_range(source, range)
-            && range_overlaps_completed_heredoc(source, range, &source_line_ranges(source))
-        {
-            // The guard refuses before any engine entry runs, but the request
-            // still happened: record one typed pipeline invocation so counted
-            // receipts do not silently omit the guarded heredoc cases
-            // (NPC-003). Installing the scope keeps nested outer collectors
-            // observing the same request.
-            let scope = PipelineCollectorScope::install();
-            record_with(|recorded| recorded.observe_pipeline_invocation());
-            scope.merge_into(counters);
-            return typed_heredoc_range_refusal(source, range, config, context);
-        }
-
-        // Both internal attempts may be discarded, so each records in scratch
-        // counters; only the attempt whose result is returned merges into the
-        // caller's collector (one pipeline per public request, NPC-003).
-        let mut baseline_attempt = NativePipelineCounters::default();
-        let baseline = engine.format_range_typed_with_counters(
-            source,
-            range,
-            config,
-            context,
-            &mut baseline_attempt,
-        );
-        if baseline.outcome.reason == FormatReasonCode::UnsafeRange {
-            merge_counters(counters, &baseline_attempt);
-            return baseline;
-        }
-
-        let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
-            merge_counters(counters, &baseline_attempt);
-            return baseline;
-        };
-
-        let mut sanitized_attempt = NativePipelineCounters::default();
-        let typed = engine.format_range_typed_with_counters(
-            &sanitized.text,
-            range,
-            config,
-            context,
-            &mut sanitized_attempt,
-        );
-        let source_identity = baseline.outcome.identity.clone();
-        match restore_typed_result(source, &sanitized, source_identity, typed) {
-            Some(result) => {
-                merge_counters(counters, &sanitized_attempt);
-                result
+        with_selected_attempt_counters(counters, |counters| {
+            let engine = implementation::NativeFormatter::new();
+            if matches!(config.mode, FormatterMode::Off) {
+                return engine
+                    .format_range_typed_with_counters(source, range, config, context, counters);
             }
-            None => {
+
+            if valid_range(source, range)
+                && range_overlaps_completed_heredoc(source, range, &source_line_ranges(source))
+            {
+                // The guard refuses before any engine entry runs, but the request
+                // still happened: record one typed pipeline invocation so counted
+                // receipts do not silently omit the guarded heredoc cases
+                // (NPC-003). Installing the scope keeps nested outer collectors
+                // observing the same request.
+                let scope = PipelineCollectorScope::install();
+                record_with(|recorded| recorded.observe_pipeline_invocation());
+                scope.merge_into(counters);
+                return typed_heredoc_range_refusal(source, range, config, context);
+            }
+
+            // Both internal attempts may be discarded, so each records in scratch
+            // counters; only the attempt whose result is returned merges into the
+            // caller's collector (one pipeline per public request, NPC-003).
+            let mut baseline_attempt = NativePipelineCounters::default();
+            let baseline = engine.format_range_typed_with_counters(
+                source,
+                range,
+                config,
+                context,
+                &mut baseline_attempt,
+            );
+            if baseline.outcome.reason == FormatReasonCode::UnsafeRange {
                 merge_counters(counters, &baseline_attempt);
-                baseline
+                return baseline;
             }
-        }
+
+            let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
+                merge_counters(counters, &baseline_attempt);
+                return baseline;
+            };
+
+            let mut sanitized_attempt = NativePipelineCounters::default();
+            let typed = engine.format_range_typed_with_counters(
+                &sanitized.text,
+                range,
+                config,
+                context,
+                &mut sanitized_attempt,
+            );
+            let source_identity = baseline.outcome.identity.clone();
+            match restore_typed_result(source, &sanitized, source_identity, typed) {
+                Some(result) => {
+                    merge_counters(counters, &sanitized_attempt);
+                    result
+                }
+                None => {
+                    merge_counters(counters, &baseline_attempt);
+                    baseline
+                }
+            }
+        })
     }
+}
+
+// Engine scopes propagate into their active parent even when their explicit
+// snapshot is scratch storage. Keep all speculative work in a disposable parent,
+// then publish only the selected attempt to both callers of the counted API.
+fn with_selected_attempt_counters(
+    counters: &mut NativePipelineCounters,
+    format: impl FnOnce(&mut NativePipelineCounters) -> TypedFormatResult,
+) -> TypedFormatResult {
+    let isolation = PipelineCollectorScope::install();
+    let mut selected = NativePipelineCounters::default();
+    let result = format(&mut selected);
+    drop(isolation);
+    merge_counters(counters, &selected);
+    record_with(|outer| merge_counters(outer, &selected));
+    result
 }
 
 impl PerlFormatter for NativeFormatter {

@@ -670,6 +670,7 @@ fn guarded_heredoc_range_refusal_records_one_pipeline_invocation() {
     let source = "print <<'EOF';\nmy$x=1;\nEOF\nmy$y=2;\n";
     let body = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
     let mut counters = NativePipelineCounters::default();
+    let outer = PipelineCollectorScope::install();
 
     let typed = NativeFormatter::new().format_range_typed_with_counters(
         source,
@@ -684,6 +685,10 @@ fn guarded_heredoc_range_refusal_records_one_pipeline_invocation() {
     assert_eq!(counters.parse_gate_invocations, 0, "the guard refuses before any parse gate runs");
     assert_eq!(counters.edits_derived, 0);
     assert_eq!(counters.replacement_bytes, 0);
+
+    let mut outer_snapshot = NativePipelineCounters::default();
+    outer.merge_into(&mut outer_snapshot);
+    assert_eq!(outer_snapshot, counters, "outer collector must see only the returned attempt");
 }
 
 #[test]
@@ -691,6 +696,7 @@ fn shielded_marker_range_request_counts_one_pipeline_invocation() {
     let source = "my$x=\"<<EOF\";\nmy$y=1;\n";
     let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(2, 0));
     let mut counters = NativePipelineCounters::default();
+    let outer = PipelineCollectorScope::install();
 
     let typed = NativeFormatter::new().format_range_typed_with_counters(
         source,
@@ -705,12 +711,17 @@ fn shielded_marker_range_request_counts_one_pipeline_invocation() {
         counters.pipeline_invocations, 1,
         "only the returned attempt may count for one range request"
     );
+
+    let mut outer_snapshot = NativePipelineCounters::default();
+    outer.merge_into(&mut outer_snapshot);
+    assert_eq!(outer_snapshot, counters, "outer collector must see only the returned attempt");
 }
 
 #[test]
 fn shielded_marker_document_request_counts_one_pipeline_invocation() {
     let source = "my$x=\"<<EOF\";\nmy$y=1;\n";
     let mut counters = NativePipelineCounters::default();
+    let outer = PipelineCollectorScope::install();
 
     let typed = NativeFormatter::new().format_document_typed_with_counters(
         source,
@@ -724,6 +735,10 @@ fn shielded_marker_document_request_counts_one_pipeline_invocation() {
         counters.pipeline_invocations, 1,
         "only the returned attempt may count for one document request"
     );
+
+    let mut outer_snapshot = NativePipelineCounters::default();
+    outer.merge_into(&mut outer_snapshot);
+    assert_eq!(outer_snapshot, counters, "outer collector must see only the returned attempt");
 }
 
 // ---------------------------------------------------------------------------

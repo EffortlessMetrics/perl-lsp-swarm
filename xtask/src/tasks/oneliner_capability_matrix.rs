@@ -416,7 +416,7 @@ const ROWS: &[CapabilityRow] = &[
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
         missing_layer: "",
         invocable: "",
-        notes: "No switch decoder exists in the workspace. The option-contamination control proves the boundary directly: `-ne print;` parses as a unary expression on `ne`, which is what a parser without argv decoding must do.",
+        notes: "A switch decoder now exists as a library API — `perl_parser_core::command_line::decode` (#13726), proven by `crates/perl-parser-core/tests/command_line_argv_decoding.rs` — but this row stays `unsupported`, for two separate reasons. No user-facing surface consumes it yet, so nothing is available to a user; and this checker can only anchor evidence to the parser-body corpus, so an earned row above layer 1 is not currently expressible at all (#14632). The option-contamination control still proves the parser's own boundary: `-ne print;` parses as a unary expression on `ne`, which is what a parser that is handed a body without argv decoding must do.",
     },
     // ---- Layer 3: source composition and provenance --------------------
     CapabilityRow {
@@ -471,7 +471,7 @@ const ROWS: &[CapabilityRow] = &[
         boundary_controls: &[],
         missing_layer: "",
         invocable: "",
-        notes: "No adapter decodes POSIX shell quoting. Layer 2 remaining unsupported means there is nothing for an adapter to feed.",
+        notes: "No adapter decodes POSIX shell quoting. An adapter now has somewhere to send its output — `perl_parser_core::command_line::decode` accepts a tokenized argv (#13726) — so this row is unsupported because the adapter itself is missing, not because layer 2 has nothing to feed.",
     },
     CapabilityRow {
         layer: Layer::ShellAdapters,
@@ -1560,6 +1560,7 @@ fn normalize_newlines(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
 
     const CORPUS_SAMPLE: &str = r####"
 command_line_oneliner!(e_print_literal, "-e", r#"print "hello\n";"#);
@@ -1586,8 +1587,8 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     }
 
     fn real_evidence() -> CorpusEvidence {
-        let root = project_root().expect("project root");
-        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
+        let root = must_with(project_root(), "project root");
+        let corpus = must_with(fs::read_to_string(root.join(CORPUS_PATH)), "corpus readable");
         extract_corpus_evidence(&corpus)
     }
 
@@ -1673,16 +1674,12 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
 
     fn expect_rejected(rows: &[CapabilityRow], fragment: &str) {
         let evidence = sample_evidence();
-        match validate(rows, &evidence) {
-            Ok(()) => panic!("expected validation to reject rows mentioning {fragment}"),
-            Err(error) => {
-                let message = error.to_string();
-                assert!(
-                    message.contains(fragment),
-                    "error {message:?} did not mention {fragment:?}"
-                );
-            }
-        }
+        let error = must_err_with(
+            validate(rows, &evidence),
+            format!("expected validation to reject rows mentioning {fragment}"),
+        );
+        let message = error.to_string();
+        assert!(message.contains(fragment), "error {message:?} did not mention {fragment:?}");
     }
 
     // ---- corpus extraction ------------------------------------------------
@@ -1755,7 +1752,10 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     #[test]
     fn committed_rows_validate_against_the_committed_corpus() {
         let evidence = real_evidence();
-        validate(ROWS, &evidence).expect("committed rows must be backed by the committed corpus");
+        must_with(
+            validate(ROWS, &evidence),
+            "committed rows must be backed by the committed corpus",
+        );
     }
 
     #[test]
@@ -1780,12 +1780,13 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             .filter(|row| row.layer == Layer::StructuredArgv)
             .any(|row| row.status.is_earned());
         for adapter in REQUIRED_SHELL_ADAPTERS {
-            let row = ROWS
-                .iter()
-                .find(|row| row.layer == Layer::ShellAdapters && row.subject == *adapter)
-                .expect("adapter row present");
+            let row = must_some_with(
+                ROWS.iter()
+                    .find(|row| row.layer == Layer::ShellAdapters && row.subject == *adapter),
+                "adapter row present",
+            );
             assert!(
-                !(row.status.is_earned() && !argv_earned),
+                !row.status.is_earned() || argv_earned,
                 "{adapter} cannot be earned while structured-argv decoding is not"
             );
         }
@@ -1876,14 +1877,13 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "    command_line_oneliner!(ghost_in_mod, \"-e\", \"print 1;\");\n",
             "}\n"
         );
-        match reject_suppressed_modules(disabled_mod) {
-            Ok(()) => panic!("a suppressed module was accepted"),
-            Err(error) => {
-                let message = error.to_string();
-                assert!(message.contains("disabled_fixtures"), "{message}");
-                assert!(message.contains("reachability"), "{message}");
-            }
-        }
+        let error = must_err_with(
+            reject_suppressed_modules(disabled_mod),
+            "a suppressed module was accepted",
+        );
+        let message = error.to_string();
+        assert!(message.contains("disabled_fixtures"), "{message}");
+        assert!(message.contains("reachability"), "{message}");
 
         // A visibility qualifier between the attribute and the keyword must not
         // hide the suppression.
@@ -1899,11 +1899,11 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         }
 
         // An ordinary module declaration is fine; the committed corpus has one.
-        reject_suppressed_modules("mod cpan_test_helpers;\n").expect("plain module accepted");
-        reject_suppressed_modules("pub mod helpers;\n").expect("plain pub module accepted");
-        let root = project_root().expect("project root");
-        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
-        reject_suppressed_modules(&corpus).expect("committed corpus has no suppressed module");
+        must_with(reject_suppressed_modules("mod cpan_test_helpers;\n"), "plain module accepted");
+        must_with(reject_suppressed_modules("pub mod helpers;\n"), "plain pub module accepted");
+        let root = must_with(project_root(), "project root");
+        let corpus = must_with(fs::read_to_string(root.join(CORPUS_PATH)), "corpus readable");
+        must_with(reject_suppressed_modules(&corpus), "committed corpus has no suppressed module");
     }
 
     /// Adding a typed proof target must not slip past the drift rule.
@@ -1912,12 +1912,9 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         let corpus = format!("{CORPUS_SAMPLE}\n#[test]\nfn brand_new_proof_target() {{}}\n");
         let evidence = extract_corpus_evidence(&corpus);
         assert!(evidence.proof_tests.contains("brand_new_proof_target"));
-        match validate(&scaffold(), &evidence) {
-            Ok(()) => panic!("an uncited proof target was accepted"),
-            Err(error) => {
-                assert!(error.to_string().contains("brand_new_proof_target"), "{error}");
-            }
-        }
+        let error =
+            must_err_with(validate(&scaffold(), &evidence), "an uncited proof target was accepted");
+        assert!(error.to_string().contains("brand_new_proof_target"), "{error}");
     }
 
     /// A negative control is cited as a boundary control, never as support, so
@@ -1932,7 +1929,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             }),
             "the negative control should be cited only as a boundary control"
         );
-        validate(ROWS, &evidence).expect("committed rows still validate");
+        must_with(validate(ROWS, &evidence), "committed rows still validate");
     }
 
     /// A cfg-disabled fixture is never compiled, so the corpus command never
@@ -2051,11 +2048,10 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         );
 
         // Citing the phantom is refused by the existing unknown-fixture rule.
-        let mut row = ROWS
-            .iter()
-            .find(|row| row.layer == Layer::ParserBody && row.subject == "-e")
-            .cloned()
-            .expect("the -e row exists");
+        let mut row = must_some_with(
+            ROWS.iter().find(|row| row.layer == Layer::ParserBody && row.subject == "-e").cloned(),
+            "the -e row exists",
+        );
         row.evidence = &["phantom_case"];
         expect_rejected(&scaffold_with(row), "phantom_case");
 
@@ -2101,8 +2097,8 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
 
         // The committed corpus defines its fixture macro this way and still
         // yields every real invocation that follows it.
-        let root = project_root().expect("project root");
-        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
+        let root = must_with(project_root(), "project root");
+        let corpus = must_with(fs::read_to_string(root.join(CORPUS_PATH)), "corpus readable");
         assert!(corpus.contains("macro_rules! command_line_oneliner"), "corpus shape changed");
         let evidence = extract_corpus_evidence(&corpus);
         assert_eq!(evidence.switch_cases.len(), 20, "{:?}", evidence.switch_cases.keys());
@@ -2149,16 +2145,19 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "#[cfg(feature = \"x\")]\nmod\tdisabled {}\n",
             "#[cfg(feature = \"x\")]\nmod\n    disabled {}\n",
         ] {
-            match reject_suppressed_modules(form) {
-                Ok(()) => panic!("whitespace hid the suppressed module in {form:?}"),
-                Err(error) => assert!(error.to_string().contains("disabled"), "{error}"),
-            }
+            let error = must_err_with(
+                reject_suppressed_modules(form),
+                format!("whitespace hid the suppressed module in {form:?}"),
+            );
+            assert!(error.to_string().contains("disabled"), "{error}");
         }
 
         // A token match must not fire on an identifier that merely contains it.
         for form in ["#[cfg(feature = \"x\")]\nfn modify() {}\n", "let commodity = 1;\n"] {
-            reject_suppressed_modules(form)
-                .unwrap_or_else(|error| panic!("`mod` matched inside a word in {form:?}: {error}"));
+            must_with(
+                reject_suppressed_modules(form),
+                format!("`mod` matched inside a word in {form:?}"),
+            );
         }
     }
 
@@ -2197,18 +2196,18 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         );
 
         // …and the refusal must still name the module, not an empty string.
-        match reject_suppressed_modules("#[cfg(feature = \"x\")]\nmod /* c */ disabled {}\n") {
-            Ok(()) => panic!("a comment hid the suppressed module"),
-            Err(error) => assert!(
-                error.to_string().contains("`disabled`"),
-                "refusal did not name the module: {error}"
-            ),
-        }
+        let error = must_err_with(
+            reject_suppressed_modules("#[cfg(feature = \"x\")]\nmod /* c */ disabled {}\n"),
+            "a comment hid the suppressed module",
+        );
+        assert!(
+            error.to_string().contains("`disabled`"),
+            "refusal did not name the module: {error}"
+        );
 
         // Identifiers that merely contain a scanned literal stay untouched.
         for form in ["fn modify() {}\n", "let commodity = 1;\n"] {
-            reject_suppressed_modules(form)
-                .unwrap_or_else(|error| panic!("`mod` matched inside a word: {error}"));
+            must_with(reject_suppressed_modules(form), "`mod` matched inside a word");
         }
     }
 
@@ -2299,7 +2298,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         ] {
             let blanked = blank_non_code(source, &code_mask(source));
             assert_eq!(blanked.len(), source.len(), "offsets shifted for {source:?}");
-            let keyword = source.find("mod ").expect("keyword present");
+            let keyword = must_some_with(source.find("mod "), "keyword present");
             assert_eq!(
                 blanked.get(keyword..keyword + 4),
                 Some("mod "),
@@ -2596,10 +2595,11 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
 
         let mut row = base_row();
         row.evidence = &["ghost_case"];
-        match validate(&scaffold_with(row), &evidence) {
-            Ok(()) => panic!("a commented-out fixture earned support"),
-            Err(error) => assert!(error.to_string().contains("does not exist")),
-        }
+        let error = must_err_with(
+            validate(&scaffold_with(row), &evidence),
+            "a commented-out fixture earned support",
+        );
+        assert!(error.to_string().contains("does not exist"));
     }
 
     /// Code context must not be over-trimmed: the live corpus still resolves,

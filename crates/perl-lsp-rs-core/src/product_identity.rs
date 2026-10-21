@@ -182,6 +182,54 @@ pub enum IdentityOutputFormat {
     Json,
 }
 
+/// One-shot identity flag spelling.
+pub const IDENTITY_FLAG: &str = "--identity";
+/// JSON spelling of the one-shot identity flag.
+pub const IDENTITY_JSON_FLAG: &str = "--identity-json";
+
+/// How a command line requests the one-shot binary identity surface.
+///
+/// The surface is resolved before the ordinary CLI parser so a one-shot query
+/// never reaches a server or DAP session. Resolving it here — rather than
+/// letting an unparsed flag fall through to the parser — is also what keeps a
+/// rejected mix from being reported as an unknown option.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IdentityRequest {
+    /// No one-shot identity request is present; use the ordinary CLI parser.
+    None,
+    /// A supported one-shot identity output was requested.
+    Output(IdentityOutputFormat),
+    /// An identity surface was requested alongside other flags.
+    MixedOperands {
+        /// The identity spelling that cannot be honored in this position.
+        flag: String,
+    },
+}
+
+impl IdentityRequest {
+    /// Operator-facing message for a rejected one-shot identity mix.
+    ///
+    /// Returns `None` for a satisfied or absent identity request, so a caller
+    /// can reject a mix before falling through to the ordinary parser.
+    #[must_use]
+    pub fn rejection_message(&self) -> Option<String> {
+        self.rejection_message_for("perllsp")
+    }
+
+    /// The same message naming the rejecting binary, so `perl-dap` and other
+    /// consumers point at their own help instead of `perllsp --help`.
+    #[must_use]
+    pub fn rejection_message_for(&self, binary: &str) -> Option<String> {
+        match self {
+            Self::MixedOperands { flag } => Some(format!(
+                "`{flag}` is a one-shot identity query and must be the only argument.\n\
+                 Drop the other flags, or run `{binary} --help` for the supported identity forms."
+            )),
+            Self::None | Self::Output(_) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct NormalizedIdentityInput {
     input: BinaryIdentityInput,
@@ -323,20 +371,60 @@ impl BinaryIdentityPacketV1 {
 ///
 /// Mixed identity and operational arguments are deliberately rejected so a
 /// one-shot query cannot silently replace a requested server or DAP session.
+/// The rejection is reported rather than inferred: a mix that fell through to
+/// the ordinary parser would either deny a real flag as unknown, or answer a
+/// requested JSON packet with human text.
 #[must_use]
-pub fn requested_identity_output(args: &[String]) -> Option<IdentityOutputFormat> {
+pub fn requested_identity(args: &[String]) -> IdentityRequest {
     let operands = args.get(1..).unwrap_or_default();
+
+    // A one-shot form is honored only when it is the *entire* command line, so
+    // the match reads the full operand list. Classifying a shortened prefix
+    // instead would answer `perllsp --identity -- file.pm` as a clean query
+    // while silently dropping the file the caller also asked about.
     match operands {
-        [flag] if flag == "--identity" => Some(IdentityOutputFormat::Human),
-        [flag] if flag == "--identity-json" => Some(IdentityOutputFormat::Json),
+        [flag] if flag == IDENTITY_FLAG => IdentityRequest::Output(IdentityOutputFormat::Human),
+        [flag] if flag == IDENTITY_JSON_FLAG => IdentityRequest::Output(IdentityOutputFormat::Json),
         [first, second]
             if (first == "--info" && second == "--json")
                 || (first == "--json" && second == "--info") =>
         {
-            Some(IdentityOutputFormat::Json)
+            IdentityRequest::Output(IdentityOutputFormat::Json)
         }
-        _ => None,
+        _ => rejected_mixed_identity(operands),
     }
+}
+
+/// Name the identity surface that a mixed command line cannot honor.
+fn rejected_mixed_identity(operands: &[String]) -> IdentityRequest {
+    // Operands past a bare `--` are positional file paths, not flags, so
+    // `perllsp --check -- --identity` names a file and must not be read as a
+    // request for the identity surface. The terminator bounds only what may be
+    // read as a flag; the operands still counted as extras above.
+    let flag_region = match operands.iter().position(|token| token == "--") {
+        Some(terminator) => &operands[..terminator],
+        None => operands,
+    };
+
+    // The one-shot identity flags are this binary's own spellings, so finding
+    // one anywhere in the flag region is a mix whatever else is present —
+    // including the value half of a value-taking flag such as `--port 9257`.
+    if let Some(flag) =
+        flag_region.iter().find(|token| *token == IDENTITY_FLAG || *token == IDENTITY_JSON_FLAG)
+    {
+        return IdentityRequest::MixedOperands { flag: flag.clone() };
+    }
+
+    // `--json` on its own is the `--doctor` output switch, so the composed form
+    // only conflicts when `--info` is present too. Every other operand then
+    // makes it a mix, including the value of a value-taking option: answering
+    // `perllsp --info --json --feature-profile prod` with the human `--info`
+    // projection is the silent substitution this surface must not perform.
+    if flag_region.contains(&"--info".to_owned()) && flag_region.contains(&"--json".to_owned()) {
+        return IdentityRequest::MixedOperands { flag: "--info --json".to_owned() };
+    }
+
+    IdentityRequest::None
 }
 
 fn embedded_build_input() -> BinaryIdentityInput {
@@ -601,8 +689,10 @@ fn artifact_identity_name(packet: &BinaryIdentityPacketV1) -> &'static str {
 mod tests {
     use super::{
         ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1, BinaryRole, BuildIdentityState,
-        IdentityOutputFormat, requested_identity_output,
+        IDENTITY_FLAG, IDENTITY_JSON_FLAG, IdentityOutputFormat, IdentityRequest,
+        requested_identity,
     };
+    use perl_tdd_support::must_some_with;
 
     fn revision(character: char) -> String {
         character.to_string().repeat(40)
@@ -794,14 +884,14 @@ mod tests {
         let ordinary = vec!["perllsp".to_owned(), "--info".to_owned()];
         let json = vec!["perllsp".to_owned(), "--info".to_owned(), "--json".to_owned()];
         let reversed_json = vec!["perllsp".to_owned(), "--json".to_owned(), "--info".to_owned()];
-        let human = vec!["perllsp".to_owned(), "--identity".to_owned()];
+        let human = vec!["perllsp".to_owned(), IDENTITY_FLAG.to_owned()];
         let mixed_server =
-            vec!["perllsp".to_owned(), "--stdio".to_owned(), "--identity".to_owned()];
+            vec!["perllsp".to_owned(), "--stdio".to_owned(), IDENTITY_FLAG.to_owned()];
         let terminated = vec![
             "perllsp".to_owned(),
             "--check".to_owned(),
             "--".to_owned(),
-            "--identity".to_owned(),
+            IDENTITY_FLAG.to_owned(),
         ];
         let mixed_dap = vec![
             "perl-dap".to_owned(),
@@ -811,12 +901,198 @@ mod tests {
             "--json".to_owned(),
         ];
 
-        assert_eq!(requested_identity_output(&ordinary), None);
-        assert_eq!(requested_identity_output(&json), Some(IdentityOutputFormat::Json));
-        assert_eq!(requested_identity_output(&reversed_json), Some(IdentityOutputFormat::Json));
-        assert_eq!(requested_identity_output(&human), Some(IdentityOutputFormat::Human));
-        assert_eq!(requested_identity_output(&mixed_server), None);
-        assert_eq!(requested_identity_output(&terminated), None);
-        assert_eq!(requested_identity_output(&mixed_dap), None);
+        assert_eq!(requested_identity(&ordinary), IdentityRequest::None);
+        assert_eq!(requested_identity(&json), IdentityRequest::Output(IdentityOutputFormat::Json));
+        assert_eq!(
+            requested_identity(&reversed_json),
+            IdentityRequest::Output(IdentityOutputFormat::Json)
+        );
+        assert_eq!(
+            requested_identity(&human),
+            IdentityRequest::Output(IdentityOutputFormat::Human)
+        );
+        // A mix is reported to the caller rather than captured: the one-shot
+        // surface must not answer a command line that also asked for a server.
+        assert_eq!(
+            requested_identity(&mixed_server),
+            IdentityRequest::MixedOperands { flag: IDENTITY_FLAG.to_owned() }
+        );
+        assert_eq!(requested_identity(&terminated), IdentityRequest::None);
+        // `perl-dap` has no `--info` option at all, so this shape is already
+        // invalid for that binary; the resolver now rejects it with the mix
+        // message instead of letting clap report the unknown flag. Either way
+        // no session starts, and the rejection is the more specific message.
+        assert_eq!(
+            requested_identity(&mixed_dap),
+            IdentityRequest::MixedOperands { flag: "--info --json".to_owned() }
+        );
+    }
+
+    /// A near-miss must not deny that a real, supported flag exists.
+    #[test]
+    fn a_mixed_identity_flag_is_rejected_instead_of_denying_the_flag_exists() {
+        for extra in [vec!["--log"], vec!["--stdio"], vec!["--port", "9257"], vec!["out.json"]] {
+            let mut args = vec!["perllsp".to_owned()];
+            args.extend(extra.iter().map(|token| (*token).to_owned()));
+            args.push(IDENTITY_FLAG.to_owned());
+            let request = requested_identity(&args);
+
+            assert_eq!(
+                request,
+                IdentityRequest::MixedOperands { flag: IDENTITY_FLAG.to_owned() },
+                "{extra:?} must be reported as a rejection, not fall through to the parser"
+            );
+
+            let message =
+                must_some_with(request.rejection_message(), "a rejected mix must explain");
+            assert!(message.contains(IDENTITY_FLAG), "message drops the flag: {message}");
+            assert!(
+                !message.to_lowercase().contains("unknown option"),
+                "message denies a supported flag exists: {message}"
+            );
+        }
+    }
+
+    /// `--info --json` only names the JSON packet when it is the whole command
+    /// line. A third operand must not downgrade a requested JSON answer to the
+    /// human `--info` projection.
+    #[test]
+    fn a_json_identity_request_with_a_third_operand_is_rejected_not_downgraded() {
+        for extra in ["--log", "--quiet", "--feature-profile=prod"] {
+            for prefix in [vec!["--info", "--json"], vec!["--json", "--info"]] {
+                let mut args = vec!["perllsp".to_owned()];
+                args.extend(prefix.iter().map(|flag| (*flag).to_owned()));
+                args.push(extra.to_owned());
+
+                let request = requested_identity(&args);
+                assert_eq!(
+                    request,
+                    IdentityRequest::MixedOperands { flag: "--info --json".to_owned() },
+                    "{:?} must be rejected",
+                    &args[1..]
+                );
+                assert!(request.rejection_message().is_some());
+            }
+        }
+    }
+
+    /// A binary that is not `perllsp` must point operators at its own help,
+    /// not at the server binary's help surface.
+    #[test]
+    fn rejection_message_names_the_rejecting_binary_for_other_consumers() {
+        let request = IdentityRequest::MixedOperands { flag: IDENTITY_FLAG.to_owned() };
+
+        let perllsp_message =
+            must_some_with(request.rejection_message(), "a rejected mix must explain");
+        assert!(
+            perllsp_message.contains("perllsp --help"),
+            "default pointer must stay perllsp: {perllsp_message}"
+        );
+
+        let dap_message = must_some_with(
+            request.rejection_message_for("perl-dap"),
+            "a rejected mix must explain",
+        );
+        assert!(
+            dap_message.contains("perl-dap --help"),
+            "DAP pointer must name perl-dap: {dap_message}"
+        );
+        assert!(
+            !dap_message.contains("perllsp"),
+            "DAP pointer must not send operators to the server help: {dap_message}"
+        );
+    }
+
+    /// Controls for the two rejection arms: neither may fire on a command line
+    /// that never asked for the one-shot identity surface.
+    #[test]
+    fn a_non_identity_command_line_is_never_rejected_as_a_mix() {
+        let controls = [
+            vec!["perllsp", "--doctor", "--json"],
+            vec!["perllsp", "--json", "--doctor"],
+            vec!["perllsp", "--json"],
+            vec!["perllsp", "--info"],
+            vec!["perllsp", "--log"],
+            vec!["perllsp", "--doctor", "--external-tools"],
+            vec!["perllsp", "--check", "--identity.pm"],
+            vec!["perllsp", "--check", "--", "--identity-json"],
+            vec!["perllsp", "--stdio", "--port", "9257"],
+        ];
+
+        for control in controls {
+            let args: Vec<String> = control.iter().map(|token| (*token).to_owned()).collect();
+            assert_eq!(
+                requested_identity(&args),
+                IdentityRequest::None,
+                "{control:?} must reach the ordinary parser"
+            );
+        }
+    }
+
+    /// A one-shot form is honored only when it is the whole command line, so
+    /// extra operands after a terminator are still extras.
+    #[test]
+    fn extra_operands_after_a_terminator_still_break_a_one_shot_form() {
+        for prefix in [
+            vec![IDENTITY_FLAG.to_owned()],
+            vec![IDENTITY_JSON_FLAG.to_owned()],
+            vec!["--info".to_owned(), "--json".to_owned()],
+        ] {
+            let mut args = vec!["perllsp".to_owned()];
+            args.extend(prefix.iter().cloned());
+            args.push("--".to_owned());
+            args.push("lib/MyModule.pm".to_owned());
+
+            assert_eq!(
+                requested_identity(&args),
+                IdentityRequest::MixedOperands {
+                    flag: if prefix.len() == 1 {
+                        prefix[0].clone()
+                    } else {
+                        "--info --json".to_owned()
+                    }
+                },
+                "{prefix:?} plus a trailing file must be rejected, not answered as a clean query"
+            );
+        }
+    }
+
+    /// The composed form must not be answered with the human `--info`
+    /// projection when a value-taking option is also present.
+    #[test]
+    fn a_valued_option_beside_the_composed_form_is_rejected_not_downgraded() {
+        for valued in [
+            vec!["--feature-profile", "prod"],
+            vec!["--port", "9257"],
+            vec!["--completion", "bash"],
+            vec!["--ripr-root", "."],
+            vec!["--runtime-mode", "e2e"],
+            vec!["prod"],
+        ] {
+            for prefix in [vec!["--info", "--json"], vec!["--json", "--info"]] {
+                let mut args = vec!["perllsp".to_owned()];
+                args.extend(prefix.iter().map(|flag| (*flag).to_owned()));
+                args.extend(valued.iter().map(|token| (*token).to_owned()));
+
+                assert_eq!(
+                    requested_identity(&args),
+                    IdentityRequest::MixedOperands { flag: "--info --json".to_owned() },
+                    "{valued:?} must be rejected, not answered with human --info"
+                );
+            }
+        }
+    }
+
+    /// A satisfied or absent request has nothing to reject.
+    #[test]
+    fn only_a_rejected_mix_carries_a_message() {
+        assert!(
+            IdentityRequest::None.rejection_message().is_none(),
+            "an absent request has nothing to reject"
+        );
+        assert!(
+            IdentityRequest::Output(IdentityOutputFormat::Json).rejection_message().is_none(),
+            "a satisfied request has nothing to reject"
+        );
     }
 }

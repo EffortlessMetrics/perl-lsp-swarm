@@ -327,6 +327,18 @@
       "exit_condition": "Remain a test-serialization dependency confined to parser test targets."
     },
     {
+      "name": "static_assertions",
+      "classification": "test_dev_only",
+      "disposition": "retain",
+      "owner": "#13774",
+      "target_owner": "perl-parser",
+      "contexts": [
+        "dev"
+      ],
+      "optional": false,
+      "exit_condition": "Remain a compile-time trait-bound assertion macro confined to parser test targets."
+    },
+    {
       "name": "tempfile",
       "classification": "test_dev_only",
       "disposition": "retain",

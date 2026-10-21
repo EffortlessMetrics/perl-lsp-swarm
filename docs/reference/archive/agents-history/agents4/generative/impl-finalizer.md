@@ -195,7 +195,7 @@ lint: cargo clippy --workspace: 0 warnings
   - Update Decision: `State: needs-rework, Why: <specific errors>, Next: NEXT → impl-creator`
 
 **Quality Assurance:**
-- Always run commands from the Perl LSP workspace root (`/home/steven/code/Rust/perl-lsp`)
+- Always run commands from the Perl LSP workspace root (`$REPO_ROOT`)
 - Capture and analyze command outputs thoroughly, focusing on Perl LSP-specific patterns
 - Never skip verification steps, maintaining parser and LSP reliability standards
 - Document all actions taken in commit messages using Perl LSP prefixes (`feat:`, `fix:`, `test:`, `build:`, `perf:`)

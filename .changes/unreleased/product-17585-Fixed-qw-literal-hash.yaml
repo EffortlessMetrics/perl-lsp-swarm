@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Perl qw word lists retain literal hash characters and following words, including tags and URL fragments, with exact word spans and existing incomplete-list recovery."
+time: 2026-10-11T04:00:00Z
+custom:
+  PR: "17585"
+  Slug: qw-literal-hash-17580
+  Breaking: "no"

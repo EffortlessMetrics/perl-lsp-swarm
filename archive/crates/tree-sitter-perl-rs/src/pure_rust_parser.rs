@@ -4,6 +4,7 @@
 //! using Pest for grammar parsing, without any dependency on tree-sitter's C code.
 
 use crate::error::ParseError;
+use crate::heredoc::{HeredocQueue, HeredocRemoval, HeredocScan};
 use crate::outcome::{ParserFailure, StrictParseError};
 use crate::pratt_parser::PrattParser;
 use pest::{
@@ -376,6 +377,59 @@ impl NormalizationMap {
             (offset as isize - shift).max(0) as usize
         })
     }
+
+    /// Carry an offset in this map's input text forward into the normalized
+    /// text.
+    ///
+    /// Returns `None` when the offset lands inside a span some pass rewrote:
+    /// those bytes have no single forward image, and a caller that needs an
+    /// exact identity — the heredoc queue, which would otherwise fall back to
+    /// matching on marker text and let a phantom opener take a later body —
+    /// must fail closed rather than guess.
+    fn to_normalized_offset(&self, input_offset: usize) -> Option<usize> {
+        self.passes.iter().try_fold(input_offset, |offset, edits| {
+            let mut shift: isize = 0;
+            for edit in edits {
+                if offset < edit.input_start {
+                    break;
+                }
+                if offset < edit.input_end {
+                    return None;
+                }
+                shift += (edit.output_end - edit.output_start) as isize
+                    - (edit.input_end - edit.input_start) as isize;
+            }
+            usize::try_from(offset as isize + shift).ok()
+        })
+    }
+
+    /// A map with the heredoc pre-pass's body removals prepended as its first
+    /// pass.
+    ///
+    /// The normalization passes run over the body-stripped text, so on their
+    /// own they resolve an offset only as far back as that intermediate text.
+    /// Each removal is an edit whose output is empty, which lets
+    /// [`Self::to_source_offset`] keep folding back into the caller's own
+    /// source in one pass rather than needing a second coordinate system.
+    fn behind_removals(&self, removals: &[HeredocRemoval]) -> Self {
+        if removals.is_empty() {
+            return self.clone();
+        }
+        let mut passes = Vec::with_capacity(self.passes.len() + 1);
+        passes.push(
+            removals
+                .iter()
+                .map(|removal| RewriteEdit {
+                    input_start: removal.source_start,
+                    input_end: removal.source_end,
+                    output_start: removal.stripped_at,
+                    output_end: removal.stripped_at,
+                })
+                .collect(),
+        );
+        passes.extend(self.passes.iter().cloned());
+        Self { passes }
+    }
 }
 
 /// Apply `regex` to `input`, rendering each match with `render`, and record the
@@ -412,11 +466,33 @@ fn rewrite_tracking_offsets(
 /// Pure Rust Perl parser implementation
 pub struct PureRustPerlParser {
     _pratt_parser: PrattParser,
+    /// Bodies owned by the heredoc pre-pass, awaiting attachment (#8220).
+    heredocs: HeredocQueue,
+    /// Whether Pest's spans are offsets into the scanner's stripped text, so a
+    /// queued capture can be identified by position rather than marker alone.
+    heredoc_offsets_exact: bool,
+    /// Offset added to a pair's span to recover whole-source coordinates.
+    ///
+    /// Zero on the whole-source parse; set per fragment during recovery.
+    heredoc_span_base: usize,
+    /// Heredoc openers the grammar produced during the last parse.
+    ///
+    /// The scanner and the grammar decide independently which `<<` is an
+    /// opener. Counting the grammar's decisions makes a disagreement visible
+    /// instead of silent: without it, an opener the scanner never recognized
+    /// creates no capture, so nothing could report the body it failed to own.
+    heredoc_nodes_built: usize,
 }
 
 impl PureRustPerlParser {
     pub fn new() -> Self {
-        Self { _pratt_parser: PrattParser::new() }
+        Self {
+            _pratt_parser: PrattParser::new(),
+            heredocs: HeredocQueue::default(),
+            heredoc_offsets_exact: false,
+            heredoc_span_base: 0,
+            heredoc_nodes_built: 0,
+        }
     }
 
     /// Parse `source` into an [`AstNode`].
@@ -429,19 +505,69 @@ impl PureRustPerlParser {
     /// [`StrictParseError`] documents.
     #[inline(always)]
     pub fn parse(&mut self, source: &str) -> Result<AstNode, ParseError> {
-        let (normalized, normalization) = Self::normalize_source_mapped(source);
+        let scan = crate::heredoc::scan(source);
+        self.parse_scanned(&scan, source)
+    }
+
+    /// Parse the body-stripped text of `scan`, attaching its captured bodies.
+    ///
+    /// Heredoc bodies are removed before normalization so that neither
+    /// `normalize_source` nor the grammar re-reads body text as Perl code, and
+    /// so following code resumes at the line after the terminator (#8220).
+    ///
+    /// `caller_source` is the text the caller passed in, before any body was
+    /// removed. Normalization now runs over the *stripped* text, so its map
+    /// alone would resolve a Pest offset only as far back as that intermediate
+    /// text. Prepending the scan's removals as the map's first pass carries the
+    /// offset the rest of the way, keeping the guarantee `error.rs` documents:
+    /// a reported range is an offset into the caller's own source.
+    pub(crate) fn parse_scanned(
+        &mut self,
+        scan: &HeredocScan,
+        caller_source: &str,
+    ) -> Result<AstNode, ParseError> {
+        let (normalized, stripped_normalization) = Self::normalize_source_mapped(scan.stripped());
+        // The scanner records opener offsets into the *stripped* text, but Pest
+        // parses the normalized text. Carrying them through the rewrites keeps a
+        // usable identity for every capture; if any offset cannot be carried the
+        // queue reports it and attachment fails closed rather than guessing by
+        // marker text, which would let a phantom opener take a later body.
+        self.heredocs = HeredocQueue::from_scan_translated(scan, |at| {
+            stripped_normalization.to_normalized_offset(at)
+        });
+        self.heredoc_nodes_built = 0;
+        self.heredoc_offsets_exact = self.heredocs.offsets_are_usable();
+        self.heredoc_span_base = 0;
+        let normalization = stripped_normalization.behind_removals(scan.removals());
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
             Err(e) => {
-                // Attempt partial parsing by trying to parse individual statements
-                self.parse_with_recovery(&normalized, source, &normalization, e)
+                // Recovery parses fragments, whose spans are fragment-relative;
+                // `parse_with_recovery` sets a per-fragment base so they can
+                // still be carried back to whole-source coordinates.
+                self.parse_with_recovery(&normalized, caller_source, &normalization, e)
             }
         }
     }
 
+    /// Captured heredoc bodies no opener node claimed during the last parse.
+    pub(crate) fn queued_heredoc_bodies(&self) -> usize {
+        self.heredocs.remaining()
+    }
+
+    /// Heredoc openers the grammar produced during the last parse.
+    pub(crate) const fn heredoc_nodes_built(&self) -> usize {
+        self.heredoc_nodes_built
+    }
+
     /// Normalize `source` and retain enough information to translate a byte
     /// offset in the normalized text back to the equivalent offset in `source`.
+    ///
+    /// The map runs both ways: the error path unwinds a Pest offset back to the
+    /// caller's text, and the heredoc pre-pass carries an opener offset forward
+    /// into the coordinate system Pest actually reports, so a capture keeps a
+    /// usable identity instead of falling back to matching on marker text alone.
     fn normalize_source_mapped(source: &str) -> (String, NormalizationMap) {
         static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
             LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
@@ -484,15 +610,24 @@ impl PureRustPerlParser {
     ) -> Result<AstNode, ParseError> {
         let source = normalized;
         let mut statements = Vec::new();
-        let lines: Vec<&str> = source.lines().collect();
         let mut current_block = String::new();
         let mut brace_count: i32 = 0;
         let mut in_single_quote = false;
         let mut in_double_quote = false;
+        // Offsets into `source` so each fragment's Pest spans can be carried
+        // back to whole-source coordinates. `split_inclusive` keeps each line's
+        // terminator, so `current_block` is byte-identical to the slice of
+        // `source` it came from — `lines()` would drop `\r` and silently skew
+        // every offset on CRLF input.
+        let mut cursor = 0usize;
+        let mut block_start = 0usize;
 
-        for line in lines {
+        for line in source.split_inclusive('\n') {
+            if current_block.is_empty() {
+                block_start = cursor;
+            }
             current_block.push_str(line);
-            current_block.push('\n');
+            cursor += line.len();
 
             // Count braces outside of string literals (state persists across lines)
             {
@@ -528,6 +663,13 @@ impl PureRustPerlParser {
                     } else {
                         trimmed.to_string()
                     };
+
+                    // `with_semi` starts at the trimmed block, so a pair span
+                    // plus this base is a whole-source offset again. Any `;`
+                    // appended above sits past the end and carries no opener.
+                    let leading =
+                        current_block.len().saturating_sub(current_block.trim_start().len());
+                    self.heredoc_span_base = block_start.saturating_add(leading);
 
                     if let Ok(pairs) =
                         <PerlParser as Parser<Rule>>::parse(Rule::statements, &with_semi)
@@ -1469,6 +1611,9 @@ impl PureRustPerlParser {
                 Ok(Some(AstNode::String(Arc::from(pair.as_str()))))
             }
             Rule::heredoc => {
+                // The `heredoc` rule starts at the `<<`, which is the same
+                // coordinate the scanner recorded for its capture.
+                let opener_start = pair.as_span().start().saturating_add(self.heredoc_span_base);
                 let inner = pair.into_inner();
                 let mut indented = false;
                 let mut marker = Arc::from("");
@@ -1510,15 +1655,23 @@ impl PureRustPerlParser {
                     }
                 }
 
-                // Note: In a real implementation, we would need to collect the heredoc content
-                // from subsequent lines until we find the marker. For now, we just create
-                // a placeholder.
-                Ok(Some(AstNode::Heredoc {
-                    marker,
-                    indented,
-                    quoted,
-                    content: Arc::from(""), // This would be filled by a stateful parser
-                }))
+                // The body was removed from the parsed text by the heredoc
+                // pre-pass (#8220) and is attached here. The queued capture's
+                // marker must match, and where Pest's spans are still stripped
+                // -text offsets its position must match too — otherwise a
+                // grammar opener the scanner did not own can claim a later
+                // capture that repeats its marker, leaving the real heredoc
+                // empty. Where the coordinates do not survive (normalization
+                // rewrote the text, or recovery parsed fragments) the marker
+                // alone decides, and `parse_heredoc_outcome` still reports the
+                // disagreement rather than passing it off as clean. An empty
+                // content therefore means an empty body, an unowned opener, or
+                // a direct `build_node` call by a bridge consumer.
+                self.heredoc_nodes_built = self.heredoc_nodes_built.saturating_add(1);
+                let at = self.heredoc_offsets_exact.then_some(opener_start);
+                let content =
+                    self.heredocs.take(&marker, at).map_or_else(|| Arc::from(""), Arc::from);
+                Ok(Some(AstNode::Heredoc { marker, indented, quoted, content }))
             }
             Rule::list => {
                 let mut elements = Vec::new();
@@ -3066,5 +3219,93 @@ mod tests {
             "expected hash assignment; got: {sexp}"
         );
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Offset translation (#8220). `NormalizationMap` is the single authority
+    // for rewrite spans and runs both ways: back to the caller's source for
+    // error ranges, forward into Pest's coordinates for heredoc openers. The
+    // integration tests cover the composed behaviour through `parse()`; these
+    // rows pin the map's own branches, including the fail-closed one that no
+    // real source reaches.
+    // -----------------------------------------------------------------------
+
+    /// A one-pass map replacing `input_start..input_end` with a span of
+    /// `output_len` bytes at the same start.
+    fn one_pass_map(input_start: usize, input_end: usize, output_len: usize) -> NormalizationMap {
+        NormalizationMap {
+            passes: vec![vec![RewriteEdit {
+                input_start,
+                input_end,
+                output_start: input_start,
+                output_end: input_start + output_len,
+            }]],
+        }
+    }
+
+    #[test]
+    fn identity_map_translates_every_offset_to_itself_in_both_directions() {
+        let map = NormalizationMap::identity();
+        for offset in [0_usize, 1, 17, 4096] {
+            assert_eq!(map.to_source_offset(offset), offset);
+            assert_eq!(map.to_normalized_offset(offset), Some(offset));
+        }
+    }
+
+    #[test]
+    fn forward_translation_shifts_offsets_after_a_rewrite_and_leaves_earlier_ones() {
+        // `$$name` (6 bytes at 4..10) becomes `${$name}` (8 bytes): everything
+        // after it moves by two, everything before it does not move at all.
+        let map = one_pass_map(4, 10, 8);
+        assert_eq!(map.to_normalized_offset(0), Some(0), "an offset before the rewrite is fixed");
+        assert_eq!(map.to_normalized_offset(3), Some(3));
+        assert_eq!(map.to_normalized_offset(10), Some(12), "the byte after it shifts by two");
+        assert_eq!(map.to_normalized_offset(14), Some(16));
+    }
+
+    #[test]
+    fn forward_translation_fails_closed_inside_a_rewritten_span() {
+        // Bytes inside the replaced span have no single forward image, and
+        // that includes the span's own first byte: it is the start of text
+        // that no longer exists, not a boundary. The heredoc queue depends on
+        // `None` here rather than a plausible-looking offset, because a wrong
+        // opener identity hands a body to the wrong node. No real opener lands
+        // here — neither normalization pattern can match text containing `<<`
+        // — so this is the fail-closed branch, asserted rather than assumed.
+        let map = one_pass_map(4, 10, 8);
+        assert_eq!(map.to_normalized_offset(4), None, "the replaced span's start is inside it");
+        assert_eq!(map.to_normalized_offset(5), None);
+        assert_eq!(map.to_normalized_offset(9), None, "the last replaced byte is inside it");
+    }
+
+    #[test]
+    fn behind_removals_is_a_no_op_when_the_scan_removed_nothing() {
+        // Source with no heredoc: the composed map must behave exactly like
+        // the normalization map alone, or every ordinary parse would report
+        // shifted ranges.
+        let map = one_pass_map(0, 6, 8);
+        let composed = map.behind_removals(&[]);
+        for offset in [0_usize, 8, 12, 99] {
+            assert_eq!(composed.to_source_offset(offset), map.to_source_offset(offset));
+        }
+    }
+
+    #[test]
+    fn behind_removals_adds_back_every_removed_body_before_the_offset() {
+        // Two bodies removed at the same stripped position, as two openers on
+        // one line produce. An offset after them must gain the total removed
+        // length; one before them must not move.
+        let removals = [
+            HeredocRemoval { source_start: 10, source_end: 30, stripped_at: 10 },
+            HeredocRemoval { source_start: 30, source_end: 45, stripped_at: 10 },
+        ];
+        let composed = NormalizationMap::identity().behind_removals(&removals);
+        assert_eq!(composed.to_source_offset(5), 5, "an offset before the removals does not move");
+        assert_eq!(
+            composed.to_source_offset(10),
+            45,
+            "an offset at the removal point resumes after both removed bodies"
+        );
+        assert_eq!(composed.to_source_offset(12), 47);
     }
 }

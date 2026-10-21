@@ -1,6 +1,8 @@
 # Runtime dependencies for release_topology.v1 schema validation.
 # Keep every version pinned: these requirements are installed by every
 # workflow that invokes scripts/generate_release_topology.py (Python >=3.11).
+# Also the pinned source of jsonschema for the Draft 2020-12 schema proof
+# in scripts/tests/test_domain6_fragment.py (installed by ci-release-history).
 jsonschema==4.26.0
 attrs==26.1.0
 jsonschema-specifications==2025.9.1

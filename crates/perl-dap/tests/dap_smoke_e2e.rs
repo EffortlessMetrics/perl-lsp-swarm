@@ -95,6 +95,10 @@ print "$x\n";
     let mut adapter = DebugAdapter::new();
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
+    // The smoke path exercises end-to-end debugging, not the launch-authority
+    // contract; without an installed authority the launch below is refused
+    // before it reaches the interpreter (#8656).
+    common::install_unbounded_test_authority(&adapter);
 
     let init_body = response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
     let capabilities = init_body.ok_or("initialize response missing capability body")?;

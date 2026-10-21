@@ -182,7 +182,10 @@ pub struct FieldId(&'static str);
 macro_rules! define_field_ids {
     ($(($constant:ident, $name:literal)),+ $(,)?) => {
         impl FieldId {
-            $(pub const $constant: Self = Self($name);)+
+            $(
+                #[doc = concat!("Field identifier for the canonical name `", $name, "`")]
+                pub const $constant: Self = Self($name);
+            )+
 
 /// All field identifiers named by the structural registry.
             ///
@@ -1114,6 +1117,10 @@ pub enum NodeKind {
 
     /// Optional signature parameter with default: `$y = 0` in `sub foo ($y = 0) { }`
     OptionalParameter {
+        /// Exact signature default operator (`=`, `//=`, or `||=`).
+        default_operator: String,
+        /// Source bytes occupied by the consumed default operator.
+        default_operator_span: SourceLocation,
         /// Variable being bound
         variable: Box<Node>,
         /// Default value expression
@@ -1139,6 +1146,8 @@ pub enum NodeKind {
         /// Default-assignment operator when a default is present: `=`, `//=`,
         /// or `||=`. `None` when the parameter has no default.
         default_operator: Option<String>,
+        /// Source bytes of the default operator; absent with no default.
+        default_operator_span: Option<SourceLocation>,
         /// Default value expression, when the parameter is defaulted.
         default_value: Option<Box<Node>>,
         /// True when the parameter has no default (the caller must supply it).
@@ -2131,11 +2140,14 @@ mod tests {
             NodeKind::Signature { parameters: vec![] },
             NodeKind::MandatoryParameter { variable: Box::new(dummy_node()) },
             NodeKind::OptionalParameter {
+                default_operator: "=".into(),
+                default_operator_span: Default::default(),
                 variable: Box::new(dummy_node()),
                 default_value: Box::new(dummy_node()),
             },
             NodeKind::SlurpyParameter { variable: Box::new(dummy_node()) },
             NodeKind::NamedParameter {
+                default_operator_span: None,
                 variable: Box::new(dummy_node()),
                 external_name: String::new(),
                 default_operator: None,

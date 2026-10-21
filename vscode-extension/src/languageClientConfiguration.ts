@@ -196,6 +196,36 @@ function readIncludePaths(config: ConfigurationReader): string[] {
   return configured.filter((value): value is string => typeof value === 'string');
 }
 
+/**
+ * Include paths explicitly set at user/global scope only.
+ *
+ * `inspect()` reports every scope regardless of the resource a configuration
+ * was opened with, so this reads `globalValue` directly — the same
+ * machine-scoped discipline `readExternalIncludePaths` applies. Workspace and
+ * folder values are deliberately invisible here: the unscoped
+ * `workspace/configuration` item feeds the server's session-global layer, so a
+ * folder-scoped value that leaked into it would re-create the "folder A's
+ * settings answer folder B / become session-global" shape #14447 removed
+ * (#17334).
+ */
+function readGlobalIncludePaths(config: ConfigurationReader): string[] | undefined {
+  const inspected = config.inspect?.('includePaths') as
+    | {
+        globalValue?: unknown;
+      }
+    | undefined;
+
+  if (!inspected || inspected.globalValue === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(inspected.globalValue)) {
+    return [...DEFAULT_INCLUDE_PATHS];
+  }
+
+  return inspected.globalValue.filter((value): value is string => typeof value === 'string');
+}
+
 function readExternalIncludePaths(config: ConfigurationReader): string[] | undefined {
   const inspected = config.inspect?.('externalIncludePaths') as
     | {
@@ -242,6 +272,38 @@ export function buildWorkspaceConfigurationPayload(
   return { workspace };
 }
 
+/**
+ * The unscoped `workspace/configuration` answer: user-scoped state only.
+ *
+ * The server's configuration pull asks for one resource-less `perl` item plus
+ * one item per workspace folder. The unscoped item is applied by the server as
+ * a session-global base layer under every folder (see `configurationPull.ts`),
+ * so it must never carry workspace/folder-scoped values — in a single-root
+ * workspace a resource-less `get()` would otherwise resolve the
+ * workspace==folder value and leak it into every session (#17334). Folder
+ * values travel exclusively through the folder-scoped items.
+ */
+export function buildGlobalWorkspaceConfigurationPayload(
+  config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
+): Record<string, unknown> | undefined {
+  const globalIncludePaths = readGlobalIncludePaths(config);
+  const externalIncludePaths = readExternalIncludePaths(config);
+
+  if (globalIncludePaths === undefined && externalIncludePaths === undefined) {
+    return undefined;
+  }
+
+  const workspace: Record<string, unknown> = {};
+  if (globalIncludePaths !== undefined) {
+    workspace.includePaths = globalIncludePaths;
+  }
+  if (externalIncludePaths !== undefined) {
+    workspace.externalIncludePaths = externalIncludePaths;
+  }
+
+  return { workspace };
+}
+
 export function buildPerlCriticConfiguration(
   documentUri?: vscode.Uri,
   severityOverride?: number,
@@ -253,11 +315,16 @@ export function buildPerlCriticConfiguration(
 export function buildLanguageClientConfigurationPayload(
   documentUri?: vscode.Uri,
 ): Record<string, unknown> {
-  const config = vscode.workspace.getConfiguration('perl-lsp', documentUri);
   const perl: Record<string, unknown> = {};
-  const workspace = buildWorkspaceConfigurationPayload(config);
-  if (workspace) {
-    Object.assign(perl, workspace);
+  // No folder exists for a scoped pull in standalone-file mode. Keep its
+  // unscoped settings push, but never apply that value to a registered folder.
+  if (!vscode.workspace.workspaceFolders?.length) {
+    const workspace = buildWorkspaceConfigurationPayload(
+      vscode.workspace.getConfiguration('perl-lsp'),
+    );
+    if (workspace) {
+      Object.assign(perl, workspace);
+    }
   }
   const critic = buildCriticSettings(documentUri);
   if (critic) {
@@ -295,6 +362,31 @@ export async function syncLanguageClientConfiguration(
   }
 
   await activeClient.sendNotification('workspace/didChangeConfiguration', { settings });
+}
+
+/** Invalidate the server's scoped pull without replacing any folder's current layer. */
+export async function invalidateFolderConfiguration(
+  activeClient: Pick<LanguageClient, 'sendNotification'> | undefined,
+): Promise<void> {
+  if (activeClient) {
+    // `settings: {}` is parsed as an unwrapped Perl object by the server and
+    // transiently rebuilds every folder. Null skips that update but still pulls.
+    await activeClient.sendNotification('workspace/didChangeConfiguration', { settings: null });
+  }
+}
+
+/** Route a live change according to the available scoped pull transport. */
+export async function syncLiveLanguageClientConfiguration(
+  activeClient: Pick<LanguageClient, 'sendNotification'> | undefined,
+  event: ConfigurationChangeEventLike,
+): Promise<void> {
+  const includePathsChanged = event.affectsConfiguration('perl-lsp.includePaths');
+  const criticChanged = CRITIC_SETTINGS.some((setting) => event.affectsConfiguration(setting));
+  if (criticChanged || (includePathsChanged && !vscode.workspace.workspaceFolders?.length)) {
+    await syncLanguageClientConfiguration(activeClient);
+  } else if (includePathsChanged) {
+    await invalidateFolderConfiguration(activeClient);
+  }
 }
 
 /// Read the effective machine-scoped boolean for server sync.

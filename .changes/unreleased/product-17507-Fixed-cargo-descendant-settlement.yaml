@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Keep admitted Linux Cargo storage leases until launched descendants settle; refuse execution when required process ownership capabilities are unavailable.
+time: 2026-10-10T07:23:26Z
+custom:
+  PR: "17507"
+  Slug: cargo-descendant-settlement
+  Breaking: "no"
