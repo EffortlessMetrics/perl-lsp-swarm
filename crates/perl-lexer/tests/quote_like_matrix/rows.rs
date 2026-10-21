@@ -1565,16 +1565,34 @@ fn context_rows() -> Vec<MatrixRow> {
             spec(ExpectedKind::Keyword, "sub"),
             spec(ExpectedKind::Identifier, "foo"),
             spec(ExpectedKind::LeftParen, "("),
-            spec(ExpectedKind::Error, "q) { }"),
+            spec(ExpectedKind::Identifier, "q"),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::RightBrace, "}"),
             spec(ExpectedKind::Eof, ""),
         ]),
         NextOrdinary::NoneAtEof,
         TerminalStateClass::ExpectOperator,
-        Disposition::Rejected,
+        Disposition::Clean,
         OracleExpectation::Skip,
-        Some("prototype `q` currently starts an unclosed quote-like Error"),
+        Some("prototype payload is preserved as an identifier for parser validation (#13919)"),
         &[Axis::SubroutineName],
     ));
+    // Every quote-like spelling as bare prototype text stays an identifier:
+    // the prototype-state exclusion in the lexer must not let any family
+    // acquire quote state from the closing paren (#13919).
+    for (id, family, word) in [
+        ("qq.prototype_word", OperatorFamily::Qq, "qq"),
+        ("qw.prototype_word", OperatorFamily::Qw, "qw"),
+        ("qx.prototype_word", OperatorFamily::Qx, "qx"),
+        ("qr.prototype_word", OperatorFamily::Qr, "qr"),
+        ("m.prototype_word", OperatorFamily::M, "m"),
+        ("s.prototype_word", OperatorFamily::S, "s"),
+        ("tr.prototype_word", OperatorFamily::Tr, "tr"),
+        ("y.prototype_word", OperatorFamily::Y, "y"),
+    ] {
+        rows.push(prototype_word_row(id, family, word));
+    }
     rows.push(row(
         "q.signature_scalar_not_quote",
         OperatorFamily::Q,
@@ -1636,6 +1654,36 @@ fn hash_key(
         OracleExpectation::CompileAccept,
         None,
         &[Axis::HashKey],
+    )
+}
+
+fn prototype_word_row(id: &'static str, operator: OperatorFamily, word: &'static str) -> MatrixRow {
+    let source: &'static str =
+        Box::leak(format!("sub named({word}) {{ 1 }}").into_boxed_str());
+    row(
+        id,
+        operator,
+        Spelling::Attached,
+        DelimiterFamily::PairedParen,
+        SourceContext::Prototype,
+        source,
+        static_specs(&[
+            spec(ExpectedKind::Keyword, "sub"),
+            spec(ExpectedKind::Identifier, "named"),
+            spec(ExpectedKind::LeftParen, "("),
+            spec(ExpectedKind::Identifier, word),
+            spec(ExpectedKind::RightParen, ")"),
+            spec(ExpectedKind::LeftBrace, "{"),
+            spec(ExpectedKind::Number, "1"),
+            spec(ExpectedKind::RightBrace, "}"),
+            spec(ExpectedKind::Eof, ""),
+        ]),
+        NextOrdinary::NoneAtEof,
+        TerminalStateClass::ExpectOperator,
+        Disposition::Clean,
+        OracleExpectation::Skip,
+        Some("prototype payload is preserved as an identifier for parser validation (#13919)"),
+        &[Axis::SubroutineName],
     )
 }
 
