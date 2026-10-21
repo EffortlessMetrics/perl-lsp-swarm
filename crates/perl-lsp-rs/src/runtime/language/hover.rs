@@ -188,6 +188,8 @@ impl LspServer {
                 let line = line.replace(['*', '_'], "");
                 // Strip inline code backticks
                 let line = line.replace('`', "");
+                // Undo Markdown table-pipe escapes; plaintext has no cells.
+                let line = line.replace("\\|", "|");
                 // Strip link syntax: [text](url) -> text
                 regex_lite_strip_links(&line)
             })
@@ -3004,5 +3006,19 @@ Not found in workspace or configured include paths.
                 "value": text,
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod plaintext_tests {
+    use super::LspServer;
+
+    #[test]
+    fn plaintext_hover_undoes_table_pipe_escapes() {
+        let md = "| `\\| ` | Alternation (OR) |\n| `[a\\|b]` | Character class |";
+        let plain = LspServer::markdown_to_plaintext(md);
+        assert!(plain.contains("Alternation (OR)"), "{plain}");
+        assert!(plain.contains("[a|b]"), "{plain}");
+        assert!(!plain.contains("\\|"), "{plain}");
     }
 }

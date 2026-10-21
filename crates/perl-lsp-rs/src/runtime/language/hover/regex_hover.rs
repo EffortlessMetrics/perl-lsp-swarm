@@ -36,7 +36,7 @@ impl LspServer {
         table.push_str("| Token | Meaning |\n|-------|-------|\n");
         for (tok, desc) in &entries {
             // Table cell separators must be escaped even inside a code span.
-            let tok = tok.replace('|', r"\|");
+            let tok = Self::escape_table_token(tok);
             table.push_str(&format!("| `{}` | {} |\n", tok, desc));
         }
 
@@ -46,6 +46,22 @@ impl LspServer {
                 "value": table,
             },
         }))
+    }
+
+    /// Escape pipes for a Markdown table cell. A pipe already preceded by an
+    /// odd run of backslashes is already escaped; adding another would make
+    /// the run even and the pipe a live delimiter again.
+    fn escape_table_token(tok: &str) -> String {
+        let mut out = String::with_capacity(tok.len());
+        let mut backslashes = 0usize;
+        for ch in tok.chars() {
+            if ch == '|' && backslashes % 2 == 0 {
+                out.push('\\');
+            }
+            out.push(ch);
+            backslashes = if ch == '\\' { backslashes + 1 } else { 0 };
+        }
+        out
     }
 
     /// Return the absolute byte span `[start, end)` of the pattern claimed by
@@ -523,7 +539,7 @@ mod tests {
                 "| `[a\\|b]` | Character class, one or more (greedy) |",
             ),
             ("my $note = '😀'; my $re = qr{[α|β]};", "[α|β]", "| `[α\\|β]` | Character class |"),
-            (r"my $re = qr{[\|]};", r"[\|]", r"| `[\\|]` | Character class |"),
+            (r"my $re = qr{[\|]};", r"[\|]", r"| `[\|]` | Character class |"),
             (
                 "my $re = qr{(?|foo)};",
                 "(?|",
@@ -544,6 +560,30 @@ mod tests {
                 "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n{expected_row}\n"
             );
             assert_eq!(markdown, expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn regex_hover_escaped_pipe_row_has_two_cells() {
+        // Split each data row on unescaped pipes: a correctly escaped token
+        // yields exactly the two intended cells, never a phantom third.
+        for (text, needle) in
+            [("my $re = qr/foo|bar/;", "foo|bar"), (r"my $re = qr{[\|]};", r"[\|]")]
+        {
+            let index = SourceRegionIndex::build(text);
+            let offset = must_some(text.find(needle));
+            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index)));
+            let markdown = must_some(card["contents"]["value"].as_str());
+            let row = must_some(markdown.lines().nth(3));
+            let mut cells = 0usize;
+            let mut backslashes = 0usize;
+            for ch in row.chars() {
+                if ch == '|' && backslashes % 2 == 0 {
+                    cells += 1;
+                }
+                backslashes = if ch == '\\' { backslashes + 1 } else { 0 };
+            }
+            assert_eq!(cells, 3, "{text:?} row {row:?}");
         }
     }
 
