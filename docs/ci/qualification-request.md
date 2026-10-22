@@ -98,10 +98,11 @@ Current subject and admission are reacquired after successful proof. Later adver
 admission on the same H preserves verified proof while refusing overall success.
 H2, changed B/S, another attempt or mismatched proof identity invalidates this request.
 
-This is a proposed result bridge contract, not a claim that #16134's publisher
-already emits it. No trusted publisher is installed here. Before wiring product
-execution, agree its actual selected/executed evidence and native app/check
-association with that owner, preserving every mandatory test/context. The existing
+The landed runtime and completion owners now supply this source contract, and
+`qualification_publication.prepare` prepares the exact H/app payload through
+GET-only reacquisition. No trusted publisher is installed here. Installing the
+runtime caller and authenticating its actual selected/executed evidence remain
+separate from the held publisher permission and native app/check association. The existing
 `ci_subject` explicit mode can represent candidate H/B independently of dispatcher
 S; ordinary dispatch semantics must remain unchanged. Product checkout must prove
 H, with trusted control source kept separate from candidate code.
@@ -116,11 +117,12 @@ native dispatch can select another ref and its workflow can change the guard or
 script; this workflow is **not a privileged trusted-execution boundary**. A future
 privileged publisher needs a separately qualified control-source boundary.
 
-Required before runtime activation: real #10057 admission producer, authenticated
-portfolio/policy derivation, qualified allocation/duplicate protocol, trusted
-product/result publisher, complete producer/indirect-trigger mapping (#17903), and
-coordinated protection/trigger cutover with fresh observed readback and rollback
-(#17080/#10065). These are precise integration interfaces, not blockers to reviewing
+The #10057 readiness join, authenticated portfolio/policy adapters, H/S runtime
+and trusted native factory are landed source through #18067. Runtime activation
+still requires their actual native importer/resource bindings and caller, qualified
+allocation/duplicate behavior, trusted product/result publication, complete
+producer/indirect-trigger consumption (#17903), and coordinated protection/trigger
+cutover with fresh observed readback and rollback (#17080/#10065). These are precise integration interfaces, not blockers to reviewing
 this staged source. No deployment, qualification run or merge is requested by a
 push of this change. The independent final vision/repository judgment and protected
 merge/readback remain separate from request acceptance and successful proof.
@@ -163,13 +165,41 @@ Concrete authorities and source gaps, inspected October 17:
 | Required obligations | `.ci/policies/required-checks.toml` and `validate_gate_enforcement_contract.py` map existing contexts/producers. They do not select changed-path product obligations or authenticate completed proof. |
 | Risk/command selection | `xtask/src/tasks/ci_subject.rs` explicit mode plus `ci_scope.rs` own subject and risk-sensitive lane selection; `.ci/gate-policy.yaml` and the existing shard runner own gate commands. Do not copy their selection logic into this adapter. |
 | Committed Rust Small proof | `rust_small_proof.rs` owns `rust_small_proof.v1`, all ten commands, exact clean source/toolchain/profile/census and outcome verification. Receipt freshness/presence helpers alone do not prove execution or producer custody. |
-| Export/import owner | #16134 head `382a0d10c9402f47391ef35ad8b4b09cb230a61b` adds `export_rust_small_receipt.py`, `rust_small_evidence.py`, isolated native import and canonical Rust verification through the pinned central workflow. Those interfaces remain the custody/semantic owners. |
-| H versus S bridge | `rust_standard_result.policy_environment(..., acquire_plan=...)` now consumes separate adapter H/B and dispatcher S through the trusted H/S bridge. Its default legacy entry remains unchanged; native central callback installation and exact-H checkout are still required. |
+| Export/import owner | The #16134 source epoch `382a0d10c9402f47391ef35ad8b4b09cb230a61b` introduced `export_rust_small_receipt.py`, `rust_small_evidence.py`, isolated native import and canonical Rust verification through the pinned central workflow. Those interfaces remain the custody/semantic owners; central #246 stages the acquired-subject import hooks and optional command sidecar without installing their callback. |
+| H versus S bridge | `rust_standard_result.policy_environment(..., acquire_plan=...)` now consumes separate adapter H/B and dispatcher S through the trusted H/S bridge. Its default legacy entry remains unchanged; `qualification_native_factory.checkout_candidate` implements exact clean H/tree checkout in source. Native central callback/factory installation remains required. |
 | H/app publication | The caller and central `d69e3c9cbc55ee8c5d084facfe18432cd4c28618` use read-only checks access and native workflow jobs. No installed publisher emits this adapter's H/check/external-ID/attempt contract. No permission grant or alternate publisher is introduced here. |
-| Entry join | `candidate_readiness.production` joins live canonical review/native findings and trusted typed owner ports. Selection, applicability and authenticated distinct warm-proof adapters still need installation. `RustSmallOwners.enter_native` connects native election/current attempt to that join and capture; the final pre-merge guard must not authorize its own future CI. |
+| Entry join | `candidate_readiness.production` joins live canonical review/native findings and trusted typed owner ports. `NativeEntryOwners` implements selection, applicability and distinct warm-proof adapters; `compose_native` binds them to the existing runtime. Actual native importer/resource bindings and a trusted caller still need installation. `RustSmallOwners.enter_native` connects native election/current attempt to that join and capture; the final pre-merge guard must not authorize its own future CI. |
 
 This finite rehearsal executes real source/policy code and retains its result while
 preserving the distinct integration gaps. A hosted attempt requires publication
 of the workflow/control source on the default branch first. Do not dispatch the
 #16134 carrier's unapproved central pin or treat these diagnostic reports as
 admission, complete mandatory proof or permission to merge.
+
+## Composition handoff and cheap allocation proof
+
+The source constructor is `qualification_native_factory.compose_native`: it binds
+`NativeEntryOwners` to `RustSmallOwners`, installs the existing eligibility callback,
+and materializes exact clean H separately from loaded clean S. Trusted native
+installation must provide the actual prior-attempt importer
+`(run_id, run_attempt, *, acquire_plan)`, current-attempt importer
+`(*, acquire_plan)`, immutable canonical tool, and existing allocator context manager
+`(plan, selection)`. These are control-code callbacks, not request JSON, module
+names, local receipts or environment enable switches.
+
+`execute_native` uses the existing native election before capture/allocation and
+repeats admission/election after waiting for the resource lease. The focused
+factory tests cover a lower-ID duplicate before allocation and one appearing
+during the wait: neither starts the producer, writes proof-entry timing or exports
+a packet; the latter releases the acquired lifetime. The positive fixture executes
+an actual subprocess and private export, preserving receipt H and native envelope
+S/run/attempt. Native API, review, canonical tool and allocator remain explicit
+fixtures. This is cheap source-boundary proof, not exactly-once native execution,
+live resource containment, authenticated hosted acquisition or product qualification.
+
+The integration owner must accept the concrete native callback/caller handoff in
+#17900 before another writer changes the existing adapter or central carrier.
+Preserve `codex/qualification-adapter`; absence of a retrievable active executor
+does not release its custody. See [native adapters](qualification-native-adapters.md)
+and [activation order](qualification-cutover.md) for the existing source contracts
+and separate runtime holds.
