@@ -4551,6 +4551,12 @@ impl<'a> BodyBuilder2<'a> {
         // on the same place (#18259). Collapsing the two made the whole
         // declaration read-modify-write, which misstates the write to a
         // binding that has no prior value in scope.
+        // `local` localizes an existing package slot instead of writing a
+        // newly declared binding, so its compound assignment stays a
+        // single read-modify-write (pinned by hir_local_assignment_payloads).
+        if declared.storage == StorageClass::LocalizedPackage {
+            return inner;
+        }
         let outer_place = HirExpr::Variable(HirVariable {
             sigil: sigil_from_str(&declared.sigil),
             name: declared.name.clone(),
