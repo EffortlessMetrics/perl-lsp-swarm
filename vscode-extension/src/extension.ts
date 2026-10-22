@@ -1995,9 +1995,7 @@ export function resolveConfiguredServerPath(
 /// fails at spawn with a misleading permission diagnosis (#18118).
 export type ConfiguredServerPathProblem = 'missing' | 'not-a-file' | 'not-executable';
 
-export function configuredServerPathProblem(
-  userPath: string,
-): ConfiguredServerPathProblem | null {
+export function configuredServerPathProblem(userPath: string): ConfiguredServerPathProblem | null {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(userPath);
