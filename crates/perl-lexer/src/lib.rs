@@ -3669,7 +3669,7 @@ impl<'a> PerlLexer<'a> {
                     self.advance();
                     escaped = true;
                 }
-                '"' | '\'' if ch != delim => {
+                '"' | '\'' if ch != delim && delim != '\\' => {
                     if let Some((string_end, true)) =
                         self.scan_inner_string_for_delimiter(self.position, ch, delim)
                     {

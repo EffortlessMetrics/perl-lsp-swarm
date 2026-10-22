@@ -125,6 +125,56 @@ fn y_parser_retains_payload_modifiers_and_neighbor() -> TestResult {
 }
 
 #[test]
+fn backslash_closer_precedes_quoted_lookahead_into_neighboring_source() -> TestResult {
+    for first_body in [r"s{a}\", r"s\a\"] {
+        for quote in ['\'', '"'] {
+            let operator = format!("{first_body}{quote}x\\");
+            let valid_suffix = format!(" + \\\\{quote}y{quote}; my $after = 7;");
+            let malformed_suffix = format!("\\y{quote}\\; my $after = 7;");
+            for suffix in [&valid_suffix, &malformed_suffix] {
+                let source = format!("{operator}{suffix}");
+                let mut lexer = PerlLexer::new(&source);
+                let token = lexer.next_token().ok_or("missing quoted replacement")?;
+                assert_eq!(token.token_type, TokenType::Substitution, "{source:?}");
+                assert_eq!(token.text.as_ref(), operator, "{source:?}");
+                assert_eq!((token.start, token.end), (0, operator.len()), "{source:?}");
+            }
+
+            // Native Perl accepts this adjacent reference expression. Its quotes
+            // and backslashes must not become part of the preceding substitution.
+            let source = format!("{operator}{valid_suffix}");
+            let mut parser = Parser::new(&source);
+            let ast = parser.parse()?;
+            assert!(parser.errors().is_empty(), "{source:?}: {:?}", parser.errors());
+            let NodeKind::Program { statements } = &ast.kind else {
+                return Err("expected program with adjacent expression".into());
+            };
+            let [first, following] = statements.as_slice() else {
+                return Err(format!("lost adjacent source: {statements:?}").into());
+            };
+            let expression = match &first.kind {
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                _ => first,
+            };
+            let NodeKind::Binary { op, left, .. } = &expression.kind else {
+                return Err(format!("lost addition: {expression:?}").into());
+            };
+            assert_eq!(op, "+");
+            assert!(matches!(&left.kind,
+                NodeKind::Substitution { pattern, replacement, modifiers, .. }
+                if pattern == "a" && replacement == &format!("{quote}x") && modifiers.is_empty()));
+            assert_eq!((left.location.start, left.location.end), (0, operator.len()));
+            assert!(matches!(&following.kind,
+                NodeKind::VariableDeclaration { variable, .. }
+                if matches!(&variable.kind, NodeKind::Variable { sigil, name }
+                    if sigil == "$" && name == "after")));
+            assert_eq!(following.location.start, source.find("my $after").ok_or("missing suffix")?);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn strict_extractors_stop_at_backslash_before_modifiers() -> TestResult {
     for (bodies, search, replacement) in [
         (r"\a\b\", "a", "b"),
