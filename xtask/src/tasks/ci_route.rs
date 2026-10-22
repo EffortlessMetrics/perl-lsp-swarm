@@ -4784,7 +4784,8 @@ mod tests {
             ("xtask/src/bin/product-topology.rs", "patch-coverage-xtask-product-topology"),
             ("xtask/src/tasks/inline_completion_quality.rs", "patch-coverage-xtask-inline-quality"),
         ] {
-            let receipt = route_receipt("origin/main", "HEAD", vec![file.to_string()], "ci-route.v1")?;
+            let receipt =
+                route_receipt("origin/main", "HEAD", vec![file.to_string()], "ci-route.v1")?;
             assert_eq!(receipt.routing_classification, "routing_bug", "{file}");
             assert!(receipt.coverage_proof_packs.is_empty(), "{file}");
             assert_eq!(

@@ -2339,10 +2339,9 @@ fn ci_route_cli_keeps_inline_quality_focused_but_out_of_codecov_lcov() -> Result
     );
     assert_eq!(route.get("routing_classification").and_then(Value::as_str), Some("routing_bug"));
     let summary = fs::read_to_string(summary)?;
-    assert!(
-        summary
-            .contains("`patch-coverage-xtask-inline-quality`: LCOV measurement disabled for this pack")
-    );
+    assert!(summary.contains(
+        "`patch-coverage-xtask-inline-quality`: LCOV measurement disabled for this pack"
+    ));
     assert!(summary.contains("## Coverage Proof Packs"));
     assert!(summary.contains("- none"));
     Ok(())
