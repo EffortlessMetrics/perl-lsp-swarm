@@ -24,6 +24,22 @@ product binary. Qualify the actual ordinary executable and keep an immutable cop
 with its hash before releasing build ownership. Version strings and successful
 Cargo exit status alone are insufficient evidence.
 
+A verified main `xtask` executable can target another worktree explicitly:
+`/path/to/copied-xtask --worktree-root /path/to/worktree change-set --base HEAD^`.
+The target may be a directory inside that worktree. Selection validates the Git
+root, workspace repository identity and xtask package, then uses that root as the
+process working directory and default task project root. Missing,
+non-repository or unrelated workspace targets fail without falling back; inherited
+`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY` and `GIT_ALTERNATE_OBJECT_DIRECTORIES` must be unset,
+including empty values. Without this option,
+existing defaults remain unchanged. Per-command explicit fixture roots and
+intentional compiled-source manifest/corpus consumers (including CPAN and legacy
+corpus lookup) retain their contracts. The option is global; invoking a copied
+runner from another directory alone does not select that worktree. Git path
+output must be UTF-8. This selects a runtime task target; it does not make mutable
+Cargo build outputs transferable between worktrees.
+
 ## Recommended route for agent work
 
 After the root admits host capacity and existing consumers, use the existing
@@ -39,6 +55,16 @@ route. It retains one common-repository/host lease and independently reusable
 Cargo home, while assigning both target and build paths to a canonical-worktree
 hash under that slot. It preserves toolchain pins, checks every admitted storage
 destination and refuses incompatible inherited target/build overrides.
+
+Before building, inspect the smallest exact operation with
+`scripts/cargo-admitted --preflight <exact Cargo command>`. For a host below the
+default reserve, use the explicit scope-bound `--budget-file` route described in
+[Cargo work on a constrained host](CONSTRAINED_CARGO_BUILDS.md). An accepted file
+is an operator declaration with `basis_verified: false`, not a measured host
+profile. Both preflight and execution evaluate every destination; execution
+rechecks inside the lease. Neither reserves bytes, enforces quotas, admits
+compiler caches, apportions growth per filesystem, or accounts for independent
+repositories and consumers. Do not lower legacy thresholds to make a build fit.
 
 `DEVPLANE` selects the machine storage root; it does not make sibling worktrees'
 mutable artifacts compatible. There is no automatic migration or deletion of old

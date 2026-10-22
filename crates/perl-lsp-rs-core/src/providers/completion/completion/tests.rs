@@ -9658,14 +9658,9 @@ fn test_signature_param_visible_in_body_only() {
 
 /// `for`/`foreach` iterator variables follow lexical admission rules.
 ///
-/// BOUNDED (#8941): the current SymbolTable does not represent bare
-/// `for my $x (...)` iterators at all — the analyzer's Foreach handler
-/// receives a VariableDeclaration node its recorder silently skips, so no
-/// symbol exists to admit or reject (producer gap transferred to #7423/
-/// #7424). Until canonical loop bindings land, this test pins that neither
-/// half fabricates candidates: nothing appears inside or after the loop,
-/// and admission of a *represented* loop lexical is covered by the
-/// predicate unit tests in lexical_visibility.
+/// The analyzer records `for my $x (...)` iterators as lexicals in the
+/// loop scope (#17297), so completion admission is exercised for real:
+/// the iterator is offered inside its loop and nowhere after it.
 #[test]
 fn test_foreach_iterator_scoped_to_loop() {
     let inside_code = concat!("for my $loop_item (1 .. 3) {\n", "    $loop\n", "}\n");
@@ -9678,15 +9673,13 @@ fn test_foreach_iterator_scoped_to_loop() {
 
     let labels = variable_labels(&completions);
     assert!(
-        !labels.iter().any(|l| l.contains("loop_item")),
-        "unrepresented iterators must not be fabricated; got {labels:?}"
+        labels.iter().any(|l| l.contains("loop_item")),
+        "represented loop iterator must be offered inside its loop; got {labels:?}"
     );
 
-    // The analyzer genuinely lacks the binding: confirm the producer gap
-    // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        !provider.symbol_table.symbols.contains_key("loop_item"),
-        "analyzer now records foreach iterators — revisit this seam for real admission coverage"
+        provider.symbol_table.symbols.contains_key("loop_item"),
+        "analyzer must record foreach iterators (#17297)"
     );
 
     let after_code = concat!("for my $loop_item (1 .. 3) {\n", "    1;\n", "}\n", "$loop\n");
@@ -9976,4 +9969,213 @@ fn test_removed_lexical_is_absent_on_requery() {
         !after_labels.iter().any(|l| l.contains("gone_now")),
         "requery after removing the declaration must drop it; got {after_labels:?}"
     );
+}
+
+/// Issue #17160 fixture: an indexed same-root sibling package must never be
+/// dressed up as an inherited ancestor. `Animal::Kennel` shares only the
+/// `Animal::` namespace root with the receiver's class — no `@ISA`, no
+/// `use parent`, no role either direction — so its subs must not appear as
+/// method candidates for an `Animal::Dog` receiver at any tier.
+#[test]
+fn same_root_sibling_package_members_never_appear_as_inherited_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal.pm")?,
+        "package Animal;\nuse strict; use warnings;\nsub new { 1 }\nsub name { 1 }\nsub speak { 1 }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Dog.pm")?,
+        "package Animal::Dog;\nuse strict; use warnings;\nuse parent -norequire, 'Animal';\nsub speak { 1 }\nsub fetch { 1 }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Kennel.pm")?,
+        "package Animal::Kennel;\nuse strict; use warnings;\nsub new { 1 }\nsub capacity { 1 }\nsub admit { 1 }\n1;\n".to_string(),
+    )?;
+
+    let code = "use strict; use warnings;\nuse Animal; use Animal::Dog;\nmy $dog = Animal::Dog->new(name => 'Rex');\n$dog->";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let leaked: Vec<_> = completions
+        .iter()
+        .filter(|item| {
+            item.label == "admit"
+                || item.label == "capacity"
+                || item.detail.as_deref().is_some_and(|detail| detail.contains("Animal::Kennel"))
+        })
+        .map(|item| (item.label.to_string(), item.detail.clone()))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "same-root sibling Animal::Kennel must not contribute inherited candidates: {leaked:?}"
+    );
+
+    // Over-suppression guard: the real inheritance edge must keep working.
+    for expected in ["fetch", "speak", "name"] {
+        assert!(
+            completions.iter().any(|item| item.label == expected),
+            "expected `{expected}` via the actual @ISA chain; got {:?}",
+            completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
+/// Issue #17161: the response promises `isIncomplete: false`, so the generic
+/// object-method catalog must respect the typed prefix like the static and
+/// instance API catalogs already do — `$dog->sp` must not return `AUTOLOAD`
+/// and friends, and the matching method must remain.
+#[test]
+fn generic_object_methods_respect_typed_method_prefix() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Dog.pm")?,
+        "package Animal::Dog;\nuse strict; use warnings;\nsub speak { 1 }\nsub fetch { 1 }\n1;\n"
+            .to_string(),
+    )?;
+
+    let code = "use strict; use warnings;\nuse Animal::Dog;\nmy $dog = Animal::Dog->new(name => 'Rex');\n$dog->sp";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let non_matching: Vec<_> = completions
+        .iter()
+        .filter(|item| !item.label.starts_with("sp"))
+        .map(|item| item.label.to_string())
+        .collect();
+    assert!(
+        non_matching.is_empty(),
+        "isIncomplete: false forbids candidates outside the typed prefix `sp`: {non_matching:?}"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "speak"),
+        "the matching method must remain; got {:?}",
+        completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Issue #17161 over-suppression guard: with no typed prefix the generic
+/// object-method catalog must still be offered.
+#[test]
+fn generic_object_methods_remain_available_without_typed_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "use strict; use warnings;\nmy $dog = Animal::Dog->new(name => 'Rex');\n$dog->";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    for generic in ["can", "isa", "new"] {
+        assert!(
+            completions.iter().any(|item| item.label == generic),
+            "generic `{generic}` must remain available with an empty prefix; got {:?}",
+            completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
+/// Issue #17162: after `Package::` the provider must offer package-level
+/// members of `Package` — never sub-local `my` lexicals (`Animal::$self` is
+/// never valid Perl) and never same-root sibling members (#17160) — plus the
+/// nested `Package::*` declarations ranked between own members and inherited
+/// members instead of only the name-only fallback tier.
+#[test]
+fn package_qualified_completion_offers_members_nested_packages_and_no_lexicals()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal.pm")?,
+        "package Animal;\nuse strict; use warnings;\nsub new { my ($class, %args) = @_; return bless {}, $class; }\nsub name { my ($self) = @_; return 'x'; }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Dog.pm")?,
+        "package Animal::Dog;\nuse strict; use warnings;\nsub fetch { 1 }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Animal/Kennel.pm")?,
+        "package Animal::Kennel;\nuse strict; use warnings;\nsub admit { 1 }\n1;\n".to_string(),
+    )?;
+
+    let code = "use strict; use warnings;\nuse Animal;\nmy $pkg = Animal::";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index.clone()));
+    let completions = provider.get_completions(code, code.len());
+
+    // A sigil-qualified request asks for a package variable: a package name
+    // must never answer it, even though the direct-member query carries the
+    // nested `Package` declarations.
+    let sigiled_code = "use strict; use warnings;\nuse Animal;\nmy $member = $Animal::";
+    let mut sigiled_parser = Parser::new(sigiled_code);
+    let sigiled_ast = must(sigiled_parser.parse());
+    let sigiled_provider = CompletionProvider::new_with_index(&sigiled_ast, Some(index.clone()));
+    let sigiled = sigiled_provider.get_completions(sigiled_code, sigiled_code.len());
+    let package_leak: Vec<_> = sigiled
+        .iter()
+        .filter(|item| item.kind == CompletionItemKind::Module)
+        .map(|item| item.label.to_string())
+        .collect();
+    assert!(
+        package_leak.is_empty(),
+        "sigiled request must not receive package-name candidates: {package_leak:?}"
+    );
+
+    let lexicals: Vec<_> = completions
+        .iter()
+        .filter(|item| {
+            item.kind == CompletionItemKind::Variable
+                || matches!(item.label.as_ref(), "$self" | "$class" | "%args")
+        })
+        .map(|item| (item.label.to_string(), item.kind))
+        .collect();
+    assert!(
+        lexicals.is_empty(),
+        "sub-local my lexicals must not be offered as package-qualified members: {lexicals:?}"
+    );
+
+    let foreign: Vec<_> = completions
+        .iter()
+        .filter(|item| {
+            item.label == "admit"
+                || item.label == "fetch"
+                || item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("from Animal::Kennel"))
+        })
+        .map(|item| (item.label.to_string(), item.detail.clone()))
+        .collect();
+    assert!(
+        foreign.is_empty(),
+        "same-root sibling members must not ride the inheritance walk: {foreign:?}"
+    );
+
+    // Nested packages arrive from this path itself, ranked between own
+    // members (tier 2) and inherited members (tier 3).
+    for nested in ["Animal::Dog", "Animal::Kennel"] {
+        let found = completions.iter().find(|item| item.label == nested);
+        let item = must_some_with(
+            found,
+            format!("nested package `{nested}` must be offered after `Animal::`"),
+        );
+        assert_eq!(item.kind, CompletionItemKind::Module, "nested package kind for {nested}");
+        let sort_text = item.sort_text.as_deref().unwrap_or("");
+        assert!(
+            sort_text.starts_with("2n_"),
+            "nested package `{nested}` must rank between own and inherited members; got {sort_text:?}"
+        );
+    }
+    assert!(
+        completions.iter().any(|item| item.label == "name"
+            && item.sort_text.as_deref().is_some_and(|sort| sort.starts_with("2_"))),
+        "own-package members keep tier 2"
+    );
+    Ok(())
 }

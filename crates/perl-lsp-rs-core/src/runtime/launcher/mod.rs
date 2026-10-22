@@ -430,6 +430,14 @@ pub struct LspArgs {
     #[arg(long, value_name = "OUT", default_value = "target/ripr/reports/perl-facts.json")]
     pub ripr_out: String,
 
+    /// Unified-diff file feeding `changes[]` (#17152). Read relative to the
+    /// working directory, like `--diff` on the `perl-ripr-facts` binary.
+    /// Absent = no-diff packet (`changes[]` empty plus `no-diff-supplied`).
+    /// Requires `--ripr-facts`: without it the flag would fall through to
+    /// `Run` and start the server while silently ignoring the diff.
+    #[arg(long, value_name = "DIFF", requires = "ripr_facts")]
+    pub ripr_diff: Option<String>,
+
     /// Set feature profile
     #[arg(long)]
     pub feature_profile: Option<String>,
@@ -581,6 +589,9 @@ pub enum LaunchAction {
         fact_classes: String,
         /// Output path (repo-relative; e.g. `target/ripr/reports/perl-facts.json`).
         out: String,
+        /// Unified-diff file feeding `changes[]` (#17152); `None` = no-diff
+        /// packet. Read by the dispatcher, like the binary's `--diff`.
+        diff_path: Option<String>,
     },
     /// Print CLI help output.
     Help,
@@ -859,7 +870,8 @@ where
                 let head = parsed_args.ripr_head.clone();
                 let fact_classes = parsed_args.ripr_fact_classes.clone();
                 let out = parsed_args.ripr_out.clone();
-                LaunchAction::RiprFacts { schema, root, base, head, fact_classes, out }
+                let diff_path = parsed_args.ripr_diff.clone();
+                LaunchAction::RiprFacts { schema, root, base, head, fact_classes, out, diff_path }
             } else {
                 LaunchAction::Run
             };
@@ -1172,6 +1184,9 @@ pub fn help_text() -> String {
     out.push_str(
         "  --ripr-out <path>    Output path (default: target/ripr/reports/perl-facts.json)\n",
     );
+    out.push_str(
+        "  --ripr-diff <file>   Unified-diff file feeding changes[] (absent = no-diff packet)\n",
+    );
     out.push('\n');
     out.push_str("Checking commands (native vs real Perl):\n");
     out.push_str("  Need fast native feedback on listed files?     ");
@@ -1265,7 +1280,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --identity --identity-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
+    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --identity --identity-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out --ripr-diff"
 
     case "${prev}" in
         --port)
@@ -1291,7 +1306,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
             COMPREPLY=( $(compgen -d -- "${cur}") )
             return 0
             ;;
-        --ripr-out)
+        --ripr-out|--ripr-diff)
             COMPREPLY=( $(compgen -f -- "${cur}") )
             return 0
             ;;
@@ -1350,6 +1365,7 @@ _perl-lsp() {
         '--ripr-head[Head git ref]:ref:' \
         '--ripr-fact-classes[Fact classes filter]:classes:' \
         '--ripr-out[Output path]:path:_files' \
+        '--ripr-diff[Unified diff file]:path:_files' \
         '--help[Show help message]' \
         '*:file:_files -g "*.{pl,pm,t}"'
 }
@@ -1388,6 +1404,7 @@ complete -c perl-lsp -l ripr-base -x -d 'Base git ref recorded in the packet'
 complete -c perl-lsp -l ripr-head -x -d 'Head git ref recorded in the packet'
 complete -c perl-lsp -l ripr-fact-classes -x -d 'Fact classes filter'
 complete -c perl-lsp -l ripr-out -r -F -d 'Output path'
+complete -c perl-lsp -l ripr-diff -r -F -d 'Unified diff file'
 complete -c perl-lsp -l help -d 'Show help message'
 "#;
 
@@ -1428,6 +1445,7 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [System.Management.Automation.CompletionResult]::new('--ripr-head', '--ripr-head', 'ParameterName', 'Head git ref')
         [System.Management.Automation.CompletionResult]::new('--ripr-fact-classes', '--ripr-fact-classes', 'ParameterName', 'Fact classes filter')
         [System.Management.Automation.CompletionResult]::new('--ripr-out', '--ripr-out', 'ParameterName', 'Output path')
+        [System.Management.Automation.CompletionResult]::new('--ripr-diff', '--ripr-diff', 'ParameterName', 'Unified diff file')
         [System.Management.Automation.CompletionResult]::new('--help', '--help', 'ParameterName', 'Show help message')
     )
 
@@ -2376,6 +2394,38 @@ mod tests {
     fn parse_doctor_conflicts_with_check() {
         let result = parse_args(["perl-lsp", "--doctor", "--check", "script.pl"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn ripr_facts_threads_optional_diff_path() {
+        // `--ripr-diff <file>` must land on the action (#17152); absent, the
+        // action carries None and dispatch emits the no-diff packet.
+        let plan = must(parse_args(["perl-lsp", "--ripr-facts", "--ripr-diff", "change.diff"]));
+        match plan.action {
+            LaunchAction::RiprFacts { diff_path, .. } => {
+                assert_eq!(diff_path.as_deref(), Some("change.diff"));
+            }
+            other => panic!("expected RiprFacts action, got {other:?}"),
+        }
+        let plan = must(parse_args(["perl-lsp", "--ripr-facts"]));
+        match plan.action {
+            LaunchAction::RiprFacts { diff_path, .. } => {
+                assert_eq!(diff_path, None);
+            }
+            other => panic!("expected RiprFacts action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ripr_diff_requires_ripr_facts() {
+        // Bare `--ripr-diff` used to fall through to `Run` and start the
+        // server, silently ignoring the diff (#17330 review).
+        let error = must_err(parse_args(["perl-lsp", "--ripr-diff", "change.diff"]));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("--ripr-facts"),
+            "rejection must name the required --ripr-facts flag; got:\n{rendered}"
+        );
     }
 
     #[test]

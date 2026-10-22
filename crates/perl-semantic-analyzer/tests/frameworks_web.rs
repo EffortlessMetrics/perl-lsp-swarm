@@ -209,8 +209,10 @@ post '/submit' => sub { my $c = shift };
 
 // === any route (Dancer2) ===
 
-// Dancer v1 keeps string-target references: upstream Dancer v1 allows an action to
-// be the name of a subroutine (#8910 containment keeps the families separate).
+// Preserve Dancer v1's legacy static string-target reference contract (#8910).
+// In the Dancer 1.3522 / Perl 5.40.1 minimal GET proof, quoted handlers compile
+// and register but dispatch 500 under strict refs; the matching CodeRef
+// dispatches 200 with "About". This test asserts indexing, not callback execution.
 #[test]
 fn dancer_route_target_string_adds_subroutine_reference() {
     let code = r#"
