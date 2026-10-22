@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import re
+import shlex
 import unittest
 from pathlib import Path
 
@@ -166,6 +167,43 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
             assert "--emit-marker" in text
             assert "semantic-review:v1" in text
             assert "COMMENTED` review is only a GitHub fact" in text
+
+    def test_codex_review_examples_bind_the_examined_sha(self) -> None:
+        text = (ROOT / ".agents/skills/review-pr/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        blocks = re.findall(r"```(bash|powershell)\n(.*?)```", text, re.DOTALL)
+        for language, invocation, flag in (
+            ("bash", ["bash", "scripts/reviews/inline"], "--commit"),
+            ("powershell", ["wsl.exe", "--exec", "bash",
+                           "/mnt/h/path/to/repo/scripts/reviews/inline"], "--commit"),
+            ("bash", ["python3", "scripts/ci/check-pr-semantic-review-currentness.py"],
+             "--expected-head"),
+        ):
+            with self.subTest(language=language, invocation=invocation):
+                examples = []
+                for lang, body in blocks:
+                    if lang != language:
+                        continue
+                    # This is a documented-argv contract, not a shell parser.
+                    # Only explicit Bash continuation joins command lines.
+                    if lang == "bash":
+                        body = body.replace("\\\n", " ")
+                    for line in body.splitlines():
+                        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+                        lexer.whitespace_split = True
+                        args = list(lexer)
+                        if args[:len(invocation)] == invocation:
+                            examples.append(args)
+                self.assertEqual(1, len(examples), "expected one command example")
+                args = examples[0]
+                self.assertFalse(
+                    any(set(arg) <= set(";&|") for arg in args),
+                    "command separators cannot donate a binding",
+                )
+                self.assertEqual(1, args.count(flag), f"{invocation} must bind {flag}")
+                self.assertLess(args.index(flag) + 1, len(args), f"{flag} needs a value")
+                self.assertEqual("<reviewed-sha>", args[args.index(flag) + 1])
 
     def test_shared_contract_defines_durable_semantic_review_record(self) -> None:
         text = " ".join(
