@@ -75,7 +75,7 @@ enforcement from the extension's prompt or a `0.17.0` version string.
 
 `perl-lsp.aiCompletion.enabled` and `perl-lsp.aiCompletion.streaming.enabled`
 are machine-scoped client preferences; they do not grant server activation
-authority. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)
+authority. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)
 for the exact source boundary and each build's configuration behavior.
 
 ### Quick Start: Demo Project
