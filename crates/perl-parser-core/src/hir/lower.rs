@@ -4421,9 +4421,15 @@ impl<'a> BodyBuilder2<'a> {
             // Compound declarations such as `my $x += $x` can put a cloned
             // assignment in `initializer` instead. Its LHS is the declaration
             // place, not a second ordinary occurrence or a second write.
+            // The repetition operator is the exception: `my $value x= 3`
+            // keeps the generic declaration shape (a simple declaration
+            // assignment of the `x=` result) pinned by
+            // repetition_assignment_preserves_hir_declaration_reachability,
+            // so it falls through to the generic initializer branch below.
             (Some(init_node), _)
                 if !is_legacy_call
                     && initializer_is_target_assignment(init_node, binding_node)
+                    && !matches!(&init_node.kind, NodeKind::Assignment { op, .. } if op == "x=")
                     && binding.is_some() =>
             {
                 binding.map(|id| self.lower_assignment_with_declared_place(init_node, id))
@@ -4539,36 +4545,7 @@ impl<'a> BodyBuilder2<'a> {
         });
         let lhs_id = self.alloc_expr(place, lhs.location);
         let rhs_id = self.lower_expr(rhs);
-        let inner = self
-            .alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, assignment.location);
-        if op == "=" {
-            return inner;
-        }
-        // A compound declaration initializer (`my $value x= 3`) is a simple
-        // declaration assignment of the compound operation's result: the
-        // outer assignment writes the newly declared binding, while the
-        // inner compound assignment keeps its read-modify-write semantics
-        // on the same place (#18259). Collapsing the two made the whole
-        // declaration read-modify-write, which misstates the write to a
-        // binding that has no prior value in scope.
-        // `local` localizes an existing package slot instead of writing a
-        // newly declared binding, so its compound assignment stays a
-        // single read-modify-write (pinned by hir_local_assignment_payloads).
-        if declared.storage == StorageClass::LocalizedPackage {
-            return inner;
-        }
-        let outer_place = HirExpr::Variable(HirVariable {
-            sigil: sigil_from_str(&declared.sigil),
-            name: declared.name.clone(),
-            kind: Self::kind_for(&declared.name, Some(declared)),
-            access: AccessMode::Write,
-            binding: Some(binding),
-        });
-        let outer_lhs = self.alloc_expr(outer_place, lhs.location);
-        self.alloc_expr(
-            HirExpr::Assign { lhs: outer_lhs, rhs: inner, mode: AssignMode::Simple },
-            assignment.location,
-        )
+        self.alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, assignment.location)
     }
 
     /// Effect of a complex-lvalue `local`: the embedded assignment, a separate
