@@ -1658,3 +1658,88 @@ sub level1 {
 
     Ok(())
 }
+
+/// Tests fix for #17442: the workspace-index tier of incomingCalls must apply
+/// the same code-reference classification as the open-document tier (#17370).
+/// A `\&foo` reference creation indexed in the workspace must not appear as
+/// an incoming call range, while `\&foo()` (a real call whose result is
+/// referenced) and a plain `foo()` call must keep appearing.
+#[test]
+fn test_incoming_calls_workspace_index_do_not_report_code_reference_creation() -> TestResult {
+    let p_pm = r#"package P;
+
+sub foo {
+    return 1;
+}
+
+1;
+"#;
+    // The caller file is indexed by the workspace but never opened, so the
+    // open-document tier cannot mask the workspace-index tier here.
+    let caller_pm = r#"package Caller;
+
+sub caller {
+    my $cb = \&P::foo;
+    my $result_ref = \&P::foo();
+    P::foo();
+    return $cb;
+}
+
+1;
+"#;
+
+    let (mut harness, workspace) =
+        LspHarness::with_workspace(&[("lib/P.pm", p_pm), ("lib/Caller.pm", caller_pm)])?;
+    let p_uri = workspace.uri("lib/P.pm");
+    harness.open(&p_uri, p_pm)?;
+    harness.barrier();
+
+    // Prepare on `foo` (line 2, char 4). The prepared item is enriched with
+    // workspace data, which gates the workspace-index tier on.
+    let prepare_response = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": p_uri },
+            "position": { "line": 2, "character": 4 }
+        }),
+    )?;
+    let items = prepare_response.as_array().ok_or("prepareCallHierarchy returned non-array")?;
+    assert!(!items.is_empty(), "prepareCallHierarchy returned empty array");
+    assert_eq!(items[0]["name"], "foo", "expected to prepare on foo");
+
+    // Pass the enriched drill-down shape a client returns (as produced by
+    // outgoingCalls): the `data.*` fields are what gate the index tier on.
+    let mut item = items[0].clone();
+    item["data"] = json!({ "packageName": "P", "qualifiedName": "P::foo" });
+    let incoming_response =
+        harness.request("callHierarchy/incomingCalls", json!({ "item": item }))?;
+    let calls = incoming_response.as_array().ok_or("incomingCalls returned non-array")?;
+
+    let caller = calls
+        .iter()
+        .find(|call| call["from"]["name"] == "caller")
+        .ok_or("expected caller as incoming caller of foo")?;
+    let ranges = caller["fromRanges"].as_array().ok_or("fromRanges missing")?;
+    for range in ranges {
+        let line = range["start"]["line"].as_u64().ok_or("range start line missing")?;
+        assert_ne!(
+            line, 3,
+            "reference-creation line 3 must not appear in fromRanges: {:?}",
+            ranges
+        );
+        assert!(
+            line == 4 || line == 5,
+            "unexpected call-site line {} in fromRanges: {:?}",
+            line,
+            ranges
+        );
+    }
+    assert_eq!(
+        ranges.len(),
+        2,
+        "only the real call sites on lines 4 and 5 must be reported; got: {:?}",
+        ranges
+    );
+
+    Ok(())
+}

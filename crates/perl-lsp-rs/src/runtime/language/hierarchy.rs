@@ -682,7 +682,10 @@ impl LspServer {
                 if let IndexAccessMode::Full(coordinator) = access_mode {
                     let index = coordinator.index();
                     let callable_symbols = index.search_symbols("");
-                    let refs = index.find_refs(&symbol_key);
+                    // Call sites only: a `\&foo` code-reference creation is
+                    // not an incoming call (#17442), matching the
+                    // open-document tier classification (#17370).
+                    let refs = index.find_call_refs(&symbol_key);
 
                     for location in refs {
                         let from_range = index_location_to_wire_range(&location);

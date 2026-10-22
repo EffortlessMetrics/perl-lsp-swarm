@@ -52,9 +52,6 @@ pub fn add_function_completions(
                     sort_text: Some(Cow::Owned(format!("{sort_tier}{scope_sort_key}_{name}"))),
                     filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
-                    // Replace the whole token, including any identifier
-                    // suffix after a mid-token cursor, so accepting the
-                    // completion does not duplicate the suffix (#18105).
                     text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
