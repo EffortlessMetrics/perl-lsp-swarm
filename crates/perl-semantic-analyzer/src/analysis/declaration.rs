@@ -1556,18 +1556,60 @@ fn looks_like_package_name(name: &str) -> bool {
     name.contains("::") || name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
+/// One recorded simple scalar declaration or assignment, including unknowns.
+///
+/// Resolution is lexically scoped (#18122): a binding must precede the use and
+/// its enclosing scope must contain the use. An inner declaration can hide an
+/// outer constructor there without leaking its local class after the block.
+/// This bounded inference does not model control-flow-dependent assignments.
+#[derive(Debug, Clone)]
+struct ReceiverBinding {
+    var_name: String,
+    // None is an explicit unknown binding: it hides an earlier constructor.
+    package: Option<String>,
+    scope_start: usize,
+    scope_end: usize,
+    assign_end: usize,
+}
+
+type ReceiverBindings = Vec<ReceiverBinding>;
+
+fn lookup_receiver_package<'a>(
+    bindings: &'a [ReceiverBinding],
+    var_name: &str,
+    use_offset: usize,
+) -> Option<&'a ReceiverBinding> {
+    bindings
+        .iter()
+        .filter(|binding| {
+            binding.var_name == var_name
+                && binding.assign_end <= use_offset
+                && binding.scope_start <= use_offset
+                && use_offset <= binding.scope_end
+        })
+        .max_by_key(|binding| binding.assign_end)
+}
+
 fn infer_receiver_package(
     object: &Node,
     current_pkg: &str,
-    receiver_packages: &std::collections::HashMap<String, String>,
+    receiver_bindings: &[ReceiverBinding],
+    use_offset: usize,
 ) -> Option<String> {
     if let NodeKind::Identifier { name } = &object.kind {
         return Some(name.clone());
     }
 
     if let Some(name) = node_variable_name(object) {
-        if let Some(package_name) = receiver_packages.get(name) {
-            return Some(package_name.clone());
+        if let Some(binding) = lookup_receiver_package(receiver_bindings, name, use_offset) {
+            if let Some(package) = binding.package.as_ref() {
+                return Some(package.clone());
+            }
+            // Keep the established self/class and package-shaped heuristics;
+            // ordinary unknown lexicals must not reuse a previous constructor.
+            if !matches!(name, "self" | "this" | "class") && !looks_like_package_name(name) {
+                return None;
+            }
         }
 
         if matches!(name, "self" | "this" | "class") {
@@ -1585,11 +1627,15 @@ fn infer_receiver_package(
 fn infer_constructor_package(
     rhs: &Node,
     current_pkg: &str,
-    receiver_packages: &std::collections::HashMap<String, String>,
+    receiver_bindings: &[ReceiverBinding],
+    use_offset: usize,
 ) -> Option<String> {
     match &rhs.kind {
         NodeKind::MethodCall { method, object, .. } if method == "new" => {
-            infer_receiver_package(object, current_pkg, receiver_packages)
+            infer_receiver_package(object, current_pkg, receiver_bindings, use_offset)
+        }
+        NodeKind::FunctionCall { name, args } if name == "bless" => {
+            super::value_shape_inferrer::literal_bless_package(args, current_pkg)
         }
         NodeKind::FunctionCall { name, .. } => {
             name.rsplit_once("::").map(|(package_name, _)| package_name.to_string())
@@ -1598,42 +1644,70 @@ fn infer_constructor_package(
     }
 }
 
+fn is_receiver_scope_boundary(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        NodeKind::Program { .. }
+            | NodeKind::Block { .. }
+            | NodeKind::Subroutine { .. }
+            | NodeKind::Method { .. }
+    )
+}
+
 fn record_receiver_assignment(
+    root: &Node,
     node: &Node,
-    offset: usize,
+    use_offset: usize,
     current_pkg: &str,
-    receiver_packages: &mut std::collections::HashMap<String, String>,
+    bindings: &mut ReceiverBindings,
+    scope: (usize, usize),
 ) {
-    if node.location.start > offset {
+    if node.location.start > use_offset {
         return;
     }
 
-    if node.location.end <= offset {
-        match &node.kind {
+    let scope = if is_receiver_scope_boundary(node) {
+        (node.location.start, node.location.end)
+    } else {
+        scope
+    };
+
+    if node.location.end <= use_offset {
+        let binding_rhs = match &node.kind {
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                if let (Some(variable_name), Some(initializer)) =
-                    (node_variable_name(variable), initializer.as_ref())
-                    && let Some(package_name) =
-                        infer_constructor_package(initializer, current_pkg, receiver_packages)
-                {
-                    receiver_packages.insert(variable_name.to_string(), package_name);
-                }
+                node_variable_name(variable).map(|name| (name, initializer.as_deref()))
             }
             NodeKind::Assignment { lhs, rhs, .. } => {
-                if let Some(variable_name) = node_variable_name(lhs)
-                    && let Some(package_name) =
-                        infer_constructor_package(rhs, current_pkg, receiver_packages)
-                {
-                    receiver_packages.insert(variable_name.to_string(), package_name);
-                }
+                node_variable_name(lhs).map(|name| (name, Some(rhs.as_ref())))
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some((variable_name, rhs)) = binding_rhs {
+            let package = rhs.and_then(|rhs| {
+                // Only omitted-class bless needs the assignment's package.
+                // Avoid a whole-AST package walk for every ordinary binding;
+                // constructor dependencies still use the assignment offset.
+                let assignment_pkg = match &rhs.kind {
+                    NodeKind::FunctionCall { name, args } if name == "bless" && args.len() == 1 => {
+                        current_package_at_with_default(root, node.location.start, current_pkg)
+                    }
+                    _ => current_pkg,
+                };
+                infer_constructor_package(rhs, assignment_pkg, bindings, node.location.start)
+            });
+            bindings.push(ReceiverBinding {
+                var_name: variable_name.to_string(),
+                package,
+                scope_start: scope.0,
+                scope_end: scope.1,
+                assign_end: node.location.end,
+            });
         }
     }
 
     for child in get_node_children(node) {
-        if child.location.start <= offset {
-            record_receiver_assignment(child, offset, current_pkg, receiver_packages);
+        if child.location.start <= use_offset {
+            record_receiver_assignment(root, child, use_offset, current_pkg, bindings, scope);
         }
     }
 }
@@ -1681,10 +1755,18 @@ pub fn method_argument_bareword_key(
     }
     let word = bareword_at_offset(source_text, offset)?;
 
-    let mut receiver_packages = std::collections::HashMap::new();
-    record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
-    let pkg = infer_receiver_package(object, current_pkg, &receiver_packages)
-        .unwrap_or_else(|| current_pkg.to_string());
+    let mut receiver_bindings: ReceiverBindings = Vec::new();
+    record_receiver_assignment(
+        ast,
+        ast,
+        offset,
+        current_pkg,
+        &mut receiver_bindings,
+        (ast.location.start, ast.location.end),
+    );
+    // No current-package fallback (#18122): an unknown receiver yields no key
+    // instead of a confident wrong-package answer.
+    let pkg = infer_receiver_package(object, current_pkg, &receiver_bindings, offset)?;
 
     Some(SymbolKey { pkg: pkg.into(), name: word.into(), sigil: None, kind: SymKind::Sub })
 }
@@ -2241,10 +2323,18 @@ fn symbol_at_cursor_internal(
                     return None;
                 }
             }
-            let mut receiver_packages = std::collections::HashMap::new();
-            record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
-            let pkg = infer_receiver_package(object, current_pkg, &receiver_packages)
-                .unwrap_or_else(|| current_pkg.to_string());
+            let mut receiver_bindings: ReceiverBindings = Vec::new();
+            record_receiver_assignment(
+                ast,
+                ast,
+                offset,
+                current_pkg,
+                &mut receiver_bindings,
+                (ast.location.start, ast.location.end),
+            );
+            // No current-package fallback (#18122): an unknown receiver
+            // resolves to no symbol instead of the current package.
+            let pkg = infer_receiver_package(object, current_pkg, &receiver_bindings, offset)?;
             Some(SymbolKey {
                 pkg: pkg.into(),
                 name: method.clone().into(),
@@ -2359,6 +2449,10 @@ pub fn symbol_at_cursor(ast: &Node, offset: usize, current_pkg: &str) -> Option<
 /// println!("Current package: {}", pkg);
 /// ```
 pub fn current_package_at(ast: &Node, offset: usize) -> &str {
+    current_package_at_with_default(ast, offset, "main")
+}
+
+fn current_package_at_with_default<'a>(ast: &'a Node, offset: usize, default: &'a str) -> &'a str {
     fn package_in_statement_list<'a>(
         statements: &'a [Node],
         offset: usize,
@@ -2407,7 +2501,7 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
         }
     }
 
-    package_in_node(ast, offset, "main")
+    package_in_node(ast, offset, default)
 }
 
 /// Finds the most specific AST node containing the given byte offset.
@@ -3363,5 +3457,207 @@ mod tests {
             subs.is_empty(),
             "collect_subroutine_declarations must NOT collect *foo = \"string\" as a sub"
         );
+    }
+}
+
+#[cfg(test)]
+mod receiver_resolution_tests {
+    use super::*;
+    use crate::Parser;
+    type ProofResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn resolved_package(code: &str, package: &str, method: &str) -> ProofResult<Option<String>> {
+        let ast = Parser::new(code).parse()?;
+        let offset = code
+            .find(&format!("->{method}"))
+            .ok_or("missing method token")?
+            .checked_add(2)
+            .ok_or("method offset overflow")?;
+        let key = symbol_at_cursor_with_source(&ast, offset, package, code);
+        if let Some(key) = key.as_ref()
+            && key.name.as_ref() != method
+        {
+            return Err(format!(
+                "receiver lookup changed the method name: expected={method}, actual={key:?}"
+            )
+            .into());
+        }
+        Ok(key.map(|key| key.pkg.to_string()))
+    }
+
+    fn require_package(
+        code: &str,
+        current: &str,
+        method: &str,
+        expected: Option<&str>,
+    ) -> ProofResult {
+        let actual = resolved_package(code, current, method)?;
+        if actual.as_deref() != expected {
+            return Err(format!(
+                "receiver package: expected {expected:?}, actual {actual:?}, source={code:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_resolution_inner_block_does_not_leak_to_outer_use() -> ProofResult {
+        let code = "my $obj = Dog->new;\n{ my $obj = Cat->new; $obj->meow; }\n$obj->bark;\n";
+        require_package(code, "main", "meow", Some("Cat"))?;
+        require_package(code, "main", "bark", Some("Dog"))
+    }
+
+    // Retention proof, deliberately not claimed as a historical-defect discriminator.
+    #[test]
+    fn receiver_resolution_later_assignment_in_same_scope_wins() -> ProofResult {
+        let code = "my $obj = Dog->new;\n$obj->bark;\n$obj = Cat->new;\n$obj->meow;\n";
+        require_package(code, "main", "bark", Some("Dog"))?;
+        require_package(code, "main", "meow", Some("Cat"))
+    }
+
+    #[test]
+    fn receiver_resolution_bless_infers_package() -> ProofResult {
+        require_package("my $obj = bless {}, 'Dog';\n$obj->bark;\n", "main", "bark", Some("Dog"))
+    }
+
+    #[test]
+    fn receiver_resolution_bless_assignment_form_infers_package() -> ProofResult {
+        require_package(
+            "my $obj;\n$obj = bless {}, 'Cat';\n$obj->meow;\n",
+            "main",
+            "meow",
+            Some("Cat"),
+        )
+    }
+
+    #[test]
+    fn receiver_resolution_unknown_receiver_has_no_current_package_fallback() -> ProofResult {
+        // Retain the original source-less regression as well as live source-aware proof.
+        let code = "package Foo;\n$mystery->bark;\n";
+        let ast = Parser::new(code).parse()?;
+        let offset = code.find("bark").ok_or("missing bark call")?;
+        if let Some(key) = symbol_at_cursor(&ast, offset, "Foo") {
+            return Err(format!("source-less unknown receiver fabricated {key:?}").into());
+        }
+        require_package(code, "Foo", "bark", None)
+    }
+
+    #[test]
+    fn receiver_resolution_unknown_receiver_with_source_has_no_package_identity() -> ProofResult {
+        let code = "package Caller;\nsub dispatch {}\n$mystery->dispatch(option => 1);\n";
+        let ast = Parser::new(code).parse()?;
+        for offset in [
+            code.find("->dispatch").ok_or("missing method")? + 2,
+            code.find("option").ok_or("missing argument")?,
+        ] {
+            if let Some(key) = symbol_at_cursor_with_source(&ast, offset, "Caller", code) {
+                return Err(format!("unknown receiver fabricated {key:?}").into());
+            }
+        }
+        let offset = code.find("option").ok_or("missing argument")?;
+        if let Some(key) = method_argument_bareword_key(&ast, offset, "Caller", code) {
+            return Err(format!("unknown receiver argument fabricated {key:?}").into());
+        }
+        let known = "package Caller;\nKnown->dispatch(option => 1);\n";
+        let ast = Parser::new(known).parse()?;
+        let offset = known.find("option").ok_or("missing known argument")?;
+        let key = method_argument_bareword_key(&ast, offset, "Caller", known)
+            .ok_or("known receiver lost argument identity")?;
+        if key.pkg.as_ref() != "Known" || key.name.as_ref() != "option" {
+            return Err(format!("wrong known-receiver argument key: {key:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_resolution_bless_omitted_class_and_package_token() -> ProofResult {
+        require_package(
+            "package Kennel; my $obj = bless {}; $obj->bark;",
+            "Kennel",
+            "bark",
+            Some("Kennel"),
+        )?;
+        // The current parser leaves this special token unresolved. The review
+        // requires an honest unknown or the actual package, never a fabricated
+        // class named after the token; it does not require broader inference.
+        let package = resolved_package(
+            "package Kennel; my $obj = bless {}, __PACKAGE__; $obj->bark;",
+            "Kennel",
+            "bark",
+        )?;
+        if !matches!(package.as_deref(), None | Some("Kennel")) {
+            return Err(format!("special token fabricated a literal class: {package:?}").into());
+        }
+        // Quoting a token makes it an actual literal class, not the special token.
+        require_package(
+            "my $obj = bless {}, '__PACKAGE__'; $obj->bark;",
+            "main",
+            "bark",
+            Some("__PACKAGE__"),
+        )
+    }
+
+    #[test]
+    fn receiver_resolution_bless_dynamic_class_is_unresolved() -> ProofResult {
+        for class in
+            ["$class", "shift", "__FILE__", "__LINE__", "__SUB__", "__CLASS__", "\"$class\""]
+        {
+            let code = format!("my $obj = bless {{}}, {class}; $obj->bark;");
+            require_package(&code, "main", "bark", None)?;
+        }
+        require_package("my $obj = bless {}, \"Dog\"; $obj->bark;", "main", "bark", Some("Dog"))
+    }
+
+    #[test]
+    fn receiver_resolution_unknown_shadow_and_reassignment_do_not_reuse_class() -> ProofResult {
+        let code = "my $obj = Dog->new; { my $obj; $obj->meow; } $obj->bark;";
+        require_package(code, "main", "meow", None)?;
+        require_package(code, "main", "bark", Some("Dog"))?;
+        require_package("my $obj = Dog->new; $obj = fetch(); $obj->bark;", "main", "bark", None)
+    }
+    #[test]
+    fn receiver_resolution_bless_uses_assignment_package_before_later_package() -> ProofResult {
+        let code = "package Kennel; my $obj = bless {}; package Caller; $obj->bark;";
+        require_package(code, "Caller", "bark", Some("Kennel"))
+    }
+
+    #[test]
+    fn receiver_resolution_reserved_receivers_retain_existing_meaning() -> ProofResult {
+        for receiver in ["self", "this", "class"] {
+            let code = format!("package Kennel; my ${receiver} = shift; ${receiver}->bark;");
+            require_package(&code, "Kennel", "bark", Some("Kennel"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_resolution_closing_brace_is_not_a_method() -> ProofResult {
+        let code = "{ my $obj = Cat->new; $obj->bark; }";
+        let ast = Parser::new(code).parse()?;
+        let offset = code.rfind('}').ok_or("missing closing brace")?;
+        if let Some(key) = symbol_at_cursor_with_source(&ast, offset, "main", code) {
+            return Err(format!("closing brace fabricated a method identity: {key:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_resolution_shared_bless_shape_retains_low_confidence() -> ProofResult {
+        use super::super::value_shape_inferrer::ValueShapeInferrer;
+        use perl_semantic_facts::{Confidence, FileId, ValueShape};
+        let code = "my $obj = bless {}, 'Dog'; $obj->bark;";
+        let ast = Parser::new(code).parse()?;
+        let shapes = ValueShapeInferrer::infer(&ast, FileId(1));
+        if !shapes.iter().any(|(_, shape)| {
+            matches!(shape,
+            ValueShape::Object { package, confidence: Confidence::Low } if package == "Dog")
+        }) {
+            return Err(format!(
+                "literal bless lost its conservative shape confidence: {shapes:?}"
+            )
+            .into());
+        }
+        require_package(code, "main", "bark", Some("Dog"))
     }
 }
