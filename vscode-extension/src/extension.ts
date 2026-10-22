@@ -1485,7 +1485,7 @@ async function runExtensionActivation(
       },
       onReconstructConfigurationChanged: async (event) => {
         if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
-          await refreshTestAdapter(context);
+          await refreshTestAdapter();
         }
 
         if (
@@ -2343,7 +2343,7 @@ async function finalizeStartedLanguageClient(
     outputChannel.error(`[ai-completion] Error suggesting AI completion: ${msg}`);
   });
 
-  await refreshTestAdapter(context);
+  await refreshTestAdapter();
   assertCurrent();
   refreshStreamingController(startedClient);
   try {
@@ -3415,7 +3415,7 @@ async function formatDocumentOnSave(document: vscode.TextDocument): Promise<vsco
   return edits ?? [];
 }
 
-async function refreshTestAdapter(context: vscode.ExtensionContext) {
+async function refreshTestAdapter() {
   if (testAdapter) {
     testAdapter.dispose();
     testAdapter = undefined;
@@ -3428,7 +3428,6 @@ async function refreshTestAdapter(context: vscode.ExtensionContext) {
   }
 
   testAdapter = new PerlTestAdapter();
-  context.subscriptions.push(testAdapter);
   outputChannel.info('Perl test integration enabled.');
 }
 
