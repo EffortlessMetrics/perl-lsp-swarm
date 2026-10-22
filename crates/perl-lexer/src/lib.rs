@@ -3664,7 +3664,7 @@ impl<'a> PerlLexer<'a> {
             }
 
             match ch {
-                '\\' => {
+                '\\' if delim != '\\' => {
                     body.push(ch);
                     self.advance();
                     escaped = true;
