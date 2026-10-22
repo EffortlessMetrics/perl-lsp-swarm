@@ -1,0 +1,9 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: "A failed statement reports one parse error instead of a duplicate expected-expression/expected-statement pair at the same position, --check and LSP diagnostics render in source order, and a missing comma in a list now suggests the ',' or operator instead of a closing parenthesis that is already present."
+time: 2026-09-29T00:52:42Z
+custom:
+  PR: "16776"
+  Slug: parser-recovered-error-dedup-missing-comma-help
+  Breaking: "no"
