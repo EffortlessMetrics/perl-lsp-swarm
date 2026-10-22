@@ -137,7 +137,7 @@ fi
     && ok "successful category entries unchanged" \
     || bad "successful category entries missing"
 
-# Case 4: the index bench gets its required features; others unchanged (#17425).
+# Case 4: benchmark targets get their required features; parser stays unchanged.
 ARGS_LOG=$(mktemp)
 export CARGO_ARGS_LOG="$ARGS_LOG"
 export FAIL_BENCHES=""
@@ -149,6 +149,15 @@ fi
 grep -q "workspace_index_benchmark.*--features workspace" "$ARGS_LOG" \
     && ok "index bench invoked with --features workspace" \
     || bad "index bench missing --features workspace"
+: >"$ARGS_LOG"
+if PATH="$STUB:$PATH" bash "$RUNNER" --category lsp >"$OUT" 2>"$ERR"; then
+    ok "lsp stub run exits 0"
+else
+    bad "lsp stub run exited nonzero"
+fi
+grep -q "rope_performance_benchmark.*--features benchmarks" "$ARGS_LOG" \
+    && ok "lsp bench invoked with --features benchmarks" \
+    || bad "lsp bench missing --features benchmarks"
 : >"$ARGS_LOG"
 if PATH="$STUB:$PATH" bash "$RUNNER" --category parser >"$OUT" 2>"$ERR"; then
     ok "parser stub run exits 0"

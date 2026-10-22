@@ -131,7 +131,7 @@ echo "4. Performance Gates"
 echo "-------------------"
 
 # Check if benchmarks can run
-if cargo bench --no-run 2>/dev/null; then
+if cargo bench --features perl-lsp-rs/benchmarks --no-run 2>/dev/null; then
     print_status "OK" "Gate PASSED: Benchmark Compilation"
     GATES_PASSED=$((GATES_PASSED + 1))
 else

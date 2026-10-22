@@ -237,7 +237,7 @@ jobs:
           "perl-parser:cpan_patterns_benchmark:"
           "perl-parser:positions_bench:"
           "perl-parser:substitution_performance:"
-          "perl-lsp-rs:rope_performance_benchmark:"
+          "perl-lsp-rs:rope_performance_benchmark:benchmarks"
           "perl-lsp-perltidy:native_pipeline_benchmark:"
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"

@@ -81,19 +81,34 @@ fn validate_output_path(output_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Keep the LSP targets selected now that their Criterion dependency is opt-in.
+fn cargo_bench_args(name: Option<&str>) -> Vec<&str> {
+    let mut args = vec!["bench"];
+    // --name is forwarded to Cargo's --bench, which accepts glob patterns.
+    // Leave malformed selectors to Cargo's existing validation.
+    let includes_lsp = name.is_none_or(|selector| {
+        glob::Pattern::new(selector).is_ok_and(|pattern| {
+            ["rope_performance_benchmark", "lsp_stdio_roundtrip_benchmark"]
+                .iter()
+                .any(|target| pattern.matches(target))
+        })
+    });
+    if includes_lsp {
+        args.extend(["--features", "perl-lsp-rs/benchmarks"]);
+    }
+    if let Some(bench_name) = name {
+        args.extend(["--bench", bench_name]);
+    }
+    args
+}
+
 pub fn run(name: Option<String>, save: bool, output: Option<PathBuf>) -> Result<()> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {wide_msg}")?);
 
     spinner.set_message("Running benchmarks");
 
-    // Build arguments for cargo bench
-    let mut args = vec!["bench"];
-
-    if let Some(bench_name) = &name {
-        args.push("--bench");
-        args.push(bench_name);
-    }
+    let args = cargo_bench_args(name.as_deref());
 
     // Execute benchmarks and capture output
     let result = cmd("cargo", &args)
@@ -269,6 +284,84 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn cargo_bench_args_broad_retains_lsp_targets() {
+        assert_eq!(cargo_bench_args(None), ["bench", "--features", "perl-lsp-rs/benchmarks"]);
+    }
+
+    #[test]
+    fn cargo_bench_args_rope_enables_required_feature() {
+        assert_eq!(
+            cargo_bench_args(Some("rope_performance_benchmark")),
+            [
+                "bench",
+                "--features",
+                "perl-lsp-rs/benchmarks",
+                "--bench",
+                "rope_performance_benchmark"
+            ]
+        );
+    }
+
+    #[test]
+    fn cargo_bench_args_stdio_enables_required_feature() {
+        assert_eq!(
+            cargo_bench_args(Some("lsp_stdio_roundtrip_benchmark")),
+            [
+                "bench",
+                "--features",
+                "perl-lsp-rs/benchmarks",
+                "--bench",
+                "lsp_stdio_roundtrip_benchmark"
+            ]
+        );
+    }
+
+    #[test]
+    fn cargo_bench_args_unrelated_name_keeps_default_features() {
+        assert_eq!(
+            cargo_bench_args(Some("parser_benchmark")),
+            ["bench", "--bench", "parser_benchmark"]
+        );
+    }
+
+    #[test]
+    fn cargo_bench_args_matching_patterns_enable_required_feature() {
+        for selector in [
+            "rope_*",
+            "lsp_stdio_*",
+            "*_benchmark",
+            "*",
+            "rop?_performance_benchmark",
+            "lsp_std?o_roundtrip_benchmark",
+            "[rl]*",
+            "[a-z]*_benchmark",
+            "[!p]*_benchmark",
+        ] {
+            assert_eq!(
+                cargo_bench_args(Some(selector)),
+                ["bench", "--features", "perl-lsp-rs/benchmarks", "--bench", selector],
+                "selector {selector} must retain matching LSP benchmarks"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_bench_args_unrelated_patterns_keep_default_features() {
+        for selector in ["parser_*", "*parser*", "[!rl]*", "rope_?", "ROPE_*"] {
+            assert_eq!(
+                cargo_bench_args(Some(selector)),
+                ["bench", "--bench", selector],
+                "selector {selector} must not enable unrelated LSP benchmarks"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_bench_args_malformed_pattern_is_forwarded_for_cargo_validation() {
+        assert_eq!(cargo_bench_args(Some("rope_[")), ["bench", "--bench", "rope_["]);
+    }
 
     #[test]
     fn test_validate_output_path_valid_extensions() {

@@ -966,7 +966,7 @@ enum Commands {
 
     /// Run benchmarks
     Bench {
-        /// Run specific benchmark
+        /// Run benchmark targets matching a Cargo name or glob pattern
         #[arg(long)]
         name: Option<String>,
 

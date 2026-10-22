@@ -38,13 +38,14 @@
 //! cargo build --release -p perllsp
 //!
 //! # Full receipt pass + criterion groups
-//! cargo bench -p perl-lsp-rs --bench lsp_stdio_roundtrip_benchmark --locked
+//! cargo bench -p perl-lsp-rs --features benchmarks --bench lsp_stdio_roundtrip_benchmark --locked
 //!
 //! # Criterion groups only (receipt pass still runs; filter after `--`)
-//! cargo bench -p perl-lsp-rs --bench lsp_stdio_roundtrip_benchmark -- hover
+//! cargo bench -p perl-lsp-rs --features benchmarks --bench lsp_stdio_roundtrip_benchmark -- hover
 //! ```
 //!
-//! `cargo test -p perl-lsp-rs --benches` (and `--all-targets`) runs this binary
+//! `cargo test -p perl-lsp-rs --features benchmarks --benches` (and `--all-targets`
+//! with that feature) runs this binary
 //! without `--bench`: the receipt pass is skipped so a plain test run never
 //! overwrites the committed baseline, and only the criterion groups execute
 //! (once each, in Criterion's test mode).
