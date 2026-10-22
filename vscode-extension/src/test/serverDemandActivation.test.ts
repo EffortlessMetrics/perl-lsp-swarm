@@ -212,11 +212,9 @@ const createdRoots: string[] = [];
 function makeExtensionRoot(): string {
   const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-demand-'));
   createdRoots.push(extensionRoot);
-  const serverPath = path.join(
-    extensionRoot,
-    process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-  );
-  fs.writeFileSync(serverPath, '');
+  // The mocked client never spawns this executable; use a real file so
+  // production path validation also succeeds on Unix.
+  const serverPath = process.execPath;
   mockConfig(serverPath);
   return extensionRoot;
 }

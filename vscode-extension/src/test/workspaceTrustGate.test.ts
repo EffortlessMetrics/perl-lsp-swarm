@@ -136,11 +136,9 @@ describe('workspace trust activation gate (#4631)', () => {
 
     try {
       const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-      const serverPath = path.join(
-        extensionRoot,
-        process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-      );
-      fs.writeFileSync(serverPath, '');
+      // The mocked client never spawns this executable; use a real file so
+      // production path validation also succeeds on Unix.
+      const serverPath = process.execPath;
       mockConfig(serverPath);
 
       await activate(makeContext(extensionRoot));
@@ -160,11 +158,7 @@ describe('workspace trust activation gate (#4631)', () => {
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
 
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = path.join(
-      extensionRoot,
-      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-    );
-    fs.writeFileSync(serverPath, '');
+    const serverPath = process.execPath;
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -192,11 +186,7 @@ describe('workspace trust activation gate (#4631)', () => {
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
 
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = path.join(
-      extensionRoot,
-      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-    );
-    fs.writeFileSync(serverPath, '');
+    const serverPath = process.execPath;
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -224,11 +214,7 @@ describe('workspace trust activation gate (#4631)', () => {
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
 
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = path.join(
-      extensionRoot,
-      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-    );
-    fs.writeFileSync(serverPath, '');
+    const serverPath = process.execPath;
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -246,11 +232,7 @@ describe('workspace trust activation gate (#4631)', () => {
     // turning one failure into a cascade of unrelated ones.
     try {
       const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-      const serverPath = path.join(
-        extensionRoot,
-        process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-      );
-      fs.writeFileSync(serverPath, '');
+      const serverPath = process.execPath;
       mockConfig(serverPath);
 
       const activation = activate(makeContext(extensionRoot));
