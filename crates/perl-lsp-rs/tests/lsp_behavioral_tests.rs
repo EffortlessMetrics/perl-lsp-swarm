@@ -120,6 +120,125 @@ fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
     })
 }
 
+fn require_extract_variable_edit(result: &Value, target_uri: &str) -> TestResult {
+    let actions = result.as_array().ok_or("Should return action array")?;
+    // Both current providers use the generic refactor.extract kind, including
+    // subroutine extraction. Match their variable titles without requiring a
+    // future typed-kind change or accepting a subroutine-only response.
+    let valid_action = actions
+        .iter()
+        .filter(|action| {
+            action["title"].as_str().is_some_and(|title| {
+                title == "Extract variable"
+                    || title == "Extract to variable"
+                    || (title.starts_with("Extract '") && title.ends_with("' to variable"))
+            })
+        })
+        .any(|action| {
+            action.get("disabled").is_none_or(Value::is_null)
+                && action
+                    .get("edit")
+                    .is_some_and(|edit| workspace_edit_has_text_edits(edit, target_uri))
+        });
+    if !valid_action {
+        return Err(format!(
+            "Should return an enabled Extract variable action with at least one well-formed text edit for {target_uri}; got {result}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn extract_variable_response_requires_action_and_target_edit() -> TestResult {
+    let target_uri = "file:///workspace/extract_variable.pl";
+    let text_edit = json!({
+        "range": {
+            "start": {"line": 3, "character": 13},
+            "end": {"line": 3, "character": 25}
+        },
+        "newText": "$len"
+    });
+    let edit = json!({"changes": {(target_uri): [text_edit.clone()]}});
+    let action = |title: &str, edit: Value| json!({"title": title, "kind": "refactor.extract", "edit": edit});
+    for title in ["Extract variable", "Extract to variable", "Extract 'length($str)' to variable"] {
+        // A preceding unrelated or subroutine action must not be selected.
+        require_extract_variable_edit(
+            &json!([
+                action("Add use strict", edit.clone()),
+                action("Extract to subroutine", edit.clone()),
+                action(title, edit.clone())
+            ]),
+            target_uri,
+        )?;
+    }
+    require_extract_variable_edit(
+        &json!([action(
+            "Extract to variable",
+            json!({
+                "documentChanges": [{
+                    "textDocument": {"uri": target_uri, "version": null},
+                    "edits": [text_edit.clone()]
+                }]
+            })
+        )]),
+        target_uri,
+    )?;
+
+    for (case, result) in [
+        ("non-array", json!(null)),
+        ("empty", json!([])),
+        ("unrelated only", json!([action("Add use strict", edit.clone())])),
+        ("subroutine only", json!([action("Extract to subroutine", edit.clone())])),
+        (
+            "expression to subroutine only",
+            json!([action("Extract 'length($str)' to subroutine", edit.clone())]),
+        ),
+        ("missing edit", json!([{"title": "Extract variable", "kind": "refactor.extract"}])),
+        ("null edit", json!([action("Extract variable", Value::Null)])),
+        ("empty edit", json!([action("Extract variable", json!({}))])),
+        (
+            "empty text edits",
+            json!([action("Extract variable", json!({"changes": {(target_uri): []}}))]),
+        ),
+        (
+            "malformed text edit",
+            json!([action("Extract variable", json!({"changes": {(target_uri): [{}]}}))]),
+        ),
+        (
+            "wrong URI",
+            json!([action(
+                "Extract variable",
+                json!({
+                    "changes": {"file:///workspace/other.pl": [text_edit.clone()]}
+                })
+            )]),
+        ),
+        (
+            "disabled action",
+            json!([{
+                "title": "Extract variable", "kind": "refactor.extract", "edit": edit,
+                "disabled": {"reason": "requires code selection"}
+            }]),
+        ),
+    ] {
+        assert!(
+            require_extract_variable_edit(&result, target_uri).is_err(),
+            "{case} must not satisfy the extract-variable behavioral oracle: {result}"
+        );
+        // Invalid matching actions must not hide a later valid variable edit.
+        if let Some(actions) = result.as_array() {
+            let mut with_valid_action = actions.clone();
+            with_valid_action.push(action(
+                "Extract variable",
+                json!({"changes": {(target_uri): [text_edit.clone()]}}),
+            ));
+            require_extract_variable_edit(&Value::Array(with_valid_action), target_uri)?;
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn workspace_edit_requires_well_formed_text_edits() {
     let target_uri = "file:///workspace/script.pl";
@@ -187,6 +306,12 @@ fn workspace_edit_requires_well_formed_text_edits() {
 }
 
 mod test_fixtures {
+    pub const EXTRACT_VARIABLE_FILE: &str = r#"use strict;
+use warnings;
+my $str = "hello";
+my $result = length($str) + 10;
+"#;
+
     pub const MAIN_FILE: &str = r#"#!/usr/bin/env perl
 use strict;
 use warnings;
@@ -369,33 +494,27 @@ fn test_workspace_symbol_search() -> TestResult {
 fn test_extract_variable_returns_edits() -> TestResult {
     const SELECTOR: &str = "test_extract_variable_returns_edits";
     if in_fallback_child(SELECTOR) {
-        let (mut harness, workspace) = create_test_server()?;
+        let (mut harness, workspace) = LspHarness::with_workspace(&[(
+            "extract_variable.pl",
+            test_fixtures::EXTRACT_VARIABLE_FILE,
+        )])?;
+        let file_uri = workspace.uri("extract_variable.pl");
+        harness.open_document(&file_uri, test_fixtures::EXTRACT_VARIABLE_FILE)?;
+        harness.did_save(&file_uri).ok();
+        harness.wait_for_idle(Duration::from_millis(200));
         let result = harness.request_with_timeout(
             "textDocument/codeAction",
             json!({
-                "textDocument": {"uri": workspace.uri("script.pl")},
+                "textDocument": {"uri": file_uri},
                 "range": {
-                    "start": {"line": 11, "character": 11},
-                    "end": {"line": 11, "character": 18}
+                    "start": {"line": 3, "character": 13},
+                    "end": {"line": 3, "character": 25}
                 },
                 "context": {"diagnostics": []}
             }),
             Duration::from_secs(10),
         )?;
-        let actions = result.as_array().ok_or("Should return action array")?;
-        if let Some(extract_action) = actions
-            .iter()
-            .find(|action| action["title"].as_str().is_some_and(|title| title.contains("Extract")))
-        {
-            let edit = extract_action
-                .get("edit")
-                .ok_or("Extract variable action should include a workspace edit")?;
-            let file_uri = workspace.uri("script.pl");
-            assert!(
-                workspace_edit_has_text_edits(edit, &file_uri),
-                "Extract variable action should include at least one well-formed text edit for {file_uri}; got {edit}"
-            );
-        }
+        require_extract_variable_edit(&result, &file_uri)?;
         println!("{FALLBACK_CHILD_MARKER}={SELECTOR}");
         return Ok(());
     }
