@@ -134,6 +134,9 @@ fn run() -> Result<i32> {
                 check_panic_test(&repo_root)?
             }
         }
+        CliCommand::CheckSecrets { base } => {
+            commands::secret_scan::check(&repo_root, base.as_deref())?
+        }
         CliCommand::CheckMustContext { base } => {
             commands::must_context::check(&repo_root, base.as_deref())?
         }

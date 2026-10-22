@@ -8,5 +8,6 @@ pub(crate) mod must_context;
 pub(crate) mod panic_test;
 pub(crate) mod print_in_lib;
 pub(crate) mod regex_static;
+pub(crate) mod secret_scan;
 pub(crate) mod serial_test;
 pub(crate) mod todos;
