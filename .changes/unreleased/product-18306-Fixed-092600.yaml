@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "Canonical incremental parsing rebuilds lexer state for edits reaching EOF, preventing stale token prefixes after appends and suffix changes."
+time: 2026-10-22T09:26:00Z
+custom:
+  PR: "18306"
+  Slug: incremental-eof-invalidation
+  Breaking: "no"
