@@ -112,16 +112,15 @@ pub(super) fn apply_symbol_and_workspace_features(
     }
 
     if build.workspace_symbol {
-        // Resolve enriches items from the parent request; it cannot advertise
-        // that request again after the parent feature has been disabled.
-        caps.workspace_symbol_provider = Some(if build.workspace_symbol_resolve {
-            OneOf::Right(WorkspaceSymbolOptions {
-                resolve_provider: Some(true),
-                work_done_progress_options: WorkDoneProgressOptions::default(),
-            })
-        } else {
-            OneOf::Left(true)
-        });
+        caps.workspace_symbol_provider = Some(OneOf::Left(true));
+    }
+
+    // Resolve options cannot advertise a disabled parent request again.
+    if build.workspace_symbol && build.workspace_symbol_resolve {
+        caps.workspace_symbol_provider = Some(OneOf::Right(WorkspaceSymbolOptions {
+            resolve_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }));
     }
 
     if build.notebook_document_sync {

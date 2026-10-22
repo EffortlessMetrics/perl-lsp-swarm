@@ -354,13 +354,22 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "textDocument/documentSymbol",
             "features.toml#lsp.document_symbol; lifecycle tests document_symbol_provider_*",
         ),
-        cap(
-            "cap.workspaceSymbolProvider.resolveProvider",
-            "workspaceSymbolProvider.resolveProvider",
-            S_SYM,
-            "workspace/symbol + workspaceSymbol/resolve",
-            "features.toml#lsp.workspace_symbol + lsp.workspace_symbol_resolve; parent suppression withdraws the entire provider (#18315)",
-        ),
+        SurfaceRow {
+            competing_paths: vec![CompetingPath {
+                path: "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs apply_symbol_and_workspace_features (workspace_symbol arm)",
+                delta: "workspace_symbol=true claims OneOf::Left(true); the later \
+                        workspace_symbol_resolve arm overwrites the same provider with \
+                        OneOf::Right({resolveProvider:true}) when both flags are set - two \
+                        writers inside one function claim the same variant",
+            }],
+            ..cap(
+                "cap.workspaceSymbolProvider.resolveProvider",
+                "workspaceSymbolProvider.resolveProvider",
+                S_SYM,
+                "workspace/symbol + workspaceSymbol/resolve",
+                "features.toml#lsp.workspace_symbol_resolve; lifecycle test workspace_symbol_provider_advertises_resolve_when_enabled",
+            )
+        },
         cap(
             "cap.notebookDocumentSync.notebookSelector[].notebook",
             "notebookDocumentSync.notebookSelector[].notebook",
