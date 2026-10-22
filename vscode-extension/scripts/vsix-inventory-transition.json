@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17985,
-  "reason": "Accept the measured 114-byte package.json growth for the truthful native-only critic-engine description and its review-driven correction in #17985; all 30 package members and the emitted extension bundle remain otherwise unchanged.",
-  "base_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
-  "candidate_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
-  "base_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f",
-  "candidate_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423"
+  "owner_issue": 16585,
+  "reason": "Measure the complete archive for capability-gated AI prompt guidance with the verified absolute README reference and current main build inputs.",
+  "base_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
+  "candidate_baseline_file_sha256": "fe0a44403694af71e19dc4443b7b2f36eeb089e071b3c9888cbb3eb817a91c05",
+  "base_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423",
+  "candidate_inventory_sha256": "e1774dcb693a6fb64150d8e8aaa78f1235b36e1d8dfb07059f1708c8d5e4cc78"
 }
