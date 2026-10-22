@@ -2569,15 +2569,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file creations
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!("Failed to refresh client after file creations: {}", e);
             }
 
-            // Push clients get no refresh request from `refresh_all`; the
-            // created file changed what open consumers resolve through, so
-            // republish them directly, mirroring the delete tail (#18116).
+            // Each usable event invalidates consumer diagnostics. The pull
+            // request must not be lost in the controller's leading-edge debounce.
             if processed_any {
-                self.republish_open_document_diagnostics();
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 
@@ -2722,15 +2721,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file renames
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after file renames");
             }
 
-            // Push clients get no refresh request from `refresh_all`; the
-            // rename changed what open consumers resolve through, so
-            // republish them directly, mirroring the delete tail (#18116).
+            // Pair push republish with a capability-aware pull refresh for
+            // every usable event, including successive operations (#18116).
             if processed_any {
-                self.republish_open_document_diagnostics();
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 

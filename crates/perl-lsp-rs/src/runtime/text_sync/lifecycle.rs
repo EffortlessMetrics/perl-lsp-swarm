@@ -184,10 +184,9 @@ impl LspServer {
                         };
                         if accepted {
                             self.refresh_metadata_for_document_uri(uri);
-                            // The saved text became the indexed facts open
-                            // consumers resolve through; refresh them
-                            // instead of waiting for a watcher echo (#18116).
-                            self.refresh_diagnostics_after_watched_change();
+                            // The accepted parse ticket owns the consumer
+                            // refresh after its index commit (#18116). Enqueue
+                            // success alone does not establish fresh facts.
                         }
                     }
                     return result;
@@ -234,7 +233,7 @@ impl LspServer {
                             .then(|| (doc_gen_val, d.generation.clone(), d.text_str().to_string()))
                     })
                 };
-                let mut index_recommitted = false;
+                let mut index_reconciled = false;
                 if let Some((doc_gen_val, instance, text)) = doc_info
                     && let Some(coordinator) = self.coordinator()
                 {
@@ -255,7 +254,7 @@ impl LspServer {
                             text,
                             "#8041 backing-file re-cohere",
                         );
-                        index_recommitted = matches!(
+                        index_reconciled = matches!(
                             outcome,
                             Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp)
                         );
@@ -279,18 +278,18 @@ impl LspServer {
                             text,
                             "stale-index reconciliation",
                         );
-                        index_recommitted = matches!(
+                        index_reconciled = matches!(
                             outcome,
                             Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp)
                         );
                     }
                 }
 
-                // A save that recommitted this file's indexed facts changed
-                // what open consumers resolve through it. Republish them the
+                // Reconciliation restores source-generation freshness, even
+                // for same-content NoOp outcomes. Republish consumers the
                 // same way the watched-file tails do (#18116); relying on the
                 // client's watcher to echo the save is client-dependent.
-                if index_recommitted {
+                if index_reconciled {
                     self.refresh_diagnostics_after_watched_change();
                 }
             }
