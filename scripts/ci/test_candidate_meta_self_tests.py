@@ -23,6 +23,7 @@ SELF_TESTS = (
     Path("scripts/ci/test_run_gate_shard.py"),
     Path("scripts/ci/test_scope_cache_key.py"),
     Path("scripts/ci/test_candidate_meta_self_tests.py"),
+    Path("scripts/ci/test_local_publication_containment.py"),
 )
 
 

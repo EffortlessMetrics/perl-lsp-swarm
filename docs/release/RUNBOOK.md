@@ -1,5 +1,21 @@
 # Release Pipeline Runbook
 
+## Publication authority (#16802)
+
+Follow the reviewed release transaction in [#13768](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13768)
+and [#6055](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6055).
+Its existing workflow entry point is `release-orchestration.yml` (see Release
+Execution below); exact candidate, channel and evidence requirements still apply.
+Local `publish-crates`, `publish-vscode`, `publish-new-crates`, `npm run publish`
+and `npm run publish:openvsx` front doors are retired. `publish-crates --dry-run`
+is only non-publishing package rehearsal, not release readiness.
+
+The legacy `publish-release` helper does not supply required `expected_sha`,
+`candidate_run_id`, and `manifest_sha256` inputs. It is not a replacement for the
+controller. Dispatch acceptance is not publication/completion; run correlation
+belongs to [#16799](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/16799).
+
+
 Pre-release checks, release execution, and recovery procedures for the 6 failure
 modes from the 2026-04-08 incident, plus the GIT_DIR clobber risk and multi-PR
 Cargo.toml race documented in project memory.
@@ -145,12 +161,13 @@ not on workspace restructures that don't touch the root manifest.
 just publish-allowlist-check
 
 # Add to Cargo.toml [workspace.metadata.publish.allow] in correct topo order
-# Then re-trigger the publish workflow:
-gh workflow run publish-crates.yml -f version=X.Y.Z -f dry_run=false
+# Then ask the reviewed controller to revalidate the exact candidate/handoff:
+# Retired incomplete dispatch example: resume the reviewed controller transaction.
 ```
 
-Retrigger is **safe**: the workflow fast-paths any crate already present in the
-crates.io sparse index and only publishes what is missing.
+After the fix, the reviewed controller must revalidate the exact candidate and
+sealed handoff before deciding whether to retry. Sparse-index visibility alone
+does not establish retry eligibility.
 
 ---
 
@@ -183,7 +200,8 @@ cargo metadata --no-deps --format-version 1 > /dev/null  # verify parseable
 git commit -m "fix(cargo): deduplicate TOML section header"
 ```
 
-Retrigger is **safe** after the fix is merged.
+After the fix is merged, return the exact candidate and sealed handoff to the
+reviewed controller for a retry-eligibility decision.
 
 ---
 
@@ -209,20 +227,10 @@ wave of new crates may still fail all 3 attempts.
 
 **Recovery.**
 
-For new crates, use the manual staggered script instead of the bulk workflow:
-
-```bash
-# Dry-run first (safe):
-DRY_RUN=true just publish-new-crates
-
-# Live run (requires CARGO_REGISTRY_TOKEN):
-CARGO_REGISTRY_TOKEN=<token> just publish-new-crates
-```
-
-See `docs/reference/MANUAL_PUBLISH_NEW_CRATES.md` for full context.
-
-If you already triggered the workflow and it partially succeeded, retriggering is
-**safe**: the sparse-index fast-path skips already-published crates.
+Keep rate-limit recovery inside the reviewed #13768 / #6055 release transaction.
+The manual ambient publisher and `just publish-new-crates` are retired (#16802).
+Preserve the exact failed run/candidate and let the controller determine whether
+a retry remains eligible; index visibility alone does not authorize it.
 
 ---
 
@@ -245,12 +253,13 @@ but it can only report what the compute-order job produced.
    gh run view <run-id> --log-failed
    ```
 2. If `compute-order` failed, fix the allowlist or TOML issue first (see FM-1/FM-2).
-3. Retrigger:
+3. Return the failed run and corrected candidate to the reviewed controller:
    ```bash
-   gh workflow run publish-crates.yml -f version=X.Y.Z -f dry_run=false
+   # Retired incomplete dispatch example: resume the reviewed controller transaction.
    ```
 
-Retrigger is **safe**: the sparse-index fast-path skips already-published crates.
+The reviewed controller must revalidate the exact candidate and sealed handoff
+before retrying; skipping occupied versions alone does not establish eligibility.
 
 ---
 
@@ -290,22 +299,22 @@ git show HEAD:LICENSE-APACHE > LICENSE-APACHE
 just publish-dry-run
 ```
 
-Retrigger is **safe** after the files are restored and pushed.
+After the files are restored and pushed, return the exact candidate and sealed
+handoff to the reviewed controller for a retry-eligibility decision.
 
 ---
 
 ### FM-6: Retrigger Safety
 
-**Summary.** Retriggering `publish-crates.yml` after any partial failure is always
-safe. The workflow checks the crates.io sparse index before each `cargo publish`
-call and skips crates that are already present at the target version. This means a
-re-run is idempotent — it publishes only what is missing.
+**Summary.** Retry eligibility belongs to the reviewed #13768 / #6055 transaction
+and its exact sealed handoff. The sparse-index fast path is an occupancy check;
+it does not prove candidate identity, authorization or completion.
 
 ```bash
-gh workflow run publish-crates.yml -f version=X.Y.Z -f dry_run=false
+# Retired incomplete dispatch example: resume the reviewed controller transaction.
 ```
 
-To verify which crates are already published before retriggering:
+To collect registry occupancy evidence for the controller (not retry authority):
 
 ```bash
 # Check a specific crate in the sparse index:
@@ -389,11 +398,11 @@ runner OOM) on the *same* code.
 
 | Failure | Recovery command | Retrigger safe? |
 |---------|-----------------|-----------------|
-| Allowlist drift | `just publish-allowlist-check` then fix + retrigger | Yes |
-| Duplicate TOML key | Deduplicate section + merge fix | Yes |
-| 429 rate limit | `CARGO_REGISTRY_TOKEN=... just publish-new-crates` | Yes |
-| Exit-on-failure cascade | Fix root cause + `gh workflow run publish-crates.yml` | Yes |
-| Missing LICENSE files | `git show HEAD:LICENSE-MIT > LICENSE-MIT` | Yes |
-| Retrigger safety | Always safe; sparse-index fast-path skips published crates | Yes |
+| Allowlist drift | `just publish-allowlist-check`, fix, then revalidate the exact handoff | Controller decision |
+| Duplicate TOML key | Deduplicate section, merge fix, then revalidate the exact handoff | Controller decision |
+| 429 rate limit | Resume the reviewed controller transaction; local publisher retired | Controller decision |
+| Exit-on-failure cascade | Fix root cause; revalidate the exact controller handoff | Controller decision |
+| Missing LICENSE files | Restore the files, then revalidate the exact handoff | Controller decision |
+| Retrigger safety | Revalidate the exact candidate and sealed handoff; index visibility alone is insufficient | Controller decision |
 | GIT_DIR clobber | `git restore <file>`; fix xtask `.env_remove("GIT_DIR")` | N/A |
-| Multi-PR TOML race | `gh pr update-branch`; dedup headers | After fix |
+| Multi-PR TOML race | Update the branch, deduplicate headers, then revalidate the exact handoff | Controller decision |

@@ -7,25 +7,23 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Read-only packaging verification over the publish allowlist.
+/// Non-publishing package rehearsal over the publish allowlist.
 ///
-/// Direct local publication to crates.io is disabled (#15393): public
-/// mutation must go through the release controller's gated
-/// `publish-crates.yml` workflow, which verifies the sealed-handoff
-/// eligibility inputs (exact candidate SHA, candidate run, terminal manifest
-/// digest) before publishing. Releases route through
-/// `cargo xtask publish-release <version>`.
+/// Direct local publication is disabled (#16802). The reviewed release
+/// transaction (#13768 / #6055) owns candidate admission and publication;
+/// `release-orchestration.yml` is its existing workflow entry point.
+/// This local dry run neither proves release readiness nor authorizes a release.
 pub fn publish_crates(dry_run: bool) -> Result<()> {
     if !dry_run {
         bail!(
-            "Direct local publication to crates.io is disabled. Dispatch the gated \"Publish to \
-             crates.io\" workflow instead: `cargo xtask publish-release <version>` (see \
-             docs/release/RUNBOOK.md). `cargo xtask publish-crates --dry-run` remains available \
-             as a read-only packaging verifier."
+            "Direct local publication to crates.io is disabled. Follow the reviewed release \
+             transaction (#13768 / #6055) and its `release-orchestration.yml` entry point (see \
+             docs/release/RUNBOOK.md). `cargo xtask publish-crates --dry-run` is only a \
+             non-publishing package rehearsal; it does not establish release readiness."
         );
     }
 
-    println!("📦 Verifying crates.io packaging (dry run; nothing is published)");
+    println!("📦 Package rehearsal only (dry run; no publication or release-readiness claim)");
 
     let publish_targets = load_publish_targets()?;
 
@@ -53,7 +51,7 @@ pub fn publish_crates(dry_run: bool) -> Result<()> {
         println!("✅ {} packaged", target.name);
     }
     println!();
-    println!("✅ All crates packaged successfully (dry run; nothing was published).");
+    println!("✅ Package rehearsal completed; no publication or release readiness established.");
 
     Ok(())
 }
@@ -137,8 +135,8 @@ fn load_publish_targets() -> Result<Vec<PublishTarget>> {
 pub fn publish_vscode() -> Result<()> {
     bail!(
         "Direct `publish-vscode` marketplace publication is disabled. Publication runs through \
-         the gated `publish-extension.yml` release workflow with sealed VSIX artifacts (see \
-         docs/release/RUNBOOK.md); publisher credentials stay in the GitHub environment boundary."
+         the reviewed release transaction (#13768 / #6055), including `publish-extension.yml` \
+         (see docs/release/RUNBOOK.md); local argv or environment credentials grant no authority."
     );
 }
 
@@ -165,7 +163,10 @@ pub fn publish_release(version: String, dry_run: bool, git_ref: Option<String>) 
         bail!("publish-release workflow dispatch failed");
     }
 
-    println!("Dispatched \"Publish to crates.io\" for {version} on ref {ref_name}.");
+    println!(
+        "Dispatch request accepted for {version} on ref {ref_name}; publication and completion \
+         are not verified. Exact workflow-run correlation is tracked by #16799."
+    );
     Ok(())
 }
 
@@ -198,12 +199,12 @@ mod tests {
         let err = publish_crates(false).expect_err("direct crates.io publication must refuse");
         let message = format!("{err:#}");
         assert!(
-            message.contains("publish-release"),
-            "refusal must route to the gated workflow dispatch: {message}"
+            message.contains("#13768 / #6055") && message.contains("release-orchestration.yml"),
+            "refusal must route to the reviewed release transaction: {message}"
         );
         assert!(
             message.contains("dry-run"),
-            "refusal must name the remaining read-only verifier: {message}"
+            "refusal must name the remaining non-publishing rehearsal: {message}"
         );
     }
 

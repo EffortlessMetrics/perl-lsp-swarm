@@ -2046,17 +2046,20 @@ enum Commands {
         version: String,
     },
 
-    /// Verify crates.io packaging (dry run only; publication is workflow-gated)
+    /// Non-publishing package rehearsal; does not establish release readiness
     ///
-    /// Direct local publication is disabled: releases must dispatch the
-    /// gated `publish-crates.yml` workflow via `publish-release`.
+    /// Direct publication is disabled. Follow the reviewed release transaction
+    /// (#13768 / #6055) through `release-orchestration.yml`; see docs/release/RUNBOOK.md.
     PublishCrates {
         /// Dry run (nothing is published)
         #[arg(long)]
         dry_run: bool,
     },
 
-    /// Dispatch the "Publish to crates.io" workflow for a release
+    /// Legacy workflow dispatch request; does not verify publication or completion
+    ///
+    /// This helper does not supply sealed-handoff eligibility inputs. Use the
+    /// reviewed release transaction (#13768 / #6055); run correlation is #16799.
     PublishRelease {
         /// Release version (for example 0.x.y)
         version: String,
