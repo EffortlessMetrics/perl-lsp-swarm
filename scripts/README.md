@@ -60,15 +60,17 @@ Scripts invoked by `just` CI tiers or GitHub Actions workflows.
 
 ## Release Workflow
 
-Run in order for a release. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-workflow) for the full sequence.
+Release publication belongs to the reviewed #13768 / #6055 controller transaction;
+see the [release runbook](../docs/release/RUNBOOK.md). This table describes preparation
+helpers and workflow internals, not a locally authorized publication sequence.
 
-| Script | Order | Purpose |
+| Script | Stage | Purpose |
 |--------|-------|---------|
-| `prepare-release.sh` | 1 | Bump versions, generate changelog entry |
-| `release-turnkey-pr.sh` | 2 | Open release PR with all artifacts |
-| `publish-topo.py` | 3 | Publish crates in topological order |
-| `publish-release.sh` | — | Full publish pipeline (wraps publish-topo.py) |
-| `publish-new-crates-manually.sh` | — | Publish a single new crate by name |
+| `prepare-release.sh` | Preparation | Bump versions, generate changelog entry |
+| `release-turnkey-pr.sh` | Preparation | Open release PR with all artifacts |
+| `publish-topo.py` | Workflow internal | Compute the topological crate order for the canonical workflow |
+| `publish-release.sh` | — | Legacy dispatch request; not publication/completion proof (#16799) |
+| `publish-new-crates-manually.sh` | — | Retired ambient publisher; always refuses (#16802) |
 | `publish-receipts.sh` | — | Generate publish receipts for audit trail |
 | `check-version-sync.sh` | — | Verify all version sites agree |
 | `prep-crates-io-launch.sh` | — | Pre-launch checklist for crates.io |

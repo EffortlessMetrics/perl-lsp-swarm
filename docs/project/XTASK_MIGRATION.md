@@ -49,7 +49,7 @@ xtask subcommands (`cargo xtask <subcommand>`).
 | `release-turnkey` | `release_turnkey.rs` | -- | PR-driven release orchestration |
 | `performance-hardening` | `hardening.rs` | -- | Production performance hardening checks |
 | `bump-version` | `bump_version.rs` | 184 | Bump version numbers across project |
-| `publish-crates` | `publish.rs` | 203 | Publish crates to crates.io |
+| `publish-crates` | `publish.rs` | 203 | Non-publishing package rehearsal; no release-readiness claim (#13768 / #6055) |
 | `forbid-fatal-constructs` | `forbid_fatal_constructs.rs` | -- | Run forbidden fatal construct checks via perl-ci-hygiene |
 | `forensics-dossier` | `forensics.rs` | -- | Generate complete PR dossier artifacts |
 | `forensics-harvest` | `forensics.rs` | -- | Harvest PR forensics metadata |
@@ -62,7 +62,7 @@ xtask subcommands (`cargo xtask <subcommand>`).
 | `gh-triage` | `github.rs` | -- | Show issues missing required label taxonomy |
 | `ci-hygiene` | `ci_hygiene.rs` | -- | Pass-through to `perl-ci-hygiene` subcommands |
 | `worktree-cleanup` | `worktrees.rs` | 71 | Remove stale `.claude/worktrees` entries |
-| `publish-vscode` | `publish.rs` | -- | Publish VSCode extension |
+| `publish-vscode` | `publish.rs` | -- | Refuses direct publication; follow the reviewed #13768 / #6055 transaction |
 | `populate-book` | `populate_book.rs` | -- | Populate mdBook source directory from docs |
 | `e2e-validate` | `e2e_validate.rs` | -- | Run end-to-end validation suite |
 | `verify-publication-facts` | `publication_facts.rs` | -- | Verify PUBLICATION_FACTS_LEDGER metrics |
@@ -109,7 +109,7 @@ xtask subcommands (`cargo xtask <subcommand>`).
 | `update-parser-matrix.py` | 255 | `cargo xtask parser-matrix` | **Replaced** | Low | Compatibility shim for `cargo xtask parser-matrix` |
 | `release-turnkey-pr.sh` | 431 | `cargo xtask release-turnkey` | **Replaced** | High | Orchestration entrypoint now delegated through `xtask release-turnkey` |
 | `prepare-release.sh` | 61 | `cargo xtask release-turnkey` | **Replaced** | -- | Thin wrapper around `release-turnkey` flow |
-| `publish-release.sh` | 94 | `cargo xtask publish-release` | **Replaced** | -- | Crate publishing dispatch wrapper |
+| `publish-release.sh` | 94 | `cargo xtask publish-release` | **Replaced** | -- | Legacy dispatch request; not publication/completion proof (#16799) |
 | `publish-receipts.sh` | 68 | `cargo xtask publish-receipts` | **Replaced** | Low | Archives gate + receipt artifacts with provenance metadata |
 | `install.sh` | 236 | -- | **Keep** | -- | Curl-pipe installer; must remain shell for `curl \| bash` UX |
 | `install-githooks.sh` | 13 | `cargo xtask ci-hygiene install-githooks` | **Replaced** | Low | Trivial pass-through wrapper |

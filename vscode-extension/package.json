@@ -1454,9 +1454,9 @@
     "bundle-lsp": "node ./scripts/bundle-lsp.js",
     "check:publisher-tools": "node scripts/check-publisher-tools.js",
     "package": "node scripts/package-vsix.js",
-    "publish": "npm exec --offline --no -- @vscode/vsce publish",
+    "publish": "node ./scripts/refuse-local-publication.cjs",
     "verify:marketplace": "npm run bundle-lsp && npm run package",
-    "publish:openvsx": "npm exec --offline --no -- ovsx publish",
+    "publish:openvsx": "node ./scripts/refuse-local-publication.cjs",
     "check:openvsx": "npm exec --offline --no -- ovsx --version"
   },
   "dependencies": {
