@@ -224,7 +224,7 @@ fn unicode_multiplication_reaches_the_parser_without_recovery() -> R {
         usize::from(matches!(&node.kind, NodeKind::Binary { op, .. } if op == "*"))
             + node.children().into_iter().map(count_multiplication).sum::<usize>()
     }
-    for name in ["$a", "$é", "$变量", "$𐐀", "$a\u{0301}"] {
+    for name in ["$a", "$é", "$变量", "$𐐀", "$a\u{0301}", "time", "rand()"] {
         for quote in ['"', '\'', '`'] {
             let input = format!("use utf8;my $x={name}*{quote};{quote};my $after=1;");
             let mut parser = Parser::new(&input);
@@ -232,6 +232,139 @@ fn unicode_multiplication_reaches_the_parser_without_recovery() -> R {
             assert!(parser.errors().is_empty(), "{input:?}: {:?}", parser.errors());
             assert_eq!(count_multiplication(&ast), 1, "{input:?}");
             assert_eq!(ast.children().len(), 3, "both declarations must survive: {input:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn unicode_comments_before_typeglob_keep_punctuation_names() -> R {
+    use perl_parser_core::Parser;
+    for quote in ['"', '\'', '`'] {
+        let prefix = "*alias = # é\n*";
+        let punctuation = quote.to_string();
+        let input = format!("{prefix}{quote};my $after=1;");
+        let q = prefix.len();
+        let expected = [
+            (TokenType::Identifier("*alias".into()), "*alias", 0, 6),
+            (TokenType::Operator("=".into()), "=", 7, 8),
+            (TokenType::Identifier("*".into()), "*", q - 1, q),
+            (TokenType::Operator(punctuation.as_str().into()), &punctuation, q, q + 1),
+            (TokenType::Semicolon, ";", q + 1, q + 2),
+            (TokenType::Keyword("my".into()), "my", q + 2, q + 4),
+            (TokenType::Identifier("$after".into()), "$after", q + 5, q + 11),
+            (TokenType::Operator("=".into()), "=", q + 11, q + 12),
+            (TokenType::Number("1".into()), "1", q + 12, q + 13),
+            (TokenType::Semicolon, ";", q + 13, q + 14),
+            (TokenType::EOF, "", q + 14, q + 14),
+        ];
+        let mut lexer = PerlLexer::new(&input);
+        for (kind, text, start, end) in expected {
+            let token = lexer.next_token().ok_or("missing token after Unicode comment")?;
+            assert_eq!(token.token_type, kind, "{input:?}: {token:?}");
+            assert_eq!((token.text.as_ref(), token.start, token.end), (text, start, end));
+            assert_eq!(input.get(start..end), Some(text));
+        }
+        assert!(lexer.next_token().is_none());
+        let mut parser = Parser::new(&input);
+        parser.parse()?;
+        assert!(parser.errors().is_empty(), "{input:?}: {:?}", parser.errors());
+    }
+    Ok(())
+}
+
+#[test]
+fn existing_punctuation_exclusions_preserve_unterminated_quote_errors() -> R {
+    // The repair must not enlarge the historical punctuation rescue. In
+    // particular, bitwise-AND/glob syntax and quote-operator delimiters remain
+    // subject to the existing operand exclusions, including their errors.
+    for prefix in ["1 & *", "q*a* "] {
+        for quote in ['"', '\'', '`'] {
+            for tail in ["", "\nmy $after=1;"] {
+                let unclosed = format!("{quote};");
+                let input = format!("{prefix}{unclosed}{tail}");
+                let mut lexer = PerlLexer::new(&input);
+                loop {
+                    let token = lexer.next_token().ok_or("missing unterminated quote")?;
+                    if token.start == prefix.len() {
+                        assert_eq!(
+                            token.token_type,
+                            TokenType::Error("unterminated string".into()),
+                            "{input:?}"
+                        );
+                        assert_eq!(
+                            (token.text.as_ref(), token.start, token.end),
+                            (unclosed.as_str(), prefix.len(), prefix.len() + 2)
+                        );
+                        break;
+                    }
+                    assert!(token.start < prefix.len(), "quote opener was swallowed: {input:?}");
+                }
+                if !tail.is_empty() {
+                    let next = lexer.next_token().ok_or("missing declaration after error")?;
+                    assert_eq!(
+                        (next.token_type, next.text.as_ref()),
+                        (TokenType::Keyword("my".into()), "my")
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_typeglob_quote_does_not_validate_a_malformed_operator_prefix() {
+    use perl_parser_core::Parser;
+    for quote in ['"', '\'', '`'] {
+        let input = format!("& *{quote};");
+        let mut parser = Parser::new(&input);
+        let result = parser.parse();
+        assert!(
+            result.is_err() || !parser.errors().is_empty(),
+            "a punctuation typeglob must not hide the malformed `& *` prefix: {input:?}"
+        );
+    }
+}
+
+#[test]
+fn a_comment_terminal_star_is_not_a_typeglob_sigil() -> R {
+    for handle in ["STDOUT", "$fh"] {
+        for quote in ['"', '\'', '`'] {
+            let prefix = format!("print {handle} # a*\n");
+            let string = format!("{quote};{quote}");
+            let input = format!("{prefix}{string};my $after=1;");
+            let expected = [
+                (TokenType::Keyword("print".into()), "print"),
+                (TokenType::Identifier(handle.into()), handle),
+                (semicolon_quote_kind(quote), string.as_str()),
+                (TokenType::Semicolon, ";"),
+                (TokenType::Keyword("my".into()), "my"),
+                (TokenType::Identifier("$after".into()), "$after"),
+                (TokenType::Operator("=".into()), "="),
+                (TokenType::Number("1".into()), "1"),
+                (TokenType::Semicolon, ";"),
+            ];
+            let mut lexer = PerlLexer::new(&input);
+            let mut end = 0;
+            for (kind, text) in expected {
+                let start = if text == string {
+                    prefix.len()
+                } else {
+                    end + input[end..].find(text).ok_or("missing expected source token")?
+                };
+                let token = lexer.next_token().ok_or("missing token after comment star")?;
+                assert_eq!(token.token_type, kind, "{input:?}: {token:?}");
+                end = start + text.len();
+                assert_eq!((token.text.as_ref(), token.start, token.end), (text, start, end));
+                assert_eq!(input.get(start..end), Some(text));
+            }
+            let eof = lexer.next_token().ok_or("missing EOF")?;
+            assert_eq!(
+                (eof.token_type, eof.start, eof.end),
+                (TokenType::EOF, input.len(), input.len())
+            );
+            assert!(lexer.next_token().is_none());
         }
     }
     Ok(())
