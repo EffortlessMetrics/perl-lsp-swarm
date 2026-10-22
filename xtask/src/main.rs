@@ -6238,7 +6238,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             benchmarks::run_benchmarks(output, quick, category)
         }
         Commands::BenchCompare { fail_on_regression } => {
-            benchmarks::compare_benchmarks(fail_on_regression)
+            let code = benchmarks::compare_benchmarks(fail_on_regression)?;
+            if code != 0 {
+                // The comparator already explained an input refusal or verdict.
+                // This CLI boundary propagates its status without an eyre
+                // backtrace; launch failures still use the normal error path.
+                std::process::exit(code);
+            }
+            Ok(())
         }
         Commands::BenchFormat { receipt, markdown } => {
             benchmarks::format_benchmarks(receipt, markdown)
