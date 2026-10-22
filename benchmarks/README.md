@@ -122,7 +122,7 @@ Measures indexing performance (affects startup time and find-references).
 just bench
 
 # Via cargo directly
-cargo bench --workspace --locked
+cargo bench --workspace --features perl-lsp-rs/benchmarks --locked
 ```
 
 ### Quick Smoke Test
