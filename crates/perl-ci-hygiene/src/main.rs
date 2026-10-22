@@ -146,6 +146,9 @@ fn run() -> Result<i32> {
                 check_serial_test(&repo_root)?
             }
         }
+        CliCommand::CheckTestDeletion { base } => {
+            commands::test_deletion::check(&repo_root, base.as_deref())?
+        }
         CliCommand::CheckDoctestEnforcement => commands::doctest_enforcement::check(&repo_root)?,
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
