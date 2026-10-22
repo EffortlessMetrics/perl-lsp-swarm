@@ -12,7 +12,98 @@ mod real_process;
 use anyhow::{Result, bail, ensure};
 use real_process::RealProcessClient;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// A recovered parse must give way to the repaired document's declarations.
+/// Both bindings share the queried prefix so filtering cannot hide stale data.
+#[test]
+fn completion_refreshes_after_incomplete_subroutine_becomes_valid() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-completion-recovery"))?;
+    let uri = "file:///completion-syntax-recovery.pl";
+    let incomplete = "my $recover_old = 1;\nprint $recover_old;\nsub interrupted {\n";
+    let repaired =
+        "my $recover_new = 2;\nprint $recover_new;\nsub interrupted {\n    return 1;\n}\n";
+
+    for (version, source, expected, stale) in [
+        (1, incomplete, "$recover_old", "$recover_new"),
+        (2, repaired, "$recover_new", "$recover_old"),
+    ] {
+        if version == 1 {
+            client.notify(
+                "textDocument/didOpen",
+                json!({"textDocument": {
+                    "uri": uri, "languageId": "perl", "version": version, "text": source
+                }}),
+            )?;
+        } else {
+            client.notify(
+                "textDocument/didChange",
+                json!({"textDocument": {"uri": uri, "version": version},
+                       "contentChanges": [{"text": source}]}),
+            )?;
+        }
+
+        let deadline = Instant::now() + timeout();
+        let mut trigger_kind = 1;
+        let mut attempt = 0;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            ensure!(!remaining.is_zero(), "version {version} completion never became complete");
+            let id = json!(format!("completion-recovery-{version}-{attempt}"));
+            let response = client.request(
+                id.clone(),
+                "textDocument/completion",
+                json!({"textDocument": {"uri": uri},
+                       "position": {"line": 1, "character": 15},
+                       "context": {"triggerKind": trigger_kind}}),
+                remaining,
+            )?;
+            assert_response_id(&response, &id)?;
+            ensure!(response.get("error").is_none(), "completion failed: {response}");
+            let is_incomplete =
+                response
+                    .pointer("/result/isIncomplete")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| anyhow::anyhow!("missing completion status: {response}"))?;
+            let items = response
+                .pointer("/result/items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| anyhow::anyhow!("missing completion items: {response}"))?;
+            ensure!(
+                items.iter().all(|item| item.get("label").and_then(Value::as_str).is_some()),
+                "malformed completion item: {response}"
+            );
+            ensure!(
+                !items.iter().any(|item| item["label"] == stale),
+                "version {version} leaked stale {stale}: {response}"
+            );
+            if !is_incomplete {
+                let bindings: Vec<_> = items
+                    .iter()
+                    .filter(|item| {
+                        item["label"].as_str().is_some_and(|label| label.starts_with("$recover_"))
+                    })
+                    .map(|item| (&item["label"], &item["kind"]))
+                    .collect();
+                ensure!(
+                    bindings == vec![(&json!(expected), &json!(6))],
+                    "version {version} must offer exactly the current variable: {response}"
+                );
+                break;
+            }
+            // Follow only explicit incomplete lists; a complete wrong answer
+            // must fail immediately rather than be retried into success.
+            trigger_kind = 3;
+            attempt += 1;
+            std::thread::sleep(
+                Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+    }
+    shutdown_and_exit(&mut client, json!("shutdown-completion-recovery"))
+}
 
 fn explain_trace(client: &mut RealProcessClient, provider: &str) -> Result<Value> {
     let id = json!("explain-trace");
