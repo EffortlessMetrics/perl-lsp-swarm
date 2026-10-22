@@ -1166,12 +1166,16 @@ impl<'a> PerlLexer<'a> {
         if index == 0 {
             return true;
         }
-        let before = bytes[index - 1] as char;
-        !(before.is_ascii_alphanumeric()
-            || matches!(
-                before,
-                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
-            ))
+        // The ASCII scans preserve a character boundary; the preceding byte
+        // itself may be inside a Unicode identifier, including a combining tail.
+        let before = self.input[..index].chars().next_back();
+        !before.is_some_and(|before| {
+            is_perl_identifier_continue(before)
+                || matches!(
+                    before,
+                    '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+                )
+        })
     }
 
     #[inline]
