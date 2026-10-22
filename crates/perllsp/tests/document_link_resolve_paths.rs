@@ -101,3 +101,14 @@ fn absolute_file_links_resolve_terminal_parent_segments() -> Result<()> {
         ("C:/..", "file:///C:/"),
     ])
 }
+
+#[test]
+fn absolute_file_links_preserve_unc_share_root() -> Result<()> {
+    resolve_file_cases(&[
+        ("//server/share/../target.pl", "file://server/share/target.pl"),
+        ("//server/share/../../target.pl", "file://server/share/target.pl"),
+        ("//server/share/a/../../../Hash#Part.pl", "file://server/share/Hash%23Part.pl"),
+        ("//server/share/..", "file://server/share/"),
+        ("//server/share/../%2e%2e/target.pl", "file://server/share/%252e%252e/target.pl"),
+    ])
+}
