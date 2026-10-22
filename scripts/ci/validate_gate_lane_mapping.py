@@ -102,6 +102,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # explicit so gate-policy additions cannot silently leave the
     # policy/economics mapping incomplete.
     "must_context_check": {"lanes": ["merge_gate_shards"]},
+    # The no-verify re-cover guard (#17430) re-runs hook policy over the
+    # pushed range in the required merge-gate policy shard.
+    "no_verify_recover_check": {"lanes": ["merge_gate_shards"]},
     # Always-running required existence check for docs/agents contract
     # workflows (#14628). Lives in the policy shard so deleting one of those
     # path-filtered workflows cannot silently stop enforcement.

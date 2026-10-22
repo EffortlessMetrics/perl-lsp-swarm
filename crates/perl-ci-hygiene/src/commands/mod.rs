@@ -5,6 +5,7 @@ pub(crate) mod doc_paths;
 pub(crate) mod doctest_enforcement;
 pub(crate) mod fatal_constructs;
 pub(crate) mod must_context;
+pub(crate) mod no_verify_recover;
 pub(crate) mod panic_test;
 pub(crate) mod print_in_lib;
 pub(crate) mod regex_static;
