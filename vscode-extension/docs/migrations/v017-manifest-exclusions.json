@@ -14,8 +14,8 @@
       "default": false,
       "scope": "machine",
       "order": 10,
-      "description": "Reserved preference for AI-powered inline completions. No shipped server can arm its AI backend yet, so this does not change completion behaviour today; inline suggestions stay deterministic. See the AI completion reference for details.",
-      "markdownDescription": "Reserved preference for AI-powered inline completions. No shipped server can arm its AI backend yet, so this does not change completion behaviour today; inline suggestions stay deterministic. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md) for what is accepted today and what is reserved."
+      "description": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the AI completion reference.",
+      "markdownDescription": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)."
     },
     "issue": 14968,
     "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
@@ -35,8 +35,8 @@
       "default": true,
       "scope": "machine",
       "order": 20,
-      "description": "Reserved preference for progressive streaming of AI completions. It does not currently authorize server streaming, and completions are delivered one-shot. Requires aiCompletion.enabled to be true.",
-      "markdownDescription": "Reserved preference for progressive streaming of AI completions. It does not currently authorize server streaming, and completions are delivered one-shot. Requires `aiCompletion.enabled` to be true. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)."
+      "description": "Client preference for progressive inline-completion display. Requires aiCompletion.enabled. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build.",
+      "markdownDescription": "Client preference for progressive inline-completion display. Requires `aiCompletion.enabled`. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)."
     },
     "issue": 14968,
     "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."

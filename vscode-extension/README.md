@@ -62,22 +62,21 @@ for support-tier boundaries, explanations, previews, and copyable receipts.
 
 ### AI Completion
 
-Perl LSP offers **AI-powered inline completions** through VS Code's
-inline-suggestion UI. The feature is **off by default** and requires a language
-server that can arm its AI backend — a capability no shipped server advertises
-yet, so inline suggestions are currently deterministic pattern-based
-completions in every configuration.
+AI inline-completion behavior depends on the connected server build. AI is
+**off by default**. The extension offers its enable prompt only when the server
+advertises explicit AI activation support and the language client has a
+registered inline-completion provider, whether registered at initialization or
+dynamically afterward.
+
+The public `perl-lsp` `v0.17.0` server accepts generic AI configuration. The
+development server at `28efaee0d8a0267c1919018ee2ae689f0db72dfa` rejects generic
+activation and requires trusted server authority. Do not infer server-side
+enforcement from the extension's prompt or a `0.17.0` version string.
 
 `perl-lsp.aiCompletion.enabled` and `perl-lsp.aiCompletion.streaming.enabled`
-are **reserved preferences** for that future capability. The extension records
-them, but the server rejects them on every generic settings channel and will
-not construct a remote AI backend until a server-owned trusted activation
-adapter lands, so setting either one does not change completion behaviour
-today. The enable prompt appears only once a connected server advertises that it
-can honour the setting.
-
-See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md) for which
-fields each channel accepts today.
+are machine-scoped client preferences; they do not grant server activation
+authority. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md)
+for the exact source boundary and each build's configuration behavior.
 
 ### Quick Start: Demo Project
 

@@ -1540,3 +1540,76 @@ test('a non-true activation capability does not open the journey (#16585)', asyn
 
   expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
 });
+
+describe('AI journey with registered inline providers', () => {
+  const capabilities = { experimental: { perlAiCompletionActivation: true } };
+  beforeEach(() => {
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn(() => false),
+      update: jest.fn(),
+    });
+  });
+
+  test('offers the journey for a dynamic provider without a static capability', async () => {
+    const workspaceState = makeState();
+    const getFeature = jest.fn(() => ({
+      getState: () => ({ kind: 'document', registrations: true }),
+    }));
+    await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+      initializeResult: { capabilities },
+      getFeature,
+    });
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(getFeature).toHaveBeenCalledWith('textDocument/inlineCompletion');
+  });
+
+  test.each([undefined, { kind: 'document', registrations: false }, { kind: 'static' }])(
+    'does not mistake an old static capability for a registered provider: %p',
+    async (state) => {
+      const workspaceState = makeState();
+      await suggestAiCompletionIfSupported(
+        { workspaceState } as unknown as vscode.ExtensionContext,
+        {
+          initializeResult: { capabilities: { ...capabilities, inlineCompletionProvider: {} } },
+          getFeature: () => (state ? { getState: () => state } : undefined),
+        },
+      );
+      expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+      expect(workspaceState.update).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([undefined, false, null, 'true', 1])(
+    'dynamic support cannot substitute for activation %p',
+    async (activation) => {
+      const workspaceState = makeState();
+      await suggestAiCompletionIfSupported(
+        { workspaceState } as unknown as vscode.ExtensionContext,
+        {
+          initializeResult: {
+            capabilities: { experimental: { perlAiCompletionActivation: activation } },
+          },
+          getFeature: () => ({ getState: () => ({ kind: 'document', registrations: true }) }),
+        },
+      );
+      expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+      expect(workspaceState.update).not.toHaveBeenCalled();
+    },
+  );
+
+  test('startup and registration overlap cannot show duplicate prompts before receipt persistence', async () => {
+    const receipt = new Deferred<void>();
+    const workspaceState = { get: jest.fn(() => false), update: jest.fn(() => receipt.promise) };
+    const context = { workspaceState } as unknown as vscode.ExtensionContext;
+    const client = {
+      initializeResult: { capabilities },
+      getFeature: () => ({ getState: () => ({ kind: 'document', registrations: true }) }),
+    };
+    const startup = suggestAiCompletionIfSupported(context, client);
+    const registration = suggestAiCompletionIfSupported(context, client);
+    expect(workspaceState.update).toHaveBeenCalledTimes(1);
+    receipt.resolve(undefined);
+    await Promise.all([startup, registration]);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+  });
+});
