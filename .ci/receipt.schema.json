@@ -261,7 +261,7 @@
         "tier": {
           "type": "string",
           "description": "Gate tier determining when it runs",
-          "enum": ["commit", "pr_fast", "merge_gate", "nightly", "release"],
+          "enum": ["commit", "publication", "pr_fast", "merge_gate", "nightly", "release"],
           "examples": ["pr_fast"]
         },
         "status": {
@@ -272,7 +272,7 @@
         },
         "required": {
           "type": "boolean",
-          "description": "Whether this gate blocks merging",
+          "description": "Whether failure blocks the requested role; publication consistency does not grant merge readiness",
           "default": true
         },
         "duration_ms": {
@@ -470,6 +470,9 @@
             "commit": {
               "$ref": "#/$defs/tier_summary"
             },
+            "publication": {
+              "$ref": "#/$defs/tier_summary"
+            },
             "pr_fast": {
               "$ref": "#/$defs/tier_summary"
             },
@@ -486,7 +489,7 @@
         },
         "overall_status": {
           "type": "string",
-          "description": "Overall result for merge-blocking decision",
+          "description": "Overall result for the requested role; publication success is not product qualification or merge permission",
           "enum": ["pass", "fail", "partial"],
           "examples": ["pass"]
         },
@@ -524,7 +527,7 @@
         "is_latest": { "type": "boolean" },
         "tier": {
           "type": "string",
-          "enum": ["commit", "pr_fast", "merge_gate", "nightly", "all"]
+          "enum": ["commit", "publication", "pr_fast", "merge_gate", "nightly", "all"]
         },
         "scope": { "$ref": "#/$defs/agent_scope" },
         "selected_lanes": {
@@ -544,12 +547,12 @@
         },
         "staged_tree_oid": {
           "type": ["string", "null"],
-          "description": "git write-tree OID of the staged tree this run inspected (issue #3786). Present only for GateTier::Commit runs invoked with --staged.",
+          "description": "Frozen tree OID inspected by the commit or publication role; publication binds it to the exact pushed head and explicit base.",
           "examples": ["a1b2c3d4e5f6", null]
         },
         "advisories": {
           "type": "array",
-          "description": "Non-blocking commit-tier findings (CLASSIFICATION REQUIRED / ADVISORY / NOT PROVEN). Blocking findings are in `failures` instead; always empty for non-commit tiers.",
+          "description": "Non-blocking commit/publication findings. Publication NOT PROVEN instrument outcomes block and appear in failures; advisory/classification findings do not claim semantic proof.",
           "items": { "$ref": "#/$defs/agent_advisory" }
         }
       }

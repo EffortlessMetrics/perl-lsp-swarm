@@ -2680,6 +2680,10 @@ enum Commands {
         #[arg(long)]
         base: Option<String>,
 
+        /// Exact pushed commit required by the publication consistency role.
+        #[arg(long)]
+        head: Option<String>,
+
         /// Immutable CI subject receipt used for scope-aware planning.
         #[arg(long)]
         subject: Option<PathBuf>,
@@ -7447,6 +7451,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy,
             gate,
             base,
+            head,
             subject,
             list,
             explain_denominator,
@@ -7465,6 +7470,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             gate_policy: Some(gate_policy),
             gate_filter: gate,
             base_ref: base,
+            head_ref: head,
             subject,
             output_format: format,
             emit_receipt: receipt,
