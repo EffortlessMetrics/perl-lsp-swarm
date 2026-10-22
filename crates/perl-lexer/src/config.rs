@@ -10,6 +10,10 @@ use crate::symbol_table::LocalSymbolTable;
 /// table changes one declared bareword/regex ambiguity surface. Token byte spans
 /// remain authoritative in every configuration.
 ///
+/// Angle scanning adds two source-operation limits. Struct literals should use
+/// `..LexerConfig::default()` to inherit new policy fields; exhaustive literals
+/// must supply both angle limits explicitly.
+///
 /// # Examples
 ///
 /// ```rust
@@ -23,6 +27,10 @@ use crate::symbol_table::LocalSymbolTable;
 /// ```
 #[derive(Debug, Clone)]
 pub struct LexerConfig {
+    /// Cumulative UTF-8 bytes inspected by angle-term scans per source operation.
+    pub max_angle_scan_bytes: usize,
+    /// Cumulative Unicode scalar inspections by angle-term scans per source operation.
+    pub max_angle_scan_steps: usize,
     /// Split interpolating string bodies into string parts (#8779).
     ///
     /// When `true`, ordinary double-quoted strings, `qq` bodies, and
@@ -112,6 +120,8 @@ impl Default for LexerConfig {
     #[allow(deprecated)] // The compatibility field keeps its default value until #8749 removes it.
     fn default() -> Self {
         Self {
+            max_angle_scan_bytes: 16 * 1024 * 1024,
+            max_angle_scan_steps: 16 * 1024 * 1024,
             parse_interpolation: true,
             track_positions: true,
             max_lookahead: Self::DEFAULT_MAX_LOOKAHEAD,
@@ -164,6 +174,7 @@ mod tests {
             track_positions: false,
             max_lookahead: 256,
             symbol_table: None,
+            ..LexerConfig::default()
         };
 
         let cloned = config.clone();

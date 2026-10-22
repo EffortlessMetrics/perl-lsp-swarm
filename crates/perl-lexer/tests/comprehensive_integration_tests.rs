@@ -973,6 +973,7 @@ fn custom_config() -> R {
         track_positions: false,
         max_lookahead: 512,
         symbol_table: None,
+        ..LexerConfig::default()
     };
     let mut lexer = PerlLexer::with_config("my $x = 1;", config);
     let toks = lexer.collect_tokens();
