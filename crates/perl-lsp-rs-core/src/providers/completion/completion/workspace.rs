@@ -141,7 +141,7 @@ pub fn add_workspace_symbol_completions(
                     detail: Some(Cow::Owned(detail)),
                     documentation: symbol.documentation.clone().map(Cow::Owned),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -180,7 +180,7 @@ pub fn add_workspace_symbol_completions(
                     sort_text: Some(Cow::Owned(format!("4_{name}"))),
                     filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: Some(vec![":".to_string(), ";".to_string()]),
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -210,7 +210,7 @@ pub fn add_workspace_symbol_completions(
                     sort_text: Some(Cow::Owned(format!("4_{name}"))),
                     filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -237,7 +237,7 @@ pub fn add_workspace_symbol_completions(
                     sort_text: Some(Cow::Owned(format!("2_{name}"))), // Prioritize exports
                     filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -329,7 +329,7 @@ pub fn add_visible_symbol_completions(
             sort_text: Some(Cow::Owned(format!("2z_visible_{label}"))),
             filter_text: Some(Cow::Owned(label)),
             additional_edits: vec![],
-            text_edit_range: Some((context.prefix_start, context.position)),
+            text_edit_range: Some((context.prefix_start, context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -1895,7 +1895,7 @@ pub fn add_workspace_method_completions(
             completions.iter().map(|item| item.label.as_ref()).collect();
         workspace_method_symbols(&members, &existing_labels, method_prefix)
     };
-    let method_text_edit_range = (context.method_text_edit_start(source), context.position);
+    let method_text_edit_range = (context.method_text_edit_start(source), context.suffix_end);
 
     if add_semantic_method_completions(
         completions,
@@ -1945,7 +1945,7 @@ pub fn add_workspace_method_completions(
             sort_text: Some(Cow::Owned(format!("{method_tier}_{}", symbol.name))), // tier 2=own, 3=inherited, after local (tier 1)
             filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits: vec![],
-            text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+            text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -2061,7 +2061,7 @@ fn add_union_receiver_method_completions(
                 sort_text: Some(Cow::Owned(format!("{sort_tier}_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -2145,7 +2145,7 @@ fn add_unknown_receiver_fallback(
                 sort_text: Some(Cow::Owned(format!("6_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -3557,6 +3557,7 @@ mod union_receiver_method_completion_tests {
             current_package: "main".to_string(),
             prefix: source.to_string(),
             prefix_start: 0,
+            suffix_end: position,
             cursor_scope_id: 0,
         }
     }
