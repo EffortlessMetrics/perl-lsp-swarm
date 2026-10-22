@@ -882,18 +882,18 @@ export async function suggestAiCompletionIfSupported(
   if (context.workspaceState.get<boolean>(stateKey, false) || aiCompletionPrompts.has(context)) {
     return;
   }
-  // Startup finalization and a late registration can overlap while the receipt
-  // is being persisted. Claim the prompt before the first await.
+  // Keep eligibility and display in the same synchronous turn. Persisting the
+  // receipt first would let provider removal or client replacement race display.
+  // Hold the overlap guard through the choice and receipt persistence.
   aiCompletionPrompts.add(context);
   try {
-    await context.workspaceState.update(stateKey, true);
-
     const choice = await vscode.window.showInformationMessage(
       'Perl LSP: your language server supports AI-powered inline completions. They are off by default — enable them now?',
       'Enable',
       'Learn More',
       'Dismiss',
     );
+    await context.workspaceState.update(stateKey, true);
 
     if (choice === 'Enable') {
       try {

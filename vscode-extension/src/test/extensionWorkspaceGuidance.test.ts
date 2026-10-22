@@ -1598,7 +1598,9 @@ describe('AI journey with registered inline providers', () => {
   );
 
   test('startup and registration overlap cannot show duplicate prompts before receipt persistence', async () => {
+    const choice = new Deferred<string | undefined>();
     const receipt = new Deferred<void>();
+    (vscode.window.showInformationMessage as jest.Mock).mockReturnValueOnce(choice.promise);
     const workspaceState = { get: jest.fn(() => false), update: jest.fn(() => receipt.promise) };
     const context = { workspaceState } as unknown as vscode.ExtensionContext;
     const client = {
@@ -1607,7 +1609,15 @@ describe('AI journey with registered inline providers', () => {
     };
     const startup = suggestAiCompletionIfSupported(context, client);
     const registration = suggestAiCompletionIfSupported(context, client);
+    // Display must not yield between checking the registered provider and
+    // showing the prompt. The old receipt-first order fails this assertion.
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(workspaceState.update).not.toHaveBeenCalled();
+    choice.resolve('Dismiss');
+    await Promise.resolve();
     expect(workspaceState.update).toHaveBeenCalledTimes(1);
+    await suggestAiCompletionIfSupported(context, client);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
     receipt.resolve(undefined);
     await Promise.all([startup, registration]);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
