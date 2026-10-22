@@ -8,8 +8,12 @@ configuration (target triple, sorted resolved features, no_default_features,
 profile), expected_targets
 (every integration target selected by Cargo metadata for that configuration),
 and suites. Each suite is keyed by Cargo target name and contains the verbatim
-`--list --format terse` stdout as `all`, and `--list --ignored --format terse`
-stdout as `ignored`. Capture each compiled integration executable separately;
+`--list --format pretty --color never` stdout as `all`, and
+`--list --ignored --format pretty --color never` stdout as `ignored`.
+Pretty output includes the required summary, including `0 tests, 0 benchmarks`
+when no ignored cases are selected. Terse output omits it and is not accepted.
+Do not synthesize a summary or convert truncated output into a valid capture.
+Capture each compiled integration executable separately;
 retain the commands, metadata, executable hashes and stderr alongside the JSON.
 Do not infer expected_targets from the list of binaries that happened to run.
 

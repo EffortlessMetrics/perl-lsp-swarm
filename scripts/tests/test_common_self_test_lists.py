@@ -3,15 +3,21 @@
 These fixtures are not captured Rust execution evidence.
 """
 from pathlib import Path
+import re
+import shlex
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import check_common_self_test_lists as comparator
 from check_common_self_test_lists import CASES, DAP_PRESERVED, compare, parse_listing
 
 
 def listing(names):
-    return ''.join(f'{name}: test\n' for name in names) + f'\n{len(names)} tests, 0 benchmarks\n'
+    count = len(names)
+    noun = 'test' if count == 1 else 'tests'
+    return (''.join(f'{name}: test\n' for name in names) + ('\n' if names else '')
+            + f'{count} {noun}, 0 benchmarks\n')
 
 
 def fixture(package, platform):
@@ -36,6 +42,51 @@ def fixture(package, platform):
 
 
 class CapturedRegistrationTests(unittest.TestCase):
+    def test_documented_capture_commands_request_summary_bearing_output(self):
+        commands = re.findall(r'`(--list[^`]*)`', comparator.__doc__)
+        self.assertEqual(len(commands), 2)
+        for command, ignored in zip(commands, [False, True]):
+            with self.subTest(command=command):
+                self.assertEqual(shlex.split(command),
+                                 ['--list'] + (['--ignored'] if ignored else [])
+                                 + ['--format', 'pretty', '--color', 'never'])
+
+    def test_pretty_discovery_output_shapes(self):
+        # Literal format-contract examples, not package execution receipts.
+        # Rust 1.95 pretty.rs write_test_discovered/write_discovery_finish:
+        # https://github.com/rust-lang/rust/blob/1.95.0/library/test/src/formatters/pretty.rs#L166-L190
+        # Empty discovery has a summary without a preceding blank line.
+        examples = [
+            ('example: test\n\n1 test, 0 benchmarks\n', {('example', 'test'): 1}),
+            ('first: test\nsecond: test\n\n2 tests, 0 benchmarks\n',
+             {('first', 'test'): 1, ('second', 'test'): 1}),
+            ('0 tests, 0 benchmarks\n', {}),
+            ('example: benchmark\n\n0 tests, 1 benchmark\n', {('example', 'benchmark'): 1}),
+        ]
+        for output, expected in examples:
+            for newline in ['\n', '\r\n']:
+                with self.subTest(output=output, newline=newline):
+                    self.assertEqual(parse_listing(output.replace('\n', newline)), expected)
+
+    def test_terse_nonempty_and_empty_ignored_output_remain_rejected(self):
+        # TerseFormatter emits no discovery summary, including zero ignored cases.
+        # https://github.com/rust-lang/rust/blob/1.95.0/library/test/src/formatters/terse.rs#L176-L181
+        for output in ['example: test\n', '']:
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(AssertionError, 'missing libtest summary'):
+                    parse_listing(output)
+
+    def test_pretty_truncation_count_and_duplicate_controls(self):
+        for output, reason in [
+            ('first: test\n\n2 tests, 0 benchmarks\n', 'listing count mismatch'),
+            ('first: test\nsecond: test\n\n', 'missing libtest summary'),
+            ('first: test\nfirst: test\n\n2 tests, 0 benchmarks\n', 'duplicate listing selector'),
+            ('error: capture failed\n0 tests, 0 benchmarks\n', 'unrecognized listing line'),
+        ]:
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(AssertionError, reason):
+                    parse_listing(output)
+
     def test_platform_fixtures_pass_without_claiming_execution(self):
         for package in CASES:
             for platform in ['unix', 'windows']:
