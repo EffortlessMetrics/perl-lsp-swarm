@@ -307,6 +307,18 @@ pub(crate) fn compose_report_identity(
     }
 }
 
+/// The schema versions composed into every pull-report result ID, in one
+/// place so tests vary the same construction `compose` consumes.
+fn current_schema_versions() -> DiagnosticResultSchemaVersions {
+    DiagnosticResultSchemaVersions::new(
+        RULE_CATALOG_SCHEMA_VERSION,
+        CRITIC_IDENTITY_SCHEMA_VERSION,
+        SUPPRESSION_CONTRACT_SCHEMA_VERSION,
+        PROJECTION_WIRE_SCHEMA_VERSION,
+        REMEDIATION_WIRE_SCHEMA_VERSION,
+    )
+}
+
 impl PullReportSubject {
     /// Compose the opaque public result ID for this subject.
     ///
@@ -333,13 +345,7 @@ impl PullReportSubject {
             ),
             policy,
             facts,
-            DiagnosticResultSchemaVersions::new(
-                RULE_CATALOG_SCHEMA_VERSION,
-                CRITIC_IDENTITY_SCHEMA_VERSION,
-                SUPPRESSION_CONTRACT_SCHEMA_VERSION,
-                PROJECTION_WIRE_SCHEMA_VERSION,
-                REMEDIATION_WIRE_SCHEMA_VERSION,
-            ),
+            current_schema_versions(),
         )
         .compose();
 
@@ -606,6 +612,74 @@ mod tests {
         // (see the bump comment on the constant) or pre-change clients could
         // be told `unchanged` and never receive the new diagnostic.
         assert_eq!(RULE_CATALOG_SCHEMA_VERSION, 3);
+        // The bump exists for one catalog entry: if PL1008 leaves the
+        // catalog, or stops round-tripping through `parse_code`, the pin
+        // above must not stay green on its own.
+        assert!(
+            perl_diagnostics::DiagnosticCode::ALL
+                .contains(&perl_diagnostics::DiagnosticCode::RegexQuantifierFollowsNothing),
+            "PL1008 must stay registered in the diagnostic catalog"
+        );
+        assert_eq!(
+            perl_diagnostics::DiagnosticCode::RegexQuantifierFollowsNothing.as_str(),
+            "PL1008"
+        );
+        assert_eq!(
+            perl_diagnostics::DiagnosticCode::parse_code("PL1008"),
+            Some(perl_diagnostics::DiagnosticCode::RegexQuantifierFollowsNothing)
+        );
+    }
+
+    #[test]
+    fn rule_catalog_version_reaches_the_substrate_id() {
+        // The version only invalidates a cached report if it reaches the
+        // composed substrate ID. Rebuild the substrate input exactly as
+        // `compose` does, once with the current versions and once with the
+        // rule-catalog slot moved: the IDs must differ, and rebuilding with
+        // the current versions must reproduce the first ID.
+        let context = context_with(Some(ROOT_A));
+        let subject = subject_for(&context, URI_A, CONTENT);
+        let substrate = |versions: DiagnosticResultSchemaVersions| {
+            let policy = AcceptedCriticPolicyIdentity::new(
+                subject.critic_root_id.clone(),
+                subject.accepted_critic_fingerprint.clone(),
+            );
+            let facts = match subject.facts_generation {
+                Some(generation) => {
+                    DiagnosticFactIdentity::Live { workspace: subject.root_id.clone(), generation }
+                }
+                None => DiagnosticFactIdentity::Unavailable,
+            };
+            DiagnosticResultIdentityInput::new(
+                DiagnosticSourceIdentity::new(
+                    LogicalSourceId::from_root_and_logical_path(
+                        &subject.root_id,
+                        &subject.logical_path,
+                    ),
+                    subject.content_digest.clone(),
+                    subject.document_generation,
+                ),
+                policy,
+                facts,
+                versions,
+            )
+            .compose()
+            .as_str()
+            .to_string()
+        };
+        let baseline = substrate(current_schema_versions());
+        assert_eq!(baseline, substrate(current_schema_versions()));
+        assert_ne!(
+            baseline,
+            substrate(DiagnosticResultSchemaVersions::new(
+                RULE_CATALOG_SCHEMA_VERSION + 1,
+                CRITIC_IDENTITY_SCHEMA_VERSION,
+                SUPPRESSION_CONTRACT_SCHEMA_VERSION,
+                PROJECTION_WIRE_SCHEMA_VERSION,
+                REMEDIATION_WIRE_SCHEMA_VERSION,
+            )),
+            "moving the rule-catalog version must move the substrate ID"
+        );
     }
 
     #[test]
