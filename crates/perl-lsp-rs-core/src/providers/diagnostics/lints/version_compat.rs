@@ -552,7 +552,12 @@ pub(crate) fn check_version_compat_with_pragma_map(
                 }
             }
 
-            // Subroutine with a signature — requires v5.20
+            // Subroutine with a signature — requires v5.20.
+            // Being inside a `class` body does not enable signatures for a
+            // plain `sub`: Perl implies signatures only for `method`, which
+            // the parser emits as a distinct node kind that this arm does not
+            // match. A signed plain sub in a class therefore still needs the
+            // `signatures` feature.
             NodeKind::Subroutine { signature: Some(_), .. }
                 if !pragma_state.has_feature("signatures") =>
             {
@@ -1384,6 +1389,68 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.message.contains("subroutine signatures")),
             "v5.20 without explicit signatures feature should emit PL900 for signature subs"
+        );
+    }
+
+    #[test]
+    fn declared_version_signed_plain_sub_inside_class_still_emits_signature_pl900() {
+        // `class` does not imply signatures for a plain `sub` — only for
+        // `method`. Perl rejects `class Foo { sub bar ($x) { $x } }` without
+        // the signatures feature ("Illegal character in prototype"), so the
+        // signatures arm must still warn inside a class body. The `class`
+        // construct itself may also warn on v5.20; only the signatures
+        // diagnostic is in scope here.
+        let diags = version_compat_diags("use v5.20;\nclass Foo { sub bar ($x) { $x } }\n");
+        assert!(
+            diags.iter().any(|d| d.message.contains("subroutine signatures")),
+            "signed plain sub inside class must emit a signatures PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn class_enabled_signatures_disabled_signed_plain_sub_still_emits_signature_pl900() {
+        // Exact reviewer scenario: class feature on, signatures explicitly
+        // off. `use v5.38` would otherwise bundle signatures, so the
+        // `no feature` is what makes this discriminating.
+        let diags = version_compat_diags(
+            "use v5.38;\nuse feature 'class';\nno feature 'signatures';\n\
+             class Foo { sub bar ($x) { $x } }\n",
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("subroutine signatures")),
+            "signed plain sub in a class with signatures disabled must emit PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn class_enabled_signatures_disabled_method_does_not_emit_signature_pl900() {
+        // Negative control for the same lexical state: a `method` implies
+        // signatures, so it must stay silent even with signatures disabled.
+        let diags = version_compat_diags(
+            "use v5.38;\nuse feature 'class';\nno feature 'signatures';\n\
+             class Foo { method bar ($x) { $x } }\n",
+        );
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "method in a class with signatures disabled must not emit PL900: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn declared_version_signed_sub_outside_class_still_warns() {
+        let diags = version_compat_diags("use v5.20;\nclass Foo { }\nsub bar ($x) { $x }\n");
+        assert!(
+            diags.iter().any(|d| d.message.contains("subroutine signatures")),
+            "signed sub outside a class must still emit a signatures PL900 on v5.20: {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn declared_version_method_inside_class_does_not_emit_signature_pl900() {
+        let diags = version_compat_diags("use v5.20;\nclass Foo { method bar ($x) { $x } }\n");
+        assert!(
+            diags.iter().all(|d| !d.message.contains("subroutine signatures")),
+            "method inside class must not emit a signatures PL900: {diags:#?}"
         );
     }
 
