@@ -68,7 +68,7 @@ fn valid_receipt_reaches_public_aggregation_and_writes_json() -> TestResult {
             "kind": "ux_scenario_run",
             "schema_version": 1,
             "measured_at": "2026-08-28T00:00:00Z",
-            "run_identity": {"sha": "abcdef12", "branch": "main"},
+            "run_identity": {"sha": "abcdef12", "branch": "main", "platform": "Linux"},
             "workflow_id": "simple_file_smoke",
             "scenario_file": "ux_scenario_01_simple_file.rs",
             "test_name": "public_cli_delegation",
@@ -129,7 +129,7 @@ fn contradictory_completed_timing_fails_publicly_without_overwriting_output() ->
             "kind": "ux_scenario_run",
             "schema_version": 1,
             "measured_at": "2026-08-28T00:00:00Z",
-            "run_identity": {"sha": "abcdef12", "branch": "main"},
+            "run_identity": {"sha": "abcdef12", "branch": "main", "platform": "Linux"},
             "workflow_id": "simple_file_smoke",
             "scenario_file": "ux_scenario_01_simple_file.rs",
             "test_name": "missing_top_level_timing",
@@ -209,7 +209,7 @@ fn tracked_metrics_artifact_is_untouched_by_cli_tests() -> TestResult {
             "kind": "ux_scenario_run",
             "schema_version": 1,
             "measured_at": "2026-08-28T00:00:00Z",
-            "run_identity": {"sha": "abcdef12", "branch": "main"},
+            "run_identity": {"sha": "abcdef12", "branch": "main", "platform": "Linux"},
             "workflow_id": "simple_file_smoke",
             "scenario_file": "ux_scenario_01_simple_file.rs",
             "test_name": "tracked_artifact_untouched",
@@ -254,4 +254,77 @@ fn workspace_root() -> TestResult<PathBuf> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "xtask manifest must have a workspace parent".into())
+}
+
+fn set_receipt(test: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind":"ux_scenario_run", "schema_version":1,
+        "measured_at":"2026-08-28T00:00:00Z",
+        "run_identity":{"sha":"abcdef12", "platform":"Linux", "branch":"main"},
+        "workflow_id":"simple_file_smoke", "scenario_file":"ux_scenario_01_simple_file.rs",
+        "test_name":test, "ci_tier":"pr", "result":"pass", "duration_ms":10.0,
+        "assertions":{"passed":1, "failed":0, "basis":"instrumented"},
+        "canonical_repro":"cargo test public_set", "friendly_repro":"just ux-tests"
+    })
+}
+
+#[test]
+fn incoherent_sets_fail_publicly_without_overwriting_output() -> TestResult {
+    for mutation in ["duplicate", "mixed_sha", "partial_hosted", "companion_identity"] {
+        let receipts = TempDir::new()?;
+        let output = TempDir::new()?;
+        let output_path = output.path().join("editor_ux.json");
+        let sentinel = b"{\"sentinel\":\"coherent-set\"}";
+        fs::write(&output_path, sentinel)?;
+        fs::write(receipts.path().join("one.json"), serde_json::to_vec(&set_receipt("one"))?)?;
+        let mut second = set_receipt("two");
+        let expected = match mutation {
+            "duplicate" => {
+                second["test_name"] = serde_json::json!("one");
+                "duplicate logical UX case"
+            }
+            "mixed_sha" => {
+                second["run_identity"]["sha"] = serde_json::json!("different");
+                "mixed compatibility receipt subject"
+            }
+            "partial_hosted" => {
+                second["run_identity"]["run_id"] = serde_json::json!("run");
+                "partial hosted compatibility identity"
+            }
+            _ => {
+                second["kind"] = serde_json::json!("golden_editor_workload");
+                "unsupported or malformed kind"
+            }
+        };
+        fs::write(receipts.path().join("two.json"), serde_json::to_vec(&second)?)?;
+        let result = run_with_temp_output(&receipts, &output)?;
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success(), "{mutation} was admitted");
+        assert!(stderr.contains(expected), "{mutation}: wrong refusal: {stderr}");
+        assert_eq!(fs::read(&output_path)?, sentinel);
+    }
+    Ok(())
+}
+
+#[test]
+fn companion_is_excluded_from_public_denominator_and_boundary_is_explicit() -> TestResult {
+    let receipts = TempDir::new()?;
+    let output = TempDir::new()?;
+    fs::write(receipts.path().join("one.json"), serde_json::to_vec(&set_receipt("one"))?)?;
+    fs::write(receipts.path().join("companion.json"), br#"{"kind":"golden_editor_workload","schema_version":3,"rows":[],"projects":[],"rollup":{}}"#)?;
+    let result = run_with_temp_output(&receipts, &output)?;
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        String::from_utf8_lossy(&result.stdout)
+            .contains("v1 predeclared completeness is not proven")
+    );
+    let generated: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.path().join("editor_ux.json"))?)?;
+    let workflow = generated["workflows"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == "simple_file_smoke"))
+        .ok_or("missing workflow")?;
+    assert_eq!(workflow["pass_rate"]["basis"][0], "1 receipts");
+    assert_eq!(workflow["pass_rate"]["value"], 1.0);
+    Ok(())
 }

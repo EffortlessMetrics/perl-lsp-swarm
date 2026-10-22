@@ -1,19 +1,21 @@
 //! Semantic timing guard for compatibility editor-UX receipts.
 //!
-//! This is the public entry point of the `metrics lsp-stats` chain: timing
-//! guard here, then receipt/fixture admission in `lsp_stats_guarded.rs`, then
-//! the historical scorecard in `lsp_stats_impl.rs`.
+//! This is the public entry point of the `metrics lsp-stats` chain. The
+//! guarded loader calls the timing validator on each captured receipt, then
+//! passes the admitted typed set to the historical metric implementation.
 //!
 //! The existing admission module owns JSON/schema and fixture-matrix identity.
 //! This boundary adds the producer's three-state operation-timing invariant
-//! before any admitted receipt can contribute to the legacy scorecard. The
-//! directory is intentionally still read by the compatibility layers more than
-//! once; #13424 owns replacing those reads with one immutable receipt set.
+//! before any admitted receipt can contribute to the legacy scorecard.
 
-use color_eyre::eyre::{Context, Result, bail};
+#[cfg(test)]
+use color_eyre::eyre::Context;
+use color_eyre::eyre::{Result, bail};
 use perl_lsp_ux_tests::recorder::{OperationTiming, UxScenarioRunReceipt};
+#[cfg(test)]
 use serde_json::Value;
 use std::collections::BTreeSet;
+#[cfg(test)]
 use std::fs;
 use std::path::Path;
 
@@ -27,34 +29,10 @@ pub fn run_with_receipt_dir(
     receipt_dir: Option<&Path>,
     output: Option<&Path>,
 ) -> Result<()> {
-    if let Some(receipts_dir) = receipt_dir {
-        validate_timing_receipts(receipts_dir)?;
-    }
     super::lsp_stats_guarded::run_with_receipt_dir(json, receipt_dir, output)
 }
 
-fn validate_timing_receipts(receipts_dir: &Path) -> Result<()> {
-    if !receipts_dir.exists() {
-        return Ok(());
-    }
-
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(receipts_dir)
-        .with_context(|| format!("reading receipts directory: {}", receipts_dir.display()))?
-    {
-        let path = entry.with_context(|| "reading receipt directory entry")?.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-
-    for path in paths {
-        validate_timing_candidate(&path)?;
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 fn validate_timing_candidate(path: &Path) -> Result<()> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading receipt candidate: {}", path.display()))?;
@@ -76,7 +54,7 @@ fn validate_timing_candidate(path: &Path) -> Result<()> {
     validate_timing_semantics(&receipt, path)
 }
 
-fn validate_timing_semantics(receipt: &UxScenarioRunReceipt, path: &Path) -> Result<()> {
+pub(super) fn validate_timing_semantics(receipt: &UxScenarioRunReceipt, path: &Path) -> Result<()> {
     validate_measurement("duration_ms", receipt.duration_ms, receipt.duration_ms, receipt, path)?;
 
     let mut operations = BTreeSet::new();
