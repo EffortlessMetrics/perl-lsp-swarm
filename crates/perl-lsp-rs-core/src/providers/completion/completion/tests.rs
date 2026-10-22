@@ -321,6 +321,185 @@ proc
     assert!(completions.iter().any(|c| c.label == "process_items"));
 }
 
+/// Mid-token workspace-symbol completion must replace the whole token, so
+/// applying the edit does not duplicate the suffix after the cursor (#18123).
+#[test]
+fn test_workspace_symbol_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/MyUtils.pm")?,
+        "package MyUtils;\nuse Exporter 'import';\nour @EXPORT = qw(register);\nsub register { }\n1;\n"
+            .to_string(),
+    )?;
+    let code = "package MyUtils;\nregister;\n";
+    let cursor = code.find("register;").ok_or("call site missing")? + 3; // after `reg`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.insert_text.as_deref() == Some("register"))
+        .ok_or("register workspace completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "register", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(
+        applied, "package MyUtils;\nregister;\n",
+        "applied edit must not duplicate the suffix"
+    );
+
+    // End-of-token control: range still ends at the cursor.
+    let end_cursor = code.find("register;").ok_or("call site missing")? + "register".len();
+    let completions = provider.get_completions(code, end_cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.insert_text.as_deref() == Some("register"))
+        .ok_or("register completion missing at end of token")?;
+    assert_eq!(item.text_edit_range.map(|(_, e)| e), Some(end_cursor));
+    Ok(())
+}
+
+/// Mid-token method completion must replace the whole method token, so
+/// applying the edit does not duplicate the suffix after the cursor (#18123).
+#[test]
+fn test_workspace_method_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/TypedService.pm")?,
+        "package TypedService;\nsub register { }\n1;\n".to_string(),
+    )?;
+    let code = "package TypedService;\nmy $self = bless {}, 'TypedService';\n$self->register;\n";
+    let cursor = code.find("->register").ok_or("call site missing")? + 2 + 3; // after `reg`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "register")
+        .ok_or("register method completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "register", "edit must cover the whole method token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert!(
+        applied.contains("$self->register();") && !applied.contains("register()ister"),
+        "applied edit must not duplicate the suffix: {applied}"
+    );
+
+    // End-of-token control: range still ends at the cursor.
+    let end_cursor = code.find("->register").ok_or("call site missing")? + 2 + "register".len();
+    let completions = provider.get_completions(code, end_cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "register")
+        .ok_or("register method completion missing at end of token")?;
+    assert_eq!(item.text_edit_range.map(|(_, e)| e), Some(end_cursor));
+    Ok(())
+}
+
+/// Mid-token in-file method completion must replace the whole method token.
+/// The in-file producer (`add_method_completions`, sort tier `1_`) wins the
+/// label dedup over the workspace producer, so its range must also extend to
+/// `suffix_end`; otherwise applying it duplicates the suffix (#18123).
+#[test]
+fn test_in_file_method_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub register { }\nmy $self = bless {}, 'Foo';\n$self->register;\nmy $obj = bless {}, 'Foo';\n$obj->register;\n";
+    for receiver in ["$self->register", "$obj->register"] {
+        let cursor = code.find(receiver).ok_or("call site missing")?
+            + receiver.find("->").ok_or("arrow missing")?
+            + 2
+            + 3;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new(&ast);
+        let completions = provider.get_completions(code, cursor);
+        let item = completions
+            .iter()
+            .find(|c| c.label == "register")
+            .ok_or("register in-file method completion missing")?;
+        let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+        assert_eq!(
+            &code[start..end],
+            "register",
+            "edit must cover the whole method token for {receiver}"
+        );
+        let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+        let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+        assert!(
+            !applied.contains("register()ister"),
+            "applied edit must not duplicate the suffix for {receiver}: {applied}"
+        );
+    }
+    Ok(())
+}
+
+/// Mid-token in-file function completion must replace the whole token, for
+/// the same dedup reason as the method case (#18123).
+#[test]
+fn test_in_file_function_completion_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub register { }\nregister;\n";
+    let cursor = code.rfind("register;").ok_or("call site missing")? + 3; // after `reg`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "register")
+        .ok_or("register in-file function completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "register", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(applied, "package Foo;\nsub register { }\nregister();\n");
+    Ok(())
+}
+
+#[test]
+fn word_suffix_end_covers_unicode_identifier_suffix() {
+    // Suffix scanning must match the Unicode prefix scan in `word_prefix`
+    // (`is_alphanumeric` + `_`): `é` is part of the token, so a cursor
+    // after `caf` in `café` must extend over the whole token.
+    let source = "caf\u{e9}";
+    assert_eq!(word_suffix_end(source, 3), source.len());
+    assert_eq!(word_suffix_end(source, source.len()), source.len());
+    assert_eq!(word_suffix_end(source, 0), source.len());
+    // The scan still stops at a non-identifier boundary.
+    let spaced = "caf\u{e9} rest";
+    assert_eq!(word_suffix_end(spaced, 3), "caf\u{e9}".len());
+}
+
+/// Mid-token in-file function completion for a Unicode name must replace
+/// the whole token; otherwise applying `café()` after `caf` leaves a
+/// stray `é` (#18123).
+#[test]
+fn test_in_file_function_completion_unicode_mid_token_replaces_whole_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "sub caf\u{e9} { }\ncaf\u{e9};\n";
+    let cursor = code.rfind("caf\u{e9};").ok_or("call site missing")? + 3; // after `caf`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item = completions
+        .iter()
+        .find(|c| c.label == "caf\u{e9}")
+        .ok_or("café in-file function completion missing")?;
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    assert_eq!(&code[start..end], "caf\u{e9}", "edit must cover the whole token");
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert_eq!(applied, "sub caf\u{e9} { }\ncaf\u{e9}();\n");
+    Ok(())
+}
+
 #[test]
 fn dash_trigger_after_multibyte_receiver_keeps_char_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -4000,6 +4179,7 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         current_package: current_package.to_string(),
         prefix: prefix.to_string(),
         prefix_start: source_position.saturating_sub(prefix.len()),
+        suffix_end: source_position,
         cursor_scope_id: 0,
     }
 }
@@ -9118,10 +9298,9 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
 -> Result<(), Box<dyn std::error::Error>> {
     // Cursor in the MIDDLE of the method word (`pro|cess Child`): `indirect_word_end`
     // must scan forward from the cursor to the full word boundary to locate the
-    // `Child` receiver, so indirect routing still fires. The edit range uses the
-    // same insert semantics as every other completion provider — `(prefix_start,
-    // position)` — replacing the text before the cursor, identical to the arrow
-    // form (`$obj->pro|cess`). This is uniform server behavior, not indirect-specific.
+    // `Child` receiver, so indirect routing still fires. The edit range
+    // replaces the whole token, identical to the arrow form
+    // (`$obj->pro|cess`), so the suffix is not duplicated (#18123).
     let index = indirect_child_parent_index()?;
 
     let code = "process Child";
@@ -9137,13 +9316,12 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
         completions.iter().any(|c| c.label == "speak"),
         "mid-word indirect cursor should still route through to methods; got {labels:?}"
     );
-    // Edit range replaces only the pre-cursor prefix (`pro`), consistent with the
-    // arrow path and all providers — the trailing `cess` is left by design, not
-    // a defect introduced by indirect routing.
+    // Edit range replaces the whole token, so accepting the completion does
+    // not duplicate the trailing `cess` after the cursor (#18123).
     assert_eq!(
         run.text_edit_range,
-        Some((0, pos)),
-        "indirect method edit range must match the uniform (prefix_start, position) insert semantics"
+        Some((0, "process".len())),
+        "indirect method edit range must cover the whole token"
     );
     Ok(())
 }

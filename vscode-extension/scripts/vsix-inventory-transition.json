@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16585,
-  "reason": "Measure the complete archive for capability-gated AI prompt guidance with the verified absolute README reference and current main build inputs.",
+  "owner_issue": 16592,
+  "reason": "Package both demo configuration pins and their README explanation from the exact produced Windows-host archive.",
   "base_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
-  "candidate_baseline_file_sha256": "fe0a44403694af71e19dc4443b7b2f36eeb089e071b3c9888cbb3eb817a91c05",
+  "candidate_baseline_file_sha256": "cfcc3fa7c3ceff01160b44160b685ac8a45572f90617bace23bc9f18e6a0cd3a",
   "base_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423",
-  "candidate_inventory_sha256": "e1774dcb693a6fb64150d8e8aaa78f1235b36e1d8dfb07059f1708c8d5e4cc78"
+  "candidate_inventory_sha256": "bae0d317b5f1c599631983021e3a8d6663f144a4447f9d91ff18450566f3606f"
 }
