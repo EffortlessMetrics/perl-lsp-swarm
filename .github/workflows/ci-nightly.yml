@@ -227,7 +227,7 @@ jobs:
         RUSTC_OS="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p' | cut -d- -f3)"
         export NATIVE_PIPELINE_TOOLCHAIN_TAG="rustc-${RUSTC_RELEASE}-${RUSTC_COMMIT_HASH}-${RUSTC_ARCH}-${RUSTC_OS}"
         declare -a BENCH_TARGETS=(
-          "perl-workspace:workspace_index_benchmark:workspace"
+          "perl-workspace:workspace_index_benchmark:"
           "perl-token:token_scorecard:"
           "perl-symbol:symbol_benchmarks:"
           "perl-pragma:pragma_benchmarks:"
@@ -238,6 +238,7 @@ jobs:
           "perl-parser:positions_bench:"
           "perl-parser:substitution_performance:"
           "perl-lsp-rs:rope_performance_benchmark:"
+          "perl-lsp-rs:lsp_stdio_roundtrip_benchmark:"
           "perl-lsp-perltidy:native_pipeline_benchmark:"
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"
