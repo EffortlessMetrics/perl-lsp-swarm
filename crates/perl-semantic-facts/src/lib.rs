@@ -2378,3 +2378,6 @@ mod tests {
         Ok(())
     }
 }
+
+mod compile_effect_source;
+pub use compile_effect_source::CompileEffectSourceKind;
