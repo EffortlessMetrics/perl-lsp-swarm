@@ -75,6 +75,12 @@ def execute(command, timeout=3):
                 child.kill()
                 child.wait()
                 code, status = child.returncode, 'timeout'
+            finally:
+                # Cancellation can interrupt either wait, including timeout cleanup.
+                # Settle the owned fixture before its evidence files are closed.
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
             out.seek(0); err.seek(0)
             stdout, stderr = out.read(LIMIT + 1), err.read(LIMIT + 1)
             if len(stdout) > LIMIT or len(stderr) > LIMIT:
