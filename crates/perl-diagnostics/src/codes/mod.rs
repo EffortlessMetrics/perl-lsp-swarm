@@ -260,6 +260,9 @@ define_diagnostic_codes! {
     /// Static regex analysis could not complete for this pattern, so its
     /// findings are partial rather than exhaustive
     RegexAnalysisIncomplete => "PL1007",
+    /// A `*`, `+`, or `?` quantifier has no preceding atom in this pattern;
+    /// Perl rejects it with `Quantifier follows nothing in regex`
+    RegexQuantifierFollowsNothing => "PL1008",
 }
 
 /// Error returned when text is not a registered built-in diagnostic code.

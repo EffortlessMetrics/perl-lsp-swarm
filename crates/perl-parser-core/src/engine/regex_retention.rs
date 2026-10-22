@@ -606,6 +606,8 @@ fn project_regex_diagnostics(parse_output: &mut ParseOutput, table: &RegexAnalys
                         location: source_range.start,
                     });
                 }
+            } else if diagnostic.code == RegexDiagnosticCode::QuantifierFollowsNothing {
+                projected.push(ParseError::quantifier_follows_nothing_error(source_range.start));
             } else if diagnostic.class == RegexDiagnosticClass::Syntax
                 || diagnostic.class == RegexDiagnosticClass::PolicyLimit
             {
