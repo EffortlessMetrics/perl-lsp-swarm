@@ -1531,7 +1531,10 @@ test('a non-true activation capability does not open the journey (#16585)', asyn
 
   await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
     initializeResult: {
-      capabilities: { experimental: { perlAiCompletionActivation: 'yes' } },
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: 'yes' },
+      },
     },
   });
 
