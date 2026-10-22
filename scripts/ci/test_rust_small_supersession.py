@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Supersession-discriminator contract for the required Rust Small aggregate (#16187).
+"""Historical recovery controls for the retired Rust Small aggregate (#16187).
+
+The exact result job was extracted from main 4cc7960e61b685ce3b7e4cb9fe43b929bf900972.
+This fixture preserves its executable cancellation and trusted-base controls for
+recovery. It is not the new caller or central aggregate and cannot certify their
+production diagnostics. Live admission is covered by test_rust_small_route_contract.
 
 A second push to a pull request cancels this workflow's in-flight lanes through
 the concurrency group's `cancel-in-progress`, and the cancelled lane used to be
@@ -34,6 +39,7 @@ mutants. They cannot establish live API or hand-cancel acceptance observations.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -47,7 +53,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml"
+WORKFLOW_PATH = ROOT / "scripts/ci/fixtures/rust-small-result-main-4cc7960e.yml"
 
 RESULT_JOB = "rust-small-result"
 RESOLVE_STEP = "Resolve the tested head, the live head, and the replacement run"
@@ -324,7 +330,9 @@ MUTATIONS: tuple[tuple[str, str, Callable[[str], str], str], ...] = (
 
 
 class DiscriminatorHolds(unittest.TestCase):
-    def test_current_workflow_carries_no_violation(self) -> None:
+    def test_recovery_fixture_carries_no_violation(self) -> None:
+        self.assertEqual(hashlib.sha256(WORKFLOW_PATH.read_bytes()).hexdigest(),
+                         '0cb8d365f69b6e7aef3f83a915fe91feaef90c6190b69e7031856b85ae6886b1')
         self.assertEqual(discriminator_violations(_workflow_text()), [])
 
 

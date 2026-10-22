@@ -557,8 +557,9 @@ mod tests {
         // these integers consciously, together with the gate description's
         // "(strict/workspace crates)" denominator (checked mechanically in
         // validate_clippy_all_targets_partition).
-        assert_eq!(partition.workspace.len(), 48);
-        assert_eq!(partition.strict.len(), 37);
+        assert_eq!(partition.workspace.len(), 49);
+        assert_eq!(partition.strict.len(), 38);
+        assert!(partition.strict.contains("perl-rust-small-verifier"));
         assert_eq!(partition.residual.len(), 11);
         let residual_names: BTreeSet<_> = partition.residual.keys().cloned().collect();
         assert!(partition.strict.is_disjoint(&residual_names));

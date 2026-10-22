@@ -2,7 +2,7 @@
 +++ b/.github/workflows/ci.yml
 @@ -6,16 +6,6 @@
  # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
- 
+
  on:
 -  pull_request:
 -    branches: [ main, master ]
@@ -21,7 +21,7 @@
 +++ b/.github/workflows/ripr.yml
 @@ -25,17 +25,6 @@
  name: ripr
- 
+
  on:
 -  pull_request:
 -    branches: [master, main]
@@ -39,34 +39,26 @@
    workflow_dispatch:
 --- a/.github/workflows/em-ci-routed-rust.yml
 +++ b/.github/workflows/em-ci-routed-rust.yml
-@@ -13,16 +13,6 @@
-           - cx53
-           - cx43
-           - github
+@@ -26,8 +25,0 @@
 -  pull_request:
 -    branches: [main]
--    types: [opened, synchronize, reopened, ready_for_review]
+-    types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]
 -  merge_group:
--  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
--  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
--  # what actually sits on main. Landed main commits now carry their own baseline run.
+-  # Keep the protected-branch event surface for discovery. Costly proof now
+-  # requires explicit pre-merge admission; a push skip is not baseline proof.
 -  push:
 -    branches: [main, master]
--
- permissions:
-   actions: read
-   checks: read
 --- a/.ci/policies/required-checks.toml
 +++ b/.ci/policies/required-checks.toml
-@@ -129,7 +129,7 @@
- workflow = ".github/workflows/em-ci-routed-rust.yml"
- job = "rust-small-result"
+@@ -138,7 +138,7 @@
+ callee_sha256 = "5a4211e361763029ba749d376c549482f3e41a7dd4b8eef977b247dd4bfc36a4"
+ callee_job = "result"
  workflow_result = "propagate"
 -events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 +events = ["workflow_dispatch"]
  required = true
  policy_role = "required"
- applicability = "always-or-scoped-noop"
+ applicability = "conditional"
 @@ -143,7 +143,7 @@
  workflow = ".github/workflows/ripr.yml"
  job = "ripr"

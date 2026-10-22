@@ -1,0 +1,107 @@
+//! Rust Small has no local result/mirror job: admission suppresses all routine PR events.
+use serde_yaml_ng::Value;
+use std::{fs, path::Path};
+type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+pub fn validate(text: &str) -> TestResult<()> {
+    let yaml: Value = serde_yaml_ng::from_str(text)?;
+    let jobs = yaml.get("jobs").and_then(Value::as_mapping).ok_or("jobs missing")?;
+    if jobs.len() != 1 {
+        return Err("Rust Small must have one governed call and no local draft mirror".into());
+    }
+    let call = jobs.get(Value::String("rust-small-proof".into())).ok_or("governed call missing")?;
+    if call.get("name").and_then(Value::as_str) != Some("Perl LSP Rust Small governed proof") {
+        return Err("native result context prefix drifted".into());
+    }
+    let guard = call.get("if").and_then(Value::as_str).ok_or("draft admission missing")?;
+    if guard
+        != "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha) || (false && github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled')"
+    {
+        return Err("drafts must skip the complete governed call".into());
+    }
+    if call.get("uses").and_then(Value::as_str)
+        != Some(
+            "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@d69e3c9cbc55ee8c5d084facfe18432cd4c28618",
+        )
+    {
+        return Err("isolated owned policy revision drifted".into());
+    }
+    let inputs = call.get("with").ok_or("proof inputs missing")?;
+    if inputs.get("fetch_depth").and_then(Value::as_u64) != Some(0) {
+        return Err("native protected-base owners require full Git history".into());
+    }
+    if inputs.get("proof_admission").is_some() {
+        return Err("native mode must stay unselected until public/runtime qualification".into());
+    }
+    let events = yaml
+        .get("on")
+        .and_then(|on| on.get("pull_request"))
+        .and_then(|pr| pr.get("types"))
+        .and_then(Value::as_sequence)
+        .ok_or("native request events missing")?;
+    let expected = ["opened", "synchronize", "reopened", "ready_for_review", "auto_merge_enabled"];
+    if events.len() != expected.len()
+        || !events.iter().zip(expected).all(|(event, name)| event.as_str() == Some(name))
+    {
+        return Err("native explicit request/discovery event set drifted".into());
+    }
+    for (key, expected) in [
+        ("profile", "standard"),
+        ("perl_receipt_verifier", "lightweight-v1"),
+        ("script", ".ci/rust-standard-proof.sh"),
+        ("result_script", ".ci/rust-standard-result.sh"),
+        ("artifact_lane", "perl-rust-small"),
+    ] {
+        if inputs.get(key).and_then(Value::as_str) != Some(expected) {
+            return Err(format!("governed {key} drifted").into());
+        }
+    }
+    if inputs.get("upload_artifacts").and_then(Value::as_bool) != Some(true) {
+        return Err("canonical Perl artifact upload must be enabled".into());
+    }
+    for forbidden in ["steps", "runs-on", "secrets", "continue-on-error", "permissions"] {
+        if call.get(forbidden).is_some() {
+            return Err(format!("consumer call must not add {forbidden}").into());
+        }
+    }
+    let scopes =
+        yaml.get("permissions").and_then(Value::as_mapping).ok_or("read scopes missing")?;
+    if scopes.len() != 4 {
+        return Err("read scope set drifted".into());
+    }
+    for scope in ["actions", "checks", "contents", "pull-requests"] {
+        if scopes.get(Value::String(scope.into())).and_then(Value::as_str) != Some("read") {
+            return Err(format!("scope {scope} must remain read only").into());
+        }
+    }
+    Ok(())
+}
+
+pub fn check_contract(path: &Path) -> TestResult<()> {
+    let text = fs::read_to_string(path)?;
+    validate(&text)?;
+    for (before, after) in [
+        ("name: Perl LSP Rust Small governed proof", "name: Unbound proof"),
+        ("inputs.pre_merge_admission && ", ""),
+        ("inputs.reviewed_sha == github.sha", "true"),
+        ("false && github.event_name", "github.event_name"),
+        ("ready_for_review, auto_merge_enabled", "ready_for_review"),
+        ("fetch_depth: 0", "fetch_depth: 1"),
+        ("artifact_lane: perl-rust-small", "artifact_lane: ripr"),
+        ("upload_artifacts: true", "upload_artifacts: false"),
+        ("      fetch_depth: 0", "      proof_admission: native-review-v1\n      fetch_depth: 0"),
+        ("result_script: .ci/rust-standard-result.sh", "result_script: .ci/noop.sh"),
+        ("  checks: read", "  checks: write"),
+    ] {
+        let mutant = text.replacen(before, after, 1);
+        if mutant == text || validate(&mutant).is_ok() {
+            return Err(format!("owned-policy mutant was not rejected: {before}").into());
+        }
+    }
+    if validate(&(text + "\n  obsolete-result:\n    runs-on: ubuntu-latest\n    steps: []\n"))
+        .is_ok()
+    {
+        return Err("local result/mirror restoration was not rejected".into());
+    }
+    Ok(())
+}

@@ -9,6 +9,16 @@ review the final combined source and current observations before requesting that
 operation. Do not land the generated-PR dispatch removal alone while required
 producers still depend on it.
 
+The #16134 source composition refreshes only the staged leaf's routed-workflow
+and first policy hunk to match the governed reusable producer. The historical
+leaf remains in commit `1fa6ba038d44b3009ce7a4bb3ff5186ba72acde3`, blob
+`1871226437139ff8a2cf891baaff7249fc4958a9` (SHA-256
+`5b7d9faca4ea7baa74587703582e646ebd9144fe0b0af0eca477a02b2ec6ca10`).
+Its old context cannot apply to the composed generation. The refreshed leaf
+retains all eight paths and the same event-only/metadata-dispatch boundary;
+both generations stay unapplied and require the qualification and authorization
+below. Local forward/reversal proof does not activate either generation.
+
 ## Exact remaining joins
 
 | Join | Existing source and remaining installation |
