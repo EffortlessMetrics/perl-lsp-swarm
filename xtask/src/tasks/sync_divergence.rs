@@ -1116,7 +1116,7 @@ mod tests {
         use std::io::Write;
         let mut seen = std::collections::HashMap::new();
         for index in 0..100_000u32 {
-            let mut child = Command::new("git")
+            let mut child = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(path)
                 .args(["hash-object", "-w", "--stdin"])
                 .stdin(std::process::Stdio::piped())
@@ -2517,7 +2517,7 @@ mod tests {
     }
 
     fn run_git_fixture(directory: &Path, args: &[&str]) -> Result<()> {
-        let mut command = Command::new("git");
+        let mut command = xtask::git_environment::isolate(Command::new("git"));
         command.current_dir(directory).args(args);
         let output = command.output()?;
         if output.status.success() {
@@ -2536,7 +2536,7 @@ mod tests {
     }
 
     fn rev_parse(directory: &Path, reference: &str) -> Result<String> {
-        let mut command = Command::new("git");
+        let mut command = xtask::git_environment::isolate(Command::new("git"));
         command.current_dir(directory).args(["rev-parse", reference]);
         let output = command.output()?;
         if !output.status.success() {

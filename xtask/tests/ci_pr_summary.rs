@@ -80,7 +80,7 @@ fn add_change_commit(repo_dir: &Path, rel_path: &str, content: &str) -> Result<(
 
 /// Run a git command in a given directory.
 fn git_cmd_in(args: &[&str], cwd: &Path) -> Result<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = xtask::git_environment::isolate(Command::new("git"));
     cmd.args(args).current_dir(cwd).stdout(Stdio::null()).stderr(Stdio::null());
     let status = cmd.status()?;
     if !status.success() {
