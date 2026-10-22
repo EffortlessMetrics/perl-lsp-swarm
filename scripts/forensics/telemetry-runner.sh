@@ -415,17 +415,17 @@ trap cleanup_worktrees EXIT
 # Timeout Wrapper
 # =============================================================================
 
-# Run command with timeout protection
+# Run command with timeout protection; callers decide how to report nonzero exits.
 run_with_timeout() {
     local timeout_secs="$1"
     shift
     local cmd="$*"
 
     if command -v timeout &> /dev/null; then
-        timeout "$timeout_secs" bash -c "$cmd" 2>&1 || true
+        timeout "$timeout_secs" bash -c "$cmd" 2>&1
     else
         # macOS fallback - use perl
-        perl -e "alarm $timeout_secs; exec @ARGV" -- bash -c "$cmd" 2>&1 || true
+        perl -e "alarm $timeout_secs; exec @ARGV" -- bash -c "$cmd" 2>&1
     fi
 }
 
@@ -440,7 +440,7 @@ run_fmt_check() {
 
     cd "$dir"
     local output
-    output=$(run_with_timeout "$TIMEOUT_FMT" "cargo fmt --check --all 2>&1")
+    output=$(run_with_timeout "$TIMEOUT_FMT" "cargo fmt --check --all 2>&1" || true)
     local status="pass"
     if echo "$output" | grep -q "Diff in"; then
         status="fail"
@@ -488,7 +488,8 @@ run_tests() {
 
     cd "$dir"
     local output
-    output=$(run_with_timeout "$TIMEOUT_TEST" "RUST_TEST_THREADS=2 cargo test --workspace --lib --no-fail-fast -- --test-threads=2 2>&1" || true)
+    local rc=0
+    output=$(run_with_timeout "$TIMEOUT_TEST" "RUST_TEST_THREADS=2 cargo test --workspace --lib --no-fail-fast -- --test-threads=2 2>&1") || rc=$?
 
     # Parse test results
     # Look for lines like: "test result: ok. 123 passed; 0 failed; 5 ignored"
@@ -503,7 +504,9 @@ run_tests() {
         fi
     done <<< "$output"
 
-    if [[ $failed -gt 0 ]]; then
+    # Successful crate summaries may precede a timeout or compilation failure.
+    # Retain their counts, but require the complete command to have succeeded.
+    if [[ $rc -ne 0 ]] || [[ $failed -gt 0 ]]; then
         status="fail"
     fi
 
