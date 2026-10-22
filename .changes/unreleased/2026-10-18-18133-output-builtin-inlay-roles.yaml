@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Output-builtin inlay hints no longer label ordinary print values as filehandles. Exact parser-preserved print, say, and printf handles and printf format operands keep source-backed role labels, while ambiguous parenthesized forms suppress instead of guessing."
+time: 2026-10-18T02:00:00Z
+custom:
+  PR: "18133"
+  Slug: output-builtin-inlay-roles
+  Breaking: "no"
