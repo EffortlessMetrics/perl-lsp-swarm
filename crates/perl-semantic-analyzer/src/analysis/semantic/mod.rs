@@ -279,8 +279,8 @@ impl SemanticAnalyzer {
             for reference in refs {
                 if reference.location.start <= position && reference.location.end >= position {
                     let symbols = self.resolve_reference_to_symbols(reference);
-                    if let Some(first_symbol) = symbols.first() {
-                        return Some(self.resolve_definition_target(first_symbol));
+                    if let Some(symbol) = self.bound_symbol(&symbols, reference) {
+                        return Some(self.resolve_definition_target(symbol));
                     }
                 }
             }

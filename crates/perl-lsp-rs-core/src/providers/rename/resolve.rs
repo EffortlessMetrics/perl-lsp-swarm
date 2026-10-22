@@ -12,22 +12,39 @@ pub fn find_symbol_at_position(
     symbol_table: &SymbolTable,
     source: &str,
 ) -> Option<(String, SymbolKind)> {
-    // First check if we're on a definition
+    // First check if we're on a definition. Prefer the smallest containing
+    // span: an enclosing declaration (a sub, a package) also contains the
+    // position, and HashMap iteration order must not let it win over the
+    // specific symbol under the cursor.
+    let mut best: Option<(&String, SymbolKind, usize)> = None;
     for (name, symbols) in &symbol_table.symbols {
         for symbol in symbols {
             if symbol.location.start <= position && position <= symbol.location.end {
-                return Some((name.clone(), symbol.kind));
+                let span = symbol.location.end - symbol.location.start;
+                if best.is_none_or(|(_, _, best_span)| span < best_span) {
+                    best = Some((name, symbol.kind, span));
+                }
             }
         }
     }
+    if let Some((name, kind, _)) = best {
+        return Some((name.clone(), kind));
+    }
 
-    // Then check references
+    // Then check references, with the same smallest-span preference.
+    let mut best: Option<(&String, SymbolKind, usize)> = None;
     for (name, references) in &symbol_table.references {
         for reference in references {
             if reference.location.start <= position && position <= reference.location.end {
-                return Some((name.clone(), reference.kind));
+                let span = reference.location.end - reference.location.start;
+                if best.is_none_or(|(_, _, best_span)| span < best_span) {
+                    best = Some((name, reference.kind, span));
+                }
             }
         }
+    }
+    if let Some((name, kind, _)) = best {
+        return Some((name.clone(), kind));
     }
 
     // Try to extract from source text

@@ -2723,7 +2723,14 @@ mod tests {
             .and_then(Value::as_array)
             .ok_or("missing same-file lexical edits")?;
         assert_eq!(changes.len(), 1, "lexical rename must stay same-file: {rename_result}");
-        assert_eq!(edits.len(), 2, "lexical rename should edit declaration and use");
+        // The initializer RHS in `my $value = $value` binds to the package
+        // global, not to the lexical being declared (#18115), so renaming
+        // the lexical edits only its declaration.
+        assert_eq!(
+            edits.len(),
+            1,
+            "lexical rename should edit the declaration only; the initializer RHS binds outward: {rename_result}"
+        );
 
         Ok(())
     }
