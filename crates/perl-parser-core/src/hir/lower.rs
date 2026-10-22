@@ -4539,7 +4539,30 @@ impl<'a> BodyBuilder2<'a> {
         });
         let lhs_id = self.alloc_expr(place, lhs.location);
         let rhs_id = self.lower_expr(rhs);
-        self.alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, assignment.location)
+        let inner = self
+            .alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, assignment.location);
+        if op == "=" {
+            return inner;
+        }
+        // A compound declaration initializer (`my $value x= 3`) is a simple
+        // declaration assignment of the compound operation's result: the
+        // outer assignment writes the newly declared binding, while the
+        // inner compound assignment keeps its read-modify-write semantics
+        // on the same place (#18259). Collapsing the two made the whole
+        // declaration read-modify-write, which misstates the write to a
+        // binding that has no prior value in scope.
+        let outer_place = HirExpr::Variable(HirVariable {
+            sigil: sigil_from_str(&declared.sigil),
+            name: declared.name.clone(),
+            kind: Self::kind_for(&declared.name, Some(declared)),
+            access: AccessMode::Write,
+            binding: Some(binding),
+        });
+        let outer_lhs = self.alloc_expr(outer_place, lhs.location);
+        self.alloc_expr(
+            HirExpr::Assign { lhs: outer_lhs, rhs: inner, mode: AssignMode::Simple },
+            assignment.location,
+        )
     }
 
     /// Effect of a complex-lvalue `local`: the embedded assignment, a separate
