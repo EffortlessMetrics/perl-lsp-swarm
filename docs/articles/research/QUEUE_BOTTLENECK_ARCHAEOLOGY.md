@@ -19,7 +19,7 @@ That is the bottleneck story.
 
 The swarm docs treat queue depth as a first-class signal, not a side effect.
 
-In [`.claude/commands/swarm.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm.md), the lead is told to:
+In [`.claude/commands/swarm.md`](../../handoff/swarm-pack/commands/swarm.md), the lead is told to:
 
 - check CI queue depth before launching builders
 - stop launching more work if more than five runs are already in progress
@@ -30,7 +30,7 @@ That is a deliberate feedback loop. The swarm is not supposed to maximize active
 
 The same pattern appears in the control-plane state:
 
-- [`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md) stores `swarm-queue.json` as active overlap tracking
+- [`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md) stores `swarm-queue.json` as active overlap tracking
 - `completed-slices.md` records dedup and lifecycle status
 - `discovered-issues.md` records leads that overflow the current slice
 - `known-pitfalls.md` keeps reusable traps
@@ -51,7 +51,7 @@ That is the core bottleneck. The repo can spawn far more parallel work than it c
 
 The consequence is visible in the control-plane commands:
 
-- [`.claude/commands/green-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/green-merge.md) merges green PRs sequentially
+- [`.claude/commands/green-merge.md`](../../handoff/swarm-pack/commands/green-merge.md) merges green PRs sequentially
 - it defaults to a `batch-size` of `3`
 - after each batch, it pauses and waits for master CI to go green
 - this is specifically to prevent merge/cancel cascades where rapid merges cancel each other's CI runs
@@ -128,7 +128,7 @@ That keeps queue pressure from collapsing the whole system.
 
 The strongest sign of maturation is that queue pressure itself got committed to state.
 
-In [`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md), the repo says:
+In [`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md), the repo says:
 
 - `swarm-queue.json` is active overlap tracking
 - `completed-slices.md` is lifecycle bookkeeping
@@ -160,10 +160,10 @@ The point is to keep the whole system moving without outrunning validation.
 
 ## Evidence Pointers
 
-- [docs/articles/research/swarm_development_methodology.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/swarm_development_methodology.md)
-- [docs/articles/research/DEVELOPMENT_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/DEVELOPMENT_ARCHAEOLOGY.md)
-- [docs/articles/research/ERA_TIMELINE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md)
-- [`.claude/commands/swarm.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/swarm.md)
-- [`.claude/commands/green-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/commands/green-merge.md)
-- [`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
-- [docs/project/CI_TEST_LANES.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_TEST_LANES.md)
+- [docs/articles/research/swarm_development_methodology.md](swarm_development_methodology.md)
+- [docs/articles/research/DEVELOPMENT_ARCHAEOLOGY.md](DEVELOPMENT_ARCHAEOLOGY.md)
+- [docs/articles/research/ERA_TIMELINE.md](ERA_TIMELINE.md)
+- [`.claude/commands/swarm.md`](../../handoff/swarm-pack/commands/swarm.md)
+- [`.claude/commands/green-merge.md`](../../handoff/swarm-pack/commands/green-merge.md)
+- [`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md)
+- [docs/project/CI_TEST_LANES.md](../../project/CI_TEST_LANES.md)

@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Admit a strict single-package Clippy workload on Linux with installed driver identity checks, private build roots and storage leases held until launched descendants settle.
+time: 2026-10-10T07:33:44Z
+custom:
+  PR: "17506"
+  Slug: admitted-clippy
+  Breaking: "no"

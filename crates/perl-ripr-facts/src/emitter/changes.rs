@@ -200,22 +200,160 @@ fn find_enclosing_owner<'a>(
     best
 }
 
+/// Strip single-line double/single-quoted string literals from a Perl source
+/// line (#17358).
+///
+/// Each `"..."` / `'...'` literal (backslash escapes honored) is replaced with
+/// an empty `""` placeholder so keyword/substring scans cannot match tokens
+/// that are only string contents — e.g. `my $msg = "please return the form";`
+/// must not classify as `return_value`. An unterminated quote consumes to end
+/// of line (the single-line approximation of a multi-line string start).
+///
+/// A `'` between word characters (`[A-Za-z0-9_]`) is the legacy Perl package
+/// separator (`$main'flag`), not a literal opener, and is left alone. Only a
+/// `'` at line start or after a non-word char opens a literal. Closing
+/// behavior inside an open literal is unchanged.
+///
+/// Explicitly out of scope (still misclassifiable): heredocs, multi-line
+/// strings, `q{}`/`qq{}` and other quote-like operators, regex literals
+/// (`m//`, `s///`, `qr//`), and tokens in trailing comments.
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Byte ranges of single-line string literals in `line`, using the same
+/// opener/escape/separator rules as [`strip_single_line_string_literals`].
+/// Byte-exact (multi-byte chars keep their width) so callers can map
+/// positions back onto the original line.
+fn single_line_string_spans(line: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    // Byte offset of each char index.
+    let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    let mut b = 0;
+    for c in &chars {
+        byte_at.push(b);
+        b += c.len_utf8();
+    }
+    byte_at.push(b);
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let quote = chars[i];
+        let opens_literal =
+            quote == '"' || (quote == '\'' && (i == 0 || !is_word_char(chars[i - 1])));
+        if opens_literal {
+            let start = byte_at[i];
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i = i.saturating_add(2).min(chars.len());
+                } else if chars[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            spans.push((start, byte_at[i]));
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+/// Byte index of the first `needle` occurrence in `line` that starts outside
+/// any single-line string literal at a Perl keyword boundary, or `None`.
+/// Lets discriminator extraction preserve the detected keyword's position
+/// instead of matching text inside an earlier string (#17389 review). A
+/// match preceded by a word char or sigil (`$return`, `@die`), or followed by
+/// a word char (`returning`), is part of a longer name, not the keyword.
+/// A needle's trailing whitespace remains required by existing exception
+/// callers; the right boundary is checked at the keyword before that suffix.
+fn find_outside_strings(line: &str, needle: &str) -> Option<usize> {
+    let spans = single_line_string_spans(line);
+    let keyword_len = needle.trim_end().len();
+    let mut from = 0;
+    while let Some(rel) = line[from..].find(needle) {
+        let idx = from + rel;
+        let inside = spans.iter().any(|&(s, e)| idx >= s && idx < e);
+        let starts_at_keyword_boundary = match line[..idx].chars().next_back() {
+            None => true,
+            Some(c) => !is_word_char(c) && !matches!(c, '$' | '@' | '%'),
+        };
+        let ends_at_keyword_boundary =
+            line[idx + keyword_len..].chars().next().is_none_or(|c| !is_word_char(c));
+        if !inside && starts_at_keyword_boundary && ends_at_keyword_boundary {
+            return Some(idx);
+        }
+        // Advance one char (never splitting a multi-byte boundary).
+        from = line[idx..].chars().next().map_or(line.len(), |c| idx + c.len_utf8());
+    }
+    None
+}
+
+/// Select a bounded return occurrence with the existing start/space shape.
+/// Check shape and quote/keyword boundaries on the same occurrence, so a
+/// method or key name cannot borrow another occurrence's supported shape.
+fn find_return_outside_strings(line: &str) -> Option<usize> {
+    find_outside_strings(line, "return")
+        .filter(|&index| index == 0)
+        .or_else(|| find_outside_strings(line, "return "))
+}
+
+fn strip_single_line_string_literals(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let quote = chars[i];
+        let opens_literal =
+            quote == '"' || (quote == '\'' && (i == 0 || !is_word_char(chars[i - 1])));
+        if opens_literal {
+            out.push_str("\"\"");
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i = i.saturating_add(2).min(chars.len());
+                } else if chars[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(quote);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Pick a `behavior_hint` + discriminator for a hunk by scanning its added lines
 /// top-to-bottom; the first line matching a known pattern (predicate boundary →
 /// return value → exception path) wins. No match on any line → `"unknown"`.
 fn behavior_hint_for_hunk(lines: &[String]) -> (&'static str, String) {
     for line in lines {
         // A whole-line comment is never executable, so it must never yield a
-        // concrete behavior hint (e.g. `# return $x;` is not a return). This is
-        // a cheap, safe filter; false positives from `die`/`return` substrings
-        // *inside string literals* remain possible and are documented as a
-        // limitation (a robust fix needs tokenization, out of this slice's scope).
+        // concrete behavior hint (e.g. `# return $x;` is not a return).
         if line.trim_start().starts_with('#') {
             continue;
         }
-        let (hint, discriminator) = infer_behavior_and_discriminator(line);
+        // Strip single-line string literals for the hint DECISION only, so
+        // tokens inside them (e.g. `die` in `my $s = 'die hard';`) cannot
+        // drive the classification (#17358). The discriminator is extracted
+        // from the ORIGINAL line, so the observable keeps the real
+        // expression (`return "ok";` observes `"ok"`, not `""`): stripping
+        // is classification-only, never observable input. String-only-token
+        // lines still classify `unknown` (null observable). Guarantee
+        // covers `"..."` / `'...'` only; heredocs, multi-line strings, q{},
+        // regex literals, and trailing comments remain unhandled (see
+        // `strip_single_line_string_literals`).
+        let stripped = strip_single_line_string_literals(line);
+        let hint = detect_behavior_kind(&stripped);
         if hint != "unknown" {
-            return (hint, discriminator);
+            return (hint, extract_discriminator(hint, line));
         }
     }
     ("unknown", String::new())
@@ -370,7 +508,7 @@ pub(crate) fn emit_changes_from_diff(
         limitations.push(json!({
             "limitation_id": "change-behavior-hint-partial",
             "kind": "partial_inference",
-            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped, but a die/return/comparison token inside a string literal can still be misclassified (a robust fix needs tokenization).",
+            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped and single-line \"...\" / '...' literal contents cannot drive classification, but tokens inside heredocs, multi-line strings, q{}/qq{} and other quote-like operators, regex literals, or trailing comments are still scanned as code and can be misclassified.",
             "evidence_refs": [],
         }));
     }
@@ -383,7 +521,19 @@ pub(crate) fn emit_changes_from_diff(
 /// Conservative: only the three alpha-supported classes produce concrete
 /// discriminators. Everything else is "unknown" with an empty discriminator
 /// (ripr's strict-actionability fails closed on unknown).
+///
+/// Test-only seam: production classifies via [`detect_behavior_kind`] on the
+/// stripped line and extracts via [`extract_discriminator`] on the original.
+#[cfg(test)]
 fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
+    let kind = detect_behavior_kind(line);
+    (kind, extract_discriminator(kind, line))
+}
+
+/// Classify a changed Perl line into one of the three
+/// syntactically-detectable behavior kinds (or `"unknown"`). Detection only —
+/// no discriminator extraction.
+fn detect_behavior_kind(line: &str) -> &'static str {
     let trimmed = line.trim();
 
     // Predicate boundary: a LEADING conditional (if/unless/while/elsif at the
@@ -404,29 +554,54 @@ fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
             || trimmed.contains(">")
             || trimmed.contains("<"))
     {
-        // Extract the condition text as the discriminator.
-        let disc = extract_condition(trimmed).unwrap_or_else(|| trimmed.to_string());
-        return ("predicate_boundary", disc);
+        return "predicate_boundary";
     }
 
-    // Return value.
-    if trimmed.starts_with("return") || trimmed.contains("return ") {
-        let expr = trimmed
-            .strip_prefix("return")
-            .unwrap_or(trimmed)
-            .trim()
-            .trim_end_matches(';')
-            .to_string();
-        return ("return_value", expr);
+    // Return value. Retain the existing supported start/space shapes so the
+    // keyword scan cannot promote punctuation-only call or key names such as
+    // `$obj->return()` / `$obj->{return}` into new concrete hints.
+    if find_return_outside_strings(trimmed).is_some() {
+        return "return_value";
     }
 
     // Exception path.
     if trimmed.contains("die ") || trimmed.contains("croak ") || trimmed.contains("confess ") {
-        let msg = extract_die_message(trimmed).unwrap_or_else(|| "exception".to_string());
-        return ("exception_path", msg);
+        return "exception_path";
     }
 
-    ("unknown", String::new())
+    "unknown"
+}
+
+/// Extract the discriminator for an already-detected `kind` from `line`.
+/// Callers pass the ORIGINAL (unstripped) line so the observable keeps the
+/// real expression. `"unknown"` (or any unrecognized kind) yields an empty
+/// discriminator.
+fn extract_discriminator(kind: &str, line: &str) -> String {
+    let trimmed = line.trim();
+    match kind {
+        // Extract the condition text as the discriminator.
+        "predicate_boundary" => extract_condition(trimmed).unwrap_or_else(|| trimmed.to_string()),
+        // Slice from the detected keyword's position (outside strings) so a
+        // quoted keyword earlier in the line cannot supply the observable.
+        "return_value" => {
+            let from = find_return_outside_strings(trimmed).unwrap_or(0);
+            trimmed[from..]
+                .strip_prefix("return")
+                .unwrap_or(&trimmed[from..])
+                .trim()
+                .trim_end_matches(';')
+                .to_string()
+        }
+        "exception_path" => {
+            let from = ["die ", "croak ", "confess "]
+                .iter()
+                .filter_map(|kw| find_outside_strings(trimmed, kw))
+                .min()
+                .unwrap_or(0);
+            extract_die_message(&trimmed[from..]).unwrap_or_else(|| "exception".to_string())
+        }
+        _ => String::new(),
+    }
 }
 
 /// Extract the condition expression from a leading if/unless/while/elsif line.
@@ -826,6 +1001,252 @@ mod tests {
         // Real code after a comment still wins.
         let lines = vec!["# comment".into(), "    return $x;".into()];
         assert_eq!(behavior_hint_for_hunk(&lines).0, "return_value");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_ignores_tokens_inside_string_literals() {
+        // #17358: tokens that appear only inside single-line string literals
+        // must not drive the classification.
+        assert_eq!(
+            behavior_hint_for_hunk(&["my $msg = \"please return the form\";".into()]).0,
+            "unknown"
+        );
+        assert_eq!(behavior_hint_for_hunk(&["my $s = 'die hard';".into()]).0, "unknown");
+        assert_eq!(behavior_hint_for_hunk(&["if ($label eq \"a>b\") {".into()]).0, "unknown");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_string_stripping_keeps_real_statements() {
+        // Guards: stripping string contents must not hide genuine statements.
+        assert_eq!(behavior_hint_for_hunk(&["return \"ok\";".into()]).0, "return_value");
+        assert_eq!(behavior_hint_for_hunk(&["die \"bad\";".into()]).0, "exception_path");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_quoted_keywords_before_real_statement() {
+        // #17389 review: a quoted keyword earlier in the line must not supply
+        // the observable; extraction starts at the detected keyword's position.
+        let (kind, disc) =
+            behavior_hint_for_hunk(&["my $s = \"return die bogus\"; die \"real\";".into()]);
+        assert_eq!(kind, "exception_path");
+        assert!(disc.contains("real"), "observable must come from the real die: {disc}");
+        assert!(!disc.contains("bogus"), "observable must not come from the string: {disc}");
+        let (kind, disc) = behavior_hint_for_hunk(&["my $t = \"x return y\"; return $z;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$z");
+        // Keyword boundary: `$return` is a longer name, not the keyword.
+        let (kind, disc) = behavior_hint_for_hunk(&["my $return = 1; return $value;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$value");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_names_are_not_keywords() {
+        for line in [
+            "returning();",
+            "return_value();",
+            "return0();",
+            "my $return = 1;",
+            "my @return = ();",
+            "my %return = ();",
+            "my $pre_return = 1;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "name must not classify as a return: {line}");
+            assert!(disc.is_empty(), "unknown hint must have no observable: {line}: {disc}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_return_names_before_real_statement() {
+        for line in [
+            "returning(); return $value;",
+            "return_value(); return $value;",
+            "my $return = 1; returning(); return $value;",
+            "my $s = \"🧵 return bogus\"; returning(); return $value;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "real return must still classify: {line}");
+            assert_eq!(disc, "$value", "observable must start at the real return: {line}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_boundaries_preserve_original_expression() {
+        for (line, expected) in [
+            ("return($value);", "($value)"),
+            ("return\t$value;", "$value"),
+            ("returning(); return \"ok\";", "\"ok\""),
+            ("my $s = 'return bogus'; return \"a\\\"b\";", "\"a\\\"b\""),
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "keyword boundary must retain real return: {line}");
+            assert_eq!(disc, expected, "observable must retain the original expression: {line}");
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_skips_return_name_on_earlier_line() {
+        let (kind, disc) =
+            behavior_hint_for_hunk(&["returning();".into(), "return $value;".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "$value", "a name-only earlier line must not win the hunk");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_detection_does_not_expand_to_call_or_key_names() {
+        for line in ["my $value = $obj->{return};", "Foo::return();", "$obj->return();"] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "a call or key name must stay unknown: {line}");
+            assert!(disc.is_empty(), "a call or key name must have no observable: {line}");
+        }
+        let (kind, disc) = behavior_hint_for_hunk(&["{ return $value; }".into()]);
+        assert_eq!(kind, "return_value", "a real return inside a block remains detectable");
+        assert_eq!(disc, "$value; }");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_return_shape_belongs_to_selected_occurrence() {
+        for line in [
+            "returning(); $obj->return();",
+            "returning(); Foo::return();",
+            "returning(); my $value = $obj->{return};",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "unknown", "unsupported occurrence must stay unknown: {line}");
+            assert!(disc.is_empty(), "unsupported occurrence has no observable: {line}");
+        }
+        for line in [
+            "$obj->return(); return $value;",
+            "Foo::return(); return $value;",
+            "returning(); $obj->return(); return $value;",
+            "my $s = \"\u{1f642} return bogus\"; $obj->return(); return $value;",
+        ] {
+            let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+            assert_eq!(kind, "return_value", "later supported occurrence must classify: {line}");
+            assert_eq!(
+                disc, "$value",
+                "only the supported occurrence supplies the observable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_return_shape_belongs_to_selected_occurrence() {
+        let (files, owners) = app_files_and_owners();
+        for (line, expected_kind, expected_observable) in [
+            ("returning(); $obj->return();", "unknown", Value::Null),
+            ("returning(); Foo::return();", "unknown", Value::Null),
+            ("returning(); my $value = $obj->{return};", "unknown", Value::Null),
+            ("$obj->return(); return $value;", "return_value", json!("$value")),
+            ("Foo::return(); return $value;", "return_value", json!("$value")),
+            ("returning(); $obj->return(); return $value;", "return_value", json!("$value")),
+        ] {
+            let diff =
+                format!("+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {{\n+    {line}\n");
+            let (changes, _) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert_eq!(changes.len(), 1, "added line must reach a change fact: {line}");
+            assert_eq!(changes[0]["behavior_hint"], expected_kind, "packet hint: {line}");
+            assert_eq!(
+                changes[0]["changed_observable"], expected_observable,
+                "packet observable: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_changes_from_diff_return_keyword_boundaries_reach_packet() {
+        let (files, owners) = app_files_and_owners();
+        for (line, expected_kind, expected_observable) in [
+            ("returning();", "unknown", Value::Null),
+            ("my $return = 1;", "unknown", Value::Null),
+            ("my $value = $obj->{return};", "unknown", Value::Null),
+            ("Foo::return();", "unknown", Value::Null),
+            ("$obj->return();", "unknown", Value::Null),
+            ("returning(); return $value;", "return_value", json!("$value")),
+            ("my $s = \"return bogus\"; return \"ok\";", "return_value", json!("\"ok\"")),
+        ] {
+            let diff =
+                format!("+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {{\n+    {line}\n");
+            let (changes, _) = emit_changes_from_diff(&diff, ".", &files, &owners);
+            assert_eq!(changes.len(), 1, "each added line must reach a change fact: {line}");
+            assert_eq!(changes[0]["behavior_hint"], expected_kind, "packet hint: {line}");
+            assert_eq!(
+                changes[0]["changed_observable"], expected_observable,
+                "packet observable must come from the real keyword or stay null: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_extracts_discriminator_from_original_line() {
+        // #17358 follow-up: stripping is classification-only. The observable
+        // comes from the ORIGINAL line, so literal-bearing statements keep
+        // their real (pre-repair) expression — never `""`/empty.
+        let (kind, disc) = behavior_hint_for_hunk(&["return \"ok\";".into()]);
+        assert_eq!(kind, "return_value");
+        assert_eq!(disc, "\"ok\"", "return observable keeps the literal: {disc}");
+
+        let (kind, disc) = behavior_hint_for_hunk(&["die \"boom\";".into()]);
+        assert_eq!(kind, "exception_path");
+        assert!(!disc.is_empty(), "die observable must be non-empty");
+        assert_eq!(
+            disc,
+            infer_behavior_and_discriminator("die \"boom\";").1,
+            "observable equals the pre-repair extraction"
+        );
+
+        // The golden `die "boom" if ...` fixture: extraction-from-original
+        // reproduces the exact pre-repair observable text.
+        let (kind, disc) = behavior_hint_for_hunk(&["die \"boom\" if $x < 0;".into()]);
+        assert_eq!(kind, "exception_path");
+        assert_eq!(disc, "boom\" if $x < 0");
+    }
+
+    #[test]
+    fn behavior_hint_for_hunk_apostrophe_separator_still_predicate_boundary() {
+        // Legacy `'` package separator must not open a string literal: the
+        // predicate survives stripping and still classifies (#17358 follow-up).
+        let line = "if ($main'flag > 0) {";
+        assert_eq!(
+            strip_single_line_string_literals(line),
+            line,
+            "apostrophe separator must pass through the stripper untouched"
+        );
+        let (kind, disc) = behavior_hint_for_hunk(&[line.to_string()]);
+        assert_eq!(kind, "predicate_boundary");
+        assert!(disc.contains("$main'flag > 0"), "condition keeps the separator: {disc}");
+    }
+
+    #[test]
+    fn strip_single_line_string_literals_honors_escapes() {
+        assert_eq!(strip_single_line_string_literals("return \"a\\\"b\";"), "return \"\";");
+        assert_eq!(strip_single_line_string_literals("my $s = 'it\\'s';"), "my $s = \"\";");
+        // Unterminated quote consumes to end of line.
+        assert_eq!(strip_single_line_string_literals("my $s = \"foo"), "my $s = \"\"");
+    }
+
+    #[test]
+    fn emit_changes_from_diff_string_only_token_yields_unknown_hint() {
+        // #17358 packet-level: a hunk whose only hint token sits inside a
+        // string literal still emits a change fact, but with an "unknown" hint.
+        let (files, owners) = app_files_and_owners();
+        let diff = "\
+--- a/lib/My/App.pm
++++ b/lib/My/App.pm
+@@ -5,3 +5,4 @@
+ sub discount {
+     my ($amount) = @_;
++    my $msg = \"please return the form\";
+ }
+";
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
+        assert_eq!(changes.len(), 1, "string-only-token line still emits a change fact");
+        assert_eq!(changes[0]["behavior_hint"], "unknown");
+        assert!(
+            changes[0]["changed_observable"].is_null(),
+            "unknown hint must carry a null changed_observable"
+        );
     }
 
     #[test]

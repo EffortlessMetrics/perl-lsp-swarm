@@ -120,6 +120,19 @@ class WindowsJob:
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.c_void_p,
+        ]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.IsProcessInJob.argtypes = [
+            wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL),
+        ]
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -156,14 +169,133 @@ class WindowsJob:
         ):
             self._raise_last_error("AssignProcessToJobObject")
 
+    def process_accounting(self) -> tuple[int, int]:
+        """Return active and lifetime process counts from this exact job."""
+        class BasicAccountingInformation(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", ctypes.c_uint32),
+                ("TotalProcesses", ctypes.c_uint32),
+                ("ActiveProcesses", ctypes.c_uint32),
+                ("TotalTerminatedProcesses", ctypes.c_uint32),
+            ]
+
+        if self._handle is None:
+            raise OSError("Windows job handle is closed; settlement unconfirmed")
+        accounting = BasicAccountingInformation()
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+        ):
+            self._raise_last_error("QueryInformationJobObject")
+        return accounting.ActiveProcesses, accounting.TotalProcesses
+
+    def active_processes(self) -> int:
+        return self.process_accounting()[0]
+
+    def total_processes(self) -> int:
+        return self.process_accounting()[1]
+
+    def process_handles(self) -> list[int]:
+        """Bind only processes enumerated from this job, before termination.
+
+        Accounting can reach zero before a process handle becomes signaled.
+        Keep those identities to observe exit rather than trusting the count.
+        Lifetime accounting around the snapshot detects new members; a changed
+        count must reject success rather than imply those members were waited.
+        """
+        from ctypes import wintypes
+
+        if self._handle is None:
+            raise OSError("Windows job handle is closed; settlement unconfirmed")
+        capacity = 16
+        while capacity <= 65_536:
+            class ProcessIdList(ctypes.Structure):
+                _fields_ = [
+                    ("NumberOfAssignedProcesses", ctypes.c_uint32),
+                    ("NumberOfProcessIdsInList", ctypes.c_uint32),
+                    ("ProcessIdList", ctypes.c_size_t * capacity),
+                ]
+
+            members = ProcessIdList()
+            complete = self._kernel32.QueryInformationJobObject(
+                self._handle, 3, ctypes.byref(members), ctypes.sizeof(members), None
+            )
+            if complete and members.NumberOfProcessIdsInList >= members.NumberOfAssignedProcesses:
+                break
+            if not complete and ctypes.get_last_error() != 234:  # ERROR_MORE_DATA
+                self._raise_last_error("QueryInformationJobObject(process IDs)")
+            capacity = max(capacity * 2, members.NumberOfAssignedProcesses)
+        else:
+            raise OSError("Windows job process list exceeded its bounded capacity")
+
+        handles: list[int] = []
+        try:
+            for pid in members.ProcessIdList[:members.NumberOfProcessIdsInList]:
+                handle = self._kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)
+                if not handle:
+                    self._raise_last_error("OpenProcess(job member)")
+                handles.append(handle)
+                member = wintypes.BOOL()
+                if not self._kernel32.IsProcessInJob(handle, self._handle, ctypes.byref(member)):
+                    self._raise_last_error("IsProcessInJob")
+                if not member.value:
+                    raise OSError("enumerated process no longer belongs to the Windows job")
+            return handles
+        except BaseException:
+            for handle in handles:
+                self._kernel32.CloseHandle(handle)
+            raise
+
     def terminate(self) -> list[str]:
         failures: list[str] = []
         if self._handle is None:
-            return failures
-        if not self._kernel32.TerminateJobObject(self._handle, 1):
-            error = ctypes.get_last_error()
-            failures.append(f"TerminateJobObject failed: {ctypes.FormatError(error)}")
-        failures.extend(self.close())
+            return ["Windows job handle is closed; settlement unconfirmed"]
+        handles: list[int] = []
+        initial_total: int | None = None
+        try:
+            try:
+                # Sample before enumeration: a later birth must not disappear
+                # from the proof merely because active accounting reaches zero.
+                initial_total = self.total_processes()
+            except OSError as error:
+                failures.append(f"Windows job initial accounting unavailable: {error}")
+            try:
+                handles = self.process_handles()
+            except OSError as error:
+                failures.append(f"Windows job identity binding incomplete: {error}")
+            if not self._kernel32.TerminateJobObject(self._handle, 1):
+                error = ctypes.get_last_error()
+                failures.append(f"TerminateJobObject failed: {ctypes.FormatError(error)}")
+            # Zero accounting can precede actual exit/file release. Observe both
+            # the job count and the verified members bound before termination.
+            deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+            try:
+                while self.active_processes():
+                    if time.monotonic() >= deadline:
+                        failures.append("Windows job settlement timed out; descendants may remain")
+                        break
+                    time.sleep(0.01)
+                for handle in handles:
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    result = self._kernel32.WaitForSingleObject(handle, remaining_ms)
+                    if result != 0:  # WAIT_OBJECT_0 is the only exit proof.
+                        failures.append(f"Windows job member exit unconfirmed: wait result {result}")
+                final_total = self.total_processes()
+                if initial_total is not None and final_total != initial_total:
+                    failures.append(
+                        "Windows job membership changed during settlement; "
+                        "post-snapshot member exit unconfirmed"
+                    )
+            except OSError as error:
+                failures.append(f"Windows job settlement unconfirmed: {error}")
+        finally:
+            for handle in handles:
+                if not self._kernel32.CloseHandle(handle):
+                    failures.append("CloseHandle(job member) failed")
+            failures.extend(self.close())
         return failures
 
     def close(self) -> list[str]:
@@ -564,7 +696,7 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             else:
                 cleanup_failures.append(late_reader_failure)
         if failure is None and windows_job is not None:
-            cleanup_failures.extend(windows_job.close())
+            cleanup_failures.extend(windows_job.terminate())
         lifecycle_released = True
 
         stderr = stderr_bytes.decode("utf-8", errors="replace")

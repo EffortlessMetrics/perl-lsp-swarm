@@ -198,7 +198,7 @@ note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof,
 reference_hashes = ["37574987ad457d02ecb27a6d50f1cc1446f24c112e0a938c8a0e0b2335e2316f", "87a11a0124beda3993077c9c49df567ca02a3f5b8f93149b836d57045f5f88d7"]
 
 [[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.json"
+path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release.json"
 classification = "legacy_compatibility"
 migration_target = "legacy_receipt_readability"
 owner_issue = 7192
@@ -208,27 +208,7 @@ note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof,
 reference_hashes = ["1acc75ceb78280421fd61f0e2327972f115fd077ecf3b7366b05f885bea67028", "c360e6ffedfbc14972ee7a6005e5fb240040295ccd5b3680f27448d1fb5ac849", "e62d4ff2334c87c4a5a33b160ca611331f294840b107e201a7d25d3f423d8c22", "ea9d764e0616a7a8872986d9bb0b372f5ffc0cc12429315daf80aa906572c880"]
 
 [[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.md"
-classification = "legacy_compatibility"
-migration_target = "legacy_receipt_readability"
-owner_issue = 7192
-removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
-allowed_to_remain = true
-note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-reference_hashes = ["37574987ad457d02ecb27a6d50f1cc1446f24c112e0a938c8a0e0b2335e2316f", "87a11a0124beda3993077c9c49df567ca02a3f5b8f93149b836d57045f5f88d7"]
-
-[[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.json"
-classification = "legacy_compatibility"
-migration_target = "legacy_receipt_readability"
-owner_issue = 7192
-removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
-allowed_to_remain = true
-note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-reference_hashes = ["1acc75ceb78280421fd61f0e2327972f115fd077ecf3b7366b05f885bea67028", "c360e6ffedfbc14972ee7a6005e5fb240040295ccd5b3680f27448d1fb5ac849", "e62d4ff2334c87c4a5a33b160ca611331f294840b107e201a7d25d3f423d8c22", "ea9d764e0616a7a8872986d9bb0b372f5ffc0cc12429315daf80aa906572c880"]
-
-[[entry]]
-path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.md"
+path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release.md"
 classification = "legacy_compatibility"
 migration_target = "legacy_receipt_readability"
 owner_issue = 7192

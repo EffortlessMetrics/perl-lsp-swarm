@@ -18,6 +18,44 @@ the [development method](../agents/DEVELOPMENT_METHOD.md). Check the
 [authority status](../agents/AUTHORITY_STATUS.md) before relying on older agent
 or orchestration documents.
 
+## Activate tools in the task shell
+
+A saved cloud setup can install tools successfully while leaving a fresh task
+shell unable to find `cargo` or `just`. Exports in an executed setup script apply
+to that process and its children; they do not configure later task shells.
+Before reinstalling tools, inspect the saved setup's install locations and the
+task shell's `PATH`, `CARGO_HOME`, and `RUSTUP_HOME`.
+
+For a POSIX cloud setup that already installed Rust and `just` under
+`/workspace/shared/cargo` and toolchains under `/workspace/shared/rustup`, run
+this from the intended repository worktree. Adapt the two paths to the actual
+saved setup; these are example locations, not repository defaults:
+
+```bash
+(
+  set -eu
+  export CARGO_HOME=/workspace/shared/cargo
+  export RUSTUP_HOME=/workspace/shared/rustup
+  export PATH="$CARGO_HOME/bin:$PATH"
+  # Use rust-toolchain.toml for ordinary repository work in this subshell.
+  unset RUSTUP_TOOLCHAIN
+  command -v cargo rustup just
+  rustup show active-toolchain
+  cargo --version
+  just --version
+  # Run the task's separately admitted commands here, in this same subshell.
+)
+```
+
+Check that the repository-pinned toolchain is already installed before running
+the probes; rustup can otherwise attempt to download it. Keep an explicitly
+qualified alternative toolchain in its own task scope. The parentheses keep
+these selections out of the parent shell; repeat the activation in each task
+shell that needs the tools. No shell-profile or global configuration edit is
+needed. Tool discovery does not establish hook readiness or build capacity;
+continue through [Cargo storage admission](../agents/CARGO_STORAGE.md) before
+building.
+
 ## Shape one bounded claim
 
 A useful work item has one target seam, a measurable acceptance condition, a

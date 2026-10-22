@@ -22,8 +22,12 @@ import {
   showWorkspaceTrustReportCommand,
 } from '../diagnosticCommands';
 import {
+  configuredServerPathProblem,
   copyProviderDecisionReceiptCommand,
   diagnoseConfiguredServerPath,
+  expandConfiguredServerPath,
+  rejectConfiguredServerPath,
+  resolveConfiguredServerPath,
   explainDiagnosticCommand,
   explainProviderDecisionCommand,
   presentFormattingProviderError,
@@ -212,6 +216,101 @@ describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => 
       diagnoseConfiguredServerPath('', false, channel as unknown as vscode.LogOutputChannel),
     ).toBeNull();
     expect(channel.info).not.toHaveBeenCalled();
+  });
+});
+
+describe('configuredServerPathProblem (perl-lsp.serverPath validation)', () => {
+  function makeTempDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-serverpath-'));
+  }
+
+  test('rejects a directory even though it exists', () => {
+    const dir = makeTempDir();
+    try {
+      expect(configuredServerPathProblem(dir)).toBe('not-a-file');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports a missing path', () => {
+    const missing = path.join(os.tmpdir(), 'perl-lsp-serverpath-definitely-missing');
+    expect(configuredServerPathProblem(missing)).toBe('missing');
+  });
+
+  test('accepts a regular file', () => {
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, process.platform === 'win32' ? 'perllsp.exe' : 'perllsp');
+      fs.writeFileSync(file, '#!/bin/sh\n');
+      if (process.platform !== 'win32') {
+        fs.chmodSync(file, 0o755);
+      }
+      expect(configuredServerPathProblem(file)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a non-executable-extension file on Windows', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, 'perllsp.txt');
+      fs.writeFileSync(file, 'not a binary');
+      expect(configuredServerPathProblem(file)).toBe('not-executable');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves relative paths against the workspace root', () => {
+    const root = path.join(os.tmpdir(), 'ws-root');
+    expect(resolveConfiguredServerPath('bin/perllsp', root)).toBe(
+      path.join(root, 'bin', 'perllsp'),
+    );
+    expect(resolveConfiguredServerPath('~/bin/perllsp', root)).toBe(
+      path.join(os.homedir(), 'bin', 'perllsp'),
+    );
+    expect(resolveConfiguredServerPath('bin/perllsp', undefined)).toBe('bin/perllsp');
+  });
+
+  test('rejects a non-executable regular file off Windows', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, 'perllsp');
+      fs.writeFileSync(file, '#!/bin/sh\n');
+      fs.chmodSync(file, 0o644);
+      expect(configuredServerPathProblem(file)).toBe('not-executable');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('expands a leading tilde to the home directory', () => {
+    expect(expandConfiguredServerPath('~/bin/perllsp')).toBe(
+      path.join(os.homedir(), 'bin', 'perllsp'),
+    );
+    expect(expandConfiguredServerPath('~')).toBe(os.homedir());
+    expect(expandConfiguredServerPath('/opt/perl/bin/perllsp')).toBe('/opt/perl/bin/perllsp');
+  });
+
+  test('rejectConfiguredServerPath logs the specific problem', () => {
+    const channel = { appendLine: jest.fn(), info: jest.fn() };
+    const result = rejectConfiguredServerPath(
+      '/opt/perl',
+      'not-a-file',
+      channel as unknown as vscode.LogOutputChannel,
+    );
+    expect(result).toBe('/opt/perl');
+    expect(channel.info).toHaveBeenCalledTimes(1);
+    expect(channel.info.mock.calls[0][0]).toContain('is not a file');
+    expect(channel.info.mock.calls[0][0]).toContain('/opt/perl');
   });
 });
 

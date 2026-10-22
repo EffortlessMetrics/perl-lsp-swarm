@@ -134,6 +134,10 @@ pub fn classify_diff(files: &[String]) -> String {
             has_prose = true;
         } else if is_ci_config_file(file) {
             has_ci_config = true;
+        } else if is_vscode_types_contract_input(file) {
+            // These JSON/YAML inputs carry an executable Rust policy guard;
+            // docs_as_code would skip RustScoped gates even with xtask selected.
+            has_code = true;
         } else if is_docs_as_code_file(file) {
             has_docs_as_code = true;
         } else {
@@ -482,6 +486,10 @@ fn has_features_toml_change(files: &[String]) -> bool {
     files.iter().any(|f| f == "features.toml")
 }
 
+fn is_vscode_types_contract_input(file: &str) -> bool {
+    matches!(file, "vscode-extension/package.json" | ".github/dependabot.yml")
+}
+
 /// Repository inputs that xtask's policy guards assert over, but which are not
 /// xtask source.
 ///
@@ -521,6 +529,9 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // routing, a gate-policy-only PR would skip both focused owner gates
         // and the very proof that pins the policy's shape (#14409 review).
         || file == ".ci/gate-policy.yaml"
+        // vscode_extension_types_fence reads both inputs (#13476). Route
+        // manifest-only and Dependabot-only edits to its owning test package.
+        || is_vscode_types_contract_input(file)
         // The required-context ledger is asserted by
         // `xtask/tests/required_context_binding_contract.rs` (#15348): a
         // required row's producer binding (`ruleset_integration_id`,
@@ -533,6 +544,11 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
+        // The lane-termination classifier is asserted by xtask's E1
+        // correctness harness and P3 scale bench (#17154): both execute the
+        // script and pin its counters. Without this routing, a script-only
+        // PR would skip the guards written to catch it (#17345 review).
+        || file == "scripts/ci/classify-ripr-lane-termination"
 }
 
 /// Extract unique crate names from cargo metadata JSON for crate dirs in the changed files.
@@ -1338,6 +1354,27 @@ mod tests {
     }
 
     #[test]
+    fn vscode_types_contract_inputs_select_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        for file in ["vscode-extension/package.json", ".github/dependabot.yml"] {
+            let scope = classify_files(&[file.to_string()], &metadata, "/workspace")?;
+            assert_eq!(scope.diff_class, "code", "{file} must not skip Rust gates");
+            assert!(
+                scope.direct_crates.iter().any(|krate| krate.name == "xtask"),
+                "{file} must select its types fence"
+            );
+            assert!(!scope.lanes.parser_ratchet.selected, "{file} is not parser work");
+        }
+        let crates = crates_from_files(
+            &["vscode-extension/README.md".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(!crates.contains("xtask"), "unrelated extension docs must not widen scope");
+        Ok(())
+    }
+
+    #[test]
     fn required_checks_ledger_change_selects_xtask() -> Result<()> {
         // #15348 / #15995 review: the required-context binding contract test
         // reads `.ci/policies/required-checks.toml`. A ledger-only PR must
@@ -1361,6 +1398,22 @@ mod tests {
         assert!(
             crates.contains("xtask"),
             "changing the packaging step must route to the guard that asserts on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_script_change_selects_xtask() -> Result<()> {
+        // #17345 review: E1's correctness harness and the P3 scale bench
+        // execute `scripts/ci/classify-ripr-lane-termination` and pin its
+        // counters. A script-only PR must route xtask into scope or a
+        // classifier regression sails through every required check green.
+        let files = vec!["scripts/ci/classify-ripr-lane-termination".to_string()];
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert!(
+            crates.contains("xtask"),
+            "changing the classifier script must route to the E1/P3 guards that assert on it"
         );
         Ok(())
     }
