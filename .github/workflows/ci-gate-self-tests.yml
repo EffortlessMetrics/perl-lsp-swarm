@@ -70,6 +70,7 @@ on:
       - 'scripts/ci/check-pr-review-convergence'
       - 'scripts/ci/fixtures/convergence/**'
       - 'scripts/tests/test-check-pr-review-convergence.sh'
+      - 'scripts/tests/test-check-pr-review-convergence-cleanup.py'
       # Paginator accumulator stdin portability regression (#15034): the test
       # pins the jq stdin form inside check-pr-review-convergence-core, and
       # the core is the implementation it gates, so both halves re-run this
@@ -456,8 +457,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Run review-convergence gate self-test
-        run: bash scripts/tests/test-check-pr-review-convergence.sh
+      - name: Run review-convergence and fixture cleanup self-tests
+        run: python3 -B scripts/tests/test-check-pr-review-convergence-cleanup.py -v
 
       # (#15034) The paginator accumulator must stay on the jq stdin form; a
       # silent revert to jq -n --argjson passes every other gated check.
