@@ -677,7 +677,7 @@ jobs:
 
       - name: Install just
         if: env.RUN_API_RATCHET == 'true'
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
@@ -899,7 +899,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
@@ -1164,7 +1164,7 @@ jobs:
       - name: Upload PR-fast test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -1294,7 +1294,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
@@ -1565,7 +1565,7 @@ jobs:
       - name: Upload gate shard test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -1844,7 +1844,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
@@ -1974,7 +1974,7 @@ jobs:
       - name: Upload UX regression test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4  # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -2081,7 +2081,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a  # v2.87.25
         with:
           tool: just
 
