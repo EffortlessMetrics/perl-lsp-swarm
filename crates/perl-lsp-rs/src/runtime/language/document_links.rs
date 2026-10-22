@@ -15,9 +15,26 @@ fn is_windows_drive_path(path: &str) -> bool {
 }
 
 fn append_literal_file_segments(mut base: url::Url, path: &str) -> Option<String> {
+    // PathSegmentsMut skips both dot components instead of resolving parents.
+    // Normalize literal components first, keeping the base (including a drive
+    // root) outside the stack so excess parents cannot remove it.
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "." => {}
+            ".." => {
+                let _ = components.pop();
+            }
+            _ => components.push(component),
+        }
+    }
+    if matches!(path.rsplit('/').next(), Some("." | "..")) {
+        components.push("");
+    }
+
     // PathSegmentsMut encodes `%` as well as URI delimiters in each filename
     // component. Url::parse would treat an already-looking escape as encoded.
-    base.path_segments_mut().ok()?.pop_if_empty().extend(path.split('/'));
+    base.path_segments_mut().ok()?.pop_if_empty().extend(components);
     Some(base.to_string())
 }
 
