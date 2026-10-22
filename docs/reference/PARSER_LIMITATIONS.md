@@ -12,7 +12,7 @@ Current parser behavior and boundaries are maintained in:
 
 Static parsing cannot establish runtime-generated source, compile-time side effects, dynamic symbol-table effects, or general semantic correctness without separate evidence. Do not turn those boundaries into a parser completeness percentage.
 
-See [dynamic Perl constructs](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/DYNAMIC_CONSTRUCTS.md) for string eval, `do FILE`, generated methods, typeglobs, and embedded-template limitations, including the current gaps in LSP degradation hints.
+See [dynamic Perl constructs](DYNAMIC_CONSTRUCTS.md) for string eval, `do FILE`, generated methods, typeglobs, and embedded-template limitations, including the current gaps in LSP degradation hints.
 
 For a new limitation, attach a minimal source example, the parser subject and revision, the observed result, and the narrowest claim the evidence supports.
 ## Retired limitation anchors

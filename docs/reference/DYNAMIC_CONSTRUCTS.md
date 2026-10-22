@@ -12,7 +12,7 @@ the surrounding Perl parses successfully.
 | `eval { ... }` | The block is parsed as Perl source. | Runtime effects and exception outcomes remain unknown; the block itself is not opaque string eval. |
 | `eval "..."`, `eval $code` | The argument expression is parsed. Some literal `eval 'sub NAME { ... }'` declarations produce low-confidence, name-bearing boundary evidence. | The resulting string is not generally parsed or analyzed as Perl. Symbols and references inside generated code may be absent from completion, definition, and rename results. |
 | `do { ... }` | The block is parsed as an ordinary expression. | This is not a file load. |
-| `do "config.pl"` | The source contains a literal filename candidate. | The LSP does not currently resolve this request or track it as a file dependency. A known filename is not a verified target file. |
+| `do "config.pl"` | The source contains a literal filename candidate. | Semantic file-dependency tracking is not established. A literal filename or candidate link URI does not verify Perl's runtime target. |
 | `do $file` | The operand remains an ordinary variable expression. | The runtime filename and loaded definitions are unknown. Do not interpret a definition result for `$file` as navigation to the loaded file. |
 | `AUTOLOAD` | The handler can be detected; supported method lookup paths can identify dynamic dispatch through it. | Arbitrary method names handled at runtime are not indexed as source declarations. A handler location is not an exact definition of every generated method. |
 | `*{$name} = sub { ... }` | The parser retains the typeglob and its expression; compiler lowering can record a dynamic stash mutation. | The installed symbol name is unknown. Dynamic brace-containing names are omitted from the static symbol-reference stream rather than exposed as concrete symbols. Static typeglobs such as `*foo` retain their own reference handling. |
@@ -49,6 +49,11 @@ source-form classification and provider-facing file-load behavior remain
 separate work. A literal filename, computed filename, and `do BLOCK` must retain
 different meanings. The LSP does not execute a project expression to discover a
 file or generated symbol.
+
+An [alternative document-link helper](../../crates/perl-lsp-rs/src/features/lsp_document_link.rs)
+can construct a file URI for a literal `do` path. The [active document-link dispatch](../../crates/perl-lsp-rs/src/runtime/dispatch/text_document.rs)
+calls a different provider; helper capability alone does not establish live
+`do` navigation or semantic dependency tracking.
 
 ## Working with dynamic code
 
