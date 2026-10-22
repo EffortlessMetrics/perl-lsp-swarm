@@ -1603,9 +1603,10 @@ describe('AI journey with registered inline providers', () => {
     (vscode.window.showInformationMessage as jest.Mock).mockReturnValueOnce(choice.promise);
     const workspaceState = { get: jest.fn(() => false), update: jest.fn(() => receipt.promise) };
     const context = { workspaceState } as unknown as vscode.ExtensionContext;
+    let registrations = true;
     const client = {
       initializeResult: { capabilities },
-      getFeature: () => ({ getState: () => ({ kind: 'document', registrations: true }) }),
+      getFeature: () => ({ getState: () => ({ kind: 'document', registrations }) }),
     };
     const startup = suggestAiCompletionIfSupported(context, client);
     const registration = suggestAiCompletionIfSupported(context, client);
@@ -1613,13 +1614,58 @@ describe('AI journey with registered inline providers', () => {
     // showing the prompt. The old receipt-first order fails this assertion.
     expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
     expect(workspaceState.update).not.toHaveBeenCalled();
+    registrations = false;
     choice.resolve('Dismiss');
     await Promise.resolve();
     expect(workspaceState.update).toHaveBeenCalledTimes(1);
+    registrations = true;
     await suggestAiCompletionIfSupported(context, client);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
     receipt.resolve(undefined);
     await Promise.all([startup, registration]);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
   });
+
+  test.each(['Enable', 'Learn More'])(
+    'receipt rejection preserves the %s choice',
+    async (choice) => {
+      const update = jest.fn(async () => undefined);
+      (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+        get: jest.fn(() => false),
+        update,
+      });
+      (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(choice);
+      const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workspaceState = {
+        get: jest.fn(() => false),
+        update: jest.fn(async () => {
+          throw new Error('receipt storage unavailable');
+        }),
+      };
+      try {
+        await suggestAiCompletionIfSupported(
+          { workspaceState } as unknown as vscode.ExtensionContext,
+          {
+            initializeResult: { capabilities },
+            getFeature: () => ({ getState: () => ({ kind: 'document', registrations: true }) }),
+          },
+        );
+        expect(workspaceState.update).toHaveBeenCalledTimes(1);
+        if (choice === 'Enable') {
+          expect(update).toHaveBeenCalledWith(
+            'aiCompletion.enabled',
+            true,
+            vscode.ConfigurationTarget.Global,
+          );
+        } else {
+          expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+            'workbench.action.openSettings',
+            '@ext:EffortlessMetrics.perl-lsp-rs perl-lsp.aiCompletion',
+          );
+        }
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
 });
