@@ -3170,6 +3170,7 @@ pub perl_lsp_rs_core::providers::completion::CompletionContext::in_use_statement
 pub perl_lsp_rs_core::providers::completion::CompletionContext::position: usize
 pub perl_lsp_rs_core::providers::completion::CompletionContext::prefix: alloc::string::String
 pub perl_lsp_rs_core::providers::completion::CompletionContext::prefix_start: usize
+pub perl_lsp_rs_core::providers::completion::CompletionContext::suffix_end: usize
 pub perl_lsp_rs_core::providers::completion::CompletionContext::trigger_character: core::option::Option<char>
 pub fn perl_lsp_rs_core::providers::CompletionContext::clone(&self) -> perl_lsp_rs_core::providers::CompletionContext
 pub fn perl_lsp_rs_core::providers::CompletionContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -8490,6 +8491,7 @@ pub perl_lsp_rs_core::providers::CompletionContext::in_use_statement: bool
 pub perl_lsp_rs_core::providers::CompletionContext::position: usize
 pub perl_lsp_rs_core::providers::CompletionContext::prefix: alloc::string::String
 pub perl_lsp_rs_core::providers::CompletionContext::prefix_start: usize
+pub perl_lsp_rs_core::providers::CompletionContext::suffix_end: usize
 pub perl_lsp_rs_core::providers::CompletionContext::trigger_character: core::option::Option<char>
 pub fn perl_lsp_rs_core::providers::CompletionContext::clone(&self) -> perl_lsp_rs_core::providers::CompletionContext
 pub fn perl_lsp_rs_core::providers::CompletionContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
