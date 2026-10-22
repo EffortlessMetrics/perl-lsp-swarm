@@ -76,7 +76,7 @@ adapter lands, so setting either one does not change completion behaviour
 today. The enable prompt appears only once a connected server advertises that it
 can honour the setting.
 
-See the [AI completion reference](../docs/reference/AI_COMPLETION.md) for which
+See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/reference/AI_COMPLETION.md) for which
 fields each channel accepts today.
 
 ### Quick Start: Demo Project

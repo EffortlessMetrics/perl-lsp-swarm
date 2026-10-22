@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16585,
-  "reason": "Measure the complete produced Windows-host archive for the capability-gated AI prompt, settings guidance, and current main build inputs.",
-  "base_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
-  "candidate_baseline_file_sha256": "b905c134e4faa76f0203ebc75afb0e145ce074dc50d51e15339c6eede3aedd1b",
-  "base_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423",
-  "candidate_inventory_sha256": "9af73bc5ec2aa86175586bb6d34c20ed77ce5d05b6142cf7bebf355e1d8df4c7"
+  "owner_issue": 17985,
+  "reason": "Accept the measured 114-byte package.json growth for the truthful native-only critic-engine description and its review-driven correction in #17985; all 30 package members and the emitted extension bundle remain otherwise unchanged.",
+  "base_baseline_file_sha256": "a02591ea0bec713209f9f682fafa481ee70fc1db93c53f4856b479936c88ddc2",
+  "candidate_baseline_file_sha256": "f658e1a682e1fee5a4d4053e0f846cac2b46e8dd7aa423f0c5373234912c7289",
+  "base_inventory_sha256": "039b3febe05d22900a49717990beb0e7267995db5e3322663e5792c43f60673f",
+  "candidate_inventory_sha256": "06a1d7fca3d31ccba5cc400078f968034fc5365fcd5ce393cf40fdfda22be423"
 }
