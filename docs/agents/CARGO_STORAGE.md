@@ -417,6 +417,44 @@ not honor this lease: quiesce those consumers before rollout. This is not a
 system-wide concurrency limit across repositories.
 
 The emitted JSON resource descriptor belongs in the existing root-held frame.
+For bounded read-only inventory, save that single JSON object locally and run
+`bash scripts/storage-doctor --descriptor record.json --json` from its original
+working directory (`--resources-descriptor` is an equivalent spelling). The
+existing repo-local target guard still runs; its failure makes this invocation
+non-success. No-argument `storage-doctor` reports only its repo-local guard and
+marks external resource authority unknown, without guessing a basename devplane.
+
+The descriptor reader uses the existing admission path rules and verifies the
+same native host, common repository, worktree, invocation directory, target/build
+slot and agreeing scope/resource fields. It rejects linked inputs and unknown or
+malformed scope. This is **historical inventory**, not authentication of the
+descriptor's origin or a live lease. It traverses only the four named roots with
+entry, depth, elapsed-time and fingerprint-byte bounds. Missing, unreadable,
+changed or clipped entries keep partial observed counts but cannot yield complete
+totals. Fingerprints under target and separated build roots include custom/agent
+profiles and explicit target triples. Public JSON retains fixed resource roles,
+path/content hashes and selected integer fingerprint hashes, never raw descriptor
+paths, arbitrary metadata or fingerprint environment/flag values.
+
+Apparent bytes measure regular-file content; allocated bytes use POSIX `st_blocks`
+and include directories. Native Windows allocated bytes remain unknown. Combined
+totals deduplicate native device/inode identities across roots, including overlapping
+roots and hardlinks. These are retained snapshots, not reclaimable or exclusive
+ownership. Peak demand, build deltas, open-unlinked bytes, WSL guest free space,
+VHDX allocation and backing-host capacity remain separate unknown fields. No
+`df` minus `du` inference, cleanup or compaction is performed.
+
+`observe-xtask-build.sh` captures the emitted descriptor in a bounded private
+temporary file outside its output directory and emits only this sanitized
+historical inventory after the command. Multiple descriptors or an incomplete
+stderr capture invalidate that inventory. Its outer before/after environment
+snapshots are hashed hints: a descriptor emitted later **cannot retroactively
+bind the before sample**. Neither command exit nor an emitted settlement line
+proves same-lease measurement. The existing command's exact argv and exit status
+remain authoritative even when inventory fails. Full workload qualification and
+same-lease sampling remain with #17623/#17655/#17658/#17668; this instrument never
+changes admission or retires a storage guard.
+
 Every terminal task returns each worktree and external resource as `released`,
 `retained with reason`, or `awaiting owner verification`. A reusable cache is
 normally retained. Unknown/active resources, dirty/untracked/ignored source or

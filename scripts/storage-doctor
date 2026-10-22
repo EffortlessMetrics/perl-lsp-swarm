@@ -2,16 +2,35 @@
 # scripts/storage-doctor
 set -euo pipefail
 
+if ! command -v timeout >/dev/null; then
+  echo 'NOT_PROVEN: bounded observation requires timeout' >&2
+  exit 1
+fi
+if [[ ${1:-} == --resources-descriptor || ${1:-} == --descriptor ]]; then
+  if command -v python3 >/dev/null; then python=python3; else python=python; fi
+  # Descriptor mode adds evidence; it cannot bypass the existing >1 GiB local
+  # target guard. Keep its private path diagnostics out of the JSON evidence.
+  guard=0; observation=0
+  bash "${BASH_SOURCE[0]}" >/dev/null 2>&1 || guard=$?
+  timeout -k 1 6 "$python" -B "$(dirname "${BASH_SOURCE[0]}")/storage_observation.py" "$@" || observation=$?
+  if [[ $guard -ne 0 || $observation -ne 0 ]]; then
+    echo 'NOT_PROVEN: repo-local guard or descriptor inventory failed/incomplete' >&2
+    exit 1
+  fi
+  exit 0
+fi
+if [[ $# -gt 0 ]]; then
+  echo 'usage: storage-doctor [--resources-descriptor FILE --json]' >&2
+  exit 2
+fi
+
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
-
-repo_name="$(basename "$repo_root")"
-devplane="${DEVPLANE:-${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$repo_name}"
 
 fail=0
 
 echo "== disk =="
-df -h "$repo_root" "$devplane" 2>/dev/null || df -h "$repo_root"
+df -h "$repo_root"
 
 echo
 echo "== repo-local target dirs =="
@@ -19,16 +38,26 @@ target_list="$(mktemp "${TMPDIR:-/tmp}/storage-doctor-targets.XXXXXXXX")"
 trap 'rm -f -- "$target_list"' EXIT
 # Keep enumeration status separate from du: find does not propagate failures
 # from -exec, and unknown retained output must not be reported as empty.
-if ! find "$repo_root" -type d -name target -prune -print0 > "$target_list"; then
+if ! timeout -k 1 5 find "$repo_root" -type d -name target -prune -print0 | head -c 65536 > "$target_list"; then
   echo "ERROR: could not enumerate repo-local target dirs: $repo_root" >&2
+  fail=1
+elif [[ $(wc -c < "$target_list") -ge 65536 ]]; then
+  echo 'NOT_PROVEN: repo-local target enumeration clipped' >&2
   fail=1
 elif [ ! -s "$target_list" ]; then
   echo "none"
 else
   # Measure each target independently and preserve its complete path, including
   # spaces, tabs and newlines. Never parse filenames from du's text records.
+  count=0
   while IFS= read -r -d '' path; do
-    if ! usage="$(du -sk -- "$path")"; then
+    count=$((count + 1))
+    if [[ $count -gt 32 ]]; then
+      echo 'NOT_PROVEN: repo-local target count clipped' >&2
+      fail=1
+      break
+    fi
+    if ! usage="$(timeout -k 1 5 du -sk -- "$path")"; then
       echo "ERROR: could not measure repo-local target dir: $path" >&2
       fail=1
       continue
@@ -52,8 +81,8 @@ fi
 
 echo
 echo "== devplane =="
-echo "Batch du counts shared hardlinks once; per-path sizes depend on traversal order."
-du -sh "$devplane"/* 2>/dev/null || echo "devplane not initialized: $devplane"
+echo "NOT_PROVEN: no admitted resource descriptor; repo-local guard only."
+echo "Use --resources-descriptor FILE --json for bounded historical inventory."
 
 echo
 echo "== cargo env =="
