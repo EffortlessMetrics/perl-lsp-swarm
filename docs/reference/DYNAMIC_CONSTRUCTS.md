@@ -25,9 +25,9 @@ outer variable does not establish the meaning of the resulting Perl program.
 ## How the LSP degrades
 
 Where matching semantic evidence reaches a provider, a dynamic boundary can
-produce an explanatory hover, a fallback navigation result, lower-confidence
-completion candidates, or a blocked refactoring plan. `AUTOLOAD` hover paths
-explicitly describe dynamic dispatch. These answers explain the evidence
+produce an explanatory hover, a fallback navigation result, or a blocked
+refactoring plan. Completion may omit runtime-generated symbols. `AUTOLOAD`
+hover paths explicitly describe dynamic dispatch. These answers explain the evidence
 available to the provider; they do not certify the runtime-generated symbol.
 
 Coverage is partial. In particular, a hover or definition request inside
