@@ -1,0 +1,10 @@
+[package]
+name = "cohort-a"
+version = "0.1.0"
+edition = "2024"
+[features]
+activated = []
+[[test]]
+name = "shared"
+path = "tests/shared.rs"
+required-features = ["activated"]

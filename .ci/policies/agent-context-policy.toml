@@ -24,6 +24,10 @@ version = 1
 # ---------------------------------------------------------------------------
 
 [[exempt]]
+name = "routed-test-cohorts-bootstrap"
+reason = "Private development bootstrap compiling xtask's canonical routed producer source; infra only, with no independent product surface. Package purpose and source ownership are documented in its README.md."
+
+[[exempt]]
 name = "perl-ci-hygiene"
 reason = "CI/policy hygiene tooling crate; no product surface to document."
 

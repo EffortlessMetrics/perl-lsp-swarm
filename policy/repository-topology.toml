@@ -708,6 +708,17 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "routed-test-cohorts-bootstrap"
+path = "crates/routed-test-cohorts-bootstrap"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#17623"
+placement_question = "Whether this private shared-source routed-verification bootstrap remains in swarm-product or moves with repository tooling is unresolved; #17623 owns recording the placement decision after native qualification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "tree-sitter-perl-c"
 path = "crates/tree-sitter-perl-c"
 current_owner = "swarm-product"

@@ -5938,3 +5938,82 @@ reason = "Disposable real Git negative-control fixture proves fetch maintenance 
 covered_by = ["python scripts/tests/test_cleanup_fetch_maintenance.py"]
 created = "2026-10-01"
 review_after = "2027-01-01"
+
+# Staged native routed producer proof; no active gate substitution.
+[[allow]]
+id = "non-rust-routed-cohort-source-proof"
+path = "scripts/tests/test_routed_test_cohorts.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Finite ownership-interface controls test native descriptor transfer, package runtime context and synthetic resolver-2 feature discrimination without claiming Cargo qualification."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_routed_test_cohorts.py -v"]
+created = "2026-10-12"
+review_after = "2027-01-12"
+
+[[allow]]
+id = "non-rust-routed-resolver-fixture"
+path = "scripts/tests/fixtures/routed-resolver-2/**/*.toml"
+kind = "ci_tooling"
+language = "toml"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Bounded two-package resolver-2 fixture manifests describe the specific development-feature activation and duplicate test name counterexample; this narrow fixture-only glob covers three manifest inputs."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_routed_test_cohorts.py -v"]
+created = "2026-10-12"
+review_after = "2027-01-12"
+
+[[allow]]
+id = "non-rust-cargo-storage-measurement"
+path = "scripts/measure_cargo_storage.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Observe admitted command allocation using storage-doctor GNU du semantics without admission or deletion authority; record honest sampling limits."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_measure_cargo_storage.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"
+
+[[allow]]
+id = "non-rust-cargo-storage-measurement-tests"
+path = "scripts/tests/test_measure_cargo_storage.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Discriminate hardlink double counting, partial measurements, interrupted sampler processes and lost product failure status."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_measure_cargo_storage.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"
+
+[[allow]]
+id = "non-rust-routed-storage-qualification-report"
+path = "scripts/ci/report_routed_storage_qualification.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "Read persisted Cargo and cohort receipts without another Rust build; expose exact inventory hashes and sampling limits for campaign comparison, with no admission or deletion authority."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_routed_storage_qualification_report.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"
+
+[[allow]]
+id = "non-rust-routed-storage-qualification-report-tests"
+path = "scripts/tests/test_routed_storage_qualification_report.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Reject extra/missing packages, feature drift, duplicate or incomplete cases and ambiguous nested harness output in qualification comparisons."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_routed_storage_qualification_report.py -v"]
+created = "2026-10-12"
+review_after = "2026-11-12"

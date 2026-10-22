@@ -63,30 +63,77 @@ fn hex(digest: &[u8]) -> String {
 }
 
 fn resolve_matrix_binary() -> Result<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PERL_DAP_TEST_BINARY") {
+    resolve_matrix_binary_from(
+        std::env::var_os("PERL_DAP_TEST_BINARY"),
+        Path::new(env!("CARGO_BIN_EXE_perl-dap")),
+    )
+}
+
+fn resolve_matrix_binary_from(
+    explicit: Option<std::ffi::OsString>,
+    cargo_binary: &Path,
+) -> Result<PathBuf> {
+    if let Some(explicit) = explicit {
         let path = PathBuf::from(&explicit);
         if !path.is_file() {
             return Err(anyhow!("PERL_DAP_TEST_BINARY does not point at a file: {explicit:?}"));
         }
         return Ok(path);
     }
-    // The Cargo test binary's sibling target tree holds the built perl-dap
-    // binary; fall back to locating it through CARGO_BIN_EXE-style layout.
-    let current = std::env::current_exe().context("resolving the test executable")?;
-    // <target>/debug/deps/<test>-<hash>.exe -> <target>/debug/perl-dap.exe
-    let profile_dir = current
-        .parent()
-        .and_then(Path::parent)
-        .context("test executable has no profile directory")?;
-    let binary_name = if cfg!(windows) { "perl-dap.exe" } else { "perl-dap" };
-    let candidate = profile_dir.join(binary_name);
-    if candidate.is_file() {
-        return Ok(candidate);
+    // Cargo may place this test in build-dir and the adapter in target-dir.
+    // Its exact binary path remains authoritative across those layouts.
+    if cargo_binary.is_file() {
+        return Ok(cargo_binary.to_path_buf());
     }
     Err(anyhow!(
-        "no exact perl-dap binary found: set PERL_DAP_TEST_BINARY (looked at {})",
-        candidate.display()
+        "no exact perl-dap binary found: set PERL_DAP_TEST_BINARY (Cargo binary {})",
+        cargo_binary.display()
     ))
+}
+
+#[test]
+fn matrix_binary_uses_cargo_path() -> Result<()> {
+    let cargo_binary = Path::new(env!("CARGO_BIN_EXE_perl-dap"));
+    assert_eq!(resolve_matrix_binary_from(None, cargo_binary)?, cargo_binary);
+    Ok(())
+}
+
+#[test]
+fn matrix_binary_prefers_explicit_file() -> Result<()> {
+    let explicit = tempfile::NamedTempFile::new()?;
+    assert_eq!(
+        resolve_matrix_binary_from(
+            Some(explicit.path().as_os_str().to_owned()),
+            Path::new(env!("CARGO_BIN_EXE_perl-dap")),
+        )?,
+        explicit.path()
+    );
+    Ok(())
+}
+
+#[test]
+fn matrix_binary_refuses_missing_explicit_file() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let missing = dir.path().join("missing-perl-dap");
+    let error = resolve_matrix_binary_from(
+        Some(missing.into_os_string()),
+        Path::new(env!("CARGO_BIN_EXE_perl-dap")),
+    )
+    .err()
+    .ok_or_else(|| anyhow!("missing explicit binary was accepted"))?;
+    assert!(error.to_string().contains("PERL_DAP_TEST_BINARY does not point at a file"));
+    Ok(())
+}
+
+#[test]
+fn matrix_binary_refuses_missing_cargo_file() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let missing = dir.path().join("missing-perl-dap");
+    let error = resolve_matrix_binary_from(None, &missing)
+        .err()
+        .ok_or_else(|| anyhow!("missing Cargo binary was accepted"))?;
+    assert!(error.to_string().contains("no exact perl-dap binary found"));
+    Ok(())
 }
 
 fn git(args: &[&str]) -> Result<String> {
