@@ -52,6 +52,12 @@ Strict selection is explicit input, then `PERL_CORPUS_ROOT`, then a typed missin
 
 `require_repository_layout()` verifies only the required `test_corpus/` and `crates/perl-corpus/fuzz/` directory chains. It does not recurse, choose members, infer extensions, or replace `CorpusTopology`. Selected-member containment and opening belong to the later capability traversal seam.
 
+### Portable member identity
+
+`CorpusAssetPath` is the reusable root-relative member identity. Its canonical serialized form uses `/` between ordered UTF-8 components on every host; a literal backslash is component data, not a portable separator. Portable parsing therefore never delegates to the host path parser. `to_host_path()` materializes components one at a time and fails with `unsupported_on_host` when the host would reinterpret them.
+
+`CorpusAsset::portable_path()` validates the topology-v1 `id`/`relative_path` pair and declared layer prefix. That proves path shape, not membership. `CorpusTopology::member_path()` additionally requires exact membership before returning the typed identity, and `asset_path()` materializes a host path only after that proof and runtime-root binding. Component-by-component no-follow opening and same-handle byte reads remain the separate #7693 authority.
+
 ### Typed source loading
 
 Ordinary Perl sources and sectioned corpus documents use different APIs:
@@ -121,6 +127,7 @@ cargo test -p perl-parser --test parser_accuracy_e2e
 # Run perl-corpus unit and integration tests
 cargo test -p perl-corpus
 cargo test -p perl-corpus --test root_path_authority
+cargo test -p perl-corpus --test corpus_asset_path
 cargo test -p perl-corpus --test distribution_contract
 ```
 
