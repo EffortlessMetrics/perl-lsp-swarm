@@ -429,29 +429,37 @@ fn watched_create_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::
 // pull-refresh requests, so push consumers never republish).
 // -------------------------------------------------------------------------
 
-/// A FIFO marker drains the outbound writer after synchronous diagnostic
-/// publication. These fixtures install a parse worker, never a debounce scheduler.
-fn save_output_boundary(
-    server: &LspServer,
-    output: &OutputCapture,
-    phase: &str,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    server.notify("test/save-proof-boundary", json!({ "phase": phase }))?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let messages = output.messages()?;
-        if let Some(position) = messages.iter().position(|message| {
-            message.get("method").and_then(Value::as_str) == Some("test/save-proof-boundary")
-                && message.pointer("/params/phase").and_then(Value::as_str) == Some(phase)
-        }) {
-            return Ok(position + 1);
+// The marker is fixture-only, not an outbound production protocol method.
+#[cfg(test)]
+mod output_boundary {
+    use super::*;
+
+    /// A FIFO marker drains the outbound writer after synchronous diagnostic
+    /// publication. These fixtures install a parse worker, never a debounce scheduler.
+    pub(super) fn save_output_boundary(
+        server: &LspServer,
+        output: &OutputCapture,
+        phase: &str,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        server.notify("test/save-proof-boundary", json!({ "phase": phase }))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let messages = output.messages()?;
+            if let Some(position) = messages.iter().position(|message| {
+                message.get("method").and_then(Value::as_str) == Some("test/save-proof-boundary")
+                    && message.pointer("/params/phase").and_then(Value::as_str) == Some(phase)
+            }) {
+                return Ok(position + 1);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("outbound boundary {phase} never arrived").into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        if Instant::now() >= deadline {
-            return Err(format!("outbound boundary {phase} never arrived").into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+use output_boundary::save_output_boundary;
 
 fn settle_save_worker(server: &LspServer, key: &str) -> Result<(), Box<dyn std::error::Error>> {
     let worker = server.parse_worker().ok_or("parse worker must be installed")?;
