@@ -34,7 +34,9 @@ fn transliteration_strict_handles_edge_cases() {
     assert_clean_parse(r#"$x =~ tr///;"#);
     assert_has_error(r#"$x =~ tr/a/b/z;"#, "invalid transliteration modifier");
     assert_has_error(r#"$x =~ tr/a/b;"#, "closing delimiter in transliteration");
-    assert_has_error(r#"$x =~ tr{abc}{xyz;"#, "closing delimiter in transliteration");
+    // Perl 5.42 names the unclosed second body: "Transliteration replacement
+    // not terminated" (#16608), not the pattern's closing delimiter.
+    assert_has_error(r#"$x =~ tr{abc}{xyz;"#, "Transliteration replacement not terminated");
     assert_has_error(r#"$x =~ tr{abc}xyz;"#, "invalid transliteration delimiter");
 }
 

@@ -131,6 +131,7 @@ impl DiagnosticCode {
             "PL1005" => "https://docs.perl-lsp.org/errors/PL1005",
             "PL1006" => "https://docs.perl-lsp.org/errors/PL1006",
             "PL1007" => "https://docs.perl-lsp.org/errors/PL1007",
+            "PL1008" => "https://docs.perl-lsp.org/errors/PL1008",
             _ => return None,
         })
     }
@@ -148,7 +149,8 @@ impl DiagnosticCode {
             | Self::UnquotedBareword
             | Self::UnresolvedQualifiedCall
             | Self::RegexModifierInvalid
-            | Self::RegexCaptureInvalid => DiagnosticSeverity::Error,
+            | Self::RegexCaptureInvalid
+            | Self::RegexUnterminatedQuoteLike => DiagnosticSeverity::Error,
 
             // Warnings
             Self::MissingStrict
@@ -520,15 +522,31 @@ impl DiagnosticCode {
                 partial. Absence of a further finding here is not evidence that the \
                 pattern is clean.",
             ),
+            Self::RegexUnterminatedQuoteLike => Some(
+                "This quote-like operator has no closing delimiter before the end of \
+                the file. Add the closing delimiter that matches the opening one.",
+            ),
         }
     }
 
     /// Try to infer a diagnostic code from a message.
     pub fn from_message(msg: &str) -> Option<Self> {
         let msg_lower = msg.to_lowercase();
-        if contains_diagnostic_phrase(&msg_lower, "inside a begin block does not enable strict")
-            || contains_diagnostic_phrase(&msg_lower, "inside a phase block does not enable strict")
+        if contains_diagnostic_phrase(&msg_lower, "search pattern not terminated")
+            || contains_diagnostic_phrase(&msg_lower, "can't find string terminator")
+            || contains_diagnostic_phrase(&msg_lower, "substitution pattern not terminated")
+            || contains_diagnostic_phrase(&msg_lower, "substitution replacement not terminated")
+            || contains_diagnostic_phrase(&msg_lower, "transliteration pattern not terminated")
+            || contains_diagnostic_phrase(&msg_lower, "transliteration replacement not terminated")
         {
+            Some(Self::RegexUnterminatedQuoteLike)
+        } else if contains_diagnostic_phrase(
+            &msg_lower,
+            "inside a begin block does not enable strict",
+        ) || contains_diagnostic_phrase(
+            &msg_lower,
+            "inside a phase block does not enable strict",
+        ) {
             Some(Self::PhaseScopedStrictPragma)
         } else if contains_diagnostic_phrase(
             &msg_lower,
