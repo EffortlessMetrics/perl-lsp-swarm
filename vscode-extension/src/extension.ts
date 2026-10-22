@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { execFile } from 'child_process';
 import {
+  CancellationToken,
   CloseAction,
   ErrorAction,
   State as LanguageClientState,
@@ -1995,9 +1996,7 @@ export function resolveConfiguredServerPath(
 /// fails at spawn with a misleading permission diagnosis (#18118).
 export type ConfiguredServerPathProblem = 'missing' | 'not-a-file' | 'not-executable';
 
-export function configuredServerPathProblem(
-  userPath: string,
-): ConfiguredServerPathProblem | null {
+export function configuredServerPathProblem(userPath: string): ConfiguredServerPathProblem | null {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(userPath);
@@ -2249,6 +2248,11 @@ function createLanguageClientLifecycle(
         // signal, so only it may start the stable-run grace window and reset
         // the automatic-restart budget after a genuinely healthy replacement.
         crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
+        // Check after finalization so a dynamic registration received during
+        // its awaits is not lost between the startup check and running state.
+        void suggestAiCompletionIfSupported(context, client).catch((err: unknown) => {
+          outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
+        });
       }
       // Only `resolving` needs an explicit projection: onStateChange maps it to
       // generic Starting, and every other lifecycle state is already owned by
@@ -2335,13 +2339,6 @@ async function finalizeStartedLanguageClient(
   const serverInfo = startedClient.initializeResult?.serverInfo;
   healthWidget?.setName(serverInfo?.name);
   healthWidget?.setVersion(serverInfo?.version);
-
-  // Offer AI inline completion once if the server advertises support (#1634).
-  // Fire-and-forget; failures must not block lifecycle finalization.
-  suggestAiCompletionIfSupported(context, startedClient).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    outputChannel.error(`[ai-completion] Error suggesting AI completion: ${msg}`);
-  });
 
   await refreshTestAdapter(context);
   assertCurrent();
@@ -2539,6 +2536,22 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      handleRegisterCapability: async (params, next) => {
+        await next(params, CancellationToken.None);
+        // Recheck only after registration succeeds. Startup finalization covers
+        // registrations received before this client reaches the running state.
+        if (
+          params.registrations.some((entry) => entry.method === 'textDocument/inlineCompletion') &&
+          languageClientLifecycle?.client === lc &&
+          languageClientLifecycle.snapshot.state === 'running' &&
+          extensionContext
+        ) {
+          // A user-facing prompt must not hold the registration response open.
+          void suggestAiCompletionIfSupported(extensionContext, lc).catch((err: unknown) => {
+            outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
+          });
+        }
+      },
       // The server pulls `section: "perl"` once unscoped and once per workspace
       // folder. Without this adapter the language client would resolve those
       // against the `perl.*` namespace, which this extension does not

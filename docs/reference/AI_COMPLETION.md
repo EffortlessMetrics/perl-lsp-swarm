@@ -1,11 +1,25 @@
 # AI Inline Completion Reference
 
-AI inline completions provide context-aware code suggestions as ghost text
-while you type. The feature is **opt-in** and **disabled by default**. When
-enabled, the server sends the surrounding code context to an
-OpenAI-compatible API endpoint and streams back completion candidates. If the
-AI backend is unavailable, slow, or disabled, the server falls back to
-deterministic pattern-based completions automatically.
+AI inline completions can provide code suggestions through an OpenAI-compatible
+backend. AI is disabled by default; deterministic inline completions do not
+require a remote AI backend. Activation behavior depends on the server build.
+
+## Server-build boundary
+
+The server configuration and trusted-activation rules below describe the
+development source at [`perl-lsp-swarm` revision `28efaee0`](https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/28efaee0d8a0267c1919018ee2ae689f0db72dfa).
+They do **not** describe the public `perl-lsp` `v0.17.0` tag at
+[`ffee2824`](https://github.com/EffortlessMetrics/perl-lsp/tree/ffee2824938f415e54923112c7b79e3f22040699).
+That public release accepts generic `aiCompletion` activation and provider
+configuration and can construct a remote backend when enabled and an API key
+is available. Its defaults remain disabled; actual requests also require usable
+provider configuration. See its [configuration parser](https://github.com/EffortlessMetrics/perl-lsp/blob/ffee2824938f415e54923112c7b79e3f22040699/crates/perl-lsp-rs-core/src/config/mod.rs#L465)
+and [backend construction](https://github.com/EffortlessMetrics/perl-lsp/blob/ffee2824938f415e54923112c7b79e3f22040699/crates/perl-lsp-rs/src/runtime/mod.rs#L503).
+
+The extension can select that public release. Its `0.17.0` version string and
+the absence of the extension's enable prompt are **not** evidence that the
+connected server enforces the newer trusted-activation rules. No first fixed
+release version is claimed here.
 
 ## VS Code Settings
 
@@ -14,8 +28,19 @@ Code settings UI.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Reserved machine-scoped extension preference. The extension does not forward trusted activation and generic server arrivals are rejected, so this key cannot currently enable remote AI. |
-| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Reserved machine-scoped extension preference for a future trusted adapter. It does not currently authorize server streaming. |
+| `perl-lsp.aiCompletion.enabled` | boolean | `false` | Machine-scoped client preference. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected build. |
+| `perl-lsp.aiCompletion.streaming.enabled` | boolean | `true` | Machine-scoped preference for progressive display. This does not grant server activation authority; backend and streaming behavior depend on the connected build. |
+
+The extension's one-time enable prompt requires
+`capabilities.experimental.perlAiCompletionActivation === true` and an inline
+completion provider registered with the language client. Static and dynamic
+registrations are supported; the check runs at startup and after successful
+dynamic inline-provider registration. Inline-completion support alone does not
+select the journey. The prompt's capability contract does not establish the
+activation behavior of a legacy server that omits the flag.
+
+The remaining channel and server-field rules apply to the development revision
+identified above.
 
 Where each field can be set:
 
