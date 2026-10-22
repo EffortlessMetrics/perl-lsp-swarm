@@ -46,6 +46,7 @@ fn trace_config(timeout: Duration) -> ScenarioConfig {
         ],
         workspace_files: Vec::new(),
         workspace_folders: vec![("project".to_string(), "trace-project".to_string())],
+        rootless: false,
         client_capability_overrides: json!({
             "workspace": {
                 "didChangeWatchedFiles": {
