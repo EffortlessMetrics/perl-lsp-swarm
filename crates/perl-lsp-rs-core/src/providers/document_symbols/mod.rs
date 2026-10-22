@@ -74,7 +74,19 @@ pub fn source_backed_document_symbols_from_ast(
     let declarations = extract_symbol_decls(ast, None);
     let mut declaration_names: DeclarationNames<'_> = HashMap::new();
     for declaration in &declarations {
-        if matches!(declaration.kind, SymbolKind::Package | SymbolKind::Subroutine) {
+        // ADJUST blocks deliberately use a Method node without a name span.
+        // Keep that unported block shape on the compatibility path; a named
+        // `method ADJUST` has an anchor and participates in the exact join.
+        if declaration.kind == SymbolKind::Method
+            && declaration.name == "ADJUST"
+            && declaration.anchor_span.is_none()
+        {
+            continue;
+        }
+        if matches!(
+            declaration.kind,
+            SymbolKind::Package | SymbolKind::Subroutine | SymbolKind::Method
+        ) {
             let key = (
                 declaration.kind,
                 declaration.full_span.0,
@@ -454,7 +466,7 @@ fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
     WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end)
 }
 
-/// Project existing canonical package/subroutine name spans. Known missing,
+/// Project existing canonical package/subroutine/named-method spans. Known missing,
 /// conflicting or invalid anchors cannot fall back to source-search inference.
 fn symbol_name_range(
     source: &str,
