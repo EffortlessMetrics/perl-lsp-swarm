@@ -416,8 +416,9 @@ impl DiagnosticCode {
                 Use `open(my $fh, '-|', $cmd, @args)` or IPC::Run for safer command execution.",
             ),
             Self::SecuritySqlInjection => Some(
-                "Interpolating or concatenating values into the SQL text passed to \
-                `prepare`/`do` allows crafted input to change the statement. \
+                "Interpolating or concatenating values into the SQL text passed to a \
+                reviewed DBI SQL-text sink (`prepare`/`do`/`selectrow_*`/`selectall_*`/`selectcol_arrayref`) \
+                allows crafted input to change the statement. \
                 Keep the SQL literal static and pass values as bind values: \
                 `$dbh->prepare('... WHERE id = ?')->execute($user_id)`.",
             ),
