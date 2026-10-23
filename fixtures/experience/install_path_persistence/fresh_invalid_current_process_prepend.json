@@ -1,0 +1,34 @@
+{
+  "schema_version": "standalone_fresh_process.v1",
+  "bound_plan_id": "path-plan-wsl-already-visible",
+  "bound_plan_sha256": "84d68076c4c22a7190ade15ae289752fbe6f53c3779b33cf87fb773958cebf60",
+  "bound_persistence_result": null,
+  "observed_environment": {
+    "platform": "wsl",
+    "shell_family": "bash"
+  },
+  "session": {
+    "origin": "current_process",
+    "environment_source": "installer_mutated_current_process",
+    "path_prepared_by_harness": false
+  },
+  "lookup": {
+    "method": "command_lookup",
+    "resolved": {
+      "path": "/home/operator/.local/share/perl-lsp/versions/0.18.0/bin/perllsp",
+      "sha256": "b100000000000000000000000000000000000000000000000000000000000000",
+      "matches_candidate": true
+    },
+    "competing_candidates": [
+      {
+        "path": "/home/operator/.local/share/perl-lsp/versions/0.18.0/bin/perllsp",
+        "sha256": "b100000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "ambiguous": false
+  },
+  "startup_disposition": "healthy",
+  "result": "path_visible_immediately",
+  "instrument_complete": true,
+  "redaction_policy": "bounded_typed_fields_only"
+}
