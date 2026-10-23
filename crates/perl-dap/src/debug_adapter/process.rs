@@ -7399,12 +7399,22 @@ mod tests {
         Ok(())
     }
 
-    fn spawn_reader_fixture_child(mode: &str) -> Result<super::Child, String> {
-        std::process::Command::new("perl")
+    fn spawn_reader_fixture_child(mode: &str) -> Result<(super::Child, String), String> {
+        static NEXT_READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let ready = format!(
+            "READER_READY_{}",
+            NEXT_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let child = std::process::Command::new("perl")
                 .arg("-e")
                 .arg(r##"
-                    my $mode = shift; my $round = 0; my $active;
+                    my $mode = shift; my $ready = shift; my $round = 0; my $active;
                     select STDERR; $|=1; select STDOUT; $|=1;
+                    if ($mode eq 'startup_delayed') {
+                        select undef, undef, undef, 0.9;
+                        $mode = 'valid';
+                    }
+                    print STDERR "$ready\n";
                     while (<STDIN>) {
                         if (/DAP_BEGIN_(\d+)/) {
                             ++$round; $active = $round == 1 ? $mode : 'valid';
@@ -7433,11 +7443,13 @@ mod tests {
                     }
                 "##)
                 .arg(mode)
+                .arg(&ready)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| format!("failed to spawn reader fixture: {error}"))
+                .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        Ok((child, ready))
     }
 
     fn reader_stack_fixture(mode: &str) -> Result<Arc<DebugAdapter>, String> {
@@ -7456,16 +7468,21 @@ mod tests {
             end_column: None,
         }]);
         adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+        let ready;
         {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
             let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
             session.stopped_generation = 1;
-            let child = spawn_reader_fixture_child(mode)?;
+            let (child, child_ready) = spawn_reader_fixture_child(mode)?;
+            ready = child_ready;
             let mut previous = std::mem::replace(&mut session.process, child);
             let _ = previous.kill();
             previous.wait().map_err(|error| format!("failed to reap seed process: {error}"))?;
         }
         adapter.start_output_reader(PathBuf::from("."));
+        // Spawn success does not establish interpreter startup. Start each
+        // unchanged query deadline only after this child's reader is ready.
+        wait_for_reader_barrier(&adapter, &ready)?;
         // Drop owns bounded child cleanup on both success and every error path.
         Ok(adapter)
     }
@@ -7520,6 +7537,15 @@ mod tests {
             return Err("reader changed accepted frames or arguments".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn framed_reader_startup_precedes_query_deadline() -> Result<(), String> {
+        // Startup exceeds the unchanged 600ms query budget. Readiness must
+        // absorb it before the query; query latency still remains bounded.
+        let adapter = reader_stack_fixture("startup_delayed")?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        assert_reader_stack(&adapter, response, "main::run", 7, &["$value", "[1, 2]", "\"a,b\""])
     }
 
     #[test]
@@ -7616,14 +7642,14 @@ mod tests {
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
         adapter.begin_session_generation();
-        let mut old_child = {
+        let (mut old_child, ready) = {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_replacement");
             let session = guard.as_mut().ok_or("missing old session")?;
-            let child = spawn_reader_fixture_child("valid")?;
+            let (child, ready) = spawn_reader_fixture_child("valid")?;
             session.stack_frames.first_mut().ok_or("missing old frame")?.name =
                 "replacement".to_string();
             session.stack_frame_arguments.insert(1, vec!["replacement_arg".to_string()]);
-            std::mem::replace(&mut session.process, child)
+            (std::mem::replace(&mut session.process, child), ready)
         };
         adapter.operation_broker.open_session();
         adapter.start_output_reader(PathBuf::from("."));
@@ -7632,6 +7658,9 @@ mod tests {
         // must leave the replacement's authorities intact.
         drop(old_child.stdin.take());
         let result = (|| {
+            // The unique marker prevents the previous child's startup from
+            // satisfying replacement readiness under concurrent host load.
+            wait_for_reader_barrier(&adapter, &ready)?;
             if !DebugAdapter::wait_for_child_exit(&mut old_child, Duration::from_secs(5)) {
                 return Err("old reader fixture failed to finish delayed output".to_string());
             }
