@@ -677,6 +677,10 @@ export function _restartServerForTest(context: vscode.ExtensionContext): Promise
   return restartServer(context);
 }
 
+/** Test the settings prompt through its production recovery action. @internal */
+export function _promptForClientRefreshForTest(context: vscode.ExtensionContext): Promise<void> {
+  return promptForClientRefresh(context);
+}
 export async function syncPerlCriticConfiguration(
   activeClient: Pick<LanguageClient, 'sendNotification'> | undefined = client,
   documentUri?: vscode.Uri,
@@ -4000,7 +4004,7 @@ async function promptForClientRefresh(context: vscode.ExtensionContext) {
   );
 
   if (choice === 'Restart Now') {
-    await restartServer(context);
+    await restartServerFromExplicitRecovery(context);
   }
 }
 
