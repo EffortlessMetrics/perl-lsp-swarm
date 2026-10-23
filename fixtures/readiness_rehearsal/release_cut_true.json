@@ -1,0 +1,198 @@
+{
+  "schema_version": "readiness_rehearsal.v1",
+  "repository": {
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "source_revision",
+    "tree_status": "clean",
+    "lockfiles": {
+      "cargo_lock": "6666666666666666666666666666666666666666666666666666666666666666",
+      "npm_lock": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "toolchains": {
+      "cargo": "1.95.0",
+      "rustc": "1.95.0"
+    }
+  },
+  "candidate_id": "rehearsal-fixture",
+  "package_version": "0.0.0+rehearsal",
+  "extension_version": "0.0.0+rehearsal",
+  "stages": [
+    {
+      "id": "identity_preflight",
+      "mandatory": true,
+      "status": "pass",
+      "instrument": {
+        "role": "identity-preflight",
+        "identity": "xtask-identity-preflight",
+        "kind": "instrument",
+        "availability": "available",
+        "outcome": "completed",
+        "exit_code": 0
+      },
+      "artifacts": [],
+      "installed": [],
+      "limitations": [],
+      "owning_issues": [
+        "#16785"
+      ]
+    },
+    {
+      "id": "package_install",
+      "mandatory": true,
+      "status": "pass",
+      "instrument": {
+        "role": "package-install",
+        "identity": "xtask-package-install",
+        "kind": "instrument",
+        "availability": "available",
+        "outcome": "completed",
+        "exit_code": 0
+      },
+      "artifacts": [
+        {
+          "role": "package_crate",
+          "name": "perl-lsp-0.0.0-rehearsal.crate",
+          "kind": "artifact_bytes",
+          "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+          "size": 32,
+          "candidate_id": "rehearsal-fixture",
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "installed": [
+        {
+          "role": "perllsp",
+          "kind": "installed_subject",
+          "identity": "perllsp 0.0.0+rehearsal",
+          "digest": "4444444444444444444444444444444444444444444444444444444444444444",
+          "path_role": "staged_install"
+        }
+      ],
+      "limitations": [],
+      "owning_issues": [
+        "#16785"
+      ]
+    },
+    {
+      "id": "vsix_inspect",
+      "mandatory": true,
+      "status": "pass",
+      "instrument": {
+        "role": "vsix-inspect",
+        "identity": "xtask-vsix-inspect",
+        "kind": "instrument",
+        "availability": "available",
+        "outcome": "completed",
+        "exit_code": 0
+      },
+      "artifacts": [
+        {
+          "role": "vsix",
+          "name": "perl-lsp-rs-rehearsal.vsix",
+          "kind": "artifact_bytes",
+          "digest": "2222222222222222222222222222222222222222222222222222222222222222",
+          "size": 64,
+          "candidate_id": "rehearsal-fixture",
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "declared_server_identity": "perllsp 0.0.0+rehearsal"
+        }
+      ],
+      "installed": [
+        {
+          "role": "bundled_server",
+          "kind": "installed_subject",
+          "identity": "perllsp 0.0.0+rehearsal",
+          "digest": "4444444444444444444444444444444444444444444444444444444444444444",
+          "path_role": "vsix_bundled_server"
+        }
+      ],
+      "limitations": [],
+      "owning_issues": [
+        "#16785"
+      ]
+    },
+    {
+      "id": "archive_members",
+      "mandatory": true,
+      "status": "pass",
+      "instrument": {
+        "role": "archive-members",
+        "identity": "xtask-archive-members",
+        "kind": "instrument",
+        "availability": "available",
+        "outcome": "completed",
+        "exit_code": 0
+      },
+      "artifacts": [
+        {
+          "role": "archive",
+          "name": "perllsp-rehearsal-x86_64-unknown-linux-gnu.tar.gz",
+          "kind": "artifact_bytes",
+          "digest": "3333333333333333333333333333333333333333333333333333333333333333",
+          "size": 128,
+          "candidate_id": "rehearsal-fixture",
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "members": [
+            {
+              "name": "perllsp",
+              "digest": "4444444444444444444444444444444444444444444444444444444444444444",
+              "size": 16,
+              "checksum": "4444444444444444444444444444444444444444444444444444444444444444"
+            },
+            {
+              "name": "perl-dap",
+              "digest": "5555555555555555555555555555555555555555555555555555555555555555",
+              "size": 16,
+              "checksum": "5555555555555555555555555555555555555555555555555555555555555555"
+            }
+          ]
+        }
+      ],
+      "installed": [
+        {
+          "role": "perllsp",
+          "kind": "installed_subject",
+          "identity": "perllsp 0.0.0+rehearsal",
+          "digest": "4444444444444444444444444444444444444444444444444444444444444444",
+          "path_role": "archive_extracted"
+        }
+      ],
+      "limitations": [],
+      "owning_issues": [
+        "#16785"
+      ]
+    },
+    {
+      "id": "cleanup",
+      "mandatory": true,
+      "status": "pass",
+      "instrument": {
+        "role": "cleanup",
+        "identity": "xtask-cleanup",
+        "kind": "instrument",
+        "availability": "available",
+        "outcome": "completed",
+        "exit_code": 0
+      },
+      "artifacts": [],
+      "installed": [],
+      "limitations": [],
+      "owning_issues": [
+        "#16785"
+      ]
+    }
+  ],
+  "cleanup": {
+    "disposition": "cleaned",
+    "status": "pass"
+  },
+  "mutations": [],
+  "limitations": [],
+  "owning_issues": [
+    "#16785"
+  ],
+  "published_channels": [],
+  "release_cut": true,
+  "status": "pass",
+  "receipt_digest": "7dbf0ee3e4bd6314f5f8725b42038e9cb07f42e5f209c15e29187892d88d464a"
+}
