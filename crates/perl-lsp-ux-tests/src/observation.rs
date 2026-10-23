@@ -239,6 +239,15 @@ impl Inbox {
         self.push(message, true)
     }
 
+    /// Wake test-only stderr predicates after their external buffer changes.
+    /// Advancing the sequence closes the same predicate-to-block race as a
+    /// protocol publication, without adding stderr to the protocol event buffer.
+    #[cfg(test)]
+    pub(crate) fn observe_stderr(&self) {
+        self.lock().seq += 1;
+        self.inner.signal.notify_all();
+    }
+
     fn push(&self, message: Value, is_response: bool) -> ObservationId {
         let id = {
             let mut state = self.lock();
@@ -592,6 +601,34 @@ mod tests {
             "a lost wakeup would have burned the whole deadline, took {:?}",
             started.elapsed()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn stderr_published_during_predicate_evaluation_is_not_missed() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let mut first = true;
+        let matched = inbox.wait_for(GENEROUS, |_| {
+            let observed = lines.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if first {
+                first = false;
+                let publisher = inbox.clone();
+                let lines = Arc::clone(&lines);
+                // Publish after the predicate's snapshot but before it can block.
+                // A notification without sequence advancement misses this arrival.
+                thread::spawn(move || {
+                    lines.lock().unwrap_or_else(|e| e.into_inner()).push("branch receipt");
+                    publisher.observe_stderr();
+                })
+                .join()
+                .expect("stderr publisher panicked");
+            }
+            observed.contains(&"branch receipt").then_some(observed)
+        })?;
+        assert_eq!(matched, vec!["branch receipt"]);
+        assert!(inbox.snapshot().events().is_empty(), "stderr is not protocol traffic");
+        assert!(inbox.snapshot().responses().is_empty());
         Ok(())
     }
 

@@ -160,10 +160,27 @@ impl LspServer {
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
         let metadata_uri = Self::text_document_uri_of(params.as_ref());
-        let result = self.handle_did_open_with_cancellation_inner(params, cancellation_token);
+        self.emit_document_symbol_lifecycle_probe(
+            "did_open_handler_entered",
+            "textDocument/didOpen",
+            params.as_ref(),
+            None,
+            None,
+            None,
+        );
+        let result =
+            self.handle_did_open_with_cancellation_inner(params.as_ref(), cancellation_token);
         if let Some(uri) = metadata_uri.filter(|_| result.is_ok()) {
             self.refresh_metadata_for_document_uri(&uri);
         }
+        self.emit_document_symbol_lifecycle_probe(
+            if result.is_ok() { "did_open_return_ok" } else { "did_open_return_error" },
+            "textDocument/didOpen",
+            params.as_ref(),
+            None,
+            None,
+            result.as_ref().err().map(|error| error.code),
+        );
         result
     }
 
@@ -177,7 +194,7 @@ impl LspServer {
 
     fn handle_did_open_with_cancellation_inner(
         &self,
-        params: Option<Value>,
+        params: Option<&Value>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
@@ -193,6 +210,14 @@ impl LspServer {
                 .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
             let admission_key = self.normalize_uri_key(uri);
             if let Err(err) = crate::security::validate_document_uri(&admission_key) {
+                self.emit_document_symbol_lifecycle_probe(
+                    "did_open_uri_rejected",
+                    "textDocument/didOpen",
+                    Some(params),
+                    None,
+                    None,
+                    Some(-32602),
+                );
                 return Err(invalid_params(&err.to_string()));
             }
             let text_raw = params
@@ -208,6 +233,14 @@ impl LspServer {
             // text enters. The sink's own size and binary guards cover the
             // remaining buffer conditions.
             if let Err(err) = crate::security::validate_buffer_line_lengths(text) {
+                self.emit_document_symbol_lifecycle_probe(
+                    "did_open_line_length_rejected",
+                    "textDocument/didOpen",
+                    Some(params),
+                    None,
+                    None,
+                    Some(-32602),
+                );
                 return Err(invalid_params(&err.to_string()));
             }
             let version_i64 =
@@ -251,6 +284,14 @@ impl LspServer {
                     let _transition = self.indexing_transition_lock.lock();
                     self.documents.lock().insert(normalized_uri.clone(), guard_state);
                 }
+                self.emit_document_symbol_lifecycle_probe(
+                    "did_open_inserted_template",
+                    "textDocument/didOpen",
+                    Some(params),
+                    None,
+                    None,
+                    None,
+                );
                 // Guarded no-parse document: terminal readiness state (#11675).
                 self.mark_active_document_guarded(
                     &normalized_uri,
@@ -305,6 +346,14 @@ impl LspServer {
                     let _transition = self.indexing_transition_lock.lock();
                     self.documents.lock().insert(normalized_uri.clone(), guard_state);
                 }
+                self.emit_document_symbol_lifecycle_probe(
+                    "did_open_inserted_oversize",
+                    "textDocument/didOpen",
+                    Some(params),
+                    None,
+                    None,
+                    None,
+                );
                 // Guarded no-parse document: terminal readiness state (#11675).
                 self.mark_active_document_guarded(
                     &normalized_uri,
@@ -355,6 +404,14 @@ impl LspServer {
                     let _transition = self.indexing_transition_lock.lock();
                     self.documents.lock().insert(normalized_uri.clone(), guard_state);
                 }
+                self.emit_document_symbol_lifecycle_probe(
+                    "did_open_inserted_binary",
+                    "textDocument/didOpen",
+                    Some(params),
+                    None,
+                    None,
+                    None,
+                );
                 // Guarded no-parse document: terminal readiness state (#11675).
                 self.mark_active_document_guarded(
                     &normalized_uri,
@@ -410,6 +467,14 @@ impl LspServer {
                         (Some(ast), errors, Arc::new(table))
                     }
                     Err(crate::error::ParseError::Cancelled) => {
+                        self.emit_document_symbol_lifecycle_probe(
+                            "did_open_parse_cancelled",
+                            "textDocument/didOpen",
+                            Some(params),
+                            None,
+                            None,
+                            None,
+                        );
                         tracing::debug!("Parse cancelled for {} — newer change pending", uri);
                         return Ok(());
                     }
@@ -504,6 +569,14 @@ impl LspServer {
                 let _transition = self.indexing_transition_lock.lock();
                 self.documents.lock().insert(normalized_uri.clone(), doc_state);
             }
+            self.emit_document_symbol_lifecycle_probe(
+                "did_open_inserted_parsed",
+                "textDocument/didOpen",
+                Some(params),
+                None,
+                None,
+                None,
+            );
             let acceptance_class = if ast_arc.is_none() {
                 crate::runtime::readiness::ParserAcceptanceClass::Failed
             } else if !snapshot.parse_errors_arc().is_empty() {
