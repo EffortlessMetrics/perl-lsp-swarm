@@ -138,6 +138,59 @@ fi
 assert_contains "cargo-safe: non-shim note reports the ignored pin" \
   "is not a rustup shim" "${TMPDIR_BASE}/fresh.err"
 
+# Failed version probes are not evidence that Cargo itself needs replacing.
+# Reach the real entrypoint and prove neither a missing rustup pin nor an
+# unrelated probe failure can authorize build delegation or storage allocation.
+FAILED_BIN="${TMPDIR_BASE}/failed-probe-bin"
+mkdir -p "$FAILED_BIN"
+cat > "${FAILED_BIN}/cargo" <<'FAILED_PROBE'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  printf '%s\n' "$PROBE_ERROR" >&2
+  exit 9
+fi
+printf '%s\n' "$*" >> "$PROBE_WORK_LOG"
+exit 0
+FAILED_PROBE
+chmod +x "${FAILED_BIN}/cargo"
+
+for scenario in missing-pin unrelated-failure; do
+  case "$scenario" in
+    missing-pin)
+      probe_error="error: toolchain '1.95.0-x86_64-unknown-linux-gnu' is not installed"
+      ;;
+    unrelated-failure)
+      # Even version-looking output must not override a failed probe status.
+      probe_error=$'cargo 1.99.0 (fixture)\nerror: permission denied'
+      ;;
+  esac
+  code=0
+  PATH="${FAILED_BIN}:$PATH" PROBE_ERROR="$probe_error" \
+    PROBE_WORK_LOG="${TMPDIR_BASE}/${scenario}.work" \
+    DEVPLANE="${TMPDIR_BASE}/${scenario}.plane" \
+    bash "$CARGO_SAFE" check -p perl-test-must --locked \
+    > "${TMPDIR_BASE}/${scenario}.out" 2> "${TMPDIR_BASE}/${scenario}.err" || code=$?
+  if [[ "$code" -eq 78 && ! -e "${TMPDIR_BASE}/${scenario}.work" && ! -e "${TMPDIR_BASE}/${scenario}.plane" ]]; then
+    pass "$scenario: failed probe refuses before work or allocation"
+  else
+    fail "$scenario: expected exit 78 without work/allocation, got $code"
+  fi
+  if [[ "$(< "${TMPDIR_BASE}/${scenario}.err")" == *"$probe_error"* ]]; then
+    pass "$scenario: preserves the complete underlying probe error"
+  else
+    fail "$scenario: missing underlying probe error"
+  fi
+  assert_contains "$scenario: names the read-only rustup inventory" \
+    'rustup toolchain list' "${TMPDIR_BASE}/${scenario}.err"
+  assert_contains "$scenario: distinguishes stable from the repository pin" \
+    'Installing stable alone does not install that pin' "${TMPDIR_BASE}/${scenario}.err"
+  assert_contains "$scenario: makes pin installation conditional on the error" \
+    'if the error reports the pinned toolchain missing: rustup toolchain install 1.95.0' \
+    "${TMPDIR_BASE}/${scenario}.err"
+  assert_not_contains "$scenario: does not prescribe removing Cargo" \
+    'repair or remove this cargo from PATH' "${TMPDIR_BASE}/${scenario}.err"
+done
+
 # ── 3. real toolchain happy path stays green ─────────────────────────────────
 
 code=0
