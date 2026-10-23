@@ -1514,6 +1514,7 @@ ci-policy:
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
+    @cargo xtask server-request-ownership check
     just version-check
     just ci-doc-claims
 
