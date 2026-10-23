@@ -1,7 +1,7 @@
 project: product
 component: LSP server
 kind: Fixed
-body: "Accepting a builtin, keyword, or package-member completion with the cursor in the middle of a name no longer duplicates the rest of the name. Previously the completion replaced only the typed prefix, so completing `pri` inside `print` produced `printnt`; the edit now replaces the whole token, including across `::` package segments."
+body: "Package-member completion replaces the remaining identifier segment after a mid-token cursor, including Unicode suffixes, while preserving a following `::` segment. Core-module member fallback keeps its package qualifier when applying the edit. Builtin and keyword suffix support landed in #18265."
 time: 2026-10-17T00:00:00Z
 custom:
   PR: "18114"

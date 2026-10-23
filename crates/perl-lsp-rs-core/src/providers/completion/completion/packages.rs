@@ -199,7 +199,9 @@ fn add_known_core_module_completions(
                 member_name,
                 summary,
             ))),
-            insert_text: Some(Cow::Owned((*member_name).to_string())),
+            // The range starts before the package qualifier, matching the
+            // other package producers' fully qualified insertion contract.
+            insert_text: Some(Cow::Owned(format!("{package_name}::{member_name}"))),
             sort_text: Some(Cow::Owned(format!("2_{member_name}"))),
             filter_text: Some(Cow::Owned((*member_name).to_string())),
             additional_edits: vec![],

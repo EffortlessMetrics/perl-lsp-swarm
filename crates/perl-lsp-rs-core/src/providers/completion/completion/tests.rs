@@ -10358,97 +10358,226 @@ fn package_qualified_completion_offers_members_nested_packages_and_no_lexicals()
     Ok(())
 }
 
-// Original stacked provider regressions retained during main integration.
+// Whole-edit proof for the existing stacked18105/18108 completion claim.
+
 #[test]
 fn test_function_completion_mid_token_replaces_whole_token()
 -> Result<(), Box<dyn std::error::Error>> {
-    let code = "sub process_data { 1 }\nprocess_data;\n";
-    let cursor = code.find("process_data;").ok_or("call site missing")? + 4; // after `proc`
-    let mut parser = Parser::new(code);
-    let ast = must(parser.parse());
-    let provider = CompletionProvider::new(&ast);
-    let completions = provider.get_completions(code, cursor);
-    let item = completions
-        .iter()
-        .find(|c| c.label == "process_data")
-        .ok_or("process_data completion missing")?;
-    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
-    assert_eq!(&code[start..end], "process_data", "edit must cover the whole token");
-    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
-    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
-    assert!(
-        applied.contains("process_data();") && !applied.contains("()ess_data"),
-        "applied edit must not duplicate the suffix: {applied}"
-    );
-
-    // End-of-token control: range still ends at the cursor.
-    let end_cursor = code.find("process_data;").ok_or("call site missing")? + "process_data".len();
-    let completions = provider.get_completions(code, end_cursor);
-    let item = completions
-        .iter()
-        .find(|c| c.label == "process_data")
-        .ok_or("process_data completion missing at end of token")?;
-    assert_eq!(item.text_edit_range.map(|(_, e)| e), Some(end_cursor));
+    for call in ["proc|ess_data;", "process_data|;"] {
+        prove_mid_token_applied_edit(
+            &format!("sub process_data {{ 1 }}\n{call}\n"),
+            "process_data()",
+            "sub process_data { 1 }\nprocess_data();\n",
+            None,
+        )?;
+    }
     Ok(())
 }
-
-/// Mid-token builtin, keyword, and package-member completions must
-/// replace the whole token, so applying the edit does not duplicate the
-/// suffix after the cursor (#18108).
 #[test]
 fn test_builtin_keyword_package_completion_mid_token_replaces_whole_token()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Builtin: `pri|nt`
-    let code = "print \"hi\";\n";
-    let cursor = 3;
-    let mut parser = Parser::new(code);
-    let ast = must(parser.parse());
-    let provider = CompletionProvider::new(&ast);
-    let completions = provider.get_completions(code, cursor);
-    let item = completions
-        .iter()
-        .find(|c| c.label == "print")
-        .ok_or("print builtin completion missing")?;
-    let (start, end) = item.text_edit_range.ok_or("builtin range missing")?;
-    assert_eq!(&code[start..end], "print", "builtin edit must cover the whole token");
-    let insert = item.insert_text.as_deref().ok_or("builtin insert missing")?;
-    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
-    assert!(!applied.contains("printnt"), "builtin edit duplicated the suffix: {applied}");
-
-    // Keyword: `whi|le`
-    let code = "while (1) { }\n";
-    let cursor = 3;
-    let mut parser = Parser::new(code);
-    let ast = must(parser.parse());
-    let provider = CompletionProvider::new(&ast);
-    let completions = provider.get_completions(code, cursor);
-    let item = completions
-        .iter()
-        .find(|c| c.label == "while")
-        .ok_or("while keyword completion missing")?;
-    let (start, end) = item.text_edit_range.ok_or("keyword range missing")?;
-    assert_eq!(&code[start..end], "while", "keyword edit must cover the whole token");
-
-    // Package member: `Foo::bar|ley`
+    prove_mid_token_applied_edit("pri|nt;\n", "print ", "print ;\n", None)?;
+    prove_mid_token_applied_edit(
+        "whi|le;\n",
+        "while ($1) {\n    $0\n}",
+        "while ($1) {\n    $0\n};\n",
+        None,
+    )?;
     let index = Arc::new(WorkspaceIndex::new());
     index.index_initial_file(
         Url::parse("file:///lib/Foo.pm")?,
         "package Foo;\nsub barley { }\n1;\n".to_string(),
     )?;
-    let code = "use strict;\nFoo::barley";
-    let cursor = code.len() - 3; // after `Foo::bar`
-    let mut parser = Parser::new(code);
-    let ast = must(parser.parse());
-    let provider = CompletionProvider::new_with_index(&ast, Some(index));
-    let completions = provider.get_completions(code, cursor);
+    prove_mid_token_applied_edit("Foo::bar|ley;\n", "Foo::barley", "Foo::barley;\n", Some(index))
+}
+#[test]
+fn mid_token_qualified_local_function_suffix_applies_exactly()
+-> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "sub process_data { 1 }\nproc|ess_data::Tail;\n",
+        "process_data()",
+        "sub process_data { 1 }\nprocess_data();\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_ampersand_qualified_function_suffix_applies_exactly()
+-> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "sub process_data { 1 }\n&proc|ess_data::Tail;\n",
+        "process_data()",
+        "sub process_data { 1 }\nprocess_data();\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_qualified_constant_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "use constant PROCESS_DATA => 1;\nPROC|ESS_DATA::Tail;\n",
+        "PROCESS_DATA",
+        "use constant PROCESS_DATA => 1;\nPROCESS_DATA;\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_function_preserves_single_ternary_colon() -> Result<(), Box<dyn std::error::Error>> {
+    prove_mid_token_applied_edit(
+        "sub process_data { 1 }\nmy $x = 1 ? proc|ess_data: 0;\n",
+        "process_data()",
+        "sub process_data { 1 }\nmy $x = 1 ? process_data(): 0;\n",
+        None,
+    )
+}
+#[test]
+fn mid_token_core_member_preserves_qualified_insertion() -> Result<(), Box<dyn std::error::Error>> {
+    for call in ["Scalar::Util::bl|essed", "Scalar::Util::blessed|"] {
+        prove_mid_token_applied_edit(
+            &format!("use Scalar::Util ();\n{call};\n"),
+            "blessed",
+            "use Scalar::Util ();\nScalar::Util::blessed;\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_suffix_scan_preserves_identifier_and_separator_boundaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (marked, suffix) in [
+        ("proc|ess_data;", "ess_data"),
+        ("caf|é;", "é"),
+        ("proc|𐐀ess;", "𐐀ess"),
+        ("Foo::B|ar::Tail", "ar"),
+        ("print|;", ""),
+        ("print|\r\n", ""),
+        ("print|", ""),
+    ] {
+        let cursor = marked.find('|').ok_or("cursor marker missing")?;
+        let source = marked.replacen('|', "", 1);
+        if word_suffix_end(&source, cursor) != cursor + suffix.len() {
+            return Err(format!("segment boundary changed for {marked}").into());
+        }
+    }
+    Ok(())
+}
+
+fn prove_mid_token_applied_edit(
+    marked: &str,
+    insertion: &str,
+    expected: &str,
+    index: Option<Arc<WorkspaceIndex>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cursor = marked.find('|').ok_or("cursor marker missing")?;
+    let source = marked.replacen('|', "", 1);
+    let mut parser = Parser::new(&source);
+    let ast = parser.parse()?;
+    let provider = CompletionProvider::new_with_index(&ast, index);
+    let completions = provider.get_completions(&source, cursor);
     let item = completions
         .iter()
-        .find(|c| c.insert_text.as_deref() == Some("Foo::barley"))
-        .ok_or("Foo::barley package completion missing")?;
-    let (start, end) = item.text_edit_range.ok_or("package range missing")?;
-    assert_eq!(&code[start..end], "Foo::barley", "package edit must cover the whole token");
-    let insert = item.insert_text.as_deref().ok_or("package insert missing")?;
-    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
-    assert_eq!(applied, code, "package edit must reproduce the source exactly");
+        .find(|item| item.insert_text.as_deref() == Some(insertion) || item.label == insertion)
+        .ok_or_else(|| format!("completion {insertion:?} missing for {marked:?}"))?;
+    let (start, end) = item.text_edit_range.ok_or("edit range missing")?;
+    if !(start <= cursor && cursor <= end) {
+        return Err(format!("range must contain cursor: {marked}").into());
+    }
+    let inserted = item.insert_text.as_deref().unwrap_or(item.label.as_ref());
+    let applied = format!(
+        "{}{}{}",
+        source.get(..start).ok_or("invalid edit start")?,
+        inserted,
+        source.get(end..).ok_or("invalid edit end")?
+    );
+    if applied != expected {
+        return Err(format!(
+            "applied edit mismatch for {marked}: expected={expected:?}, actual={applied:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_function_unicode_suffix_and_crlf_apply_exactly()
+-> Result<(), Box<dyn std::error::Error>> {
+    for call in ["proc|λess_data;", "proc|𐐀ess_data;", "process_data|;"] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\nsub process_data {{ 1 }}\r\n{call}\r\n"),
+            "process_data()",
+            "# 😀\r\nsub process_data { 1 }\r\nprocess_data();\r\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_builtin_unicode_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    for token in ["pri|λnt", "pri|𐐀nt", "print|"] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\n{token};\r\n"),
+            "print ",
+            "# 😀\r\nprint ;\r\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_keyword_unicode_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    for token in ["whi|λle", "whi|𐐀le", "while|"] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\n{token};\r\n"),
+            "while ($1) {\n    $0\n}",
+            "# 😀\r\nwhile ($1) {\n    $0\n};\r\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_local_package_unicode_suffix_applies_exactly() -> Result<(), Box<dyn std::error::Error>>
+{
+    for token in ["Foo::bar|λey", "Foo::bar|𐐀ey", "Foo::barley|"] {
+        prove_mid_token_applied_edit(
+            &format!("package Foo; sub barley {{ }}\npackage main;\n{token};\n"),
+            "Foo::barley",
+            "package Foo; sub barley { }\npackage main;\nFoo::barley;\n",
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn mid_token_workspace_package_unicode_suffix_preserves_separator()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nsub barley { }\n1;\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///lib/Foo/Bar.pm")?,
+        "package Foo::Bar;\n1;\n".to_string(),
+    )?;
+    for (token, insertion, expected) in [
+        ("Foo::bar|λey", "Foo::barley", "Foo::barley"),
+        ("Foo::bar|𐐀ey", "Foo::barley", "Foo::barley"),
+        ("Foo::barley|", "Foo::barley", "Foo::barley"),
+        ("Foo::Ba|λr::Tail", "Foo::Bar", "Foo::Bar::Tail"),
+        ("Foo::Ba|𐐀r::Tail", "Foo::Bar", "Foo::Bar::Tail"),
+        ("Foo::Bar|::Tail", "Foo::Bar", "Foo::Bar::Tail"),
+    ] {
+        prove_mid_token_applied_edit(
+            &format!("# 😀\r\n{token};\r\n"),
+            insertion,
+            &format!("# 😀\r\n{expected};\r\n"),
+            Some(index.clone()),
+        )?;
+    }
     Ok(())
 }
