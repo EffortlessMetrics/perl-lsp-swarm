@@ -1366,9 +1366,15 @@ fn pr_fast_role(gate: &GateDefinition) -> Result<GatePlanningRole> {
 /// Filename class can skip Rust proof only when ci-scope selected no owner.
 /// Policy/fixture inputs can be non-Rust while their contracts belong to Rust packages.
 fn is_unowned_non_rust_diff(scope: &ScopeOutput) -> bool {
-    matches!(scope.diff_class.as_str(), "prose_only" | "docs_as_code" | "ci_config")
+    (matches!(scope.diff_class.as_str(), "prose_only" | "docs_as_code" | "ci_config")
+        || (scope.diff_class == "mixed"
+            && ci_scope::is_known_non_rust_composition(&scope.changed_files)))
         && selected_package_names(scope).is_empty()
 }
+
+#[cfg(test)]
+#[path = "gates/non_rust_composition_tests.rs"]
+mod non_rust_composition_tests;
 
 fn scope_skip_reason(scope: Option<&ScopeOutput>) -> String {
     let diff_class = scope.map(|scope| scope.diff_class.as_str()).unwrap_or("unknown");

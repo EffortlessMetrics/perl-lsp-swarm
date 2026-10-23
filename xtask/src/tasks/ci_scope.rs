@@ -164,6 +164,30 @@ pub fn classify_diff(files: &[String]) -> String {
     "code".to_string()
 }
 
+/// Prove the bounded prose/script composition admitted by PR-fast (#17825).
+/// Keep aggregate `mixed` semantics: machine configuration and unknown inputs
+/// do not acquire this optimization. `scripts/` is the existing governed CI
+/// tooling root; only its Python/shell surface is admitted here. Package
+/// ownership must still be checked by the consumer.
+pub(crate) fn is_known_non_rust_composition(files: &[String]) -> bool {
+    !files.is_empty()
+        && files.iter().all(|file| {
+            if crate::tasks::file_policy::is_rust_file(file) {
+                return false;
+            }
+            match classify_diff(std::slice::from_ref(file)).as_str() {
+                "prose_only" => {
+                    PROSE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
+                        || matches!(file.as_str(), "LICENSE" | "CHANGELOG")
+                }
+                "ci_config" => {
+                    file.starts_with("scripts/") && (file.ends_with(".py") || file.ends_with(".sh"))
+                }
+                _ => false,
+            }
+        })
+}
+
 fn is_prose_file(file: &str) -> bool {
     PROSE_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
         || file.starts_with("docs/")
@@ -701,6 +725,29 @@ pub fn classify_files(
     workspace_root: &str,
 ) -> Result<ScopeOutput> {
     let diff_class = classify_diff(files);
+
+    // The new mixed optimization needs positive ownership evidence. Missing
+    // package identity must reach the planner's acquisition fallback rather
+    // than masquerade as an empty, proven-unowned package set. `--no-deps`
+    // metadata legitimately has resolve=null; only package identity is needed.
+    if diff_class == "mixed" && is_known_non_rust_composition(files) {
+        let packages = metadata
+            .get("packages")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| eyre!("non-Rust composition requires cargo package metadata"))?;
+        if packages.is_empty()
+            || packages.iter().any(|package| {
+                ["name", "id", "manifest_path"].iter().any(|field| {
+                    package
+                        .get(*field)
+                        .and_then(|value| value.as_str())
+                        .is_none_or(|value| value.trim().is_empty())
+                })
+            })
+        {
+            return Err(eyre!("non-Rust composition requires complete cargo package identities"));
+        }
+    }
 
     // Empty diff or prose-only → empty output (no lanes)
     if files.is_empty() || diff_class == "prose_only" {
