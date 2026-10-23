@@ -9,20 +9,21 @@ map of the docs tree, use [INDEX.md](INDEX.md).
 This docs tree is checked in with the active development repository,
 `EffortlessMetrics/perl-lsp-swarm` on `main`.
 
-- Clone `perl-lsp-swarm`, open ordinary development issues here, and target pull
-  requests here.
-- `EffortlessMetrics/perl-lsp` on `master` owns public release lineage and
-  published artifacts, so installation and release links may point there
-  intentionally.
-- A merge to `perl-lsp-swarm/main` is development state. It does not prove that
-  the change has completed publication, entered a release, or reached any
-  package or editor channel.
+- Swarm remains the maintainer/agent product-development and product-proof authority.
+- External contributors should clone or fork
+  `EffortlessMetrics/perl-lsp` on `master`, open public issues there, and target pull
+  requests there.
+- Before integrating a shared-product public PR, maintainers first reconcile accepted swarm
+  state into `perl-lsp/master`; after merge, they reconcile the shared-product effect back
+  into swarm.
+- A merge to `perl-lsp-swarm/main` is development state. It does not prove that the change
+  has completed publication, entered a release, or reached any package or editor channel.
 
 The current distinction is defined by
 [product identity](reference/product-identity.md) and the
 [publication sync protocol](swarm/sync-protocol.md). The landed
-contributor-topology projection derives the repository, branch, and publication
-relationships from local authorities without requiring network access. The bare
+contributor-topology projection derives the repository, branch, contribution, and
+publication relationships from local authorities without requiring network access. The bare
 command intentionally leaves live stage and channel status `NOT_PROVEN`; a captured
 `--observation` is required to project observed status:
 
