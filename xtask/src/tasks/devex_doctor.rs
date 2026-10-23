@@ -14,19 +14,24 @@ use std::{
 };
 
 pub fn run() -> Result<()> {
+    // The wrapper uses this marker to distinguish Cargo bootstrap failures
+    // from findings produced after the doctor actually started.
+    println!("devex-doctor: started");
     let root = repository_root()?;
     env::set_current_dir(&root)
         .with_context(|| format!("failed to switch to repository root: {}", root.display()))?;
 
-    let mut missing_required = false;
+    let mut missing_tool = false;
+    let mut missing_component = false;
+    let mut failed_check = false;
 
     println!("Repository: {}", root.display());
     println!();
     println!("== Required ==");
 
-    check_command("cargo", "cargo", &mut missing_required);
-    check_command("rustfmt", "rustfmt", &mut missing_required);
-    check_command("rustup", "rustup", &mut missing_required);
+    check_command("cargo", "cargo", &mut missing_tool);
+    check_command("rustfmt", "rustfmt", &mut missing_tool);
+    check_command("rustup", "rustup", &mut missing_tool);
 
     show_version("rustc", "rustc", &["--version"]);
     show_version("cargo", "cargo", &["--version"]);
@@ -43,18 +48,13 @@ pub fn run() -> Result<()> {
     println!("== Rust components ==");
     if has_command("rustup") {
         let installed_components = get_installed_rustup_components();
-        check_rust_component(
-            "rustfmt",
-            true,
-            &mut missing_required,
-            installed_components.as_deref(),
-        );
-        check_rust_component(
-            "clippy",
-            true,
-            &mut missing_required,
-            installed_components.as_deref(),
-        );
+        if let Some(installed) = installed_components.as_deref() {
+            check_rust_component("rustfmt", true, &mut missing_component, Some(installed));
+            check_rust_component("clippy", true, &mut missing_component, Some(installed));
+        } else {
+            warn("rustup component inventory failed; component presence is unknown");
+            failed_check = true;
+        }
     } else {
         warn("rustup unavailable; cannot verify components");
     }
@@ -83,7 +83,7 @@ pub fn run() -> Result<()> {
             .status()
             .context("failed to run scripts/check-rust-toolchain.sh")?;
         if !status.success() {
-            missing_required = true;
+            failed_check = true;
         }
     } else {
         warn("rust-toolchain.toml not found");
@@ -96,8 +96,16 @@ pub fn run() -> Result<()> {
     println!("  just ci-gate          # repo-native local gate");
     println!("  nix develop -c just ci-gate");
 
-    if missing_required {
-        fail("Missing required tools. Install Rust via https://rustup.rs");
+    if missing_tool || missing_component || failed_check {
+        if missing_tool {
+            fail("doctor_required_tool_missing: install the missing tool listed above (Rust tools: https://rustup.rs)");
+        }
+        if missing_component {
+            fail("doctor_required_component_missing: run the rustup component add command listed above");
+        }
+        if failed_check {
+            fail("doctor_check_failed: inspect the failed probe or toolchain check above; no missing tool was inferred from it");
+        }
         bail!("required checks did not pass");
     }
 
