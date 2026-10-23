@@ -66,4 +66,94 @@ mod build_catalog {
 
         assert!(error.contains("meta.compliance_percent is refused"));
     }
+
+    fn empty_advertised_catalog() -> &'static str {
+        "[meta]\nversion = 'test'\nlsp_version = '3.18'\n\n[[feature]]\nid = 'lsp.planned'\nmaturity = 'planned'\nadvertised = false\narea = 'text_document'\n"
+    }
+
+    fn advertised_catalog() -> &'static str {
+        "[meta]\nversion = 'test'\nlsp_version = '3.18'\n\n[[feature]]\nid = 'lsp.completion'\nmaturity = 'proven'\nadvertised = true\narea = 'text_document'\n"
+    }
+
+    fn unpacked_crate(root: &std::path::Path, package: &str, fallback: &str) {
+        must_with(std::fs::create_dir_all(root), "create unpacked crate");
+        must_with(
+            std::fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = \"{package}\"\nversion = \"0.0.0\"\n"),
+            ),
+            "write package manifest",
+        );
+        must_with(
+            std::fs::write(root.join("features_sot.toml"), fallback),
+            "write package fallback",
+        );
+    }
+
+    #[test]
+    fn package_fallback_generate_records_digest_and_package() {
+        let root = must_with(tempfile::tempdir(), "create unpacked crate");
+        unpacked_crate(root.path(), "perl-lsp-rs-core", advertised_catalog());
+        let out_dir = root.path().join("out");
+        must_with(std::fs::create_dir(&out_dir), "create out dir");
+
+        let source = must_with(
+            generate_lsp_catalog_module_package_isolated(root.path(), &out_dir),
+            "valid package fallback must generate",
+        );
+        assert!(matches!(source.kind, CatalogSourceKind::Vendored));
+        let generated = must_with(
+            std::fs::read_to_string(out_dir.join("feature_contracts.rs")),
+            "read generated",
+        );
+        assert!(generated.contains("catalog-source-kind: package-fallback"));
+        assert!(generated.contains("catalog-source-digest: sha256:"));
+        assert!(generated.contains("catalog-package: perl-lsp-rs-core"));
+        assert!(generated.contains("catalog-projection: FullCatalog"));
+    }
+
+    #[test]
+    fn empty_package_fallback_does_not_emit_module() {
+        let root = must_with(tempfile::tempdir(), "create unpacked crate");
+        unpacked_crate(root.path(), "perl-lsp-rs-core", empty_advertised_catalog());
+        let out_dir = root.path().join("out");
+        must_with(std::fs::create_dir(&out_dir), "create out dir");
+
+        let error = must_err_with(
+            generate_lsp_catalog_module_package_isolated(root.path(), &out_dir),
+            "empty fallback must fail closed",
+        );
+        assert!(error.contains("EMPTY_FALLBACK"));
+        assert!(!out_dir.join("feature_contracts.rs").exists());
+    }
+
+    #[test]
+    fn malformed_package_fallback_does_not_emit_module() {
+        let root = must_with(tempfile::tempdir(), "create unpacked crate");
+        unpacked_crate(root.path(), "perl-lsp-rs-core", "not toml [[[");
+        let out_dir = root.path().join("out");
+        must_with(std::fs::create_dir(&out_dir), "create out dir");
+
+        let error = must_err_with(
+            generate_lsp_catalog_module_package_isolated(root.path(), &out_dir),
+            "malformed fallback must fail closed",
+        );
+        assert!(error.contains("MALFORMED_FALLBACK"));
+        assert!(!out_dir.join("feature_contracts.rs").exists());
+    }
+
+    #[test]
+    fn auto_vendored_generate_rejects_wrong_package_identity() {
+        let root = must_with(tempfile::tempdir(), "create unpacked crate");
+        unpacked_crate(root.path(), "other-package", advertised_catalog());
+        let out_dir = root.path().join("out");
+        must_with(std::fs::create_dir(&out_dir), "create out dir");
+
+        let error = must_err_with(
+            generate_lsp_catalog_module_at(root.path(), &out_dir, None),
+            "wrong Cargo package must fail on Auto vendored generate",
+        );
+        assert!(error.contains("WRONG_PACKAGE"));
+        assert!(!out_dir.join("feature_contracts.rs").exists());
+    }
 }
