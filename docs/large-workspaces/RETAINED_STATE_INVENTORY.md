@@ -21,17 +21,22 @@ Close and delete are different lifecycle events.
 
 | Lifecycle | Required behavior |
 |-----------|-------------------|
-| Close-only: `didOpen -> didClose` | Evict editor/session state for the open buffer. Workspace-backed indexes may retain file symbols because the source file still exists. |
+| Close-only: `didOpen -> didClose` | Evict editor/session state and retire indexed buffer facts. Restore closed-source workspace facts only after a successful import of admitted, size-bounded and non-binary disk source; missing, unreadable, guarded or unindexable backing leaves them absent. Reopened buffers and newer watcher publications keep authority. |
 | Close and delete: `didOpen -> didClose -> watched-file DELETED` | Evict editor/session state and remove workspace-index state for that file. No index structure should retain the deleted URI after pending work drains. |
 | Workspace-folder removal | Evict open documents and workspace-index state under the removed roots only. Unrelated roots must remain intact. |
 
-Use `evict_open_document_session_state(uri)` for close-only state,
-`evict_deleted_file_state(uri)` for deleted files, and
+Use `evict_open_document_session_state(uri)` for close-only editor/session state,
+then the close handler owns retirement and admitted disk restoration of workspace facts.
+Use `evict_deleted_file_state(uri)` for deleted files, and
 `evict_workspace_folder_state(folder_uri)` for folder-scoped cleanup.
 
 Background tasks must not be allowed to repopulate stale state after close,
 delete, or folder removal. Indexing tasks need generation or version validation
-before committing derived state.
+before committing derived state. Close compares the workspace write revision under
+the indexing transition lock and makes at most two bounded disk reads. Sustained
+index mutation can leave a closed file absent until a later watcher/scan; the
+close path preserves newer published facts rather than replacing them with its
+invalidated snapshot. This is not a transaction guarantee for other writers.
 
 ## Current Inventory
 
@@ -51,7 +56,7 @@ recovery diagnostics. A complete parse-artifact store is future work.
 | `LspServer` | Session warning dedup store (`session_warning_dedup`, #9769) | Typed `SessionWarningIdentity { code, subject tag, u64 fingerprint }` per family (critic / client_setting / ai_backend) | Presentation-only suppression identities; no raw value, path, or secret payload retained | Hard cap 32 fixed-size identities per family with reviewed saturation (new identities beyond the cap emit without retaining); critic family (shared by push and pull diagnostics) cleared on critic config transitions, AI-backend family cleared on configuration notifications; session end releases everything by drop | `SessionWarningDedupSnapshot` per-family counters (entries, high-water, inserted, suppressed, emitted_without_retaining, cleared_by_lifecycle) | `session_warning_dedup_tests.rs` bound/privacy/lifecycle falsifiers; xtask raw-string-set negative control |
 | `StreamSessionManager` | Inline-completion stream sessions | `SessionKey { uri, document_version, line, character }` | Streaming buffers, cancellation flags, per-request session entries | `cancel_for_uri` and `cancel_for_uri_version` cancel and remove entries immediately | `MemoryStateSnapshot.stream_sessions`; `RuntimePressureSnapshot.active_stream_sessions` | stream-session eviction tests; `MemoryStateSnapshot.stream_sessions` |
 | `SymbolIndex` | Open-document symbols | Document URI plus symbol name | Per-open-document symbol vectors and lookup maps | Re-index replaces old symbols; close cleanup clears document symbols | close/delete lifecycle assertions for retained symbols | `test_did_close_removes_document_symbols_from_index` |
-| `WorkspaceIndex` | Files, symbols, references, semantic shards, import/export facts | Normalized URI plus symbol/reference keys | Workspace-wide derived state, potentially proportional to workspace size | Delete and reindex use `remove_file`/`clear_file`; close-only should not remove file-backed symbols | `WorkspaceIndex::memory_snapshot`; memory plateau receipt fields | `memory_leak_regression.rs`; close/delete lifecycle tests; memory plateau receipts |
+| `WorkspaceIndex` | Files, symbols, references, semantic shards, import/export facts | Normalized URI plus symbol/reference keys | Workspace-wide derived state, potentially proportional to workspace size | Delete and reindex use `remove_file`/`clear_file`; close retires buffer facts and restores only admitted current disk facts | `WorkspaceIndex::memory_snapshot`; memory plateau receipt fields | `memory_leak_regression.rs`; close/delete lifecycle tests; memory plateau receipts |
 | `DocumentStore` | Workspace document store | Normalized URI `String` | Raw text for workspace-indexed documents | `WorkspaceIndex::remove_file` closes the document store entry | `WorkspaceIndex::memory_snapshot.document_count` | document-store lifecycle tests |
 | `NotebookStore` | Notebook documents and cell mapping | Notebook URI and cell URI `String` | Cell document text and notebook-to-cell relations | Notebook close closes cell docs; cell removal clears mapping and document state | notebook lifecycle assertions for document and cell counts | notebook lifecycle tests |
 | `LspServer` | Pending workspace configuration requests | JSON-RPC request id `i64` | Request parameters and response bookkeeping | Capped to 10; response removes id; configuration and folder changes clear pending entries | `RuntimePressureSnapshot.pending_workspace_configuration_requests` | workspace configuration lifecycle tests |
