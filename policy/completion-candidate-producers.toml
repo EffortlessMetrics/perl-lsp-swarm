@@ -173,12 +173,14 @@ outcome_owner = "#10230"
 # Those edits change range bounds/context plumbing, not append channels,
 # producer identities, entry routes, delegations, or finalization. This feature
 # extends the four package ranges and qualifies the existing core-member
-# insertion. Its function-specific context adapter consumes paired namespace
+# insertion. The indexed and external/cache use-module item ranges also use
+# the segment suffix; their scan, containment and cancellation rules are unchanged.
+# Its function-specific context adapter consumes paired namespace
 # suffixes only on the two existing function routes; it returns a context, not
 # candidates. The shared segment scanner still stops at ::. Tests are excluded
 # by the existing test-surface rule. The same 42 files and 59 producer rows keep
 # their existing identity/evidence/completeness ceilings and migration owners.
-source_digest = "sha256:90f02ae365547f7f45309d4c6f77e32b3b427f436545cf4910dba79a8dfeb55e"
+source_digest = "sha256:c5870ec9349a9483f86f22f1738b29b78d7a8b845b845114c975b6f2155b5f31"
 
 [[delegations]]
 module = "dancer2"
@@ -945,7 +947,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11015"
 limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
-note = "Module name candidates in a `use`/`require` context, served from the scan cache."
+note = "Module name candidates in a `use`/`require` context, indexed or external/cached; current segment suffix ranges preserve subsequent namespace segments and whitespace-separated arguments."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_use_qw_import_completions"
