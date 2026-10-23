@@ -10,22 +10,36 @@ provider-native repository contracts without creating a second workflow.
 
 ## Repository context
 
-Ordinary development happens in
 [`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
-on `main`. Clone this repository, open development issues here, and target pull requests
-here.
+on `main` is the active high-throughput product-development and product-proof
+authority. Development issues live there, including issues that an external contributor
+may choose to implement. Maintainers and authorized swarm operators also work there
+directly.
 
-[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
-`master` owns public release lineage and published artifacts. A merge to
-`perl-lsp-swarm/main` is development state; it does not establish that a change is in a
-release, package registry, editor marketplace, or other public channel. Installation and
-release links may therefore point to `perl-lsp` intentionally.
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp)
+on `master` is the public pull-request surface as well as the public release lineage.
+External contributors should clone or fork `perl-lsp` for their implementation branch
+and target pull requests there. Do not open an external pull request against
+`perl-lsp-swarm`.
 
-The current relationship is defined by
-[product identity](docs/reference/product-identity.md). The landed contributor-topology
-projection derives it from local authorities, but the bare command intentionally leaves live
-stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
-observed status:
+Before a shared-product external pull request is integrated, a maintainer first converges
+accepted `perl-lsp-swarm/main` state into `perl-lsp/master`, then reconciles and proves
+the contributor pull request against that current public-source base. After the public
+pull request merges, its shared-product effect is reverse-converged into swarm so swarm
+remains the sole product-development authority. The contributor does not need to open a
+duplicate swarm pull request.
+
+A merge to `perl-lsp-swarm/main` is development state; it does not establish that a
+change is in a release, package registry, editor marketplace, or other public channel.
+Installation and release links therefore continue to point to `perl-lsp` where that is
+their actual subject.
+
+The repository relationship is defined by
+[product identity](docs/reference/product-identity.md) and the
+[publication sync protocol](docs/swarm/sync-protocol.md). The contributor-topology
+projection derives the development/publication identities, swarm issue authority, and
+public pull-request ingress from those authorities. The bare command intentionally leaves live stage and channel
+status `NOT_PROVEN`; a captured `--observation` is required to project observed status:
 
 ```bash
 cargo run --locked -p xtask --bin contributor-topology
@@ -34,8 +48,8 @@ cargo run --locked -p xtask --bin contributor-topology
 ## Quick start
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
-cd perl-lsp-swarm
+git clone https://github.com/EffortlessMetrics/perl-lsp.git
+cd perl-lsp
 
 # Recommended reproducible environment
 nix develop
@@ -215,6 +229,29 @@ stash is shared across worktrees. Use scoped restore or a branch-local WIP commi
 
 ### 6. Open the pull request
 
+External contributors should push to their fork and open the pull request against
+`EffortlessMetrics/perl-lsp/master`:
+
+```bash
+gh repo fork EffortlessMetrics/perl-lsp --remote --remote-name fork
+git push -u fork HEAD
+gh pr create --repo EffortlessMetrics/perl-lsp --base master
+```
+
+Authorized swarm collaborators working on swarm-owned internal work may instead use the
+swarm repository directly. Do not redirect an external contributor's pull request into
+swarm merely because its controlling issue lives there.
+
+When the controlling issue is in swarm, preserve that identity in the public PR body with
+a fully qualified reference, for example:
+
+```text
+Refs EffortlessMetrics/perl-lsp-swarm#13253
+```
+
+Use `Refs`, not a guessed or duplicated public issue. The maintainer owns the cross-repo
+integration and issue closeout.
+
 Use a conventional title with the controlling issue number:
 
 ```text
@@ -241,6 +278,12 @@ candidate, different platform, or fixture proves a surface it did not exercise.
 Pull requests receive substantive provider-native review and live GitHub integration
 checks. There is no fixed two-model review ladder, permanent named-agent roster, or
 lifecycle-label state machine.
+
+For a shared-product pull request opened on `perl-lsp/master`, maintainers own the
+repository reconciliation. They first bring the accepted swarm state into the public
+source repository before integration, rather than asking the contributor to retarget
+swarm. After the public pull request merges, its shared-product effect is
+reverse-converged into `perl-lsp-swarm/main`.
 
 Review is semantic and cumulative:
 
@@ -402,10 +445,12 @@ checks, issue, and landed commit are the durable record; runtime agent state is 
 ## Community and licensing
 
 Use [development issues](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues) for
-confirmed defects and scoped implementation work. Keep reports reproducible, redact
-private data, and link the smallest relevant evidence. Public release and installation
-claims should still cite the publication repository or released artifact they concern;
-opening the development issue here does not promote swarm state to public availability.
+confirmed defects and scoped implementation work, including work an external contributor
+may pick up. Keep reports reproducible, redact private data, and link the smallest
+relevant evidence. The implementation pull request still targets `perl-lsp/master`;
+the swarm issue remains the controlling development record. A swarm development result is
+not public availability until it reaches the public repository and the applicable release
+or channel.
 
 Repository discussion/support surfaces may be enabled separately; do not use a feature
 proposal as a substitute for a verified bug report or accepted plan.
