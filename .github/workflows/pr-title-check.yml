@@ -133,7 +133,7 @@ jobs:
             // subject that moved during validation is NOT_PROVEN, not success.
             // Defined before every possible call site: the exemption branches
             // below invoke it before reporting their exempt success.
-            const confirmUnchanged = async () => {
+            const confirmUnchanged = async (requiredLabel = null) => {
               let reread;
               try {
                 ({ data: reread } = await github.rest.pulls.get({ ...repoParams, pull_number: subject.number }));
@@ -158,6 +158,15 @@ jobs:
                 );
                 return false;
               }
+              // Label-based exceptions are mutable even when H/title do not move.
+              // Verify the specific exception used, not unrelated label churn.
+              if (requiredLabel && (!Array.isArray(reread.labels) ||
+                  !reread.labels.some(label => label && label.name === requiredLabel))) {
+                core.setFailed(
+                  `PR #${subject.number} no longer carries the required ${requiredLabel} exemption; failing closed.`
+                );
+                return false;
+              }
               return true;
             };
 
@@ -175,7 +184,7 @@ jobs:
 
             const labels = (pr.labels || []).map(l => l.name);
             if (labels.includes('skip-title-check')) {
-              if (!(await confirmUnchanged())) {
+              if (!(await confirmUnchanged('skip-title-check'))) {
                 return;
               }
               setReceiptOutputs('skip-title-check-exempt');
