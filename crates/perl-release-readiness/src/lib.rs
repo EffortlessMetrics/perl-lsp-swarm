@@ -47,6 +47,8 @@ mod evidence;
 mod historical_home;
 mod indicator;
 mod legacy;
+/// Canonical native-product readiness payload (`native_product_readiness.v1`, #7168).
+pub mod native_product;
 mod profile;
 mod receipt;
 mod score;
