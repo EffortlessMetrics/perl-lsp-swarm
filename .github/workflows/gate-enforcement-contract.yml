@@ -1,17 +1,14 @@
 name: Gate Enforcement Contract
 
 on:
-  pull_request:
-    branches: [main, master]
-    types: [opened, synchronize, reopened, ready_for_review]
-  merge_group: {}
-  push:
-    branches: [main, master]
-  workflow_dispatch: {}
+  # #17903: source checks run locally while a PR is mutable. Only the actual
+  # native integration subject invokes this advisory workflow.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -32,6 +29,7 @@ jobs:
           python3 -m unittest \
             scripts/ci/test_validate_gate_enforcement_contract.py \
             scripts/ci/test_gate_enforcement_app_bindings.py \
+            scripts/ci/test_queue_qualification_source.py \
             scripts/ci/test_reconcile_github_enforcement_snapshot.py \
             scripts/ci/test_observe_github_enforcement.py \
             scripts/ci/test_check_release_required_ci.py \
