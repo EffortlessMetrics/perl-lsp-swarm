@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import json
 import os
 import queue
@@ -241,14 +242,52 @@ def main() -> int:
 
             time.sleep(args.settle_seconds)
             sample("settled", args.n_files)
-            shutdown_id = request("shutdown", {})
-            wait_for_response(shutdown_id, timeout=10.0)
-            notify("exit", {})
+            teardown_race = None
+            teardown_note = None
+            try:
+                shutdown_id = request("shutdown", {})
+                wait_for_response(shutdown_id, timeout=10.0)
+                notify("exit", {})
+            except BrokenPipeError as exc:
+                teardown_race = exc
+            except OSError as exc:
+                # Windows reports the same dead-peer stdin write as EINVAL
+                # rather than EPIPE (observed: `OSError(22, 'Invalid
+                # argument')` on win32); only that exact shape is tolerated.
+                if exc.errno != errno.EINVAL:
+                    raise
+                teardown_race = exc
+            if teardown_race is not None:
+                # #18349: the server's documented delivery-failure policy
+                # closes ingress — over stdio ending the process — when the
+                # teardown burst overflows the outbound channel. The workload
+                # above already completed and the settled sample is recorded,
+                # so the harness's own write on the dead peer is an expected
+                # teardown race, not a run failure: proceed with the samples
+                # already collected so the plateau assertion still runs (and
+                # still fails on a real memory regression). A mid-workload
+                # server death is NOT tolerated here and still fails the run,
+                # as does a timeout waiting for the shutdown response.
+                print(
+                    f"teardown race tolerated ({type(teardown_race).__name__}: "
+                    f"{teardown_race}): server closed stdio after the workload "
+                    "completed; proceeding to the plateau assertion on the "
+                    "samples already collected",
+                    file=sys.stderr,
+                )
+                teardown_note = {
+                    "stage": "shutdown",
+                    "error": type(teardown_race).__name__,
+                    "errno": getattr(teardown_race, "errno", None),
+                }
         finally:
             try:
                 if proc.stdin:
                     proc.stdin.close()
-            except BrokenPipeError:
+            except OSError:
+                # Discarding the pipe is best-effort cleanup: a server that
+                # already self-exited (#18349 teardown race) leaves the write
+                # end dead — BrokenPipeError on Linux, EINVAL on Windows.
                 pass
             try:
                 proc.wait(timeout=5)
@@ -268,6 +307,10 @@ def main() -> int:
             "sample_every": args.sample_every,
             "settle_seconds": args.settle_seconds,
             "samples": samples,
+            # #18349: None unless the post-workload shutdown hit the server's
+            # documented delivery-failure self-exit and was tolerated; when
+            # set, the plateau assertion ran on the samples already collected.
+            "teardown_race": teardown_note,
         }
 
         if args.json_out:
