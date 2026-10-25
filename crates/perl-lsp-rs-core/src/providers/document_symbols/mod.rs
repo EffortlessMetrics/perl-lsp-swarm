@@ -205,6 +205,9 @@ struct PendingSymbol {
 }
 
 fn sort_pending_indices(indices: &mut [usize], pending: &[Option<PendingSymbol>]) {
+    // #18111: (priority, start, end, name) ties must not fall through to the
+    // HashMap-derived bucket order of the flattened symbol table; `kind` is
+    // the final deterministic tiebreak. Order only — no entry or kind changes.
     indices.sort_by(|&a, &b| {
         let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
             return std::cmp::Ordering::Equal;
@@ -214,12 +217,14 @@ fn sort_pending_indices(indices: &mut [usize], pending: &[Option<PendingSymbol>]
             left.start,
             left.end,
             left.document_symbol.name.as_str(),
+            left.document_symbol.kind,
         )
             .cmp(&(
                 right.document_symbol.sort_priority,
                 right.start,
                 right.end,
                 right.document_symbol.name.as_str(),
+                right.document_symbol.kind,
             ))
     });
 }
@@ -977,6 +982,64 @@ mod tests {
             );
         }
         assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    /// #18111: top-level and child outline order must be deterministic.
+    ///
+    /// The fixture combines the two probe shapes that permuted across
+    /// processes before the deterministic sorts: a global variable and a sub
+    /// declared before the first package (symbols that used to follow the
+    /// symbol-table HashMap bucket order at the top level), and two
+    /// Class::Tiny attribute batches whose members all share one
+    /// `use Class::Tiny` span, so the child sort keys tie beyond
+    /// (priority, start, end) and used to keep HashMap insertion order.
+    /// Every iteration rebuilds the table from a fresh parse, so the symbol
+    /// table's HashMaps re-seed; the exact pinned order must hold each time.
+    #[test]
+    fn document_symbols_order_deterministic_multiple_packages_shared_class_tiny_span()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $global_thing = 1;\nsub before_pkg { 2 }\npackage Alpha;\nuse Class::Tiny qw(zeta alpha middle);\nsub method1 { 1 }\npackage Beta;\nuse Class::Tiny qw(zulu able mike);\nsub method2 { 2 }\n";
+        let expected_top: Vec<(&str, u32)> =
+            vec![("$global_thing", 13), ("before_pkg", 12), ("Alpha", 5), ("Beta", 5)];
+        let expected_children: Vec<(&str, Vec<(&str, u32)>)> = vec![
+            ("Alpha", vec![("alpha", 7), ("middle", 7), ("zeta", 7), ("method1", 12)]),
+            ("Beta", vec![("able", 7), ("mike", 7), ("zulu", 7), ("method2", 12)]),
+        ];
+        let mut pinned: Option<Vec<DocumentSymbol>> = None;
+        for _ in 0..32 {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            let top_identities: Vec<(&str, u32)> =
+                result.symbols.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+            assert_eq!(
+                top_identities, expected_top,
+                "top-level order and kinds must be pinned: {:?}",
+                result.symbols
+            );
+            for (package, children) in &expected_children {
+                let symbol = result
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == *package)
+                    .ok_or_else(|| format!("no {package} symbol"))?;
+                let child_identities: Vec<(&str, u32)> =
+                    symbol.children.iter().map(|c| (c.name.as_str(), c.kind)).collect();
+                assert_eq!(
+                    child_identities, *children,
+                    "{package} children must be pinned: shared-span Class::Tiny attributes sort by name, then the method: {:?}",
+                    symbol.children
+                );
+            }
+            assert_ranges_contained(&result.symbols);
+            if let Some(previous) = &pinned {
+                assert_eq!(
+                    &result.symbols, previous,
+                    "the complete outline must be identical for every fresh HashMap seeding"
+                );
+            }
+            pinned = Some(result.symbols);
+        }
         Ok(())
     }
 
