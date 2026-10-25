@@ -1126,6 +1126,8 @@ pub enum ReferenceKind {
     Definition,
     /// General usage of the symbol (function call, method call)
     Usage,
+    /// Code-reference creation (`\&foo` without call parentheses), not a call site
+    Coderef,
     /// Dynamic or static method dispatch stored under its bare method name.
     ///
     /// Method dispatch is kept distinct from a bare function usage because a
@@ -3083,6 +3085,10 @@ impl WorkspaceIndex {
     /// let _refs = index.find_references("Utils::process_data");
     /// ```
     pub fn find_references(&self, symbol_name: &str) -> Vec<Location> {
+        self.find_references_filtered(symbol_name, false)
+    }
+
+    fn find_references_filtered(&self, symbol_name: &str, exclude_coderef: bool) -> Vec<Location> {
         // Log staleness warning when queries are made while files have pending
         // (uncommitted) generations — results may reflect pre-edit state (#5963).
         let stale = self.stale_file_count();
@@ -3099,7 +3105,7 @@ impl WorkspaceIndex {
         // We retry up to 3 times to get a consistent snapshot.
         for _ in 0..3 {
             let v1 = self.write_version();
-            let result = self.find_references_inner(symbol_name);
+            let result = self.find_references_inner(symbol_name, exclude_coderef);
             let v2 = self.write_version();
             if v1 == v2 {
                 return result;
@@ -3108,10 +3114,10 @@ impl WorkspaceIndex {
             tracing::debug!("Torn read in find_references, retrying");
         }
         // Fallback: return whatever the last attempt produced
-        self.find_references_inner(symbol_name)
+        self.find_references_inner(symbol_name, exclude_coderef)
     }
 
-    fn find_references_inner(&self, symbol_name: &str) -> Vec<Location> {
+    fn find_references_inner(&self, symbol_name: &str, exclude_coderef: bool) -> Vec<Location> {
         let global_refs = self.global_references.read();
         let mut seen: HashSet<(String, u32, u32, u32, u32)> = HashSet::new();
         let mut locations = Vec::new();
@@ -3119,6 +3125,9 @@ impl WorkspaceIndex {
         // O(1) lookup for exact symbol name
         if let Some(refs) = global_refs.get(symbol_name) {
             for sym_ref in refs {
+                if exclude_coderef && sym_ref.kind == ReferenceKind::Coderef {
+                    continue;
+                }
                 let key = (
                     sym_ref.uri.clone(),
                     sym_ref.range.start.line,
@@ -3138,6 +3147,9 @@ impl WorkspaceIndex {
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
                 for sym_ref in refs {
+                    if exclude_coderef && sym_ref.kind == ReferenceKind::Coderef {
+                        continue;
+                    }
                     if !self.bare_reference_matches_package(sym_ref, package) {
                         continue;
                     }
@@ -3162,6 +3174,9 @@ impl WorkspaceIndex {
                 }
 
                 for sym_ref in refs {
+                    if exclude_coderef && sym_ref.kind == ReferenceKind::Coderef {
+                        continue;
+                    }
                     let key = (
                         sym_ref.uri.clone(),
                         sym_ref.range.start.line,
@@ -5229,6 +5244,20 @@ impl WorkspaceIndex {
     /// let _refs = index.find_refs(&key);
     /// ```
     pub fn find_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        self.find_refs_filtered(key, false)
+    }
+
+    /// Like [`Self::find_refs`] but excludes code-reference creations
+    /// (`\&foo` without call parentheses, [`ReferenceKind::Coderef`]).
+    ///
+    /// Call hierarchy incoming calls are call sites, so a reference creation
+    /// must not be reported as one (#17442); references and rename keep using
+    /// [`Self::find_refs`], which retains those locations.
+    pub fn find_call_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        self.find_refs_filtered(key, true)
+    }
+
+    fn find_refs_filtered(&self, key: &SymbolKey, exclude_coderef: bool) -> Vec<Location> {
         let files_locked = self.files.read();
         let mut all_refs = if let Some(sigil) = key.sigil {
             // It's a variable - search through all files for this variable name
@@ -5237,6 +5266,9 @@ impl WorkspaceIndex {
             for (_uri_key, file_index) in files_locked.iter() {
                 if let Some(var_refs) = file_index.references.get(&var_name) {
                     for reference in var_refs {
+                        if exclude_coderef && reference.kind == ReferenceKind::Coderef {
+                            continue;
+                        }
                         refs.push(Location { uri: reference.uri.clone(), range: reference.range });
                     }
                 }
@@ -5246,11 +5278,15 @@ impl WorkspaceIndex {
             // It's a subroutine or package
             if key.pkg.as_ref() == "main" {
                 // For main package, we search for both "main::foo" and bare "foo"
-                let mut refs = self.find_references(&format!("main::{}", key.name));
+                let mut refs =
+                    self.find_references_filtered(&format!("main::{}", key.name), exclude_coderef);
                 // Add bare name references
                 for (_uri_key, file_index) in files_locked.iter() {
                     if let Some(bare_refs) = file_index.references.get(key.name.as_ref()) {
                         for reference in bare_refs {
+                            if exclude_coderef && reference.kind == ReferenceKind::Coderef {
+                                continue;
+                            }
                             refs.push(Location {
                                 uri: reference.uri.clone(),
                                 range: reference.range,
@@ -5261,7 +5297,7 @@ impl WorkspaceIndex {
                 refs
             } else {
                 let qualified_name = format!("{}::{}", key.pkg, key.name);
-                self.find_references(&qualified_name)
+                self.find_references_filtered(&qualified_name, exclude_coderef)
             }
         };
         drop(files_locked);
@@ -5300,7 +5336,7 @@ impl WorkspaceIndex {
             .into_iter()
             .flat_map(|refs| refs.iter())
             .filter(|reference| {
-                reference.kind == ReferenceKind::Usage
+                (reference.kind == ReferenceKind::Usage || reference.kind == ReferenceKind::Coderef)
                     && reference.package.as_deref() != Some(key.pkg.as_ref())
             })
             .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
@@ -6131,6 +6167,50 @@ impl IndexVisitor {
                 }
             }
 
+            // `\&foo` creates a code reference, not a call site (#17442):
+            // record the operand with the coderef classification (the
+            // parenthesized `\&foo()` form stays a call-site `Usage`)
+            // instead of letting generic recursion claim it as a call.
+            NodeKind::Unary { op, operand }
+                if op == "\\"
+                    && matches!(
+                        operand.kind,
+                        NodeKind::FunctionCall { .. } | NodeKind::AmperCall { .. }
+                    )
+                    && canonical_coderef_target_ref(
+                        operand,
+                        (node.location.start, node.location.end),
+                    )
+                    .is_some() =>
+            {
+                if let NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } =
+                    &operand.kind
+                {
+                    let location = self.node_to_range(operand);
+                    let (pkg, bare_name) = if let Some(idx) = name.rfind("::") {
+                        (&name[..idx], &name[idx + 2..])
+                    } else {
+                        (self.current_package.as_deref().unwrap_or("main"), name.as_str())
+                    };
+                    let qualified = format!("{pkg}::{bare_name}");
+                    let ref_kind = self.coderef_operand_ref_kind(operand);
+                    file_index.references.entry(bare_name.to_string()).or_default().push(
+                        SymbolReference {
+                            uri: self.uri.clone(),
+                            range: location,
+                            kind: ref_kind,
+                            package: Some(pkg.to_string()),
+                        },
+                    );
+                    file_index.references.entry(qualified).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: location,
+                        kind: ref_kind,
+                        package: None,
+                    });
+                }
+            }
+
             // Handle special assignments (++ and --)
             NodeKind::Unary { op, operand } if op == "++" || op == "--" => {
                 // Pre/post increment/decrement are both read and write
@@ -6243,6 +6323,17 @@ impl IndexVisitor {
             _ => {
                 // For other node types, no children to visit
             }
+        }
+    }
+
+    /// Classify a `\&foo` operand as a code-reference creation or a real
+    /// call, mirroring the open-document call-hierarchy classification
+    /// (#17370, #17442): explicit parentheses (`\&foo()`) invoke the sub and
+    /// reference its result, so they stay a call-site `Usage`.
+    fn coderef_operand_ref_kind(&self, operand: &Node) -> ReferenceKind {
+        match self.document.text().get(operand.location.start..operand.location.end) {
+            Some(text) if text.contains('(') => ReferenceKind::Usage,
+            _ => ReferenceKind::Coderef,
         }
     }
 
@@ -6855,6 +6946,11 @@ impl IndexVisitor {
                                     )
                                 };
                                 let qualified = format!("{pkg}::{bare_name}");
+                                // A `\&foo` operand is a code-reference
+                                // creation, not a call site (#17442); only
+                                // the parenthesized `\&foo()` form stays a
+                                // call-site `Usage`.
+                                let ref_kind = self.coderef_operand_ref_kind(operand);
                                 file_index
                                     .references
                                     .entry(bare_name.to_string())
@@ -6862,14 +6958,14 @@ impl IndexVisitor {
                                     .push(SymbolReference {
                                         uri: self.uri.clone(),
                                         range: location,
-                                        kind: ReferenceKind::Usage,
+                                        kind: ref_kind,
                                         package: Some(pkg.to_string()),
                                     });
                                 file_index.references.entry(qualified).or_default().push(
                                     SymbolReference {
                                         uri: self.uri.clone(),
                                         range: location,
-                                        kind: ReferenceKind::Usage,
+                                        kind: ref_kind,
                                         package: None,
                                     },
                                 );
@@ -8407,10 +8503,15 @@ has 'name' => (is => 'ro');
 
         let foo_kinds = reference_kinds_for(&index, uri, "foo");
         assert!(
-            foo_kinds
-                .iter()
-                .all(|kind| matches!(kind, ReferenceKind::Definition | ReferenceKind::Usage)),
-            r"dynamic call forms (&foo, \&foo, goto &foo) are currently flattened to Usage"
+            foo_kinds.iter().all(|kind| matches!(
+                kind,
+                ReferenceKind::Definition | ReferenceKind::Usage | ReferenceKind::Coderef
+            )),
+            r"dynamic call forms stay Usage or Definition, with only \&foo typed as Coderef (#17442)"
+        );
+        assert!(
+            foo_kinds.contains(&ReferenceKind::Coderef),
+            r"\&foo reference creations must be classified as Coderef (#17442); got {foo_kinds:?}"
         );
 
         assert!(
@@ -8536,6 +8637,48 @@ sub call_on_other {
         assert!(
             !refs.iter().any(|location| location.uri == unrelated_uri),
             "qualified method lookup must not retain an arbitrary receiver; got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_call_refs_excludes_code_reference_creation() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///P.pm";
+        let code = "package P;\nsub foo { return 1; }\nsub caller {\n    my $cb = \\&foo;\n    my $result_ref = \\&foo();\n    foo();\n    return $cb;\n}\n1;\n";
+        must(index.index_initial_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let key = SymbolKey {
+            pkg: Arc::from("P"),
+            name: Arc::from("foo"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        // References and rename keep every location, including the
+        // code-reference creation on line 3.
+        let all_refs = index.find_refs(&key);
+        assert_eq!(all_refs.len(), 3, "find_refs must retain coderef locations; got {all_refs:?}");
+        assert!(
+            all_refs.iter().any(|location| location.range.start.line == 3),
+            "find_refs must retain the line 3 coderef creation; got {all_refs:?}"
+        );
+
+        // Call hierarchy call sites exclude the creation but keep the real
+        // calls: `\&foo()` on line 4 and `foo()` on line 5.
+        let call_refs = index.find_call_refs(&key);
+        assert_eq!(
+            call_refs.len(),
+            2,
+            "find_call_refs must exclude only the coderef; got {call_refs:?}"
+        );
+        assert!(
+            call_refs.iter().all(|location| location.range.start.line != 3),
+            "find_call_refs must not report the line 3 coderef creation; got {call_refs:?}"
+        );
+        assert!(
+            call_refs.iter().any(|location| location.range.start.line == 4)
+                && call_refs.iter().any(|location| location.range.start.line == 5),
+            "find_call_refs must keep lines 4 and 5; got {call_refs:?}"
         );
     }
 

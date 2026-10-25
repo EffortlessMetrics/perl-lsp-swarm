@@ -456,21 +456,30 @@ impl LspServer {
                 // Calculate actual line numbers from document content
                 let start_line = offset_to_line(doc_text, range.start_offset);
                 let end_line = offset_to_line(doc_text, range.end_offset);
-                let lsp_end_line = match lsp_inclusive_multiline_end_line(start_line, end_line) {
-                    Some(end) => Some(end),
-                    None => {
-                        // A span rejected by the inclusive filter may still
-                        // genuinely cover multiple lines when its end offset
-                        // sits at the start of its last line (heredoc bodies
-                        // end at content, not at line starts). Count the
-                        // newlines inside the span: any newline means real
-                        // multiline content that must not be dropped
-                        // (#15430 residue).
-                        let newlines = doc_text
-                            .get(range.start_offset..range.end_offset)
-                            .map(|span| span.matches('\n').count())
-                            .unwrap_or(0);
-                        (newlines >= 1).then_some(start_line + newlines)
+                // Imports spans end at the last use/no statement, so their
+                // end line is content to keep inside the fold, not a closing
+                // brace line to keep visible (#18113).
+                let is_imports =
+                    matches!(range.kind, Some(crate::folding::FoldingRangeKind::Imports));
+                let lsp_end_line = if is_imports && end_line > start_line {
+                    Some(end_line)
+                } else {
+                    match lsp_inclusive_multiline_end_line(start_line, end_line) {
+                        Some(end) => Some(end),
+                        None => {
+                            // A span rejected by the inclusive filter may still
+                            // genuinely cover multiple lines when its end offset
+                            // sits at the start of its last line (heredoc bodies
+                            // end at content, not at line starts). Count the
+                            // newlines inside the span: any newline means real
+                            // multiline content that must not be dropped
+                            // (#15430 residue).
+                            let newlines = doc_text
+                                .get(range.start_offset..range.end_offset)
+                                .map(|span| span.matches('\n').count())
+                                .unwrap_or(0);
+                            (newlines >= 1).then_some(start_line + newlines)
+                        }
                     }
                 };
                 if let Some(lsp_end_line) = lsp_end_line {
@@ -615,7 +624,13 @@ fn document_symbols_to_json(
 
 /// Helper function to convert offset to line number
 fn offset_to_line(content: &str, offset: usize) -> usize {
-    content[..offset.min(content.len())].chars().filter(|&c| c == '\n').count()
+    // Floor to a char boundary: an externally-derived offset can land
+    // mid-codepoint, and slicing there would panic (#18097).
+    let mut offset = offset.min(content.len());
+    while offset > 0 && !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    content[..offset].chars().filter(|&c| c == '\n').count()
 }
 
 /// Scan for POD blocks (`=pod`/`=head*`/`=begin` ... `=cut`/`=end`) and return
@@ -775,6 +790,17 @@ mod tests {
         CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcId, JsonRpcRequest,
         JsonRpcResponse, METHOD_NOT_FOUND, REQUEST_FAILED,
     };
+
+    /// A mid-codepoint offset must floor instead of panicking (#18097).
+    #[test]
+    fn offset_to_line_floors_mid_codepoint_offsets() {
+        // "é" is 2 bytes (0..2), "\n" at 2, "x" at 3.
+        let content = "é\nx";
+        assert_eq!(offset_to_line(content, 1), 0, "mid-codepoint floors to line 0");
+        assert_eq!(offset_to_line(content, 2), 0);
+        assert_eq!(offset_to_line(content, 3), 1);
+        assert_eq!(offset_to_line(content, usize::MAX), 1, "length clamp still applies");
+    }
 
     #[test]
     fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input()
@@ -1164,6 +1190,49 @@ mod tests {
             )
             .into());
         }
+        Ok(())
+    }
+
+    /// Malformed Perl in a CRLF document must still fold the region on
+    /// the exact marker lines through production dispatch (#18034): the
+    /// extractor's byte offsets feed `offset_to_line`, whose direct slice
+    /// panicked when a CRLF drift landed inside a multi-byte character.
+    #[test]
+    fn folding_range_dispatch_handles_malformed_crlf_region()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": "file:///crlf-region.pl",
+                "languageId": "perl",
+                "version": 1,
+                "text": "#region\r\nmy $x = (\r\n#endregion",
+            }
+        })))?;
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///crlf-region.pl" } })),
+        )?;
+        if let Some(error) = response.error.as_ref() {
+            return Err(format!("malformed CRLF region must succeed: {error:?}").into());
+        }
+        let ranges = response
+            .result
+            .as_ref()
+            .and_then(Value::as_array)
+            .ok_or("folding range must return an array")?;
+        let region = ranges
+            .iter()
+            .find(|range| range.get("kind").and_then(Value::as_str) == Some("region"))
+            .ok_or("the CRLF region fold must be present")?;
+        assert_eq!(region.get("startLine"), Some(&json!(0)), "region start line: {region}");
+        assert_eq!(region.get("endLine"), Some(&json!(2)), "region end line: {region}");
         Ok(())
     }
 

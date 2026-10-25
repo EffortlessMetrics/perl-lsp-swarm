@@ -521,6 +521,7 @@ jobs:
                 --review-receipt target/ripr/review/comments.json \
                 --ripr-base "$RIPR_BASE_SHA" \
                 --ripr-head "$RIPR_EVALUATED_SHA" \
+                --ripr-pr-head "$PR_HEAD_SHA" \
                 --receipt target/receipts/quality/quality-gate-ripr.json \
                 --summary target/receipts/quality/quality-gate-ripr.md
               cargo xtask quality-gate \
@@ -530,6 +531,7 @@ jobs:
                 --review-receipt target/ripr/review/comments.json \
                 --ripr-base "$RIPR_BASE_SHA" \
                 --ripr-head "$RIPR_EVALUATED_SHA" \
+                --ripr-pr-head "$PR_HEAD_SHA" \
                 --receipt target/receipts/quality/quality-gate-ripr.json \
                 --summary target/receipts/quality/quality-gate-ripr.md \
                 --check
@@ -960,6 +962,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md
           cargo xtask quality-gate \
@@ -969,6 +972,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md \
             --check
@@ -1297,6 +1301,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md
           cargo xtask quality-gate \
@@ -1306,6 +1311,7 @@ jobs:
             --review-receipt target/ripr/review/comments.json \
             --ripr-base "$RIPR_BASE_SHA" \
             --ripr-head "$RIPR_EVALUATED_SHA" \
+            --ripr-pr-head "$PR_HEAD_SHA" \
             --receipt target/receipts/quality/quality-gate-ripr.json \
             --summary target/receipts/quality/quality-gate-ripr.md \
             --check

@@ -1339,9 +1339,10 @@ fn module_path_for(file: &str) -> String {
 /// AST rather than the raw bytes gives the digest the same definition of
 /// the scanned surface as the visitors: a `#[cfg(test)]`-only or
 /// `#[test]`-only edit cannot move it, while any shipped edit can. The
-/// rendering is the AST's `Debug` form with span lines removed (`quote` is
-/// not an `xtask` dependency, and spans would otherwise reintroduce the
-/// raw-position sensitivity this digest exists to remove).
+/// rendering is the AST's `Debug` form with span lines removed and inline
+/// span byte ranges blanked (`quote` is not an `xtask` dependency, and
+/// spans would otherwise reintroduce the raw-position sensitivity this
+/// digest exists to remove; #18028).
 ///
 /// A `syn` or `proc-macro2` update can change this rendering and require
 /// re-anchoring `source_digest` even when the scanned source is unchanged.
@@ -1365,14 +1366,48 @@ fn digest_files(files: &[String], asts: &BTreeMap<String, syn::File>) -> Result<
 
 /// Canonical, position-insensitive rendering of the test-stripped AST.
 fn render_stripped(file: &syn::File) -> String {
-    format!("{:#?}", stripped_for_digest(file))
+    let rendered = format!("{:#?}", stripped_for_digest(file))
         .lines()
         .filter(|line| {
             let trimmed = line.trim_start();
             !trimmed.starts_with("span:") && !trimmed.starts_with("spans:")
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    normalize_span_bytes(&rendered)
+}
+
+/// Blank out inline span byte ranges in the Debug rendering.
+///
+/// Dropping `span:`/`spans:` lines is not enough: `syn` also renders some
+/// spans inline (a `Lifetime`'s apostrophe prints as `bytes(149753..149754)`),
+/// and those offsets are global across the whole parse sequence, so any
+/// byte-length-changing edit anywhere — a comment, a newline, test-only
+/// code — shifted them and moved the digest (#18028). Replacing the range
+/// with `bytes(..)` keeps the rendering's shape while removing the raw
+/// positions the digest exists to ignore.
+fn normalize_span_bytes(rendered: &str) -> String {
+    let mut out = String::with_capacity(rendered.len());
+    let mut rest = rendered;
+    while let Some(idx) = rest.find("bytes(") {
+        let after = &rest[idx + "bytes(".len()..];
+        let lo_len = after.bytes().take_while(|b| b.is_ascii_digit()).count();
+        let tail = &after[lo_len..];
+        let hi_len = tail
+            .strip_prefix("..")
+            .map_or(0, |t| t.bytes().take_while(|b| b.is_ascii_digit()).count());
+        let hi_tail = if hi_len > 0 { &tail[2 + hi_len..] } else { tail };
+        if lo_len > 0 && hi_len > 0 && hi_tail.starts_with(')') {
+            out.push_str(&rest[..idx]);
+            out.push_str("bytes(..)");
+            rest = &hi_tail[1..];
+            continue;
+        }
+        out.push_str(&rest[..idx + "bytes(".len()]);
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
@@ -5242,6 +5277,24 @@ mod tests {
              enum E { A, #[cfg(test)] B(u16) }",
         );
         assert_eq!(field_base, field_test_only, "test-gated fields/variants must not move it");
+    }
+
+    /// Byte-length-only edits (comments, newlines) shift every inline
+    /// `bytes(lo..hi)` span in the Debug rendering; the digest must not
+    /// move for them (#18028).
+    #[test]
+    fn digest_ignores_position_only_shifts() {
+        let base = digest_of("fn f<'a>(x: &'a str) -> &'a str { x }");
+        let commented =
+            digest_of("// a longer leading comment\nfn f<'a>(x: &'a str) -> &'a str { x }");
+        assert_eq!(base, commented, "a leading comment must not move the digest");
+        let eof_newline = digest_of("fn f<'a>(x: &'a str) -> &'a str { x }\n");
+        assert_eq!(base, eof_newline, "an EOF newline must not move the digest");
+        let bof_newline = digest_of("\nfn f<'a>(x: &'a str) -> &'a str { x }");
+        assert_eq!(base, bof_newline, "a BOF newline must not move the digest");
+        // A shipped change still moves it, through the same rendering.
+        let shipped = digest_of("fn g<'a>(x: &'a str) -> &'a str { x }");
+        assert_ne!(base, shipped, "renaming the function must move the digest");
     }
 
     /// A `#[cfg(test)] impl` must not replace the shipped entry's call set.
