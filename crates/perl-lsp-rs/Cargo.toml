@@ -28,7 +28,7 @@ path = "src/lib.rs"
 [dependencies]
 perl-dap = { workspace = true }
 # perl-incremental-parsing absorbed into perl-parser::incremental (Wave 4-Completion)
-perl-parser = { workspace = true, features = ["test-performance"] }
+perl-parser = { workspace = true }
 # (perl-lsp-providers absorbed into perl-lsp-rs-core::providers::lsp_compat — Wave G1b)
 # (perl-lsp-formatting absorbed into perl-lsp-rs-core::providers::formatting — Wave G1b)
 # perl-lsp-uri absorbed into perl-lsp-rs-core::uri (Wave G3 step 3)
