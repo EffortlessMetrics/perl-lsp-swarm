@@ -25,9 +25,11 @@
 //!   bare calls (`name()` and `&name()`) force the fail-closed
 //!   `RenameRefusal::AmbiguousIdentity` path instead of an edit set.
 //!
-//! Every fixture is validated once at setup, outside the timed region, so a
-//! fixture drift that stops exercising the intended authority path fails the
-//! run before any timing happens.
+//! Every fixture is validated once at setup, outside the timed region —
+//! including the exact per-caller edit count and position for the
+//! dispatch-heavy fixture — so a fixture drift or attribution regression
+//! that stops exercising the intended authority path fails the run before
+//! any timing happens.
 //!
 //! # Running
 //!
@@ -42,6 +44,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use perl_lsp::features::workspace_rename::{RenameRefusal, build_rename_edit};
 use perl_workspace::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::sync::Arc;
 use url::Url;
@@ -168,11 +171,30 @@ fn ambiguous_index() -> WorkspaceIndex {
     idx
 }
 
+/// Expected dispatch edit spans in every caller package, as sorted
+/// `(start_line, start_col, end_line, end_col)` of the narrowed `greet`
+/// token (0-based; the fixture is pure ASCII, so columns are UTF-16-stable).
+///
+/// Exactly the three attributed sites: the two constructor-attributed
+/// `$obj->greet()` arrow calls (lines 6 and 9) and the qualified
+/// `Greeter::greet($obj)` call (line 8). The foreign-typed
+/// `$logger->greet()` site (line 7) must stay unedited.
+const CALLER_EXPECTED_SPANS: [(u32, u32, u32, u32); 3] =
+    [(6, 22, 6, 27), (8, 26, 8, 31), (9, 41, 9, 46)];
+
+/// Expected dispatch edit span of the `Greeter::greet` definition name in
+/// Greeter.pm (line 2, after the `sub ` prefix).
+const GREETER_DEF_SPAN: (u32, u32, u32, u32) = (2, 4, 2, 9);
+
 /// Setup-time validation of the dispatch-heavy fixture.
 ///
 /// The rename must cover exactly the definition and every
 /// constructor-attributed caller — never the foreign-typed Logger receiver,
-/// the inherited Base receiver, or any other same-named package.
+/// the inherited Base receiver, or any other same-named package. Each caller
+/// is pinned to exactly its three attributed edits by position — both
+/// `$obj->greet()` arrow sites plus the qualified `Greeter::greet($obj)` —
+/// so a caller that received only its qualified-call edit, or that gained a
+/// wrongly included `$logger->greet()` site, fails before any timing.
 fn validate_dispatch_fixture(idx: &WorkspaceIndex) {
     let renamed = build_rename_edit(idx, &sub_key("Greeter", "greet"), "salute");
     assert!(
@@ -194,6 +216,30 @@ fn validate_dispatch_fixture(idx: &WorkspaceIndex) {
         renamed_uris, expected,
         "dispatch rename must edit exactly the definition + constructor-attributed callers"
     );
+
+    let mut actual_spans: BTreeMap<String, Vec<(u32, u32, u32, u32)>> = BTreeMap::new();
+    for edit in &edits {
+        let mut spans: Vec<(u32, u32, u32, u32)> =
+            edit.edits.iter().map(|te| (te.start.0, te.start.1, te.end.0, te.end.1)).collect();
+        spans.sort_unstable();
+        actual_spans.insert(edit.uri.clone(), spans);
+    }
+    let mut expected_spans: BTreeMap<String, Vec<(u32, u32, u32, u32)>> = BTreeMap::new();
+    for n in 1..=CALLER_COUNT {
+        expected_spans.insert(
+            format!("file:///bench-rename/Caller{n:02}.pm"),
+            CALLER_EXPECTED_SPANS.to_vec(),
+        );
+    }
+    expected_spans.insert("file:///bench-rename/Greeter.pm".to_string(), vec![GREETER_DEF_SPAN]);
+
+    assert_eq!(
+        actual_spans, expected_spans,
+        "dispatch rename must place exactly CALLER_EXPECTED_SPANS in each caller \
+         (both $obj->greet() sites + the qualified Greeter::greet($obj) site, \
+         never $logger->greet()) and exactly the definition-name edit in Greeter.pm"
+    );
+
     assert!(
         edits.iter().all(|edit| edit.edits.iter().all(|te| te.new_text == "salute")),
         "every dispatch edit renames the method"
