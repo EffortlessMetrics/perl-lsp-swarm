@@ -3932,6 +3932,7 @@ fn deliver_reserved_terminated_event(
 
 #[cfg(test)]
 mod tests {
+    use super::super::patterns::DEBUGGER_QUERY_WAIT_MS;
     use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
     use super::{
@@ -7522,8 +7523,52 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts the accepted authority for a `late` fixture payload whose end
+    /// marker landed inside the framed-query window (coverage clamp, #18348):
+    /// the parsed `main` frame replaces the pre-seeded sentinel as the
+    /// response and the cached session frames, and the sentinel arguments are
+    /// dropped with the replaced frame.
+    fn assert_in_window_late_payload_accepted(
+        adapter: &DebugAdapter,
+        response: DapMessage,
+    ) -> Result<(), String> {
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("in-window late stackTrace failed: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or_else(|| format!("missing stack frame: {body}"))?;
+        if frame.get("name").and_then(Value::as_str) != Some("main")
+            || frame.get("line").and_then(Value::as_i64) != Some(9)
+        {
+            return Err(format!("in-window late payload not accepted: {body}"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.reader_late_window");
+        let session = guard.as_ref().ok_or("reader lost the session")?;
+        let cached = session.stack_frames.first().ok_or("reader lost cached frames")?;
+        if cached.name != "main" || cached.line != 9 {
+            return Err("in-window late payload did not reach cached authority".to_string());
+        }
+        if session.stack_frame_arguments.contains_key(&cached.id) {
+            return Err("in-window late payload kept the sentinel arguments".to_string());
+        }
+        Ok(())
+    }
+
     #[test]
     fn framed_reader_preserves_stack_and_recovers_after_partial_output() -> Result<(), String> {
+        // The `late` fixture withholds its end marker for 0.9s. Against the
+        // plain framed-query window (`DEBUGGER_QUERY_WAIT_MS * 8`) that is
+        // genuinely late: the query times out and the pre-seeded sentinel
+        // frame stays authoritative. Coverage instrumentation clamps the
+        // window to >=15s (#18348), which pulls the marker inside the window,
+        // so the completed poison payload is then legitimately accepted as
+        // stack authority. Derive the expectation from the effective window
+        // rather than raw instrumentation env checks (#18348).
+        let late_marker_in_window = Duration::from_millis(900)
+            <= DebugAdapter::framed_query_window_for_test(DEBUGGER_QUERY_WAIT_MS * 8);
         for mode in ["empty", "internal", "partial", "late", "late_begin", "valid"] {
             let adapter = reader_stack_fixture(mode)?;
             let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
@@ -7536,6 +7581,8 @@ mod tests {
                     7,
                     &["$value", "[1, 2]", "\"a,b\""],
                 )?;
+            } else if mode == "late" && late_marker_in_window {
+                assert_in_window_late_payload_accepted(&adapter, response)?;
             } else {
                 assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
             }

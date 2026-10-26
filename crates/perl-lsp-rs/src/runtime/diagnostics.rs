@@ -3699,7 +3699,18 @@ mod tests {
             .as_array()
             .and_then(|items| items.first())
             .ok_or("absent lifecycle item missing")?;
-        assert!(!absent_item.to_string().contains("PL900"));
+        // #16611: with the project version absent, a signed sub carries no
+        // declared-version fallback, so the versionless PL900 warning is
+        // the intended report (not the pre-#18270 silence).
+        let absent_text = absent_item.to_string();
+        assert!(
+            absent_text.contains("PL900"),
+            "absent project version must keep the versionless PL900 warning: {absent_text}"
+        );
+        assert!(
+            absent_text.contains("no Perl version declared"),
+            "absent project version must use the versionless PL900 message: {absent_text}"
+        );
         Ok(())
     }
 
