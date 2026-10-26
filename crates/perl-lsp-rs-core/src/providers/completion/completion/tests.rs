@@ -327,7 +327,7 @@ proc
 fn test_workspace_symbol_completion_mid_token_replaces_whole_token()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyUtils.pm")?,
         "package MyUtils;\nuse Exporter 'import';\nour @EXPORT = qw(register);\nsub register { }\n1;\n"
             .to_string(),
@@ -368,7 +368,7 @@ fn test_workspace_symbol_completion_mid_token_replaces_whole_token()
 fn test_workspace_method_completion_mid_token_replaces_whole_token()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/TypedService.pm")?,
         "package TypedService;\nsub register { }\n1;\n".to_string(),
     )?;
