@@ -114,6 +114,15 @@ Atomic skills change attention and method. They do not automatically require a n
 agent. Conversely, use a fresh context when a different source, oracle, threat model,
 tool boundary, or independence property is the reason for delegation.
 
+When an independent agent reviewer is needed for a missing or stale judgment,
+spawn that reviewer as a subagent inside the current working session. Keep the
+candidate and useful build context in that session; reviewer placement does not
+require a transfer to another executor. Give the reviewer a concrete differing
+lens and keep candidate mutation with the one writer. Preserve earlier valid
+reviews and refresh only affected evidence. Do not assume optional external review
+capacity is available or make a new reviewer identity a required stage. Existing
+required reviews, approvals, checks, and holds still apply.
+
 ## Capacity admission
 
 Size execution to the host, not to the amount of work available. Saturation destroys

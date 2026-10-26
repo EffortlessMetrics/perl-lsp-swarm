@@ -61,7 +61,10 @@ root direct
 A provider may use context forks, built-in workers, nested agents, dynamic workflows, or
 Teams when a specific task benefits. Those are physical execution choices, not logical
 claim-orchestration authority. No skill may require recursive orchestration, a
-subordinate orchestrator role, or a particular physical topology.
+subordinate orchestrator role, or a particular physical topology except for
+independent agent reviewer placement: use a subagent inside the working session
+through the provider's `orchestrate-work` skill. This does not require a new
+reviewer for an already-current judgment or impose a whole-flow topology.
 
 ## Required skill shape
 
