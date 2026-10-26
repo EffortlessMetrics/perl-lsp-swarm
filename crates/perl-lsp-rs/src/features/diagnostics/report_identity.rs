@@ -326,6 +326,15 @@ impl PullReportSubject {
     /// through SHA-256 over a length-prefixed canonical encoding that embeds
     /// the core substrate identity (#7201) plus this layer's fragments.
     pub fn compose(&self) -> Result<PullReportResultId, NotReusable> {
+        self.compose_with_versions(current_schema_versions())
+    }
+
+    /// [`Self::compose`] with explicit schema versions, so tests can vary
+    /// one version slot through the complete production composition.
+    fn compose_with_versions(
+        &self,
+        versions: DiagnosticResultSchemaVersions,
+    ) -> Result<PullReportResultId, NotReusable> {
         let policy = AcceptedCriticPolicyIdentity::new(
             self.critic_root_id.clone(),
             self.accepted_critic_fingerprint.clone(),
@@ -345,7 +354,7 @@ impl PullReportSubject {
             ),
             policy,
             facts,
-            current_schema_versions(),
+            versions,
         )
         .compose();
 
@@ -631,54 +640,33 @@ mod tests {
     }
 
     #[test]
-    fn rule_catalog_version_reaches_the_substrate_id() {
+    fn rule_catalog_version_reaches_the_result_id() {
         // The version only invalidates a cached report if it reaches the
-        // composed substrate ID. Rebuild the substrate input exactly as
-        // `compose` does, once with the current versions and once with the
-        // rule-catalog slot moved: the IDs must differ, and rebuilding with
-        // the current versions must reproduce the first ID.
+        // composed result ID. Compare final IDs from the production
+        // composition: the current versions must reproduce the `compose`
+        // ID, and moving the rule-catalog slot must move the ID, so a
+        // pre-bump client is never told `unchanged`.
         let context = context_with(Some(ROOT_A));
         let subject = subject_for(&context, URI_A, CONTENT);
-        let substrate = |versions: DiagnosticResultSchemaVersions| {
-            let policy = AcceptedCriticPolicyIdentity::new(
-                subject.critic_root_id.clone(),
-                subject.accepted_critic_fingerprint.clone(),
-            );
-            let facts = match subject.facts_generation {
-                Some(generation) => {
-                    DiagnosticFactIdentity::Live { workspace: subject.root_id.clone(), generation }
-                }
-                None => DiagnosticFactIdentity::Unavailable,
-            };
-            DiagnosticResultIdentityInput::new(
-                DiagnosticSourceIdentity::new(
-                    LogicalSourceId::from_root_and_logical_path(
-                        &subject.root_id,
-                        &subject.logical_path,
-                    ),
-                    subject.content_digest.clone(),
-                    subject.document_generation,
-                ),
-                policy,
-                facts,
-                versions,
-            )
-            .compose()
-            .as_str()
-            .to_string()
-        };
-        let baseline = substrate(current_schema_versions());
-        assert_eq!(baseline, substrate(current_schema_versions()));
+        let baseline = subject.compose().ok().unwrap();
+        assert_eq!(
+            baseline,
+            subject.compose_with_versions(current_schema_versions()).ok().unwrap(),
+            "the current versions must reproduce the composed ID"
+        );
         assert_ne!(
             baseline,
-            substrate(DiagnosticResultSchemaVersions::new(
-                RULE_CATALOG_SCHEMA_VERSION + 1,
-                CRITIC_IDENTITY_SCHEMA_VERSION,
-                SUPPRESSION_CONTRACT_SCHEMA_VERSION,
-                PROJECTION_WIRE_SCHEMA_VERSION,
-                REMEDIATION_WIRE_SCHEMA_VERSION,
-            )),
-            "moving the rule-catalog version must move the substrate ID"
+            subject
+                .compose_with_versions(DiagnosticResultSchemaVersions::new(
+                    RULE_CATALOG_SCHEMA_VERSION + 1,
+                    CRITIC_IDENTITY_SCHEMA_VERSION,
+                    SUPPRESSION_CONTRACT_SCHEMA_VERSION,
+                    PROJECTION_WIRE_SCHEMA_VERSION,
+                    REMEDIATION_WIRE_SCHEMA_VERSION,
+                ))
+                .ok()
+                .unwrap(),
+            "moving the rule-catalog version must move the result ID"
         );
     }
 
