@@ -695,6 +695,10 @@ fn filter_encoded_semantic_tokens_by_range(
     end_line: u32,
     end_char: u32,
 ) -> Vec<u32> {
+    if (start_line, start_char) >= (end_line, end_char) {
+        return Vec::new();
+    }
+
     let mut absolute_tokens = Vec::new();
     let mut line = 0u32;
     let mut start = 0u32;
@@ -708,11 +712,14 @@ fn filter_encoded_semantic_tokens_by_range(
             start = delta_start;
         }
 
-        let starts_after_range_start =
-            line > start_line || (line == start_line && start >= start_char);
+        // The collector emits single-line tokens in negotiated UTF-16 units.
+        // LSP range requests retain the whole token on partial overlap at
+        // either boundary; clipping would discard canonical source geometry.
+        let ends_after_range_start =
+            line > start_line || (line == start_line && start.saturating_add(length) > start_char);
         let starts_before_range_end = line < end_line || (line == end_line && start < end_char);
 
-        if starts_after_range_start && starts_before_range_end {
+        if ends_after_range_start && starts_before_range_end {
             absolute_tokens.push((line, start, length, token_type, modifiers));
         }
     }
