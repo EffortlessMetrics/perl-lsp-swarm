@@ -106,7 +106,8 @@ A new session must recover from GitHub and repository artifacts alone. Leave the
 
 - repository, branch, candidate/tree and relevant base or landed identity;
 - commands, results, environment, and stable versioned evidence/run references;
-- original review subjects, findings, dispositions, and remaining uncertainty;
+- original review subjects, directed passes or independent actor reviews, findings,
+  dispositions, and remaining uncertainty;
 - current writer, next bounded action, and any acknowledged ownership transfer;
 - explicit `NOT_PROVEN` gaps, holds and their sources, and pending wake conditions;
 - links to governing specs, evidence, and merged PRs;
@@ -124,8 +125,11 @@ caches.
 Keep original run and review identities when carrying evidence forward, and state
 why it still applies. A replacement session does not make that evidence a new
 execution or invalidate it; refresh only affected evidence under
-[review currentness](../agents/REVIEW_CURRENTNESS.md). Confirm that the receiving
-context can read the needed artifacts before treating the handoff as complete; a
+[review currentness](../agents/REVIEW_CURRENTNESS.md). Resume directed staged review
+inline in the owning session's main context; a reset does not require another reviewer,
+external handoff, or routine parent payload approval. Preserve any actual independent
+actor or GitHub approval requirement. Confirm that the receiving context can read the
+needed artifacts before treating the handoff as complete; a
 sender-local path alone does not establish recovery.
 
 Do not preserve raw polling logs, head/claim receipt comments, or a second status database. The durable issue, PR, checks, reviews, threads, worktree, and branch state are the handoff.
