@@ -1435,13 +1435,13 @@ mod tests {
         // package as Class/Role, but the outline selection must stay on the
         // declared name (chars 8-11), not slide into the `package` keyword
         // (chars 4-7, the first substring occurrence of "age").
-        // (framework module, expected wire kind: Class = 5, Role = 8)
+        // (framework module, expected wire kind: Class = 5, Role = 11)
         for (module, expected_kind) in [
             ("Moo", 5),
             ("Moose", 5),
-            ("Moo::Role", 8),
-            ("Moose::Role", 8),
-            ("Role::Tiny", 8),
+            ("Moo::Role", 11),
+            ("Moose::Role", 11),
+            ("Role::Tiny", 11),
             ("Class::Tiny", 5),
         ] {
             let source = format!("package age {{ use {module}; }}");
