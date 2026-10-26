@@ -22,11 +22,10 @@ const CANCELLED_SET_CAP: usize = 256;
 /// failure — `WriteFailed`/`FlushFailed` with `kind`, `queued`,
 /// `batch_messages`, and `batch_bytes` — so a real stdout write failure is
 /// distinguishable at a glance. `None` (or a non-I/O outcome such as
-/// `NormalClose`) means the writer never failed on I/O: the failure signal
-/// came from the required-response admission path while the writer stayed
-/// healthy, which is the channel-Full backpressure shape — the recurring
-/// nightly storm teardown fingerprint whose discriminator was previously
-/// invisible.
+/// `NormalClose`) means no sink I/O failure has settled yet: the failure
+/// signal came from the required-response admission path, but a pending
+/// writer write may still settle later, so this record claims neither writer
+/// health nor a transport cause (#18349 review).
 fn log_response_delivery_failure(method: Option<&str>, outcome: Option<&WriterTerminalOutcome>) {
     if let Some(outcome) = outcome.filter(|candidate| candidate.is_io_failure()) {
         tracing::warn!(
@@ -39,7 +38,7 @@ fn log_response_delivery_failure(method: Option<&str>, outcome: Option<&WriterTe
         tracing::warn!(
             method,
             writer_outcome = ?outcome,
-            "outbound response delivery failed; closing LSP ingress (no sink I/O failure settled: delivery refused by outbound admission while the writer stayed healthy — channel-Full backpressure shape, not a stdout write failure)"
+            "outbound response delivery failed; closing LSP ingress (no sink I/O failure settled yet; outbound admission refused)"
         );
     }
 }
@@ -503,8 +502,8 @@ mod tests {
 
     /// #18349: a settled sink I/O failure must be logged with its typed
     /// outcome — kind, queued depth, and batch context — so the next nightly
-    /// occurrence distinguishes a real stdout write failure from the
-    /// channel-Full backpressure shape.
+    /// occurrence distinguishes a real stdout write failure from an
+    /// admission-path refusal.
     #[test]
     fn delivery_failure_log_names_typed_writer_outcome() {
         let outcome = WriterTerminalOutcome::WriteFailed {
@@ -536,11 +535,12 @@ mod tests {
         );
     }
 
-    /// #18349: when no sink I/O failure has settled (no outcome published at
-    /// all, or a `NormalClose`), the log must say so — that is the
-    /// admission-path channel-Full shape, not a stdout write failure.
+    /// #18349 review: when no sink I/O failure has settled (no outcome
+    /// published at all, or a `NormalClose`), the log must say exactly that
+    /// — a pending writer write may still settle later, so the record must
+    /// not attribute writer health or a transport cause.
     #[test]
-    fn delivery_failure_log_reports_admission_refusal_when_writer_stayed_healthy() {
+    fn delivery_failure_log_reports_admission_refusal_when_no_io_failure_settled() {
         let records = capture_tracing_records(|| {
             log_response_delivery_failure(Some("workspace/symbol"), None)
         });
@@ -549,8 +549,16 @@ mod tests {
             "teardown fingerprint message must be preserved: {records}"
         );
         assert!(
-            records.contains("channel-Full backpressure shape"),
-            "a missing outcome must be reported as the admission-path shape: {records}"
+            records.contains("no sink I/O failure settled yet; outbound admission refused"),
+            "a missing outcome must be reported as an unsettled admission refusal: {records}"
+        );
+        assert!(
+            !records.contains("stayed healthy"),
+            "an unsettled outcome must not attribute writer health: {records}"
+        );
+        assert!(
+            !records.contains("channel-Full backpressure shape"),
+            "an unsettled outcome must not attribute a transport cause: {records}"
         );
         assert!(
             !records.contains("WriteFailed") && !records.contains("FlushFailed"),
@@ -561,8 +569,8 @@ mod tests {
         let records =
             capture_tracing_records(|| log_response_delivery_failure(None, Some(&normal)));
         assert!(
-            records.contains("channel-Full backpressure shape"),
-            "a normal close is also not a sink I/O failure: {records}"
+            records.contains("no sink I/O failure settled yet; outbound admission refused"),
+            "a normal close is also not a settled sink I/O failure: {records}"
         );
         assert!(
             records.contains("Some(NormalClose)"),

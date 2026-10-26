@@ -3,15 +3,21 @@
 
 Drives the real harness (`scripts/repro_lsp_storm.py`) against a stub LSP
 server that reproduces the nightly fingerprint: it answers `initialize`,
-then self-exits when it consumes the workload's final `textDocument/didClose`,
-closing stdio so the harness's later `shutdown` write fails on a dead peer.
+consumes the whole workload, answers the harness's post-workload
+`workspace/symbol` barrier request (the workload-completion evidence the
+tolerance is gated on), and only then self-exits — closing stdio so the
+harness's later `shutdown` write fails on a dead peer. With
+`STUB_DIE_ON_FIRST_DIDCLOSE=1` the stub instead self-exits on the first
+`textDocument/didClose`, which is a death MID-workload.
 
 Covers three properties:
 
-1. a server self-exit AFTER the workload completes is tolerated — the run
-   succeeds, the RSS samples (including `settled`) reach the JSON artifact,
-   and the race is noted in the `teardown_race` output field;
-2. a server death MID-workload still fails the run with no JSON artifact;
+1. a server self-exit AFTER the barrier-confirmed workload completes is
+   tolerated — the run succeeds, the RSS samples (including `settled`) reach
+   the JSON artifact, and the race is noted in the `teardown_race` output
+   field;
+2. a server death MID-workload still fails the run with no JSON artifact
+   (the barrier is never reached, so no tolerance applies);
 3. the downstream `assert_rss_plateau.py` assertion is untouched: it still
    passes a flat series and still fails a regressing one.
 """
@@ -32,12 +38,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 HARNESS = REPO_ROOT / "scripts" / "repro_lsp_storm.py"
 PLATEAU = REPO_ROOT / "scripts" / "assert_rss_plateau.py"
 
-# Stub perllsp: LSP framing on stdio, one initialize response, then a
-# self-exit on the first textDocument/didClose — the #18349 teardown shape
-# (server delivery-failure policy ends the process mid-teardown burst).
-STUB_SOURCE = """
+# Stub perllsp: LSP framing on stdio, one initialize response, then the
+# workload is consumed silently, the post-workload workspace/symbol barrier
+# is answered, and the process self-exits — the #18349 teardown shape
+# (server delivery-failure policy ends the process after the workload, so
+# the harness's shutdown write fails on the dead peer).
+# STUB_DIE_ON_FIRST_DIDCLOSE=1 switches to a death on the first
+# textDocument/didClose instead, which is MID-workload for n_files >= 2.
+STUB_SOURCE = """#!/usr/bin/env python3
 import json
+import os
 import sys
+
+DIE_ON_FIRST_DIDCLOSE = os.environ.get("STUB_DIE_ON_FIRST_DIDCLOSE") == "1"
 
 
 def read_frame(stream):
@@ -54,6 +67,16 @@ def read_frame(stream):
     return stream.read(length) if length > 0 else b""
 
 
+def respond(message, result):
+    payload = json.dumps(
+        {"jsonrpc": "2.0", "id": message.get("id"), "result": result}
+    ).encode("utf-8")
+    sys.stdout.buffer.write(
+        b"Content-Length: " + str(len(payload)).encode("ascii") + b"\\r\\n\\r\\n" + payload
+    )
+    sys.stdout.buffer.flush()
+
+
 def main():
     while True:
         body = read_frame(sys.stdin.buffer)
@@ -62,15 +85,17 @@ def main():
         message = json.loads(body.decode("utf-8"))
         method = message.get("method")
         if method == "initialize":
-            result = {"jsonrpc": "2.0", "id": message.get("id"), "result": {"capabilities": {}}}
-            payload = json.dumps(result).encode("utf-8")
-            sys.stdout.buffer.write(
-                b"Content-Length: " + str(len(payload)).encode("ascii") + b"\\r\\n\\r\\n" + payload
-            )
-            sys.stdout.buffer.flush()
+            respond(message, {"capabilities": {}})
         elif method == "textDocument/didClose":
-            # #18349 fingerprint: self-exit with stdio still attached, so the
-            # harness's next write (shutdown) fails on the dead peer.
+            if DIE_ON_FIRST_DIDCLOSE:
+                # MID-workload death: the harness's next workload write hits
+                # the dead peer before the barrier is ever reached.
+                return 0
+        elif method == "workspace/symbol":
+            # The harness's post-workload barrier: answering it confirms the
+            # whole workload stream was consumed; exiting here is the
+            # #18349 post-workload self-exit the tolerance covers.
+            respond(message, {"symbols": []})
             return 0
     return 0
 
@@ -99,9 +124,18 @@ def _write_stub(scratch: Path) -> str:
     return str(stub_py)
 
 
-def _run_harness(binary: str, scratch: Path, n_files: int) -> subprocess.CompletedProcess[bytes]:
+def _run_harness(
+    binary: str,
+    scratch: Path,
+    n_files: int,
+    *,
+    stub_dies_on_first_didclose: bool = False,
+) -> subprocess.CompletedProcess[bytes]:
     json_out = scratch / f"storm-{n_files}.json"
     csv_out = scratch / f"storm-{n_files}.csv"
+    env = dict(os.environ)
+    if stub_dies_on_first_didclose:
+        env["STUB_DIE_ON_FIRST_DIDCLOSE"] = "1"
     return subprocess.run(
         [
             sys.executable,
@@ -124,6 +158,7 @@ def _run_harness(binary: str, scratch: Path, n_files: int) -> subprocess.Complet
         capture_output=True,
         timeout=120,
         cwd=str(REPO_ROOT),
+        env=env,
     )
 
 
@@ -148,6 +183,7 @@ class ReproLspStormTeardownTest(unittest.TestCase):
         )
         stderr = run.stderr.decode(errors="replace")
         self.assertIn("teardown race tolerated", stderr)
+        self.assertIn("workspace/symbol barrier", stderr)
 
         payload = json.loads((self.scratch / "storm-1.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["schema"], 1)
@@ -157,15 +193,33 @@ class ReproLspStormTeardownTest(unittest.TestCase):
         # the race.
         self.assertEqual(phases, ["initialized", "churn", "settled"])
         self.assertEqual(payload["teardown_race"]["stage"], "shutdown")
-        self.assertIn(payload["teardown_race"]["error"], {"BrokenPipeError", "OSError"})
+        # The dead-peer race surfaces as a failed shutdown write
+        # (BrokenPipeError, or OSError EINVAL on Windows) or as the server
+        # closing stdout before answering shutdown (TimeoutError), depending
+        # on whether the write beats the peer's exit into the pipe buffer.
+        self.assertIn(
+            payload["teardown_race"]["error"],
+            {"BrokenPipeError", "OSError", "TimeoutError"},
+        )
+        # The race note must record the evidence the tolerance was gated on:
+        # the barrier response, not just a successful pipe write.
+        self.assertEqual(
+            payload["teardown_race"]["workload_confirmed_by"],
+            "workspace/symbol barrier response",
+        )
         # The CSV artifact is written too (nightly also consumes it).
         csv_text = (self.scratch / "storm-1.csv").read_text(encoding="utf-8")
         self.assertIn("elapsed_s,phase,file_index,rss_kb", csv_text)
         self.assertIn("settled", csv_text)
 
     def test_mid_workload_server_death_still_fails_the_run(self) -> None:
-        """The tolerance covers only the post-workload shutdown, nothing else."""
-        run = _run_harness(self.binary, self.scratch, n_files=2)
+        """The tolerance covers only the barrier-confirmed post-workload shutdown."""
+        run = _run_harness(
+            self.binary,
+            self.scratch,
+            n_files=2,
+            stub_dies_on_first_didclose=True,
+        )
 
         self.assertNotEqual(
             run.returncode,
@@ -175,11 +229,14 @@ class ReproLspStormTeardownTest(unittest.TestCase):
             f"stderr={run.stderr.decode(errors='replace')}",
         )
         stderr = run.stderr.decode(errors="replace")
-        # The stub dies at file 0's didClose; file 1's didOpen write hits the
-        # dead peer mid-workload: BrokenPipeError on POSIX, OSError EINVAL on
-        # Windows.
+        # The stub dies at file 0's didClose; the death must surface before
+        # the post-workload barrier is ever reached — as a mid-workload pipe
+        # failure (BrokenPipeError, OSError EINVAL on Windows) when the next
+        # write hits the dead peer, or at the fatal barrier wait
+        # (TimeoutError) if that write slipped into the pipe buffer. Either
+        # way the run fails with no JSON artifact.
         self.assertTrue(
-            "BrokenPipeError" in stderr or "OSError" in stderr,
+            "BrokenPipeError" in stderr or "OSError" in stderr or "TimeoutError" in stderr,
             f"expected the mid-workload pipe failure in the traceback, got:\n{stderr}",
         )
         self.assertFalse(

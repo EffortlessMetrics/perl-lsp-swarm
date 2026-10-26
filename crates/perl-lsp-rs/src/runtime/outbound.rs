@@ -295,13 +295,14 @@ impl OutboundSender {
 
     /// Snapshot the writer's terminal outcome without waiting (#18349).
     ///
-    /// `None` means the writer thread has settled nothing yet: serving was
-    /// torn down by an admission-path failure signal (`signal_failure` from
-    /// a refused required response) while the writer stayed healthy — the
-    /// channel-Full backpressure shape. `Some(outcome)` is the writer's
-    /// first causal termination, published before the failure wake (see
-    /// [`WriterCompletion::publish`]), so a failure wake never observes
-    /// `None` from this snapshot.
+    /// `None` means the writer thread has settled no I/O failure yet: serving
+    /// was torn down by an admission-path failure signal (`signal_failure`
+    /// from a refused required response) with no sink I/O failure settled —
+    /// a pending writer write may still settle later, so no writer-health or
+    /// transport-cause attribution may be drawn from `None`. `Some(outcome)`
+    /// is the writer's first causal termination, published before the
+    /// failure wake (see [`WriterCompletion::publish`]), so a failure wake
+    /// never observes `None` from this snapshot.
     pub(crate) fn terminal_outcome_snapshot(&self) -> Option<WriterTerminalOutcome> {
         self.completion.outcome.lock().clone()
     }
