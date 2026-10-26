@@ -1000,6 +1000,8 @@ mod tests {
     fn document_symbols_order_deterministic_multiple_packages_shared_class_tiny_span()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "my $global_thing = 1;\nsub before_pkg { 2 }\npackage Alpha;\nuse Class::Tiny qw(zeta alpha middle);\nsub method1 { 1 }\npackage Beta;\nuse Class::Tiny qw(zulu able mike);\nsub method2 { 2 }\n";
+        // LSP SymbolKind numeric values below: 5 = Class, 7 = Property,
+        // 12 = Function, 13 = Variable.
         let expected_top: Vec<(&str, u32)> =
             vec![("$global_thing", 13), ("before_pkg", 12), ("Alpha", 5), ("Beta", 5)];
         let expected_children: Vec<(&str, Vec<(&str, u32)>)> = vec![
@@ -1041,6 +1043,48 @@ mod tests {
             pinned = Some(result.symbols);
         }
         Ok(())
+    }
+
+    /// #18111: `kind` is the final child-order tiebreak. When
+    /// (priority, start, end, name) tie exactly, the lower LSP `SymbolKind`
+    /// number must sort first regardless of the input (HashMap bucket) order;
+    /// a stable sort without the `kind` comparison would keep the input
+    /// order instead.
+    #[test]
+    fn child_sort_kind_tiebreak_orders_full_key_tie_from_either_input_order() {
+        let tied = |kind: u32| PendingSymbol {
+            document_symbol: DocumentSymbol {
+                name: "twin".to_string(),
+                detail: String::new(),
+                kind,
+                range: perl_position_tracking::WireRange {
+                    start: perl_position_tracking::WirePosition { line: 0, character: 0 },
+                    end: perl_position_tracking::WirePosition { line: 1, character: 6 },
+                },
+                selection_range: perl_position_tracking::WireRange {
+                    start: perl_position_tracking::WirePosition { line: 0, character: 4 },
+                    end: perl_position_tracking::WirePosition { line: 0, character: 8 },
+                },
+                children: Vec::new(),
+                sort_priority: CALLABLE_DOCUMENT_SYMBOL_PRIORITY,
+            },
+            start: 0,
+            end: 20,
+            extent: (0, 20),
+            container: false,
+        };
+        // LSP SymbolKind values: 7 = Property, 12 = Function.
+        let pending = vec![Some(tied(12)), Some(tied(7))];
+        let mut forward = vec![0, 1];
+        sort_pending_indices(&mut forward, &pending);
+        assert_eq!(forward, vec![1usize, 0], "kind 7 (Property) must precede kind 12 (Function)");
+        let mut reversed = vec![1usize, 0];
+        sort_pending_indices(&mut reversed, &pending);
+        assert_eq!(
+            reversed,
+            vec![1usize, 0],
+            "the `kind` tiebreak, not the input order, must decide a full-key tie"
+        );
     }
 
     /// Review regression (#18184): `use EV` synthesizes a framework class
