@@ -37,7 +37,11 @@ impl DebugAdapter {
         let mut installed = HashSet::new();
         let mut ambiguous = false;
         let mut cleanup_succeeded = true;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Select the aggregate policy window once. Re-expanding each remaining
+        // acknowledgement under coverage would replenish the budget after a
+        // slow prefix instead of sharing it across the installation.
+        let deadline =
+            Instant::now() + Duration::from_millis(self.framed_query_timeout_budget_ms(5_000));
         for record in records {
             if !record.verified
                 || record.condition.is_some()
@@ -476,8 +480,17 @@ mod source_boundary_tests {
         }
     }
 
-    #[test]
-    fn source_breakpoint_installation_uses_one_aggregate_timeout() -> Result<(), Box<dyn Error>> {
+    struct SourceBreakpointTimeoutFixture {
+        _root: tempfile::TempDir,
+        adapter: DebugAdapter,
+        source_path: PathBuf,
+        records: Vec<BreakpointRecord>,
+    }
+
+    fn source_breakpoint_timeout_fixture(
+        child: std::process::Child,
+        unscaled: bool,
+    ) -> Result<SourceBreakpointTimeoutFixture, Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let source = root.path().join("aggregate_timeout.pl");
         let source_contents =
@@ -486,13 +499,8 @@ mod source_boundary_tests {
         let source_path = canonical_fixture(&source)?;
         let source_text = source_path.to_str().ok_or("source path is not UTF-8")?;
 
-        let child = Command::new("perl")
-            .args(["-e", "sleep 30"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let adapter = DebugAdapter::new();
+        let mut adapter = DebugAdapter::new();
+        adapter.unscaled_debugger_query_timeouts_for_test = unscaled;
         adapter.set_workspace_root(canonical_fixture(root.path())?);
         let digest =
             perl_source_identity::ContentDigest::of_bytes(source_contents.as_bytes()).to_string();
@@ -514,31 +522,41 @@ mod source_boundary_tests {
         });
         adapter.operation_broker.open_session();
 
-        let records = (1..=20)
-            .map(|line| BreakpointRecord {
-                id: line,
-                line,
-                column: None,
-                condition: None,
-                hit_condition: None,
-                log_message: None,
-                hit_count: 0,
-                verified: true,
-                message: None,
-            })
-            .collect::<Vec<_>>();
+        let args = serde_json::from_value(json!({
+            "source": {"path": source_text},
+            "breakpoints": (1..=20).map(|line| json!({"line": line})).collect::<Vec<_>>()
+        }))?;
+        adapter.breakpoints.set_breakpoints(&args);
+        let records = adapter.breakpoints.get_breakpoints(source_text);
+        require(
+            records.len() == 20 && records.iter().all(|record| record.verified),
+            "aggregate fixture requires twenty actual valid store records",
+        )?;
+        Ok(SourceBreakpointTimeoutFixture { _root: root, adapter, source_path, records })
+    }
+
+    #[test]
+    fn source_breakpoint_installation_uses_one_aggregate_timeout() -> Result<(), Box<dyn Error>> {
+        let child = Command::new("perl")
+            .args(["-e", "sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let fixture = source_breakpoint_timeout_fixture(child, false)?;
+        let adapter = &fixture.adapter;
+        let source_text = fixture.source_path.to_str().ok_or("source path is not UTF-8")?;
         let started = Instant::now();
-        let installed = adapter.install_stored_source_breakpoints(source_text, &records);
+        let installed = adapter.install_stored_source_breakpoints(source_text, &fixture.records);
         let elapsed = started.elapsed();
         require(
             installed.installed.is_empty(),
             "a nonresponding engine must not install breakpoints",
         )?;
         require(installed.ambiguous, "a nonresponding engine must invalidate the session")?;
-        // The aggregate installation deadline is 5s, but each framed
-        // acknowledgement window rides `debugger_timeout_budget_ms`, which
-        // coverage instrumentation clamps to >=15s (#18348). Keep the
-        // one-budget ceiling relative to that effective window: plain runs
+        // The aggregate policy window is selected once: 5s normally and
+        // 15s under coverage (#18348). Keep the one-budget ceiling relative
+        // to that effective window: plain runs
         // stay tight (5s window + 3s slack = 8s), instrumented runs assert
         // against their clamped budget with the same slack.
         let ceiling = DebugAdapter::framed_query_window_for_test(5_000) + Duration::from_secs(3);
@@ -553,6 +571,99 @@ mod source_boundary_tests {
             .as_ref()
             .map(|session| session.state.clone());
         require_equal(state, None, "an ambiguous installation must clear the active session")?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_breakpoint_slow_prefix_uses_remaining_aggregate_budget() -> Result<(), Box<dyn Error>>
+    {
+        assert_slow_prefix_uses_remaining_budget(true, Duration::from_secs(8))
+    }
+
+    #[test]
+    fn source_breakpoint_slow_prefix_uses_effective_aggregate_budget() -> Result<(), Box<dyn Error>>
+    {
+        let ceiling = DebugAdapter::framed_query_window_for_test(5_000) + Duration::from_secs(3);
+        assert_slow_prefix_uses_remaining_budget(false, ceiling)
+    }
+
+    fn assert_slow_prefix_uses_remaining_budget(
+        unscaled: bool,
+        ceiling: Duration,
+    ) -> Result<(), Box<dyn Error>> {
+        let child = Command::new("perl")
+            .args([
+                "-e",
+                r#"
+                select STDERR; $|=1; select STDOUT; $|=1;
+                my $round = 0;
+                print STDERR "BP_PREFIX_READY\n";
+                while (<STDIN>) {
+                    if (/DAP_BEGIN_(\d+)/) {
+                        ++$round;
+                        print STDERR "DAP_BEGIN_$1\n";
+                    } elsif (/DB::break_on_filename_line/ && $round <= 2) {
+                        select undef, undef, undef, 2;
+                        print STDERR "DAP_BP:31\n";
+                    } elsif (/DAP_END_(\d+)/ && $round <= 2) {
+                        print STDERR "DAP_END_$1\n";
+                    }
+                }
+            "#,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        // This control measures the explicit five-second aggregate contract;
+        // the default-policy test above separately covers coverage scaling.
+        let fixture = source_breakpoint_timeout_fixture(child, unscaled)?;
+        let adapter = &fixture.adapter;
+        adapter.start_output_reader(PathBuf::from("."));
+        let startup_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if adapter
+                .recent_output
+                .lock()
+                .map_err(|_| "reader output lock poisoned")?
+                .lines
+                .iter()
+                .any(|line| line.normalized == "BP_PREFIX_READY")
+            {
+                break;
+            }
+            require(Instant::now() < startup_deadline, "slow-prefix child did not become ready")?;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let source_text = fixture.source_path.to_str().ok_or("source path is not UTF-8")?;
+        let started = Instant::now();
+        let installed = adapter.install_stored_source_breakpoints(source_text, &fixture.records);
+        let elapsed = started.elapsed();
+        let expected = fixture.records.iter().take(2).map(|record| record.id).collect();
+        require_equal(
+            adapter.debugger_query_count_for_test(),
+            3,
+            "the silent suffix must actually be attempted",
+        )?;
+        eprintln!("slow-prefix proof: attempts=3, acknowledged=2, elapsed={elapsed:?}");
+        require_equal(
+            installed.installed,
+            expected,
+            "both slow prefix acknowledgements must commit",
+        )?;
+        require(installed.ambiguous, "the third silent acknowledgement must be ambiguous")?;
+        require(
+            elapsed >= Duration::from_secs(4),
+            "the fixture must consume its slow acknowledged prefix",
+        )?;
+        require(
+            elapsed < ceiling,
+            &format!("slow prefix renewed an aggregate budget: {elapsed:?}"),
+        )?;
+        require(
+            adapter.session.lock().map_err(|_| "session lock poisoned")?.is_none(),
+            "ambiguous suffix must clear the active session",
+        )?;
         Ok(())
     }
 

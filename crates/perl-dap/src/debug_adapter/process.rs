@@ -7400,15 +7400,37 @@ mod tests {
         Ok(())
     }
 
-    fn spawn_reader_fixture_child(mode: &str) -> Result<super::Child, String> {
-        std::process::Command::new("perl")
+    fn spawn_reader_fixture_child(mode: &str) -> Result<(super::Child, String), String> {
+        spawn_reader_fixture_child_with_release(mode, None)
+    }
+
+    fn spawn_reader_fixture_child_with_release(
+        mode: &str,
+        release: Option<&std::path::Path>,
+    ) -> Result<(super::Child, String), String> {
+        static NEXT_READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let ready = format!(
+            "READER_READY_{}",
+            NEXT_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let child = std::process::Command::new("perl")
                 .arg("-e")
                 .arg(r##"
-                    my $mode = shift; my $round = 0; my $active;
+                    my $mode = shift; my $ready = shift; my $release = shift;
+                    my $round = 0; my $active;
                     select STDERR; $|=1; select STDOUT; $|=1;
+                    if ($mode eq 'startup_delayed') {
+                        select undef, undef, undef, 0.9;
+                        $mode = 'valid';
+                    }
+                    print STDERR "$ready\n";
                     while (<STDIN>) {
                         if (/DAP_BEGIN_(\d+)/) {
                             ++$round; $active = $round == 1 ? $mode : 'valid';
+                            if ($active eq 'held_begin') {
+                                print STDERR "READER_HELD_BEGIN\n";
+                                select undef, undef, undef, 0.002 while !-e $release;
+                            }
                             select undef, undef, undef, 0.9 if $active eq 'late_begin';
                             print STDERR "DAP_BEGIN_$1\n";
                         } elsif (/^T/) {
@@ -7416,7 +7438,7 @@ mod tests {
                                 print STDERR q{$ = main::run($value, [1, 2], "a,b") called from file `script.pl' line 7}, "\n";
                             } elsif ($active eq 'internal') {
                                 print STDERR "# 0 DB::DB at /tmp/perl5db.pl line 8\n";
-                            } elsif ($active eq 'partial' || $active eq 'late') {
+                            } elsif ($active eq 'partial' || $active eq 'late' || $active eq 'held_begin') {
                                 print STDERR "main::(/tmp/poison.pl:9):\n";
                             } elsif ($active eq 'overflow') {
                                 print STDERR "main::(/tmp/poison.pl:9):\n" for 1..2049;
@@ -7434,15 +7456,35 @@ mod tests {
                     }
                 "##)
                 .arg(mode)
+                .arg(&ready)
+                .arg(release.unwrap_or_else(|| std::path::Path::new("")))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| format!("failed to spawn reader fixture: {error}"))
+                .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        Ok((child, ready))
     }
 
     fn reader_stack_fixture(mode: &str) -> Result<Arc<DebugAdapter>, String> {
-        let adapter = Arc::new(DebugAdapter::new());
+        reader_stack_fixture_with_unscaled_budget(mode, false)
+    }
+
+    fn reader_stack_fixture_with_unscaled_budget(
+        mode: &str,
+        unscaled: bool,
+    ) -> Result<Arc<DebugAdapter>, String> {
+        reader_stack_fixture_with_release(mode, unscaled, None)
+    }
+
+    fn reader_stack_fixture_with_release(
+        mode: &str,
+        unscaled: bool,
+        release: Option<&std::path::Path>,
+    ) -> Result<Arc<DebugAdapter>, String> {
+        let mut adapter = DebugAdapter::new();
+        adapter.unscaled_debugger_query_timeouts_for_test = unscaled;
+        let adapter = Arc::new(adapter);
         adapter.seed_stopped_session_with_frames_for_test(vec![super::StackFrame {
             id: 1,
             name: "sentinel".to_string(),
@@ -7457,16 +7499,21 @@ mod tests {
             end_column: None,
         }]);
         adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+        let ready;
         {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
             let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
             session.stopped_generation = 1;
-            let child = spawn_reader_fixture_child(mode)?;
+            let (child, child_ready) = spawn_reader_fixture_child_with_release(mode, release)?;
+            ready = child_ready;
             let mut previous = std::mem::replace(&mut session.process, child);
             let _ = previous.kill();
             previous.wait().map_err(|error| format!("failed to reap seed process: {error}"))?;
         }
         adapter.start_output_reader(PathBuf::from("."));
+        // Spawn success does not establish interpreter startup. Start each
+        // unchanged query deadline only after this child's reader is ready.
+        wait_for_reader_barrier(&adapter, &ready)?;
         // Drop owns bounded child cleanup on both success and every error path.
         Ok(adapter)
     }
@@ -7555,6 +7602,29 @@ mod tests {
             return Err("in-window late payload kept the sentinel arguments".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn framed_reader_startup_precedes_query_deadline() -> Result<(), String> {
+        // Startup exceeds the unchanged 600ms query budget. Readiness must
+        // absorb it before the query; query latency still remains bounded.
+        let adapter = reader_stack_fixture_with_unscaled_budget("startup_delayed", true)?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        assert_reader_stack(&adapter, response, "main::run", 7, &["$value", "[1, 2]", "\"a,b\""])
+    }
+
+    #[test]
+    fn framed_reader_rejects_late_payload_with_explicit_query_budget() -> Result<(), String> {
+        // This adversary must remain late even when the default production
+        // policy expands query windows under coverage. Other reader controls
+        // retain the default policy and exercise in-window acceptance.
+        let adapter = reader_stack_fixture_with_unscaled_budget("late", true)?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        wait_for_reader_barrier(&adapter, "READER_DONE_1")?;
+        assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
+        let recovered = adapter.handle_stack_trace(2, 2, Some(json!({"threadId": 1})));
+        wait_for_reader_barrier(&adapter, "READER_DONE_2")?;
+        assert_reader_stack(&adapter, recovered, "main::run", 7, &["$value", "[1, 2]", "\"a,b\""])
     }
 
     #[test]
@@ -7659,18 +7729,21 @@ mod tests {
 
     #[test]
     fn framed_reader_late_begin_cannot_mutate_replacement_session() -> Result<(), String> {
-        let adapter = reader_stack_fixture("late_begin")?;
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let release = root.path().join("release-old-reader");
+        let adapter = reader_stack_fixture_with_release("held_begin", true, Some(&release))?;
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        wait_for_reader_barrier(&adapter, "READER_HELD_BEGIN")?;
         assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
         adapter.begin_session_generation();
-        let mut old_child = {
+        let (mut old_child, ready) = {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_replacement");
             let session = guard.as_mut().ok_or("missing old session")?;
-            let child = spawn_reader_fixture_child("valid")?;
+            let (child, ready) = spawn_reader_fixture_child("valid")?;
             session.stack_frames.first_mut().ok_or("missing old frame")?.name =
                 "replacement".to_string();
             session.stack_frame_arguments.insert(1, vec!["replacement_arg".to_string()]);
-            std::mem::replace(&mut session.process, child)
+            (std::mem::replace(&mut session.process, child), ready)
         };
         adapter.operation_broker.open_session();
         adapter.start_output_reader(PathBuf::from("."));
@@ -7679,6 +7752,15 @@ mod tests {
         // must leave the replacement's authorities intact.
         drop(old_child.stdin.take());
         let result = (|| {
+            // The unique marker prevents the previous child's startup from
+            // satisfying replacement readiness under concurrent host load.
+            wait_for_reader_barrier(&adapter, &ready)?;
+            // The old child cannot emit its begin marker or observe EOF until
+            // the replacement process is installed and its own reader ready.
+            if old_child.try_wait().map_err(|error| error.to_string())?.is_some() {
+                return Err("old reader exited before post-replacement release".to_string());
+            }
+            std::fs::write(&release, b"release").map_err(|error| error.to_string())?;
             if !DebugAdapter::wait_for_child_exit(&mut old_child, Duration::from_secs(5)) {
                 return Err("old reader fixture failed to finish delayed output".to_string());
             }

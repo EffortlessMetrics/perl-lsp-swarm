@@ -221,6 +221,9 @@ pub struct DebugAdapter {
     /// Test-only fault injection for exercising retained cleanup ownership.
     #[cfg(test)]
     cleanup_failure_for_test: Arc<AtomicBool>,
+    /// Synthetic debugger fixtures exercise explicit deadlines independently of coverage.
+    #[cfg(test)]
+    unscaled_debugger_query_timeouts_for_test: bool,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
     /// Whether the explicit `repl` context may execute side-effectful Perl.
@@ -348,6 +351,8 @@ impl DebugAdapter {
             event_drain: sync_utils::EventDrainLatch::default(),
             #[cfg(test)]
             cleanup_failure_for_test: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            unscaled_debugger_query_timeouts_for_test: false,
             initialized: Arc::new(AtomicBool::new(false)),
             repl_trust: ReplTrustPolicy::default(),
             reload_route: Arc::new(Mutex::new(reload_route::ReloadRouteState::default())),
@@ -764,9 +769,8 @@ impl DebugAdapter {
             // will establish the real running mode afterward.
             let prior_state = session.state.clone();
             session.state = DebugState::Stopped;
-            let timeout_ms = timeout.as_millis().try_into().unwrap_or(u64::MAX);
             let (operation, begin, end) =
-                match self.send_framed_debugger_query(stdin, &[command], timeout_ms) {
+                match self.send_framed_debugger_query_with_budget(stdin, &[command], timeout) {
                     Ok(query) => query,
                     Err(error) => {
                         session.state = prior_state;
@@ -907,6 +911,19 @@ impl DebugAdapter {
         self.send_framed_debugger_query_bound(stdin, commands, timeout_ms, None, None)
     }
 
+    /// Submit a duration already selected by an enclosing aggregate deadline.
+    /// Applying the normal query floor again would replenish that deadline.
+    fn send_framed_debugger_query_with_budget(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        budget: Duration,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_budget(
+            stdin, commands, budget, None, None, None, None,
+        )
+    }
+
     fn send_framed_debugger_query_bound(
         &self,
         stdin: &mut impl Write,
@@ -956,6 +973,27 @@ impl DebugAdapter {
         request_seq: Option<i64>,
         cancellation: Option<operation_broker::CancellationToken>,
     ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_budget(
+            stdin,
+            commands,
+            Duration::from_millis(self.framed_query_timeout_budget_ms(timeout_ms)),
+            suspension_generation,
+            expected_session_generation,
+            request_seq,
+            cancellation,
+        )
+    }
+
+    fn send_framed_debugger_query_bound_with_budget(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        budget: Duration,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+        request_seq: Option<i64>,
+        cancellation: Option<operation_broker::CancellationToken>,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
         self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
         let cancellation = cancellation
             .or_else(|| request_seq.map(|_| operation_broker::CancellationToken::new()));
@@ -969,7 +1007,7 @@ impl DebugAdapter {
                 .unwrap_or_else(|| self.operation_broker.current_session_generation()),
             suspension_generation: suspension_generation
                 .map(operation_broker::SuspensionGeneration::from_u64),
-            timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
+            timeout: budget,
             cancellation,
         };
         let operation = self
@@ -1035,7 +1073,7 @@ impl DebugAdapter {
             class: operation_broker::OperationClass::Query,
             session_generation: self.operation_broker.current_session_generation(),
             suspension_generation: None,
-            timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
+            timeout: Duration::from_millis(self.framed_query_timeout_budget_ms(timeout_ms)),
             cancellation: None,
         };
         let operation = match self.operation_broker.submit(spec) {
@@ -1099,6 +1137,14 @@ impl DebugAdapter {
                 None
             }
         }
+    }
+
+    fn framed_query_timeout_budget_ms(&self, timeout_ms: u64) -> u64 {
+        #[cfg(test)]
+        if self.unscaled_debugger_query_timeouts_for_test {
+            return timeout_ms.max(DEBUGGER_QUERY_WAIT_MS);
+        }
+        Self::debugger_timeout_budget_ms(timeout_ms)
     }
 
     /// Expand debugger query budgets in heavily instrumented environments.
@@ -1380,6 +1426,57 @@ pub(super) enum EngineBreakpointAcknowledgeError {
 fn engine_breakpoint_acknowledged(lines: &[String]) -> bool {
     lines.iter().any(|line| line.trim().trim_matches('"') == "DAP_BP:31")
 }
+#[cfg(test)]
+mod framed_query_budget_tests {
+    use super::DebugAdapter;
+    use std::time::Duration;
+
+    #[test]
+    fn remaining_query_budget_is_not_rescaled() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.operation_broker.open_session();
+        let mut transport = Vec::new();
+        let (operation, _, _) = adapter.send_framed_debugger_query_with_budget(
+            &mut transport,
+            &["T".to_string()],
+            Duration::from_millis(1),
+        )?;
+        let exact = operation.timeout == Duration::from_millis(1);
+        adapter.operation_broker.retire_after_write_failure(operation.id);
+        if !exact {
+            return Err("remaining aggregate budget was rescaled".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn default_and_explicit_query_windows_match_independent_expectations() -> Result<(), String> {
+        let coverage_marker = std::env::var_os("LLVM_PROFILE_FILE").is_some()
+            || std::env::var_os("CARGO_LLVM_COV").is_some();
+        let mut adapter = DebugAdapter::new();
+        for base in [600, 5_000] {
+            // Independent literal expectations catch a changed production
+            // policy even when the adaptive fixture helper changes with it.
+            let expected = if coverage_marker { 15_000 } else { base };
+            if adapter.framed_query_timeout_budget_ms(base) != expected
+                || DebugAdapter::framed_query_window_for_test(base)
+                    != Duration::from_millis(expected)
+            {
+                return Err(format!(
+                    "unexpected default query window for {base}: expected {expected}"
+                ));
+            }
+        }
+        adapter.unscaled_debugger_query_timeouts_for_test = true;
+        if adapter.framed_query_timeout_budget_ms(600) != 600
+            || adapter.framed_query_timeout_budget_ms(5_000) != 5_000
+        {
+            return Err("explicit fixture query budgets changed".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
