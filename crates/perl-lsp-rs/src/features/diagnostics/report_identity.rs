@@ -640,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn rule_catalog_version_reaches_the_result_id() {
+    fn rule_catalog_version_reaches_the_result_id() -> Result<(), NotReusable> {
         // The version only invalidates a cached report if it reaches the
         // composed result ID. Compare final IDs from the production
         // composition: the current versions must reproduce the `compose`
@@ -648,26 +648,24 @@ mod tests {
         // pre-bump client is never told `unchanged`.
         let context = context_with(Some(ROOT_A));
         let subject = subject_for(&context, URI_A, CONTENT);
-        let baseline = subject.compose().ok().unwrap();
+        let baseline = subject.compose()?;
         assert_eq!(
             baseline,
-            subject.compose_with_versions(current_schema_versions()).ok().unwrap(),
+            subject.compose_with_versions(current_schema_versions())?,
             "the current versions must reproduce the composed ID"
         );
         assert_ne!(
             baseline,
-            subject
-                .compose_with_versions(DiagnosticResultSchemaVersions::new(
-                    RULE_CATALOG_SCHEMA_VERSION + 1,
-                    CRITIC_IDENTITY_SCHEMA_VERSION,
-                    SUPPRESSION_CONTRACT_SCHEMA_VERSION,
-                    PROJECTION_WIRE_SCHEMA_VERSION,
-                    REMEDIATION_WIRE_SCHEMA_VERSION,
-                ))
-                .ok()
-                .unwrap(),
+            subject.compose_with_versions(DiagnosticResultSchemaVersions::new(
+                RULE_CATALOG_SCHEMA_VERSION + 1,
+                CRITIC_IDENTITY_SCHEMA_VERSION,
+                SUPPRESSION_CONTRACT_SCHEMA_VERSION,
+                PROJECTION_WIRE_SCHEMA_VERSION,
+                REMEDIATION_WIRE_SCHEMA_VERSION,
+            ))?,
             "moving the rule-catalog version must move the result ID"
         );
+        Ok(())
     }
 
     #[test]
