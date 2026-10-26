@@ -3640,7 +3640,18 @@ mod tests {
             .as_str()
             .ok_or("initial lifecycle result ID missing")?
             .to_string();
-        assert!(initial_item.to_string().contains("PL900"));
+        let initial_diagnostics =
+            initial_item["items"].as_array().ok_or("initial lifecycle diagnostics missing")?;
+        assert!(
+            initial_diagnostics.iter().any(|diagnostic| {
+                diagnostic["code"] == "PL900"
+                    && diagnostic["message"].as_str().is_some_and(|message| {
+                        message.contains("subroutine signatures")
+                            && message.contains("target from project [perl].version")
+                    })
+            }),
+            "initial configuration must supply the signature's project fallback: {initial_item}"
+        );
 
         std::fs::write(&config_path, "[perl]\nversion = \"5.20.1\"\n")?;
         server.load_and_apply_project_config();
@@ -3699,7 +3710,28 @@ mod tests {
             .as_array()
             .and_then(|items| items.first())
             .ok_or("absent lifecycle item missing")?;
-        assert!(!absent_item.to_string().contains("PL900"));
+        assert_eq!(absent_item["kind"], "full", "config removal must recompute the report");
+        assert_ne!(
+            absent_item["resultId"].as_str().ok_or("absent lifecycle result ID missing")?,
+            malformed_id,
+            "config removal must invalidate the malformed-config report identity"
+        );
+        let absent_diagnostics =
+            absent_item["items"].as_array().ok_or("absent lifecycle diagnostics missing")?;
+        let absent_version_diagnostics: Vec<_> =
+            absent_diagnostics.iter().filter(|diagnostic| diagnostic["code"] == "PL900").collect();
+        assert_eq!(
+            absent_version_diagnostics.len(),
+            1,
+            "config removal must retain exactly the versionless-signature PL900: {absent_item}"
+        );
+        assert_eq!(
+            absent_version_diagnostics[0]["message"],
+            "'subroutine signatures' requires the 'signatures' feature, which is not \
+             enabled (no Perl version declared)",
+            "the remaining PL900 must describe the undeclared signature, with no stale \
+             project target or invalid-config diagnostic: {absent_item}"
+        );
         Ok(())
     }
 
