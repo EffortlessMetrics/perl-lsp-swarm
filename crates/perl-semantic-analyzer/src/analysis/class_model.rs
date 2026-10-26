@@ -295,8 +295,11 @@ pub struct ClassModel {
 ///   one. Blindly unioning the lists would invent parents Perl no longer
 ///   dispatches through. A segment that declares no ancestry carries no
 ///   decision and leaves the prior value intact.
-/// - The same rule applies to `with`: a segment that consumes no role leaves
-///   the prior composition alone, and an explicit later `with` replaces it.
+/// - `with` composes cumulatively: a segment that consumes no role leaves the
+///   prior composition alone, and a later `with` unions its roles into the
+///   composition in first-seen order without duplicates. Role::Tiny and Moose
+///   treat successive `with` statements in one package as composing every
+///   named role, so the merged model must keep the earlier roles' candidates.
 /// - A reopen may redefine a method, so declaration order stays authoritative
 ///   and the later definition wins.
 /// - An explicit `use mro` can reset an earlier one; a silent reopen cannot.
@@ -336,8 +339,14 @@ pub fn merge_reopened_class_models(models: &[ClassModel]) -> Vec<ClassModel> {
             // this merge, which consumes per-segment builder output.
             existing.parents_explicit = true;
         }
-        if !model.roles.is_empty() {
-            existing.roles = model.roles.clone();
+        // Perl role composition is cumulative across `with` statements in one
+        // package (#16853 review): a reopened segment's roles join the
+        // composition instead of replacing it. Same-name method conflicts are
+        // already resolved by the later-declaration method rule below.
+        for role in &model.roles {
+            if !existing.roles.contains(role) {
+                existing.roles.push(role.clone());
+            }
         }
 
         for method in &model.methods {
@@ -2288,7 +2297,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_reopened_class_models_later_explicit_role_replaces_earlier() {
+    fn merge_reopened_class_models_later_explicit_role_unions_with_earlier() {
         let source = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
                      \npackage Other;\nuse Moo::Role;\nsub other_method { 1 }\n\
                      \npackage User;\nuse Moo;\nwith 'Printable';\n\
@@ -2299,8 +2308,9 @@ mod tests {
         let user = merged_model(&models, "User");
         assert_eq!(
             user.roles,
-            vec!["Other".to_string()],
-            "a later explicit `with` must supersede the earlier role, not union with it"
+            vec!["Printable".to_string(), "Other".to_string()],
+            "successive `with` statements compose cumulatively, so the merged model must \
+             keep every composed role in first-seen order without duplicates"
         );
     }
 

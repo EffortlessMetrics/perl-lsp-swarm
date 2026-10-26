@@ -3155,7 +3155,7 @@ my %config = (key => "value");
     }
 
     #[test]
-    fn test_reopened_package_later_ancestry_replaces_parents_and_roles()
+    fn test_reopened_package_later_ancestry_replaces_parents_and_unions_roles()
     -> Result<(), Box<dyn std::error::Error>> {
         let code = concat!(
             "package OldParent;\n",
@@ -3188,7 +3188,9 @@ my %config = (key => "value");
             .find(|model| model.name == "Child")
             .ok_or("Child model not found")?;
         assert_eq!(child.parents, vec!["NewParent"]);
-        assert_eq!(child.roles, vec!["NewRole"]);
+        // Role composition is cumulative across successive `with` statements
+        // (Role::Tiny/Moose semantics), unlike explicit ancestry replacement.
+        assert_eq!(child.roles, vec!["OldRole", "NewRole"]);
 
         let offset = modifier_target_offset(code, "before 'save'", "save")
             .ok_or("modifier target not found")?;

@@ -3100,8 +3100,12 @@ fn indexed_package_model_at(
     let Ok(ast) = parser.parse() else {
         return None;
     };
-    perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-        .build(&ast)
+    // A persisted document may reopen the package: select from the merged
+    // ancestry-and-method view so later segments' role edges survive, matching
+    // the current-document seam (#16853). A first-raw-segment selection drops a
+    // reopened role's later compositions from cross-file completion.
+    let models = perl_semantic_analyzer::class_model::ClassModelBuilder::new().build(&ast);
+    perl_semantic_analyzer::class_model::merge_reopened_class_models(&models)
         .into_iter()
         .find(|model| model.name == pkg)
 }
@@ -3577,16 +3581,16 @@ mod reopened_consumer_source_facts_tests {
     }
 
     #[test]
-    fn explicit_ancestry_reopen_replaces_rather_than_unions() {
+    fn explicit_role_reopen_unions_cumulative_compositions() {
         let names = collected(EXPLICIT_REOPEN, "User");
         assert!(
             names.contains(&"other_method".to_string()),
             "the latest explicit role must be offered; got {names:?}"
         );
         assert!(
-            !names.contains(&"stringify".to_string()),
-            "a later explicit ancestry declaration must supersede, not union, the earlier role; \
-             got {names:?}"
+            names.contains(&"stringify".to_string()),
+            "successive `with` statements compose cumulatively, so the earlier role's \
+             candidates must survive the explicit reopen; got {names:?}"
         );
     }
 
@@ -3635,6 +3639,56 @@ mod reopened_consumer_source_facts_tests {
             names.contains(&"buffered_method".to_string())
                 && names.contains(&"reset_method".to_string()),
             "both reopened segments' own methods must still be offered; got {names:?}"
+        );
+    }
+
+    /// Cross-file fallback regression (#16853 review): a role document that
+    /// reopens itself to compose another role must contribute the later
+    /// segment's composition when the consumer's facts are read from the
+    /// index. The edited buffer is empty and indexes nothing it edits, so
+    /// every fact flows through `load_source_package_facts`'s indexed
+    /// fallback, which previously selected the first raw segment model and
+    /// dropped the reopened segment's `with`.
+    #[test]
+    fn indexed_role_reopen_surfaces_later_composition_from_the_fallback() {
+        use perl_tdd_support::must;
+
+        let index = WorkspaceIndex::new();
+
+        let printable_uri = must(url::Url::parse("file:///workspace/Printable.pm"));
+        must(
+            index.index_initial_file(
+                printable_uri,
+                "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n1;\n\
+             \npackage Printable;\nuse Moo::Role;\nwith 'Other';\n1;\n"
+                    .to_string(),
+            ),
+        );
+
+        let other_uri = must(url::Url::parse("file:///workspace/Other.pm"));
+        must(index.index_initial_file(
+            other_uri,
+            "package Other;\nuse Moo::Role;\nsub other_method { 1 }\n1;\n".to_string(),
+        ));
+
+        let consumer_uri = must(url::Url::parse("file:///workspace/User.pm"));
+        must(index.index_initial_file(
+            consumer_uri,
+            "package User;\nuse Moo;\nwith 'Printable';\n1;\n".to_string(),
+        ));
+
+        // Empty source and empty document identity: no current-document facts
+        // exist, so the indexed fallback is the only supplier.
+        let members = collect_all_package_members_with_source(&index, "User", "", "");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"stringify"),
+            "the indexed role's own method must stay offered; got {names:?}"
+        );
+        assert!(
+            names.contains(&"other_method"),
+            "a role reopened to compose another role must keep the later composition's \
+             candidates in indexed completion; got {names:?}"
         );
     }
 }
