@@ -42,8 +42,30 @@ impl<'a> Parser<'a> {
         let pattern_start = geometry.pattern.range.start;
         let has_embedded_code = validator.find_code_execution(pattern, pattern_start).is_some();
         let nested_quantifier = validator.find_nested_quantifier(pattern, pattern_start);
-        let quantifier_follows_nothing =
-            validator.find_quantifier_follows_nothing(pattern, pattern_start);
+        // The retained scan analyzes this body with the operator's actual
+        // suffix modifiers; the legacy scan must do the same for this
+        // diagnostic, because modifier state decides what is an atom
+        // (under `/x`, ignored whitespace before a quantifier leaves it
+        // following nothing). The profile is unknown here, matching the
+        // compatibility projection used elsewhere on this path.
+        let effective_modifiers = crate::engine::regex_validator::analyzer::ModifierSequence::new(
+            geometry.modifiers.text.clone(),
+            geometry.modifiers.range.start,
+        )
+        .map(|sequence| {
+            crate::engine::regex_validator::RegexAnalyzer::analyze_modifiers(
+                crate::syntax::regex_analysis::map_operator(geometry.operator),
+                sequence,
+                crate::engine::regex_validator::analyzer::CaptureLanguageProfile::unknown().regex,
+            )
+            .effective
+        })
+        .unwrap_or_default();
+        let quantifier_follows_nothing = validator.find_quantifier_follows_nothing_with_modifiers(
+            pattern,
+            pattern_start,
+            effective_modifiers,
+        );
 
         if !has_embedded_code && nested_quantifier.is_none() && quantifier_follows_nothing.is_none()
         {

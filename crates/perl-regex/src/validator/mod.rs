@@ -141,9 +141,30 @@ impl RegexValidator {
         pattern: &str,
         start_pos: usize,
     ) -> Option<RegexFinding> {
-        self.analyze(pattern).facts.quantifier_follows_nothing.first().map(|range| RegexFinding {
-            offset: start_pos.saturating_add(range.start),
-            message: "Quantifier follows nothing in regex",
-        })
+        self.find_quantifier_follows_nothing_with_modifiers(
+            pattern,
+            start_pos,
+            EffectiveModifiers::default(),
+        )
+    }
+
+    /// Locate the first quantifier that follows nothing under explicit
+    /// effective suffix modifiers. Modifier state changes what counts as
+    /// an atom: under `/x`, unescaped whitespace and comments are ignored,
+    /// so a quantifier after them still follows nothing.
+    pub fn find_quantifier_follows_nothing_with_modifiers(
+        &self,
+        pattern: &str,
+        start_pos: usize,
+        modifiers: EffectiveModifiers,
+    ) -> Option<RegexFinding> {
+        self.analyze_with_modifiers(pattern, modifiers)
+            .facts
+            .quantifier_follows_nothing
+            .first()
+            .map(|range| RegexFinding {
+                offset: start_pos.saturating_add(range.start),
+                message: "Quantifier follows nothing in regex",
+            })
     }
 }
