@@ -64,7 +64,7 @@ fn sub_key(pkg: &str, name: &str) -> SymbolKey {
 fn index_fixture(idx: &WorkspaceIndex, uri: &str, text: &str) {
     let indexed = Url::parse(uri)
         .map_err(|err| err.to_string())
-        .and_then(|url| idx.index_file(url, text.to_string()));
+        .and_then(|url| idx.index_initial_file(url, text.to_string()));
     assert!(indexed.is_ok(), "fixture document {uri} failed to index: {:?}", indexed.err());
 }
 
