@@ -211,18 +211,22 @@ fn bench_keyword_heavy(c: &mut Criterion) {
 /// `heredoc_heavy` interleaves `<<~` heredoc blocks with `sub` declarations and
 /// ordinary code. Both opener shapes that make the prepass consult the table
 /// appear: a term-position initializer (`my $template = <<~TPL_n;`) and a
-/// callable bareword (`finish_block_n <<~CFG_n;`) whose declaration only lands
-/// *after* the terminator — the forward reference that exists only because the
-/// prepass runs two passes. Each body carries `sub`-shaped prose the scan must
-/// keep out of the table, and a declared nullary call (`counter_n << 4`) pins
-/// the left-shift control so the nullary lookup path is paid in both variants.
-/// The control keeps the same declarations and code shape with the heredoc
-/// blocks replaced by ordinary lines, so the disambiguation cost is visible as
-/// the delta between the two cases.
+/// callable bareword (`finish_block_n(<<~CFG_n, $count_n);`) whose declaration
+/// only lands *after* the call — the forward reference that exists only because
+/// the prepass runs two passes. Each body carries `sub`-shaped prose the scan
+/// must keep out of the table, and a declared nullary call (`counter_n << 4`)
+/// pins the left-shift control so the nullary lookup path is paid in both
+/// variants. The fixture is strict-clean Perl: each block hoists a top-level
+/// `my $count_n` covering the top-level, heredoc-interpolation, and
+/// `finish_block_n`-body references, and the bareword `strict` argument is
+/// quoted (#18062 review). The control keeps the same declarations and code
+/// shape with the heredoc blocks replaced by ordinary lines, so the
+/// disambiguation cost is visible as the delta between the two cases.
 fn heredoc_fixture_source(heredoc_heavy: bool) -> String {
     const BLOCKS: usize = 64;
     let mut source = String::from("use strict;\nuse warnings;\n\n");
     for i in 0..BLOCKS {
+        source.push_str(&format!("my $count{i} = {i};\n"));
         source.push_str(&format!(
             "sub render_block_{i} {{\n    my ($self, $count{i}) = @_;\n    return $count{i} * {i};\n}}\n"
         ));
@@ -234,12 +238,12 @@ fn heredoc_fixture_source(heredoc_heavy: bool) -> String {
             source.push_str(&format!("    sub fake_body_{i} {{ }}\n"));
             source.push_str(&format!("    value => $count{i}\n"));
             source.push_str(&format!("    TPL_{i}\n"));
-            source.push_str(&format!("finish_block_{i} <<~CFG_{i}, $count{i};\n"));
-            source.push_str(&format!("    mode => strict,\n    sub fake_cfg_{i} {{ }}\n"));
+            source.push_str(&format!("finish_block_{i}(<<~CFG_{i}, $count{i});\n"));
+            source.push_str(&format!("    mode => 'strict',\n    sub fake_cfg_{i} {{ }}\n"));
             source.push_str(&format!("    CFG_{i}\n"));
         } else {
             source.push_str(&format!("my $template_{i} = \"block {i}: value => $count{i}\";\n"));
-            source.push_str(&format!("finish_block_{i}(strict, $count{i});\n"));
+            source.push_str(&format!("finish_block_{i}('strict', $count{i});\n"));
         }
         source.push_str(&format!("sub finish_block_{i} {{ $count{i} + {i} }}\n"));
         source.push_str(&format!("print \"block {i} done\\n\";\n"));
