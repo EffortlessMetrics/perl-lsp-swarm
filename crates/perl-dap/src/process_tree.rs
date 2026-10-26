@@ -313,7 +313,7 @@ mod tests {
     /// kill (the mutation check's surviving grandchild, for one) still
     /// exits instead of stranding a live process on a runner.
     fn tick_loop(path: PathBuf) -> ! {
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + Duration::from_mins(2);
         loop {
             let _ = touch(&path);
             if Instant::now() >= deadline {
@@ -388,10 +388,10 @@ mod tests {
     fn linux_process_alive(pid: u32, stat: std::io::Result<String>) -> bool {
         // A killed grandchild may await its init/subreaper's reap. Signal 0
         // still succeeds for that zombie, although it cannot run.
-        if let Ok(stat) = stat {
-            if matches!(linux_process_state(pid, &stat), Some("Z" | "X")) {
-                return false;
-            }
+        if let Ok(stat) = stat
+            && matches!(linux_process_state(pid, &stat), Some("Z" | "X"))
+        {
+            return false;
         }
         // Missing, unreadable or malformed procfs is not evidence of death.
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()

@@ -7,6 +7,7 @@
 
 use perl_dap::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
 use perl_dap::{DapConfig, DapMode, DapServer};
+use perl_test_must::must_with;
 use std::time::Duration;
 
 // ── DapMode ────────────────────────────────────────────────────────
@@ -82,13 +83,13 @@ fn dap_server_without_launch_authority_still_constructs_for_management_flows() {
         launch_authority: perl_dap::LaunchAuthorityStartup::default(),
     };
     let server =
-        DapServer::new(config).expect("a server without authority inputs must still construct");
+        must_with(DapServer::new(config), "a server without authority inputs must still construct");
     assert!(server.config.launch_authority.trusted_roots.is_empty());
     assert!(server.config.launch_authority.allow_unbounded.is_none());
 }
 
 #[test]
-fn dap_server_trusted_root_that_does_not_exist_is_rejected() {
+fn dap_server_trusted_root_that_does_not_exist_is_rejected() -> Result<(), String> {
     // #8656: trusted roots are canonicalized and validated at startup.
     let missing = std::env::temp_dir().join(format!("pldap-missing-root-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&missing);
@@ -102,13 +103,14 @@ fn dap_server_trusted_root_that_does_not_exist_is_rejected() {
         },
     };
     let error = match DapServer::new(config) {
-        Ok(_) => panic!("a missing trusted root must be rejected"),
+        Ok(_) => return Err("a missing trusted root must be rejected".to_string()),
         Err(error) => error,
     };
     assert!(
         error.to_string().contains("does not exist"),
         "startup error should name the missing root; got: {error:?}"
     );
+    Ok(())
 }
 
 // ── TcpAttachConfig ────────────────────────────────────────────────

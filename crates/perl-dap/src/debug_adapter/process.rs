@@ -3947,28 +3947,32 @@ mod tests {
         LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
     };
     use crate::tcp_attach::DapEvent;
-    use perl_test_must::must_some_with;
+    use perl_test_must::{must_err, must_some_with, must_with};
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
 
     fn workspace_bound_authority(root: &std::path::Path) -> LaunchAuthority {
-        LaunchAuthority::resolve(&LaunchAuthorityStartup {
-            trusted_roots: vec![root.to_path_buf()],
-            allow_unbounded: None,
-        })
-        .expect("test authority resolution")
+        must_with(
+            LaunchAuthority::resolve(&LaunchAuthorityStartup {
+                trusted_roots: vec![root.to_path_buf()],
+                allow_unbounded: None,
+            }),
+            "test authority resolution",
+        )
     }
 
     fn unbounded_test_authority() -> LaunchAuthority {
-        LaunchAuthority::resolve(&LaunchAuthorityStartup {
-            trusted_roots: Vec::new(),
-            allow_unbounded: Some(UnboundedAcknowledgement::new(
-                LaunchAuthoritySource::CommandLine,
-                "test session",
-            )),
-        })
-        .expect("test authority resolution")
+        must_with(
+            LaunchAuthority::resolve(&LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(UnboundedAcknowledgement::new(
+                    LaunchAuthoritySource::CommandLine,
+                    "test session",
+                )),
+            }),
+            "test authority resolution",
+        )
     }
 
     /// #18027: wrong-typed launch options refuse with a typed message;
@@ -3978,44 +3982,46 @@ mod tests {
         let parse = |args: Value| DebugAdapter::parse_launch_typed_options(&args);
 
         assert_eq!(
-            parse(json!({ "stopOnEntry": "true" })).map_err(|e| e),
+            parse(json!({ "stopOnEntry": "true" })),
             Err("Invalid stopOnEntry: expected a boolean".to_string())
         );
         assert_eq!(
-            parse(json!({ "stopOnEntry": 1 })).map_err(|e| e),
+            parse(json!({ "stopOnEntry": 1 })),
             Err("Invalid stopOnEntry: expected a boolean".to_string())
         );
         assert_eq!(
-            parse(json!({ "debuggeeTimeoutSeconds": "30" })).map_err(|e| e),
+            parse(json!({ "debuggeeTimeoutSeconds": "30" })),
             Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
         );
         assert_eq!(
-            parse(json!({ "debuggeeTimeoutSeconds": -5 })).map_err(|e| e),
+            parse(json!({ "debuggeeTimeoutSeconds": -5 })),
             Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
         );
         assert_eq!(
-            parse(json!({ "env": ["A=1"] })).map_err(|e| e),
+            parse(json!({ "env": ["A=1"] })),
             Err("Invalid env: expected an object mapping names to string values".to_string())
         );
-        let env_err = parse(json!({ "env": { "SECRET_TOKEN": 42 } })).unwrap_err();
+        let env_err = must_err(parse(json!({ "env": { "SECRET_TOKEN": 42 } })));
         assert!(env_err.contains("SECRET_TOKEN"), "error names the key: {env_err}");
         assert!(!env_err.contains("42"), "error must not echo the value: {env_err}");
 
-        let (stop, timeout, env) = parse(json!({})).expect("absent options admit defaults");
+        let (stop, timeout, env) = must_with(parse(json!({})), "absent options admit defaults");
         assert!(!stop && timeout == 0 && env.is_empty());
-        let (stop, timeout, env) = parse(json!({
-            "stopOnEntry": true,
-            "debuggeeTimeoutSeconds": 30,
-            "env": { "A": "1" }
-        }))
-        .expect("well-typed options admit");
+        let (stop, timeout, env) = must_with(
+            parse(json!({
+                "stopOnEntry": true,
+                "debuggeeTimeoutSeconds": 30,
+                "env": { "A": "1" }
+            })),
+            "well-typed options admit",
+        );
         assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
     }
 
     /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
     /// any session is created or connected.
     #[test]
-    fn attach_refuses_string_stop_on_entry_before_connecting() {
+    fn attach_refuses_string_stop_on_entry_before_connecting() -> Result<(), String> {
         let adapter = DebugAdapter::new();
         let message = adapter.handle_attach(
             1,
@@ -4027,12 +4033,13 @@ mod tests {
                 assert!(!success, "malformed attach stopOnEntry must fail");
                 assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
             }
-            other => panic!("expected failed attach response, got {other:?}"),
+            other => return Err(format!("expected failed attach response, got {other:?}")),
         }
         assert!(
             lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
             "no TCP session may be created for a refused attach"
         );
+        Ok(())
     }
 
     fn launch_failure_message(response: super::DapMessage) -> Option<String> {
@@ -4099,8 +4106,10 @@ mod tests {
         let _ = adapter.handle_initialize(1, 1, None);
         let response =
             adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": "script.pl" })));
-        let message = launch_failure_message(response)
-            .expect("a launch without startup authority must be refused");
+        let message = must_some_with(
+            launch_failure_message(response),
+            "a launch without startup authority must be refused",
+        );
         assert!(
             message.contains("no startup launch authority"),
             "refusal should explain the missing authority; got: {message:?}"
@@ -4109,22 +4118,24 @@ mod tests {
 
     #[test]
     fn workspace_bound_authority_refuses_program_outside_trusted_roots() {
-        let root = tempfile::tempdir().expect("temp root");
+        let root = must_with(tempfile::tempdir(), "temp root");
         let mut adapter = DebugAdapter::new();
         adapter.set_launch_authority(workspace_bound_authority(root.path()));
         let _ = adapter.handle_initialize(1, 1, None);
 
-        let outside = tempfile::tempdir().expect("outside temp root");
+        let outside = must_with(tempfile::tempdir(), "outside temp root");
         let outside_script = outside.path().join("outside.pl");
-        std::fs::write(&outside_script, b"print 1;").expect("script");
+        must_with(std::fs::write(&outside_script, b"print 1;"), "script");
 
         let response = adapter.handle_launch(
             2,
             2,
             Some(serde_json::json!({ "program": outside_script.display().to_string() })),
         );
-        let message = launch_failure_message(response)
-            .expect("a program outside every trusted root must be refused");
+        let message = must_some_with(
+            launch_failure_message(response),
+            "a program outside every trusted root must be refused",
+        );
         assert!(
             message.contains("trusted root"),
             "refusal should mention the trusted-root boundary; got: {message:?}"
@@ -4133,14 +4144,14 @@ mod tests {
 
     #[test]
     fn launch_args_workspace_root_cannot_create_authority() {
-        let root = tempfile::tempdir().expect("temp root");
+        let root = must_with(tempfile::tempdir(), "temp root");
         let mut adapter = DebugAdapter::new();
         adapter.set_launch_authority(workspace_bound_authority(root.path()));
         let _ = adapter.handle_initialize(1, 1, None);
 
-        let outside = tempfile::tempdir().expect("outside temp root");
+        let outside = must_with(tempfile::tempdir(), "outside temp root");
         let script = outside.path().join("script.pl");
-        std::fs::write(&script, b"print 1;").expect("script");
+        must_with(std::fs::write(&script, b"print 1;"), "script");
 
         // A launch-args workspaceRoot outside the trusted roots must be
         // refused instead of becoming the launch boundary.
@@ -4152,8 +4163,10 @@ mod tests {
                 "workspaceRoot": outside.path().display().to_string(),
             })),
         );
-        let message = launch_failure_message(response)
-            .expect("a launch-args workspaceRoot cannot create authority");
+        let message = must_some_with(
+            launch_failure_message(response),
+            "a launch-args workspaceRoot cannot create authority",
+        );
         assert!(
             message.contains("trusted root"),
             "refusal should mention the trusted-root boundary; got: {message:?}"
@@ -4176,20 +4189,24 @@ mod tests {
 
     #[test]
     fn launch_authority_can_only_be_installed_once() {
-        let first_root = tempfile::tempdir().expect("first temp root");
-        let second_root = tempfile::tempdir().expect("second temp root");
+        let first_root = must_with(tempfile::tempdir(), "first temp root");
+        let second_root = must_with(tempfile::tempdir(), "second temp root");
         let adapter = DebugAdapter::new();
 
         adapter.set_launch_authority(workspace_bound_authority(first_root.path()));
         adapter.set_launch_authority(workspace_bound_authority(second_root.path()));
 
-        let (_, receipt) =
-            adapter.begin_authority_session().expect("first authority must remain installed");
-        let first = LaunchAuthority::resolve(&LaunchAuthorityStartup {
-            trusted_roots: vec![first_root.path().to_path_buf()],
-            allow_unbounded: None,
-        })
-        .expect("first authority resolution");
+        let (_, receipt) = must_some_with(
+            adapter.begin_authority_session(),
+            "first authority must remain installed",
+        );
+        let first = must_with(
+            LaunchAuthority::resolve(&LaunchAuthorityStartup {
+                trusted_roots: vec![first_root.path().to_path_buf()],
+                allow_unbounded: None,
+            }),
+            "first authority resolution",
+        );
         assert_eq!(receipt.authority_identity, first.receipt().authority_identity);
     }
 

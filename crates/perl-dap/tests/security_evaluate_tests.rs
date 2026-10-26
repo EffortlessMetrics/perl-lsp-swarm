@@ -298,14 +298,14 @@ const NON_REPL_CONTEXTS: [&str; 5] =
 /// side-effectful — so hover is asserted against that gate instead.
 const HOVER_CONTEXT: &str = "hover";
 
-fn refusal_message(response: DapMessage) -> String {
+fn refusal_message(response: DapMessage) -> Result<String, Box<dyn std::error::Error>> {
     match response {
         DapMessage::Response { command, success, message, .. } => {
             assert_eq!(command, "evaluate");
             assert!(!success, "a refused evaluate must not report success");
-            message.unwrap_or_default()
+            Ok(message.unwrap_or_default())
         }
-        other => panic!("expected Response, got {other:?}"),
+        other => Err(format!("expected Response, got {other:?}").into()),
     }
 }
 
@@ -325,7 +325,7 @@ fn side_effects_are_refused_in_every_non_repl_context() -> TestResult {
                 })),
             );
 
-            let message = refusal_message(response);
+            let message = refusal_message(response)?;
             assert!(
                 message.contains("only honored for the 'repl' evaluation context"),
                 "context {context:?} must refuse '{expression}' with the trust-boundary \
@@ -360,7 +360,7 @@ fn hover_carries_no_side_effect_authority_under_the_earlier_capability_gate() ->
             })),
         );
 
-        let message = refusal_message(response);
+        let message = refusal_message(response)?;
         assert!(
             message.contains("context 'hover' is not supported"),
             "hover must be refused by the #9573 capability gate for '{expression}', \
@@ -380,7 +380,7 @@ fn hover_carries_no_side_effect_authority_under_the_earlier_capability_gate() ->
         "evaluate",
         Some(json!({ "expression": "$my_scalar", "context": HOVER_CONTEXT })),
     );
-    let message = refusal_message(response);
+    let message = refusal_message(response)?;
     assert!(
         message.contains("context 'hover' is not supported"),
         "hover refusal must not depend on the expression being dangerous: {message}"
@@ -402,7 +402,7 @@ fn side_effects_are_refused_when_the_context_is_absent() -> TestResult {
             Some(json!({ "expression": expression, "allowSideEffects": true })),
         );
 
-        let message = refusal_message(response);
+        let message = refusal_message(response)?;
         assert!(
             message.contains("only honored for the 'repl' evaluation context"),
             "an absent context must refuse '{expression}', but got: {message}"
@@ -429,7 +429,7 @@ fn repl_context_is_matched_exactly_and_not_by_case_or_prefix() -> TestResult {
             })),
         );
 
-        let message = refusal_message(response);
+        let message = refusal_message(response)?;
         assert!(
             message.contains("only honored for the 'repl' evaluation context"),
             "near-miss context {context:?} must not be treated as the REPL, got: {message}"
@@ -465,7 +465,11 @@ fn read_oriented_contexts_still_evaluate_safe_expressions() -> TestResult {
                     "safe expression in context {context:?} must not be refused, got: {message}"
                 );
             }
-            other => panic!("expected Response for context {context:?}, got {other:?}"),
+            other => {
+                return Err(
+                    format!("expected Response for context {context:?}, got {other:?}").into()
+                );
+            }
         }
     }
 
@@ -486,7 +490,7 @@ fn screening_still_blocks_dangerous_expressions_without_the_flag() -> TestResult
             Some(json!({ "expression": "system('ls')", "context": context })),
         );
 
-        let message = refusal_message(response);
+        let message = refusal_message(response)?;
         assert!(
             !message.contains("only honored for the 'repl' evaluation context"),
             "context {context:?} without the flag must be screened, not refused for context"
@@ -522,7 +526,7 @@ fn inspection_refusals_do_not_prescribe_a_retry_that_is_always_refused() -> Test
             Some(json!({ "expression": "$x = 42", "context": context })),
         );
 
-        let message = refusal_message(response);
+        let message = refusal_message(response)?;
         assert!(
             !message.contains("allowSideEffects"),
             "context {context:?} cannot set the flag, so its refusal must not prescribe it: \
@@ -545,7 +549,7 @@ fn inspection_refusals_do_not_prescribe_a_retry_that_is_always_refused() -> Test
         "evaluate",
         Some(json!({ "expression": "$x = 42", "context": "repl" })),
     );
-    let message = refusal_message(response);
+    let message = refusal_message(response)?;
     assert!(
         message.contains("allowSideEffects"),
         "the REPL caller can set the flag, so the actionable hint must survive: {message}"
@@ -571,7 +575,7 @@ fn repl_side_effects_are_refused_when_trusted_repl_is_disabled() -> TestResult {
         })),
     );
 
-    let message = refusal_message(response);
+    let message = refusal_message(response)?;
     assert!(
         message.contains("disabled by policy"),
         "REPL-disabled policy must refuse before debugger write, got: {message}"

@@ -6,10 +6,6 @@
 //! `perl` on PATH and pinned `perl5`. The live debuggee reports `$^X`, which
 //! must identify the pinned path rather than the ambient path.
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic output; tracing is not wired into test helpers."
-)]
 #![allow(unsafe_code)] // required for std::env::set_var/remove_var in Rust 2024 (unsafe fn)
 
 mod common;

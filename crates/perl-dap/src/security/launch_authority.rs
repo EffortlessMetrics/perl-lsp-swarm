@@ -600,6 +600,7 @@ mod tests {
         LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthoritySource,
         LaunchAuthorityStartup, UnboundedAcknowledgement,
     };
+    use perl_test_must::{must_err, must_with};
     use std::path::{Path, PathBuf};
 
     #[cfg(windows)]
@@ -635,7 +636,7 @@ mod tests {
     fn make_root(name: &str) -> PathBuf {
         let path = tempfile_name(name);
         let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("test root creation");
+        must_with(std::fs::create_dir_all(&path), "test root creation");
         path
     }
 
@@ -649,7 +650,7 @@ mod tests {
 
     #[test]
     fn no_authority_configured_fails_closed() {
-        let error = LaunchAuthority::resolve(&LaunchAuthorityStartup::default()).unwrap_err();
+        let error = must_err(LaunchAuthority::resolve(&LaunchAuthorityStartup::default()));
         assert_eq!(error, LaunchAuthorityError::NoAuthorityConfigured);
     }
 
@@ -660,7 +661,7 @@ mod tests {
             trusted_roots: vec![root.clone()],
             allow_unbounded: Some(unbounded("operator")),
         };
-        let error = LaunchAuthority::resolve(&startup).unwrap_err();
+        let error = must_err(LaunchAuthority::resolve(&startup));
         assert_eq!(error, LaunchAuthorityError::AmbiguousAuthorityMode);
         cleanup(&root);
     }
@@ -670,10 +671,10 @@ mod tests {
         let root = make_root("single");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         assert_eq!(authority.mode(), LaunchAuthorityMode::WorkspaceBound);
         assert_eq!(authority.trusted_roots().len(), 1);
-        let again = LaunchAuthority::resolve(&startup).expect("resolution");
+        let again = must_with(LaunchAuthority::resolve(&startup), "resolution");
         assert_eq!(authority.identity(), again.identity());
         cleanup(&root);
     }
@@ -686,7 +687,7 @@ mod tests {
             trusted_roots: vec![first.clone(), second.clone()],
             allow_unbounded: None,
         };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         let identities: Vec<&str> =
             authority.trusted_roots().iter().map(|root| root.identity()).collect();
         let mut sorted = identities.clone();
@@ -703,17 +704,17 @@ mod tests {
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![missing.clone()], allow_unbounded: None };
         assert_eq!(
-            LaunchAuthority::resolve(&startup).unwrap_err(),
+            must_err(LaunchAuthority::resolve(&startup)),
             LaunchAuthorityError::TrustedRootNotFound { path: missing }
         );
 
         let file = tempfile_name("a-file");
         let _ = std::fs::remove_file(&file);
-        std::fs::write(&file, b"not a directory").expect("test file");
+        must_with(std::fs::write(&file, b"not a directory"), "test file");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![file.clone()], allow_unbounded: None };
         assert_eq!(
-            LaunchAuthority::resolve(&startup).unwrap_err(),
+            must_err(LaunchAuthority::resolve(&startup)),
             LaunchAuthorityError::TrustedRootNotADirectory { path: file.clone() }
         );
         let _ = std::fs::remove_file(&file);
@@ -727,7 +728,7 @@ mod tests {
             allow_unbounded: None,
         };
         assert_eq!(
-            LaunchAuthority::resolve(&startup).unwrap_err(),
+            must_err(LaunchAuthority::resolve(&startup)),
             LaunchAuthorityError::DuplicateTrustedRoot { path: root.clone() }
         );
         cleanup(&root);
@@ -773,11 +774,11 @@ mod tests {
         let target = make_root("symlink-target");
         let link = tempfile_name("symlink-link");
         let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&target, &link).expect("test symlink");
+        must_with(std::os::unix::fs::symlink(&target, &link), "test symlink");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![link.clone()], allow_unbounded: None };
         assert_eq!(
-            LaunchAuthority::resolve(&startup).unwrap_err(),
+            must_err(LaunchAuthority::resolve(&startup)),
             LaunchAuthorityError::TrustedRootSymlink { path: link.clone() }
         );
         let _ = std::fs::remove_file(&link);
@@ -791,7 +792,7 @@ mod tests {
             allow_unbounded: Some(unbounded("   ")),
         };
         assert!(matches!(
-            LaunchAuthority::resolve(&startup).unwrap_err(),
+            must_err(LaunchAuthority::resolve(&startup)),
             LaunchAuthorityError::InvalidAcknowledgement(_)
         ));
     }
@@ -802,7 +803,7 @@ mod tests {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("operator session")),
         };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         assert_eq!(authority.mode(), LaunchAuthorityMode::ExplicitUnbounded);
         let receipt = authority.receipt();
         assert_eq!(receipt.mode, "explicit_unbounded");
@@ -816,12 +817,12 @@ mod tests {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("earlier session")),
         };
-        let _ = LaunchAuthority::resolve(&unbounded_startup).expect("resolution");
+        let _ = must_with(LaunchAuthority::resolve(&unbounded_startup), "resolution");
 
         let root = make_root("later-bounded");
         let bounded_startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
-        let bounded = LaunchAuthority::resolve(&bounded_startup).expect("resolution");
+        let bounded = must_with(LaunchAuthority::resolve(&bounded_startup), "resolution");
         assert_eq!(bounded.mode(), LaunchAuthorityMode::WorkspaceBound);
         cleanup(&root);
     }
@@ -832,7 +833,7 @@ mod tests {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("operator session")),
         };
-        let mut authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let mut authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         let identity = authority.identity().to_string();
         let first = authority.begin_session();
         let second = authority.begin_session();
@@ -845,14 +846,14 @@ mod tests {
         let root = make_root("admit");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
 
         let inside = root.join("script.pl");
-        std::fs::write(&inside, b"print 1;").expect("test script");
+        must_with(std::fs::write(&inside, b"print 1;"), "test script");
         assert!(authority.admits_launch_path(&inside).is_ok());
 
         let outside = tempfile_name("outside-script");
-        std::fs::write(&outside, b"print 1;").expect("test script");
+        must_with(std::fs::write(&outside, b"print 1;"), "test script");
         assert!(authority.admits_launch_path(&outside).is_err());
         let _ = std::fs::remove_file(&outside);
         cleanup(&root);
@@ -863,7 +864,7 @@ mod tests {
         let root = make_root("retarget");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         #[cfg(windows)]
         let (original_created, original_written) = {
             use std::os::windows::fs::MetadataExt;
@@ -872,7 +873,7 @@ mod tests {
         };
         let displaced = tempfile_name("retarget-displaced");
         let _ = std::fs::remove_dir_all(&displaced);
-        std::fs::rename(&root, &displaced).expect("displace startup root");
+        must_with(std::fs::rename(&root, &displaced), "displace startup root");
         #[cfg(windows)]
         {
             use super::FilesystemIdentity;
@@ -885,9 +886,9 @@ mod tests {
                 "renaming the same directory must preserve its pinned identity"
             );
         }
-        std::fs::create_dir_all(&root).expect("replacement root");
+        must_with(std::fs::create_dir_all(&root), "replacement root");
         let replacement_program = root.join("replacement.pl");
-        std::fs::write(&replacement_program, b"print 1;").expect("replacement script");
+        must_with(std::fs::write(&replacement_program, b"print 1;"), "replacement script");
         #[cfg(windows)]
         {
             use super::FilesystemIdentity;
@@ -921,9 +922,9 @@ mod tests {
         let root = make_root("childwrite");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         let child = root.join("later.pl");
-        std::fs::write(&child, b"print 1;").expect("child script");
+        must_with(std::fs::write(&child, b"print 1;"), "child script");
         assert!(
             authority.admits_launch_path(&child).is_ok(),
             "a child written after startup must still be admitted"
@@ -938,10 +939,10 @@ mod tests {
             trusted_roots: Vec::new(),
             allow_unbounded: Some(unbounded("operator session")),
         };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         let anywhere = std::env::temp_dir().join("anywhere.pl");
         assert!(authority.admits_launch_path(&anywhere).is_ok());
-        assert_eq!(authority.narrow_launch_root(&anywhere).expect("narrow"), None);
+        assert_eq!(must_with(authority.narrow_launch_root(&anywhere), "narrow"), None);
     }
 
     #[test]
@@ -949,7 +950,7 @@ mod tests {
         let root = make_root("receipt");
         let startup =
             LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
-        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let authority = must_with(LaunchAuthority::resolve(&startup), "resolution");
         let rendered = format!("{:?}", authority.receipt());
         // The canonical directory name is unique per test run; a receipt that
         // leaked paths would contain it.

@@ -838,6 +838,10 @@ fn wait_for_process_start(pid: u32, timeout: Duration) -> io::Result<()> {
 /// the regression is intentionally skipped: the discipline is exactly the
 /// tighter bound we want the production assertion to keep.
 #[test]
+#[expect(
+    clippy::print_stderr,
+    reason = "This integration test intentionally explains its Windows-only proof when skipping on Unix."
+)]
 fn pid_publication_helpers_hold_past_configured_timeout_on_windows_hosts() -> io::Result<()> {
     if !cfg!(windows) {
         eprintln!(
