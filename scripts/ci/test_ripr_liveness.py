@@ -18,12 +18,17 @@ motivated the script: run 35487554523 on PR #16083, pending with zero jobs for
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("ripr_liveness.py")
 SPEC = importlib.util.spec_from_file_location("ripr_liveness", SCRIPT)
@@ -952,8 +957,17 @@ def recovered(*, as_of: str = "2026-09-20T05:05:00Z", **overrides) -> dict:
     return candidate
 
 
-def posted(ids: dict[str, int], head: str = HEAD) -> dict[str, dict[str, int]]:
-    return {head: ids}
+def posted(ids: dict[str, int], head: str = HEAD) -> dict:
+    records = {}
+    for external_id, check_id in ids.items():
+        identity = liveness.parse_external_id(external_id)
+        run_id, classification = identity if identity is not None else (None, None)
+        records[external_id] = [{
+            "id": check_id,
+            "conclusion": "failure" if classification == liveness.INFRA_NO_PROOF else "neutral",
+            "title": f"ripr run {run_id} alive: fixture" if classification == liveness.ALIVE else None,
+        }]
+    return {head: records}
 
 
 class RetractionTests(unittest.TestCase):
@@ -1445,91 +1459,54 @@ class ExternalIdTests(unittest.TestCase):
 
 
 class PostedChecksReadTests(unittest.TestCase):
-    """The read that supplies the memory between fires.
+    ROW = {"external_id": "ripr-liveness:1:infra-no-proof", "id": 9001,
+           "conclusion": "failure", "title": None}
 
-    ``filter=all`` and ``--paginate`` were the subject of the one defect this
-    workflow shipped: the dedup read used the endpoint's default filter, which
-    answers "is this the newest id under this name" when the question is "has
-    this id ever been posted". Those two flags are wired in the workflow; what
-    the body *means* is pinned here, because a parser that quietly accepted the
-    wrong shape would look identical to a working one.
-    """
-
-    ROW = '{"external_id": "ripr-liveness:1:infra-no-proof", "id": 9001}'
-
-    def test_a_line_per_check_run_parses_to_an_addressable_id(self) -> None:
+    def test_a_line_per_check_run_parses_to_an_addressable_state(self) -> None:
         self.assertEqual(
-            liveness.posted_checks_from_api(0, self.ROW + "\n"),
-            {"ripr-liveness:1:infra-no-proof": 9001},
+            liveness.posted_checks_from_api(0, json.dumps(self.ROW)),
+            {self.ROW["external_id"]: [{"id": 9001, "conclusion": "failure", "title": None}]},
         )
 
-    def test_paginated_output_is_one_row_per_line(self) -> None:
-        body = "\n".join(
-            [
-                '{"external_id": "ripr-liveness:1:infra-no-proof", "id": 9001}',
-                '{"external_id": "ripr-liveness:2:alive", "id": 9002}',
-                "",
-            ]
-        )
+    def test_paginated_duplicate_external_ids_retain_every_check(self) -> None:
+        second = {**self.ROW, "id": 9002, "conclusion": "neutral"}
+        body = "\n".join(json.dumps(row) for row in (self.ROW, second, self.ROW))
         self.assertEqual(
             liveness.posted_checks_from_api(0, body),
-            {
-                "ripr-liveness:1:infra-no-proof": 9001,
-                "ripr-liveness:2:alive": 9002,
-            },
+            {self.ROW["external_id"]: [
+                {"id": 9001, "conclusion": "failure", "title": None},
+                {"id": 9002, "conclusion": "neutral", "title": None},
+            ]},
         )
 
     def test_a_failed_read_is_unreadable_not_empty(self) -> None:
-        """`None` and `{}` are different answers and must not collapse.
+        for code, body in ((1, json.dumps(self.ROW)), (0, None), (0, "\n\n")):
+            with self.subTest(code=code, body=body):
+                self.assertIsNone(liveness.posted_checks_from_api(code, body))
 
-        `None` lets the caller re-post, which is visible. An empty map would
-        read as "nothing has ever been posted here" and silently stop updating
-        a live signal.
-        """
-        self.assertIsNone(liveness.posted_checks_from_api(1, ""))
-        self.assertIsNone(liveness.posted_checks_from_api(0, None))
-        self.assertIsNone(liveness.posted_checks_from_api(0, "\n\n"))
-
-    def test_a_row_without_an_addressable_id_is_dropped(self) -> None:
-        """A partial row would aim an update at check run 0.
-
-        The API's answer to that is a 404, indistinguishable from a row that
-        was never this reporter's.
-        """
-        self.assertIsNone(
-            liveness.posted_checks_from_api(0, '{"external_id": "ripr-liveness:1:x"}\n')
-        )
-        self.assertIsNone(
-            liveness.posted_checks_from_api(0, '{"external_id": "ripr-liveness:1:x", "id": 0}\n')
-        )
-        self.assertIsNone(
-            liveness.posted_checks_from_api(0, '{"external_id": null, "id": 9001}\n')
-        )
-        self.assertIsNone(
-            liveness.posted_checks_from_api(0, '{"id": 9001}\n')
-        )
+    def test_partial_or_malformed_rows_are_unreadable(self) -> None:
+        for row in (
+            {**self.ROW, "id": 0}, {**self.ROW, "id": -1}, {**self.ROW, "id": True},
+            {**self.ROW, "external_id": None}, {**self.ROW, "external_id": ""},
+            {**self.ROW, "conclusion": None}, {"external_id": "x"}, [1, 2, 3],
+        ):
+            with self.subTest(row=row):
+                self.assertIsNone(liveness.posted_checks_from_api(0, json.dumps(row)))
 
     def test_an_unreadable_line_does_not_discard_the_usable_ones(self) -> None:
-        body = "\n".join(
-            [
-                "not json at all",
-                '{"external_id": "ripr-liveness:1:infra-no-proof", "id": 9001}',
-                "[1, 2, 3]",
-            ]
-        )
+        body = "not json\n" + json.dumps(self.ROW) + "\n[1, 2, 3]\n"
         self.assertEqual(
             liveness.posted_checks_from_api(0, body),
-            {"ripr-liveness:1:infra-no-proof": 9001},
+            liveness.posted_checks_from_api(0, json.dumps(self.ROW)),
         )
 
-    def test_the_query_selects_only_rows_carrying_an_external_id(self) -> None:
-        """A null id is filtered by the query, not by the parser's patience.
-
-        The workflow's `--jq` selects `.external_id != null`; this asserts the
-        shape that selection produces, so a change to the query that let a
-        null through is caught by the reader rather than by a live failure.
-        """
-        self.assertIsNone(liveness.posted_checks_from_api(0, '{"external_id": null, "id": 5}\n'))
+    def test_open_progress_title_is_retained_for_later_retirement(self) -> None:
+        row = {**self.ROW, "external_id": "ripr-liveness:1:alive",
+               "conclusion": "neutral", "title": "ripr run 1 alive: running tests"}
+        self.assertEqual(
+            liveness.posted_checks_from_api(0, json.dumps(row)),
+            {row["external_id"]: [{"id": 9001, "conclusion": "neutral", "title": row["title"]}]},
+        )
 
 
 class ProgressReadTests(unittest.TestCase):
@@ -1690,12 +1667,8 @@ class WorkflowTransitionTests(unittest.TestCase):
         self.assertIn('"PATCH"', self.text)
         self.assertIn("/check-runs/{check_run_id}", self.text)
 
-    def test_an_update_does_not_resend_the_fixed_identity_fields(self) -> None:
-        """A check run's name and head are fixed at creation.
-
-        Resending them invites a rejection on a head that is not even wrong,
-        and the failure would look like a permissions problem.
-        """
+    def test_an_update_preserves_identity_and_sends_only_state(self) -> None:
+        """The reporter updates an observed check without changing its identity."""
         patch_block = self.text.split("if verb == \"PATCH\" and isinstance(check_run_id, int):", 1)[1]
         patch_payload = patch_block.split("payload = {", 1)[1].split("}", 1)[0]
         self.assertNotIn("head_sha", patch_payload)
@@ -1752,47 +1725,38 @@ class PostedMemoryBoundTests(unittest.TestCase):
         finished = self._head(
             1, HEAD, status="completed", created_at="2026-09-20T11:00:00Z"
         )
+        finished["updated_at"] = "2026-09-20T11:30:00Z"
         self.assertIn(HEAD, self._heads([finished]))
 
     def test_a_run_that_finished_long_ago_is_not_worth_reading(self) -> None:
         old = self._head(
             1, HEAD, status="completed", created_at="2026-09-19T00:00:00Z"
         )
+        old["updated_at"] = "2026-09-19T01:00:00Z"
         self.assertEqual(self._heads([old]), set())
 
-    def test_the_bound_clears_the_slowest_observed_run(self) -> None:
-        """The invariant that actually has to hold.
-
-        `ripr`'s median is ~59 minutes and its slowest measured run 118. The
-        bound is measured from `created_at`, so a bound shorter than a run's own
-        lifetime would drop its head while the run was still going -- and a run
-        that is still going is exactly what a retraction is for. Comfortably
-        over the slowest observation, not merely over the median.
-        """
-        self.assertGreater(liveness.POSTED_MEMORY_HOURS * 60, 118 * 2)
+    def test_a_long_running_head_is_kept_independently_of_retention_age(self) -> None:
+        active = self._head(1, HEAD, status="in_progress", created_at="2026-09-18T00:00:00Z")
+        self.assertIn(HEAD, self._heads([active]))
 
     def test_the_post_completion_window_is_generous(self) -> None:
-        """The bound is from `created_at`, so a long run gets less time after.
-
-        For the slowest observed run the remaining window is still hours, which
-        is many more 15-minute fires than a red needs to survive before the head
-        is superseded anyway.
-        """
-        remaining = (liveness.POSTED_MEMORY_HOURS * 60) - 118
-        self.assertGreaterEqual(remaining // 15, 8)
+        """A long run retains the full window after its terminal update."""
+        long_run = self._head(1, HEAD, status="completed", created_at="2026-09-19T00:00:00Z")
+        long_run["updated_at"] = "2026-09-20T11:55:00Z"
+        self.assertIn(HEAD, self._heads([long_run]))
 
     def test_only_relevant_heads_are_selected_from_a_full_page(self) -> None:
         """The shape that actually happens: 100 runs, 92 heads, a few live."""
         runs: list[dict] = []
         for index in range(77):
-            runs.append(
-                self._head(
+            old = self._head(
                     1000 + index,
                     f"{index:040x}",
                     status="completed",
                     created_at="2026-09-18T00:00:00Z",
                 )
-            )
+            old["updated_at"] = "2026-09-18T01:00:00Z"
+            runs.append(old)
         live = self._head(9001, HEAD, status="in_progress")
         stalled = self._head(9002, OTHER_HEAD, status="pending")
         runs += [live, stalled]
@@ -1867,6 +1831,145 @@ class AliveFloorTests(unittest.TestCase):
             )
             self.assertEqual(report["alive"], [], status)
             self.assertEqual(report["findings"], [], status)
+
+
+class ReconciliationStateTests(unittest.TestCase):
+    def _row(self, check_id, *, external_id=STALL_ID, conclusion="failure", title=None):
+        return {"external_id": external_id, "id": check_id,
+                "conclusion": conclusion, "title": title}
+
+    def _history(self, *rows):
+        body = "\n".join(json.dumps(row) for row in rows)
+        return {HEAD: liveness.posted_checks_from_api(0, body)}
+
+    def _report(self, history, *runs):
+        return liveness.classify_snapshot(snapshot(*runs, as_of="2026-09-20T05:05:00Z"), history)
+
+    def test_recovery_retracts_only_failures_and_only_once(self) -> None:
+        row = self._row(11)
+        first = self._report(self._history(row), recovered())
+        self.assertEqual([entry["check_run_id"] for entry in first["resolutions"]], [11])
+        row["conclusion"] = first["resolutions"][0]["conclusion"]
+        self.assertEqual(self._report(self._history(row), recovered())["resolutions"], [])
+
+    def test_every_duplicate_failure_is_retracted_independently_of_read_order(self) -> None:
+        rows = [self._row(13, conclusion="neutral"), self._row(12), self._row(11)]
+        for ordered in (rows, list(reversed(rows))):
+            report = self._report(self._history(*ordered), recovered())
+            self.assertEqual([entry["check_run_id"] for entry in report["resolutions"]], [11, 12])
+
+    def test_missing_conclusion_cannot_authorize_a_retraction(self) -> None:
+        row = self._row(11)
+        del row["conclusion"]
+        self.assertEqual(self._report(self._history(row), recovered())["resolutions"], [])
+
+    def test_legacy_id_only_memory_does_not_authorize_a_retraction(self) -> None:
+        report = self._report({HEAD: {STALL_ID: 11}}, recovered())
+        self.assertEqual(report["resolutions"], [])
+        self.assertIsNone(report["alive"][0]["check_run_id"])
+
+    def _open_alive(self, check_id=21):
+        return self._row(
+            check_id, external_id="ripr-liveness:35487554523:alive", conclusion="neutral",
+            title="ripr run 35487554523 alive: running Generate PR evidence",
+        )
+
+    def test_completed_progress_observation_is_closed_once(self) -> None:
+        row = self._open_alive()
+        finished = recovered(status="completed")
+        first = self._report(self._history(row), finished)
+        self.assertEqual(len(first["resolutions"]), 1)
+        close = first["resolutions"][0]
+        self.assertEqual(close["check_run_id"], 21)
+        self.assertEqual(close["classification"], liveness.ALIVE)
+        self.assertEqual(close["conclusion"], "neutral")
+        self.assertIn("progress observation ended (completed)", close["check_title"])
+        self.assertNotIn("running Generate PR evidence", close["check_title"])
+        self.assertIn("`alive`", liveness.render(first))
+        row.update(conclusion=close["conclusion"], title=close["check_title"])
+        self.assertEqual(self._report(self._history(row), finished)["resolutions"], [])
+
+    def test_still_running_or_absent_progress_observation_is_not_closed(self) -> None:
+        history = self._history(self._open_alive())
+        self.assertEqual(self._report(history, recovered())["resolutions"], [])
+        self.assertEqual(self._report(history)["resolutions"], [])
+
+    def test_only_a_known_open_progress_title_is_closed(self) -> None:
+        row = self._open_alive()
+        for title in (None, "unrecognized title", "ripr run 35487554523: progress observation ended (completed)"):
+            row["title"] = title
+            self.assertEqual(self._report(self._history(row), recovered(status="completed"))["resolutions"], [])
+
+    def test_every_open_progress_copy_is_closed_but_a_closed_copy_is_not(self) -> None:
+        rows = [self._open_alive(21), self._open_alive(22), self._open_alive(23)]
+        rows[2]["title"] = "ripr run 35487554523: progress observation ended (completed)"
+        report = self._report(self._history(*rows), recovered(status="completed"))
+        self.assertEqual([entry["check_run_id"] for entry in report["resolutions"]], [21, 22])
+
+    def test_an_unknown_run_status_cannot_close_progress(self) -> None:
+        report = self._report(self._history(self._open_alive()), recovered(status="unknown"))
+        self.assertEqual(report["resolutions"], [])
+
+    def test_queued_again_progress_is_closed_without_claiming_success(self) -> None:
+        report = self._report(self._history(self._open_alive()), recovered(status="queued", job_count=0))
+        self.assertEqual(len(report["resolutions"]), 1)
+        self.assertEqual(report["resolutions"][0]["conclusion"], "neutral")
+
+    def test_completed_retention_never_guesses_from_an_old_creation_time(self) -> None:
+        finished = recovered(status="completed", created_at="2026-09-18T00:00:00Z")
+        for updated_at in (None, "unreadable", "2026-09-20T05:00:00Z"):
+            finished["updated_at"] = updated_at
+            self.assertEqual(
+                liveness.posted_memory_heads([finished], liveness.parse_time("2026-09-20T05:05:00Z")),
+                {HEAD},
+            )
+
+    def _execute_post_step(self, report, *, forbid_network=False):
+        text = WorkflowTransitionTests.WORKFLOW.read_text(encoding="utf-8")
+        programs = [textwrap.dedent(part.split("\n          PY", 1)[0])
+                    for part in text.split("python3 - <<'PY'\n")[1:]
+                    if "def write(entry, verb):" in part]
+        self.assertEqual(len(programs), 1)
+        calls = []
+
+        def request(args, **kwargs):
+            self.assertFalse(forbid_network, "forbidden entry reached network")
+            calls.append((args, json.loads(kwargs["input"])))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (mock.patch.dict("os.environ", {"GITHUB_REPOSITORY": "fixture/repository"}),
+              mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(report))),
+              mock.patch("subprocess.run", side_effect=request),
+              contextlib.redirect_stdout(io.StringIO())):
+            try:
+                exec(compile(programs[0], str(WorkflowTransitionTests.WORKFLOW), "exec"), {})
+            except SystemExit as stopped:
+                if stopped.code != 0:
+                    raise
+        return calls
+
+    def test_duplicate_recovery_writes_each_exact_id_then_stops(self) -> None:
+        rows = [self._row(11), self._row(12)]
+        report = self._report(self._history(*rows), recovered(status="completed"))
+        calls = self._execute_post_step(report)
+        self.assertEqual([args[4] for args, _ in calls],
+                         ["repos/fixture/repository/check-runs/11", "repos/fixture/repository/check-runs/12"])
+        for row, (args, payload) in zip(rows, calls):
+            self.assertEqual(args[3], "PATCH")
+            self.assertEqual(payload["conclusion"], "neutral")
+            self.assertNotIn("head_sha", payload)
+            self.assertNotIn("external_id", payload)
+            row["conclusion"] = payload["conclusion"]
+        self.assertEqual(self._execute_post_step(self._report(self._history(*rows), recovered(status="completed"))), [])
+
+    def test_post_step_preserves_both_forbidden_write_guards(self) -> None:
+        report = self._report(self._history(self._row(11)), recovered(status="completed"))
+        entry = report["resolutions"][0]
+        for conclusion, name in (("success", liveness.ADVISORY_CHECK_NAME),
+                                 ("neutral", liveness.REQUIRED_CONTEXT_NAME)):
+            entry.update(conclusion=conclusion, check_name=name)
+            with self.subTest(conclusion=conclusion, name=name), self.assertRaises(SystemExit):
+                self._execute_post_step(report, forbid_network=True)
 
 
 if __name__ == "__main__":

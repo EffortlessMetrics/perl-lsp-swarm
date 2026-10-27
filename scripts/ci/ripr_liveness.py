@@ -134,21 +134,14 @@ ADVISORY_CHECK_NAME = "ripr+ liveness"
 
 # A run is only `alive` while it is actually running. `queued` with jobs is a
 # different state -- waiting on a runner, which is what `serialised` exists to
-# describe -- and `completed` has nothing left to report.
+# describe. Completed runs provide no new progress but can retire an earlier
+# running-step observation.
 IN_FLIGHT_STATUSES = frozenset({"in_progress"})
 
-# How long after a run finishes the reporter still considers withdrawing a red
-# it wrote for it. This is a valve, not a budget: it drops the older portion of
-# the runs page once throughput rises, and it is *not* what bounds the read
-# today. Measured on the last 100 `ripr` runs, the page spans 264 minutes and
-# carries 91 distinct heads, so a 6-hour bound drops nothing and every head is
-# still read. That number is the honest cost of the capability and is reported
-# in the step summary rather than assumed away -- the read is what lets a
-# retraction happen at all, and shrinking it would silently stop red from ever
-# clearing, which is the defect this exists to fix.
-#
-# It clears the slowest observed run twice over (118 min) so a long run's head
-# is never dropped while the run is still going.
+# Retain completed-run history for this long after the terminal update. This
+# is a retention window, not a request budget; heads_read reports actual cost.
+# In-flight runs are retained regardless of age. Missing completion clocks
+# conservatively retain history rather than guessing from creation time.
 POSTED_MEMORY_HOURS = 6
 
 
@@ -163,8 +156,7 @@ def posted_memory_heads(runs: list[dict[str, Any]], as_of: datetime.datetime | N
     of all.
 
     A run that finished longer ago than `POSTED_MEMORY_HOURS` is dropped. This
-    is a throughput valve rather than a budget -- see the constant's comment
-    for what it does and does not bound today.
+    is a retention bound rather than a request budget.
 
     An unreadable clock yields the conservative set -- every head with one --
     because over-reading costs API calls and under-reading silently skips a
@@ -193,8 +185,10 @@ def posted_memory_heads(runs: list[dict[str, Any]], as_of: datetime.datetime | N
         if run.get("status") != "completed":
             keep.add(head)
             continue
-        created_at = parse_time(run.get("created_at"))
-        if created_at is None or (as_of - created_at).total_seconds() // 60 <= age_limit:
+        # For a completed workflow run, updated_at carries its terminal update.
+        # A missing completion clock must not turn a long run into an old one.
+        finished_at = parse_time(run.get("updated_at"))
+        if finished_at is None or (as_of - finished_at).total_seconds() // 60 <= age_limit:
             keep.add(head)
     return keep
 
@@ -245,30 +239,18 @@ def parse_external_id(value: Any) -> tuple[int, str] | None:
     return int(run_id_text), classification
 
 
-def posted_checks_from_api(returncode: int, stdout: str | None) -> dict[str, int] | None:
-    """The ``external_id -> check run id`` map a check-runs read established.
+def posted_checks_from_api(returncode: int, stdout: str | None) -> dict[str, list[dict[str, Any]]] | None:
+    """Read every addressable check and its current state, grouped by external id.
 
-    Maps to the numeric id, not to a set of names, because a resolution has to
-    be *addressed*: withdrawing a stall means updating the check run that
-    already carries the red, and the check-runs API addresses a write by that
-    run's own id. A set would be enough to suppress a duplicate and useless for
-    a retraction, which is the same reason the format lives in this module.
-
-    ``None`` means the read failed or nothing in the body was an addressable
-    row, which leaves the caller to choose between posting anyway and staying
-    silent. The workflow refuses to stay silent, and that refusal stays
-    deliberate policy in the workflow text rather than becoming a silent
-    default here.
-
-    Each line is one JSON object, which is what ``--jq '.check_runs[] |
-    @json'`` emits under ``--paginate``. A row is taken only when it carries a
-    usable ``external_id`` **and** a positive integer ``id``: a partial row
-    would produce an update aimed at check run 0, and the API's response to
-    that is a 404 that looks identical to a row that was never ours.
+    A failed dedup read can cause a second POST under the same external id, so
+    retaining just one numeric id would leave another failure red on recovery.
+    Conclusion distinguishes a live failure from an already-withdrawn one;
+    title distinguishes open and closed progress observations, both neutral.
+    The producer writes this transient map for the classifier in the same job.
     """
     if returncode != 0 or stdout is None:
         return None
-    posted: dict[str, int] = {}
+    posted: dict[str, dict[int, dict[str, Any]]] = {}
     for line in stdout.splitlines():
         line = line.strip()
         if not line:
@@ -285,39 +267,57 @@ def posted_checks_from_api(returncode: int, stdout: str | None) -> dict[str, int
             continue
         if not isinstance(check_id, int) or isinstance(check_id, bool) or check_id <= 0:
             continue
-        posted[external_id] = check_id
-    return posted if posted else None
+        conclusion = row.get("conclusion")
+        if not isinstance(conclusion, str) or not conclusion:
+            continue
+        title = row.get("title")
+        posted.setdefault(external_id, {})[check_id] = {
+            "id": check_id,
+            "conclusion": conclusion,
+            "title": title if isinstance(title, str) else None,
+        }
+    return {key: list(rows.values()) for key, rows in posted.items()} if posted else None
+
+
+def posted_checks_for(
+    posted: dict[str, Any], head_sha: Any, run_id: Any, classification: str,
+) -> list[dict[str, Any]]:
+    """Addressable records for exactly this head, run, and reporter class."""
+    external_id = external_id_for(run_id, classification)
+    if external_id is None or not isinstance(head_sha, str):
+        return []
+    on_head = posted.get(head_sha)
+    if not isinstance(on_head, dict):
+        return []
+    rows = on_head.get(external_id)
+    if not isinstance(rows, list):
+        return []
+    valid = {
+        row["id"]: row
+        for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("id"), int)
+        and not isinstance(row["id"], bool)
+        and row["id"] > 0
+        and isinstance(row.get("conclusion"), str)
+    }
+    return [valid[check_id] for check_id in sorted(valid)]
 
 
 def posted_id_for(
-    posted: dict[str, dict[str, int]],
+    posted: dict[str, Any],
     head_sha: Any,
     run_id: Any,
     classification: str,
 ) -> int | None:
-    """The check run id already carrying this reporter's claim on this head.
+    """One deterministic existing address for an ordinary live refresh.
 
-    ``None`` means "not posted yet", which is the caller's cue to POST; an
-    integer means "this is the run to update". The distinction is made once,
-    here, rather than in the transport, because getting it backwards is exactly
-    the defect class this reporter has already shipped once: a dedup read that
-    answered a different question than the one it was written for, and looked
-    correct while doing it.
-
-    An unreadable head map is treated as not-posted. That direction re-posts a
-    check run that may already exist, which is visible and correctable; the
-    opposite would silently stop updating a live signal.
+    Retraction and retirement process every matching record separately. An
+    unreadable map returns None, which chooses a visible repeat POST instead
+    of silently suppressing a signal or guessing which check to retract.
     """
-    external_id = external_id_for(run_id, classification)
-    if external_id is None or not isinstance(head_sha, str):
-        return None
-    on_head = posted.get(head_sha)
-    if not isinstance(on_head, dict):
-        return None
-    check_id = on_head.get(external_id)
-    if isinstance(check_id, int) and not isinstance(check_id, bool) and check_id > 0:
-        return check_id
-    return None
+    rows = posted_checks_for(posted, head_sha, run_id, classification)
+    return max((row["id"] for row in rows), default=None)
 
 
 def parse_time(value: Any) -> datetime.datetime | None:
@@ -873,21 +873,20 @@ def check_summary(
 
 def classify_snapshot(
     snapshot: dict[str, Any],
-    posted_checks: dict[str, dict[str, int]] | None = None,
+    posted_checks: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Classify one snapshot against what this reporter has already posted.
 
-    ``posted_checks`` maps a head SHA to the ``external_id -> check run id``
-    pairs found on it, or is ``None``/absent when the caller could not read
+    ``posted_checks`` maps each head SHA to external ids and lists of check
+    records containing ``id``, ``conclusion``, and ``title``. It is
+    ``None``/absent when the caller could not read
     them. It is the reporter's memory across cron fires, and it comes from the
     API rather than from a file: the check runs this reporter wrote *are* the
     record, and a persisted state file would be a second thing to go stale, get
     evicted, or be written by a run that then failed before posting.
 
-    With no memory the report is exactly what it always was, minus the two
-    transitions. A missing read therefore costs a retraction and a heartbeat
-    update, never a wrong conclusion, which is the right direction for the one
-    call whose failure mode would be a false statement about a run.
+    With no readable memory, withdrawal is not authorized and live observations
+    may repeat a POST. Missing state never authorizes a guessed clear.
     """
     as_of = parse_time(snapshot.get("as_of"))
     floor = snapshot.get("floor_minutes")
@@ -930,15 +929,17 @@ def classify_snapshot(
         run_id = run.get("id")
         head_sha = run.get("head_sha")
         stall_id = external_id_for(run_id, INFRA_NO_PROOF)
-        posted_check_id = posted_id_for(posted, head_sha, run_id, INFRA_NO_PROOF)
         reason = recovery_reason(run, classification)
-        if posted_check_id is not None and reason is not None:
+        for prior in posted_checks_for(posted, head_sha, run_id, INFRA_NO_PROOF):
+            if prior["conclusion"] != "failure" or reason is None:
+                continue
             resolutions.append(
                 {
                     "run_id": run_id,
                     "head_sha": head_sha,
                     "check_name": ADVISORY_CHECK_NAME,
-                    "check_run_id": posted_check_id,
+                    "check_run_id": prior["id"],
+                    "classification": INFRA_NO_PROOF,
                     "external_id": stall_id,
                     "conclusion": RESOLUTION_CONCLUSION,
                     "now_classification": classification,
@@ -947,6 +948,33 @@ def classify_snapshot(
                     "check_summary": resolution_summary(run, reason),
                 }
             )
+
+        # An ALIVE check is neutral even while open, so conclusion alone cannot
+        # identify whether its old running-step title has already been retired.
+        if run.get("status") == "completed" or run.get("status") in UNSTARTED_STATUSES:
+            for prior in posted_checks_for(posted, head_sha, run_id, ALIVE):
+                title = prior.get("title")
+                if prior["conclusion"] != "neutral" or not isinstance(title, str):
+                    continue
+                if not title.startswith(f"ripr run {run_id} alive:"):
+                    continue
+                resolutions.append({
+                    "run_id": run_id,
+                    "head_sha": head_sha,
+                    "check_name": ADVISORY_CHECK_NAME,
+                    "check_run_id": prior["id"],
+                    "external_id": external_id_for(run_id, ALIVE),
+                    "classification": ALIVE,
+                    "conclusion": RESOLUTION_CONCLUSION,
+                    "now_classification": classification,
+                    "reason": "progress observation ended",
+                    "check_title": f"ripr run {run_id}: progress observation ended ({run.get('status')})",
+                    "check_summary": (
+                        f"The snapshot observes run `{run_id}` as `{run.get('status')}`, "
+                        "so the earlier running-step observation is no longer current. "
+                        "This neutral advisory is not a candidate verdict."
+                    ),
+                })
 
         if classification == ALIVE:
             # Reported through its own channel. A run that is working is not a
@@ -1059,11 +1087,11 @@ def render(report: dict[str, Any]) -> str:
         for entry in alive:
             lines.append(f"- {entry.get('check_title')}")
     if resolutions:
-        lines += ["", "**Stalls withdrawn since the last report**", ""]
+        lines += ["", "**Advisory observations to withdraw**", ""]
         for entry in resolutions:
             lines.append(
                 f"- run `{entry.get('run_id')}`: was reported "
-                f"`{INFRA_NO_PROOF}`, now `{entry.get('now_classification')}`"
+                f"`{entry.get('classification', INFRA_NO_PROOF)}`, now `{entry.get('now_classification')}`"
             )
     unclassifiable = report.get("unclassifiable", [])
     if unclassifiable:
@@ -1075,7 +1103,7 @@ def render(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def read_posted(path: Path) -> dict[str, dict[str, int]] | None:
+def read_posted(path: Path) -> dict[str, Any] | None:
     """The head-keyed check-run map the snapshot step read, or ``None``.
 
     A missing or unreadable file is ``None`` rather than ``{}`` for the same

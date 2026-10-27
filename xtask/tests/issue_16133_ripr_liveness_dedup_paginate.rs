@@ -49,11 +49,12 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 
 const WORKFLOW: &str = ".github/workflows/ripr-liveness.yml";
 const CHECK_RUNS_URL: &str = "check-runs?";
 const GH_API_INVOCATION_OPEN: &str = "[\"gh\", \"api\",";
+const POSTED_FIELDS: &str = "{external_id, id, conclusion, title: .output.title}";
 
 fn project_root() -> Result<PathBuf> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,14 +92,22 @@ fn check_runs_invocation(workflow: &str) -> Result<&str> {
         .ok_or_else(|| anyhow!("{WORKFLOW} has no check-runs read"))?;
     // Walk back to the start of the list literal carrying the URL, so the slice
     // is the whole call and not whatever precedes it in the step.
-    let open_idx = workflow[..url_pos]
+    let open_idx = workflow
+        .get(..url_pos)
+        .ok_or_else(|| anyhow!("check-runs URL is not at a UTF-8 boundary"))?
         .rfind(GH_API_INVOCATION_OPEN)
         .ok_or_else(|| anyhow!("{WORKFLOW} check-runs read is not a `gh api` list literal"))?;
-    let rest = &workflow[open_idx..];
+    let rest = workflow
+        .get(open_idx..)
+        .ok_or_else(|| anyhow!("gh api invocation is not at a UTF-8 boundary"))?;
     let close_idx = rest
         .find("],\n")
         .ok_or_else(|| anyhow!("{WORKFLOW} `gh api` invocation is not closed by `],`"))?;
-    Ok(&rest[..=close_idx + 1])
+    let end = close_idx
+        .checked_add(2)
+        .ok_or_else(|| anyhow!("invocation end overflow"))?;
+    rest.get(..end)
+        .ok_or_else(|| anyhow!("gh api invocation end is not a UTF-8 boundary"))
 }
 
 #[test]
@@ -107,14 +116,14 @@ fn ripr_liveness_dedup_read_uses_paginate_and_external_id() -> Result<()> {
     let call = check_runs_invocation(&workflow)?;
 
     // The four properties the dedup read needs to exist.
-    assert!(
+    ensure!(
         call.contains("--paginate"),
         "the dedup `gh api` call must pass `--paginate` so every page of check \
          runs on this head contributes to the seen-id set; without it the cron \
          re-posts an identical check run for every tick past page one. \
          Call:\n{call}"
     );
-    assert!(
+    ensure!(
         call.contains("check-runs?filter=all"),
         "the dedup `gh api` call must request `filter=all` so the dedup sees \
          every check run on the head rather than only the most recent per \
@@ -123,13 +132,13 @@ fn ripr_liveness_dedup_read_uses_paginate_and_external_id() -> Result<()> {
          when the question is \"has this id been posted at all\". \
          Call:\n{call}"
     );
-    assert!(
+    ensure!(
         call.contains("per_page="),
         "the dedup `gh api` call must set `per_page` on the check-runs URL; \
          the default is 30, and this repository's heads carry 83 check-run \
          rows on the busiest measured case. Call:\n{call}"
     );
-    assert!(
+    ensure!(
         call.contains("external_id"),
         "the dedup `gh api` call must read `external_id`, not `name` - every \
          post here carries the single name `ripr+ liveness` and the same name \
@@ -149,25 +158,47 @@ fn ripr_liveness_dedup_read_rejects_each_load_bearing_regression() -> Result<()>
     // Keeping them as separate mutations makes a failing test name a precise
     // pointer at the regressed property rather than at "the contract broke".
     let mutations: &[(&str, &str, &str)] = &[
-        ("dropped --paginate", "[\"gh\", \"api\", \"--paginate\",", "[\"gh\", \"api\","),
-        ("filter=all dropped", "check-runs?filter=all&per_page=100", "check-runs?per_page=100"),
-        ("per_page dropped", "check-runs?filter=all&per_page=100", "check-runs?filter=all"),
         (
-            "external_id switched to name",
-            "select(.external_id != null) | {external_id, id}",
-            "select(.name != null) | {name, id}",
+            "dropped --paginate",
+            "[\"gh\", \"api\", \"--paginate\",",
+            "[\"gh\", \"api\",",
         ),
+        (
+            "filter=all dropped",
+            "check-runs?filter=all&per_page=100",
+            "check-runs?per_page=100",
+        ),
+        (
+            "per_page dropped",
+            "check-runs?filter=all&per_page=100",
+            "check-runs?filter=all",
+        ),
+        (
+            "external_id selector switched to name while preserving the projection",
+            "select(.external_id != null)",
+            "select(.name)",
+        ),
+        (
+            "numeric id dropped",
+            "external_id, id, conclusion",
+            "external_id, conclusion",
+        ),
+        ("conclusion dropped", "id, conclusion, title:", "id, title:"),
+        ("progress title dropped", ", title: .output.title", ""),
     ];
 
     for (name, needle, replacement) in mutations {
-        assert!(
+        ensure!(
             call.contains(needle),
             "{name}: the dedup call does not contain the literal `{needle}`; the \
              mutation fixture is stale. Call:\n{call}"
         );
         let mutated = call.replace(needle, replacement);
-        assert!(mutated != *call, "{name}: mutation did not change the dedup call");
-        assert!(
+        ensure!(
+            mutated != *call,
+            "{name}: mutation did not change the dedup call"
+        );
+        ensure!(
             dedup_call_holds_the_contract(&mutated).is_err(),
             "{name}: the regressed dedup call was accepted"
         );
@@ -186,8 +217,11 @@ fn dedup_call_holds_the_contract(call: &str) -> Result<()> {
     if !call.contains("per_page=") {
         bail!("the dedup `gh api` call must set `per_page`");
     }
-    if !call.contains("external_id") {
-        bail!("the dedup `gh api` call must read `external_id`");
+    if !call.contains("select(.external_id != null)") {
+        bail!("the dedup `gh api` call must select rows by `external_id`");
+    }
+    if !call.contains(POSTED_FIELDS) {
+        bail!("the check-runs read must retain external id, numeric id, conclusion and title");
     }
     if call.contains("select(.name != null)") || call.contains("{name, id}") {
         bail!("the dedup `gh api` call must not key the identity on `name`");
@@ -206,22 +240,22 @@ fn ripr_liveness_dedup_read_is_paired_with_its_consumer() -> Result<()> {
     // read, the file that carries it forward, and the step that consumes it.
     let workflow = read_workflow()?;
 
-    assert!(
+    ensure!(
         workflow.contains("- name: Post advisory check runs"),
         "{WORKFLOW} has no `Post advisory check runs` step; the dedup read has \
          no consumer to guard"
     );
-    assert!(
+    ensure!(
         workflow.contains("target/ripr/liveness/posted.json"),
         "{WORKFLOW} never writes `posted.json`; the read has nowhere to put the \
          map its consumer needs"
     );
-    assert!(
+    ensure!(
         workflow.contains("--posted target/ripr/liveness/posted.json"),
         "{WORKFLOW} never passes `posted.json` to the classifier; the reporter's \
          memory across cron fires is read and then discarded"
     );
-    assert!(
+    ensure!(
         workflow.contains("posted_checks_from_api"),
         "{WORKFLOW} no longer hands the read to the tested module; a parsing \
          decision has moved back into untested inline Python"
@@ -242,19 +276,19 @@ fn ripr_liveness_dedup_read_selects_external_id_not_name() -> Result<()> {
     let workflow = read_workflow()?;
     let call = check_runs_invocation(&workflow)?;
 
-    assert!(
+    ensure!(
         !call.contains(".check_runs[].name"),
         "the dedup `gh api` call must NOT select `name`; every post here \
          carries the single name `ripr+ liveness` and reading `name` would \
          collapse every id into the one name and re-post on every flip. \
          Call:\n{call}"
     );
-    assert!(
+    ensure!(
         !call.contains("select(.name != null)"),
         "the dedup `gh api` call must not select rows by `name`; the reporter's \
          own `external_id` is the identity. Call:\n{call}"
     );
-    assert!(
+    ensure!(
         !call.contains("{name, id}"),
         "the dedup `gh api` call must not project `name` into the parsed row; a \
          retraction is addressed by the numeric `id` and keyed to the \
@@ -275,14 +309,14 @@ fn ripr_liveness_dedup_read_selects_the_numeric_id_too() -> Result<()> {
     let workflow = read_workflow()?;
     let call = check_runs_invocation(&workflow)?;
 
-    assert!(
+    ensure!(
         call.contains("| @json"),
         "the dedup `gh api` call must emit one JSON object per line under \
          `--paginate`, not one document for the whole page; the reader parses a \
          row per line. Call:\n{call}"
     );
-    assert!(
-        call.contains("{external_id, id}"),
+    ensure!(
+        call.contains(POSTED_FIELDS),
         "the dedup `gh api` call must project both the identity and the numeric \
          id; a retraction is addressed by the id. Call:\n{call}"
     );

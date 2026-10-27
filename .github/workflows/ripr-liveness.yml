@@ -81,7 +81,7 @@ jobs:
           # One page is ample: ripr runs are serialised per PR and the floor is
           # minutes, so anything older than this page has long since resolved.
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
-            --jq '[.workflow_runs[] | {id, status, event, created_at, head_sha, head_branch,
+            --jq '[.workflow_runs[] | {id, status, event, created_at, updated_at, head_sha, head_branch,
                    head_repository: .head_repository.full_name,
                    pull_requests: [.pull_requests[]?.number]}]' \
             > target/ripr/liveness/runs.json
@@ -201,7 +201,7 @@ jobs:
               out = subprocess.run(
                   ["gh", "api", "--paginate",
                    f"repos/{repo}/commits/{head}/check-runs?filter=all&per_page=100",
-                   "--jq", '.check_runs[] | select(.external_id != null) | {external_id, id} | @json'],
+                   "--jq", '.check_runs[] | select(.external_id != null) | {external_id, id, conclusion, title: .output.title} | @json'],
                   capture_output=True, text=True, check=False,
               )
               # An unreadable head is recorded as absent, not as empty: absent
@@ -261,11 +261,9 @@ jobs:
               claim (#16567).
 
               The two verbs take different bodies. An update addresses an
-              existing check run by its own numeric id and must not resend the
-              identity fields, because a check run's name and head are fixed at
-              creation; resending them invites a rejection on a head that is
-              not even wrong. Only the mutable parts -- status, conclusion, and
-              the output a reader sees -- are sent back.
+              existing check run by its observed numeric id. This reporter
+              preserves its identity and sends only status, conclusion, and
+              the output a reader sees back to that address.
               """
               external_id = entry.get("external_id")
               if not external_id:
