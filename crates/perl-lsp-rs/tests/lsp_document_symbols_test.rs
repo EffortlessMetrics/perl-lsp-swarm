@@ -669,6 +669,9 @@ fn package_member_oracle_rejects_floating_members() -> TestResult {
 #[test]
 fn statement_package_oracle_rejects_wrongly_nested_package() -> TestResult {
     let nested = json!([
+        { "name": "Child", "kind": 2, "children": [
+            { "name": "child_method", "kind": 12 }
+        ] },
         { "name": "Parent", "kind": 2, "children": [
             { "name": "parent_method", "kind": 12 },
             { "name": "$package_var", "kind": 13 },
@@ -678,6 +681,12 @@ fn statement_package_oracle_rejects_wrongly_nested_package() -> TestResult {
         ] }
     ]);
     let symbols = nested.as_array().ok_or("nested negative fixture must be an array")?;
+    require_fixture_package_members(
+        symbols,
+        "Parent",
+        &[("parent_method", 12), ("$package_var", 13)],
+    )?;
+    require_fixture_package_members(symbols, "Child", &[("child_method", 12)])?;
     require_symbol_shape(
         require_statement_package_hierarchy(symbols).is_err(),
         "finding every name recursively must not admit wrongly nested statement packages",
