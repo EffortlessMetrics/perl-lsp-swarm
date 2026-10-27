@@ -103,11 +103,8 @@ fn check_runs_invocation(workflow: &str) -> Result<&str> {
     let close_idx = rest
         .find("],\n")
         .ok_or_else(|| anyhow!("{WORKFLOW} `gh api` invocation is not closed by `],`"))?;
-    let end = close_idx
-        .checked_add(2)
-        .ok_or_else(|| anyhow!("invocation end overflow"))?;
-    rest.get(..end)
-        .ok_or_else(|| anyhow!("gh api invocation end is not a UTF-8 boundary"))
+    let end = close_idx.checked_add(2).ok_or_else(|| anyhow!("invocation end overflow"))?;
+    rest.get(..end).ok_or_else(|| anyhow!("gh api invocation end is not a UTF-8 boundary"))
 }
 
 #[test]
@@ -158,31 +155,15 @@ fn ripr_liveness_dedup_read_rejects_each_load_bearing_regression() -> Result<()>
     // Keeping them as separate mutations makes a failing test name a precise
     // pointer at the regressed property rather than at "the contract broke".
     let mutations: &[(&str, &str, &str)] = &[
-        (
-            "dropped --paginate",
-            "[\"gh\", \"api\", \"--paginate\",",
-            "[\"gh\", \"api\",",
-        ),
-        (
-            "filter=all dropped",
-            "check-runs?filter=all&per_page=100",
-            "check-runs?per_page=100",
-        ),
-        (
-            "per_page dropped",
-            "check-runs?filter=all&per_page=100",
-            "check-runs?filter=all",
-        ),
+        ("dropped --paginate", "[\"gh\", \"api\", \"--paginate\",", "[\"gh\", \"api\","),
+        ("filter=all dropped", "check-runs?filter=all&per_page=100", "check-runs?per_page=100"),
+        ("per_page dropped", "check-runs?filter=all&per_page=100", "check-runs?filter=all"),
         (
             "external_id selector switched to name while preserving the projection",
             "select(.external_id != null)",
             "select(.name)",
         ),
-        (
-            "numeric id dropped",
-            "external_id, id, conclusion",
-            "external_id, conclusion",
-        ),
+        ("numeric id dropped", "external_id, id, conclusion", "external_id, conclusion"),
         ("conclusion dropped", "id, conclusion, title:", "id, title:"),
         ("progress title dropped", ", title: .output.title", ""),
     ];
@@ -194,10 +175,7 @@ fn ripr_liveness_dedup_read_rejects_each_load_bearing_regression() -> Result<()>
              mutation fixture is stale. Call:\n{call}"
         );
         let mutated = call.replace(needle, replacement);
-        ensure!(
-            mutated != *call,
-            "{name}: mutation did not change the dedup call"
-        );
+        ensure!(mutated != *call, "{name}: mutation did not change the dedup call");
         ensure!(
             dedup_call_holds_the_contract(&mutated).is_err(),
             "{name}: the regressed dedup call was accepted"
