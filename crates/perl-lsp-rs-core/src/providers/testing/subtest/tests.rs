@@ -2,6 +2,20 @@
 
 use super::*;
 
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn ensure_eq<T>(actual: T, expected: T, context: &str) -> TestResult
+where
+    T: std::fmt::Debug + PartialEq,
+{
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("{context}: expected {expected:?}, got {actual:?}"))
+            .into())
+    }
+}
+
 fn discover(source: &str) -> Vec<DiscoveredSubtest> {
     let mut parser = perl_parser::Parser::new(source);
     let ast = parser.parse().expect("source parses");
@@ -157,6 +171,18 @@ fn nested_outline(source: &str) -> Vec<DocumentSymbol> {
         nest_subtest_symbols_in_outline(&mut outline, &subtests, source);
     }
     outline
+}
+
+fn try_nested_outline(source: &str) -> TestResult<Vec<DocumentSymbol>> {
+    let mut parser = perl_parser::Parser::new(source);
+    let ast = parser.parse()?;
+    let mut core_result =
+        crate::providers::document_symbols::source_backed_document_symbols_from_ast(&ast, source);
+    let subtests = discover_subtests(&ast, source);
+    if !subtests.is_empty() {
+        core_result.nest_discovered_subtests(&subtests, source);
+    }
+    Ok(core_result.symbols)
 }
 
 fn find_named<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
@@ -379,16 +405,46 @@ fn new_subtest_keeps_compiler_priority_order_with_mixed_siblings() {
 }
 
 #[test]
-fn ordinary_array_and_hash_follow_callables_in_compiler_priority_order() {
+fn ordinary_array_and_hash_follow_callables_in_compiler_priority_order() -> TestResult {
     let source = "package Collections;
         my @items = ();
         my %items_by_name = ();
         subtest 'middle' => sub { ok(1); };
         sub later { return 1; }
 ";
-    let outline = nested_outline(source);
-    let package = find_named_deep(&outline, "Collections").expect("package missing");
+    let outline = try_nested_outline(source)?;
+    let package = find_named_deep(&outline, "Collections")
+        .ok_or_else(|| std::io::Error::other("package missing"))?;
     let names: Vec<&str> = package.children.iter().map(|child| child.name.as_str()).collect();
 
-    assert_eq!(names, vec!["middle", "later", "@items", "%items_by_name"]);
+    ensure_eq(names, vec!["middle", "later", "@items", "%items_by_name"], "package order")
+}
+
+#[test]
+fn ownerless_collections_follow_callables_in_compiler_priority_order() -> TestResult {
+    let source = "my @items = ();
+        my %items_by_name = ();
+        subtest 'middle' => sub { ok(1); };
+        sub later { return 1; }
+";
+    let outline = try_nested_outline(source)?;
+    let names: Vec<&str> = outline.iter().map(|symbol| symbol.name.as_str()).collect();
+
+    ensure_eq(names, vec!["middle", "later", "@items", "%items_by_name"], "root order")
+}
+
+#[test]
+fn public_document_symbol_value_round_trips_without_ordering_metadata() -> TestResult {
+    let source = "package Collections;
+        my @items = ();
+        sub later { return 1; }
+";
+    let mut parser = perl_parser::Parser::new(source);
+    let ast = parser.parse()?;
+    let result =
+        crate::providers::document_symbols::source_backed_document_symbols_from_ast(&ast, source);
+    let encoded = serde_json::to_string(&result.symbols)?;
+    let decoded: Vec<DocumentSymbol> = serde_json::from_str(&encoded)?;
+
+    ensure_eq(decoded, result.symbols, "public document-symbol serde round trip")
 }

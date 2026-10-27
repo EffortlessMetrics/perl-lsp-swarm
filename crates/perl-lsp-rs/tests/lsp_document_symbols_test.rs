@@ -15,6 +15,18 @@ use serde_json::{Value, json};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+fn ensure_eq<T>(actual: T, expected: T, context: &str) -> TestResult
+where
+    T: std::fmt::Debug + PartialEq,
+{
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("{context}: expected {expected:?}, got {actual:?}"))
+            .into())
+    }
+}
+
 fn setup_server() -> LspServer {
     setup_server_with_capabilities(json!({}))
 }
@@ -206,6 +218,30 @@ fn test_document_symbols_include_test2_subtests() -> TestResult {
     assert_eq!(inner["detail"].as_str(), Some("subtest"));
 
     Ok(())
+}
+
+#[test]
+fn test_document_symbols_ownerless_collections_keep_compiler_order() -> TestResult {
+    let server = setup_server();
+    let content = "my @items = ();
+        my %items_by_name = ();
+        subtest 'middle' => sub { ok(1); };
+        sub later { return 1; }
+";
+    open_document(&server, "file:///t/root-order.t", content);
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        method: "textDocument/documentSymbol".to_string(),
+        params: Some(json!({ "textDocument": { "uri": "file:///t/root-order.t" } })),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(24)),
+    };
+    let response = server.handle_request(request).ok_or("No response from server")?;
+    let result = response.result.ok_or("Missing result")?;
+    let symbols = result.as_array().ok_or("Result is not an array")?;
+    let names: Vec<&str> = symbols.iter().filter_map(|symbol| symbol["name"].as_str()).collect();
+
+    ensure_eq(names, vec!["middle", "later", "@items", "%items_by_name"], "wire root order")
 }
 
 /// Regression guard for #1792: a subtest declared inside a named sub is

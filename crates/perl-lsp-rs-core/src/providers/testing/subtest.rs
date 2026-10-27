@@ -9,7 +9,10 @@
 //! rather than a string literal) are reported as [`SubtestName::Dynamic`]
 //! rather than guessed — the caller decides how to present an unknown name.
 
-use crate::providers::document_symbols::{CALLABLE_DOCUMENT_SYMBOL_PRIORITY, DocumentSymbol};
+use crate::providers::document_symbols::{
+    CALLABLE_DOCUMENT_SYMBOL_PRIORITY, DocumentSymbol, DocumentSymbolPriorities,
+    assembler_document_symbol_sort_key,
+};
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_position_tracking::WireRange;
 use perl_semantic_analyzer::symbol::SymbolKind;
@@ -91,23 +94,46 @@ pub fn subtest_document_symbols(subtests: &[DiscoveredSubtest]) -> Vec<DocumentS
 ///   being floated to the root.
 ///
 /// Name, kind, detail, and selection-range conventions are exactly those of
-/// [`subtest_document_symbols`]; sibling order follows assembler priority and
-/// then source position.
+/// [`subtest_document_symbols`]. This standalone compatibility entry point has
+/// only the public LSP-shaped values, so it retains their legacy kind-based
+/// grouping. Compiler-backed callers should use
+/// [`DocumentSymbolLiveResult::nest_discovered_subtests`](crate::providers::document_symbols::DocumentSymbolLiveResult::nest_discovered_subtests),
+/// which carries the assembler's declaration-sensitive ordering facts outside
+/// the serialized value.
 pub fn nest_subtest_symbols_in_outline(
     outline: &mut Vec<DocumentSymbol>,
     subtests: &[DiscoveredSubtest],
     source: &str,
 ) {
+    nest_subtest_symbols_in_outline_with_priorities(
+        outline,
+        subtests,
+        source,
+        &DocumentSymbolPriorities::new(),
+    );
+}
+
+/// Merge subtests into a fresh compiler outline while its private ordering
+/// facts are still available.
+pub(crate) fn nest_subtest_symbols_in_outline_with_priorities(
+    outline: &mut Vec<DocumentSymbol>,
+    subtests: &[DiscoveredSubtest],
+    source: &str,
+    priorities: &DocumentSymbolPriorities,
+) {
+    if !priorities.is_empty() {
+        outline.sort_by_key(|symbol| document_symbol_sort_key(symbol, priorities));
+    }
     for symbol in subtest_document_symbols(subtests) {
         let Some(path) = find_owner_path(outline, &symbol.range, source) else {
-            insert_by_source_position(outline, symbol);
+            insert_by_source_position(outline, symbol, priorities);
             continue;
         };
         let mut cursor: &mut Vec<DocumentSymbol> = &mut *outline;
         for index in path {
             cursor = &mut cursor[index].children;
         }
-        insert_by_source_position(cursor, symbol);
+        insert_by_source_position(cursor, symbol, priorities);
     }
 }
 
@@ -241,19 +267,39 @@ fn module_region_contains(node: &DocumentSymbol, target: &WireRange, source: &st
 /// inside the established priority group, then by source position. The source
 /// document-symbol assembler sorts children by semantic priority first; a
 /// source-only partition point is not valid for that vector.
-fn insert_by_source_position(children: &mut Vec<DocumentSymbol>, symbol: DocumentSymbol) {
-    let sort_key = document_symbol_sort_key(&symbol);
-    let position = children.partition_point(|child| document_symbol_sort_key(child) <= sort_key);
+fn insert_by_source_position(
+    children: &mut Vec<DocumentSymbol>,
+    symbol: DocumentSymbol,
+    priorities: &DocumentSymbolPriorities,
+) {
+    let sort_key = document_symbol_sort_key(&symbol, priorities);
+    let position =
+        children.partition_point(|child| document_symbol_sort_key(child, priorities) <= sort_key);
     children.insert(position, symbol);
 }
 
-fn document_symbol_sort_key(symbol: &DocumentSymbol) -> (u8, u32, u32, u32) {
-    (
-        symbol.sort_priority,
-        symbol.range.start.line,
-        symbol.range.start.character,
-        symbol.range.end.line,
-    )
+fn document_symbol_sort_key(
+    symbol: &DocumentSymbol,
+    priorities: &DocumentSymbolPriorities,
+) -> (u8, u32, u32, u32) {
+    assembler_document_symbol_sort_key(symbol, priorities).unwrap_or_else(|| {
+        (
+            legacy_document_symbol_priority(symbol.kind),
+            symbol.range.start.line,
+            symbol.range.start.character,
+            symbol.range.end.line,
+        )
+    })
+}
+
+fn legacy_document_symbol_priority(kind: u32) -> u8 {
+    match kind {
+        7 => 0,                 // scalar `has` property
+        2 | 3 | 4 | 5 | 8 => 1, // package/class/role namespace family
+        18 | 19 => 2,           // array/hash `has` properties
+        6 | 12 => CALLABLE_DOCUMENT_SYMBOL_PRIORITY,
+        _ => 4,
+    }
 }
 
 /// Find the innermost subtest whose range contains the 0-based `line`.
@@ -287,7 +333,6 @@ fn to_document_symbol(subtest: &DiscoveredSubtest) -> DocumentSymbol {
         range: subtest.range,
         selection_range: subtest.name_range,
         children: subtest.children.iter().map(to_document_symbol).collect(),
-        sort_priority: CALLABLE_DOCUMENT_SYMBOL_PRIORITY,
     }
 }
 

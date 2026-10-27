@@ -198,7 +198,7 @@ impl LspServer {
                     // Source-backed compiler document symbols are live for fresh,
                     // high-confidence parser syntax facts. Astless documents keep
                     // the legacy text fallback below.
-                    let live_result =
+                    let mut live_result =
                         perl_lsp_rs_core::providers::document_symbols::source_backed_document_symbols_from_ast(
                             ast,
                             &doc.text,
@@ -209,18 +209,13 @@ impl LspServer {
                     // the innermost scope the parse proves instead of floating at
                     // the top level. Subtest calls only exist in test files, so
                     // this is empty for ordinary source.
-                    let mut outline = live_result.symbols;
                     let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
                         ast, &doc.text,
                     );
                     if !subtests.is_empty() {
-                        perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
-                            &mut outline,
-                            &subtests,
-                            &doc.text,
-                        );
+                        live_result.nest_discovered_subtests(&subtests, &doc.text);
                     }
-                    let mut document_symbols = document_symbols_to_json(outline);
+                    let mut document_symbols = document_symbols_to_json(live_result.symbols);
 
                     // Append POD section symbols from a direct line scan
                     document_symbols.extend(pod_section_symbols(&doc.text));

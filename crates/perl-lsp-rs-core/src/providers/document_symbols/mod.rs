@@ -35,13 +35,25 @@ pub struct DocumentSymbol {
     pub selection_range: WireRange,
     /// Nested source-backed symbols.
     pub children: Vec<DocumentSymbol>,
-    /// Internal assembler ordering fact; never emitted on the LSP wire.
-    #[serde(skip)]
-    pub(crate) sort_priority: u8,
 }
 
 /// Assembler priority shared by source-backed callables and synthesized subtests.
 pub(crate) const CALLABLE_DOCUMENT_SYMBOL_PRIORITY: u8 = 3;
+
+pub(crate) type DocumentSymbolPriorities = HashMap<(u32, u32), u8>;
+
+pub(crate) fn document_symbol_priority_key(symbol: &DocumentSymbol) -> (u32, u32) {
+    (symbol.range.start.line, symbol.range.start.character)
+}
+
+pub(crate) fn assembler_document_symbol_sort_key(
+    symbol: &DocumentSymbol,
+    priorities: &DocumentSymbolPriorities,
+) -> Option<(u8, u32, u32, u32)> {
+    priorities.get(&document_symbol_priority_key(symbol)).map(|priority| {
+        (*priority, symbol.range.start.line, symbol.range.start.character, symbol.range.end.line)
+    })
+}
 
 /// Source-backed document-symbol live result.
 #[derive(Debug, Clone)]
@@ -51,6 +63,23 @@ pub struct DocumentSymbolLiveResult {
     pub symbols: Vec<DocumentSymbol>,
     /// Fact traces proving source/provenance/confidence/freshness.
     pub fact_traces: Vec<ProviderFactTrace>,
+    sort_priorities: DocumentSymbolPriorities,
+}
+
+impl DocumentSymbolLiveResult {
+    /// Merge discovered subtests using the assembler's declaration-sensitive ordering facts.
+    pub fn nest_discovered_subtests(
+        &mut self,
+        subtests: &[crate::providers::testing::subtest::DiscoveredSubtest],
+        source: &str,
+    ) {
+        crate::providers::testing::subtest::nest_subtest_symbols_in_outline_with_priorities(
+            &mut self.symbols,
+            subtests,
+            source,
+            &self.sort_priorities,
+        );
+    }
 }
 
 /// Build live document symbols from fresh, source-backed parser/compiler facts.
@@ -85,6 +114,7 @@ fn source_backed_document_symbols_from_table(
     let global_symbols = symbols_by_scope.get(&0).unwrap_or(&empty_vec);
     let mut raw = Vec::new();
     let mut fact_traces = Vec::new();
+    let mut sort_priorities = DocumentSymbolPriorities::new();
 
     for symbol in global_symbols {
         if let Some(document_symbol) = source_backed_document_symbol(
@@ -93,6 +123,7 @@ fn source_backed_document_symbols_from_table(
             &symbols_by_scope,
             source,
             &mut fact_traces,
+            &mut sort_priorities,
         ) {
             raw.push(document_symbol);
         }
@@ -115,7 +146,7 @@ fn source_backed_document_symbols_from_table(
         .filter(|sym| !child_starts.contains(&(sym.range.start.line, sym.range.start.character)))
         .collect();
 
-    DocumentSymbolLiveResult { symbols: output, fact_traces }
+    DocumentSymbolLiveResult { symbols: output, fact_traces, sort_priorities }
 }
 
 fn source_backed_document_symbol(
@@ -124,6 +155,7 @@ fn source_backed_document_symbol(
     symbols_by_scope: &HashMap<ScopeId, Vec<Symbol>>,
     source: &str,
     fact_traces: &mut Vec<ProviderFactTrace>,
+    sort_priorities: &mut DocumentSymbolPriorities,
 ) -> Option<DocumentSymbol> {
     if !is_source_backed(symbol, source) {
         return None;
@@ -145,7 +177,7 @@ fn source_backed_document_symbol(
                             continue;
                         }
                         if let Some(child_symbol) =
-                            source_backed_leaf_symbol(child, source, fact_traces)
+                            source_backed_leaf_symbol(child, source, fact_traces, sort_priorities)
                         {
                             children.push((
                                 document_symbol_priority(child),
@@ -165,36 +197,41 @@ fn source_backed_document_symbol(
     let children = children.into_iter().map(|(_, _, _, child)| child).collect();
 
     fact_traces.push(source_backed_trace());
-    Some(DocumentSymbol {
+    let priority = document_symbol_priority(symbol);
+    let document_symbol = DocumentSymbol {
         name: document_symbol_name(symbol),
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
         range: symbol_range(source, symbol),
         selection_range: symbol_name_range(source, symbol),
         children,
-        sort_priority: document_symbol_priority(symbol),
-    })
+    };
+    sort_priorities.insert(document_symbol_priority_key(&document_symbol), priority);
+    Some(document_symbol)
 }
 
 fn source_backed_leaf_symbol(
     symbol: &Symbol,
     source: &str,
     fact_traces: &mut Vec<ProviderFactTrace>,
+    sort_priorities: &mut DocumentSymbolPriorities,
 ) -> Option<DocumentSymbol> {
     if !is_source_backed(symbol, source) {
         return None;
     }
 
     fact_traces.push(source_backed_trace());
-    Some(DocumentSymbol {
+    let priority = document_symbol_priority(symbol);
+    let document_symbol = DocumentSymbol {
         name: document_symbol_name(symbol),
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
         range: symbol_range(source, symbol),
         selection_range: symbol_name_range(source, symbol),
         children: Vec::new(),
-        sort_priority: document_symbol_priority(symbol),
-    })
+    };
+    sort_priorities.insert(document_symbol_priority_key(&document_symbol), priority);
+    Some(document_symbol)
 }
 
 fn source_backed_trace() -> ProviderFactTrace {
