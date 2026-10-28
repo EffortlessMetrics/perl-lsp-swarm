@@ -627,6 +627,25 @@ fn float_literal() -> R {
 }
 
 #[test]
+fn trailing_decimal_point_before_ternary_and_comment() -> R {
+    for (input, next) in [("1.?2:3", "?"), ("1.# comment\n;", ";")] {
+        let mut lexer = PerlLexer::new(input);
+        let tok = lexer.next_token().ok_or("missing number")?;
+        assert!(matches!(tok.token_type, TokenType::Number(_)), "{input:?}: {tok:?}");
+        assert_eq!(tok.text.as_ref(), "1.", "{input:?}");
+        assert_eq!((tok.start, tok.end), (0, 2), "{input:?}");
+        let following = lexer.next_token().ok_or("missing following token")?;
+        assert_eq!(following.text.as_ref(), next, "{input:?}");
+    }
+    for input in ["1..2", "1 . $x"] {
+        let tok = first_token(input).ok_or("missing number")?;
+        assert!(matches!(tok.token_type, TokenType::Number(_)), "{input:?}: {tok:?}");
+        assert_eq!(tok.text.as_ref(), "1", "{input:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn hex_literal() -> R {
     // Lexer splits "0xFF" into Number("0") + Identifier("xFF")
     let tok = first_token("0xFF").ok_or("no token")?;

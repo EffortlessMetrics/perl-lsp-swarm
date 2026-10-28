@@ -1384,6 +1384,8 @@ impl<'a> PerlLexer<'a> {
                         || matches!(
                             next_byte,
                             b';' | b','
+                                | b'?'
+                                | b'#'
                                 | b')'
                                 | b'}'
                                 | b']'
