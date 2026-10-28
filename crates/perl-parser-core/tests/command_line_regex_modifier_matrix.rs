@@ -730,6 +730,30 @@ fn invalid_substitution_modifiers_diagnose_inside_the_operator() -> TestResult {
 }
 
 #[test]
+fn substitution_ascii_modifier_is_limited_to_two_occurrences() -> TestResult {
+    for (source, operator) in [
+        (r#"print "x"; s/foo/bar/aaa;"#, "s/foo/bar/aaa"),
+        (r#"print "x"; s{foo}{bar}aiaa;"#, "s{foo}{bar}aiaa"),
+    ] {
+        assert_invalid_modifier_is_diagnosed_within_operator(
+            source,
+            operator,
+            "Invalid substitution modifier 'a'",
+        )?;
+    }
+    for source in [r#"s/foo/bar/aa;"#, r#"s{foo}{bar}aia;"#] {
+        let mut parser = Parser::new(source);
+        parser.parse().map_err(|error| format!("parse of {source:?} failed: {error:?}"))?;
+        let blocking: Vec<_> =
+            parser.get_errors().iter().filter(|error| error.blocks_clean_parse()).collect();
+        if !blocking.is_empty() {
+            return Err(format!("{source:?} must parse cleanly; got {blocking:#?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn invalid_transliteration_modifiers_diagnose_inside_the_operator() -> TestResult {
     assert_invalid_modifier_is_diagnosed_within_operator(
         r#"print "xxxxxxxxxx"; tr/a-z/A-Z/x;"#,

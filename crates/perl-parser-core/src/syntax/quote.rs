@@ -960,6 +960,7 @@ fn extract_substitution_modifiers(text: &str) -> String {
 /// ```
 pub fn validate_substitution_modifiers(modifiers_str: &str) -> Result<String, char> {
     let mut valid_modifiers = String::new();
+    let mut ascii_mode_count = 0;
 
     for c in modifiers_str.chars() {
         // Stop at non-alphabetic characters (end of modifiers)
@@ -977,6 +978,12 @@ pub fn validate_substitution_modifiers(modifiers_str: &str) -> Result<String, ch
             c,
             'g' | 'i' | 'm' | 's' | 'x' | 'o' | 'e' | 'r' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'c'
         ) {
+            if c == 'a' {
+                ascii_mode_count += 1;
+                if ascii_mode_count > 2 {
+                    return Err(c);
+                }
+            }
             valid_modifiers.push(c);
         } else {
             // Invalid alphabetic modifier
