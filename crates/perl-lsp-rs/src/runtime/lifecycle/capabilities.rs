@@ -402,11 +402,9 @@ impl LspServer {
                     .and_then(|b| b.as_bool())
                     .unwrap_or(false);
 
-                // Check if client supports markdown in MarkupContent (hover,
-                // completion, signature help). LSP 3.17 general.markup.contentFormat
-                // is the canonical source; textDocument.hover.contentFormat is the
-                // legacy fallback. Default to true since most clients support
-                // markdown (#1724).
+                // Select the first supported format in client preference order.
+                // Preserve the existing general-markup precedence and the markdown
+                // default when neither source contains an array (#1724).
                 caps.markdown_support = {
                     let general_format = params
                         .pointer("/capabilities/general/markup/contentFormat")
@@ -416,9 +414,14 @@ impl LspServer {
                         .and_then(|v| v.as_array());
                     let format = general_format.or(hover_format);
                     match format {
-                        Some(arr) => {
-                            arr.iter().any(|v| v.as_str().is_some_and(|s| s == "markdown"))
-                        }
+                        Some(arr) => arr
+                            .iter()
+                            .find_map(|v| match v.as_str() {
+                                Some("markdown") => Some(true),
+                                Some("plaintext") => Some(false),
+                                _ => None,
+                            })
+                            .unwrap_or(false),
                         None => true, // Default: assume markdown support
                     }
                 };

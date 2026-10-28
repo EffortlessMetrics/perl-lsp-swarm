@@ -2038,10 +2038,10 @@ pub struct ClientCapabilities {
     /// handle `{defaultBehavior: true}` PrepareRenameResult responses; the server
     /// may delegate word-boundary selection to the client when this is set.
     pub prepare_support_default_behavior: u8,
-    /// Client supports markdown in MarkupContent responses (hover, completion,
-    /// signature help). Parsed from `capabilities.general.markup.contentFormat`
-    /// or `capabilities.textDocument.hover.contentFormat` — defaults to `true`
-    /// since most modern LSP clients support markdown (#1724).
+    /// Whether Markdown is the selected hover format. Parsed in client preference
+    /// order from `capabilities.general.markup.contentFormat` or
+    /// `capabilities.textDocument.hover.contentFormat`; defaults to `true` when
+    /// neither is an array (#1724).
     pub markdown_support: bool,
 }
 
