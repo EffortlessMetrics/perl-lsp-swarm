@@ -13,7 +13,7 @@ use std::path::Path;
 /// while being cheap to scan.
 const BINARY_PROBE_BYTES: usize = 4096;
 
-/// Maximum number of bytes read when classifying an extensionless script.
+/// Maximum number of bytes inspected in an extensionless script shebang.
 const SHEBANG_PROBE_BYTES: usize = 256;
 
 /// Minimum ratio of NUL bytes (within the probe window) required to classify
@@ -190,14 +190,7 @@ pub fn is_perl_source_bytes(path: &Path, bytes: &[u8]) -> bool {
         return false;
     }
 
-    let probe = &bytes[..bytes.len().min(SHEBANG_PROBE_BYTES)];
-    let Some(first_line) = probe.split(|byte| *byte == b'\n').next() else {
-        return false;
-    };
-    let Ok(first_line) = std::str::from_utf8(first_line) else {
-        return false;
-    };
-    is_perl_shebang_line(first_line)
+    is_perl_shebang_prefix(&bytes[..bytes.len().min(SHEBANG_PROBE_BYTES + 3)])
 }
 
 fn is_extensionless_perl_script(path: &Path) -> bool {
@@ -233,17 +226,52 @@ fn has_perl_shebang(path: &Path) -> bool {
         return false;
     }
 
-    let mut prefix = Vec::with_capacity(SHEBANG_PROBE_BYTES);
-    let mut limited = file.take(SHEBANG_PROBE_BYTES as u64);
+    let mut prefix = Vec::with_capacity(SHEBANG_PROBE_BYTES + 3);
+    let mut limited = file.take((SHEBANG_PROBE_BYTES + 3) as u64);
     if limited.read_to_end(&mut prefix).is_err() {
         return false;
     }
-    let first_line = prefix.split(|byte| *byte == b'\n').next().unwrap_or(b"");
-    let Ok(first_line) = std::str::from_utf8(first_line) else {
-        return false;
-    };
+    is_perl_shebang_prefix(&prefix)
+}
 
-    is_perl_shebang_line(first_line)
+fn is_perl_shebang_prefix(probe: &[u8]) -> bool {
+    let prefix = &probe[..probe.len().min(SHEBANG_PROBE_BYTES)];
+    let first_line = prefix.split(|byte| *byte == b'\n').next().unwrap_or(b"");
+    let line = match std::str::from_utf8(first_line) {
+        Ok(line) => line,
+        // Only discard an incomplete character at the end of a full probe.
+        // Invalid UTF-8 elsewhere, or at the end of a complete line, fails closed.
+        Err(error)
+            if probe.len() > prefix.len()
+                && prefix.len() == SHEBANG_PROBE_BYTES
+                && first_line.len() == prefix.len()
+                && error.error_len().is_none() =>
+        {
+            let start = error.valid_up_to();
+            let width = match probe[start] {
+                0xc2..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf4 => 4,
+                _ => return false,
+            };
+            let Some(character) = probe.get(start..start + width) else { return false };
+            if std::str::from_utf8(character).is_err() {
+                return false;
+            }
+            let valid = &first_line[..start];
+            // The cut character belongs to the final word. Exclude that word
+            // so a truncated interpreter cannot become a false Perl match.
+            let Some(end) = valid.iter().rposition(u8::is_ascii_whitespace) else {
+                return false;
+            };
+            match std::str::from_utf8(&valid[..end]) {
+                Ok(line) => line,
+                Err(_) => return false,
+            }
+        }
+        Err(_) => return false,
+    };
+    is_perl_shebang_line(line)
 }
 
 fn is_perl_shebang_line(line: &str) -> bool {
@@ -424,6 +452,32 @@ mod tests {
         assert!(is_perl_source_path(Path::new("/var/www/cgi-bin/upload.CGI")));
         assert!(!is_perl_source_path(Path::new("/workspace/README.md")));
         assert!(!is_perl_source_path(Path::new("/workspace/no_extension")));
+    }
+
+    #[test]
+    fn shebang_probe_handles_split_utf8_in_arguments() {
+        let path = Path::new("script");
+        for (interpreter, expected) in [("perl", true), ("python", false)] {
+            let prefix = format!("#!/usr/bin/{interpreter} ");
+            let line = format!("{}{}é\n", prefix, "x".repeat(255 - prefix.len()));
+            assert_eq!(is_perl_source_bytes(path, line.as_bytes()), expected);
+            let directory = tempfile::tempdir().unwrap();
+            let file = directory.path().join("script");
+            std::fs::write(&file, line).unwrap();
+            assert_eq!(is_perl_source_path(&file), expected);
+        }
+        let prefix = "#!/usr/bin/perl ";
+        let four_byte = format!("{}{}😀\n", prefix, "x".repeat(255 - prefix.len()));
+        assert!(is_perl_source_bytes(path, four_byte.as_bytes()));
+        assert!(!is_perl_source_bytes(path, b"#!/usr/bin/perl \xc3"));
+        let mut incomplete = b"#!/usr/bin/perl ".to_vec();
+        incomplete.resize(255, b'x');
+        incomplete.push(0xc3);
+        assert!(!is_perl_source_bytes(path, &incomplete));
+        incomplete.push(b'\n');
+        assert!(!is_perl_source_bytes(path, &incomplete));
+        let long_interpreter = format!("#!/{}/perlé\n", "x".repeat(247));
+        assert!(!is_perl_source_bytes(path, long_interpreter.as_bytes()));
     }
 
     #[test]
