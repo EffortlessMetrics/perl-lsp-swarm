@@ -183,7 +183,10 @@ cargo_toolchain_guard() {
   # current directory, so a wrapper invoked from inside another pinned Rust
   # project would otherwise be judged against the caller's toolchain rather
   # than the one the entrypoint will actually use after it enters the repo.
-  if ! probe="$(cd "$CARGO_GUARD_REPO_ROOT" 2>/dev/null && "$resolved" --version 2>&1)"; then
+  # Keep this probe local even for legacy callers: a missing pin must refuse
+  # before admission, not trigger rustup downloads. Scope the setting to this
+  # command so the guard does not change its caller's installation policy.
+  if ! probe="$(cd "$CARGO_GUARD_REPO_ROOT" 2>/dev/null && RUSTUP_AUTO_INSTALL=0 "$resolved" --version 2>&1)"; then
     printf 'cargo-toolchain-guard: REFUSED: `%s --version` failed at %s: %s\n' "cargo" "$resolved" "${probe:-<no output>}" >&2
     printf '  fix: repair or remove this cargo from PATH; the workspace needs >= %s.\n' "$required" >&2
     exit "$CARGO_GUARD_EXIT_CODE"

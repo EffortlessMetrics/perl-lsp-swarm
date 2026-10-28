@@ -176,10 +176,11 @@ else
   fail "preflight.sh: stale cargo received delegated args: $(cat "$STALE_LOG")"
 fi
 
-# Only the opt-in route promises no automatic toolchain installation. Model a
-# missing pin with a fake rustup Cargo proxy: without suppression even --version
-# would attempt installation. No network or actual toolchain mutation is involved.
-if [[ "$(basename "$CARGO_SAFE")" == "cargo-admitted" ]]; then
+# Every shared guard probe must suppress automatic toolchain installation,
+# including legacy callers without the admitted route's exported setting.
+# Model a missing pin with a fake rustup Cargo proxy: without suppression even
+# --version would attempt installation. No network or toolchain mutation occurs.
+{
   MISSING_BIN="${TMPDIR_BASE}/missing-pin-bin"
   mkdir -p "$MISSING_BIN"
   cat > "${MISSING_BIN}/cargo" <<'MISSING_PROXY'
@@ -205,7 +206,9 @@ MISSING_PROXY
   else
     fail "missing pin must refuse without installation/allocation (exit $code)"
   fi
-fi
+  assert_contains "missing-pin refusal preserves the probe diagnostic" \
+    "missing pinned toolchain (fixture)" "${TMPDIR_BASE}/missing.err"
+}
 
 TOTAL=$((PASS + FAIL))
 echo ""

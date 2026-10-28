@@ -114,13 +114,13 @@ expect_false "named channel is not a numeric version" \
 # ── rustup shim-path detection ────────────────────────────────────────────────
 
 expect_true  "shim: ~/.cargo/bin/cargo" \
-  cargo_guard_is_rustup_shim "/home/steven/.cargo/bin/cargo"
+  cargo_guard_is_rustup_shim "/fixture/profile/.cargo/bin/cargo"
 expect_true  "shim: windows-mounted home" \
-  cargo_guard_is_rustup_shim "/mnt/c/Users/steven/.cargo/bin/cargo.exe"
+  cargo_guard_is_rustup_shim "/mnt/c/fixture/profile/.cargo/bin/cargo.exe"
 expect_true  "shim: windows separators normalize" \
-  cargo_guard_is_rustup_shim 'C:\Users\steven\.cargo\bin\cargo.exe'
+  cargo_guard_is_rustup_shim 'C:\fixture\profile\.cargo\bin\cargo.exe'
 expect_true  "shim: rustup toolchain binary" \
-  cargo_guard_is_rustup_shim "/home/steven/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
+  cargo_guard_is_rustup_shim "/fixture/profile/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
 expect_false "not shim: /usr/bin/cargo (WSL apt cargo)" \
   cargo_guard_is_rustup_shim "/usr/bin/cargo"
 expect_false "not shim: /usr/local/bin/cargo" \
@@ -296,6 +296,38 @@ fi
 assert_contains "guard: non-shim note reports the ignored pin" \
   "is not a rustup shim, so the rust-toolchain.toml pin (1.95.0) is not in effect" \
   "${TMPDIR_BASE}/new.err"
+
+# ── version probes never opt into implicit toolchain installation ──────────
+# The shared library is also used by legacy callers that do not export the
+# admitted wrapper's no-install setting. Observe the subprocess environment,
+# and separately verify that the guard does not change its caller's policy.
+PROBE_BIN="${TMPDIR_BASE}/probe-bin"
+mkdir -p "$PROBE_BIN"
+cat > "${PROBE_BIN}/cargo" <<'STUB'
+#!/usr/bin/env bash
+[[ "$*" == "--version" ]] || exit 91
+printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" > "$PROBE_ENV_LOG"
+printf 'cargo 1.95.0 (installed fixture)\n'
+STUB
+chmod +x "${PROBE_BIN}/cargo"
+
+for setting in unset '' 0 1; do
+  code=0
+  PATH="${PROBE_BIN}:$PATH" PROBE_ENV_LOG="${TMPDIR_BASE}/probe.env" \
+    bash -c '
+      if [[ "$2" == unset ]]; then unset RUSTUP_AUTO_INSTALL;
+      else export RUSTUP_AUTO_INSTALL="$2"; fi
+      . "$1"
+      cargo_toolchain_guard
+      printf "%s\n" "${RUSTUP_AUTO_INSTALL-unset}"
+    ' guard-test "$LIB" "$setting" \
+    > "${TMPDIR_BASE}/caller.env" 2> "${TMPDIR_BASE}/probe.err" || code=$?
+  expect_eq "guard: installed probe passes with caller setting '$setting'" 0 "$code"
+  expect_eq "guard: probe disables auto-install with caller setting '$setting'" \
+    0 "$(cat "${TMPDIR_BASE}/probe.env")"
+  expect_eq "guard: preserves caller setting '$setting'" \
+    "$setting" "$(cat "${TMPDIR_BASE}/caller.env")"
+done
 
 # ── probe runs from the repository root, not the caller's directory ──────────
 # A rustup shim picks its toolchain from the nearest rust-toolchain.toml
