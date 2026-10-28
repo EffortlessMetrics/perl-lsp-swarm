@@ -425,6 +425,23 @@ impl<'a> EventParser<'a> {
         let mut closed = false;
         while cursor < self.bytes.len() {
             match self.bytes[cursor] {
+                b'[' if self.bytes.get(cursor + 1) == Some(&b':') => {
+                    // A POSIX class is part of the surrounding bracket class;
+                    // its `:]` must not terminate the outer class.
+                    let mut end = cursor + 2;
+                    if self.bytes.get(end) == Some(&b'^') {
+                        end += 1;
+                    }
+                    let name_start = end;
+                    while self.bytes.get(end).is_some_and(u8::is_ascii_alphabetic) {
+                        end += 1;
+                    }
+                    if end > name_start && self.bytes.get(end..end + 2) == Some(b":]") {
+                        cursor = end + 2;
+                    } else {
+                        cursor += 1;
+                    }
+                }
                 b'\\' => {
                     cursor = if cursor + 1 < self.bytes.len() {
                         self.next_char_end(cursor + 1)

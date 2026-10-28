@@ -676,3 +676,25 @@ fn quoted_literal_interpolation_records_runtime_text_without_numbering_impact()
     );
     Ok(())
 }
+
+#[test]
+fn posix_class_does_not_create_phantom_capture() {
+    for pattern in ["[[:alpha:]()](Z)", "[[:^digit:]()](Z)", "[[a](Z)"] {
+        let analysis = RegexAnalyzer::analyze_captures(
+            pattern,
+            EffectiveModifiers::default(),
+            profile(44, FeatureState::Enabled),
+        );
+        assert_eq!(analysis.declarations.len(), 1, "{pattern}");
+        assert_eq!(analysis.declarations[0].number, Some(1), "{pattern}");
+        assert_eq!(
+            pattern.get(
+                analysis.declarations[0].group_range.start
+                    ..analysis.declarations[0].group_range.end
+            ),
+            Some("(Z)"),
+            "{pattern}"
+        );
+        assert!(analysis.status.is_complete(), "{pattern}");
+    }
+}
