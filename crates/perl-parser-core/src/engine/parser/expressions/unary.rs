@@ -231,7 +231,7 @@ impl<'a> Parser<'a> {
                     // If followed by ->, allow postfix chaining: +{@_}->{key}
                     if self.peek_kind() == Some(TokenKind::LeftBrace) {
                         // Parse as hash literal
-                        let hash = self.parse_hash_or_block()?;
+                        let hash = self.parse_hash_or_block_with_context(true)?;
                         let end = hash.location.end;
 
                         // Wrap the hash in a unary plus to preserve the explicit disambiguation

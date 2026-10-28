@@ -33,16 +33,16 @@ impl<'a> Parser<'a> {
         self.parse_hash_or_block_with_context(false)
     }
 
-    /// Parse hash literal or block with context about whether blocks are expected
-    fn parse_hash_or_block_with_context(&mut self, expect_block: bool) -> ParseResult<Node> {
-        self.with_recursion_guard(|s| s.parse_hash_or_block_inner(expect_block))
+    /// Parse hash literal or block, with explicit hash-constructor context.
+    fn parse_hash_or_block_with_context(&mut self, force_hash: bool) -> ParseResult<Node> {
+        self.with_recursion_guard(|s| s.parse_hash_or_block_inner(force_hash))
     }
 
-    fn parse_hash_or_block_inner(&mut self, expect_block: bool) -> ParseResult<Node> {
-        self.with_depth(|s| s.parse_hash_or_block_contents(expect_block))
+    fn parse_hash_or_block_inner(&mut self, force_hash: bool) -> ParseResult<Node> {
+        self.with_depth(|s| s.parse_hash_or_block_contents(force_hash))
     }
 
-    fn parse_hash_or_block_contents(&mut self, _expect_block: bool) -> ParseResult<Node> {
+    fn parse_hash_or_block_contents(&mut self, force_hash: bool) -> ParseResult<Node> {
         let start_token = self.advance_token()?; // consume {
         let start = start_token.start();
 
@@ -176,6 +176,21 @@ impl<'a> Parser<'a> {
                 // This happens when parse_comma creates a HashLiteral from key => value pairs
                 kind @ NodeKind::HashLiteral { .. } => {
                     return self.charge_node(kind, first_loc);
+                }
+
+                // A number is a single list element, so in an explicitly forced
+                // hash constructor it has an implicit undef value. Do not apply
+                // this to arbitrary expressions: an array or call can return a list.
+                kind @ NodeKind::Number { .. } if force_hash => {
+                    let key = self.charge_node(kind, first_loc)?;
+                    let value = self.charge_node(
+                        NodeKind::Undef,
+                        SourceLocation { start: end - 1, end: end - 1 },
+                    )?;
+                    return self.charge_node(
+                        NodeKind::HashLiteral { pairs: vec![(key, value)] },
+                        SourceLocation { start, end },
+                    );
                 }
 
                 // Otherwise it's a block with a single expression
