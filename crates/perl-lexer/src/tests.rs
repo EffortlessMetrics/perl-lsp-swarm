@@ -832,3 +832,27 @@ fn pod_after_blank_line_reads_only_the_immediately_previous_line() {
         assert_eq!(lexer.pod_after_blank_line(), expected, "{source:?}");
     }
 }
+
+#[test]
+fn pod_cut_requires_command_boundary() {
+    for newline in ["\n", "\r\n", "\r"] {
+        let source = format!(
+            "1;{newline}=pod{newline}docs{newline}=cutlery{newline}hidden{newline}=cut{newline}visible"
+        );
+        let mut lexer = PerlLexer::new(&source);
+        lexer.position = 2 + newline.len();
+        lexer.skip_whitespace_and_comments();
+        assert_eq!(lexer.position, source.len() - "visible".len(), "{newline:?}");
+    }
+    for suffix in ["", "123", "!", " text"] {
+        let source = format!("1;\n=pod\nbody\n=cut{suffix}\nvisible");
+        let mut lexer = lexer_at_equals(&source);
+        lexer.skip_whitespace_and_comments();
+        assert_eq!(lexer.position, source.len() - "visible".len(), "{suffix:?}");
+    }
+    let source = "1;\n=construct\nbody\n=cutlery\nvisible";
+    let mut lexer = lexer_at_equals(source);
+    assert!(!lexer.pod_has_later_cut());
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, 3);
+}

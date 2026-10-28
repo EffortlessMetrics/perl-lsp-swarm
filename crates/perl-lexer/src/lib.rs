@@ -895,7 +895,7 @@ impl<'a> PerlLexer<'a> {
                         while i < bytes.len() {
                             // Look for =cut at the start of a line
                             if (i == 0 || matches!(bytes[i - 1], b'\n' | b'\r'))
-                                && bytes[i..].starts_with(b"=cut")
+                                && Self::is_pod_cut(&bytes[i..])
                             {
                                 i += 4; // Skip "=cut"
                                 // Skip rest of the =cut line
@@ -4664,6 +4664,11 @@ impl PerlLexer<'_> {
         })
     }
 
+    /// Perl recognizes the alphabetic command name before any non-letter suffix.
+    fn is_pod_cut(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"=cut") && bytes.get(4).is_none_or(|b| !b.is_ascii_alphabetic())
+    }
+
     /// True when a line-start `=cut` exists at or after the cursor. The result is memoized so
     /// many candidates cost one scan.
     fn pod_has_later_cut(&mut self) -> bool {
@@ -4675,9 +4680,8 @@ impl PerlLexer<'_> {
             return found.is_some();
         }
         let b = self.input_bytes;
-        let found = (pos..b.len()).find(|&i| {
-            (i == 0 || matches!(b[i - 1], b'\n' | b'\r')) && b[i..].starts_with(b"=cut")
-        });
+        let found = (pos..b.len())
+            .find(|&i| (i == 0 || matches!(b[i - 1], b'\n' | b'\r')) && Self::is_pod_cut(&b[i..]));
         self.pod_cut_cache = Some((pos, found));
         found.is_some()
     }
