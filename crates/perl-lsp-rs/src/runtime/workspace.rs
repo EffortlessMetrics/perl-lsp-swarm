@@ -722,7 +722,7 @@ impl LspServer {
                 // The canonical Dancer2 entries are computed from open
                 // documents' current snapshots, so they stay available on
                 // the stale-index fallback path (#8928).
-                let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
+                let dancer2_entries = self.dancer2_workspace_symbols_typed(&query_profile, cap);
                 let fallback = self.search_open_documents_for_symbols(query, cap)?;
                 let merged = match fallback {
                     Some(Value::Array(mut items)) => {
@@ -743,7 +743,7 @@ impl LspServer {
             // Canonical Dancer2 entries (#8928) are computed BEFORE the
             // index coordinator guard is taken: the computation re-enters
             // module resolution and readiness state internally.
-            let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
+            let dancer2_entries = self.dancer2_workspace_symbols_typed(&query_profile, cap);
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -1298,7 +1298,7 @@ impl LspServer {
     #[cfg(feature = "workspace")]
     fn dancer2_workspace_symbols_typed(
         &self,
-        query: &str,
+        profile: &perl_workspace::workspace_symbol_query::WorkspaceSymbolQueryProfile,
         cap: usize,
     ) -> Vec<perl_workspace::workspace_index::WorkspaceSymbol> {
         use perl_lsp_rs_core::providers::dancer2::{
@@ -1307,10 +1307,13 @@ impl LspServer {
         use perl_parser_core::position::{Position, Range as ByteRange};
         use perl_symbol::SymbolKind;
 
-        if query.is_empty() || cap == 0 {
+        use perl_workspace::workspace_symbol_query::{
+            WorkspaceSymbolMatchTier, WorkspaceSymbolSearchKeyRole, match_searchable_key,
+        };
+
+        if profile.is_browse() || cap == 0 {
             return Vec::new();
         }
-        let lower_query = query.to_ascii_lowercase();
         let docs: Vec<(String, std::sync::Arc<crate::state::ParsedSnapshot>, String)> = {
             let documents = self.documents_guard();
             documents
@@ -1331,7 +1334,13 @@ impl LspServer {
                 continue;
             }
             for entity in dancer2_workspace_entities(&context.facts) {
-                if !entity.bare_name.to_ascii_lowercase().contains(&lower_query) {
+                if !match_searchable_key(
+                    profile,
+                    &entity.bare_name,
+                    WorkspaceSymbolSearchKeyRole::GeneratedFrameworkProjection,
+                )
+                .is_some_and(|evidence| evidence.tier() != WorkspaceSymbolMatchTier::Subsequence)
+                {
                     continue;
                 }
                 let ((sl, sc), (el, ec)) = {
@@ -4266,6 +4275,49 @@ mod tests {
             index.find_symbols("stale_new").is_empty(),
             "failed rename read must clear stale destination facts"
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn dancer2_workspace_symbol_query_obeys_short_query_filter()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let lib = dir.path().join("lib");
+        std::fs::create_dir_all(&lib)?;
+        std::fs::write(
+            lib.join("Dancer2.pm"),
+            "package Dancer2;\nour $VERSION = '1.300.0';\n1;\n",
+        )?;
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(dir.path().to_path_buf());
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|()| "fixture directory must be a file URI")?;
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri.to_string())
+                .with_path(dir.path().to_path_buf()),
+        ];
+        let uri = url::Url::from_file_path(dir.path().join("app.pl"))
+            .map_err(|()| "fixture path must be a file URI")?;
+        server.test_apply_did_open(
+            uri.as_str(),
+            "package App;\nuse lib 'lib';\nuse Dancer2;\nget 'alpha', '/a' => sub { 1 };\nget 'beta', '/b' => sub { 1 };\n",
+            1,
+        )?;
+        let names = |query: &str| -> Vec<String> {
+            let profile =
+                perl_workspace::workspace_symbol_query::WorkspaceSymbolQueryProfile::compile(query);
+            server
+                .dancer2_workspace_symbols_typed(&profile, 100)
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        };
+        assert_eq!(names("a"), vec!["alpha [Dancer2 route]"]);
+        assert!(names("l").is_empty(), "one-character substring must not match");
+        assert_eq!(names("LP"), vec!["alpha [Dancer2 route]"]);
+        assert!(names("aa").is_empty(), "generated entries do not admit subsequences");
+        assert!(names("").is_empty(), "browse excludes framework projections");
         Ok(())
     }
 
