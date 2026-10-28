@@ -188,10 +188,9 @@ impl<'a> Parser<'a> {
                         let token = self.advance_token()?;
                         argument_end = token.end();
 
-                        if base_name == "prototype"
-                            && paren_depth == 1
-                            && token.kind() == TokenKind::Identifier
-                            && token.text.as_ref() == "$)"
+                        // The lexer combines $) as a special variable, but in
+                        // attribute text the closing byte still balances a paren.
+                        if token.kind() == TokenKind::Identifier && token.text.as_ref() == "$)"
                         {
                             paren_depth -= 1;
                         } else {
