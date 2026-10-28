@@ -1547,12 +1547,28 @@ fn when_a_format_declaration_carries_a_comment_then_its_body_still_owns_no_opene
 }
 
 #[test]
+fn format_dot_with_non_horizontal_whitespace_does_not_end_body() {
+    for suffix in ["\u{000b}", "\u{000c}", "\u{00a0}"] {
+        // Perl treats these picture lines as data, not format terminators.
+        let source = format!("format F =\n.{suffix}\n<<FAKE\n.\nmy $x = <<REAL;\nbody\nREAL\n");
+        let scan = perl_parser_pest::heredoc::scan(&source);
+        assert_eq!(scan.captures().len(), 1, "only the real heredoc is owned for {suffix:?}");
+        assert!(scan.stripped().contains("<<FAKE\n.\n"), "picture data must survive");
+        assert!(!scan.stripped().contains("body\nREAL\n"), "real heredoc body must be removed");
+    }
+}
+
+#[test]
 fn when_a_format_body_ends_then_a_later_heredoc_is_still_owned() -> Result<(), String> {
     assert_eq!(
         heredoc_contents("format STDOUT =\n@<<<\n.\nmy $x = <<EOF;\nbody\nEOF\n")?,
         vec![("EOF".to_string(), "body\n".to_string())],
         "code after the format terminator must resume"
     );
+    let padded = "format F =\n@<<<\n. \t\nmy $x = <<EOF;\nbody\nEOF\n";
+    let scan = perl_parser_pest::heredoc::scan(padded);
+    assert_eq!(scan.captures().len(), 1, "horizontal whitespace still permits termination");
+    assert!(!scan.stripped().contains("body\nEOF\n"));
     Ok(())
 }
 

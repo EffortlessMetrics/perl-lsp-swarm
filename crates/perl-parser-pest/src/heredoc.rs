@@ -393,7 +393,8 @@ impl<'a> Scanner<'a> {
                     continue;
                 }
                 Region::Format => {
-                    if content.trim_end() == "." {
+                    // Only horizontal whitespace may follow a format terminator.
+                    if content.trim_end_matches([' ', '\t']) == "." {
                         region = Region::Code;
                     }
                     continue;
