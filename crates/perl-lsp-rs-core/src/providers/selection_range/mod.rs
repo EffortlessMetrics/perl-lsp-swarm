@@ -390,8 +390,10 @@ pub fn selection_ranges(text: &str, positions: &[Position]) -> Vec<SelectionRang
             let line_text = &text[line_start..line_end];
             let trim_left = line_text.find(|c: char| !c.is_whitespace()).unwrap_or(0);
             let trim_right = line_text
-                .rfind(|c: char| !c.is_whitespace())
-                .map(|i| i + 1)
+                .char_indices()
+                .rev()
+                .find(|&(_, c)| !c.is_whitespace())
+                .map(|(i, c)| i + c.len_utf8())
                 .unwrap_or(line_text.len());
             spans.push((line_start + trim_left, line_start + trim_right));
 
@@ -578,6 +580,18 @@ mod tests {
         // Last range should be the full file
         let last = &chain[chain.len() - 1];
         assert_eq!(last.0, 0, "outermost should start at line 0");
+    }
+
+    #[test]
+    fn trimmed_line_includes_final_unicode_character() {
+        for (text, end) in [("# cafe   ", 6), ("# café   ", 6), ("# caf😀   ", 7)] {
+            let results = selection_ranges(text, &[Position::new(0, 3)]);
+            let chain = chain_to_vec(&results[0]);
+            assert!(
+                chain.contains(&(0, 0, 0, end)),
+                "trimmed line must include its final character in {text:?}: {chain:?}"
+            );
+        }
     }
 
     #[test]
