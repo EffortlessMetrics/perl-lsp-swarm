@@ -264,7 +264,7 @@ impl<'a> Parser<'a> {
                                     self.peek_kind(),
                                     Some(TokenKind::LeftBracket | TokenKind::LeftBrace)
                                 ) {
-                                    return Ok(self.recover_invalid_hash_slice_subscript(expr));
+                                    return Ok(self.recover_invalid_postfix_slice_subscript(expr));
                                 }
                             } else {
                                 expr = self.recover_truncated_arrow(expr);
@@ -273,13 +273,36 @@ impl<'a> Parser<'a> {
                         }
 
                         Some(TokenKind::HashSigil) => {
-                            // ->%* or ->%{...}
+                            // ->%*, ->%[...], or ->%{...}
                             self.consume_token()?; // consume %
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
                                 expr = self.consume_arrow_star_deref(expr, "->%*")?;
                                 record_postfix_layer()?;
+                            } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
+                                // ->%[...] key/value array slice
+                                self.advance_token()?;
+                                let index = self.parse_expression()?;
+                                self.expect_closing_delimiter(TokenKind::RightBracket)?;
+
+                                let start = expr.location.start;
+                                let end = self.previous_position().max(index.location.end);
+                                record_postfix_layer()?;
+                                expr = self.charge_node(
+                                    NodeKind::Binary {
+                                        op: "->%[]".to_string(),
+                                        left: Box::new(expr),
+                                        right: Box::new(index),
+                                    },
+                                    SourceLocation { start, end },
+                                )?;
+                                if matches!(
+                                    self.peek_kind(),
+                                    Some(TokenKind::LeftBracket | TokenKind::LeftBrace)
+                                ) {
+                                    return Ok(self.recover_invalid_postfix_slice_subscript(expr));
+                                }
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
                                 self.advance_token()?; // consume {
@@ -1702,11 +1725,11 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn recover_invalid_hash_slice_subscript(&mut self, expr: Node) -> Node {
+    fn recover_invalid_postfix_slice_subscript(&mut self, expr: Node) -> Node {
         let start = expr.location.start;
         let prefix_end = expr.location.end;
         let message =
-            "A postfix hash slice needs parentheses or an explicit arrow before a subscript";
+            "A postfix slice needs parentheses or an explicit arrow before a subscript";
         let location = self.current_position();
         self.record_error(ParseError::syntax(message, location));
         // Reuse the annotated synthetic recovery-node constructor and retain
