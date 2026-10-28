@@ -647,16 +647,12 @@ impl LspServer {
         if let Some(p) = params {
             let uri = req_uri(&p)?;
 
-            // Extract the range parameter (required by LSP spec)
-            // InlayHint range is required per spec, but we allow graceful degradation to full doc
-            let range = if let Ok(((sl, sc), (el, ec))) = req_range(&p) {
-                Some(perl_position_tracking::WireRange::new(
-                    perl_position_tracking::WirePosition::new(sl, sc),
-                    perl_position_tracking::WirePosition::new(el, ec),
-                ))
-            } else {
-                None
-            };
+            // A malformed range must not silently expand the request to the full document.
+            let ((sl, sc), (el, ec)) = req_range(&p)?;
+            let range = Some(perl_position_tracking::WireRange::new(
+                perl_position_tracking::WirePosition::new(sl, sc),
+                perl_position_tracking::WirePosition::new(el, ec),
+            ));
 
             // Clone the current document snapshot and release the mutex before
             // parameter-hint resolution can query the workspace index.

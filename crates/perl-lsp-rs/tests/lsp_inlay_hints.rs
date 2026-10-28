@@ -91,6 +91,28 @@ fn inlay_hints_for_substr_and_types() -> TestResult {
     Ok(())
 }
 
+#[test]
+#[serial]
+fn inlay_hints_reject_missing_or_malformed_ranges() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(Some(inlay_hint_caps()))?;
+    let uri = "file:///hints_invalid_range.pl";
+    harness.open(uri, "my $x = substr(\"hello\", 1, 3);")?;
+    assert!(!request_hints(&mut harness, uri)?.as_array().ok_or("expected hints")?.is_empty());
+
+    for range in [None, Some(json!({"start": {"line": 0, "character": 0}}))] {
+        let mut params = json!({"textDocument": {"uri": uri}});
+        if let Some(range) = range {
+            params["range"] = range;
+        }
+        let response = harness.request_raw(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "textDocument/inlayHint", "params": params
+        }));
+        assert_eq!(response["error"]["code"], -32602, "response: {response}");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Config: enabled = false returns an empty response.
 // ---------------------------------------------------------------------------
