@@ -1680,6 +1680,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(MARKER, "1")
+            .env("RUST_LOG", "debug")
             .env("PERL_LSP_LOG_FILE", dir.path().join("wave-a1.log"))
             .output()?;
         assert!(output.status.success(), "logging child failed: {output:?}");
@@ -1716,6 +1717,7 @@ mod tests {
         Ok(std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", test_name, "--nocapture"])
             .env(marker, "1")
+            .env("RUST_LOG", "debug")
             .env("PERL_LSP_LOG_FILE", log_file)
             .output()?)
     }
