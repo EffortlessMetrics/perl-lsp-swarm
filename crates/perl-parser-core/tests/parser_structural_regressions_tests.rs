@@ -62,6 +62,24 @@ fn end_marker_without_body_is_data_section() -> TestResult {
 }
 
 #[test]
+fn data_marker_with_trailing_comment_stops_parsing() -> TestResult {
+    for marker in ["__DATA__", "__END__"] {
+        let source = format!("1;\n{marker} # explanation\nsub not_code {{ 1 }}\n");
+        let ast = parse_clean(&source)?;
+        let statements = statements(&ast)?;
+        assert_eq!(statements.len(), 2);
+        match &statements[1].kind {
+            NodeKind::DataSection { marker: actual, body, .. } => {
+                assert_eq!(actual, marker);
+                assert_eq!(body.as_deref(), Some("sub not_code { 1 }\n"));
+            }
+            other => return Err(format!("expected DataSection, got {other:?}").into()),
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn phase_block_records_phase_span_and_body() -> TestResult {
     let ast = parse_clean("BEGIN { my $x = 1; }")?;
     let statements = statements(&ast)?;

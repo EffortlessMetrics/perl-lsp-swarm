@@ -284,6 +284,38 @@ fn data_section_is_terminal_code_state_with_one_body_and_one_eof() -> R {
 }
 
 #[test]
+fn data_markers_end_code_even_with_text_on_the_marker_line() -> R {
+    for marker in ["__DATA__", "__END__"] {
+        for suffix in [" # explanation", "; ignored"] {
+            let input = format!("print 1;\n{marker}{suffix}\nsub not_code {{ 1 }}\n");
+            let tokens = collect(&input)?;
+            let marker_token = tokens
+                .iter()
+                .find(|t| matches!(t.token_type, TokenType::DataMarker(_)))
+                .ok_or_else(|| missing(format!("missing marker in {input:?}")))?;
+            assert_eq!(
+                input.get(marker_token.start..marker_token.end),
+                Some(format!("{marker}{suffix}\n").as_str())
+            );
+            assert!(tokens.iter().any(|t| matches!(&t.token_type, TokenType::DataBody(body) if body.as_ref() == "sub not_code { 1 }\n")));
+            assert!(!tokens.iter().any(|t| t.text.as_ref() == "not_code"));
+        }
+    }
+
+    for input in
+        ["__DATA__suffix;\nprint 1;\n", "__END__::suffix;\nprint 1;\n", "print '__DATA__';\n"]
+    {
+        let tokens = collect(input)?;
+        assert!(
+            !tokens.iter().any(|t| matches!(t.token_type, TokenType::DataMarker(_))),
+            "{input:?}"
+        );
+        assert!(tokens.iter().any(|t| t.text.as_ref() == "print"), "{input:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn peek_and_reset_preserve_the_exact_public_stream() -> R {
     let input = "$obj->m('arg'); q{value};";
     let expected = collect(input)?;

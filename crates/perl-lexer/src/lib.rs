@@ -2163,28 +2163,25 @@ impl<'a> PerlLexer<'a> {
                 // These must be at the beginning of a line
                 // Use the after_newline flag to determine if we're at line start
                 if self.after_newline {
-                    // Check if rest of line is only whitespace
-                    // Only treat as data marker if line has no trailing junk
-                    if Self::trailing_ws_only(self.input_bytes, self.position) {
-                        // Consume the rest of the line (the marker line)
-                        while self.position < self.input.len()
-                            && self.input_bytes[self.position] != b'\n'
-                            && self.input_bytes[self.position] != b'\r'
-                        {
-                            self.advance();
-                        }
-                        self.consume_newline();
-
-                        // Switch to data section mode
-                        self.mode = LexerMode::InDataSection;
-
-                        return Some(Token {
-                            token_type: TokenType::DataMarker(Arc::from(marker_text)),
-                            text: Arc::from(marker_text),
-                            start,
-                            end: self.position,
-                        });
+                    // Perl ignores the rest of the marker line, including comments
+                    // and other text, before exposing the data body.
+                    while self.position < self.input.len()
+                        && self.input_bytes[self.position] != b'\n'
+                        && self.input_bytes[self.position] != b'\r'
+                    {
+                        self.advance();
                     }
+                    self.consume_newline();
+
+                    // Switch to data section mode
+                    self.mode = LexerMode::InDataSection;
+
+                    return Some(Token {
+                        token_type: TokenType::DataMarker(Arc::from(marker_text)),
+                        text: Arc::from(marker_text),
+                        start,
+                        end: self.position,
+                    });
                 }
             }
 
