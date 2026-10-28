@@ -208,6 +208,7 @@ pub struct SymbolTable {
     pub references: HashMap<String, Vec<SymbolReference>>,
     /// Scopes indexed by ID for hierarchical lookup
     pub scopes: HashMap<ScopeId, Scope>,
+    pub(crate) lexical_activation: HashMap<usize, usize>,
     /// Scope stack maintained during AST traversal
     scope_stack: Vec<ScopeId>,
     /// Monotonic scope ID generator
@@ -241,6 +242,7 @@ impl SymbolTable {
             symbols: HashMap::new(),
             references: HashMap::new(),
             scopes: HashMap::new(),
+            lexical_activation: HashMap::new(),
             scope_stack: vec![0],
             next_scope_id: 1,
             current_package: "main".to_string(),
@@ -374,17 +376,6 @@ impl SymbolTable {
                 {
                     for symbol in symbols {
                         if symbol.scope_id == scope_id && symbol.kind == kind {
-                            results.push(symbol);
-                        }
-                    }
-                }
-
-                // For 'our' variables, also check package scope
-                if scope.kind != ScopeKind::Package
-                    && let Some(symbols) = self.symbols.get(name)
-                {
-                    for symbol in symbols {
-                        if symbol.declaration.as_deref() == Some("our") && symbol.kind == kind {
                             results.push(symbol);
                         }
                     }
@@ -671,6 +662,11 @@ impl SymbolExtractor {
             }
 
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
+                if matches!(declarator.as_str(), "my" | "state" | "our") {
+                    self.table
+                        .lexical_activation
+                        .insert(variable.location.start, node.location.end);
+                }
                 let doc = self.extract_leading_comment(node.location.start);
                 self.handle_variable_declaration(
                     declarator,
@@ -692,6 +688,9 @@ impl SymbolExtractor {
             } => {
                 let doc = self.extract_leading_comment(node.location.start);
                 for var in variables {
+                    if matches!(declarator.as_str(), "my" | "state" | "our") {
+                        self.table.lexical_activation.insert(var.location.start, node.location.end);
+                    }
                     self.handle_variable_declaration(
                         declarator,
                         var,

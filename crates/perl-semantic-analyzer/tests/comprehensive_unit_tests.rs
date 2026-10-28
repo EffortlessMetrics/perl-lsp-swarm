@@ -1149,3 +1149,73 @@ my %map = (a => 1);
     assert!(hash_c.iter().any(|c| c.label == "keys"));
     Ok(())
 }
+
+#[test]
+fn references_distinguish_shadowed_lexicals() {
+    let code = "my $x = 1; print $x; { print $x; my $x = 2; print $x; } print $x;";
+    let analyzer = parse_and_analyze(code);
+    let positions: Vec<_> = code.match_indices("$x").map(|(pos, _)| pos).collect();
+    let mut outer: Vec<_> =
+        analyzer.find_all_references(positions[0], true).iter().map(|loc| loc.start).collect();
+    outer.sort_unstable();
+    assert_eq!(outer, vec![positions[0], positions[1], positions[2], positions[5]]);
+    let mut inner: Vec<_> =
+        analyzer.find_all_references(positions[4] + 1, true).iter().map(|loc| loc.start).collect();
+    inner.sort_unstable();
+    assert_eq!(inner, vec![positions[3], positions[4]]);
+}
+
+#[test]
+fn references_respect_redeclaration_initializer() {
+    let code = "my $x = 1; print $x; my $x = $x + 1; print $x;";
+    let analyzer = parse_and_analyze(code);
+    let positions: Vec<_> = code.match_indices("$x").map(|(pos, _)| pos).collect();
+    let mut first: Vec<_> =
+        analyzer.find_all_references(positions[0], true).iter().map(|loc| loc.start).collect();
+    first.sort_unstable();
+    assert_eq!(first, vec![positions[0], positions[1], positions[3]]);
+    let mut second: Vec<_> =
+        analyzer.find_all_references(positions[2], true).iter().map(|loc| loc.start).collect();
+    second.sort_unstable();
+    assert_eq!(second, vec![positions[2], positions[4]]);
+}
+
+#[test]
+fn lexical_references_do_not_capture_inner_our() {
+    let code = "my $x = 1; { our $x; print $x; } print $x;";
+    let analyzer = parse_and_analyze(code);
+    let positions: Vec<_> = code.match_indices("$x").map(|(pos, _)| pos).collect();
+    let mut found: Vec<_> =
+        analyzer.find_all_references(positions[0], true).iter().map(|loc| loc.start).collect();
+    found.sort_unstable();
+    assert_eq!(found, vec![positions[0], positions[3]]);
+    assert!(analyzer.find_lexical_references(positions[2], true).is_none());
+}
+
+#[test]
+fn lexical_multiline_inner_use() {
+    let code = "my $x = 1;\nprint $x;\n{\n  print $x;\n  my $x = 2;\n  print $x;\n}\nprint $x;\n";
+    let analyzer = parse_and_analyze(code);
+    let positions: Vec<_> = code.match_indices("$x").map(|(p, _)| p).collect();
+    let result = analyzer.find_lexical_references(positions[4] + 1, true).unwrap_or_default();
+    let mut starts: Vec<_> = result.iter().map(|loc| loc.start).collect();
+    starts.sort_unstable();
+    assert_eq!(starts, vec![positions[3], positions[4]]);
+}
+
+#[test]
+fn lexical_array_element_declines_shortcut() {
+    let code = "my @a = (1); print $a[0];";
+    let analyzer = parse_and_analyze(code);
+    assert!(analyzer.find_lexical_references(3, true).is_none());
+    let code = "my $a = 2; my @a = (1); print $a[0];";
+    let analyzer = parse_and_analyze(code);
+    assert!(analyzer.find_lexical_references(3, true).is_none());
+}
+
+#[test]
+fn scalar_shortcut_declines_indexed_namesake_without_aggregate_declaration() {
+    let code = "my $a = 2; print $a[0];";
+    let analyzer = parse_and_analyze(code);
+    assert!(analyzer.find_lexical_references(3, true).is_none());
+}

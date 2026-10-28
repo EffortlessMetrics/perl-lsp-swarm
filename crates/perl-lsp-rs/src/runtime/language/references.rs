@@ -980,6 +980,47 @@ impl LspServer {
                             }
                         }
 
+                        if include_declaration
+                            && crate::declaration::find_node_at_offset(ast, offset).is_some_and(
+                                |node| {
+                                    matches!(node.kind, perl_parser::ast::NodeKind::Variable { .. })
+                                },
+                            )
+                            && parsed.as_ref().is_some_and(|p| p.parse_errors().is_empty())
+                            && let Some(references) =
+                                crate::semantic::SemanticAnalyzer::analyze_with_source(
+                                    ast, &doc.text,
+                                )
+                                .find_lexical_references(offset, include_declaration)
+                        {
+                            let locations = references.iter().map(|loc| {
+                                let (sl, sc) = self.offset_to_pos16(doc, loc.start);
+                                let (el, ec) = self.offset_to_pos16(doc, loc.end);
+                                json!({"uri": uri, "range": {"start": {"line": sl, "character": sc}, "end": {"line": el, "character": ec}}})
+                            }).collect();
+                            self.check_references_cancellation(
+                                typed_request_id.as_ref(),
+                                &mut fallback_receipt,
+                            )?;
+                            if start.elapsed() >= deadline {
+                                fallback_receipt.deadline_exhausted = true;
+                                fallback_receipt.fallback_completeness = "partial";
+                                fallback_receipt.fallback_reason = Some(
+                                    "reference_scan_deadline_before_lexical_result".to_owned(),
+                                );
+                            }
+                            return Ok((
+                                Some(Value::Array(finalize_reference_locations(locations, cap))),
+                                ReferencesAnsweringTier::SemanticAnalyzer,
+                                index_state,
+                                0,
+                                0,
+                                start.elapsed().as_micros(),
+                                source_backed_attempt.clone(),
+                                fallback_receipt.clone(),
+                            ));
+                        }
+
                         match access_mode {
                             IndexAccessMode::Full(coordinator) => {
                                 let index = coordinator.index();

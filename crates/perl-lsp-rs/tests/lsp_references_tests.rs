@@ -408,3 +408,45 @@ fn test_references_capability_advertised() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn references_respect_lexical_shadowing() -> TestResult {
+    let doc = "my $x = 1;\nprint $x;\n{\n  print $x;\n  my $x = 2;\n  print $x;\n}\nprint $x;\n";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[])?;
+    let uri = format!("{}/lexical-shadow.pl", workspace.root_uri);
+    harness.open_document(&uri, doc)?;
+    let result = harness.request_with_timeout(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 0, "character": 4},
+            "context": {"includeDeclaration": true}
+        }),
+        std::time::Duration::from_secs(10),
+    )?;
+    let mut lines: Vec<_> = result
+        .as_array()
+        .ok_or("expected references array")?
+        .iter()
+        .filter_map(|location| location.pointer("/range/start/line").and_then(|v| v.as_u64()))
+        .collect();
+    lines.sort_unstable();
+    assert_eq!(lines, vec![0, 1, 3, 7]);
+    let inner = harness.request_with_timeout(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": uri}, "position": {"line": 5, "character": 9},
+            "context": {"includeDeclaration": true}
+        }),
+        std::time::Duration::from_secs(10),
+    )?;
+    let mut inner_lines: Vec<_> = inner
+        .as_array()
+        .ok_or("expected inner references")?
+        .iter()
+        .filter_map(|location| location.pointer("/range/start/line").and_then(|v| v.as_u64()))
+        .collect();
+    inner_lines.sort_unstable();
+    assert_eq!(inner_lines, vec![4, 5]);
+    Ok(())
+}
