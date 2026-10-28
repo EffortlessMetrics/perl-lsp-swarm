@@ -4148,3 +4148,67 @@ fn arrow_receiver_does_not_navigate_to_coincidental_sub() -> TestResult {
     assert_eq!(location["range"]["start"]["line"], 1);
     Ok(())
 }
+
+#[test]
+fn imported_definition_does_not_cross_package_boundary() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+    let module = "package My::Utils;\nuse Exporter 'import';\nour @EXPORT_OK = qw(calculate_sum);\nsub calculate_sum { 1 }\n1;\n";
+    workspace.write("lib/My/Utils.pm", module)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let module_uri = workspace.uri("lib/My/Utils.pm");
+    harness.open(&module_uri, module)?;
+    let caller = "package First;\nuse My::Utils qw(calculate_sum);\ncalculate_sum();\npackage Second;\ncalculate_sum();\n";
+    let caller_uri = workspace.uri("app.pl");
+    harness.open(&caller_uri, caller)?;
+    harness.barrier();
+    let request = |line| json!({"textDocument": {"uri": caller_uri}, "position": {"line": line, "character": 2}});
+    let imported = harness.request("textDocument/definition", request(2))?;
+    assert_eq!(first_location(&imported)?["uri"], module_uri, "same-package import should resolve");
+    let other_package = harness.request("textDocument/definition", request(4))?;
+    assert!(
+        other_package.is_null() || other_package.as_array().is_some_and(Vec::is_empty),
+        "import must not leak to another package: {other_package}"
+    );
+    Ok(())
+}
+
+#[test]
+fn imported_definition_respects_package_blocks_and_manual_imports() -> TestResult {
+    for (caller, positive, negative) in [
+        (
+            "package First {\nuse My::Utils qw(calculate_sum);\ncalculate_sum();\n}\npackage Second;\ncalculate_sum();\n",
+            2,
+            5,
+        ),
+        (
+            "require My::Utils;\npackage First;\nMy::Utils->import('calculate_sum');\ncalculate_sum();\npackage Second;\ncalculate_sum();\n",
+            3,
+            5,
+        ),
+    ] {
+        let mut harness = LspHarness::new();
+        let workspace = TempWorkspace::new()?;
+        let module = "package My::Utils;\nuse Exporter 'import';\nour @EXPORT_OK = qw(calculate_sum);\nsub calculate_sum { 1 }\n1;\n";
+        workspace.write("lib/My/Utils.pm", module)?;
+        harness.initialize_with_root(&workspace.root_uri, None)?;
+        let module_uri = workspace.uri("lib/My/Utils.pm");
+        harness.open(&module_uri, module)?;
+        let caller_uri = workspace.uri("app.pl");
+        harness.open(&caller_uri, caller)?;
+        harness.barrier();
+        let request = |line| json!({"textDocument": {"uri": caller_uri}, "position": {"line": line, "character": 2}});
+        let imported = harness.request("textDocument/definition", request(positive))?;
+        assert_eq!(
+            first_location(&imported)?["uri"],
+            module_uri,
+            "same-package import should resolve: {caller}"
+        );
+        let other_package = harness.request("textDocument/definition", request(negative))?;
+        assert!(
+            other_package.is_null() || other_package.as_array().is_some_and(Vec::is_empty),
+            "import must not leak to another package: {other_package}; {caller}"
+        );
+    }
+    Ok(())
+}

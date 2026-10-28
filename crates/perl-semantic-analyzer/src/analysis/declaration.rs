@@ -1841,7 +1841,7 @@ fn symbol_at_cursor_internal(
         })
     }
 
-    fn find_import_source(ast: &Node, symbol_name: &str) -> Option<String> {
+    fn find_import_source(ast: &Node, symbol_name: &str, current_pkg: &str) -> Option<String> {
         /// Extract the module name from a `require Module;` statement node.
         ///
         /// Matches both `require Foo::Bar` (Identifier arg) and
@@ -2009,7 +2009,12 @@ fn symbol_at_cursor_internal(
         /// that exports `symbol`.  The require and import calls do not have to
         /// be adjacent — the import just needs to appear anywhere in the same
         /// statement list after (or even before) the require.
-        fn scan_statements_for_require_import(stmts: &[Node], symbol: &str) -> Option<String> {
+        fn scan_statements_for_require_import(
+            ast: &Node,
+            stmts: &[Node],
+            symbol: &str,
+            current_pkg: &str,
+        ) -> Option<String> {
             // Collect all `require Module` names present in this block.
             let mut required_modules: Vec<String> =
                 stmts.iter().filter_map(|s| require_module_name(inner_expr(s))).collect();
@@ -2032,6 +2037,9 @@ fn symbol_at_cursor_internal(
             // exports our symbol, using the set of required modules.
             for stmt in stmts {
                 let expr = inner_expr(stmt);
+                if current_package_at(ast, expr.location.start) != current_pkg {
+                    continue;
+                }
                 for module in &required_modules {
                     if import_call_exports(expr, module, symbol, &aliases) {
                         return Some(module.clone());
@@ -2041,8 +2049,10 @@ fn symbol_at_cursor_internal(
             None
         }
 
-        fn find(node: &Node, name: &str) -> Option<String> {
-            if let NodeKind::Use { module, args, .. } = &node.kind {
+        fn find(ast: &Node, node: &Node, name: &str, current_pkg: &str) -> Option<String> {
+            if let NodeKind::Use { module, args, .. } = &node.kind
+                && current_package_at(ast, node.location.start) == current_pkg
+            {
                 // Skip structural pragmas — their args are not import-list symbols
                 if NON_IMPORT_PRAGMAS.contains(&module.as_str()) {
                     // Fall through to children
@@ -2089,13 +2099,14 @@ fn symbol_at_cursor_internal(
                 _ => None,
             };
             if let Some(statements) = stmts
-                && let Some(module) = scan_statements_for_require_import(statements, name)
+                && let Some(module) =
+                    scan_statements_for_require_import(ast, statements, name, current_pkg)
             {
                 return Some(module);
             }
 
             for child in get_node_children(node) {
-                if let Some(module) = find(child, name) {
+                if let Some(module) = find(ast, child, name, current_pkg) {
                     return Some(module);
                 }
             }
@@ -2103,7 +2114,7 @@ fn symbol_at_cursor_internal(
             None
         }
 
-        find(ast, symbol_name)
+        find(ast, ast, symbol_name, current_pkg)
     }
 
     fn plack_builder_middleware_symbol(path: &[&Node], offset: usize) -> Option<SymbolKey> {
@@ -2185,7 +2196,8 @@ fn symbol_at_cursor_internal(
                 (name[..idx].to_string(), name[idx + 2..].to_string())
             } else {
                 (
-                    find_import_source(ast, name).unwrap_or_else(|| current_pkg.to_string()),
+                    find_import_source(ast, name, current_pkg)
+                        .unwrap_or_else(|| current_pkg.to_string()),
                     name.clone(),
                 )
             };

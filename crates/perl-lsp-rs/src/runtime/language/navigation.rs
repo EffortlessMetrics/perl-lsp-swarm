@@ -2707,8 +2707,11 @@ impl LspServer {
                             if let Some(symbol_key) = cursor_symbol_key {
                                 let workspace_symbol_key =
                                     super::to_workspace_symbol_key(&symbol_key);
-                                let import_source =
-                                    self.find_import_source(ast, &workspace_symbol_key.name);
+                                let import_source = self.find_import_source_in_package(
+                                    ast,
+                                    &workspace_symbol_key.name,
+                                    Some(current_package),
+                                );
                                 let semantic_symbol = semantic_definition_query_symbol(
                                     &workspace_symbol_key,
                                     current_package,
@@ -2857,8 +2860,11 @@ impl LspServer {
 
                             if workspace_symbol_key.kind == crate::workspace_index::SymKind::Sub
                                 && workspace_symbol_key.sigil.is_none()
-                                && let Some(import_source) =
-                                    self.find_import_source(ast, &workspace_symbol_key.name)
+                                && let Some(import_source) = self.find_import_source_in_package(
+                                    ast,
+                                    &workspace_symbol_key.name,
+                                    Some(current_package),
+                                )
                                 && let Some(def_location) = find_workspace_definition_location(
                                     workspace_index,
                                     &import_source,
@@ -3301,7 +3307,11 @@ impl LspServer {
                 &doc.text,
             ) {
                 let workspace_symbol_key = super::to_workspace_symbol_key(&symbol_key);
-                let import_source = self.find_import_source(ast, &workspace_symbol_key.name);
+                let import_source = self.find_import_source_in_package(
+                    ast,
+                    &workspace_symbol_key.name,
+                    Some(current_package),
+                );
                 let symbol = semantic_definition_query_symbol(
                     &workspace_symbol_key,
                     current_package,

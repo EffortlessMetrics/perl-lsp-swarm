@@ -345,6 +345,15 @@ impl LspServer {
         ast: &crate::ast::Node,
         symbol_name: &str,
     ) -> Option<String> {
+        self.find_import_source_in_package(ast, symbol_name, None)
+    }
+
+    pub(crate) fn find_import_source_in_package(
+        &self,
+        ast: &crate::ast::Node,
+        symbol_name: &str,
+        package: Option<&str>,
+    ) -> Option<String> {
         use perl_parser::ast::NodeKind;
 
         fn require_module_name(node: &crate::ast::Node) -> Option<String> {
@@ -476,9 +485,19 @@ impl LspServer {
             }
         }
 
-        fn find(node: &crate::ast::Node, name: &str) -> Option<String> {
+        fn find(
+            ast: &crate::ast::Node,
+            node: &crate::ast::Node,
+            name: &str,
+            package: Option<&str>,
+        ) -> Option<String> {
+            let matches_package = |site: &crate::ast::Node| {
+                package.is_none_or(|pkg| {
+                    crate::declaration::current_package_at(ast, site.location.start) == pkg
+                })
+            };
             match &node.kind {
-                NodeKind::Use { module, args, .. } => {
+                NodeKind::Use { module, args, .. } if matches_package(node) => {
                     for arg in args {
                         if arg == name {
                             return Some(module.clone());
@@ -525,6 +544,9 @@ impl LspServer {
                     }
                     for stmt in statements {
                         let expr = inner_expr(stmt);
+                        if !matches_package(expr) {
+                            continue;
+                        }
                         for module in &required_modules {
                             if import_call_exports(expr, module, name, &aliases) {
                                 return Some(module.clone());
@@ -532,17 +554,20 @@ impl LspServer {
                         }
                     }
                     for stmt in statements {
-                        if let Some(src) = find(stmt, name) {
+                        if let Some(src) = find(ast, stmt, name, package) {
                             return Some(src);
                         }
                     }
+                }
+                NodeKind::Package { block: Some(block), .. } if package.is_some() => {
+                    return find(ast, block, name, package);
                 }
                 _ => {}
             }
             None
         }
 
-        find(ast, symbol_name)
+        find(ast, ast, symbol_name, package)
     }
 
     /// Check if a variable is declared with 'our' (package-scoped)
