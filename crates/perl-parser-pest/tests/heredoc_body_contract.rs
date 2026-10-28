@@ -1565,7 +1565,7 @@ fn when_a_format_body_ends_then_a_later_heredoc_is_still_owned() -> Result<(), S
         vec![("EOF".to_string(), "body\n".to_string())],
         "code after the format terminator must resume"
     );
-    let padded = "format F =\n@<<<\n. \t\nmy $x = <<EOF;\nbody\nEOF\n";
+    let padded = "format F =\ntext\n. \t\nmy $x = <<EOF;\nbody\nEOF\n";
     let scan = perl_parser_pest::heredoc::scan(padded);
     assert_eq!(scan.captures().len(), 1, "horizontal whitespace still permits termination");
     assert!(!scan.stripped().contains("body\nEOF\n"));
