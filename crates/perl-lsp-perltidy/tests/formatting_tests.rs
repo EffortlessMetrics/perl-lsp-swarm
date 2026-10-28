@@ -365,3 +365,169 @@ fn get_suggestions_includes_removed_lines() {
     assert_eq!(suggestions[1].formatted, "");
     assert_eq!(suggestions[1].description, "Line removed by formatting");
 }
+
+#[test]
+fn range_formatting_preserves_unselected_line_endings_and_final_newline() {
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success(b"my $x = 1;\n".to_vec()));
+    let mut formatter = PerlTidyFormatter::new(PerlTidyConfig::default(), runtime);
+    let result = must(formatter.format_range("before\r\nmy $x=1;\r\nafter\r\n", 1, 1));
+    assert_eq!(result, "before\r\nmy $x = 1;\r\nafter\r\n");
+}
+
+#[test]
+fn range_formatting_preserves_missing_final_newline() {
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success(b"my $x = 1;\n".to_vec()));
+    let mut formatter = PerlTidyFormatter::new(PerlTidyConfig::default(), runtime);
+    assert_eq!(must(formatter.format_range("before\nmy $x=1;", 1, 1)), "before\nmy $x = 1;");
+}
+
+#[test]
+fn native_range_provider_formats_second_line_with_cr_and_lf() {
+    use perl_lsp_perltidy::native::{FormatContext, FormatDisposition};
+    use perl_lsp_rs_core::providers::formatting::{
+        FormatPosition, FormatRange, FormattingOptions, FormattingProvider,
+    };
+    let provider = FormattingProvider::new(MockSubprocessRuntime::new());
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: None,
+        trim_final_newlines: None,
+    };
+    let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 8));
+    for ending in ["\n", "\r", "\r\n"] {
+        let source = format!("my $a=1;{ending}my $b=2;{ending}");
+        let decision = must(provider.format_range_decision(
+            &source,
+            &range,
+            &options,
+            &FormatContext::default(),
+        ));
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied, "{ending:?}");
+        assert_eq!(decision.document.text, format!("my $a=1;{ending}my $b = 2;{ending}"));
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].new_text, "my $b = 2;");
+    }
+}
+
+#[test]
+fn native_range_bare_cr_refuses_selected_literal() {
+    use perl_lsp_perltidy::{
+        FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+    };
+    let source = "my $a=1;\rmy $x = qr/foo/;\r";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 15));
+    let result = NativeFormatter::new().format_range(source, range, &FormatConfig::default());
+    assert_eq!(result.formatted, source);
+    assert!(result.diagnostics.iter().any(|d| d.code == "native.format.literal_preserve_region"));
+}
+
+#[test]
+fn native_document_bare_cr_uses_same_line_geometry() {
+    use perl_lsp_perltidy::{FormatConfig, NativeFormatter, PerlFormatter};
+    let source = "my $a=1;\rmy $b=2;\r";
+    let result = NativeFormatter::new().format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, "my $a = 1;\rmy $b = 2;\r");
+}
+
+#[test]
+fn native_range_generated_layout_preserves_bare_cr() {
+    use perl_lsp_perltidy::{
+        FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+    };
+    let source = "my $a=1;\rwhile($n){next;}\r";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 16));
+    let result = NativeFormatter::new().format_range(source, range, &FormatConfig::default());
+    assert_eq!(result.formatted, "my $a=1;\rwhile ($n) {\r    next;\r}\r");
+    assert_eq!(result.edits[0].new_text, "while ($n) {\r    next;\r}");
+}
+
+#[test]
+fn native_document_preserves_pod_after_bare_cr() {
+    use perl_lsp_perltidy::{FormatConfig, NativeFormatter, PerlFormatter};
+    let source = "my $a=1;\r=head1 Example\rtext\r=cut\r";
+    let result = NativeFormatter::new().format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, "my $a = 1;\r=head1 Example\rtext\r=cut\r");
+}
+
+#[test]
+fn native_range_preserves_mixed_lines_and_outside_literal() {
+    use perl_lsp_perltidy::native::{FormatContext, FormatDisposition};
+    use perl_lsp_rs_core::providers::formatting::{
+        FormatPosition, FormatRange, FormattingOptions, FormattingProvider,
+    };
+    let provider = FormattingProvider::new(MockSubprocessRuntime::new());
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: None,
+        trim_final_newlines: None,
+    };
+    let source = "# 🦀\rmy $b=2;\r\nmy $re = qr/foo/;\n";
+    let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 8));
+    let decision =
+        must(provider.format_range_decision(source, &range, &options, &FormatContext::default()));
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(decision.document.text, "# 🦀\rmy $b = 2;\r\nmy $re = qr/foo/;\n");
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].range, range);
+}
+
+#[test]
+fn native_multiline_strings_are_preserved_for_range_and_document() {
+    use perl_lsp_perltidy::{
+        FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+    };
+    let formatter = NativeFormatter::new();
+    for ending in ["\n", "\r\n", "\r"] {
+        for quote in ["'", "\""] {
+            let source = format!("my $s = {quote}hello{ending}$x=1;{ending}world{quote};{ending}");
+            let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+            let result = formatter.format_range(&source, range, &FormatConfig::default());
+            assert_eq!(result.formatted, source, "{ending:?} {quote}");
+            assert!(result.edits.is_empty());
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == "native.format.literal_preserve_region"),
+                "{ending:?} {quote}"
+            );
+            let document = formatter.format_document(&source, &FormatConfig::default());
+            assert_eq!(document.formatted, source, "document {ending:?} {quote}");
+        }
+    }
+}
+
+#[test]
+fn native_range_after_multiline_string_remains_formattable() {
+    use perl_lsp_perltidy::{
+        FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+    };
+    for ending in ["\n", "\r\n", "\r"] {
+        let source = format!("my $s = 'hello{ending}raw{ending}world';{ending}$x=1;{ending}");
+        let range = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
+        let result = NativeFormatter::new().format_range(&source, range, &FormatConfig::default());
+        assert_eq!(
+            result.formatted,
+            format!("my $s = 'hello{ending}raw{ending}world';{ending}$x = 1;{ending}"),
+            "{ending:?}"
+        );
+        assert_eq!(result.edits.len(), 1);
+    }
+}
+
+#[test]
+fn native_range_single_line_string_remains_formattable() {
+    use perl_lsp_perltidy::{
+        FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
+    };
+    let source = "my $s='hello';\n";
+    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(1, 0));
+    let result = NativeFormatter::new().format_range(source, range, &FormatConfig::default());
+    assert_eq!(result.formatted, "my $s = 'hello';\n");
+}

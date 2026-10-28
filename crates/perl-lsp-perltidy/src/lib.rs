@@ -304,25 +304,32 @@ impl PerlTidyFormatter {
             );
         }
 
-        let lines: Vec<&str> = code.lines().collect();
-
+        let lines: Vec<&str> = code.split_inclusive('\n').collect();
         if start_line as usize >= lines.len() || end_line as usize >= lines.len() {
             return Err("Line range out of bounds".to_string());
         }
 
-        let range_code = lines[start_line as usize..=end_line as usize].join("\n");
-        let formatted_range = self.format(&range_code)?;
-
-        let mut result = Vec::new();
-        if start_line > 0 {
-            result.extend_from_slice(&lines[0..start_line as usize]);
-        }
-        result.extend(formatted_range.lines());
-        if (end_line as usize) < lines.len() - 1 {
-            result.extend_from_slice(&lines[(end_line as usize + 1)..]);
-        }
-
-        Ok(result.join("\n"))
+        let start = lines[..start_line as usize].iter().map(|line| line.len()).sum::<usize>();
+        let end = start
+            + lines[start_line as usize..=end_line as usize]
+                .iter()
+                .map(|line| line.len())
+                .sum::<usize>();
+        let selected = &code[start..end];
+        let ending = if selected.ends_with("\r\n") {
+            "\r\n"
+        } else if selected.ends_with('\n') {
+            "\n"
+        } else {
+            ""
+        };
+        let formatted = self.format(selected.strip_suffix(ending).unwrap_or(selected))?;
+        // Keep the selected span's boundary terminator and every byte outside it.
+        let formatted = formatted
+            .strip_suffix("\r\n")
+            .or_else(|| formatted.strip_suffix('\n'))
+            .unwrap_or(&formatted);
+        Ok(format!("{}{formatted}{ending}{}", &code[..start], &code[end..]))
     }
 
     /// Get formatting suggestions without applying them.

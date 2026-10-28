@@ -134,7 +134,7 @@ impl NativeFormatter {
         // their contents move the block stack.
         let literal_lines = preserve_region_lines(source);
 
-        for (line_index, line) in source.split_inclusive('\n').enumerate() {
+        for (line_index, line) in physical_lines(source).enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
             if literal_lines.contains(&line_index) {
@@ -236,7 +236,7 @@ impl NativeFormatter {
         let unit = indent_unit(config);
         let literal_lines = preserve_region_lines(source);
 
-        for (line_index, line) in source.split_inclusive('\n').enumerate() {
+        for (line_index, line) in physical_lines(source).enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let in_range = range_includes_line(range, line_index as u32);
             let line_index_u32 = line_index as u32;
@@ -365,8 +365,7 @@ impl NativeFormatter {
 /// formattable; only its body and terminator are preserved.
 pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
     let mut lines = multiline_literal_lines(source);
-    let line_starts: Vec<usize> =
-        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_starts: Vec<usize> = physical_line_starts(source);
     let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
 
     // Token-spanned literals (regex, qw, format bodies, ...).
@@ -407,7 +406,7 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
     let mut in_format = false;
     let mut heredoc_queue: std::collections::VecDeque<(String, bool)> =
         std::collections::VecDeque::new();
-    for (index, raw_line) in source.split_inclusive('\n').enumerate() {
+    for (index, raw_line) in physical_lines(source).enumerate() {
         let (body, _) = split_line_ending(raw_line);
         let trimmed = body.trim_start();
         if in_data {
@@ -492,15 +491,14 @@ fn heredoc_openers(line: &str) -> Vec<(String, bool)> {
 /// stack must ignore them and formatting must preserve them exactly.
 pub(super) fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
     let mut lines = std::collections::HashSet::new();
-    let line_starts: Vec<usize> =
-        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_starts: Vec<usize> = physical_line_starts(source);
     let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
     let mut stream = perl_parser_core::TokenStream::new(source);
     loop {
         match stream.next() {
             Ok(token) if token.kind() == perl_parser_core::TokenKind::Eof => break,
             Ok(token) => {
-                if token.text.contains('\n') {
+                if token.text.contains(['\n', '\r']) {
                     for line in line_of(token.start()) + 1..=line_of(token.end()) {
                         lines.insert(line);
                     }
@@ -616,18 +614,51 @@ impl PerlFormatter for NativeFormatter {
     }
 }
 
+// Treat CRLF as one separator and preserve each original terminator.
+fn physical_lines(source: &str) -> impl Iterator<Item = &str> {
+    let mut remaining = source;
+    std::iter::from_fn(move || {
+        if remaining.is_empty() {
+            return None;
+        }
+        let bytes = remaining.as_bytes();
+        let end = match bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n')) {
+            Some(i) if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') => i + 2,
+            Some(i) => i + 1,
+            None => bytes.len(),
+        };
+        let (line, rest) = remaining.split_at(end);
+        remaining = rest;
+        Some(line)
+    })
+}
+
+fn physical_line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    let mut offset = 0;
+    for line in physical_lines(source) {
+        offset += line.len();
+        if line.ends_with(['\r', '\n']) {
+            starts.push(offset);
+        }
+    }
+    starts
+}
+
 fn split_line_ending(line: &str) -> (&str, &str) {
     if let Some(body) = line.strip_suffix("\r\n") {
         (body, "\r\n")
     } else if let Some(body) = line.strip_suffix('\n') {
         (body, "\n")
+    } else if let Some(body) = line.strip_suffix('\r') {
+        (body, "\r")
     } else {
         (line, "")
     }
 }
 
 fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {
-    if source_line_ending != "\r\n" || !formatted.contains('\n') {
+    if !matches!(source_line_ending, "\r\n" | "\r") || !formatted.contains('\n') {
         return formatted;
     }
 
@@ -635,7 +666,7 @@ fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) 
     let mut remaining = formatted.as_str();
     while let Some((line, tail)) = remaining.split_once('\n') {
         normalized.push_str(line.strip_suffix('\r').unwrap_or(line));
-        normalized.push_str("\r\n");
+        normalized.push_str(source_line_ending);
         remaining = tail;
     }
     normalized.push_str(remaining);
@@ -2375,7 +2406,8 @@ fn simple_value_text(token: &perl_parser_core::Token) -> Option<&str> {
 }
 
 pub(super) fn literal_preserve_region(source: &str) -> Option<&'static str> {
-    for line in source.lines() {
+    for line in physical_lines(source) {
+        let (line, _) = split_line_ending(line);
         let trimmed = line.trim_start();
         if is_pod_start(trimmed) {
             return Some("POD");
@@ -2413,10 +2445,11 @@ pub(super) fn literal_preserve_region(source: &str) -> Option<&'static str> {
 /// multi-line constructs that straddle the range boundary.
 fn literal_preserve_region_for_range(source: &str, range: TextRange) -> Option<&'static str> {
     // --- line-based checks (scoped to the requested lines) ---
-    for (line_index, line) in source.lines().enumerate() {
+    for (line_index, line) in physical_lines(source).enumerate() {
         if !range_includes_line(range, line_index as u32) {
             continue;
         }
+        let (line, _) = split_line_ending(line);
         let trimmed = line.trim_start();
         if is_pod_start(trimmed) {
             return Some("POD");
@@ -2450,7 +2483,7 @@ fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
     let mut found_start = false;
 
     let mut byte_offset = 0_usize;
-    for (line_index, line) in source.split_inclusive('\n').enumerate() {
+    for (line_index, line) in physical_lines(source).enumerate() {
         let line_index = line_index as u32;
         if line_index == range.start.line {
             byte_start = byte_offset;
@@ -2491,6 +2524,7 @@ fn token_literal_preserve_region_overlapping(
         // Check only tokens of interest for preserve regions.
         let kind_label = match token.kind() {
             TokenKind::Eof => return None,
+            TokenKind::String if token.text.contains(['\n', '\r']) => "multiline string",
             TokenKind::Regex => "regex literal",
             TokenKind::Substitution => "substitution operator",
             TokenKind::Transliteration => "transliteration operator",
@@ -2523,6 +2557,9 @@ fn token_literal_preserve_region(source: &str) -> Option<&'static str> {
         };
         match token.kind() {
             TokenKind::Eof => return None,
+            TokenKind::String if token.text.contains(['\n', '\r']) => {
+                return Some("multiline string");
+            }
             TokenKind::Regex => return Some("regex literal"),
             TokenKind::Substitution => return Some("substitution operator"),
             TokenKind::Transliteration => return Some("transliteration operator"),
