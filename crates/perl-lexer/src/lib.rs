@@ -1986,6 +1986,12 @@ impl<'a> PerlLexer<'a> {
             pos += 1;
         }
 
+        // A digit-suffixed package segment starts a qualified identifier, not
+        // a single-component v-string followed by the package separator.
+        if bytes.get(pos..pos + 2) == Some(b"::") {
+            return None;
+        }
+
         // Consume optional `.DIGITS` segments (require at least one digit after dot)
         while pos < bytes.len() && bytes[pos] == b'.' {
             let dot_pos = pos;

@@ -94,6 +94,15 @@ fn test_vstring_no_dot_single_component() {
     );
 }
 
+#[test]
+fn test_v_digits_package_qualified_call() {
+    let source = "my $result = v5::foo();";
+    assert_clean_parse(source);
+    let sexp = parse(source).to_sexp();
+    assert!(sexp.contains("(name v5::foo)"), "qualified call lost: {sexp}");
+    assert!(!sexp.contains("(vstring "), "package became a v-string: {sexp}");
+}
+
 /// ripr+ gap 1: lower_ast must accept NodeKind::VString nodes produced by the
 /// parser without panic.  This test exercises the `TokenKind::VString →
 /// NodeKind::VString` arm in `primary.rs` (the core PR change) and then feeds

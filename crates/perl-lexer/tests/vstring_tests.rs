@@ -232,3 +232,15 @@ fn test_vstring_large_version_numbers() -> R {
     );
     Ok(())
 }
+
+#[test]
+fn test_v_digits_package_name_is_identifier() {
+    for source in ["v5::foo", "v12::Nested::method"] {
+        let toks = significant(source);
+        assert_eq!(toks.len(), 1, "{source}: {toks:?}");
+        assert!(
+            matches!(&toks[0].token_type, TokenType::Identifier(name) if name.as_ref() == source),
+            "{source}: {toks:?}"
+        );
+    }
+}
