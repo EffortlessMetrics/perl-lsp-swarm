@@ -263,3 +263,28 @@ fn malformed_not_rhs_recovers_following_statement() -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+fn word_not_arrow_subscript_chain() -> Result<(), String> {
+    for (source, expected) in [
+        ("not($n)->[0]{key};", "{}(->[](not($n),0),id:key)"),
+        ("not($n)->{key}[0];", "[](->{}(not($n),id:key),0)"),
+        ("not($n)->[0][1];", "[](->[](not($n),0),1)"),
+    ] {
+        let ast = clean(source)?;
+        let actual = shape(expression(&ast)?)?;
+        if actual != expected {
+            return Err(format!("{source:?}: expected {expected}, got {actual}"));
+        }
+    }
+    for source in ["not($n)[0];", "not($n)->foo[0];"] {
+        let output = Parser::new(source).parse_with_recovery();
+        if output.diagnostics.is_empty() {
+            return Err(format!(
+                "admitted invalid continuation: {source:?} {}",
+                output.ast.to_sexp()
+            ));
+        }
+    }
+    Ok(())
+}

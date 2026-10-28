@@ -59,8 +59,9 @@ impl<'a> Parser<'a> {
     /// FC-WORD-NOT-POSTFIX-OVERADMIT). Perl admits `->` chains on a
     /// parenthesized `not` result (`not($x)->foo`) but rejects direct `[]`,
     /// `{}`, `++`, `--`, and call continuations (`not($x)[0]`, `not($x)++`
-    /// are syntax errors per perl 5.38.2 `-c`). Anything else stays
-    /// unconsumed so statement recovery reports it instead of a clean AST.
+    /// are syntax errors per perl 5.38.2 `-c`). Subscripts may continue
+    /// implicitly after an arrow subscript; other tokens stay unconsumed so
+    /// statement recovery reports them instead of a clean AST.
     pub(crate) fn parse_arrow_chain(&mut self, expr: Node) -> ParseResult<Node> {
         self.parse_postfix_chain_with(expr, true)
     }
@@ -83,10 +84,22 @@ impl<'a> Parser<'a> {
 
         loop {
             // #13932 (FC-WORD-NOT-POSTFIX-OVERADMIT): word `not` results admit
-            // only `->` continuations. Anything else is left unconsumed so
-            // statement recovery reports the residue instead of a clean AST.
+            // only `->` continuations initially. Implicit subscripts may follow
+            // an arrow subscript; other tokens remain for statement recovery.
             if arrow_only && !matches!(self.peek_kind(), Some(TokenKind::Arrow)) {
-                break;
+                // Once an arrow subscript has established a dereference chain,
+                // Perl also permits implicit subscripts on its result.
+                let implicit_subscript = matches!(
+                    self.peek_kind(),
+                    Some(TokenKind::LeftBracket | TokenKind::LeftBrace)
+                ) && matches!(
+                    &expr.kind,
+                    NodeKind::Binary { op, .. }
+                        if matches!(op.as_str(), "->[]" | "->{}" | "[]" | "{}")
+                );
+                if !implicit_subscript {
+                    break;
+                }
             }
             // #15649: leave a surviving do-while trailing `{` for
             // `parse_statement_modifier` to reject with `DoWhileTrailingBlock`.
