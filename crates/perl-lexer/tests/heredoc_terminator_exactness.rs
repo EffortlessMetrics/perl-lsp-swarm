@@ -204,3 +204,16 @@ fn exact_label_at_eof_remains_a_terminator() -> R {
         "exact label at EOF was incorrectly classified as unterminated",
     )
 }
+
+#[test]
+fn missing_terminator_at_body_start_is_recovery() -> R {
+    for source in ["<<END", "<<END\n", "<<'END'\n", "<<''\n", "<<A, <<B\nA\n"] {
+        let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+        require_unterminated_payload(source, &tokens, "")?;
+        require(
+            matches!(tokens.last().map(|t| &t.token_type), Some(TokenType::EOF)),
+            "recovery must finish at EOF",
+        )?;
+    }
+    Ok(())
+}

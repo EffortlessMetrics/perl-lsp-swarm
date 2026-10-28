@@ -508,9 +508,16 @@ impl<'a> PerlLexer<'a> {
                 continue; // Go back to top of loop to process heredoc
             }
 
-            // If we reach EOF with pending heredocs, clear them and emit EOF
+            // A pending body at EOF still lacks its terminator, even when
+            // there are no body bytes to include in the recovery token.
             if self.position >= self.input.len() && !self.pending_heredocs.is_empty() {
                 self.pending_heredocs.clear();
+                return Some(Token {
+                    token_type: TokenType::UnknownRest,
+                    text: empty_arc(),
+                    start: self.position,
+                    end: self.position,
+                });
             }
 
             if self.position >= self.input.len() {
