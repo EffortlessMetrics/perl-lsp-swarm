@@ -140,6 +140,24 @@ mod tests {
     }
 
     #[test]
+    fn zero_line_is_not_verified() {
+        let o = oracle("my $x = 1;\n");
+        let bp = DebugBreakpoint {
+            id: None,
+            source: DebugSource::from_path("/work/script.pl"),
+            line: 0,
+            column: None,
+            condition: None,
+            hit_condition: None,
+            log_message: None,
+        };
+        let outcome = o.validate_source_breakpoint(&bp);
+        assert!(!outcome.verified);
+        assert_eq!(outcome.actual_line, 0);
+        assert!(outcome.message.is_some());
+    }
+
+    #[test]
     fn executable_line_is_verified() {
         let o = oracle("# a comment\nmy $x = 1;\nprint $x;\n");
         let bp = DebugBreakpoint {

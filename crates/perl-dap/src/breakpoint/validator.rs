@@ -201,7 +201,7 @@ impl AstBreakpointValidator {
 
     /// Get the line range (start byte, end byte) for a given 1-based line number
     fn line_byte_range(&self, line: i64) -> Option<(usize, usize)> {
-        let line_idx = (line - 1).max(0) as usize;
+        let line_idx = usize::try_from(line.checked_sub(1)?).ok()?;
         if line_idx >= self.rope.len_lines() {
             return None;
         }
@@ -467,6 +467,18 @@ mod tests {
         let result = validator.validate(100);
         assert!(!result.verified);
         assert_eq!(result.reason, Some(ValidationReason::LineOutOfRange));
+    }
+
+    #[test]
+    fn test_invalid_line_numbers() {
+        let validator = must(AstBreakpointValidator::new("my $x = 1;\n"));
+        for line in [i64::MIN, -1, 0, 3, i64::MAX] {
+            let result = validator.validate(line);
+            assert!(!result.verified, "line {line} must be rejected");
+            assert_eq!(result.line, line);
+            assert_eq!(result.reason, Some(ValidationReason::LineOutOfRange));
+        }
+        assert!(validator.validate(1).verified);
     }
 
     #[test]
