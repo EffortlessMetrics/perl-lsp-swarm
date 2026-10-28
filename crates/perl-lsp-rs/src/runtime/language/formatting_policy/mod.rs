@@ -8,8 +8,7 @@
 //! same-line adjacent edit composition.
 
 use super::super::{
-    GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
-    PerlLspCancellationToken, Value, json,
+    INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, Value, json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::convert::{WirePosition, WireRange};
@@ -243,15 +242,16 @@ fn actual_engine_for_decisions(decisions: &[FormattingDecision]) -> Option<&'sta
 }
 
 fn cancellation_token(
+    server: &LspServer,
     id: Option<&JsonRpcId>,
     surface: Surface,
 ) -> Option<PerlLspCancellationToken> {
     let id = id?;
-    if let Some(token) = GLOBAL_CANCELLATION_REGISTRY.get_token(id) {
+    if let Some(token) = server.cancellation_registry.get_token(id) {
         return Some(token);
     }
     let token = PerlLspCancellationToken::new(id.clone(), surface.method().to_string());
-    let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+    let _ = server.cancellation_registry.register_token(token.clone());
     Some(token)
 }
 

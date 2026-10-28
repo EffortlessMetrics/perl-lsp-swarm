@@ -532,7 +532,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
+    use crate::cancellation::PerlLspCancellationToken;
 
     /// Static-analysis test: verify that `LSP_TEST_FALLBACKS` is only read
     /// inside `#[cfg(any(test, feature = "test-fallbacks"))]` blocks, never
@@ -1027,8 +1027,8 @@ fn production() {
         // finds a cancelled token and returns REQUEST_CANCELLED immediately.
         let token =
             PerlLspCancellationToken::new(typed_id.clone(), "textDocument/definition".to_string());
-        let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token);
-        let _ = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&typed_id);
+        let _ = server.cancellation_registry.register_token(token);
+        let _ = server.cancellation_registry.cancel_request(&typed_id);
 
         let params = json!({
             "textDocument": {"uri": "file:///nonexistent.pl"},
@@ -1039,7 +1039,7 @@ fn production() {
             .handle_definition_cancellable_dispatch(Some(params), Some(&request_id.to_value()));
 
         // Clean up the registry entry
-        GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
+        server.cancellation_registry.remove_request(&typed_id);
 
         match result {
             Err(error) => {

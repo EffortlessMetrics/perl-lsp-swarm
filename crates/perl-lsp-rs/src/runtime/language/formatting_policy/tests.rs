@@ -247,14 +247,14 @@ fn cancellation_records_a_typed_receipt() -> Result<(), Box<dyn std::error::Erro
     let request_id = JsonRpcId::Integer(77);
     let token =
         PerlLspCancellationToken::new(request_id.clone(), Surface::Document.method().to_string());
-    GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone())?;
-    let _ = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&request_id)?;
+    server.cancellation_registry.register_token(token.clone())?;
+    let _ = server.cancellation_registry.cancel_request(&request_id)?;
 
     let error = server
         .ensure_not_cancelled(Surface::Document, Some(&token), Some(&snapshot), None)
         .err()
         .ok_or("expected cancellation error")?;
-    GLOBAL_CANCELLATION_REGISTRY.remove_request(&request_id);
+    server.cancellation_registry.remove_request(&request_id);
 
     assert_eq!(error.code, REQUEST_CANCELLED);
     assert_eq!(receipt(&server)?["reason"], "request_cancelled");

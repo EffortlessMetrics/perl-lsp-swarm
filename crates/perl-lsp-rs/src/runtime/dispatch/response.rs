@@ -1,6 +1,6 @@
 //! JSON-RPC response construction for dispatched requests.
 
-use super::super::{JsonRpcError, JsonRpcId, JsonRpcResponse, Value};
+use super::super::{JsonRpcError, JsonRpcId, JsonRpcResponse, LspServer, Value};
 use super::request_cancellation::finalize_cancellation_state;
 use perl_parser_core::ErrorCategory;
 
@@ -33,6 +33,7 @@ fn classify_jsonrpc_error(error: &JsonRpcError) -> ErrorCategory {
 }
 
 pub(super) fn finalize_response(
+    server: &LspServer,
     request_id: Option<&Value>,
     routed: RoutedResponse,
 ) -> Option<JsonRpcResponse> {
@@ -42,7 +43,7 @@ pub(super) fn finalize_response(
             // Check for enhanced cancellation with provider context before cleanup.
             // This preserves cancelled responses for requests that are interrupted while
             // handlers are already running.
-            if let Some(cancelled) = finalize_cancellation_state(request_id) {
+            if let Some(cancelled) = finalize_cancellation_state(server, request_id) {
                 return Some(cancelled);
             }
 

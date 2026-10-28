@@ -6,8 +6,8 @@
 use super::super::diagnostics_sink::DiagnosticSubject;
 use super::super::{
     CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider, EnhancedCodeActionsProvider,
-    GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind, InternalCodeActionKindV2,
-    JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, TestGenerator, Value, json,
+    HashMap, InternalCodeActionKind, InternalCodeActionKindV2, JsonRpcError, JsonRpcId, LspServer,
+    PerlLspCancellationToken, TestGenerator, Value, json,
 };
 
 /// One immutable accepted subject for a native critic code-action run (#9062).
@@ -1436,16 +1436,19 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
-        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+        let _cleanup_guard = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
 
         let Some(ref tid) = typed_id else {
             return self.handle_code_action(params);
         };
 
-        let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+        let token = self.cancellation_registry.get_token(tid).unwrap_or_else(|| {
             let token =
                 PerlLspCancellationToken::new(tid.clone(), "textDocument/codeAction".into());
-            let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+            let _ = self.cancellation_registry.register_token(token.clone());
             token
         });
         let cancelled = || JsonRpcError {
@@ -2159,7 +2162,7 @@ print $x;
             JsonRpcId::from_value(&request_id).expect("numeric request id is valid"),
             "textDocument/codeAction".into(),
         );
-        let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+        let _ = server.cancellation_registry.register_token(token.clone());
         token.cancel();
 
         let params = json!({

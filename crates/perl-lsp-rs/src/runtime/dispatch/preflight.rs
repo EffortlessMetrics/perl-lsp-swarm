@@ -44,7 +44,7 @@ pub(super) fn prepare_request(
     // deliberately. Cancellation handling remains ahead of token registration.
     //
     // `register_request_cancellation` inserts a token and a cloned cleanup
-    // context into the global registry, and the entry is normally removed by
+    // context into the session registry, and the entry is normally removed by
     // `finalize_response` or a handler cleanup guard. Rejecting here returns
     // early and reaches neither, so admitting after registration would leak one
     // registry entry — holding its cloned params — per rejected request, letting

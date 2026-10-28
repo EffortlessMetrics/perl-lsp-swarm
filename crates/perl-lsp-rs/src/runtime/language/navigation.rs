@@ -4,9 +4,8 @@
 //! and textDocument/implementation requests.
 
 use super::super::{
-    Arc, DocumentState, GLOBAL_CANCELLATION_REGISTRY, ImplementationProvider, JsonRpcError,
-    JsonRpcId, LspServer, ParentMap, Parser, PerlLspCancellationToken, REQUEST_CANCELLED, Value,
-    json,
+    Arc, DocumentState, ImplementationProvider, JsonRpcError, JsonRpcId, LspServer, ParentMap,
+    Parser, PerlLspCancellationToken, REQUEST_CANCELLED, Value, json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{req_position, req_uri};
@@ -2915,17 +2914,20 @@ impl LspServer {
         // Convert raw Value ID to typed ID at the boundary.
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)
-        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+        let _cleanup_guard = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
 
         if let Some(params) = params {
             // Create or get cancellation token for this request
             if let Some(ref tid) = typed_id {
-                let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+                let token = self.cancellation_registry.get_token(tid).unwrap_or_else(|| {
                     let token = PerlLspCancellationToken::new(
                         tid.clone(),
                         "textDocument/definition".to_string(),
                     );
-                    let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                    let _ = self.cancellation_registry.register_token(token.clone());
                     token
                 });
 

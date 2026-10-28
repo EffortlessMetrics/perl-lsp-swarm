@@ -13,8 +13,11 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
-        let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
-        let token = cancellation_token(typed_id.as_ref(), Surface::Document);
+        let _cleanup = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
+        let token = cancellation_token(self, typed_id.as_ref(), Surface::Document);
         self.ensure_not_cancelled(Surface::Document, token.as_ref(), None, None)?;
         self.ensure_surface_advertised(Surface::Document)?;
         let params = params.ok_or_else(|| invalid_params("Missing formatting parameters"))?;
@@ -55,8 +58,11 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
-        let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
-        let token = cancellation_token(typed_id.as_ref(), Surface::Range);
+        let _cleanup = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
+        let token = cancellation_token(self, typed_id.as_ref(), Surface::Range);
         self.ensure_not_cancelled(Surface::Range, token.as_ref(), None, None)?;
         let params = params.ok_or_else(|| invalid_params("Missing range-formatting parameters"))?;
         let snapshot = self.admit(Surface::Range, &params)?;
@@ -113,8 +119,11 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
-        let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
-        let token = cancellation_token(typed_id.as_ref(), Surface::OnType);
+        let _cleanup = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
+        let token = cancellation_token(self, typed_id.as_ref(), Surface::OnType);
         self.ensure_not_cancelled(Surface::OnType, token.as_ref(), None, None)?;
         let params =
             params.ok_or_else(|| invalid_params("Missing on-type formatting parameters"))?;

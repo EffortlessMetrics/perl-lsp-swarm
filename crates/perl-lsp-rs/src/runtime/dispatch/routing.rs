@@ -10,7 +10,6 @@ use super::super::{
     cancelled_response_with_method, enhanced_error,
 };
 use super::response::RoutedResponse;
-use crate::cancellation::GLOBAL_CANCELLATION_REGISTRY;
 
 impl LspServer {
     pub(super) fn route_request(
@@ -348,7 +347,7 @@ impl LspServer {
             && self.is_cancelled(&typed_id)
         {
             self.cancel_clear(&typed_id);
-            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
+            self.cancellation_registry.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
@@ -395,18 +394,20 @@ impl LspServer {
             // Remove the token registered by check_cancellation_before_dispatch
             // so it is not orphaned when the Immediate path bypasses the
             // RequestCleanupGuard below (#5944).
-            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
+            self.cancellation_registry.remove_request(&typed_id);
             self.record_lsp_request_latency(&method, request_start);
             return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
         }
 
         // Create cleanup guard around handler so cancellation state is cleaned
         // up on both normal return and panic. Without this, a panicking handler
-        // orphans its token in the global cancellation registry (#5369).
+        // orphans its token in the session cancellation registry (#5369).
         let typed_id = id.as_ref().and_then(JsonRpcId::from_value);
-        let _cleanup_guard = perl_lsp_rs_core::runtime::cancellation::RequestCleanupGuard::from_ref(
-            typed_id.as_ref(),
-        );
+        let _cleanup_guard =
+            perl_lsp_rs_core::runtime::cancellation::RequestCleanupGuard::for_registry(
+                self.cancellation_registry.clone(),
+                typed_id.as_ref(),
+            );
 
         let result = handler(id.as_ref());
         self.record_live_provider_decision_trace(&method, &result);

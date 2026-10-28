@@ -373,7 +373,8 @@ struct IndexingResources {
     outbound: outbound::OutboundSender,
     work_done_progress: bool,
     progress_tokens: Arc<Mutex<HashSet<String>>>,
-    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
+    progress_token_to_request:
+        Arc<Mutex<HashMap<String, crate::runtime::ProgressCancellationTarget>>>,
     next_request_id: Arc<AtomicI32>,
     permission_denied_shown: Arc<AtomicBool>,
     readiness_receipt: Arc<Mutex<crate::runtime::readiness::WorkspaceReadinessReceipt>>,
@@ -387,7 +388,8 @@ struct IndexingResources {
 #[cfg(feature = "workspace")]
 struct WorkspaceIndexCancellationGuard {
     progress_tokens: Arc<Mutex<HashSet<String>>>,
-    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
+    progress_token_to_request:
+        Arc<Mutex<HashMap<String, crate::runtime::ProgressCancellationTarget>>>,
     request_id: JsonRpcId,
 }
 
@@ -2947,7 +2949,7 @@ impl LspServer {
                 progress_tokens.lock().insert(WORKSPACE_INDEX_PROGRESS_TOKEN.to_string());
                 progress_token_to_request.lock().insert(
                     WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
-                    progress_request_id.clone(),
+                    crate::runtime::ProgressCancellationTarget::Index(progress_request_id.clone()),
                 );
                 true
             }
@@ -5795,18 +5797,21 @@ mod tests {
         server
             .readiness_receipt_observer_id
             .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
-        let client_request_id = JsonRpcId::Integer(1);
-        GLOBAL_CANCELLATION_REGISTRY.remove_request(&client_request_id);
-        GLOBAL_CANCELLATION_REGISTRY.register_token(PerlLspCancellationToken::new(
-            client_request_id.clone(),
-            "client-request".to_string(),
-        ))?;
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
 
         server.start_workspace_indexing();
         started_rx.recv_timeout(SCAN_GATE_WAIT)?;
+        let client_request_id =
+            match server.progress_token_to_request.lock().get(WORKSPACE_INDEX_PROGRESS_TOKEN) {
+                Some(crate::runtime::ProgressCancellationTarget::Index(id)) => id.clone(),
+                _ => return Err("indexing progress was not registered".into()),
+            };
+        server.cancellation_registry.register_token(PerlLspCancellationToken::new(
+            client_request_id.clone(),
+            "client-request".to_string(),
+        ))?;
         server.handle_progress_cancel(Some(json!({
             "token": "workspace-index"
         })));
@@ -5828,9 +5833,11 @@ mod tests {
         {
             return Err("cancelled indexing left progress registration behind".into());
         }
-        let client_request_preserved =
-            GLOBAL_CANCELLATION_REGISTRY.get_token(&client_request_id).is_some();
-        GLOBAL_CANCELLATION_REGISTRY.remove_request(&client_request_id);
+        let client_request_preserved = server
+            .cancellation_registry
+            .get_token(&client_request_id)
+            .is_some_and(|token| !token.is_cancelled());
+        server.cancellation_registry.remove_request(&client_request_id);
         if !client_request_preserved {
             return Err("workspace indexing overwrote a client cancellation registration".into());
         }
@@ -5922,13 +5929,19 @@ mod tests {
             .progress_token_to_request
             .lock()
             .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
-            .cloned()
+            .and_then(|target| match target {
+                crate::runtime::ProgressCancellationTarget::Index(id) => Some(id.clone()),
+                _ => None,
+            })
             .ok_or("cancelled session did not register progress")?;
         let other_request = other_server
             .progress_token_to_request
             .lock()
             .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
-            .cloned();
+            .and_then(|target| match target {
+                crate::runtime::ProgressCancellationTarget::Index(id) => Some(id.clone()),
+                _ => None,
+            });
         cancelled_server.handle_progress_cancel(Some(json!({"token": "workspace-index"})));
         // Keep A paused with its cancelled token live while B completes. This
         // makes the historical cross-session collision deterministic.

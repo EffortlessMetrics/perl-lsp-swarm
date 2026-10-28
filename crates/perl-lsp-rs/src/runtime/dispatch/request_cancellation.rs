@@ -2,9 +2,7 @@ use super::{
     JsonRpcRequest, JsonRpcResponse, LspServer, Value, cancelled_response_with_method,
     enhanced_cancelled_response,
 };
-use crate::cancellation::{
-    GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken, ProviderCleanupContext,
-};
+use crate::cancellation::{PerlLspCancellationToken, ProviderCleanupContext};
 use crate::protocol::JsonRpcId;
 use std::time::Instant;
 
@@ -18,7 +16,7 @@ pub(super) fn handle_cancel_notification(server: &LspServer, request: &JsonRpcRe
         && let Some(typed_id) = JsonRpcId::try_from_value(idv)
     {
         let start_time = Instant::now();
-        if let Ok(_cleanup_context) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&typed_id) {
+        if let Ok(_cleanup_context) = server.cancellation_registry.cancel_request(&typed_id) {
             let latency = start_time.elapsed();
             tracing::debug!(latency = ?latency, request = %typed_id, "Enhanced cancellation processed");
             if latency.as_millis() > 50 {
@@ -54,16 +52,17 @@ pub(super) fn register_request_cancellation(
     let cleanup_context =
         ProviderCleanupContext::new(request.method.clone(), request.params.clone());
 
-    if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_token(token) {
+    if let Err(error) = server.cancellation_registry.register_token(token) {
         tracing::trace!(%error, "cancellation: failed to register token");
     }
-    if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_cleanup(&typed_id, cleanup_context) {
+    if let Err(error) = server.cancellation_registry.register_cleanup(&typed_id, cleanup_context) {
         tracing::trace!(%error, "cancellation: failed to register cleanup");
     }
 
-    if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&typed_id) {
-        if let Some(token) = GLOBAL_CANCELLATION_REGISTRY.get_token(&typed_id) {
-            let cleanup_context = GLOBAL_CANCELLATION_REGISTRY
+    if server.cancellation_registry.is_cancelled(&typed_id) {
+        if let Some(token) = server.cancellation_registry.get_token(&typed_id) {
+            let cleanup_context = server
+                .cancellation_registry
                 .cancel_request(&typed_id)
                 .map_err(|error| {
                     tracing::trace!(%error, "cancellation: failed to cancel request (early)");
@@ -73,11 +72,11 @@ pub(super) fn register_request_cancellation(
             // Clean up the token/cleanup we just registered so the maps
             // don't retain entries for requests that never reach the handler
             // (#5032).
-            GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
+            server.cancellation_registry.remove_request(&typed_id);
             return Some(enhanced_cancelled_response(&token, cleanup_context.as_ref()));
         }
         // Same cleanup for the fallback path.
-        GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
+        server.cancellation_registry.remove_request(&typed_id);
         return Some(cancelled_response_with_method(request_id, &request.method));
     }
 
@@ -109,26 +108,30 @@ fn method_supports_cancellation(method: &str) -> bool {
     )
 }
 
-pub(super) fn finalize_cancellation_state(request_id: Option<&Value>) -> Option<JsonRpcResponse> {
+pub(super) fn finalize_cancellation_state(
+    server: &LspServer,
+    request_id: Option<&Value>,
+) -> Option<JsonRpcResponse> {
     let request_id = request_id?;
     // Convert at the boundary; if conversion fails, skip registry interaction.
     let typed_id = JsonRpcId::try_from_value(request_id)?;
 
-    if let Some(token) = GLOBAL_CANCELLATION_REGISTRY.get_token(&typed_id)
+    if let Some(token) = server.cancellation_registry.get_token(&typed_id)
         && token.is_cancelled()
     {
-        let cleanup_context = GLOBAL_CANCELLATION_REGISTRY
+        let cleanup_context = server
+            .cancellation_registry
             .cancel_request(&typed_id)
             .map_err(|error| {
                 tracing::trace!(%error, "cancellation: failed to cancel request (post-dispatch)");
             })
             .ok()
             .flatten();
-        GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
+        server.cancellation_registry.remove_request(&typed_id);
         return Some(enhanced_cancelled_response(&token, cleanup_context.as_ref()));
     }
 
-    GLOBAL_CANCELLATION_REGISTRY.remove_request(&typed_id);
+    server.cancellation_registry.remove_request(&typed_id);
     None
 }
 
@@ -164,9 +167,9 @@ mod tests {
         let server = LspServer::new();
         let numeric = Value::from(71003_i64);
         let string = Value::from("71003");
-        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
-            .remove_request(&crate::protocol::JsonRpcId::Integer(71003));
-        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+        server.cancellation_registry.remove_request(&crate::protocol::JsonRpcId::Integer(71003));
+        server
+            .cancellation_registry
             .remove_request(&crate::protocol::JsonRpcId::String("71003".to_string()));
 
         server.mark_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
@@ -185,15 +188,71 @@ mod tests {
         if register_request_cancellation(&server, Some(&string), &hover_request()).is_some() {
             return Err("unrelated string ID was incorrectly cancelled".into());
         }
-        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+        server
+            .cancellation_registry
             .remove_request(&crate::protocol::JsonRpcId::String("71003".to_string()));
 
         server.clear_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
         if register_request_cancellation(&server, Some(&numeric), &hover_request()).is_some() {
             return Err("settled numeric ID retained cancellation state".into());
         }
-        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
-            .remove_request(&crate::protocol::JsonRpcId::Integer(71003));
+        server.cancellation_registry.remove_request(&crate::protocol::JsonRpcId::Integer(71003));
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_does_not_cross_server_sessions() -> Result<(), Box<dyn std::error::Error>> {
+        let server_a = LspServer::new();
+        let server_b = LspServer::new();
+        for id in [json!(71004), json!("71004")] {
+            let typed_id = crate::protocol::JsonRpcId::from_value(&id).ok_or("invalid id")?;
+            server_b.mark_request_pending(&typed_id);
+            if register_request_cancellation(&server_b, Some(&id), &hover_request()).is_some() {
+                return Err("fresh B request was unexpectedly cancelled".into());
+            }
+            // A has no request. An unknown cancel must not touch B.
+            handle_cancel_notification(&server_a, &cancellation_request(id.clone()));
+            if server_b.cancellation_registry.is_cancelled(&typed_id) {
+                return Err("unknown cancellation crossed sessions".into());
+            }
+            server_a.mark_request_pending(&typed_id);
+            if register_request_cancellation(&server_a, Some(&id), &hover_request()).is_some() {
+                return Err("fresh A request was unexpectedly cancelled".into());
+            }
+            // A provider cleanup in B must not remove A's token.
+            {
+                let _guard = crate::cancellation::RequestCleanupGuard::for_registry(
+                    server_b.cancellation_registry.clone(),
+                    Some(&typed_id),
+                );
+            }
+            if server_a.cancellation_registry.get_token(&typed_id).is_none() {
+                return Err("provider cleanup crossed sessions".into());
+            }
+            if register_request_cancellation(&server_b, Some(&id), &hover_request()).is_some() {
+                return Err("B could not register after provider cleanup".into());
+            }
+            // Both sessions now have the same wire ID. Cancel A only.
+            handle_cancel_notification(&server_a, &cancellation_request(id.clone()));
+            let a = super::finalize_cancellation_state(&server_a, Some(&id));
+            let b = super::finalize_cancellation_state(&server_b, Some(&id));
+            server_a.clear_request_pending(&typed_id);
+            server_b.clear_request_pending(&typed_id);
+            if a.and_then(|response| response.error).map(|error| error.code) != Some(-32800) {
+                return Err("owning session did not cancel its request".into());
+            }
+            if b.is_some() {
+                return Err("another session cancelled server B's request".into());
+            }
+            // Completion and cancellation must not poison reuse in either session.
+            if register_request_cancellation(&server_a, Some(&id), &hover_request()).is_some()
+                || register_request_cancellation(&server_b, Some(&id), &hover_request()).is_some()
+            {
+                return Err("completed cancellation poisoned ID reuse".into());
+            }
+            super::finalize_cancellation_state(&server_a, Some(&id));
+            super::finalize_cancellation_state(&server_b, Some(&id));
+        }
         Ok(())
     }
 

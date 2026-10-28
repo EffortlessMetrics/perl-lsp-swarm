@@ -182,6 +182,12 @@ use crate::fallback::text::extract_text_based_symbols;
 
 // Note: ClientCapabilities imported from crate::lsp::state::document
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProgressCancellationTarget {
+    Client(JsonRpcId),
+    Index(JsonRpcId),
+}
+
 /// LSP server that handles JSON-RPC communication
 pub struct LspServer {
     /// Document contents indexed by URI
@@ -227,6 +233,8 @@ pub struct LspServer {
     /// client's advertised bit and the declared root input never merge into
     /// one derived boolean.
     initial_root_input: Mutex<Option<lifecycle::root_input::InitialRootInput>>,
+    /// Cancellation tokens and cleanup state belonging to this server session.
+    pub(crate) cancellation_registry: Arc<crate::cancellation::CancellationRegistry>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Request IDs that are queued or executing in the async scheduler.
@@ -339,7 +347,7 @@ pub struct LspServer {
     /// Active progress tokens for work done progress tracking
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     /// Maps progress tokens to their originating request IDs for cancellation routing
-    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
+    progress_token_to_request: Arc<Mutex<HashMap<String, ProgressCancellationTarget>>>,
     /// Refresh controller for debounced client refresh requests
     refresh_controller: refresh::RefreshController,
     /// Accepted-ticket push-diagnostics sink (#11673): per-URI record of the

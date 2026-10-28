@@ -78,7 +78,7 @@ impl LspServer {
                 .unwrap_or_else(|| {
                     self.route_request(request, context.id.clone(), context.should_respond)
                 });
-        response::finalize_response(context.id.as_ref(), routed)
+        response::finalize_response(self, context.id.as_ref(), routed)
     }
 }
 

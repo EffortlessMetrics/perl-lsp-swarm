@@ -11,8 +11,8 @@
 //!   package-scoped workspace renames fail closed instead of editing from stale facts
 
 use super::super::{
-    GLOBAL_CANCELLATION_REGISTRY, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
-    Value, best_workspace_folder_for_doc, json, workspace_folder_path,
+    JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, Value,
+    best_workspace_folder_for_doc, json, workspace_folder_path,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{REQUEST_CANCELLED, REQUEST_FAILED, req_position, req_uri};
@@ -1265,13 +1265,16 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
-        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+        let _cleanup_guard = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
 
         if let Some(ref tid) = typed_id {
-            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+            let token = self.cancellation_registry.get_token(tid).unwrap_or_else(|| {
                 let token =
                     PerlLspCancellationToken::new(tid.clone(), "textDocument/rename".into());
-                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                let _ = self.cancellation_registry.register_token(token.clone());
                 token
             });
             if token.is_cancelled_relaxed() {

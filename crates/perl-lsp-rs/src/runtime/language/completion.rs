@@ -7,9 +7,7 @@
 //! - Workspace-wide symbol completion
 //! - Cancellation support
 
-use crate::cancellation::{
-    GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken, RequestCleanupGuard,
-};
+use crate::cancellation::{PerlLspCancellationToken, RequestCleanupGuard};
 use crate::completion::{
     CompletionItemKind, CompletionProvider, InsertTextFormat, add_xs_api_completions_for_prefix,
 };
@@ -1837,17 +1835,20 @@ impl LspServer {
         // Convert raw Value ID to typed ID at the boundary.
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)
-        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+        let _cleanup_guard = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
 
         if let Some(params) = params {
             // Create or get cancellation token for this request
             let token = if let Some(ref tid) = typed_id {
-                GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+                self.cancellation_registry.get_token(tid).unwrap_or_else(|| {
                     let token = PerlLspCancellationToken::new(
                         tid.clone(),
                         "textDocument/completion".to_string(),
                     );
-                    let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                    let _ = self.cancellation_registry.register_token(token.clone());
                     token
                 })
             } else {
@@ -2955,7 +2956,8 @@ mod tests {
             request_id.clone(),
             "textDocument/completion".to_string(),
         );
-        GLOBAL_CANCELLATION_REGISTRY
+        server
+            .cancellation_registry
             .register_token(token.clone())
             .map_err(|e| format!("failed to register cancellation token: {e:?}"))?;
 
@@ -3060,7 +3062,8 @@ mod tests {
             request_id.clone(),
             "textDocument/completion".to_string(),
         );
-        GLOBAL_CANCELLATION_REGISTRY
+        server
+            .cancellation_registry
             .register_token(token.clone())
             .map_err(|e| format!("failed to register cancellation token: {e:?}"))?;
 

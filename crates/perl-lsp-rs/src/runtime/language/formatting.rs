@@ -4,8 +4,7 @@
 //! policy interceptor in `runtime::dispatch::formatting_policy`.
 
 use super::super::{
-    GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
-    PerlLspCancellationToken, Value, json,
+    INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, Value, json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::features::formatting::{
@@ -199,13 +198,16 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
-        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
+        let _cleanup_guard = RequestCleanupGuard::for_registry(
+            self.cancellation_registry.clone(),
+            typed_id.as_ref(),
+        );
 
         if let Some(ref tid) = typed_id {
-            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+            let token = self.cancellation_registry.get_token(tid).unwrap_or_else(|| {
                 let token =
                     PerlLspCancellationToken::new(tid.clone(), "textDocument/formatting".into());
-                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+                let _ = self.cancellation_registry.register_token(token.clone());
                 token
             });
             if token.is_cancelled_relaxed() {

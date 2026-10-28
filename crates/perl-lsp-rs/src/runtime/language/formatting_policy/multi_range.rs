@@ -499,8 +499,9 @@ pub(super) fn handle(
     request_id: Option<&Value>,
 ) -> Result<Option<Value>, JsonRpcError> {
     let typed_id = request_id.and_then(JsonRpcId::try_from_value);
-    let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
-    let token = cancellation_token(typed_id.as_ref(), Surface::Ranges);
+    let _cleanup =
+        RequestCleanupGuard::for_registry(server.cancellation_registry.clone(), typed_id.as_ref());
+    let token = cancellation_token(server, typed_id.as_ref(), Surface::Ranges);
     server.ensure_not_cancelled(Surface::Ranges, token.as_ref(), None, None)?;
     let params =
         params.ok_or_else(|| invalid_params("Missing multi-range formatting parameters"))?;

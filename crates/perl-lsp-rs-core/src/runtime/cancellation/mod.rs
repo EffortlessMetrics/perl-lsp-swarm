@@ -492,6 +492,7 @@ macro_rules! check_cancellation {
 /// ```
 pub struct RequestCleanupGuard {
     request_id: Option<JsonRpcId>,
+    registry: Option<Arc<CancellationRegistry>>,
 }
 
 impl RequestCleanupGuard {
@@ -499,7 +500,15 @@ impl RequestCleanupGuard {
     ///
     /// If `request_id` is `None`, the guard does nothing on drop.
     pub fn new(request_id: Option<JsonRpcId>) -> Self {
-        Self { request_id }
+        Self { request_id, registry: None }
+    }
+
+    /// Create a guard that cleans up in the supplied session registry.
+    pub fn for_registry(
+        registry: Arc<CancellationRegistry>,
+        request_id: Option<&JsonRpcId>,
+    ) -> Self {
+        Self { request_id: request_id.cloned(), registry: Some(registry) }
     }
 
     /// Create a guard from a reference to an optional `JsonRpcId`
@@ -507,14 +516,17 @@ impl RequestCleanupGuard {
     /// This is a convenience method for the common pattern of
     /// `RequestCleanupGuard::new(request_id.cloned())`.
     pub fn from_ref(request_id: Option<&JsonRpcId>) -> Self {
-        Self { request_id: request_id.cloned() }
+        Self { request_id: request_id.cloned(), registry: None }
     }
 }
 
 impl Drop for RequestCleanupGuard {
     fn drop(&mut self) {
         if let Some(ref req_id) = self.request_id {
-            GLOBAL_CANCELLATION_REGISTRY.remove_request(req_id);
+            self.registry
+                .as_deref()
+                .unwrap_or(&GLOBAL_CANCELLATION_REGISTRY)
+                .remove_request(req_id);
         }
     }
 }

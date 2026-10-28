@@ -373,11 +373,19 @@ impl LspServer {
                 tracing::debug!(token, "Progress cancelled by client");
 
                 // Look up the request ID associated with this progress token
-                // and signal cancellation via the global registry
+                // and signal cancellation in the corresponding registry
                 let request_id = self.progress_token_to_request.lock().remove(token);
-                if let Some(req_id) = request_id {
+                if let Some(target) = request_id {
+                    let (registry, req_id) = match target {
+                        super::ProgressCancellationTarget::Client(id) => {
+                            (&*self.cancellation_registry, id)
+                        }
+                        super::ProgressCancellationTarget::Index(id) => {
+                            (&*GLOBAL_CANCELLATION_REGISTRY, id)
+                        }
+                    };
                     tracing::debug!(request = ?req_id, token, "Signalling cancellation via progress token");
-                    if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&req_id) {
+                    if let Err(e) = registry.cancel_request(&req_id) {
                         tracing::warn!(error = %e, "Failed to cancel request via registry");
                     }
                 }
@@ -417,7 +425,7 @@ impl Drop for RequestProgressGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
+    use crate::cancellation::PerlLspCancellationToken;
     use serde_json::json;
 
     #[test]
@@ -431,19 +439,19 @@ mod tests {
         server.progress_tokens.lock().insert(token_str.to_string());
         server.register_progress_request(token_str, request_id.clone());
 
-        // Register a cancellation token in the global registry for this request
+        // Register a cancellation token in the session registry for this request
         let cancel_token =
             PerlLspCancellationToken::new(request_id.clone(), "test-provider".to_string());
-        let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(cancel_token.clone());
+        let _ = server.cancellation_registry.register_token(cancel_token.clone());
 
         // Verify not cancelled yet
-        assert!(!GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&request_id));
+        assert!(!server.cancellation_registry.is_cancelled(&request_id));
 
         // Simulate client sending window/workDoneProgress/cancel
         server.handle_progress_cancel(Some(json!({ "token": token_str })));
 
         // Verify the cancellation was signalled through the registry
-        assert!(GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&request_id));
+        assert!(server.cancellation_registry.is_cancelled(&request_id));
 
         // Verify token was removed from active set
         assert!(!server.progress_tokens.lock().contains(token_str));
@@ -451,8 +459,27 @@ mod tests {
         // Verify mapping was removed
         assert!(!server.progress_token_to_request.lock().contains_key(token_str));
 
-        // Clean up global registry
-        GLOBAL_CANCELLATION_REGISTRY.remove_request(&request_id);
+        // Clean up session registry
+        server.cancellation_registry.remove_request(&request_id);
+    }
+
+    #[test]
+    fn progress_cancellation_targets_the_owning_client_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let a = LspServer::new();
+        let b = LspServer::new();
+        let id = JsonRpcId::String("progress-session-test".into());
+        for server in [&a, &b] {
+            server
+                .cancellation_registry
+                .register_token(PerlLspCancellationToken::new(id.clone(), "test".into()))?;
+        }
+        a.progress_tokens.lock().insert("test-progress".to_string());
+        a.register_progress_request("test-progress", id.clone());
+        a.handle_progress_cancel(Some(json!({"token": "test-progress"})));
+        assert!(a.cancellation_registry.is_cancelled(&id));
+        assert!(!b.cancellation_registry.is_cancelled(&id));
+        Ok(())
     }
 
     #[test]
