@@ -363,12 +363,22 @@ fn current_stopped_frame_id(
     stop_counter: &AtomicU64,
 ) -> i32 {
     if advance_generation || session.stopped_generation == 0 {
-        let previous = stop_counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                Some(value.saturating_add(1))
-            })
-            .unwrap_or(u64::MAX);
-        session.stopped_generation = previous.saturating_add(1);
+        let mut previous = stop_counter.load(Ordering::Relaxed);
+        loop {
+            let next = previous.saturating_add(1);
+            match stop_counter.compare_exchange_weak(
+                previous,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    session.stopped_generation = next;
+                    break;
+                }
+                Err(observed) => previous = observed,
+            }
+        }
     }
     let generation = session.stopped_generation.max(1);
     if generation <= SCOPE_FRAME_ID_MAX { generation as i32 } else { i32::MAX }
@@ -7291,6 +7301,7 @@ mod tests {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
             let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
             session.stopped_generation = 1;
+            adapter.stop_counter.store(1, std::sync::atomic::Ordering::Relaxed);
             let child = spawn_reader_fixture_child(mode)?;
             let mut previous = std::mem::replace(&mut session.process, child);
             let _ = previous.kill();

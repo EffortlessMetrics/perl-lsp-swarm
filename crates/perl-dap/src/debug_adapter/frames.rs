@@ -5,9 +5,11 @@ use super::{
     ScopesResponseBody, Source, StackFrame, StackTraceArguments, Value, json, lock_or_recover,
 };
 use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
-use std::collections::HashSet;
 
 const FRAME_ID_MODULUS: i32 = 100_000;
+// Partition the remaining positive DAP frame-id space by stopped generation.
+// The top frame occupies the scope-encodable band; outer frames cannot alias it.
+const OUTER_FRAMES_PER_STOP: usize = 20_000;
 
 fn clear_rejected_framed_snapshot(session: &mut Option<super::DebugSession>) {
     if let Some(session) = session {
@@ -22,40 +24,24 @@ impl DebugAdapter {
         arguments: HashMap<i32, Vec<String>>,
         current_frame_id: Option<i32>,
     ) -> Option<(Vec<StackFrame>, HashMap<i32, Vec<String>>)> {
-        let base_id = current_frame_id.or_else(|| frames.first().map(|frame| frame.id));
-        if base_id.is_some_and(|id| !(0..FRAME_ID_MODULUS).contains(&id))
-            || frames.len() > FRAME_ID_MODULUS as usize
+        let base_id = current_frame_id?;
+        if !(0..FRAME_ID_MODULUS).contains(&base_id)
+            || frames.len().saturating_sub(1) > OUTER_FRAMES_PER_STOP
         {
             return None;
         }
-        let mut used_ids = HashSet::new();
         let mut rebound_arguments = HashMap::new();
         let mut rebound_frames = Vec::with_capacity(frames.len());
 
         for (index, mut frame) in frames.into_iter().enumerate() {
             let original_id = frame.id;
-            let index = i32::try_from(index).unwrap_or(i32::MAX);
-            let mut candidate = if index == 0 {
+            let candidate = if index == 0 {
                 base_id
-                    .map(|base| base.rem_euclid(FRAME_ID_MODULUS))
-                    .unwrap_or_else(|| original_id.rem_euclid(FRAME_ID_MODULUS))
             } else {
-                base_id
-                    .map(|base| {
-                        base.rem_euclid(FRAME_ID_MODULUS)
-                            .wrapping_add(index)
-                            .rem_euclid(FRAME_ID_MODULUS)
-                    })
-                    .unwrap_or_else(|| original_id.rem_euclid(FRAME_ID_MODULUS))
+                // This calculation is bounded by the generation and depth checks above.
+                let outer_index = i32::try_from(index - 1).ok()?;
+                FRAME_ID_MODULUS + base_id * OUTER_FRAMES_PER_STOP as i32 + outer_index
             };
-            let mut attempts = 0;
-            while !used_ids.insert(candidate) {
-                candidate = (candidate + 1).rem_euclid(FRAME_ID_MODULUS);
-                attempts += 1;
-                if attempts >= FRAME_ID_MODULUS {
-                    return None;
-                }
-            }
             frame.id = candidate;
             if let Some(values) = arguments.get(&original_id) {
                 rebound_arguments.insert(candidate, values.clone());
@@ -167,7 +153,9 @@ impl DebugAdapter {
             match Self::rebind_generation_frame_ids(
                 frames,
                 arguments,
-                captured_identity.and_then(|(_, _, frame)| frame),
+                captured_identity.and_then(|(stopped, _, frame)| {
+                    frame.or_else(|| i32::try_from(stopped.max(1)).ok())
+                }),
             ) {
                 None => Snapshot::Rejected,
                 Some((frames, _)) if frames.is_empty() => Snapshot::Unavailable,
@@ -394,6 +382,52 @@ mod pagination_tests {
     }
 
     #[test]
+    fn old_non_top_frame_cannot_address_next_stop() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        let (old_frames, _) = DebugAdapter::rebind_generation_frame_ids(
+            vec![make_frame(0, "inner"), make_frame(1, "outer")],
+            HashMap::new(),
+            Some(1),
+        )
+        .ok_or("first snapshot rejected")?;
+        let old_outer = old_frames[1].id;
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(2, "next")]);
+        adapter.seed_stack_frame_arguments_for_test(2, vec!["current".into()]);
+        let scopes = |id| match adapter.handle_scopes(1, 1, Some(json!({"frameId": id}))) {
+            DapMessage::Response { body: Some(body), .. } => body["scopes"].clone(),
+            _ => json!(null),
+        };
+        assert_eq!(scopes(old_outer), json!([]), "old outer frame revived at the next stop");
+        assert!(!scopes(2).as_array().ok_or("missing current scopes")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn outer_frame_ids_are_stable_per_stop_and_disjoint_across_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let frames = vec![make_frame(0, "inner"), make_frame(1, "outer")];
+        let ids = |generation| -> Result<Vec<i32>, Box<dyn std::error::Error>> {
+            let (frames, _) = DebugAdapter::rebind_generation_frame_ids(
+                frames.clone(),
+                HashMap::new(),
+                Some(generation),
+            )
+            .ok_or("snapshot rejected")?;
+            Ok(frames.into_iter().map(|frame| frame.id).collect())
+        };
+        let first = ids(1)?;
+        assert_eq!(first, ids(1)?);
+        let second = ids(2)?;
+        assert_ne!(first[1], second[1]);
+        assert_ne!(first[1], second[0]);
+        let too_deep = vec![make_frame(0, "deep"); OUTER_FRAMES_PER_STOP + 2];
+        assert!(
+            DebugAdapter::rebind_generation_frame_ids(too_deep, HashMap::new(), Some(1)).is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn generation_rebinding_keeps_multi_frame_ids_and_arguments_aligned()
     -> Result<(), Box<dyn std::error::Error>> {
         let frames = vec![make_frame(0, "inner"), make_frame(1, "outer")];
@@ -408,9 +442,9 @@ mod pagination_tests {
                 .ok_or("valid generation rebinding unexpectedly rejected")?;
 
         let ids = rebound.iter().map(|frame| frame.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec![2, 3], "every visible frame needs a unique stop-bound id");
+        assert_eq!(ids, vec![2, 140_000], "every visible frame needs a unique stop-bound id");
         assert_eq!(rebound_arguments.get(&2), Some(&vec!["inner_arg".to_string()]));
-        assert_eq!(rebound_arguments.get(&3), Some(&vec!["outer_arg".to_string()]));
+        assert_eq!(rebound_arguments.get(&140_000), Some(&vec!["outer_arg".to_string()]));
         Ok(())
     }
 
@@ -427,8 +461,8 @@ mod pagination_tests {
         )
         .ok_or("near-ceiling generation rebinding unexpectedly rejected")?;
         let near_ids = near_ceiling.iter().map(|frame| frame.id).collect::<Vec<_>>();
-        assert_eq!(near_ids, vec![99_999, 0]);
-        assert_eq!(near_arguments.get(&0), Some(&vec!["outer_arg".to_string()]));
+        assert_eq!(near_ids, vec![99_999, 2_000_080_000]);
+        assert_eq!(near_arguments.get(&2_000_080_000), Some(&vec!["outer_arg".to_string()]));
 
         let rejected = DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(100_000));
         assert!(rejected.is_none());
