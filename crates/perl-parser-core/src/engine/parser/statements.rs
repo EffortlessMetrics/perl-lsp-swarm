@@ -1929,9 +1929,7 @@ impl<'a> Parser<'a> {
 
     /// Parse a block statement
     fn parse_block(&mut self) -> ParseResult<Node> {
-        let package = self.call_package.clone();
-        self.lexical_call_shadows.push(HashSet::new());
-        let result = self.with_block_recursion_guard(|s| {
+        self.with_call_scope(|s| s.with_block_recursion_guard(|s| {
             let start = s.current_position();
 
             s.expect(TokenKind::LeftBrace)?;
@@ -2028,10 +2026,7 @@ impl<'a> Parser<'a> {
             let end = s.previous_position();
 
             s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
-        });
-        self.call_package = package;
-        self.lexical_call_shadows.pop();
-        result
+        }))
     }
 
     /// Check if the token after `Identifier:` cannot start a Perl statement.

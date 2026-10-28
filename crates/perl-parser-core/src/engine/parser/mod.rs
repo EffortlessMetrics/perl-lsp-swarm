@@ -519,6 +519,18 @@ impl<'a> Parser<'a> {
         self.errors.clear();
     }
 
+    fn with_call_scope<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        let package = self.call_package.clone();
+        self.lexical_call_shadows.push(HashSet::new());
+        let result = parse(self);
+        self.call_package = package;
+        self.lexical_call_shadows.pop();
+        result
+    }
+
     fn normalize_call_package(name: &str) -> String {
         let name = name.replace("'", "::");
         let name = name.strip_prefix("::").unwrap_or(&name);

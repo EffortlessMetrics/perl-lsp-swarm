@@ -898,6 +898,10 @@ impl<'a> Parser<'a> {
 
     /// Parse given block (which contains when/default statements)
     fn parse_given_block(&mut self) -> ParseResult<Node> {
+        self.with_call_scope(|s| s.parse_given_block_contents())
+    }
+
+    fn parse_given_block_contents(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
         self.expect(TokenKind::LeftBrace)?;
 

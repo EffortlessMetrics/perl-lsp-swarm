@@ -153,3 +153,36 @@ fn method_calls_are_not_reclassified() -> Result<(), String> {
 fn class_sub_does_not_register_in_enclosing_package() -> Result<(), String> {
     check_named("class C { sub f { @_ } } my $x = f $v ? 1 : 0;", "x", false)
 }
+
+#[test]
+fn builtin_block_restores_package_and_lexical_context() -> Result<(), String> {
+    check_named(
+        "package B; sub f { @_ } package main; sub f ($); map { package B; 1 } @v; my $x = f $v ? 1 : 0;",
+        "x",
+        false,
+    )?;
+    check_named(
+        "sub f { @_ } map { my sub f ($) { $_[0] } 1 } @v; my $x = f $v ? 1 : 0;",
+        "x",
+        false,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn given_block_restores_enclosing_package() -> Result<(), String> {
+    check_named(
+        "use feature 'switch'; no warnings 'experimental::smartmatch'; package B; sub f { @_ } package main; sub f ($); given ($v) { package B; } my $x = f $v ? 1 : 0;",
+        "x",
+        false,
+    )
+}
+
+#[test]
+fn generic_block_argument_restores_enclosing_package() -> Result<(), String> {
+    check_named(
+        "package B; sub f { @_ } package main; sub f ($); sub h (&); h { package B; 1 }; my $x = f $v ? 1 : 0;",
+        "x",
+        false,
+    )
+}

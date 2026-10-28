@@ -5,7 +5,7 @@ impl<'a> Parser<'a> {
     /// The block may contain multiple statements separated by semicolons,
     /// e.g. `map { my $y = uc $_; $y } @list`.
     fn parse_builtin_block(&mut self) -> ParseResult<Node> {
-        self.with_recursion_guard(|s| {
+        self.with_call_scope(|s| s.with_recursion_guard(|s| {
             let start_token = s.advance_token()?; // consume {
             let start = start_token.start();
 
@@ -25,7 +25,7 @@ impl<'a> Parser<'a> {
 
             // Always return a block node for builtin functions
             s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
-        })
+        }))
     }
 
     /// Parse hash literal or block
@@ -35,7 +35,7 @@ impl<'a> Parser<'a> {
 
     /// Parse hash literal or block with context about whether blocks are expected
     fn parse_hash_or_block_with_context(&mut self, expect_block: bool) -> ParseResult<Node> {
-        self.with_recursion_guard(|s| s.parse_hash_or_block_inner(expect_block))
+        self.with_call_scope(|s| s.with_recursion_guard(|s| s.parse_hash_or_block_inner(expect_block)))
     }
 
     fn parse_hash_or_block_inner(&mut self, expect_block: bool) -> ParseResult<Node> {
