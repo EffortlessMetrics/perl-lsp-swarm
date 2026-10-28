@@ -578,6 +578,40 @@ impl<'a> Parser<'a> {
 mod modifier_tests {
     use crate::Parser;
 
+    #[test]
+    fn source_evaluator_refuses_synthetic_qw_nodes_from_buffered_tokens() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::ast::NodeKind;
+        use crate::token_stream::{Token, TokenKind, TokenStream};
+        use crate::value_analysis::{evaluate, evaluate_with_source, AbstractValue, EvaluationBudget, ScalarValue};
+
+        let source = "qw(a b)";
+        // Buffered tokens select the split-token fallback rather than the live
+        // lexer's single QuoteWords token.
+        let tokens = vec![
+            Token::new_checked(TokenKind::Identifier, "qw", 0, 2)?,
+            Token::new_checked(TokenKind::LeftParen, "(", 2, 3)?,
+            Token::new_checked(TokenKind::Identifier, "a", 3, 4)?,
+            Token::new_checked(TokenKind::Identifier, "b", 5, 6)?,
+            Token::new_checked(TokenKind::RightParen, ")", 6, 7)?,
+            Token::new_checked(TokenKind::Eof, "", 7, 7)?,
+        ];
+        let mut fallback = Parser::assemble(TokenStream::from_vec_with_source(tokens, source), source, super::super::super::ParserConfigIdentity::production_default(), None);
+        let synthesized = fallback.parse_quote_operator()?;
+        let NodeKind::ArrayLiteral { elements } = &synthesized.kind else { return Err("expected fallback array".into()) };
+        assert!(matches!(&elements[0].kind, NodeKind::String { value, .. } if value == "'a'"));
+        assert_eq!(evaluate(&synthesized), AbstractValue::Unknown);
+        assert_eq!(evaluate_with_source(&synthesized, source, EvaluationBudget::default()), AbstractValue::Unknown);
+
+        let mut primary = Parser::new(source);
+        let program = primary.parse()?;
+        let statement = program.children().into_iter().next().ok_or("missing statement")?;
+        let NodeKind::ExpressionStatement { expression } = &statement.kind else { return Err("expected statement".into()) };
+        let NodeKind::ArrayLiteral { elements } = &expression.kind else { return Err("expected primary array".into()) };
+        assert!(matches!(&elements[0].kind, NodeKind::String { value, .. } if value == "a"));
+        assert_eq!(evaluate_with_source(statement, source, EvaluationBudget::default()), AbstractValue::Finite(vec![ScalarValue::String("a".into()), ScalarValue::String("b".into())]));
+        Ok(())
+    }
+
     /// Parse a Perl expression and return the parse output (#1727).
     fn parse(source: &str) -> crate::error::ParseOutput {
         let mut parser = Parser::new(source);

@@ -74,14 +74,37 @@ pub fn evaluate(node: &Node) -> AbstractValue {
 /// Evaluate one AST expression without executing calls or project code.
 #[must_use]
 pub fn evaluate_with_budget(node: &Node, budget: EvaluationBudget) -> AbstractValue {
-    Evaluator { budget }.eval(node, 0)
+    Evaluator { budget, source: None }.eval(node, 0)
 }
 
-struct Evaluator {
+/// Evaluate a complete parsed statement or its root expression against its source.
+///
+/// The source is reparsed and the node must match a complete top-level statement
+/// or its root expression. Detached children and recovered parses widen to Unknown.
+/// The caller must supply the same source snapshot used to produce the node;
+/// structurally identical trees can arise from different source text.
+#[must_use]
+pub fn evaluate_with_source(node: &Node, source: &str, budget: EvaluationBudget) -> AbstractValue {
+    let mut parser = crate::Parser::new(source);
+    let Ok(program) = parser.parse() else { return AbstractValue::Unknown };
+    if !parser.errors().is_empty() {
+        return AbstractValue::Unknown;
+    }
+    let matches = program.children().into_iter().any(|statement| {
+        statement == node || matches!(&statement.kind, NodeKind::ExpressionStatement { expression } if expression.as_ref() == node)
+    });
+    if !matches {
+        return AbstractValue::Unknown;
+    }
+    Evaluator { budget, source: Some(source) }.eval(node, 0)
+}
+
+struct Evaluator<'a> {
     budget: EvaluationBudget,
+    source: Option<&'a str>,
 }
 
-impl Evaluator {
+impl Evaluator<'_> {
     fn eval(&self, node: &Node, depth: usize) -> AbstractValue {
         if depth > self.budget.max_depth {
             return AbstractValue::OverBudget;
@@ -94,6 +117,17 @@ impl Evaluator {
                     AbstractValue::Scalar(ScalarValue::Integer(value))
                 }),
             NodeKind::String { value, interpolated } if !interpolated => {
+                // A source-free string spelling can also be a raw qw word.
+                // Source-backed literals must occupy their exact source span.
+                if let Some(source) = self.source {
+                    if source.get(node.location.start..node.location.end) != Some(value.as_str()) {
+                        return AbstractValue::Unknown;
+                    }
+                } else {
+                    // Even a bare word may come from qw: the parser splits on
+                    // Unicode whitespace that Perl does not necessarily split.
+                    return AbstractValue::Unknown;
+                }
                 let Some(value) = decode_literal(value) else {
                     return AbstractValue::Unknown;
                 };
@@ -110,7 +144,16 @@ impl Evaluator {
                 AbstractValue::Dynamic
             }
             NodeKind::Undef => AbstractValue::Scalar(ScalarValue::Undef),
-            NodeKind::ArrayLiteral { elements } => self.eval_array(elements, depth),
+            NodeKind::ArrayLiteral { elements } => {
+                if let Some(source) = self.source {
+                    if let Some(text) = source.get(node.location.start..node.location.end) {
+                        if text.starts_with("qw") {
+                            return self.eval_qw(text, depth);
+                        }
+                    }
+                }
+                self.eval_array(elements, depth)
+            }
             NodeKind::Binary { op, left, right } => self.eval_binary(op, left, right, depth),
             NodeKind::Unary { op, operand } => self.eval_unary(op, operand, depth),
             NodeKind::Ternary { condition, then_expr, else_expr } => {
@@ -124,6 +167,37 @@ impl Evaluator {
             | NodeKind::Glob { .. } => AbstractValue::Dynamic,
             _ => AbstractValue::Unknown,
         }
+    }
+
+    fn eval_qw(&self, text: &str, depth: usize) -> AbstractValue {
+        // Limit the proof to ASCII, unescaped, non-nested parenthesized words.
+        // Other forms widen until delimiter and escape decoding is proven.
+        let Some(body) = text.strip_prefix("qw(").and_then(|s| s.strip_suffix(')')) else {
+            return AbstractValue::Unknown;
+        };
+        if !body.is_ascii() || body.contains(['\\', '(', ')']) {
+            return AbstractValue::Unknown;
+        }
+        let mut values = Vec::new();
+        for word in body
+            .split(|c: char| c.is_ascii_whitespace() || c == '\u{b}')
+            .filter(|word| !word.is_empty())
+        {
+            if depth >= self.budget.max_depth {
+                return AbstractValue::OverBudget;
+            }
+            if word.len() > self.budget.max_string_length {
+                return AbstractValue::OverBudget;
+            }
+            let value = ScalarValue::String(word.to_owned());
+            if !values.contains(&value) {
+                if values.len() >= self.budget.max_alternatives {
+                    return AbstractValue::OverBudget;
+                }
+                values.push(value);
+            }
+        }
+        AbstractValue::Finite(values)
     }
 
     fn eval_array(&self, elements: &[Node], depth: usize) -> AbstractValue {
@@ -414,11 +488,15 @@ mod tests {
             .clone()
     }
 
+    fn eval_source(source: &str) -> AbstractValue {
+        evaluate_with_source(&expression(source), source, EvaluationBudget::default())
+    }
+
     #[test]
     fn folds_bounded_integer_and_string_expressions() {
         assert_eq!(evaluate(&expression("2 + 3 * 4;")), scalar_integer(14));
         assert_eq!(
-            evaluate(&expression("'find_' . 'user';")),
+            eval_source("'find_' . 'user';"),
             AbstractValue::Scalar(ScalarValue::String("find_user".into()))
         );
     }
@@ -432,7 +510,7 @@ mod tests {
     #[test]
     fn joins_unknown_condition_without_fabricating_a_single_value() {
         assert_eq!(
-            evaluate(&expression("$flag ? 'Foo' : 'Bar';")),
+            eval_source("$flag ? 'Foo' : 'Bar';"),
             AbstractValue::Finite(vec![
                 ScalarValue::String("Foo".into()),
                 ScalarValue::String("Bar".into())
@@ -444,7 +522,11 @@ mod tests {
     fn widening_is_explicit_and_budgeted() {
         let budget = EvaluationBudget { max_alternatives: 1, ..EvaluationBudget::default() };
         assert_eq!(
-            evaluate_with_budget(&expression("$flag ? 'Foo' : 'Bar';"), budget),
+            evaluate_with_source(
+                &expression("$flag ? 'Foo' : 'Bar';"),
+                "$flag ? 'Foo' : 'Bar';",
+                budget
+            ),
             AbstractValue::OverBudget
         );
         assert_eq!(
@@ -457,20 +539,116 @@ mod tests {
         );
     }
     #[test]
+    fn qw_and_quoted_list_can_share_an_ast() {
+        assert_eq!(expression("qw('quoted'  );"), expression("(  'quoted', );"));
+    }
+
+    #[test]
+    fn qw_words_keep_literal_quote_characters() {
+        assert_eq!(
+            eval_source("('plain', 'quoted');"),
+            AbstractValue::Finite(vec![
+                ScalarValue::String("plain".into()),
+                ScalarValue::String("quoted".into()),
+            ])
+        );
+        assert_eq!(
+            eval_source("qw(plain 'quoted');"),
+            AbstractValue::Finite(vec![
+                ScalarValue::String("plain".into()),
+                ScalarValue::String("'quoted'".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn source_context_guards_qw_provenance() {
+        let qw = "qw('quoted'  );";
+        let ordinary = "(  'quoted', );";
+        let node = expression(qw);
+        assert_eq!(evaluate(&node), AbstractValue::Unknown);
+        assert_eq!(
+            eval_source(qw),
+            AbstractValue::Finite(vec![ScalarValue::String("'quoted'".into())])
+        );
+        assert_eq!(
+            eval_source(ordinary),
+            AbstractValue::Finite(vec![ScalarValue::String("quoted".into())])
+        );
+        // This is a deliberately mismatched snapshot with an identical AST.
+        // Structural validation cannot detect it; the source is authoritative.
+        assert_eq!(
+            evaluate_with_source(&node, ordinary, EvaluationBudget::default()),
+            AbstractValue::Finite(vec![ScalarValue::String("quoted".into())])
+        );
+        assert_eq!(
+            evaluate_with_source(&node, "qw('different');", EvaluationBudget::default()),
+            AbstractValue::Unknown
+        );
+        assert_eq!(
+            evaluate_with_source(&node, "qw('quoted'", EvaluationBudget::default()),
+            AbstractValue::Unknown
+        );
+        let NodeKind::ExpressionStatement { expression: list } = &node.kind else { unreachable!() };
+        let NodeKind::ArrayLiteral { elements } = &list.kind else { unreachable!() };
+        assert_eq!(
+            evaluate_with_source(&elements[0], qw, EvaluationBudget::default()),
+            AbstractValue::Unknown
+        );
+        assert_eq!(evaluate(&elements[0]), AbstractValue::Unknown);
+        assert_eq!(
+            eval_source("$flag ? qw(a b) : qw(c d);"),
+            AbstractValue::Finite(vec![
+                ScalarValue::String("a".into()),
+                ScalarValue::String("b".into()),
+                ScalarValue::String("c".into()),
+                ScalarValue::String("d".into())
+            ])
+        );
+        assert_eq!(
+            eval_source("qw(a\tb);"),
+            AbstractValue::Finite(vec![
+                ScalarValue::String("a".into()),
+                ScalarValue::String("b".into())
+            ])
+        );
+        assert_eq!(
+            eval_source("qw(a\u{b}b);"),
+            AbstractValue::Finite(vec![
+                ScalarValue::String("a".into()),
+                ScalarValue::String("b".into())
+            ])
+        );
+        let budget = EvaluationBudget { max_depth: 1, ..EvaluationBudget::default() };
+        assert_eq!(
+            evaluate_with_source(&expression("qw(a);"), "qw(a);", budget),
+            AbstractValue::OverBudget
+        );
+        assert_eq!(
+            evaluate_with_source(&expression("qw();"), "qw();", budget),
+            AbstractValue::Finite(vec![])
+        );
+        assert_eq!(eval_source("qw(a\u{a0}b);"), AbstractValue::Unknown);
+        assert_eq!(evaluate(&expression("qw(a\u{a0}b);")), AbstractValue::Unknown);
+        assert_eq!(eval_source(r"qw(a\ b);"), AbstractValue::Unknown);
+        assert_eq!(eval_source("qw[a b];"), AbstractValue::Unknown);
+    }
+
+    #[test]
     fn single_quote_escapes_decode_exactly() {
         // `\'` decodes to a quote and `\\` to a backslash; the published
         // value is the Perl value, not the raw token text.
         assert_eq!(
-            evaluate(&expression(r"'it\'s';")),
+            eval_source(r"'it\'s';"),
             AbstractValue::Scalar(ScalarValue::String("it's".into()))
         );
         assert_eq!(
-            evaluate(&expression(r"'a\\b';")),
+            eval_source(r"'a\\b';"),
             AbstractValue::Scalar(ScalarValue::String(r"a\b".into()))
         );
         // Other backslash sequences are literal in single quotes.
         assert_eq!(
-            evaluate(&expression(r"'a\tb';")),
+            eval_source(r"'a\tb';"),
             AbstractValue::Scalar(ScalarValue::String("a\\tb".into()))
         );
         // Double-quoted literals are interpolating contexts (the parser
@@ -536,16 +714,16 @@ mod tests {
     fn equality_coerces_per_operator_without_fabricating() {
         // Numeric coercion: `"01" == 1` is true because Perl numifies the
         // string decimally (not octally) at runtime.
-        assert_eq!(evaluate(&expression("'01' == 1;")), scalar_integer(1));
-        assert_eq!(evaluate(&expression("'01' != 1;")), scalar_integer(0));
+        assert_eq!(eval_source("'01' == 1;"), scalar_integer(1));
+        assert_eq!(eval_source("'01' != 1;"), scalar_integer(0));
         // String coercion: `"1" eq 1` compares both sides as strings.
-        assert_eq!(evaluate(&expression("'1' eq 1;")), scalar_integer(1));
-        assert_eq!(evaluate(&expression("'1' ne 1;")), scalar_integer(0));
+        assert_eq!(eval_source("'1' eq 1;"), scalar_integer(1));
+        assert_eq!(eval_source("'1' ne 1;"), scalar_integer(0));
         // Spellings whose numification is not proven (Perl numifies `'0x10'`
         // to 0, unlike the source literal `0x10`) widen instead of folding a
         // fabricated branch.
-        assert_eq!(evaluate(&expression("'0x10' == 0;")), AbstractValue::Unknown);
-        assert_eq!(evaluate(&expression("'' == 0;")), scalar_integer(1));
+        assert_eq!(eval_source("'0x10' == 0;"), AbstractValue::Unknown);
+        assert_eq!(eval_source("'' == 0;"), scalar_integer(1));
     }
 
     #[test]
