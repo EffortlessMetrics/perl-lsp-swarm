@@ -84,7 +84,9 @@ impl<'a> Parser<'a> {
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
                 self.advance_token()?; // consume =
-                Some(Box::new(self.parse_expression()?))
+                // Assignment binds more tightly than comma and word operators.
+                // Grouped RHS expressions still parse their contents in full.
+                Some(Box::new(self.parse_assignment()?))
             } else {
                 None
             };
