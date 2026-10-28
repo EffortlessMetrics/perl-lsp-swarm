@@ -868,7 +868,10 @@ impl<'a> EventParser<'a> {
         let next = self.bytes.get(start + 1).copied()?;
         let end = if next == b'{' {
             return Some(self.braced_interpolation_end(start + 1));
-        } else if sigil == b'$' && next == b'^' && self.bytes.get(start + 2) == Some(&b'R') {
+        } else if sigil == b'$'
+            && next == b'^'
+            && matches!(self.bytes.get(start + 2), Some(b'R' | b'O'))
+        {
             start.saturating_add(3).min(self.bytes.len())
         } else if sigil == b'$'
             && next == b':'
@@ -1283,6 +1286,27 @@ mod tests {
 
         assert_eq!(interpolations, vec!["$^R", "$::foo", "$runtime", "@items"]);
         Ok(())
+    }
+
+    #[test]
+    fn operating_system_variable_is_interpolated() {
+        for pattern in [r"$^O", r"[$^O]", r"\Q$^O\E"] {
+            let stream = parse_regex_events(pattern, RegexModeState::default());
+            assert!(
+                stream.events.iter().any(|event| {
+                    matches!(event.kind, RegexEventKind::Interpolation { .. })
+                        && pattern.get(event.range.start..event.range.end) == Some("$^O")
+                }),
+                "missing interpolation in {pattern:?}"
+            );
+        }
+        let literal = parse_regex_events(r"\$^O", RegexModeState::default());
+        assert!(
+            !literal
+                .events
+                .iter()
+                .any(|event| matches!(event.kind, RegexEventKind::Interpolation { .. }))
+        );
     }
 
     #[test]

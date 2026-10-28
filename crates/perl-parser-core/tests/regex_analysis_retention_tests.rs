@@ -251,3 +251,14 @@ fn malformed_pattern_is_retained_with_explicit_incompleteness() -> Result<(), Bo
     assert!(output.regex_analysis.source_matches(source));
     Ok(())
 }
+
+#[test]
+fn retained_analysis_marks_operating_system_interpolation_dynamic() -> Result<(), Box<dyn Error>> {
+    for (source, dynamic) in [(r"my $rx = qr/$^O/;", true), (r"my $rx = qr/\$^O/;", false)] {
+        let output = parse_source_with_regex_analysis(source);
+        let record = output.regex_analysis.records.first().ok_or("missing regex record")?;
+        let pattern = record.pattern.as_ref().ok_or("missing retained analysis")?;
+        assert_eq!(pattern.controls.captures.status.dynamic, dynamic, "{source}");
+    }
+    Ok(())
+}
