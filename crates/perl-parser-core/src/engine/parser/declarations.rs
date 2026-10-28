@@ -1666,13 +1666,7 @@ impl<'a> Parser<'a> {
                             }
                             Some(TokenKind::FatArrow) => {
                                 self.consume_token()?; // consume =>
-                                // Best-effort: slurp the value until ',' or ';'
-                                while !Self::is_statement_terminator(self.peek_kind())
-                                    && self.peek_kind() != Some(TokenKind::Comma)
-                                    && !self.tokens.is_eof()
-                                {
-                                    args.push(self.consume_import_argument_token()?.text.to_string());
-                                }
+                                self.consume_import_value(&mut args, false)?;
                                 // Consume trailing comma if present
                                 if self.peek_kind() == Some(TokenKind::Comma) {
                                     self.consume_token()?;
@@ -1693,13 +1687,7 @@ impl<'a> Parser<'a> {
                             }
                             Some(TokenKind::FatArrow) => {
                                 self.consume_token()?; // consume =>
-                                // Best-effort: slurp the value until ',' or ';'
-                                while !Self::is_statement_terminator(self.peek_kind())
-                                    && self.peek_kind() != Some(TokenKind::Comma)
-                                    && !self.tokens.is_eof()
-                                {
-                                    args.push(self.consume_import_argument_token()?.text.to_string());
-                                }
+                                self.consume_import_value(&mut args, false)?;
                                 // Consume trailing comma if present
                                 if self.peek_kind() == Some(TokenKind::Comma) {
                                     self.consume_token()?;
@@ -1782,6 +1770,10 @@ impl<'a> Parser<'a> {
     /// keep nested delimiters and ternaries balanced instead of bailing on the
     /// first operator or inner fat arrow.
     fn consume_use_import_value(&mut self, args: &mut Vec<String>) -> ParseResult<()> {
+        self.consume_import_value(args, true)
+    }
+
+    fn consume_import_value(&mut self, args: &mut Vec<String>, stop_at_pair: bool) -> ParseResult<()> {
         let mut paren_depth = 0usize;
         let mut bracket_depth = 0usize;
         let mut brace_depth = 0usize;
@@ -1806,13 +1798,13 @@ impl<'a> Parser<'a> {
                 match kind {
                     Some(
                         TokenKind::Comma
-                        | TokenKind::FatArrow
                         | TokenKind::RightParen
                         | TokenKind::RightBracket
                         | TokenKind::RightBrace,
                     ) => break,
+                    Some(TokenKind::FatArrow) if stop_at_pair => break,
                     Some(TokenKind::Identifier)
-                        if !consumed_any
+                        if stop_at_pair && !consumed_any
                             && self.tokens.peek_second().map(|t| t.kind())
                                 == Ok(TokenKind::FatArrow) =>
                     {

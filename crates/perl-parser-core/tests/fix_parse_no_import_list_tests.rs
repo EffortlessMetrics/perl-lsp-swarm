@@ -299,6 +299,33 @@ fn no_q_quotes_keep_nested_pair_values() -> Result<(), String> {
 }
 
 #[test]
+fn no_plain_keys_keep_nested_pair_values() -> Result<(), String> {
+    for key in ["'key'", "key"] {
+        no_with_following_declaration(
+            &format!("no Example {key} => sub {{ 1; 2; }}, 'tail'"),
+            "Example",
+            &[key, "sub", "{", "1", ";", "2", ";", "}", "'tail'"],
+        )?;
+        no_with_following_declaration(
+            &format!("no Example {key} => {{ nested => [1, 2] }}, 'tail'"),
+            "Example",
+            &[key, "{", "nested", "=>", "[", "1", ",", "2", "]", "}", "'tail'"],
+        )?;
+        no_with_following_declaration(
+            &format!("no Example {key} => 'middle' => 1"),
+            "Example",
+            &[key, "'middle'", "=>", "1"],
+        )?;
+    }
+    // A top-level comma and semicolon remain directive boundaries.
+    no_with_following_declaration(
+        "no Example 'key' => 1, 'tail'",
+        "Example",
+        &["'key'", "1", "'tail'"],
+    )
+}
+
+#[test]
 fn no_q_quotes_reject_truncated_tokens() -> Result<(), String> {
     for source in [
         "no Example q(",
