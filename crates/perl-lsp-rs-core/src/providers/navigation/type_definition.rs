@@ -108,6 +108,7 @@ impl TypeDefinitionProvider {
             if !Self::should_parse_document(source_text) {
                 continue;
             }
+            let previous_count = locations.len();
             if let Ok(ast) = perl_parser_core::Parser::new(source_text).parse() {
                 self.find_custom_type_in_node(
                     &ast,
@@ -118,7 +119,7 @@ impl TypeDefinitionProvider {
                 );
             }
 
-            if locations.is_empty() {
+            if locations.len() == previous_count {
                 self.find_custom_type_in_source(type_name, doc_uri, source_text, &mut locations);
             }
         }
@@ -1017,6 +1018,41 @@ $obj->method();
         assert!(
             locations.is_some(),
             "a genuine `type Writer => ...` declaration must still resolve"
+        );
+    }
+
+    #[test]
+    fn test_custom_type_fallback_is_per_document() {
+        let provider = TypeDefinitionProvider::new();
+        let source = "type('Writer');\n";
+        let ast = must(perl_parser_core::Parser::new(source).parse());
+        let mut ast_locations = Vec::new();
+        provider.find_custom_type_in_node(
+            &ast,
+            "Writer",
+            "file:///one.pl",
+            source,
+            &mut ast_locations,
+        );
+        assert!(ast_locations.is_empty(), "fixture must require fallback");
+        let mut documents = HashMap::new();
+        documents.insert("file:///one.pl".to_string(), source.to_string());
+        let control = must_some(provider.find_custom_type_definition_in_docs(
+            "Writer",
+            "file:///origin.pl",
+            &documents,
+        ));
+        assert_eq!(control.len(), 1, "a single fallback declaration resolves");
+        documents.insert("file:///two.pl".to_string(), source.to_string());
+        let locations = must_some(provider.find_custom_type_definition_in_docs(
+            "Writer",
+            "file:///origin.pl",
+            &documents,
+        ));
+        assert_eq!(
+            locations.len(),
+            2,
+            "both documents should resolve regardless of iteration order"
         );
     }
 
