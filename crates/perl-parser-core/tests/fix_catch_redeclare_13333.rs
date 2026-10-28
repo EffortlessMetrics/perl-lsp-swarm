@@ -94,13 +94,23 @@ fn whitespace_and_comment_variations_still_diagnose() {
 
 #[test]
 fn keyword_without_a_variable_is_not_a_redeclaration() {
-    let source = "try { die } catch (my) { print 1 }\n";
-    let (ast, errors) = parse(source);
-    assert!(
-        redeclarations(&errors).is_empty(),
-        "`catch (my)` has no variable to redeclare: {errors:?}"
-    );
-    assert_eq!(catch_bindings(&ast), vec![None]);
+    for keyword in ["my", "our", "state"] {
+        let source = format!("try {{ die }} catch ({keyword}) {{ print 1 }}; after();\n");
+        let (ast, errors) = parse(&source);
+        assert!(redeclarations(&errors).is_empty(), "not a redeclaration: {errors:?}");
+        assert!(
+            errors.iter().any(|error| matches!(error,
+                ParseError::SyntaxError { message, location }
+                    if message == "Expected catch variable after declarator"
+                        && *location == source.find(keyword).unwrap_or(usize::MAX)
+            )),
+            "expected diagnostic on keyword: {errors:?}"
+        );
+        assert_eq!(catch_bindings(&ast), vec![None]);
+        let sexp = ast.to_sexp();
+        assert!(sexp.contains("print"), "catch body lost: {sexp}");
+        assert!(sexp.contains("after"), "following statement lost: {sexp}");
+    }
 }
 
 #[test]

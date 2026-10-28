@@ -773,6 +773,11 @@ impl<'a> Parser<'a> {
                                 end: keyword_token.end(),
                             },
                         });
+                    } else {
+                        self.record_error(ParseError::syntax(
+                            "Expected catch variable after declarator",
+                            keyword_token.start(),
+                        ));
                     }
                 }
                 let var_name = if self.peek_kind() == Some(TokenKind::ScalarSigil)
