@@ -1504,7 +1504,18 @@ impl<'a> Parser<'a> {
         // Parse module name — accepts bare identifiers or keyword-named pragmas
         // (e.g. `no if COND, warnings`, `no feature`).
         let first_token = self.consume_token()?;
-        let mut module = if first_token.kind() == TokenKind::Identifier {
+        let mut module = if matches!(first_token.kind(), TokenKind::Number | TokenKind::VString) {
+            let mut version = first_token.text.to_string();
+            while self.peek_kind() == Some(TokenKind::Dot)
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Number)
+            {
+                self.consume_token()?;
+                let number = self.consume_token()?;
+                version.push('.');
+                version.push_str(&number.text);
+            }
+            version
+        } else if first_token.kind() == TokenKind::Identifier {
             first_token.text.to_string()
         } else if first_token.text.chars().all(|c| c.is_alphanumeric() || c == '_')
             && !first_token.text.is_empty()
