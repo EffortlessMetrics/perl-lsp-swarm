@@ -497,6 +497,32 @@ fn scan_code_line(
             return LineScan { trailing_bare_slash: false, bare_slashes };
         };
 
+        // `$#array` is the last-index variable, not a comment. Consume the
+        // sigil and hash together, before the ordinary comment boundary.
+        // `$$` is itself a scalar variable, so a following hash is a comment.
+        if line[offset..].starts_with("$$#") {
+            trailing_bare_slash = false;
+            offset += 2;
+            continue;
+        }
+        if line[offset..].starts_with("$#") {
+            trailing_bare_slash = false;
+            let name_start = offset + 2;
+            offset = if line[name_start..].starts_with('{') {
+                let inner_start = skip_horizontal_whitespace(line, name_start + 1);
+                match parse_qualified_name(line, inner_start) {
+                    Some((_, end)) => {
+                        let end = skip_horizontal_whitespace(line, end);
+                        if line[end..].starts_with('}') { end + 1 } else { name_start }
+                    }
+                    _ => name_start,
+                }
+            } else {
+                parse_qualified_name(line, name_start).map_or(name_start, |(_, end)| end)
+            };
+            continue;
+        }
+
         if ch == '#' {
             return LineScan { trailing_bare_slash, bare_slashes };
         }
@@ -1331,6 +1357,35 @@ mod tests {
         assert!(!table.is_known_sub("bar"));
         assert!(!table.is_known_sub("legacy"));
         assert!(!table.is_known_sub("root"));
+    }
+
+    #[test]
+    fn array_last_index_does_not_start_a_comment() {
+        let table =
+            LocalSymbolTable::scan_subs("my $last = $#items; sub later { 1 } # sub hidden { 1 }\n");
+        assert!(table.is_known_sub("later"));
+        assert!(!table.is_known_sub("hidden"));
+
+        for name in ["q", "sub", "Foo::q", "{q}", "{ q }"] {
+            let source = format!("my $last = $#{name}; sub later {{ 1 }} # sub hidden {{ 1 }}\n");
+            let table = LocalSymbolTable::scan_subs(&source);
+            assert!(table.is_known_sub("later"), "missing declaration after {name}");
+            assert!(!table.is_known_sub("hidden"));
+        }
+
+        let table = LocalSymbolTable::scan_subs(
+            "my $last = $#{sub { sub inside { 1 }; [] }->()}; sub later { 1 }\n",
+        );
+        assert!(table.is_known_sub("inside"));
+        assert!(table.is_known_sub("later"));
+
+        let table =
+            LocalSymbolTable::scan_subs("my $last = $#q# sub hidden { 1 }\nsub later { 1 }\n");
+        assert!(!table.is_known_sub("hidden"));
+        assert!(table.is_known_sub("later"));
+
+        let table = LocalSymbolTable::scan_subs("my $pid = $$# sub hidden { 1 }\n");
+        assert!(!table.is_known_sub("hidden"));
     }
 
     #[test]
