@@ -135,8 +135,7 @@ impl FoldingRangeExtractor {
                 if after_hash.starts_with("region") {
                     // Verify it's a word boundary (not part of another word)
                     let after_region = after_hash.strip_prefix("region").unwrap_or("");
-                    if after_region.is_empty()
-                        || !after_region.chars().next().unwrap_or(' ').is_alphanumeric()
+                    if after_region.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_')
                     {
                         stack.push((line_start_offset, depth));
                         depth += 1;
@@ -150,8 +149,10 @@ impl FoldingRangeExtractor {
                 if after_hash.starts_with("endregion") {
                     // Verify it's a word boundary
                     let after_endregion = after_hash.strip_prefix("endregion").unwrap_or("");
-                    if (after_endregion.is_empty()
-                        || !after_endregion.chars().next().unwrap_or(' ').is_alphanumeric())
+                    if after_endregion
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !c.is_alphanumeric() && c != '_')
                         && depth > 0
                     {
                         depth -= 1;
@@ -791,6 +792,17 @@ mod tests {
         let source = "# regioncode\n# endregionmore\ncode\n";
         let ranges = FoldingRangeExtractor::extract_region_markers(source);
         assert_eq!(ranges.len(), 0, "Should not match region/endregion without word boundary");
+    }
+
+    #[test]
+    fn extract_region_markers_rejects_underscore_suffixes() {
+        let source = "#region_name\ncode\n#endregion\n#region\ncode\n#endregion_name\n";
+        assert!(FoldingRangeExtractor::extract_region_markers(source).is_empty());
+
+        let source = "#region: name\ncode\n#endregion!\n";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 30));
     }
 
     #[test]
