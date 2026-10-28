@@ -101,7 +101,10 @@ fn is_namespace_container(symbol: &Symbol) -> bool {
 
 fn is_container(symbol: &Symbol) -> bool {
     is_namespace_container(symbol)
-        || matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method)
+        || (matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method)
+            // Framework APIs synthesized at call sites are outline entries,
+            // not declarations whose arguments define a symbol container.
+            && !symbol.declaration.as_deref().is_some_and(|d| d.starts_with("framework=")))
 }
 
 /// A framework namespace symbol synthesized by the extractor at an import
@@ -1150,6 +1153,32 @@ mod tests {
                 );
             }
         }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    #[test]
+    fn framework_call_does_not_parent_callback_declarations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package P;\nuse EV;\nsub outer {\n    EV::timer(0, 1, sub { my $callback_local = 1; });\n    sub inner { my $inner_local = 2; }\n}\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let package = result.symbols.iter().find(|s| s.name == "P").ok_or("no P")?;
+        let outer = package.children.iter().find(|s| s.name == "outer").ok_or("no outer")?;
+        let timer = outer.children.iter().find(|s| s.name == "EV::timer").ok_or("no timer")?;
+        assert!(
+            timer.children.is_empty(),
+            "a framework call is not a declaration container: {timer:?}"
+        );
+        assert!(
+            child_names(outer).contains(&"$callback_local"),
+            "callback local should remain under outer: {outer:?}"
+        );
+        let inner = outer.children.iter().find(|s| s.name == "inner").ok_or("no inner")?;
+        assert!(
+            child_names(inner).contains(&"$inner_local"),
+            "a real sub remains a container: {inner:?}"
+        );
         assert_ranges_contained(&result.symbols);
         Ok(())
     }
