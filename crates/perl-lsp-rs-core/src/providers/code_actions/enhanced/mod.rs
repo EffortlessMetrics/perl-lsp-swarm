@@ -733,6 +733,17 @@ mod tests {
     }
 
     #[test]
+    fn test_unless_does_not_offer_invalid_postfix_if() {
+        let source = "unless ($debug) { print \"Debug\\n\"; }";
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let provider = EnhancedCodeActionsProvider::new(source.to_string());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(!actions.iter().any(|a| a.title == "Convert to postfix if"));
+    }
+
+    #[test]
     fn test_convert_to_postfix() {
         let source = "if ($debug) { print \"Debug\\n\"; }";
         let mut parser = Parser::new(source);

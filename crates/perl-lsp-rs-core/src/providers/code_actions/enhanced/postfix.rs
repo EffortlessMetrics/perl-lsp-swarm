@@ -6,9 +6,12 @@ use perl_parser_core::ast::{Node, NodeKind};
 
 /// Convert if statement to postfix form
 pub fn convert_to_postfix(node: &Node, source: &str) -> Option<CodeAction> {
-    if let NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } = &node.kind {
+    if let NodeKind::If { condition, then_branch, elsif_branches, else_branch, keyword } =
+        &node.kind
+    {
         // Only convert simple if statements with no elsif/else
-        if elsif_branches.is_empty()
+        if keyword.is_none()
+            && elsif_branches.is_empty()
             && else_branch.is_none()
             && let NodeKind::Block { statements } = &then_branch.kind
             && statements.len() == 1
@@ -36,7 +39,8 @@ pub fn convert_to_postfix(node: &Node, source: &str) -> Option<CodeAction> {
     }
 
     // Similarly for while, until
-    // Note: Unless is not a separate node type in this AST
+    // Unless is represented by an If node with a synthetic negated condition.
+    // Its source span is not an expression, so do not offer this conversion.
 
     None
 }
