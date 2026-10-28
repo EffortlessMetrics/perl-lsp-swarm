@@ -27,7 +27,7 @@ pub struct LexerConfig {
     ///
     /// When `true`, ordinary double-quoted strings, `qq` bodies, and
     /// interpolating heredoc bodies segment variable/expression islands out
-    /// of the literal run during the original body scan. When `false`, every
+    /// of the literal run within the delimited body. When `false`, every
     /// covered body keeps one opaque `StringPart::Literal` part instead —
     /// disabled mode never leaks selected variable parts. Non-interpolating
     /// forms (`q`, `qw`, `<<'EOF'`, `<<\EOF`) are invariant controls that

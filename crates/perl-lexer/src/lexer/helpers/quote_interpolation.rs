@@ -1,8 +1,8 @@
 //! Interpolation segmentation for quote-like and heredoc bodies (#8779).
 //!
 //! Applies the #8244 ordinary-string interpolation policy to `qq` bodies and
-//! interpolating heredoc bodies: segments are produced during the original
-//! body scan (never by rescanning completed token text), non-interpolating
+//! interpolating heredoc bodies: segments are produced within the raw delimiter-bounded
+//! body, non-interpolating
 //! forms never consume the setting, and `qx`/backtick bodies are an explicit
 //! intentional boundary that stays opaque under every configuration.
 //!
@@ -27,78 +27,48 @@ use super::interpolation_scan::is_perl_punctuation_variable;
 use crate::quote_handler;
 
 impl PerlLexer<'_> {
-    /// Read a delimited body, segmenting interpolation islands into
-    /// [`StringPart`]s while the scan runs (#8779).
-    ///
-    /// The scan loop is the same as `read_delimited_body` (escape pairs,
-    /// paired-delimiter nesting, close handling); the only addition is that
-    /// `$`/`@` sigils delegate to [`Self::scan_interpolation_island`] when
-    /// the interpolation setting is enabled. Escape pairs stay in the
-    /// literal bucket exactly as the ordinary-string scanner keeps them raw.
+    /// Find the raw quote boundary before segmenting interpolation. Perl counts
+    /// paired delimiters even inside interpolation expressions, so an island
+    /// scanner must not determine the enclosing token's end on its own.
     pub(crate) fn read_delimited_body_with_parts(
         &mut self,
         delim: char,
     ) -> (Vec<StringPart>, bool) {
-        let paired = quote_handler::paired_close(delim);
-        let close = paired.unwrap_or(delim);
-        let mut parts: Vec<StringPart> = Vec::new();
+        let body_start = self.position;
+        let (_, closed) = self.read_delimited_body(delim);
+        let token_end = self.position;
+        if !closed {
+            return (Vec::new(), false);
+        }
+
+        let close = quote_handler::paired_close(delim).unwrap_or(delim);
+        let body_end = token_end - close.len_utf8();
+        let saved_scan_limit = self.scan_limit;
+        self.scan_limit = Some(body_end);
+        self.position = body_start;
+        let mut parts = Vec::new();
         let mut literal = String::new();
-        let mut depth = i32::from(paired.is_some());
-        let terminator = close;
 
         while let Some(ch) = self.current_char() {
             if ch == '\\' && delim != '\\' {
-                // Escape pairs stay raw in the literal run, exactly like the
-                // ordinary-string scanner (no flush: `a\$b` is one literal).
                 literal.push(ch);
                 self.advance();
                 if let Some(next) = self.current_char() {
                     literal.push(next);
                     self.advance();
                 }
-                continue;
-            }
-
-            if paired.is_some() && ch == delim {
-                depth += 1;
+            } else if ch == '$' || ch == '@' {
+                Self::flush_literal(&mut literal, &mut parts);
+                self.scan_interpolation_island(ch, Some(close), &mut parts, &mut literal);
+            } else {
                 literal.push(ch);
                 self.advance();
-                continue;
             }
-
-            if ch == close {
-                if paired.is_some() {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.advance();
-                        Self::flush_literal(&mut literal, &mut parts);
-                        return (parts, true);
-                    }
-                    literal.push(ch);
-                    self.advance();
-                } else {
-                    self.advance();
-                    Self::flush_literal(&mut literal, &mut parts);
-                    return (parts, true);
-                }
-                continue;
-            }
-
-            if (ch == '$' || ch == '@') && self.config.interpolation_enabled() {
-                Self::flush_literal(&mut literal, &mut parts);
-                self.scan_interpolation_island(ch, Some(terminator), &mut parts, &mut literal);
-                continue;
-            }
-
-            literal.push(ch);
-            self.advance();
         }
-
-        // EOF reached without finding the closing delimiter. The caller turns
-        // an unclosed body into its recovery token, so the partial parts are
-        // still returned honestly.
         Self::flush_literal(&mut literal, &mut parts);
-        (parts, false)
+        self.scan_limit = saved_scan_limit;
+        self.position = token_end;
+        (parts, true)
     }
 
     /// Flush a pending literal run into `parts` (empty runs are dropped),

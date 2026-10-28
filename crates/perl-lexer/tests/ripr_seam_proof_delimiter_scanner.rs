@@ -44,3 +44,39 @@ fn unclosed_qw_observes_recovery_before_following_statement() -> TestResult {
     assert_eq!(following.text.as_ref(), "my");
     Ok(())
 }
+
+#[test]
+fn qq_interpolation_preserves_outer_delimiter_nesting() -> TestResult {
+    use perl_lexer::LexerConfig;
+
+    for input in [r#"qq[${\("[")}]];"#, r#"qq[${\("\[")}];"#] {
+        for enabled in [false, true] {
+            let config = LexerConfig { parse_interpolation: enabled, ..LexerConfig::default() };
+            let mut lexer = PerlLexer::with_config(input, config);
+            let token = next_non_trivia(&mut lexer).ok_or("expected qq token")?;
+            assert!(matches!(token.token_type, TokenType::QuoteDouble(_)), "{input}: {token:?}");
+            assert_eq!(
+                token.text.as_ref(),
+                &input[..input.len() - 1],
+                "{input}, interpolation={enabled}"
+            );
+            assert_eq!(next_non_trivia(&mut lexer).ok_or("expected semicolon")?.text.as_ref(), ";");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn qq_unclosed_nested_delimiter_is_an_error_in_both_modes() -> TestResult {
+    use perl_lexer::LexerConfig;
+
+    let input = r#"qq[${\("[")}];"#;
+    for enabled in [false, true] {
+        let config = LexerConfig { parse_interpolation: enabled, ..LexerConfig::default() };
+        let mut lexer = PerlLexer::with_config(input, config);
+        let token = next_non_trivia(&mut lexer).ok_or("expected error token")?;
+        assert!(matches!(token.token_type, TokenType::Error(_)), "{token:?}");
+        assert_eq!(token.text.as_ref(), input);
+    }
+    Ok(())
+}
