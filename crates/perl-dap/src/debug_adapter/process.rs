@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 // The internal TCP-attach DapEvent fan-in queue is bounded with a
 // generation-aware forwarder (#9521); the reader-side admission policy lives in
 // `tcp_attach::reader`.
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::sync_channel;
 
 use super::sync_utils::{EventDrainLatch, EventSender};
@@ -357,9 +357,18 @@ fn apply_windows_debugger_transport_env(_cmd: &mut std::process::Command) {}
 /// generation itself. Scope references have a bounded frame-id wire space; once
 /// the generation exceeds it, return an unencodable sentinel rather than
 /// reusing an older frame id and reviving stale references.
-fn current_stopped_frame_id(session: &mut DebugSession, advance_generation: bool) -> i32 {
-    if advance_generation {
-        session.stopped_generation = session.stopped_generation.saturating_add(1);
+fn current_stopped_frame_id(
+    session: &mut DebugSession,
+    advance_generation: bool,
+    stop_counter: &AtomicU64,
+) -> i32 {
+    if advance_generation || session.stopped_generation == 0 {
+        let previous = stop_counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_add(1))
+            })
+            .unwrap_or(u64::MAX);
+        session.stopped_generation = previous.saturating_add(1);
     }
     let generation = session.stopped_generation.max(1);
     if generation <= SCOPE_FRAME_ID_MAX { generation as i32 } else { i32::MAX }
@@ -1533,6 +1542,7 @@ impl DebugAdapter {
     /// Start thread to read debugger output with enhanced error recovery
     pub(super) fn start_output_reader(&self, debuggee_cwd: PathBuf) {
         let session = self.session.clone();
+        let stop_counter = self.stop_counter.clone();
         let seq = self.seq.clone();
         let sender = self.event_sender.clone();
         let recent_output = self.recent_output.clone();
@@ -2081,7 +2091,8 @@ impl DebugAdapter {
                                         continue;
                                     }
                                     let was_running = matches!(s.state, DebugState::Running);
-                                    let current_frame_id = current_stopped_frame_id(s, was_running);
+                                    let current_frame_id =
+                                        current_stopped_frame_id(s, was_running, &stop_counter);
                                     if !current_file.is_empty()
                                         && current_line > 0
                                         && (!s.entry_stop_pending || native_context_has_source)
@@ -2388,6 +2399,7 @@ impl DebugAdapter {
                                         s,
                                         matches!(s.state, DebugState::Running)
                                             && !context_established_suspension,
+                                        &stop_counter,
                                     );
                                     let has_source_frame =
                                         !prompt_file.is_empty() && prompt_line > 0;
@@ -4086,6 +4098,60 @@ mod tests {
     }
 
     #[test]
+    fn replacement_session_does_not_revive_prior_scope() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let install_stop = || -> Result<i32, String> {
+            adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+            let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned")?;
+            let session = guard.as_mut().ok_or("missing session")?;
+            let id = current_stopped_frame_id(session, true, &adapter.stop_counter);
+            session.stack_frames = vec![crate::types::StackFrame {
+                id,
+                name: "main".into(),
+                source: crate::types::Source {
+                    name: Some("mock.pl".into()),
+                    path: "mock.pl".into(),
+                    source_reference: None,
+                },
+                line: 1,
+                column: 1,
+                end_line: None,
+                end_column: None,
+            }];
+            session.stack_frame_arguments.insert(id, vec!["mock argument".into()]);
+            Ok(id)
+        };
+        let old_id = install_stop()?;
+        let old_scope = i64::from(old_id) * 10 + 4;
+        let new_id = install_stop()?;
+        let scopes = |id| match adapter.handle_scopes(1, 1, Some(json!({"frameId": id}))) {
+            DapMessage::Response { body: Some(body), .. } => body["scopes"].clone(),
+            _ => json!(null),
+        };
+        assert_eq!(scopes(old_id), json!([]), "old frame must not address replacement session");
+        assert!(!scopes(new_id).as_array().ok_or("missing current scopes")?.is_empty());
+        let stale = adapter.handle_variables(1, 1, Some(json!({"variablesReference": old_scope})));
+        match stale {
+            DapMessage::Response { body: Some(body), .. } => {
+                assert_eq!(body["variables"], json!([]))
+            }
+            _ => return Err("missing variables response".into()),
+        }
+        let current = adapter.handle_variables(
+            1,
+            1,
+            Some(json!({"variablesReference": i64::from(new_id) * 10 + 4})),
+        );
+        match current {
+            DapMessage::Response { body: Some(body), .. } => {
+                assert_eq!(body["variables"][0]["value"], json!("mock argument"));
+            }
+            _ => return Err("missing current variables response".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn context_then_prompt_preserves_current_suspension_frame_id() -> Result<(), String> {
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test().map_err(|error| error.to_string())?;
@@ -4096,12 +4162,12 @@ mod tests {
         // The context branch sees the running session and establishes the
         // generation that the stopped event exposes.
         session.state = DebugState::Running;
-        let context_frame_id = current_stopped_frame_id(session, true);
+        let context_frame_id = current_stopped_frame_id(session, true, &adapter.stop_counter);
         session.state = DebugState::Stopped;
 
         // The prompt branch follows that same stop. It must retain the id
         // rather than reviving the historical constant frame id 1.
-        let prompt_frame_id = current_stopped_frame_id(session, false);
+        let prompt_frame_id = current_stopped_frame_id(session, false, &adapter.stop_counter);
         if prompt_frame_id != context_frame_id {
             return Err(format!(
                 "prompt changed the current frame id: context={context_frame_id}, prompt={prompt_frame_id}"
@@ -4111,7 +4177,7 @@ mod tests {
         // A subsequent context starts a fresh suspension and receives a new
         // authority, preventing the old scope reference from reviving.
         session.state = DebugState::Running;
-        let next_context_frame_id = current_stopped_frame_id(session, true);
+        let next_context_frame_id = current_stopped_frame_id(session, true, &adapter.stop_counter);
         if next_context_frame_id == context_frame_id {
             return Err("next suspension reused the previous frame id".to_string());
         }
@@ -5339,14 +5405,15 @@ mod tests {
         let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
         let session = guard.as_mut().ok_or("session was not installed")?;
         session.stopped_generation = 99_999;
+        adapter.stop_counter.store(99_999, std::sync::atomic::Ordering::Relaxed);
         session.state = DebugState::Running;
 
-        let exhausted = current_stopped_frame_id(session, true);
+        let exhausted = current_stopped_frame_id(session, true, &adapter.stop_counter);
         if exhausted != i32::MAX {
             return Err(format!("generation 100000 must fail closed, got {exhausted}"));
         }
         session.stopped_generation = u64::MAX;
-        let still_exhausted = current_stopped_frame_id(session, false);
+        let still_exhausted = current_stopped_frame_id(session, false, &adapter.stop_counter);
         if still_exhausted != i32::MAX {
             return Err(format!("exhausted generation revived a scope frame: {still_exhausted}"));
         }

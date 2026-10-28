@@ -165,6 +165,8 @@ pub struct DebugAdapter {
     /// context id after a session replacement (#8294). Allocation must have
     /// no failure path that reuses an id.
     thread_counter: Arc<AtomicI32>,
+    /// Stop generations remain unique across replacement sessions.
+    stop_counter: Arc<AtomicU64>,
     /// Bounded output channel for sending events to client
     event_sender: Option<EventSender>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
@@ -326,6 +328,7 @@ impl DebugAdapter {
             tcp_session: Arc::new(Mutex::new(None)),
             breakpoints: BreakpointStore::new(),
             thread_counter: Arc::new(AtomicI32::new(0)),
+            stop_counter: Arc::new(AtomicU64::new(0)),
             event_sender: None,
             termination_state: Arc::new(Mutex::new(TerminationState::default())),
             recent_output: Arc::new(Mutex::new(RecentOutputBuffer::new())),
