@@ -484,6 +484,18 @@ fn renderer_format_scalar_all_escapes() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
+fn renderer_escapes_other_control_characters_without_changing_printable_text() {
+    let renderer = PerlVariableRenderer::new();
+    let val = PerlValue::scalar("nul\0 esc\x1b del\x7f café \\0");
+    assert_eq!(renderer.render("$value", &val).value, r#""nul\x{0} esc\x{1b} del\x{7f} café \\0""#);
+    let array = PerlValue::Array(vec![val]);
+    assert_eq!(
+        renderer.render("@values", &array).value,
+        r#"["nul\x{0} esc\x{1b} del\x{7f} café \\0"]"#
+    );
+}
+
+#[test]
 fn renderer_truncate_long_string() -> Result<(), Box<dyn std::error::Error>> {
     let renderer = PerlVariableRenderer::new().with_max_string_length(20);
     let long_str = "a".repeat(100);

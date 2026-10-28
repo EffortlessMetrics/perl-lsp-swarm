@@ -295,13 +295,20 @@ impl PerlVariableRenderer {
             s.to_string()
         };
 
-        // Escape special characters and quote
-        let escaped = truncated
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t");
+        // Preserve printable characters while making every control character visible.
+        // Use Perl's hexadecimal escape form for controls without a short escape.
+        let mut escaped = String::with_capacity(truncated.len());
+        for ch in truncated.chars() {
+            match ch {
+                '\\' => escaped.push_str("\\\\"),
+                '"' => escaped.push_str("\\\""),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                '\t' => escaped.push_str("\\t"),
+                c if c.is_control() => escaped.push_str(&format!("\\x{{{:x}}}", c as u32)),
+                c => escaped.push(c),
+            }
+        }
 
         format!("\"{}\"", escaped)
     }
