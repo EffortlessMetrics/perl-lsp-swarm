@@ -84,10 +84,15 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                if Self::is_identifier_start(bytes[i]) {
-                    i += 1;
-                    while i < quote_end && Self::is_identifier_continue(bytes[i]) {
-                        i += 1;
+                if let Some(first) = text.get(i..quote_end).and_then(|rest| rest.chars().next())
+                    && Self::is_identifier_start(first)
+                {
+                    i += first.len_utf8();
+                    while let Some(ch) = text.get(i..quote_end).and_then(|rest| rest.chars().next()) {
+                        if !Self::is_identifier_continue(ch) {
+                            break;
+                        }
+                        i += ch.len_utf8();
                     }
 
                     if i + 1 < quote_end && bytes[i] == b'-' && bytes[i + 1] == b'>' {
@@ -171,12 +176,12 @@ impl<'a> Parser<'a> {
         false
     }
 
-    fn is_identifier_start(byte: u8) -> bool {
-        byte.is_ascii_alphabetic() || byte == b'_'
+    fn is_identifier_start(ch: char) -> bool {
+        ch.is_alphabetic() || ch == '_'
     }
 
-    fn is_identifier_continue(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric() || byte == b'_'
+    fn is_identifier_continue(ch: char) -> bool {
+        ch.is_alphanumeric() || ch == '_'
     }
 
     /// Locate one word inside a `qw` token without assigning the whole list span.

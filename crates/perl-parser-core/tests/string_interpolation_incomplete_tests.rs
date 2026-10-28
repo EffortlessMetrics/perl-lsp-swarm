@@ -160,3 +160,24 @@ fn double_quote_complete_interpolation_cases() -> R {
 
     Ok(())
 }
+
+#[test]
+fn unicode_scalar_subscripts_report_unclosed_delimiters() -> R {
+    for source in [
+        r#"my $msg = "$café{key";"#,
+        r#"my $msg = "$π[0";"#,
+        r#"my $msg = "$café->{key";"#,
+        r#"my $msg = "$π->[0";"#,
+    ] {
+        assert_has_unclosed_interpolation_diagnostic(source)?;
+    }
+    for source in [
+        r#"my $msg = "$café{key} $π[0] $café->{key} $π->[0]";"#,
+        r#"my $msg = "$café->method(arg";"#,
+        r#"my $msg = "\$café{key";"#,
+        r#"my $msg = "$nameé"#,
+    ] {
+        assert_no_unclosed_interpolation_diagnostic(source)?;
+    }
+    Ok(())
+}
