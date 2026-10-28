@@ -162,3 +162,52 @@ fn highlight_catch_parameter_at_trailing_edge_returns_occurrence()
 
     Ok(())
 }
+
+#[test]
+fn scoped_array_subscript_highlights_container_and_usage() -> Result<(), Box<dyn std::error::Error>>
+{
+    for source in
+        ["my @arr = (1);\n$arr[0] = 2;\n", "sub example { my @arr = (1); $arr[0] = 2; }\n"]
+    {
+        let ast = parse(source);
+        let declaration = source.find("@arr").ok_or("missing declaration")?;
+        let usage = source.find("$arr[0]").ok_or("missing usage")?;
+        let highlights =
+            DocumentHighlightProvider::new().find_highlights(&ast, source, declaration + 1);
+        assert!(
+            highlights.iter().any(|h| h.location.start == declaration),
+            "missing declaration: {highlights:?}"
+        );
+        assert!(
+            highlights.iter().any(|h| h.location.start == usage),
+            "missing usage for {source:?}: {highlights:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn scoped_cross_sigil_excludes_index_and_other_subroutine() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source =
+        "sub first { my @arr; $arr[0]; $#arr; $other[$arr]; }\nsub second { my @arr; $arr[0]; }\n";
+    let ast = parse(source);
+    let decl = source.find("@arr").ok_or("missing declaration")?;
+    let usage = source.find("$arr[0]").ok_or("missing usage")?;
+    let last = source.find("$#arr").ok_or("missing last index")?;
+    for cursor in [decl + 1, usage + 1] {
+        let highlights = DocumentHighlightProvider::new().find_highlights(&ast, source, cursor);
+        let starts: Vec<_> = highlights.iter().map(|h| h.location.start).collect();
+        // A scalar used as an index is not the array container.
+        for expected in [decl, usage, last] {
+            assert!(starts.contains(&expected), "missing {expected}: {highlights:?}");
+        }
+        let index = source.find("$other[$arr]").ok_or("missing index")? + "$other[".len();
+        assert!(!starts.contains(&index), "index must not match the array: {highlights:?}");
+        assert!(
+            starts.iter().all(|start| *start < source.find("sub second").unwrap_or(source.len())),
+            "outside scope: {highlights:?}"
+        );
+    }
+    Ok(())
+}

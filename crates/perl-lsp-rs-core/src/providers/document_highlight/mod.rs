@@ -644,14 +644,11 @@ impl DocumentHighlightProvider {
             && node.location.start >= sub_start
             && node.location.end <= sub_end
         {
-            // Presence of a subscript parent is the gate; the parent node
-            // itself is not needed here.
-            if self.find_subscript_parent(node, node.location.start).is_some() {
-                let target_sigil_str = target.sigil.as_deref().unwrap_or("");
-                if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
-                    let kind = self.determine_highlight_kind_with_parent(node, parent);
-                    highlights.push(DocumentHighlight { location: node.location, kind });
-                }
+            let target_sigil_str = target.sigil.as_deref().unwrap_or("");
+            if self.is_cross_sigil_match(node, sigil, name, target_sigil_str, &target.name, parent)
+            {
+                let kind = self.determine_highlight_kind_with_parent(node, parent);
+                highlights.push(DocumentHighlight { location: node.location, kind });
             }
         }
 
@@ -698,7 +695,7 @@ impl DocumentHighlightProvider {
             && let Some(target_sigil) = &target.sigil
         {
             let cross_match =
-                self.is_cross_sigil_match(sigil, name, target_sigil, &target.name, parent);
+                self.is_cross_sigil_match(node, sigil, name, target_sigil, &target.name, parent);
             if cross_match {
                 let kind = self.determine_highlight_kind_with_parent(node, parent);
                 highlights.push(DocumentHighlight { location: node.location, kind });
@@ -867,6 +864,7 @@ impl DocumentHighlightProvider {
     /// - `$#array` is the last index of `@array` -> name `#foo` maps to `@foo`
     fn is_cross_sigil_match(
         &self,
+        node: &Node,
         sigil: &str,
         name: &str,
         target_sigil: &str,
@@ -892,7 +890,8 @@ impl DocumentHighlightProvider {
         }
 
         if let Some(parent_node) = parent
-            && let NodeKind::Binary { op, .. } = &parent_node.kind
+            && let NodeKind::Binary { op, left, .. } = &parent_node.kind
+            && std::ptr::eq(left.as_ref(), node)
         {
             // $hash{key} when target is %hash
             if target_sigil == "%" && sigil == "$" && op == "{}" {
