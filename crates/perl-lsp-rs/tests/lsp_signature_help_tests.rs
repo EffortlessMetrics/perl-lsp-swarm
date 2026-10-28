@@ -883,3 +883,28 @@ my $r = configure("localhost");
     harness.shutdown_gracefully();
     Ok(())
 }
+
+#[test]
+fn signature_help_ignores_commas_in_quoted_arguments() -> TestResult {
+    let doc = "sub calculate ($first, $second, $third) {}\ncalculate(\"a,b\", 42, 99);\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///quoted-argument.pl", doc)?;
+
+    for (character, expected) in [(13, 0), (15, 0), (16, 1), (20, 2)] {
+        let result = harness.request_with_timeout(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": {"uri": "file:///quoted-argument.pl"},
+                "position": {"line": 1, "character": character}
+            }),
+            std::time::Duration::from_secs(10),
+        )?;
+        assert_eq!(
+            result["activeParameter"],
+            json!(expected),
+            "at character {character}: {result}"
+        );
+    }
+    Ok(())
+}

@@ -379,14 +379,20 @@ impl LspServer {
         let func_name =
             if let Some(pos) = full_name.rfind("::") { &full_name[pos + 2..] } else { &full_name };
 
-        // Count commas at depth 0 to determine active parameter
+        // Count only comma tokens at the call's top level. Commas inside
+        // strings, quote-like operators and comments are not argument separators.
+        let arguments: String = chars[paren_pos + 1..offset].iter().collect();
+        let mut lexer = perl_lexer::PerlLexer::new(&arguments);
         let mut comma_count = 0;
-        let mut depth = 0;
-        for k in (paren_pos + 1)..offset.min(chars.len()) {
-            match chars[k] {
-                '(' | '[' | '{' => depth += 1,
-                ')' | ']' | '}' => depth -= 1,
-                ',' if depth == 0 => comma_count += 1,
+        let mut depth = 0usize;
+        while let Some(token) = lexer.next_token() {
+            use perl_lexer::TokenType;
+            match token.token_type {
+                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => depth += 1,
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    depth = depth.saturating_sub(1);
+                }
+                TokenType::Comma if depth == 0 => comma_count += 1,
                 _ => {}
             }
         }
