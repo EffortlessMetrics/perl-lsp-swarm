@@ -206,8 +206,16 @@ impl LspServer {
     fn markdown_to_plaintext(md: &str) -> String {
         let mut in_regex_card = false;
         let mut seen_table_row = false;
+        let mut in_code_block = false;
         md.lines()
-            .map(|line| {
+            .filter_map(|line| {
+                if line.trim_start().starts_with("```") {
+                    in_code_block = !in_code_block;
+                    return None;
+                }
+                if in_code_block {
+                    return Some(line.to_string());
+                }
                 if line.trim() == "**Regex Pattern**" {
                     in_regex_card = true;
                     seen_table_row = false;
@@ -221,16 +229,20 @@ impl LspServer {
                 }
                 // Strip markdown headers (# ... ######)
                 let line = line.trim_start_matches('#').trim_start();
-                // Strip bold/italic markers
-                let line = line.replace("**", "").replace("__", "");
-                let line = line.replace(['*', '_'], "");
-                // Strip inline code backticks
-                let line = line.replace('`', "");
+                // Only remove formatting from prose. Perl code spans can contain
+                // underscores, asterisks and text resembling Markdown links.
+                let mut plain = String::new();
+                for (index, part) in line.split('`').enumerate() {
+                    if index % 2 == 1 {
+                        plain.push_str(part);
+                    } else {
+                        let prose = part.replace(['*', '_'], "");
+                        plain.push_str(&regex_lite_strip_links(&prose));
+                    }
+                }
                 // Undo table escapes only inside the Regex Pattern card;
                 // unrelated content keeps its genuine backslashes.
-                let line = if decode_row { Self::decode_regex_table_escapes(&line) } else { line };
-                // Strip link syntax: [text](url) -> text
-                regex_lite_strip_links(&line)
+                Some(if decode_row { Self::decode_regex_table_escapes(&plain) } else { plain })
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -3051,6 +3063,27 @@ Not found in workspace or configured include paths.
 #[cfg(test)]
 mod plaintext_tests {
     use super::LspServer;
+
+    #[test]
+    fn plaintext_hover_preserves_perl_in_code() {
+        let md = "**Subroutine**\n\n`sub my_function($my_arg)`\n\n```perl\nmy $some_value = $_[0] * 2;\n```\n\n_Example_";
+        let hover = serde_json::json!({"contents": {"kind": "markdown", "value": md}});
+        let plain = LspServer::convert_hover_to_plaintext(hover);
+        assert_eq!(plain["contents"]["kind"], "plaintext");
+        assert_eq!(
+            plain["contents"]["value"],
+            "Subroutine\n\nsub my_function($my_arg)\n\nmy $some_value = $_[0] * 2;\n\nExample"
+        );
+    }
+
+    #[test]
+    fn plaintext_hover_keeps_code_that_looks_like_markdown() {
+        let md = "`[a](b) * $_`\n```perl\n    # keep_comment\n    my $x = `echo hi`;\n```\n[docs](https://example.com)";
+        assert_eq!(
+            LspServer::markdown_to_plaintext(md),
+            "[a](b) * $_\n    # keep_comment\n    my $x = `echo hi`;\ndocs"
+        );
+    }
 
     #[test]
     fn plaintext_hover_undoes_table_pipe_escapes() {
