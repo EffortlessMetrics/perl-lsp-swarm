@@ -210,6 +210,42 @@ MISSING_PROXY
     "missing pinned toolchain (fixture)" "${TMPDIR_BASE}/missing.err"
 }
 
+# Old rustup ignores RUSTUP_AUTO_INSTALL; even its own --version installs.
+# The standard hardlinked proxy must be refused using only manager --help.
+OLD_PROXY_BIN="${TMPDIR_BASE}/old-proxy-bin"
+mkdir -p "$OLD_PROXY_BIN"
+cat > "${OLD_PROXY_BIN}/rustup" <<'OLD_PROXY'
+#!/usr/bin/env bash
+printf '%s %s\n' "${0##*/}" "$*" >> "$OLD_PROXY_TRACE"
+if [[ "${0##*/}" == rustup && "$*" == --help ]]; then
+  printf 'rustup 1.27.1 (fixture)\n'
+  exit 0
+fi
+printf 'attempted install despite override\n' > "$INSTALL_MARKER"
+exit 1
+OLD_PROXY
+chmod +x "${OLD_PROXY_BIN}/rustup"
+ln "${OLD_PROXY_BIN}/rustup" "${OLD_PROXY_BIN}/cargo"
+OLD_PROXY_TRACE="${TMPDIR_BASE}/old-control.trace" INSTALL_MARKER="${TMPDIR_BASE}/old-control-install" \
+  RUSTUP_AUTO_INSTALL=0 "${OLD_PROXY_BIN}/cargo" --version >/dev/null 2>&1 || true
+if [[ -f "${TMPDIR_BASE}/old-control-install" ]]; then
+  pass "old proxy control ignores the no-install override"
+else
+  fail "old proxy control did not exercise automatic installation"
+fi
+code=0
+PATH="${OLD_PROXY_BIN}:$PATH" OLD_PROXY_TRACE="${TMPDIR_BASE}/old-guard.trace" \
+  INSTALL_MARKER="${TMPDIR_BASE}/old-guard-install" DEVPLANE="${TMPDIR_BASE}/old-unallocated-plane" \
+  bash "$CARGO_SAFE" check >"${TMPDIR_BASE}/old.out" 2>"${TMPDIR_BASE}/old.err" || code=$?
+if [[ "$code" == 78 && ! -e "${TMPDIR_BASE}/old-guard-install" && ! -e "${TMPDIR_BASE}/old-unallocated-plane" &&
+      "$(cat "${TMPDIR_BASE}/old-guard.trace")" == 'rustup --help' ]]; then
+  pass "old proxy refuses with help only before installation or allocation"
+else
+  fail "old proxy must refuse before install-capable probes (exit $code)"
+fi
+assert_contains "old proxy refusal names the safe manager floor" \
+  'needs rustup >= 1.28.0' "${TMPDIR_BASE}/old.err"
+
 TOTAL=$((PASS + FAIL))
 echo ""
 echo "=== Results: ${PASS}/${TOTAL} passed ==="
