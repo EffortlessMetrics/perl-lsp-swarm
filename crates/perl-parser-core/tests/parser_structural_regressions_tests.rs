@@ -80,6 +80,18 @@ fn data_marker_with_trailing_comment_stops_parsing() -> TestResult {
 }
 
 #[test]
+fn data_marker_spelling_before_fat_arrow_remains_a_hash_key() -> TestResult {
+    for marker in ["__DATA__", "__END__"] {
+        let source = format!("my %h = (\n{marker} => 1\n);\nprint 1;\n");
+        let ast = parse_clean(&source)?;
+        let statements = statements(&ast)?;
+        assert_eq!(statements.len(), 2);
+        assert!(!statements.iter().any(|node| matches!(node.kind, NodeKind::DataSection { .. })));
+    }
+    Ok(())
+}
+
+#[test]
 fn phase_block_records_phase_span_and_body() -> TestResult {
     let ast = parse_clean("BEGIN { my $x = 1; }")?;
     let statements = statements(&ast)?;

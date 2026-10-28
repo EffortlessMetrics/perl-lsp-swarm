@@ -312,6 +312,23 @@ fn data_markers_end_code_even_with_text_on_the_marker_line() -> R {
         );
         assert!(tokens.iter().any(|t| t.text.as_ref() == "print"), "{input:?}");
     }
+    for marker in ["__DATA__", "__END__"] {
+        for gap in ["", " ", "\t", "\u{b}", "\u{c}"] {
+            let input = format!("my %h = (\n{marker}{gap}=> 1\n);\nprint 1;\n");
+            let tokens = collect(&input)?;
+            assert!(
+                !tokens.iter().any(|t| matches!(t.token_type, TokenType::DataMarker(_))),
+                "fat-arrow key was treated as a marker: {input:?}"
+            );
+            assert!(tokens.iter().any(|t| t.text.as_ref() == "print"), "{input:?}");
+        }
+        let input = format!("{marker}\n=> 1\n");
+        let tokens = collect(&input)?;
+        assert!(matches!(tokens.first().map(|t| &t.token_type), Some(TokenType::DataMarker(_))));
+        assert!(tokens.iter().any(
+            |t| matches!(&t.token_type, TokenType::DataBody(body) if body.as_ref() == "=> 1\n")
+        ));
+    }
     Ok(())
 }
 

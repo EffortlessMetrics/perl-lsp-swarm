@@ -2162,7 +2162,12 @@ impl<'a> PerlLexer<'a> {
             if let Some(marker_text) = marker {
                 // These must be at the beginning of a line
                 // Use the after_newline flag to determine if we're at line start
-                if self.after_newline {
+                // A same-line fat arrow autoquotes the word as a hash key.
+                let rest = &self.input_bytes[self.position..];
+                let gap =
+                    rest.iter().take_while(|&&b| matches!(b, b' ' | b'\t' | 0x0b | 0x0c)).count();
+                let is_fat_arrow_key = rest[gap..].starts_with(b"=>");
+                if self.after_newline && !is_fat_arrow_key {
                     // Perl ignores the rest of the marker line, including comments
                     // and other text, before exposing the data body.
                     while self.position < self.input.len()
