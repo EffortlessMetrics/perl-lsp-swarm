@@ -286,11 +286,11 @@ impl<'a> Parser<'a> {
                 TokenKind::Field if self.is_field_declaration_context() => {
                     let decl = self.parse_variable_declaration()?;
                     if self.peek_kind() == Some(TokenKind::FatArrow) {
+                        let call_start = decl.location.start;
                         let variable = match decl.into_parts() {
                             (NodeKind::VariableDeclaration { variable, .. }, _) => *variable,
                             (kind, location) => self.charge_node(kind, location)?,
                         };
-                        let call_start = variable.location.start;
                         let mut args = vec![variable];
 
                         while matches!(

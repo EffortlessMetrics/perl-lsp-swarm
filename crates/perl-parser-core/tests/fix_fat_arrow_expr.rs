@@ -856,3 +856,31 @@ fn fat_arrow_eval_error_handling() {
 };"#;
     assert_clean_parse(source);
 }
+
+fn field_call(node: &perl_parser_core::Node) -> Option<&perl_parser_core::Node> {
+    if matches!(&node.kind, perl_parser_core::NodeKind::FunctionCall { name, .. } if name == "field")
+    {
+        return Some(node);
+    }
+    node.children().into_iter().find_map(field_call)
+}
+
+#[test]
+fn parenthesized_field_call_span_includes_name() {
+    let source = "field($class_id);";
+    let ast = parse(source);
+    let call = field_call(&ast).unwrap_or_else(|| panic!("missing field call: {}", ast.to_sexp()));
+    assert_eq!(&source[call.location.start..call.location.end], "field($class_id)");
+}
+
+#[test]
+fn bare_field_fat_arrow_call_span_includes_name() {
+    let source = "# café
+field $class_id => -init => $value;";
+    let ast = parse(source);
+    let call = field_call(&ast).unwrap_or_else(|| panic!("missing field call: {}", ast.to_sexp()));
+    assert_eq!(
+        &source[call.location.start..call.location.end],
+        "field $class_id => -init => $value"
+    );
+}
