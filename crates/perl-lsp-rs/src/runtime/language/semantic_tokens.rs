@@ -157,8 +157,8 @@ impl LspServer {
 
     /// Handle the `textDocument/semanticTokens/full/delta` request (LSP 3.17).
     ///
-    /// Computes the current full token set, then returns the minimal set of
-    /// edits transforming the client's previously cached result (identified by
+    /// Computes the current full token set, then returns a token-aligned edit
+    /// transforming the client's previously cached result (identified by
     /// `previousResultId`) into the current one. When `previousResultId` is
     /// missing or no longer cached, falls back to a full token response so the
     /// client can resynchronize.
@@ -652,25 +652,29 @@ fn semantic_tokens_result_id(data: &[u32]) -> String {
     hasher.finish().to_string()
 }
 
-/// Compute the minimal LSP semantic-tokens delta edits that transform `old`
+/// Compute a token-aligned LSP semantic-tokens delta edit that transforms `old`
 /// into `new`.
 ///
 /// Both slices are flat encoded token arrays (groups of 5 `u32`). The result is
 /// a single contiguous `SemanticTokensEdit` covering the changed middle region,
-/// found by stripping the longest common prefix and suffix. An empty `Vec`
-/// means the two results are identical and no edit is required.
+/// found by stripping common whole-token prefixes and suffixes. Keeping edit
+/// data in groups of five also supports clients that deserialize it as tokens.
+/// An empty `Vec` means the two results are identical and no edit is required.
 fn compute_semantic_tokens_delta_edits(old: &[u32], new: &[u32]) -> Vec<Value> {
     let max_prefix = old.len().min(new.len());
     let mut prefix = 0;
-    while prefix < max_prefix && old[prefix] == new[prefix] {
-        prefix += 1;
+    while prefix + 5 <= max_prefix && old[prefix..prefix + 5] == new[prefix..prefix + 5] {
+        prefix += 5;
     }
 
     // Common suffix length, never overlapping the shared prefix.
     let max_suffix = max_prefix - prefix;
     let mut suffix = 0;
-    while suffix < max_suffix && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix] {
-        suffix += 1;
+    while suffix + 5 <= max_suffix
+        && old[old.len() - suffix - 5..old.len() - suffix]
+            == new[new.len() - suffix - 5..new.len() - suffix]
+    {
+        suffix += 5;
     }
 
     let delete_count = old.len() - prefix - suffix;
@@ -952,6 +956,35 @@ mod tests {
         );
         assert!(filter_encoded_semantic_tokens_by_range(tokens, 3, 0, 4, 0).is_empty());
 
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_tokens_delta_edits_decode_and_reconstruct_complete_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A change within a token previously emitted a one-integer data array,
+        // which lsp-types rejects when decoding SemanticTokensEdit.
+        let cases: &[(&[u32], &[u32])] = &[
+            (&[0, 0, 3, 1, 0], &[0, 0, 4, 1, 0]),
+            (&[0, 0, 3, 1, 0, 0, 4, 2, 2, 0], &[0, 0, 3, 1, 0, 0, 5, 2, 2, 0]),
+            (&[0, 0, 3, 1, 0], &[0, 0, 3, 1, 0, 0, 4, 2, 2, 0]),
+            (&[0, 0, 3, 1, 0, 0, 4, 2, 2, 0], &[0, 0, 3, 1, 0]),
+        ];
+        for &(old, new) in cases {
+            let edits = compute_semantic_tokens_delta_edits(old, new);
+            let response = json!({ "resultId": "test", "edits": edits });
+            let decoded: lsp_types::SemanticTokensFullDeltaResult =
+                serde_json::from_value(response.clone())?;
+            assert!(matches!(decoded, lsp_types::SemanticTokensFullDeltaResult::TokensDelta(_)));
+            let mut actual = old.to_vec();
+            for edit in response["edits"].as_array().ok_or("missing edits")?.iter().rev() {
+                let start = edit["start"].as_u64().ok_or("missing start")? as usize;
+                let count = edit["deleteCount"].as_u64().ok_or("missing deleteCount")? as usize;
+                let data: Vec<u32> = serde_json::from_value(edit["data"].clone())?;
+                actual.splice(start..start + count, data);
+            }
+            assert_eq!(actual, new);
+        }
         Ok(())
     }
 
