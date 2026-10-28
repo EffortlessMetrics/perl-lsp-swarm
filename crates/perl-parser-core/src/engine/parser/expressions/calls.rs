@@ -501,6 +501,16 @@ impl<'a> Parser<'a> {
                 self.parse_primary()?
             };
 
+        self.parse_indirect_call_arguments(start, method, object)
+    }
+
+    fn parse_indirect_call_arguments(
+        &mut self,
+        start: usize,
+        method: String,
+        object: Node,
+    ) -> ParseResult<Node> {
+
         // Parse remaining arguments
         let mut args = vec![];
 

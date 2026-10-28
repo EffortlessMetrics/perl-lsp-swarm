@@ -1662,6 +1662,8 @@ impl<'a> Parser<'a> {
 
                             // Has arguments - parse them as a comma-separated list
                             let mut args = vec![];
+                            let possible_block_handle = matches!(func_name.as_ref(), "print" | "say" | "printf")
+                                && self.peek_kind() == Some(TokenKind::LeftBrace);
 
                             // Parse first argument
                             // Special handling for open/pipe/socket which can take my $var as first arg
@@ -1739,6 +1741,22 @@ impl<'a> Parser<'a> {
                                 // For builtins, use parse_assignment_or_declaration to handle
                                 // my/our/local/state declarations inside argument lists
                                 args.push(self.parse_assignment_or_declaration()?);
+                            }
+
+                            // A braced expression may be either a hash reference or a
+                            // filehandle block. Once parsed, a block followed directly by
+                            // an output argument belongs to the indirect call.
+                            if possible_block_handle
+                                && matches!(args.first().map(|arg| &arg.kind), Some(NodeKind::Block { .. }))
+                                && self.tokens.peek().ok().is_some_and(|token| {
+                                    matches!(token.kind(), TokenKind::String | TokenKind::Number)
+                                        || token.text.starts_with('$')
+                                        || token.text.starts_with('@')
+                                        || token.text.starts_with('%')
+                                })
+                                && let Some(object) = args.pop()
+                            {
+                                return self.parse_indirect_call_arguments(start, func_name.to_string(), object);
                             }
 
                             // Handle map/grep/sort { block } LIST case where no comma separates block and list.

@@ -244,6 +244,58 @@ fn print_block_scalar_fh_is_indirect_call() {
 }
 
 #[test]
+fn print_block_call_fh_is_indirect_call() {
+    let code = r#"print { get_fh() } "data";"#;
+    assert_clean_parse(code);
+    let ast = parse(code);
+    let mut calls = Vec::new();
+    collect_indirect_calls(&ast, &mut calls);
+    assert_eq!(calls.len(), 1, "AST: {}", ast.to_sexp());
+    assert_eq!(calls[0].0, "print");
+    assert_eq!(calls[0].2, 1);
+    assert!(matches!(calls[0].1.kind, NodeKind::Block { .. }));
+    assert!(calls[0].1.to_sexp().contains("get_fh"));
+    fn find_call(node: &Node) -> Option<&Node> {
+        if matches!(&node.kind, NodeKind::IndirectCall { method, .. } if method == "print") {
+            return Some(node);
+        }
+        node.children().into_iter().find_map(find_call)
+    }
+    let call = find_call(&ast).unwrap_or_else(|| panic!("missing print call: {}", ast.to_sexp()));
+    if let NodeKind::IndirectCall { args, .. } = &call.kind {
+        assert_eq!(&code[args[0].location.start..args[0].location.end], "\"data\"");
+        assert_eq!(&code[call.location.start..call.location.end], &code[..code.len() - 1]);
+    }
+}
+
+#[test]
+fn print_hash_reference_remains_an_ordinary_call() {
+    let code = r#"print { foo => 1 }, "data";"#;
+    assert_clean_parse(code);
+    let ast = parse(code);
+    let mut calls = Vec::new();
+    collect_indirect_calls(&ast, &mut calls);
+    assert!(calls.is_empty(), "AST: {}", ast.to_sexp());
+}
+
+#[test]
+fn output_builtins_accept_block_call_handles() {
+    for (method, code) in [
+        ("say", r#"say { get_fh() } $message;"#),
+        ("printf", r#"printf { get_fh() } "%s", $message;"#),
+    ] {
+        assert_clean_parse(code);
+        let ast = parse(code);
+        let mut calls = Vec::new();
+        collect_indirect_calls(&ast, &mut calls);
+        assert_eq!(calls.len(), 1, "AST: {}", ast.to_sexp());
+        assert_eq!(calls[0].0, method);
+        assert_eq!(calls[0].2, if method == "printf" { 2 } else { 1 });
+        assert!(matches!(calls[0].1.kind, NodeKind::Block { .. }));
+    }
+}
+
+#[test]
 fn say_block_scalar_fh() {
     let code = r#"say { $fh } "data";"#;
     assert_clean_parse(code);
