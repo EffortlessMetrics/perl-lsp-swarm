@@ -138,8 +138,8 @@ pub struct Parser<'a> {
     /// Nesting depth of grouping parentheses inside an armed, parenthesized
     /// do-while condition. Depth > 0 means the parser is still inside the
     /// condition's own `(...)`, where postfix braces are ordinary subscripts;
-    /// depth 0 there means the group closed and a following `{` is the
-    /// trailing block. Maintained by [`Parser::enter_paren_group`] and
+    /// depth 0 means the initial group closed; a brace directly following
+    /// a grouped operand is a trailing block. Maintained by [`Parser::enter_paren_group`] and
     /// [`Parser::leave_paren_group`].
     do_while_paren_depth: usize,
     /// Scope-aware class grammar context governing context-sensitive

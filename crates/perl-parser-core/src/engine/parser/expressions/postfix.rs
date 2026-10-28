@@ -4,8 +4,9 @@ impl<'a> Parser<'a> {
     /// Parses a primary expression first, then applies any postfix operators
     /// (arrow chains, subscripts, etc.) to form a complete postfix expression.
     fn parse_postfix(&mut self) -> ParseResult<Node> {
+        let grouped = self.peek_kind() == Some(TokenKind::LeftParen);
         let expr = self.parse_primary()?;
-        self.parse_postfix_chain(expr)
+        self.parse_postfix_chain_with(expr, false, grouped)
     }
 
     /// Apply postfix operators (arrow chains, subscripts, etc.) to an
@@ -15,21 +16,10 @@ impl<'a> Parser<'a> {
     /// build an initial node outside the normal `parse_primary` path
     /// (e.g. typeglobs in `parse_unary`) can still participate in postfix chaining.
     ///
-    /// Do-while trailing-block brace policy (#15649).
-    ///
-    /// A `{` following a do-while condition is the trailing block that real
-    /// Perl rejects near `") {"`. The grammar boundary is the condition's own
-    /// parentheses, not the expression shape: inside the condition's `(...)`
-    /// (paren depth > 0) every postfix brace is an ordinary subscript
-    /// (`while ($h{k})`), and after the group closed no shape can subscript
-    /// (`while ($flag) {k}` and `($h{k}){k}` reject even though grouping left
-    /// a bare variable or subscript binary here). Unparenthesized conditions
-    /// keep the shape rule: bare variables and bareword call/block forms
-    /// (`while foo {k}`) and any subscript-chain result (`$h{k}{j}`,
-    /// `$a[0]{k}`, `$self->{a}{b}`) keep consuming; a brace after a completed
-    /// non-subscript shape (`while $a eq $b {`) is the trailing block, left
-    /// for `parse_statement_modifier` to reject.
-    fn do_while_keep_consuming_brace(&self, expr: &Node) -> bool {
+    /// Leave a trailing brace after a grouped do-while operand for rejection.
+    /// Inside the initial condition group braces remain subscripts; after it,
+    /// a fresh bare operand or subscript chain can still consume a brace.
+    fn do_while_keep_consuming_brace(&self, expr: &Node, grouped: bool) -> bool {
         let subscript_chain = matches!(
             &expr.kind,
             NodeKind::Binary { op, .. }
@@ -40,8 +30,8 @@ impl<'a> Parser<'a> {
         let inside_condition_group = self.in_do_while_condition
             && self.do_while_paren_reject
             && self.do_while_paren_depth > 0;
-        let unparenthesized_condition = self.in_do_while_condition && !self.do_while_paren_reject;
-        inside_condition_group || (unparenthesized_condition && (bare_shape || subscript_chain))
+        let outside_group = self.in_do_while_condition && !(self.do_while_paren_reject && grouped);
+        inside_condition_group || (outside_group && (bare_shape || subscript_chain))
     }
 
     /// The loop handles several postfix patterns in order of precedence:
@@ -52,7 +42,7 @@ impl<'a> Parser<'a> {
     /// 5. Hash subscript with block handling (`{...}`)
     /// 6. Function call parentheses (`(...)`)
     pub(crate) fn parse_postfix_chain(&mut self, expr: Node) -> ParseResult<Node> {
-        self.parse_postfix_chain_with(expr, false)
+        self.parse_postfix_chain_with(expr, false, false)
     }
 
     /// Arrow-only postfix continuation for word `not` results (#13932,
@@ -62,10 +52,15 @@ impl<'a> Parser<'a> {
     /// are syntax errors per perl 5.38.2 `-c`). Anything else stays
     /// unconsumed so statement recovery reports it instead of a clean AST.
     pub(crate) fn parse_arrow_chain(&mut self, expr: Node) -> ParseResult<Node> {
-        self.parse_postfix_chain_with(expr, true)
+        self.parse_postfix_chain_with(expr, true, false)
     }
 
-    fn parse_postfix_chain_with(&mut self, mut expr: Node, arrow_only: bool) -> ParseResult<Node> {
+    fn parse_postfix_chain_with(
+        &mut self,
+        mut expr: Node,
+        arrow_only: bool,
+        mut grouped: bool,
+    ) -> ParseResult<Node> {
         let mut postfix_chain_depth = 0usize;
 
         // Closure to track nesting depth and prevent stack overflow on deeply
@@ -90,34 +85,17 @@ impl<'a> Parser<'a> {
             }
             // #15649: leave a surviving do-while trailing `{` for
             // `parse_statement_modifier` to reject with `DoWhileTrailingBlock`.
-            // This single gate covers every direct-`{` postfix arm below (hash
-            // slices, block-call forms, hash subscripts): after the
-            // parenthesized condition's own `)` closes, no shape subscripts.
+            // This gate covers every direct-`{` postfix arm below, including
+            // slices, block-call forms and hash subscripts.
             if self.peek_kind() == Some(TokenKind::LeftBrace)
                 && self.in_do_while_condition
-                && !self.do_while_keep_consuming_brace(&expr)
+                && !self.do_while_keep_consuming_brace(&expr, grouped)
             {
                 break;
             }
-            // --------------------------------------------------------------------
-            // Do-while closed-group guard — must precede every `{`-consuming
-            // arm below (slices, bareword block calls, hash subscripts), or
-            // shapes like `while (@h) { 2 }` and `while (foo) { 2 }` leak
-            // their trailing block into those arms: parenthesized conditions
-            // preserve their inner node kind, so the slice/block-call
-            // detectors see a Variable/Identifier and consume the brace.
-            // When the do-while condition's own `(...)` group is closed
-            // (reject armed, depth 0), a following `{` is the trailing block
-            // real Perl rejects near ") {" — leave it for
-            // `parse_statement_modifier` (#15649, #15719 review).
-            // --------------------------------------------------------------------
-            if self.in_do_while_condition
-                && self.do_while_paren_reject
-                && self.do_while_paren_depth == 0
-                && self.peek_kind() == Some(TokenKind::LeftBrace)
-            {
-                break;
-            }
+            // A consumed postfix continuation makes a later brace belong to the
+            // continued expression rather than directly to the closed group.
+            grouped = false;
 
             // --------------------------------------------------------------------
             // Hash/array slice without arrow: @hash{...} or %hash{...}
@@ -733,7 +711,7 @@ impl<'a> Parser<'a> {
                     // Hash element access (do-while trailing `{` already left
                     // by the loop-top gate above; this re-check keeps the arm
                     // honest if it is ever reached directly).
-                    if self.in_do_while_condition && !self.do_while_keep_consuming_brace(&expr) {
+                    if self.in_do_while_condition && !self.do_while_keep_consuming_brace(&expr, false) {
                         break;
                     }
                     self.advance_token()?; // consume {
@@ -1808,7 +1786,7 @@ impl<'a> Parser<'a> {
 /// condition's own `(...)`, keep bare/subscript shapes for unparenthesized
 /// conditions, and stop for everything else so `parse_statement_modifier`
 /// can reject the trailing block. (ripr discriminators for the
-/// `inside_condition_group || (unparenthesized_condition && (bare_shape ||
+/// `inside_condition_group || (outside_group && (bare_shape ||
 /// subscript_chain))` seams.)
 #[cfg(test)]
 mod do_while_brace_boundary_tests {
@@ -1850,29 +1828,29 @@ mod do_while_brace_boundary_tests {
     #[test]
     fn inside_condition_group_keeps_consuming() {
         let parser = condition_parser(false, 1);
-        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), true);
-        assert_eq!(parser.do_while_keep_consuming_brace(&number_node()), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node(), false), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&number_node(), false), true);
     }
 
     #[test]
     fn closed_condition_group_stops_consuming() {
         let parser = condition_parser(false, 0);
-        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), false);
-        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node(), true), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node(), true), false);
     }
 
     #[test]
     fn unparenthesized_condition_keeps_bare_and_subscript_shapes() {
         let parser = condition_parser(true, 0);
-        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), true);
-        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), true);
-        assert_eq!(parser.do_while_keep_consuming_brace(&number_node()), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node(), false), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node(), false), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&number_node(), false), false);
     }
 
     #[test]
     fn outside_do_while_condition_stops_consuming() {
-        let mut parser = Parser::new("while 1 {}");
-        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), false);
-        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), false);
+        let parser = Parser::new("while 1 {}");
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node(), false), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node(), false), false);
     }
 }

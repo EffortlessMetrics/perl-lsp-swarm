@@ -4,7 +4,7 @@
 //! in `perl-parser-core`'s postfix parser and the `DoWhileTrailingBlock`
 //! error variant is defined here.
 
-use perl_parser_core::{ParseError, Parser};
+use perl_parser_core::{NodeKind, ParseError, Parser};
 
 fn parse_clean(src: &str) -> Result<(), String> {
     let mut parser = Parser::new(src);
@@ -288,5 +288,36 @@ fn consume_balanced_and_paren_group_call_observation() -> Result<(), String> {
         matches!(err, ParseError::DoWhileTrailingBlock { .. }),
         "nested-group trailing block must raise the exact variant, got: {err:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn do_while_condition_allows_hash_subscript_after_binary_operator() -> Result<(), String> {
+    let mut parser = Parser::new("do {} while (0) && $h{k}; $after = 1;");
+    let ast = parser.parse().map_err(|e| format!("parse error: {e:?}"))?;
+    let NodeKind::Program { statements } = &ast.kind else { return Err("expected program".into()) };
+    assert_eq!(statements.len(), 2, "following statement must survive");
+    let NodeKind::StatementModifier { condition, .. } = &statements[0].kind else {
+        return Err(format!("expected statement modifier: {}", ast.to_sexp()));
+    };
+    let NodeKind::Binary { op, right, .. } = &condition.kind else {
+        return Err(format!("expected binary condition: {}", ast.to_sexp()));
+    };
+    assert_eq!(op, "&&");
+    let NodeKind::Binary { op, left, right } = &right.kind else {
+        return Err(format!("expected subscript: {}", ast.to_sexp()));
+    };
+    assert_eq!(op, "{}");
+    assert!(
+        matches!(&left.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "h")
+    );
+    assert!(matches!(&right.kind, NodeKind::Identifier { name } if name == "k"));
+    parse_clean("do {} until (0) || $h{k};")?;
+    parse_clean("do {} while (0) && $h[0]{k};")?;
+    parse_clean("do {} while ($h)->{k}{j};")?;
+    let mut rhs_group = Parser::new("do {} while (0) && ($h){k};");
+    assert!(matches!(rhs_group.parse(), Err(ParseError::DoWhileTrailingBlock { .. })));
+    let mut parser = Parser::new("do {} while (0) {k};");
+    assert!(matches!(parser.parse(), Err(ParseError::DoWhileTrailingBlock { .. })));
     Ok(())
 }
