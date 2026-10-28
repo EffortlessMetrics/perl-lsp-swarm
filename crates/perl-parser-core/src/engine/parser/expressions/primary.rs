@@ -688,7 +688,7 @@ impl<'a> Parser<'a> {
                     }
 
                     if self.peek_kind() == Some(TokenKind::Greater) {
-                        self.consume_token()?; // consume >
+                        let close = self.consume_token()?; // consume >
                         let end = self.previous_position();
 
                         if pattern.is_empty() {
@@ -697,8 +697,12 @@ impl<'a> Parser<'a> {
                         } else if has_glob_chars || pattern.contains('/') {
                             // Looks like a glob pattern
                             self.charge_node(NodeKind::Glob { pattern }, SourceLocation { start, end })
-                        } else if pattern.chars().all(|c| c.is_uppercase() || c == '_') {
-                            // Bareword filehandle e.g. <STDIN>, <FH>
+                        } else if close.start().saturating_sub(start + 1) == pattern.len()
+                            && is_bareword_filehandle(&pattern)
+                        {
+                            // Bareword filehandles may be lowercase, contain digits,
+                            // or be package-qualified. Ignore concatenated tokens
+                            // when whitespace appears inside the angle brackets.
                             self.charge_node(
                                 NodeKind::Readline { filehandle: Some(pattern) },
                                 SourceLocation { start, end },
@@ -1405,6 +1409,15 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
     }
+}
+
+/// A directly written bareword or package-qualified filehandle name.
+fn is_bareword_filehandle(pattern: &str) -> bool {
+    pattern.split("::").all(|part| {
+        let mut chars = part.chars();
+        matches!(chars.next(), Some(c) if c.is_alphabetic() || c == '_')
+            && chars.all(|c| c.is_alphanumeric() || c == '_')
+    })
 }
 
 /// Returns `true` if `pattern` is a *simple scalar variable* of the form
