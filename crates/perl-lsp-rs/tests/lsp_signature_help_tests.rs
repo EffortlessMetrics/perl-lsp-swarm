@@ -908,3 +908,40 @@ fn signature_help_ignores_commas_in_quoted_arguments() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn signature_help_counts_only_top_level_comma_tokens() -> TestResult {
+    let calls = [
+        ("calculate(q/a,b/, 42, 99);", "q/a,b/"),
+        ("calculate(qq{a,b}, 42, 99);", "qq{a,b}"),
+        ("calculate([1, 2], 42, 99);", "[1, 2]"),
+        (r#"calculate("a\",b", 42, 99);"#, r#""a\",b""#),
+    ];
+    let doc = format!(
+        "sub calculate ($first, $second, $third) {{}}\n{}\n",
+        calls.iter().map(|(call, _)| *call).collect::<Vec<_>>().join("\n")
+    );
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///argument-tokens.pl", &doc)?;
+    for (line, (call, first)) in calls.iter().enumerate() {
+        let inside_first = call.find(',').ok_or("embedded comma missing")? + 1;
+        let after_first = call.find(first).ok_or("first argument missing")? + first.len();
+        for (character, expected) in [(inside_first, 0), (after_first, 0), (after_first + 1, 1)] {
+            let result = harness.request_with_timeout(
+                "textDocument/signatureHelp",
+                json!({
+                    "textDocument": {"uri": "file:///argument-tokens.pl"},
+                    "position": {"line": line + 1, "character": character}
+                }),
+                std::time::Duration::from_secs(10),
+            )?;
+            assert_eq!(
+                result["activeParameter"],
+                json!(expected),
+                "{call} at {character}: {result}"
+            );
+        }
+    }
+    Ok(())
+}
