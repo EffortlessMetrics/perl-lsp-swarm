@@ -1723,6 +1723,18 @@ impl<'a> Parser<'a> {
             if !next_is_attr_ident {
                 break;
             }
+            // `: Type $var` is an invocant separator followed by a typed
+            // parameter, not an attribute named `Type` on the preceding one.
+            let followed_by_variable = self.tokens.peek_third().is_ok_and(|tok| {
+                matches!(
+                    tok.kind(),
+                    TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil
+                ) || (tok.kind() == TokenKind::Identifier
+                    && tok.text.starts_with(['$', '@', '%']))
+            });
+            if followed_by_variable {
+                break;
+            }
             self.consume_token()?; // consume ':'
             let attr = self.expect(TokenKind::Identifier)?;
             end = attr.end();

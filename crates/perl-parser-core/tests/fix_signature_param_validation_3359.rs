@@ -7,7 +7,7 @@
 ///
 /// The parser should emit diagnostics for these violations while still
 /// producing a usable AST (error-recovery mode).
-use perl_parser_core::Parser;
+use perl_parser_core::{Node, NodeKind, Parser};
 
 /// Helper: parse and return diagnostic messages as a Vec<String>
 fn parse_and_collect_errors(source: &str) -> Vec<String> {
@@ -214,5 +214,63 @@ fn test_signature_param_attributes_parse_without_signature_separator_error() {
         !errors.iter().any(|e| e.contains("Expected comma or closing parenthesis in signature")),
         "parameter attributes must not trip signature separator recovery, got: {:?}",
         errors
+    );
+}
+
+#[test]
+fn test_typed_parameter_after_invocant_separator() -> Result<(), String> {
+    fn signature(node: &Node) -> Option<&Node> {
+        if matches!(node.kind, NodeKind::Signature { .. }) {
+            return Some(node);
+        }
+        node.children().into_iter().find_map(signature)
+    }
+
+    for source in [
+        "method run ($self: Str $arg) { }",
+        "method run ($self: Str $arg, $other) { }",
+        "method run ($self :param, Str $arg) { }",
+    ] {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|e| format!("{source}: {e}"))?;
+        assert!(parser.errors().is_empty(), "{source}: {:?}", parser.errors());
+        let method = ast
+            .children()
+            .into_iter()
+            .find(|node| matches!(node.kind, NodeKind::Method { .. }))
+            .ok_or_else(|| format!("missing method: {source}"))?;
+        let sig = signature(method).ok_or_else(|| format!("missing signature: {source}"))?;
+        let NodeKind::Signature { parameters } = &sig.kind else { unreachable!() };
+        let names: Vec<_> = parameters
+            .iter()
+            .filter_map(|param| match &param.kind {
+                NodeKind::MandatoryParameter { variable } => match &variable.kind {
+                    NodeKind::Variable { name, .. } => Some(name.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let expected = if source.contains("$other") {
+            vec!["self", "arg", "other"]
+        } else {
+            vec!["self", "arg"]
+        };
+        assert_eq!(names, expected, "{source}");
+        if source.contains(":param") {
+            let first = &parameters[0].location;
+            assert_eq!(&source[first.start..first.end], "$self :param");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_second_invocant_separator_before_typed_parameter_is_rejected() {
+    let source = "method run ($self: $arg: Str $other) { }";
+    let errors = parse_and_collect_errors(source);
+    assert!(
+        errors.iter().any(|error| error.contains("Expected comma or closing parenthesis")),
+        "second separator should be rejected for {source}: {errors:?}"
     );
 }
