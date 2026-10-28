@@ -892,11 +892,14 @@ impl<'a> Parser<'a> {
                             // Handles `blessed $self`, `reftype $x`, `weaken $ref`, etc.
                             // (imported unary functions that look like builtins at the call site)
                             //
-                            // Parse only a high-precedence argument expression here so
-                            // lower-precedence operators remain outside the call.
-                            // Example: `is_ready $obj ? 1 : 0` must parse as
-                            // `(is_ready $obj) ? 1 : 0`, not `is_ready($obj ? 1 : 0)`.
-                            let first_arg = self.parse_shift()?;
+                            // Unknown and prototyped calls retain the conservative
+                            // unary interpretation; only an observed plain declaration
+                            // admits list-operator precedence.
+                            let first_arg = if self.known_list_call(name) {
+                                self.parse_assignment_before_separator()?
+                            } else {
+                                self.parse_shift()?
+                            };
                             let mut args = vec![first_arg];
 
                             while matches!(

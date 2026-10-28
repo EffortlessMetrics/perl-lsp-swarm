@@ -62,7 +62,7 @@ use crate::{
     token_stream::{ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream},
 };
 use perl_lexer::LexerMode;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -92,6 +92,13 @@ pub(crate) struct ParserDecisionTrace {
     pub(crate) end: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CallPrototype {
+    Unprototyped,
+    Scalar,
+    Unknown,
+}
+
 /// Parser state for a single Perl source input.
 ///
 /// Construct with [`Parser::new`] and call [`Parser::parse`] to obtain an AST.
@@ -109,6 +116,10 @@ pub(crate) struct ParserDecisionTrace {
 pub struct Parser<'a> {
     /// Token stream providing access to lexed Perl script content
     tokens: TokenStream<'a>,
+    // Source-order, conservative evidence used only for bare call binding.
+    call_prototypes: HashMap<String, CallPrototype>,
+    call_package: String,
+    lexical_call_shadows: Vec<HashSet<String>>,
     /// Syntactic block nesting for `NestingTooDeep`. This is not the
     /// production resource-control depth; that lives on the operation
     /// context tracker and is governed by [`Parser::with_depth`].
@@ -238,6 +249,9 @@ impl<'a> Parser<'a> {
     ) -> Self {
         Parser {
             tokens,
+            call_prototypes: HashMap::new(),
+            call_package: "main".to_string(),
+            lexical_call_shadows: vec![HashSet::new()],
             block_depth: 0,
             last_end_position: 0,
             in_for_loop_init: false,
@@ -492,6 +506,10 @@ impl<'a> Parser<'a> {
     fn begin_operation(&mut self) {
         self.operation.begin();
         self.block_depth = 0;
+        self.call_prototypes.clear();
+        self.call_package = "main".to_string();
+        self.lexical_call_shadows.clear();
+        self.lexical_call_shadows.push(HashSet::new());
         // #8786: the retained diagnostics are operation-scoped too. `begin`
         // zeroes the charge counters, so leaving the vector behind would let a
         // second operation return the first operation's diagnostics while
@@ -499,6 +517,38 @@ impl<'a> Parser<'a> {
         // receipt and the vector describing different operations. Retention and
         // its charge share one lifetime, or neither means anything.
         self.errors.clear();
+    }
+
+    fn normalize_call_package(name: &str) -> String {
+        let name = name.replace("'", "::");
+        let name = name.strip_prefix("::").unwrap_or(&name);
+        if name == "main" || name.starts_with("main::") {
+            name.to_string()
+        } else {
+            format!("main::{name}")
+        }
+    }
+
+    fn call_key(&self, name: &str) -> String {
+        let normalized = name.replace("'", "::");
+        if normalized.contains("::") {
+            Self::normalize_call_package(&normalized)
+        } else {
+            format!("{}::{normalized}", self.call_package)
+        }
+    }
+
+    fn known_list_call(&self, name: &str) -> bool {
+        if self.class_grammar.admits_class_members() {
+            return false;
+        }
+        if !name.contains("::")
+            && !name.contains('\'')
+            && self.lexical_call_shadows.iter().rev().any(|scope| scope.contains(name))
+        {
+            return false;
+        }
+        self.call_prototypes.get(&self.call_key(name)) == Some(&CallPrototype::Unprototyped)
     }
 
     /// Get all parse errors collected during parsing

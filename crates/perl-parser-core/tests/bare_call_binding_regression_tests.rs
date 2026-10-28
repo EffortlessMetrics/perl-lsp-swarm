@@ -47,7 +47,7 @@ fn function_call<'a>(node: &'a Node, context: &str) -> Result<(&'a str, &'a [Nod
 }
 
 #[test]
-fn bare_call_condition_stays_outside_ternary() -> Result<(), String> {
+fn declared_bare_call_takes_ternary_argument() -> Result<(), String> {
     let source = "sub is_ready { 1 }; my $x = is_ready $obj ? 1 : 0;";
     assert_clean_parse(source);
 
@@ -57,16 +57,9 @@ fn bare_call_condition_stays_outside_ternary() -> Result<(), String> {
     let second = statement_at(&statements, 1, "bare call ternary assignment")?;
     let initializer = variable_initializer(second, "bare call ternary assignment")?;
 
-    match &initializer.kind {
-        NodeKind::Ternary { condition, .. } => match &condition.kind {
-            NodeKind::FunctionCall { name, args } => {
-                assert_eq!(name, "is_ready");
-                assert_eq!(args.len(), 1, "expected one bare-call argument");
-            }
-            other => return Err(format!("expected FunctionCall condition, got {other:?}")),
-        },
-        other => return Err(format!("expected Ternary initializer, got {other:?}")),
-    }
+    let (name, args) = function_call(initializer, "declared bare call")?;
+    assert_eq!(name, "is_ready");
+    assert!(matches!(args.first().map(|arg| &arg.kind), Some(NodeKind::Ternary { .. })));
     Ok(())
 }
 

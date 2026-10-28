@@ -151,6 +151,8 @@ impl<'a> Parser<'a> {
         let mut attributes = Vec::new();
 
         while self.peek_kind() == Some(TokenKind::Colon) {
+            // Attribute handlers can execute at compile time and change symbols.
+            self.call_prototypes.clear();
             self.advance_token()?; // consume colon
             let mut parsed_any = false;
 
@@ -293,7 +295,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse subroutine definition
-    fn parse_subroutine(&mut self) -> ParseResult<Node> {
+    fn parse_subroutine(&mut self, scoped: bool) -> ParseResult<Node> {
         let start = self.current_position();
         self.advance_token()?; // consume 'sub'
 
@@ -363,6 +365,37 @@ impl<'a> Parser<'a> {
         // Parse optional trailing attributes after the prototype/signature.
         if self.peek_kind() == Some(TokenKind::Colon) {
             attributes.extend(self.parse_declaration_attributes()?);
+        }
+
+        // Only an explicit, unambiguous source declaration supplies a list-call
+        // fact. Attributes can execute arbitrary compile-time handlers.
+        if !attributes.is_empty() {
+            self.call_prototypes.clear();
+        }
+        if let Some(ref name) = name
+            && !self.class_grammar.admits_class_members()
+        {
+            if scoped {
+                if let Some(scope) = self.lexical_call_shadows.last_mut() {
+                    scope.insert(name.clone());
+                }
+                let key = self.call_key(name);
+                self.call_prototypes.remove(&key);
+            } else {
+                let key = self.call_key(name);
+                let binding = if !attributes.is_empty() {
+                    CallPrototype::Unknown
+                } else if let Some(prototype) = &prototype {
+                    if matches!(&prototype.kind, NodeKind::Prototype { content } if content == "$") {
+                        CallPrototype::Scalar
+                    } else {
+                        CallPrototype::Unknown
+                    }
+                } else {
+                    CallPrototype::Unprototyped
+                };
+                self.call_prototypes.insert(key, binding);
+            }
         }
 
         // Check for forward declaration: sub foo; or sub foo(@); or sub foo :method;
@@ -802,10 +835,12 @@ impl<'a> Parser<'a> {
         // polluted PL201 messages and package-to-file mapping. (#5265)
         let _ = version; // version is parsed but not attached to name
 
+        let previous_package = std::mem::replace(&mut self.call_package, Self::normalize_call_package(&name));
         let block = if self.peek_kind() == Some(TokenKind::LeftBrace) {
-            Some(Box::new(self.parse_block()?))
+            let result = self.parse_block();
+            self.call_package = previous_package;
+            Some(Box::new(result?))
         } else {
-            // Don't consume semicolon here - let parse_statement handle it uniformly
             None
         };
 
@@ -815,6 +850,7 @@ impl<'a> Parser<'a> {
 
     /// Parse use statement
     fn parse_use(&mut self) -> ParseResult<Node> {
+        self.call_prototypes.clear();
         let start = self.current_position();
         self.consume_token()?; // consume 'use'
 
@@ -1439,6 +1475,7 @@ impl<'a> Parser<'a> {
 
     /// Parse phase block (BEGIN, END, CHECK, INIT, UNITCHECK)
     fn parse_phase_block(&mut self) -> ParseResult<Node> {
+        self.call_prototypes.clear();
         let start = self.current_position();
         let phase_token = self.consume_token()?;
         let phase = phase_token.text.to_string();
@@ -1454,7 +1491,9 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        let block = self.parse_block()?;
+        let block = self.parse_block();
+        self.call_prototypes.clear();
+        let block = block?;
         let end = block.location.end;
 
         // Create a special node for phase blocks
@@ -1498,6 +1537,7 @@ impl<'a> Parser<'a> {
 
     /// Parse no statement (similar to use but disables pragmas/modules)
     fn parse_no(&mut self) -> ParseResult<Node> {
+        self.call_prototypes.clear();
         let start = self.current_position();
         self.advance_token()?; // consume 'no'
 

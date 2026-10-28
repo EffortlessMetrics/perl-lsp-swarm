@@ -1208,7 +1208,7 @@ impl<'a> Parser<'a> {
                     Some(TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::Colon)
                 ) {
                     // It's an anonymous subroutine
-                    self.parse_subroutine()
+                    self.parse_subroutine(false)
                 } else {
                     // It's used as an identifier
                     let token = self.advance_token()?;

@@ -218,7 +218,7 @@ impl<'a> Parser<'a> {
 
         let mut stmt = if self.is_async_sub_start() {
             let async_token = self.consume_token()?;
-            let mut sub_node = self.parse_subroutine()?;
+            let mut sub_node = self.parse_subroutine(false)?;
             sub_node.location.start = async_token.start();
             if let NodeKind::Subroutine { attributes, .. } = &mut sub_node.kind
                 && !attributes.iter().any(|attr| attr == "async")
@@ -244,7 +244,7 @@ impl<'a> Parser<'a> {
                 TokenKind::My | TokenKind::Our | TokenKind::State => {
                     if matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::Sub)) {
                         let decl_token = self.consume_token()?;
-                        let mut sub_node = self.parse_subroutine()?;
+                        let mut sub_node = self.parse_subroutine(true)?;
                         sub_node.location.start = decl_token.start();
                         // Inject the declarator into the Subroutine node
                         if let NodeKind::Subroutine { declarator, name, .. } = &mut sub_node.kind {
@@ -375,7 +375,7 @@ impl<'a> Parser<'a> {
 
                 // Subroutines and modern OOP
                 TokenKind::Sub => {
-                    let sub_node = self.parse_subroutine()?;
+                    let sub_node = self.parse_subroutine(false)?;
                     self.finish_subroutine_statement(sub_node)
                 }
                 TokenKind::Class
@@ -1929,7 +1929,9 @@ impl<'a> Parser<'a> {
 
     /// Parse a block statement
     fn parse_block(&mut self) -> ParseResult<Node> {
-        self.with_block_recursion_guard(|s| {
+        let package = self.call_package.clone();
+        self.lexical_call_shadows.push(HashSet::new());
+        let result = self.with_block_recursion_guard(|s| {
             let start = s.current_position();
 
             s.expect(TokenKind::LeftBrace)?;
@@ -2026,7 +2028,10 @@ impl<'a> Parser<'a> {
             let end = s.previous_position();
 
             s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
-        })
+        });
+        self.call_package = package;
+        self.lexical_call_shadows.pop();
+        result
     }
 
     /// Check if the token after `Identifier:` cannot start a Perl statement.
