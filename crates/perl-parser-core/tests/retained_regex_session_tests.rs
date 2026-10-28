@@ -432,3 +432,25 @@ const _SESSION_IS_NOT_SEND: () = assert!(!IsSend::<RetainedRegexSession<'static>
 // the degenerate reading of the assertion above: that the probe always answers `false`
 // and would hold no matter what `RetainedRegexSession` does.
 const _PROBE_CAN_REPORT_SEND: () = assert!(IsSend::<String>::IS_SEND);
+
+#[test]
+fn transliteration_geometry_stops_before_following_quoted_statement() {
+    let source = "$_ = \"a\"; tr/a/\"b/c; print \"x/y\";";
+    let output = parse_source_with_regex_analysis(source);
+    let table = output.regex_analysis;
+    let record = table
+        .records
+        .iter()
+        .find(|record| record.availability == RegexAnalysisAvailability::TransliterationNotRegex);
+    let Some(record) = record else {
+        panic!("transliteration geometry was not retained: {table:#?}");
+    };
+    let Some(geometry) = &record.geometry else {
+        panic!("transliteration geometry unavailable: {record:#?}");
+    };
+    let Some(replacement) = &geometry.replacement else {
+        panic!("replacement geometry unavailable: {geometry:#?}");
+    };
+    assert_eq!(replacement.text, "\"b");
+    assert_eq!(&source[geometry.full_range.start..geometry.full_range.end], "tr/a/\"b/c");
+}

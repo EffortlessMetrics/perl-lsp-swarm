@@ -117,3 +117,26 @@ fn geometry_rejects_unicode_comment_gaps_like_strict_transliteration_parsing() {
         }
     }
 }
+
+#[test]
+fn transliteration_quotes_do_not_hide_the_closing_delimiter() -> Result<(), String> {
+    for operator in ["tr", "y"] {
+        let source = format!("{operator}/a/\"b/c; print \"x/y\";");
+        let geometry = extract_regex_family_geometry(&source, 10)
+            .ok_or_else(|| format!("missing geometry for {source:?}"))?;
+        let replacement = geometry.replacement.ok_or("missing replacement")?;
+        let body_start = 10 + operator.len() + 3;
+        assert_eq!(replacement.text, "\"b");
+        assert_eq!(replacement.range, SourceLocation { start: body_start, end: body_start + 2 });
+        assert_eq!(
+            replacement.closing_delimiter_range,
+            Some(SourceLocation { start: body_start + 2, end: body_start + 3 })
+        );
+        assert_eq!(geometry.modifiers.text, "c");
+        assert_eq!(geometry.full_range.end, body_start + 4);
+        let parsed = perl_parser_core::quote_parser::extract_transliteration_parts_strict(&source)
+            .map_err(|error| format!("strict parse failed: {error:?}"))?;
+        assert_eq!(parsed, ("a".into(), "\"b".into(), "c".into()));
+    }
+    Ok(())
+}

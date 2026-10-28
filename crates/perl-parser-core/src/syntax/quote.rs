@@ -523,7 +523,7 @@ pub fn extract_transliteration_parts_strict(
         if rest1.is_empty() {
             return Err(TransliterationError::MissingReplacement);
         }
-        extract_unpaired_body_skip_strings(rest1, closing)
+        extract_unpaired_body(rest1, closing)
     } else {
         let trimmed = skip_paired_replacement_gap(rest1);
         if let Some(repl_delimiter) = trimmed.chars().next() {
@@ -1635,6 +1635,7 @@ mod regex_family_geometry {
                 pattern_close,
                 pattern_close_end,
                 pattern.delimiter,
+                kind,
             ));
         }
 
@@ -1655,6 +1656,7 @@ mod regex_family_geometry {
         shared_open_offset: usize,
         body_start: usize,
         delimiter: char,
+        kind: SecondBodyKind,
     ) -> ScannedBody {
         let mut escaped = false;
         let Some(rest) = text.get(body_start..) else {
@@ -1683,7 +1685,8 @@ mod regex_family_geometry {
                 relative = relative.saturating_add(ch.len_utf8());
                 continue;
             }
-            if matches!(ch, '\'' | '"')
+            if matches!(kind, SecondBodyKind::Substitution)
+                && matches!(ch, '\'' | '"')
                 && ch != delimiter
                 && !is_word_apostrophe(text, offset, ch)
                 && let Some(string_end) = scan_inner_string(text, offset, ch, delimiter)
