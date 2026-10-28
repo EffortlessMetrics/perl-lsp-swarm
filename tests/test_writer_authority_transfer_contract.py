@@ -365,5 +365,17 @@ affected proof/review.
         self.assertNotIn(expected, workflow_run_commands(workflow))
 
 
+class PolicyStageTest(unittest.TestCase):
+    def test_policy_discovery_is_scoped_to_integration(self):
+        text = read('.agents/skills/orchestrate-work/SKILL.md')
+        section = text.split('Carry volatile values as an observation basis, not instructions:', 1)[1].split('## Graph-delta returns', 1)[0].lower()
+        self.assertNotIn('before mutating', section)
+        self.assertIn('before integration', section)
+        self.assertIn('ordinary local edits or draft publication', section)
+        self.assertIn('required checks', section)
+        self.assertIn('queue', section)
+
+
+
 if __name__ == "__main__":
     unittest.main()

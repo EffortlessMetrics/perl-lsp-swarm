@@ -187,13 +187,16 @@ Carry volatile values as an observation basis, not instructions:
 
 ```text
 Observed as of <sha>: <PR state, head, then-discovered required-policy set and results>.
-Re-derive live protection, rulesets, contexts, and results before mutating.
+Re-derive the relevant live candidate and transaction state before the requested action.
 If materially different, return PREMISE_CHANGED, CANDIDATE_MOVED, or SUPERSEDED rather
 than proceeding against stale state.
 ```
 
-Discover required policy rather than naming a remembered set. Write any instruction
-that names a specific PR, branch, or SHA as conditional.
+Before integration, discover applicable required policy and current required checks and
+queue state rather than naming a remembered set. Policy-administration reads are not a
+prerequisite for ordinary local edits or draft publication; preserve actual protections
+and use normal PR operations. Write any instruction that names a specific PR, branch,
+or SHA as conditional.
 
 ## Graph-delta returns
 
