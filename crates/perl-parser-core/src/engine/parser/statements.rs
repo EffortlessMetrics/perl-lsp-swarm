@@ -1377,7 +1377,8 @@ impl<'a> Parser<'a> {
         expr = self.parse_and_with(expr)?;
         expr = self.parse_or_with(expr)?;
         expr = self.parse_range_with(expr)?;
-        expr = self.parse_ternary_with(expr)?;
+        // This statement tail owns the surrounding comma/fat-arrow list.
+        expr = self.parse_ternary_with_existing_condition(expr, false)?;
         expr = self.collect_comma_fat_arrow_continuation(expr)?;
         self.parse_word_or_expr(expr)
     }

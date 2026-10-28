@@ -335,14 +335,26 @@ impl<'a> Parser<'a> {
     /// Continue parsing ternary conditional when we already have the condition
     /// expression.  Used by the statement-level named-unary tail so that
     /// `defined $var ? then : else` is correctly wrapped in a Ternary node.
-    fn parse_ternary_with(&mut self, mut expr: Node) -> ParseResult<Node> {
+    fn parse_ternary_with(&mut self, expr: Node) -> ParseResult<Node> {
+        self.parse_ternary_with_existing_condition(expr, true)
+    }
+
+    fn parse_ternary_with_existing_condition(
+        &mut self,
+        mut expr: Node,
+        collect_else_list: bool,
+    ) -> ParseResult<Node> {
         if self.peek_kind() == Some(TokenKind::Question) {
             self.advance_token()?; // consume ?
             let then_expr = self.parse_assignment()?;
             let then_expr = self.collect_fat_arrow_ternary_branch(then_expr)?;
             self.expect(TokenKind::Colon)?;
-            let else_expr = self.parse_ternary()?;
-            let else_expr = self.collect_fat_arrow_ternary_branch(else_expr)?;
+            let else_expr = self.parse_ternary_with_tail(collect_else_list)?;
+            let else_expr = if collect_else_list {
+                self.collect_fat_arrow_ternary_branch(else_expr)?
+            } else {
+                else_expr
+            };
 
             let start = expr.location.start;
             let end = else_expr.location.end;
