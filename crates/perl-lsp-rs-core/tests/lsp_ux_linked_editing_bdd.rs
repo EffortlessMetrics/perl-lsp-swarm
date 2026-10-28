@@ -107,6 +107,21 @@ fn given_cursor_on_regex_delimiter_when_linked_editing_requested_then_delimiter_
 }
 
 #[test]
+fn regex_delimiters_after_unicode_and_ascii_prefixes() -> TestResult {
+    for (prefix, first_column) in [("a", 16), ("é", 16), ("😀", 17)] {
+        let fixture = format!("say \"{prefix}\"; $x =~ m<<CURSOR>>/foo/;");
+        let scenario = LinkedEditingScenario::from_fixture(&fixture)?;
+        let ranges = scenario.linked_ranges().ok_or("expected regex delimiter ranges")?;
+        assert_eq!(ranges.ranges.len(), 2);
+        assert_eq!(ranges.ranges[0].start, lsp_types::Position::new(0, first_column));
+        assert_eq!(ranges.ranges[1].start, lsp_types::Position::new(0, first_column + 4));
+        assert_eq!(slice_for_range(&scenario.text, &ranges.ranges[0])?, "/");
+        assert_eq!(slice_for_range(&scenario.text, &ranges.ranges[1])?, "/");
+    }
+    Ok(())
+}
+
+#[test]
 fn given_cursor_on_plain_identifier_when_linked_editing_requested_then_no_ranges_are_returned()
 -> TestResult {
     let scenario = LinkedEditingScenario::from_fixture("my <<CURSOR>>$name = 'x';")?;
