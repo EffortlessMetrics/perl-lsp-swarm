@@ -217,3 +217,26 @@ fn missing_terminator_at_body_start_is_recovery() -> R {
     }
     Ok(())
 }
+
+#[test]
+fn unterminated_queued_body_emits_one_recovery() -> R {
+    let source = "<<A, <<B\nbody\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+    require_unterminated_payload(source, &tokens, "body\n")?;
+    require_eq(
+        &tokens.iter().filter(|t| matches!(t.token_type, TokenType::UnknownRest)).count(),
+        &1,
+        "unterminated queue recovery count",
+    )
+}
+
+#[test]
+fn over_budget_queued_body_emits_one_recovery() -> R {
+    let source = format!("<<A, <<B\n{}", "x".repeat(256 * 1024 + 1));
+    let tokens = PerlLexer::with_body_tokens(&source).collect_tokens();
+    require_eq(
+        &tokens.iter().filter(|t| matches!(t.token_type, TokenType::UnknownRest)).count(),
+        &1,
+        "over-budget queue recovery count",
+    )
+}

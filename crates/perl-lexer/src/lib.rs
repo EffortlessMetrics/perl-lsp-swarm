@@ -254,7 +254,7 @@ impl<'a> PerlLexer<'a> {
     /// other bounded-payload shape (a payload-carrying `Error` over the header
     /// text). Pinned by `tests/budget_recovery_contract.rs`.
     fn heredoc_budget_recovery(&mut self, body_start: usize) -> Token {
-        self.pending_heredocs.remove(0);
+        self.pending_heredocs.clear();
         self.position = self.input.len();
         Token {
             token_type: TokenType::UnknownRest,
@@ -479,7 +479,8 @@ impl<'a> PerlLexer<'a> {
                     // payload copy safe; see the budget-stop recovery contract
                     // in the crate docs.
                     if !found_terminator {
-                        self.pending_heredocs.remove(0);
+                        // The remaining queued bodies cannot start after EOF.
+                        self.pending_heredocs.clear();
                         self.position = self.input.len();
                         return Some(Token {
                             token_type: TokenType::UnknownRest,
