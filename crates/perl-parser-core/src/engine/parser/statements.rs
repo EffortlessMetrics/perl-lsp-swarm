@@ -75,7 +75,12 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = self.previous_position();
+        // Recovery can anchor an error at EOF, or retain a partially parsed
+        // statement beyond the last successfully consumed token.
+        let end = statements
+            .iter()
+            .map(|stmt| stmt.location.end)
+            .fold(self.previous_position(), usize::max);
         self.charge_node(NodeKind::Program { statements }, SourceLocation { start, end })
     }
 
@@ -2002,7 +2007,7 @@ impl<'a> Parser<'a> {
                     start,
                 ));
             }
-            let end = s.previous_position();
+            let end = statements.iter().map(|stmt| stmt.location.end).fold(s.previous_position(), usize::max);
 
             s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
         })
