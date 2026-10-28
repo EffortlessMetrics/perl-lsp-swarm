@@ -577,6 +577,37 @@ my $nested = 1;
 }
 
 #[test]
+fn test_folding_range_region_markers_crlf_prefix() -> TestResult {
+    let content = format!("{}# region x\r\nbody\r\n# endregion\r\n", "\r\n".repeat(20));
+    let ranges = folding_ranges_for("file:///regions-crlf-prefix.pl", &content)?;
+
+    assert!(
+        ranges.iter().any(|range| {
+            range.get("kind").and_then(Value::as_str) == Some("region")
+                && range_lines(range) == Some((20, 22))
+        }),
+        "CRLF prefix must not shift region lines: {ranges:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_folding_range_nested_region_marker_word_boundaries() -> TestResult {
+    let content = "# region outer\n# region inner\nbody\n# endregion_bad\n# endregioné\n# endregion\n# endregion\n";
+    let ranges = folding_ranges_for("file:///regions-boundaries.pl", content)?;
+    let region_lines: Vec<_> = ranges
+        .iter()
+        .filter(|range| range.get("kind").and_then(Value::as_str) == Some("region"))
+        .filter_map(range_lines)
+        .collect();
+
+    assert_eq!(region_lines.len(), 2, "unexpected region folds: {ranges:?}");
+    assert!(region_lines.contains(&(1, 5)), "inner region closed early: {ranges:?}");
+    assert!(region_lines.contains(&(0, 6)), "outer region closed early: {ranges:?}");
+    Ok(())
+}
+
+#[test]
 fn test_folding_range_region_markers_with_names() -> TestResult {
     let content = r#"# region Initialization Block
 my $config = load_config();
