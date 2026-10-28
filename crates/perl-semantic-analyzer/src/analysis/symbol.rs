@@ -859,12 +859,18 @@ impl SymbolExtractor {
                 }
             }
 
-            NodeKind::While { condition, body, continue_block: _, .. } => {
+            NodeKind::While { condition, body, continue_block, .. } => {
                 self.visit_node(condition);
 
                 self.table.push_scope(ScopeKind::Block, body.location);
                 self.visit_node(body);
                 self.table.pop_scope();
+
+                // A continue block is a sibling of the body: its declarations
+                // and references belong to its own lexical scope.
+                if let Some(block) = continue_block {
+                    self.visit_node(block);
+                }
             }
 
             NodeKind::For { init, condition, update, body, .. } => {

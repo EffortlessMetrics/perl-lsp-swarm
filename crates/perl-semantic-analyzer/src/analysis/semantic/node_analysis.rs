@@ -421,9 +421,13 @@ impl SemanticAnalyzer {
                 }
             }
 
-            NodeKind::While { condition, body, continue_block: _, .. } => {
+            NodeKind::While { condition, body, continue_block, .. } => {
                 self.analyze_node(condition, scope_id);
                 self.analyze_node(body, scope_id);
+                if let Some(block) = continue_block {
+                    let continue_scope = self.symbol_table.scope_at_offset(block.location.start);
+                    self.analyze_node(block, continue_scope);
+                }
             }
 
             NodeKind::For { init, condition, update, body, .. } => {
