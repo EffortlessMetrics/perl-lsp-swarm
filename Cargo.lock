@@ -1841,7 +1841,6 @@ name = "perl-lsp-perltidy"
 version = "0.17.0"
 dependencies = [
  "criterion",
- "perl-lsp-rs-core",
  "perl-parser-core",
  "perl-subprocess-runtime",
  "perl-tdd-support",
