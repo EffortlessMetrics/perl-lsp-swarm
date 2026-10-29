@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use crate::hir::{
     AccessMode, AssignMode, BranchKeyword, BranchShell, CallForm, ControlTransferKind,
     DeclStorageClass, DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId,
-    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirRegexTarget, HirScopeId, HirStmt,
-    LiteralKind, LoopShell, RegexTargetKind, Sigil, StatementModifierKind, UnaryMode, VariableKind,
+    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirLiteralKind, HirRegexTarget, HirScopeId,
+    HirStmt, LiteralExpr, LiteralKind, LoopShell, RegexTargetKind, Sigil, StatementModifierKind,
+    UnaryMode, VariableKind, hir_quote_kind, strip_string_quotes,
 };
 
 use super::model::{
@@ -198,7 +199,7 @@ impl Lowerer {
             HirKind::DynamicBoundary(boundary) => {
                 self.lower_dynamic_boundary(item, boundary.kind, boundary.reason.clone());
             }
-            HirKind::LiteralExpr(literal) => self.lower_literal(item, literal.kind),
+            HirKind::LiteralExpr(literal) => self.lower_literal(item, literal),
             HirKind::RegexExpr(regex) => self.lower_regex_literal(item, regex),
             HirKind::MatchExpr(match_expr) => self.lower_match(item, match_expr),
             HirKind::SubstitutionExpr(subst) => self.lower_substitution(item, subst),
@@ -223,11 +224,27 @@ impl Lowerer {
         }
     }
 
-    fn lower_literal(&mut self, item: &HirItem, kind: LiteralKind) {
+    fn lower_literal(&mut self, item: &HirItem, literal: &LiteralExpr) {
         // HIR preserves the literal category but not the surrounding expression
         // context on this item, so PIR keeps context Unknown rather than guessing
-        // scalar or list behavior.
-        let operation = PirOperation::Literal { kind: map_literal_kind(kind) };
+        // scalar or list behavior. The flat path shares the body path's value
+        // convention (#17538): quotable string token text is stripped to
+        // content (interpolated forms included — flat models them, unlike the
+        // body cohort gate), and a zero-width item range marks a node that is
+        // absent from the source text, exactly like the body leaf.
+        let value = match literal.kind {
+            LiteralKind::String => literal.value.as_deref().map(|raw| {
+                strip_string_quotes(raw)
+                    .map_or_else(|| raw.to_string(), |(content, _)| content.to_string())
+            }),
+            _ => literal.value.clone(),
+        };
+        let operation = PirOperation::Literal {
+            kind: map_literal_kind(literal.kind),
+            value,
+            quote: literal.value.as_deref().and_then(hir_quote_kind),
+            synthesized: item.range.start == item.range.end,
+        };
         let anchor = PirSourceAnchor::explicit(item.range, item.id);
         self.push_node_maybe_operand(item, anchor, operation, None);
     }
@@ -1120,12 +1137,23 @@ impl BodyLowerer {
                                 name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
                             })
                         }
+                        // A class-body `field` declaration writes per-object
+                        // storage: neither a lexical pad slot nor a package
+                        // stash slot (#13844). The extractor already treats
+                        // `FieldWrite` as a non-lexical fact, so no false
+                        // lexical binding is published.
+                        DeclStorageClass::Field => Some(PirOperation::FieldWrite {
+                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                        }),
                         DeclStorageClass::Unknown => None,
                     };
-                    // The write access comes from `access_for_operation`; the
-                    // value context of the declared place is not proven by
-                    // this lowering (scalar versus list assignment shape), so
-                    // it stays `Unknown` rather than the statement's `Void`.
+                    // The write access comes from `access_for_operation` for
+                    // lexical and stash writes; field writes carry no access
+                    // fact (the Field family is ignored by extraction in PR1,
+                    // #13817). The value context of the declared place is not
+                    // proven by this lowering (scalar versus list assignment
+                    // shape), so it stays `Unknown` rather than the
+                    // statement's `Void`.
                     if let Some(op) = op {
                         self.push_body_node(anchor, op, PirContext::Unknown, None, file);
                     }
@@ -1206,8 +1234,31 @@ impl BodyLowerer {
     /// Walk the operand of a regex-family operation (#7136).
     ///
     /// An implicit default topic has no operand expression to walk.
-    fn lower_regex_target(&mut self, body: &HirBody, target: &HirRegexTarget, file: &HirFile) {
+    fn lower_regex_target(
+        &mut self,
+        body: &HirBody,
+        target: &HirRegexTarget,
+        op_text: &'static str,
+        file: &HirFile,
+    ) {
         if let HirRegexTarget::Bound { expr, .. } = target {
+            // A mutating substitution/transliteration target is a
+            // read-modify-write variable (#14639). Emit its Modify fact
+            // directly, as compound assignment does, instead of routing it
+            // through the read/write path whose fail-closed guard would
+            // record an RmwVariableFallthrough gap and no node.
+            if let Some(HirExpr::Variable(v)) = body.expr(*expr)
+                && v.access == AccessMode::ReadModifyWrite
+            {
+                // No source range means fail-closed, as in `lower_expr`:
+                // emit nothing rather than a Modify anchored at offset 0.
+                let Some(range) = body.source_map.expr_ranges.get(expr.0 as usize).copied() else {
+                    return;
+                };
+                let v = v.clone();
+                self.lower_variable_modify(&v, op_text.to_string(), range, file);
+                return;
+            }
             self.lower_expr(body, *expr, file);
         }
     }
@@ -1298,11 +1349,12 @@ impl BodyLowerer {
                 //
                 // Condition link (v0 approximation): the last PIR node lowered
                 // from the condition expression, when the condition lowered to at
-                // least one node. A constant or otherwise opaque condition
-                // (`if (1)`) emits no PIR node, so the link stays None
-                // (fail-closed). Compound conditions (`$a && $b`) are not modeled
-                // as a single value node; the link points at the last lowered
-                // operand. `next_id == nodes.len()` holds in this lowerer because
+                // least one node. Admitted constant leaves (#17538) emit nodes,
+                // so `if (1)` links to the `1` leaf; only opaque or otherwise
+                // unmodeled conditions leave the link None (fail-closed).
+                // Compound conditions (`$a && $b`) are not modeled as a single
+                // value node; the link points at the last lowered operand.
+                // `next_id == nodes.len()` holds in this lowerer because
                 // `push_body_node` is the only node-emitting path, so `next_id - 1`
                 // is the id of the last-pushed node.
                 let id_before_condition = self.next_id;
@@ -1391,9 +1443,9 @@ impl BodyLowerer {
                 // same HIR `condition` field (see hir/lower.rs NodeKind::Foreach);
                 // that iterable is still lowered so its read is reachable, but a
                 // `foreach` has no boolean condition, so the link stays None.
-                // Constant or otherwise opaque conditions also leave it None
-                // (fail-closed). `foreach` is the only form carrying an
-                // `iterator_binding`.
+                // Opaque or otherwise unmodeled conditions also leave it None
+                // (fail-closed); admitted constant leaves (#17538) emit nodes.
+                // `foreach` is the only form carrying an `iterator_binding`.
                 let is_foreach = iterator_binding.is_some();
                 let id_before_condition = self.next_id;
                 if let Some(condition) = condition {
@@ -1485,9 +1537,10 @@ impl BodyLowerer {
                 //
                 // Condition link (v0 approximation): the last PIR node lowered
                 // from the condition expression, when it lowered to at least one
-                // node (`$c ? ...`). A constant/opaque condition emits no node,
-                // so the link stays None (fail-closed). `next_id == nodes.len()`
-                // holds because `push_body_node` is the only node-emitting path.
+                // node (`$c ? ...`). Admitted constant leaves (#17538) emit
+                // nodes; only opaque conditions leave the link None
+                // (fail-closed). `next_id == nodes.len()` holds because
+                // `push_body_node` is the only node-emitting path.
                 //
                 // Known v0 imprecision (tracked follow-up): when a ternary is
                 // *itself* the condition of an enclosing `if`/`while`/`unless`
@@ -1603,17 +1656,41 @@ impl BodyLowerer {
 
             HirExpr::Match(op) => {
                 *self.unsupported.entry("Match").or_insert(0) += 1;
-                self.lower_regex_target(body, &op.target, file);
+                self.lower_regex_target(body, &op.target, "=~", file);
             }
 
             HirExpr::Substitution(op) => {
                 *self.unsupported.entry("Substitution").or_insert(0) += 1;
-                self.lower_regex_target(body, &op.target, file);
+                self.lower_regex_target(body, &op.target, "s///", file);
             }
 
             HirExpr::Transliteration(op) => {
                 *self.unsupported.entry("Transliteration").or_insert(0) += 1;
-                self.lower_regex_target(body, &op.target, file);
+                self.lower_regex_target(body, &op.target, "tr///", file);
+            }
+
+            HirExpr::Literal(literal) => {
+                // First-cohort scalar handoff (#17538): the operation carries
+                // the leaf payload in the same lowering generation, so no
+                // cross-generation join can mismatch it. Context stays Unknown
+                // rather than guessing scalar or list behavior.
+                let (kind, value, quote) = match literal.kind {
+                    HirLiteralKind::Number => {
+                        (PirLiteralKind::Number, Some(literal.payload.clone()), None)
+                    }
+                    HirLiteralKind::String(quote) => {
+                        (PirLiteralKind::String, Some(literal.payload.clone()), Some(quote))
+                    }
+                    HirLiteralKind::Undef => (PirLiteralKind::Undef, None, None),
+                };
+                let anchor = self.make_body_anchor(range);
+                self.push_body_node(
+                    anchor,
+                    PirOperation::Literal { kind, value, quote, synthesized: literal.synthesized },
+                    PirContext::Unknown,
+                    None,
+                    file,
+                );
             }
 
             HirExpr::Opaque { ast_kind } => {
@@ -1782,6 +1859,8 @@ impl BodyLowerer {
     ///   never called, so the Variable node itself never reaches `lower_expr`.
     /// - The operand of `HirExpr::Unary { mode: ReadModifyWrite }` — same pattern:
     ///   `lower_variable_modify` is called directly.
+    /// - The target of a mutating `s///`/`tr///` (#14639) — intercepted by
+    ///   `lower_regex_target`, which calls `lower_variable_modify` directly.
     ///
     /// Therefore this function only needs to handle `Read` and `Write` access. If a
     /// future HIR change routes an RMW Variable here, the early-return below ensures
@@ -1808,6 +1887,12 @@ impl BodyLowerer {
             }
             VariableKind::Lexical => {
                 PirOperation::LexicalWrite { name: LexicalName { sigil, name: v.name.clone() } }
+            }
+            VariableKind::Field if v.access == AccessMode::Read => {
+                PirOperation::FieldRead { name: LexicalName { sigil, name: v.name.clone() } }
+            }
+            VariableKind::Field => {
+                PirOperation::FieldWrite { name: LexicalName { sigil, name: v.name.clone() } }
             }
             VariableKind::Package if v.access == AccessMode::Read => PirOperation::StashRead {
                 symbol: SymbolName {
@@ -1839,6 +1924,10 @@ impl BodyLowerer {
         let sigil = sigil_str(&v.sigil);
         let op = match &v.kind {
             VariableKind::Lexical => PirOperation::Modify {
+                name: LexicalName { sigil, name: v.name.clone() },
+                op: op_text,
+            },
+            VariableKind::Field => PirOperation::FieldModify {
                 name: LexicalName { sigil, name: v.name.clone() },
                 op: op_text,
             },
@@ -2091,7 +2180,11 @@ mod tests {
         assert_eq!(graph.nodes[1].context, PirContext::Void);
         assert!(matches!(
             graph.nodes[2].operation,
-            PirOperation::Literal { kind: PirLiteralKind::Number }
+            PirOperation::Literal {
+                kind: PirLiteralKind::Number,
+                value: Some(ref payload),
+                ..
+            } if payload == "1"
         ));
         assert_eq!(graph.nodes[2].context, PirContext::Unknown);
     }
@@ -2330,7 +2423,7 @@ mod tests {
         for (source, expected_kind) in cases {
             let graph = lower(source);
             assert!(graph.nodes.iter().any(|node| {
-                matches!(node.operation, PirOperation::Literal { kind } if kind == expected_kind)
+                matches!(node.operation, PirOperation::Literal { kind, .. } if kind == expected_kind)
             }));
             assert_eq!(graph.receipt.unsupported_construct_counts.get("LiteralExpr"), None);
             assert!(

@@ -5,6 +5,9 @@
 > Current workspace version is taken from [../../Cargo.toml](../../Cargo.toml);
 > published release state must be verified against GitHub Releases;
 > current capability truth is taken from [../../features.toml](../../features.toml).
+> Dated wave and convergence plans linked below (including `EDITOR_TRUST_WAVE.md`
+> and `plans/2026-06-convergence-to-release.md`) are `historical` per
+> `docs/agents/authority_status.toml`; do not treat them as active plans.
 
 ## Current Focus (2026-08-10): Multi-Lane Trust Hardening
 
@@ -517,12 +520,12 @@ The LSP declared-catalog table is auto-generated from `features.toml`.
 | Area | Declared proven/preview rows | Total rows |
 |------|---------------------------|------------|
 | debug | 0 | 24 |
-| notebook | 2 | 2 |
+| notebook | 2 | 3 |
 | protocol | 0 | 9 |
-| text_document | 15 | 53 |
+| text_document | 15 | 54 |
 | window | 0 | 9 |
-| workspace | 1 | 28 |
-| **Overall** | **18** | **125** |
+| workspace | 1 | 30 |
+| **Overall** | **18** | **129** |
 
 Counts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.
 <!-- END: COMPLIANCE_TABLE -->

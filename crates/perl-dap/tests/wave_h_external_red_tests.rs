@@ -178,10 +178,17 @@ fn test_config_launch_validates_program() -> Result<()> {
 fn test_dap_server_construction() -> Result<()> {
     use perl_dap::{DapConfig, DapMode, DapServer};
 
+    // The trusted root must exist so the #8656 startup authority resolves.
+    let root = tempfile::tempdir()?;
+    let root_path = root.path().to_path_buf();
     let config = DapConfig {
         log_level: "debug".into(),
         mode: DapMode::Native,
-        workspace_root: Some(std::path::PathBuf::from("/tmp")),
+        workspace_root: Some(root_path.clone()),
+        launch_authority: perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![root_path],
+            allow_unbounded: None,
+        },
     };
 
     let server = DapServer::new(config);

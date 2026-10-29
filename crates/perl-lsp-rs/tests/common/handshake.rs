@@ -110,6 +110,15 @@ fn initialize_lsp_with_params(server: &LspServer, params: Value) -> Value {
     resp
 }
 
+/// Initialize a deliberately rootless session.
+///
+/// Both root channels are declared empty: `rootUri: null` and a present
+/// `workspaceFolders: null`. Under #8161 a present null is an explicit
+/// no-active-folder declaration, so this handshake never adopts a legacy root
+/// and never reaches the process-working-directory compatibility fallback.
+/// That is the intent — these tests drive documents they open themselves and
+/// must not race a bulk index of the runner's working directory. Tests that
+/// need a real filesystem root call [`initialize_lsp_with_root_path`] instead.
 pub fn initialize_lsp(server: &LspServer) -> Value {
     initialize_lsp_with_params(
         server,
@@ -122,6 +131,9 @@ pub fn initialize_lsp(server: &LspServer) -> Value {
     )
 }
 
+/// As [`initialize_lsp`], with client capabilities under the caller's control.
+///
+/// The session is rootless for the same reason and by the same declaration.
 pub fn initialize_lsp_with_capabilities(server: &LspServer, capabilities: Value) -> Value {
     initialize_lsp_with_params(
         server,
@@ -137,12 +149,17 @@ pub fn initialize_lsp_with_capabilities(server: &LspServer, capabilities: Value)
 /// Initialize the server with an explicit filesystem workspace root.
 ///
 /// Tests that drive virtual (never-on-disk) documents through `didOpen` need
-/// this to keep the server's workspace index isolated: with no root of any
-/// kind, the server deliberately falls back to the process working directory
-/// (lightweight-client compatibility) and bulk-indexes it, racing those tests'
-/// assertions with a real-directory scan and polluting the index with files
-/// unrelated to the scenario under test. Pointing the server at an empty
-/// directory keeps the index populated only by the documents the test opens.
+/// this to keep the server's workspace index isolated: a client that declares
+/// *nothing at all* still falls back to the process working directory
+/// (lightweight-client compatibility, #8161 `NoWorkspaceRoot`) and bulk-indexes
+/// it, racing those tests' assertions with a real-directory scan and polluting
+/// the index with files unrelated to the scenario under test. Pointing the
+/// server at an empty directory keeps the index populated only by the documents
+/// the test opens.
+///
+/// `workspaceFolders` is omitted here rather than sent as null: a present null
+/// is an explicit no-active-folder declaration that suppresses the legacy
+/// `rootPath` channel this helper depends on.
 pub fn initialize_lsp_with_root_path(server: &LspServer, root_path: &str) -> Value {
     initialize_lsp_with_params(
         server,
@@ -150,8 +167,7 @@ pub fn initialize_lsp_with_root_path(server: &LspServer, root_path: &str) -> Val
             "capabilities": {},
             "clientInfo": {"name":"perl-parser-tests","version":"0"},
             "rootPath": root_path,
-            "rootUri": null,
-            "workspaceFolders": null
+            "rootUri": null
         }),
     )
 }

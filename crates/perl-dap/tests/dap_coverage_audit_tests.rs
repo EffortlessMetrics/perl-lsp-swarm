@@ -811,10 +811,13 @@ fn test_dap_mode_clone_and_debug() {
 
 #[test]
 fn test_dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
+    // The trusted root must exist so the #8656 startup authority resolves.
+    let root = tempfile::tempdir()?;
     let config = DapConfig {
         log_level: "info".to_string(),
         mode: DapMode::Native,
-        workspace_root: Some(PathBuf::from("/workspace")),
+        workspace_root: Some(root.path().to_path_buf()),
+        launch_authority: perl_dap::LaunchAuthorityStartup::default(),
     };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);

@@ -9,6 +9,8 @@ use super::failure::{
 use super::*;
 use color_eyre::eyre::Result;
 
+use crate::tasks::parser_corpus_sweep::SCHEMA_VERSION;
+
 const PARSER_STATUS_MARKER_NAMES: [&str; 13] = [
     "PARSER_TRACKING_TABLE",
     "PARSER_PERFORMANCE_TABLE",
@@ -857,7 +859,7 @@ fn parser_failure_worklist_builds_cluster_and_bucket_details_with_populated_rece
     );
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -941,7 +943,7 @@ fn parser_failure_worklist_replaces_cluster_and_bucket_status_markers() -> Resul
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1002,7 +1004,7 @@ fn parser_failure_worklist_handles_empty_buckets() {
     use std::collections::BTreeMap;
 
     let report = SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1055,7 +1057,7 @@ fn parser_failure_worklist_handles_empty_buckets() {
 fn test_parser_strict_clean_row_with_receipt() -> Result<()> {
     use std::collections::BTreeMap;
     let receipt = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-11T00:00:00Z".to_string(),
         corpus_profile: "common".to_string(),
@@ -1107,7 +1109,7 @@ fn test_parser_tracking_old_cpan_receipt_missing_recovery_shape_reports_insuffic
     use std::collections::BTreeMap;
 
     let receipt = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.2.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "old".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "cpan".to_string(),
@@ -1250,7 +1252,7 @@ fn test_parser_error_density_and_salvage_rows_with_populated_receipt() -> Result
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1311,7 +1313,7 @@ fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> R
     use std::collections::BTreeMap;
 
     let report = super::super::super::parser_corpus_sweep::SweepReport {
-        schema_version: "1.3.0".to_string(),
+        schema_version: SCHEMA_VERSION,
         commit: "abc".to_string(),
         timestamp: "2026-04-09T00:00:00Z".to_string(),
         corpus_profile: "system".to_string(),
@@ -1363,5 +1365,39 @@ fn test_parser_error_density_row_no_dirty_files_reports_insufficient_data() -> R
         ),
         "zero dirty files must not fabricate salvage rate"
     );
+    Ok(())
+}
+
+#[test]
+fn sweep_report_fixtures_share_envelope_schema_version() -> Result<()> {
+    // #15363: fixtures across this file share exactly one schema_version —
+    // the shared integer constant. The envelope is negotiated fail-closed:
+    // the current version carries recovery claims, legacy string versions are
+    // refused, and unknown integer versions parse without recovery claims.
+    assert_eq!(SCHEMA_VERSION, 1);
+
+    let dir = std::env::temp_dir().join(format!("lane3b-schema-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let envelope = |version: &str| {
+        format!(
+            r#"{{"schema_version":{version},"commit":"abc","timestamp":"now","corpus_roots":[],"total_files":2,"files_unreadable":0,"clean_files":1,"files_with_errors":1,"total_error_nodes":1,"first_error_buckets":{{}},"elapsed_secs":1.0,"files_with_structured_recovery_only":1,"files_with_error_nodes":1,"files_with_catastrophic_parse_failure":0,"total_dirty_files":1}}"#
+        )
+    };
+    let shape_for = |body: String| -> Option<bool> {
+        let path = dir.join("envelope.json");
+        std::fs::write(&path, body).ok()?;
+        super::read_sweep_report(&path).map(|receipt| receipt.has_recovery_shape)
+    };
+
+    let current = shape_for(envelope("1")).expect("current envelope must load");
+    assert!(current, "current version must negotiate recovery shape");
+
+    let legacy = shape_for(envelope("\"1\""));
+    assert!(legacy.is_none(), "legacy string version must fail closed");
+
+    let unknown = shape_for(envelope("2")).expect("unknown integer version still parses");
+    assert!(!unknown, "unknown version must not render recovery claims");
+
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

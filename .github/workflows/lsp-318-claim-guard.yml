@@ -64,17 +64,23 @@ jobs:
     timeout-minutes: 10
     env:
       CARGO_INCREMENTAL: "0"
+      # #17236: validation needs no dev-profile optimization. Oct 12's
+      # 590s job spent 522s on this build and 53s building Cargo test targets.
+      CARGO_PROFILE_DEV_OPT_LEVEL: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 
       - name: Check LSP 3.18 claim guard
-        run: cargo xtask check-lsp-318-claims
+        run: |
+          start=$SECONDS
+          cargo xtask check-lsp-318-claims
+          echo "Claim validation (including compilation): $((SECONDS - start))s; job budget: 600s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check official LSP 3.18 changelog totality
         run: cargo test -p xtask --test lsp_318_changelog_totality --locked

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## Crate Overview
 
 - **Crate**: `perl-workspace`
-- **Version**: workspace (currently 0.12.3)
+- **Version**: tracks the workspace version.
 - **Tier**: 3 (two-level internal dependencies)
 - **Purpose**: Central workspace indexing engine providing cross-file symbol lookup, document management, lifecycle state machine, bounded caching, and SLO monitoring for the Perl LSP server.
 
@@ -96,7 +96,7 @@ store.close("file:///lib/Foo.pm");
 
 ## Important Notes
 
-- **Dual indexing pattern** (PR #122): symbols are indexed under both `Package::name` and `name` for comprehensive cross-file resolution.
+- **Dual indexing pattern**: symbols are indexed under both `Package::name` and `name` for comprehensive cross-file resolution.
 - `workspace_index.rs` is the largest source file in the workspace; changes require careful review.
 - All public types from submodules are re-exported via `workspace::mod.rs`.
 - `workspace_rename.rs` is a deprecated stub; rename logic has moved to `perl-lsp`.

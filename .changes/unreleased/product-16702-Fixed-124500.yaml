@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "`perl-dap --ptkdb-bootstrap-rc` and `--debug-session-plan` now fail with a nonzero exit naming the unreadable program instead of silently emitting empty `source_facts` and exiting 0."
+time: 2026-09-28T12:45:00Z
+custom:
+  PR: "16702"
+  Slug: dap-oneshot-unreadable-program
+  Breaking: "no"

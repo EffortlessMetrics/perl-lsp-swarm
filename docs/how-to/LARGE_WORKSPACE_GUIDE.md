@@ -15,7 +15,7 @@ behaviour, and diagnose the failures that appear only after hours of editor use.
   - [Criterion Benchmarks](#criterion-benchmarks)
   - [cargo flamegraph](#cargo-flamegraph)
   - [DHAT Heap Profiling](#dhat-heap-profiling)
-  - [tracing / tokio-console](#tracing--tokio-console)
+  - [Tracing and timing](#tracing-and-timing)
   - [Interpreting Results](#interpreting-results)
   - [Common Performance Pitfalls](#common-performance-pitfalls)
 - [Memory Patterns at Scale](#memory-patterns-at-scale)
@@ -200,7 +200,7 @@ echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 
 # Profile workspace indexing
 cargo flamegraph --root \
-  -p perl-lsp-rs \
+  -p perllsp \
   -- --stdio < scripts/lsp-index-replay.json \
   > flamegraph.svg
 
@@ -235,7 +235,7 @@ most bytes" in a run.
 
 ```bash
 # Build with DHAT support (Valgrind must be installed)
-RUSTFLAGS="-g" cargo build --release -p perl-lsp-rs
+RUSTFLAGS="-g" cargo build --release -p perllsp
 
 # Run under DHAT — produces dhat.out.<pid>
 valgrind --tool=dhat --dhat-out-file=dhat.out \
@@ -265,7 +265,7 @@ fn main() {
 }
 ```
 
-### tracing / tokio-console
+### Tracing and timing
 
 The LSP server uses `tracing` for structured logging. Enable spans to see where async
 time goes:
@@ -280,20 +280,11 @@ RUST_LOG=perl_lsp=trace RUST_LOG_STYLE=always \
   perllsp --stdio 2>trace.log
 ```
 
-For real-time async task inspection, connect `tokio-console`:
-
-```bash
-# In one terminal — start the server with tokio-console support
-RUSTFLAGS="--cfg tokio_unstable" \
-  cargo run -p perl-lsp-rs --features tokio-console -- --stdio
-
-# In another terminal
-cargo install tokio-console
-tokio-console
-```
-
-`tokio-console` shows live task timings, waker counts, and poll durations — useful for
-finding tasks that hold locks too long or are polled at high frequency.
+Live task and waker inspection through `tokio-console` is unavailable in this tree:
+`perllsp` declares no `tokio-console` feature or console subscriber. Use the tracing
+commands above for structured events. Set `PERL_LSP_TIMING=1` to record the selected
+phase and lock-wait timings instrumented by the server (including
+`didChange.lock_wait`). These timings do not identify which task owns a lock.
 
 ### Interpreting Results
 
@@ -361,8 +352,6 @@ Tune these via the LSP configuration:
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 250000
     }
   }
 }
@@ -371,7 +360,7 @@ Tune these via the LSP configuration:
 ### AST Cache Behaviour
 
 After parsing, the server stores ASTs in a `BoundedLruCache` keyed by URI. The cache
-evicts least-recently-used entries when it reaches `astCacheMaxEntries`. Key facts:
+evicts least-recently-used entries under its internal cache bounds. Key facts:
 
 - **Cache hit**: No reparse, constant time lookup
 - **Cache miss**: Full reparse from source string (O(n) in source length)
@@ -379,7 +368,6 @@ evicts least-recently-used entries when it reaches `astCacheMaxEntries`. Key fac
 - **Large files**: A single 10 000-line file can consume 5–20 MB of AST cache memory
 
 If the cache is too large, memory grows; if too small, latency spikes. A good starting
-point is `astCacheMaxEntries = 100` (roughly 1 AST per open editor tab, plus headroom).
 
 To check effective cache behaviour, look for the `ast_cache` span in trace logs:
 
@@ -392,7 +380,7 @@ TRACE perl_lsp::workspace: ast_cache miss uri="file:///lib/Bar.pm" reason=evicte
 
 **Unbounded symbol accumulation**
 
-Symbols are never removed unless the file is closed or `maxTotalSymbols` is hit. If
+Symbols are never removed unless the file is closed or its internal symbol budget is hit. If
 your workflow opens many files and never closes them, the index grows unboundedly.
 Ensure editors send `textDocument/didClose` on buffer close.
 
@@ -475,7 +463,6 @@ let mut map = HashMap::with_capacity(expected_symbol_count);
 | Workspace root too broad | Set a narrower `includePaths` |
 | `useSystemInc: true` on large `@INC` | Set `useSystemInc: false` |
 | Network filesystem | Copy sources to local SSD for development |
-| `maxIndexedFiles` not capped | Set `maxIndexedFiles` to a sensible limit |
 | Deep `node_modules` or `vendor` in path | Add ignore patterns for non-Perl dirs |
 
 ### High Memory After Hours of Use
@@ -509,9 +496,7 @@ system swap activity increases.
 
 | Cause | Fix |
 |-------|-----|
-| `astCacheMaxEntries` too high | Reduce to 50–100 |
 | Files never closed (`didClose` not sent) | Check editor LSP plugin version |
-| Unbounded symbol accumulation | Cap with `maxTotalSymbols` |
 | String duplication | Profile with DHAT, apply `StringInterner` |
 
 ### Slow Completion Latency
@@ -541,7 +526,6 @@ system swap activity increases.
 | `completionCap` too high (thousands of items) | Reduce to 50–100 |
 | Symbol lookup doing linear scan | Verify dual-index is built (check for `index_file` errors in log) |
 | `resolutionTimeout` too permissive | Reduce to 25–50 ms |
-| Cache miss on every keystroke | Increase `astCacheMaxEntries` |
 
 ### Degraded After Long Sessions
 
@@ -569,12 +553,11 @@ are exceeded or when incremental updates fail to apply cleanly.
    ```
 
 3. If the server frequently enters `Degraded`, it is hitting resource limits. Review
-   `maxTotalSymbols` and `maxIndexedFiles` in your configuration.
+   whether the editor opened a broad repository or parent directory, and open a
+   narrower workspace folder if it includes unrelated project areas. Also review
+   memory-budget settings.
 
 **Remediation**:
-
-- Increase `maxTotalSymbols` if the workspace is legitimately large
-- Reduce `maxIndexedFiles` and add explicit `includePaths` to stay in `Ready`
 - File a bug if `Degraded` is entered without hitting documented limits
 
 ### Diagnosis Workflow
@@ -587,7 +570,7 @@ Is startup slow (>30s)?
   No  → continue
 
 Is RSS growing over time?
-  Yes → run DHAT, check astCacheMaxEntries, check for missing didClose
+  Yes → run DHAT, check the AST cache memory budget, check for missing didClose
   No  → continue
 
 Is completion latency >500ms?

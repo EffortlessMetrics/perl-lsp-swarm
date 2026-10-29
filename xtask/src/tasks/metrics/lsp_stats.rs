@@ -63,6 +63,13 @@ fn validate_timing_candidate(path: &Path) -> Result<()> {
     if value.get("kind").and_then(Value::as_str) != Some("ux_scenario_run") {
         return Ok(());
     }
+    if value.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        bail!(
+            "unsupported UX scenario receipt schema_version {:?} in {} (expected 1)",
+            value.get("schema_version"),
+            path.display()
+        );
+    }
 
     let receipt: UxScenarioRunReceipt = serde_json::from_value(value)
         .with_context(|| format!("deserializing UX receipt: {}", path.display()))?;
@@ -426,5 +433,55 @@ mod tests {
             color_eyre::eyre::eyre!("valid missing-start receipt rejected: {error}")
         })?;
         Ok(())
+    }
+
+    #[test]
+    fn supported_schema_version_receipt_passes_candidate_boundary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("supported.json");
+        fs::write(&path, serde_json::to_string_pretty(&receipt(25.0, Some(12.0), json!([]))?)?)?;
+        validate_timing_candidate(&path)
+    }
+
+    #[test]
+    fn unsupported_receipt_schema_versions_fail_closed() -> Result<()> {
+        for version in [Some(json!(2)), Some(json!("1")), None] {
+            let temp = tempfile::tempdir()?;
+            let path = temp.path().join("receipt.json");
+            let mut value = serde_json::to_value(receipt(25.0, Some(12.0), json!([]))?)?;
+            match version {
+                Some(mutated) => value["schema_version"] = mutated,
+                None => {
+                    value
+                        .as_object_mut()
+                        .ok_or_else(|| color_eyre::eyre::eyre!("receipt is not a JSON object"))?
+                        .remove("schema_version");
+                }
+            }
+            fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+
+            let message = error_message(
+                validate_timing_candidate(&path),
+                "receipt with unsupported schema_version unexpectedly passed",
+            )?;
+            assert!(message.contains("unsupported UX scenario receipt schema_version"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn companion_receipt_kinds_remain_ignored_despite_schema_version() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("companion.json");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "kind": "golden_editor_workload",
+                "schema_version": 3,
+                "result": "pass",
+                "duration_ms": 10.0
+            }))?,
+        )?;
+        validate_timing_candidate(&path)
     }
 }
