@@ -12,6 +12,8 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
+from git_environment import isolated_git_env
+
 from check_release_tag_provenance import (  # noqa: E402
     load_manifest,
     validate_manifest,
@@ -110,6 +112,7 @@ class GitVerificationTests(unittest.TestCase):
     def run_git(self, root: Path, *args: str) -> str:
         result = subprocess.run(
             ["git", "-C", str(root), *args],
+            env=isolated_git_env(),
             check=True,
             text=True,
             stdout=subprocess.PIPE,
@@ -127,6 +130,148 @@ class GitVerificationTests(unittest.TestCase):
         self.run_git(root, "init")
         self.run_git(root, "config", "user.name", "Tag Provenance Test")
         self.run_git(root, "config", "user.email", "test@example.invalid")
+
+    def cloud_fixture(
+        self, root: Path, *, shallow: bool = False, untagged_tip: bool = False
+    ) -> tuple[Path, Path, Path]:
+        upstream = root / "upstream"
+        upstream.mkdir()
+        self.init_repo(upstream)
+        first = self.write_commit(upstream, "first")
+        self.run_git(upstream, "tag", "v0.1.0")
+        second = self.write_commit(upstream, "second")
+        self.run_git(upstream, "tag", "-a", "v0.2.0", "-m", "annotated release")
+        self.run_git(upstream, "tag", "v9.9.9")  # Undeclared remote tag must stay absent.
+        if untagged_tip:
+            self.write_commit(upstream, "untagged-tip")
+        checkout = root / "cloud"
+        args = ["clone", "--no-tags"]
+        if shallow:
+            args.extend(["--depth", "1"])
+        self.run_git(root, *args, upstream.as_uri(), str(checkout))
+        manifest = root / "manifest.toml"
+        manifest.write_text(
+            'schema_version = 1\nrepository = "fixture/cloud"\naudited_at = "2026-07-12"\n'
+            '[[tag]]\nname = "v0.0.1"\ncurrent_sha = "' + "f" * 40 + '"\n'
+            'unresolvable = true\nrecord_status = "pending"\nlineage = "root"\n'
+            '[[tag]]\nname = "v0.1.0"\ncurrent_sha = "' + first + '"\n'
+            'record_status = "match"\nrecorded_sha = "' + first[:8] + '"\n'
+            'recorded_reachable = true\nlineage = "root"\n'
+            '[[tag]]\nname = "v0.2.0"\ncurrent_sha = "' + second + '"\n'
+            'record_status = "pending"\npredecessor = "v0.1.0"\nlineage = "linear"\n',
+            encoding="utf-8",
+        )
+        return upstream, checkout, manifest
+
+    def cloud_command(self, checkout: Path, manifest: Path, mode: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / "check_release_tag_provenance.py"), mode,
+             "--repo-root", str(checkout), "--manifest", str(manifest)],
+            cwd=manifest.parent, text=True, capture_output=True, check=False,
+        )
+
+    def test_cloud_missing_refs_restore_exact_pins_and_preserve_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            _, checkout, manifest = self.cloud_fixture(Path(temp))
+            missing = self.cloud_command(checkout, manifest, "--verify-git")
+            self.assertNotEqual(0, missing.returncode)
+            self.assertIn("v0.1.0 cannot be resolved", missing.stderr)
+            self.assertNotIn("provenance OK", missing.stdout)
+            git_dir = checkout / ".git"
+            config = (git_dir / "config").read_bytes()
+            (git_dir / "FETCH_HEAD").write_text("preserved fetch receipt\n")
+            restored = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertEqual(0, restored.returncode, restored.stderr)
+            self.assertIn("1 orphaned lineage", restored.stdout)
+            self.assertEqual(["v0.1.0", "v0.2.0"], self.run_git(checkout, "tag", "--list").splitlines())
+            data = load_manifest(manifest)
+            for row in data["tag"][1:]:
+                self.assertEqual(row["current_sha"], self.run_git(checkout, "rev-parse", row["name"] + "^{commit}"))
+            self.assertEqual(config, (git_dir / "config").read_bytes())
+            self.assertEqual("preserved fetch receipt\n", (git_dir / "FETCH_HEAD").read_text())
+            # A prepared checkout requires no network on the next invocation.
+            self.run_git(checkout, "remote", "set-url", "origin", str(Path(temp) / "offline"))
+            again = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertEqual(0, again.returncode, again.stderr)
+
+    def test_cloud_missing_remote_ref_fails_without_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            upstream, checkout, manifest = self.cloud_fixture(Path(temp))
+            self.run_git(upstream, "tag", "-d", "v0.2.0")
+            result = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("required release refs unavailable", result.stderr)
+            self.assertNotIn("provenance OK", result.stdout)
+            self.assertEqual("", self.run_git(checkout, "tag", "--list"))
+
+    def test_cloud_conflicting_local_tag_is_preserved_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            _, checkout, manifest = self.cloud_fixture(Path(temp))
+            self.run_git(checkout, "tag", "v0.1.0")  # HEAD is the wrong release commit.
+            before = self.run_git(checkout, "rev-parse", "refs/tags/v0.1.0")
+            result = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("existing tag preserved", result.stderr)
+            self.assertEqual(before, self.run_git(checkout, "rev-parse", "refs/tags/v0.1.0"))
+            self.assertEqual("v0.1.0", self.run_git(checkout, "tag", "--list"))
+
+    def test_cloud_restored_remote_pin_mismatch_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            upstream, checkout, manifest = self.cloud_fixture(Path(temp))
+            self.run_git(upstream, "tag", "-f", "v0.1.0", "HEAD")
+            result = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("v0.1.0 drifted", result.stderr)
+            self.assertNotIn("provenance OK", result.stdout)
+
+    def test_cloud_shallow_history_is_explicit_then_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            _, checkout, manifest = self.cloud_fixture(
+                Path(temp), shallow=True, untagged_tip=True
+            )
+            self.assertEqual("true", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
+            missing = self.cloud_command(checkout, manifest, "--verify-git")
+            self.assertNotEqual(0, missing.returncode)
+            self.assertIn("full history unavailable", missing.stderr)
+            restored = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertEqual(0, restored.returncode, restored.stderr)
+            self.assertEqual("false", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
+            self.assertEqual("3", self.run_git(checkout, "rev-list", "--count", "HEAD"))
+            self.run_git(checkout, "fsck", "--connectivity-only")
+            verified = self.cloud_command(checkout, manifest, "--verify-git")
+            self.assertEqual(0, verified.returncode, verified.stderr)
+
+    def test_cloud_shallow_reannotation_preserves_existing_tag_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            upstream, checkout, manifest = self.cloud_fixture(
+                Path(temp), shallow=True, untagged_tip=True
+            )
+            self.run_git(
+                checkout, "fetch", "--no-tags", "origin",
+                "refs/tags/v0.1.0:refs/tags/v0.1.0",
+                "refs/tags/v0.2.0:refs/tags/v0.2.0",
+            )
+            self.assertEqual("true", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
+            original = self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0")
+            commit = self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0^{commit}")
+            self.run_git(upstream, "tag", "-f", "-a", "v0.2.0", "-m", "new annotation", commit)
+            self.assertNotEqual(original, self.run_git(upstream, "rev-parse", "refs/tags/v0.2.0"))
+            # Configured refmaps must not turn a source-only request into a
+            # forced tag update behind the preparation command's back.
+            self.run_git(checkout, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
+            git_dir = checkout / ".git"
+            config = (git_dir / "config").read_bytes()
+            (git_dir / "FETCH_HEAD").write_text("preserved reannotation receipt\n")
+            restored = self.cloud_command(checkout, manifest, "--prepare-git")
+            self.assertEqual(0, restored.returncode, restored.stderr)
+            self.assertEqual(original, self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0"))
+            self.assertEqual(commit, self.run_git(checkout, "rev-parse", "refs/tags/v0.2.0^{commit}"))
+            self.assertEqual(["v0.1.0", "v0.2.0"], self.run_git(checkout, "tag", "--list").splitlines())
+            self.assertEqual(config, (git_dir / "config").read_bytes())
+            self.assertEqual("preserved reannotation receipt\n", (git_dir / "FETCH_HEAD").read_text())
+            self.assertEqual("false", self.run_git(checkout, "rev-parse", "--is-shallow-repository"))
+            self.assertEqual("3", self.run_git(checkout, "rev-list", "--count", "HEAD"))
+            self.run_git(checkout, "fsck", "--connectivity-only")
 
     def test_local_ref_drift_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -277,10 +422,10 @@ class OrphanClassificationTests(unittest.TestCase):
     """#15263: typed classification of orphaned lineage records."""
 
     def _git(self, repo, *args):
-        return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+        return subprocess.run(["git", "-C", repo, *args], env=isolated_git_env(), capture_output=True, text=True)
 
     def _init(self, repo):
-        subprocess.run(["git", "init", "-q", repo], check=True)
+        subprocess.run(["git", "init", "-q", repo], env=isolated_git_env(), check=True)
         self._git(repo, "config", "user.name", "t")
         self._git(repo, "config", "user.email", "t@x")
         open(f"{repo}/f", "w").close()
@@ -365,6 +510,7 @@ class OrphanClassificationTests(unittest.TestCase):
             self._init(repo)
             blob = subprocess.run(
                 ["git", "-C", repo, "hash-object", "-w", "--stdin"],
+                env=isolated_git_env(),
                 input="payload", capture_output=True, text=True, check=True,
             ).stdout.strip()
             manifest["tag"][0]["current_sha"] = blob

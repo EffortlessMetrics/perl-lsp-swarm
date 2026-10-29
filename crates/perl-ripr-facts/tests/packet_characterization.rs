@@ -23,8 +23,9 @@
 //! this comment says is unnecessary today.
 //!
 //! The only other source of non-determinism the packet schema could carry is
-//! a timestamp — the schema has none (`packet_fingerprint`/`packet_id` are
-//! content-derived), and file `digest`s are SHA-256 over fixed fixture bytes.
+//! a timestamp — the schema has none (`packet_fingerprint` is derived from
+//! the packet's semantic identity tuples and `packet_id` from the fixed
+//! request shape), and file `digest`s are SHA-256 over fixed fixture bytes.
 //! So the golden comparison below is a **plain, unmodified**
 //! `assert_eq!(actual_json, golden_json)` — no field is stripped, redacted, or
 //! projected before comparing, which also means the negative control test

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -45,6 +46,36 @@ def valid_dist() -> dict:
 
 
 class DistShadowTests(unittest.TestCase):
+    def test_live_macos_release_rows_use_latest_native_runners(self) -> None:
+        # Official standard-runner mappings, verified 2026-10-11:
+        # https://github.com/actions/runner-images#available-images
+        # macos-latest is ARM64; the latest standard Intel image needs its
+        # explicit label. This checks routing, not macOS build compatibility.
+        workflow = (SCRIPTS.parent / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        build = workflow.split("\n  build:\n", 1)[1].split("\n    steps:\n", 1)[0]
+        self.assertIn("runs-on: ${{ matrix.os }}", build)
+        include = build.split("\n        include:\n", 1)[1]
+        rows = []
+        for block in re.split(r"(?m)^[ \t]*-[ \t]+", include)[1:]:
+            row = {}
+            for field in ("target", "os", "use_cross"):
+                values = re.findall(
+                    rf"(?m)^[ \t]*{field}:[ \t]*(\S+)[ \t]*(?:#.*)?$", block
+                )
+                self.assertEqual(len(values), 1, f"ambiguous {field}: {block}")
+                row[field] = values[0]
+            if row["target"].endswith("apple-darwin") or row["os"].startswith("macos-"):
+                rows.append((row["target"], row["os"], row["use_cross"]))
+        self.assertCountEqual(
+            rows,
+            [
+                ("x86_64-apple-darwin", "macos-26-intel", "false"),
+                ("aarch64-apple-darwin", "macos-latest", "false"),
+            ],
+        )
+
     def test_valid_contract(self) -> None:
         self.assertEqual([], validate_contract(valid_dist(), RELEASE))
 
