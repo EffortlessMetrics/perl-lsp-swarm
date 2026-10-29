@@ -236,6 +236,9 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // Windows directory identity and its replacement witness live
             // in this shared file; select the exact seam, not its module.
             || normalized == "crates/perl-dap/src/security/launch_authority.rs"
+            // Reader lifecycle fixtures and bounded child cleanup are a
+            // demonstrated Windows startup/termination seam (#17757).
+            || normalized == "crates/perl-dap/src/debug_adapter/process.rs"
             || normalized.starts_with("crates/perl-uri/")
             || normalized.contains("workspace-index")
             || normalized.contains("workspace_index")
@@ -1755,6 +1758,23 @@ mod tests {
             assert!(output.platform_overrides.windows_runner, "{file} must execute on Windows");
             assert_eq!(output.platform_overrides.windows_test_crates, expected, "{file}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_dap_reader_lifecycle_selects_only_dap_for_windows_smoke() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-dap", "crates/perl-dap")]);
+        let output = classify_files(
+            &["crates/perl-dap/src/debug_adapter/process.rs".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert!(output.platform_overrides.windows_runner);
+        assert_eq!(output.platform_overrides.windows_test_crates, vec!["perl-dap"]);
+        assert!(!requires_windows_runner(&[
+            "crates/perl-dap/src/debug_adapter/process.rs.backup".to_string(),
+            "crates/perl-dap/src/debug_adapter/protocol.rs".to_string(),
+        ]));
         Ok(())
     }
 
