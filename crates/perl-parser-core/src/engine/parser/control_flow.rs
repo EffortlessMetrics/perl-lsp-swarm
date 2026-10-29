@@ -298,14 +298,18 @@ impl<'a> Parser<'a> {
     fn parse_c_style_or_implicit_foreach(&mut self, start: usize) -> ParseResult<Node> {
         self.expect(TokenKind::LeftParen)?;
 
-        // Parse init (or check if it's a foreach)
-        let init = if self.peek_kind() == Some(TokenKind::Semicolon) {
+        // Parse the first clause before deciding between C-style and list iteration.
+        let mut init = if self.peek_kind() == Some(TokenKind::Semicolon) {
             None
         } else if self.peek_kind() == Some(TokenKind::My) {
             // Handle variable declaration in for loop init
             self.in_for_loop_init = true;
             let decl = self.parse_variable_declaration()?;
             self.in_for_loop_init = false;
+            // Uninitialized declarations can be operands, as in `my $x && $ready`
+            // or `my $x ? 1 : 2`. Finish them before the comma/word continuations
+            // and delimiter dispatch, just like condition declarations.
+            let decl = self.parse_below_assignment_with(decl)?;
             // `my` declares only the FIRST variable in an unparenthesized
             // list (perlsub), so `for (my $i, $j; ...)` parses as
             // `for ((my $i), $j; ...)` — absorb the trailing comma term(s)
@@ -328,32 +332,42 @@ impl<'a> Parser<'a> {
             self.mark_not_stmt_start();
             let expr = self.parse_expression()?;
 
-            // If followed by ), it's a foreach loop
-            if self.peek_kind() == Some(TokenKind::RightParen) {
-                self.advance_token()?; // consume )
-                let body = self.parse_block()?;
-
-                let end = self.previous_position();
-
-                // Create implicit $_ variable
-                let implicit_var = self.charge_node(
-                    NodeKind::Variable { sigil: "$".to_string(), name: "_".to_string() },
-                    SourceLocation { start, end: start },
-                )?;
-
-                return self.charge_node(
-                    NodeKind::Foreach {
-                        variable: Box::new(implicit_var),
-                        list: Box::new(expr),
-                        body: Box::new(body),
-                        continue_block: None, // No continue block for implicit foreach
-                    },
-                    SourceLocation { start, end },
-                );
-            }
-
             Some(Box::new(expr))
         };
+
+        // Both declarations and ordinary expressions can be the complete list.
+        // Only a semicolon selects the C-style path; `my` alone does not.
+        if self.peek_kind() == Some(TokenKind::RightParen)
+            && let Some(list) = init.take()
+        {
+            self.advance_token()?; // consume )
+            let body = self.parse_block()?;
+            let continue_block = if self.peek_kind() == Some(TokenKind::Continue)
+                && self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftBrace)
+            {
+                self.advance_token()?; // consume 'continue'
+                Some(Box::new(self.parse_block()?))
+            } else {
+                None
+            };
+            let end = self.previous_position();
+
+            // Create implicit $_ variable, retaining the declaration in the list.
+            let implicit_var = self.charge_node(
+                NodeKind::Variable { sigil: "$".to_string(), name: "_".to_string() },
+                SourceLocation { start, end: start },
+            )?;
+
+            return self.charge_node(
+                NodeKind::Foreach {
+                    variable: Box::new(implicit_var),
+                    list,
+                    body: Box::new(body),
+                    continue_block,
+                },
+                SourceLocation { start, end },
+            );
+        }
         // First internal semicolon (after init) — recover inline instead of hard-failing.
         // A hard `?` here cascades into multiple spurious errors because the expression
         // parser has already consumed tokens; recovering inline keeps the For node intact.
@@ -401,17 +415,25 @@ impl<'a> Parser<'a> {
         self.expect_closing_delimiter(TokenKind::RightParen)?;
         let body = self.parse_block()?;
 
-        // Handle continue block
-        let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.advance_token()?; // consume 'continue'
-            Some(Box::new(self.parse_block()?))
-        } else {
-            None
-        };
+        // A `continue` block never attaches to C-style `for`: real Perl
+        // rejects `for (;;) { ... } continue { ... }` outright (`syntax
+        // error near "} continue"`). Fail the parse like
+        // `DoWhileTrailingBlock` rather than recovering — the orphaned
+        // `continue { ... }` would otherwise re-parse as a clean
+        // expression statement and silently accept what `perl` refuses
+        // to compile (#16296). Only the block form is rejected: a bare
+        // `continue;` statement after the loop is valid Perl and keeps
+        // today's route.
+        if self.peek_kind() == Some(TokenKind::Continue)
+            && self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftBrace)
+        {
+            let location = self.current_position();
+            return Err(ParseError::CStyleForContinueBlock { location });
+        }
 
         let end = self.previous_position();
         self.charge_node(
-            NodeKind::For { init, condition, update, body: Box::new(body), continue_block },
+            NodeKind::For { init, condition, update, body: Box::new(body), continue_block: None },
             SourceLocation { start, end },
         )
     }
@@ -432,6 +454,12 @@ impl<'a> Parser<'a> {
 
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions: mark them so
+        // declaration tails that form assignments stay disabled (#13486).
+        // Save and restore the prior value around the fallible parse so a
+        // broken header cannot poison later statements via `?` propagation.
+        let prior_foreach_iterator = self.in_foreach_iterator;
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -439,11 +467,13 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            self.parse_variable_declaration()?
+            self.parse_variable_declaration()
         } else {
             // foreach $var (LIST) — bare scalar without my
-            self.parse_variable()?
+            self.parse_variable()
         };
+        self.in_foreach_iterator = prior_foreach_iterator;
+        let variable = variable?;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;
@@ -477,6 +507,11 @@ impl<'a> Parser<'a> {
     fn parse_foreach_style_for(&mut self) -> ParseResult<Node> {
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions (#13486). Save and
+        // restore the prior value so a broken header cannot poison later
+        // statements via `?` propagation.
+        let prior_foreach_iterator = self.in_foreach_iterator;
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -484,11 +519,13 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            self.parse_variable_declaration()?
+            self.parse_variable_declaration()
         } else {
             // for $var (LIST) — bare scalar without my
-            self.parse_variable()?
+            self.parse_variable()
         };
+        self.in_foreach_iterator = prior_foreach_iterator;
+        let variable = variable?;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;
@@ -709,6 +746,35 @@ impl<'a> Parser<'a> {
             // Check for optional variable
             let var = if self.peek_kind() == Some(TokenKind::LeftParen) {
                 self.consume_token()?; // consume '('
+                // A declarator keyword in the head redeclares the
+                // automatically declared catch variable (`catch (my $e)`):
+                // never accepted by Perl, and named by 5.44 as
+                // `Can't redeclare catch variable as "%s"`. Record the
+                // typed diagnostic on the keyword, then keep parsing the
+                // variable so the catch binding is retained exactly as
+                // for the bare form and no ordinary lexical declaration
+                // is created for the rejected head (#13333).
+                if matches!(
+                    self.peek_kind(),
+                    Some(TokenKind::My | TokenKind::Our | TokenKind::State)
+                ) {
+                    let keyword_token = self.consume_token()?;
+                    // Only a keyword actually followed by a variable is a
+                    // redeclaration; `catch (my)` has no variable to
+                    // redeclare and stays on the ordinary malformed-head
+                    // path instead of claiming one was present.
+                    let variable_follows = self.peek_kind() == Some(TokenKind::ScalarSigil)
+                        || self.tokens.peek()?.text.starts_with('$');
+                    if variable_follows {
+                        self.record_error(ParseError::CatchVariableRedeclaration {
+                            keyword: keyword_token.text.to_string(),
+                            range: SourceLocation {
+                                start: keyword_token.start(),
+                                end: keyword_token.end(),
+                            },
+                        });
+                    }
+                }
                 let var_name = if self.peek_kind() == Some(TokenKind::ScalarSigil)
                     || self.tokens.peek()?.text.starts_with('$')
                 {
@@ -867,7 +933,10 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649). `CStyleForContinueBlock` joins them
+                        // for the same reason on C-style `for`, and
+                        // `QualifiedLoopControlLabel` on qualified labels
+                        // (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -876,6 +945,8 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::CStyleForContinueBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }

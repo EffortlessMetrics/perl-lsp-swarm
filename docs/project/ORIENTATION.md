@@ -65,7 +65,7 @@ cargo test -p perl-lsp-rs
 cargo test -p perl-dap
 
 # Run the server locally
-cargo run -p perl-lsp-rs -- --stdio
+cargo run -p perllsp -- --stdio
 
 # Repository formatting and governed checks
 cargo fmt --all -- --check

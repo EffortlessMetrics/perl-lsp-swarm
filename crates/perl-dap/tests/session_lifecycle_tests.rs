@@ -8,6 +8,8 @@
 //!
 //! Specification: GitHub Issue #449 - AC5.1, AC5.3, AC5.4, AC5.5
 
+mod common;
+
 use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
@@ -25,6 +27,10 @@ fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
+    // These scenarios exercise session lifecycle, not the launch-authority
+    // contract; without an installed authority every launch is refused before
+    // reaching the behavior under test (#8656).
+    common::install_unbounded_test_authority(&adapter);
     (adapter, rx)
 }
 
@@ -585,8 +591,15 @@ fn test_session_lifecycle_launch_nonexistent_program() {
     let (mut adapter, _rx) = create_test_adapter();
     initialize_adapter(&mut adapter);
 
+    // Authority-backed launches require an absolute `program` path (#8656);
+    // anchor the nonexistent path inside a unique retained temp directory so
+    // nonexistence is guaranteed regardless of machine state and the launch
+    // reaches the file-existence check this test asserts on every platform
+    // (a bare `/nonexistent/...` is not absolute on Windows).
+    let dir = must(tempfile::tempdir());
+    let nonexistent = dir.path().join("script.pl").to_str().map(str::to_string).unwrap_or_default();
     let args = json!({
-        "program": "/nonexistent/path/to/script.pl",
+        "program": nonexistent,
         "args": [],
         "stopOnEntry": false
     });
@@ -1562,9 +1575,13 @@ fn test_error_handling_launch_program_is_directory() {
     let (mut adapter, _rx) = create_test_adapter();
     initialize_adapter(&mut adapter);
 
-    // Use current directory as program (should fail)
+    // Authority-backed launches require an absolute `program` path (#8656);
+    // a bare "." is relative and would be refused at the path gate before the
+    // file-type check this test asserts. `temp_dir` is absolute on every
+    // platform and is always a directory.
+    let dir = std::env::temp_dir().to_str().map(str::to_string).unwrap_or_default();
     let args = json!({
-        "program": ".",
+        "program": dir,
         "args": []
     });
 

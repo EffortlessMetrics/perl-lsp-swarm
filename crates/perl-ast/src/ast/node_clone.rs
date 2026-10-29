@@ -187,6 +187,12 @@ where
         | NodeKind::Format { name_span, .. } => map_optional_location(name_span, map),
         NodeKind::Package { name_span, .. } => *name_span = map(*name_span),
         NodeKind::PhaseBlock { phase_span, .. } => map_optional_location(phase_span, map),
+        NodeKind::OptionalParameter { default_operator_span, .. } => {
+            *default_operator_span = map(*default_operator_span)
+        }
+        NodeKind::NamedParameter { default_operator_span, .. } => {
+            map_optional_location(default_operator_span, map)
+        }
         NodeKind::Error { found, .. } => {
             if map_recovery_tokens
                 && let Some(found) = found
@@ -239,9 +245,7 @@ where
         | NodeKind::Prototype { .. }
         | NodeKind::Signature { .. }
         | NodeKind::MandatoryParameter { .. }
-        | NodeKind::OptionalParameter { .. }
         | NodeKind::SlurpyParameter { .. }
-        | NodeKind::NamedParameter { .. }
         | NodeKind::Return { .. }
         | NodeKind::LoopControl { .. }
         | NodeKind::Goto { .. }

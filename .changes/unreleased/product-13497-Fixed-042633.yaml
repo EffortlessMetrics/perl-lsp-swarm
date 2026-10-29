@@ -1,0 +1,12 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Preserve contiguous Perl `x=` when a list declaration or a declaration used
+  as a call argument is the assignment target, while retaining ordinary list
+  assignment and binary repetition behavior.
+time: 2026-08-29T04:26:33Z
+custom:
+  PR: "13497"
+  Slug: declaration-repetition-assignment
+  Breaking: "no"

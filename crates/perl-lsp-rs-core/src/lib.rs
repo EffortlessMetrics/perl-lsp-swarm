@@ -10,6 +10,12 @@ pub mod config;
 /// Checked scope/precedence/validation authority consumed by configuration generations.
 #[path = "configuration_authority/checked.rs"]
 pub(crate) mod configuration_authority;
+/// Checked writer/invalidation evidence for derived workspace-folder facts (#16827).
+#[doc(hidden)]
+pub use configuration_authority::{
+    ConfigurationAuthorityReport, DerivedWorkspaceLifecycleState, DerivedWorkspaceRowStatus,
+    DerivedWorkspaceViolation, check_configuration_authority, derived_workspace_corpus_paths,
+};
 /// Crate-private, versioned configuration observation model (#10813); fixture
 /// producers only until #10386 consumes it.
 mod configuration_observation;

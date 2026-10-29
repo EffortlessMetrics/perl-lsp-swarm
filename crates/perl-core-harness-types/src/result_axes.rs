@@ -14,6 +14,20 @@
 //!
 //! This module is representation-only. It adds no production consumer, migrates
 //! no baseline, and accepts no transition.
+//!
+//! # Proof boundaries
+//!
+//! Axis-level validity is decided three independent ways over the full
+//! 2500-combination product: [`ResultAxes::new`], the published
+//! `perl_core_harness.result_axes.v2` schema, and a test-local rule table
+//! re-derived from the issue's terms rather than from [`ResultAxes::new`].
+//! The report level cannot be enumerated:
+//! `published_schema_and_rust_agree_on_report_fixtures` states each fixture's
+//! expected decision by hand, but hand-selected fixtures cannot prove that a
+//! report-level rule is not missing from both `RunAxesReport::validate` and
+//! the published schema. Generating report space and comparing both
+//! validators against stated report-level rules is a separate instrument that
+//! this module does not provide.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -2825,6 +2839,295 @@ mod tests {
             mismatches.len(),
             mismatches.join("\n")
         );
+        Ok(())
+    }
+
+    // ---- Independent rule table (issue #15578) ----
+    //
+    // The sweep above proves agreement: its oracle for "what should this
+    // combination decide" is the constructor itself, so a rule missing from
+    // both surfaces stays green. The table below states the intended validity
+    // of every combination in the issue's terms, re-derived from the axis
+    // variants without calling `ResultAxes::new` or any classification helper
+    // the constructor is written against. Each rejection names the rule it
+    // breaks, so a rule dropped from the constructor, from the schema, or from
+    // this table surfaces as a row no surviving surface satisfies.
+
+    /// Independent decision for one axis combination, stated in the issue's
+    /// terms: evidence decides first, process failure is never valid evidence,
+    /// only `implemented` underwrites `general`, `fixture_replay` never
+    /// implies `general`, and `unavailable` names no mechanism.
+    ///
+    /// Deliberately avoids `ResultAxes::new`,
+    /// `EvidenceValidity::supports_domain_conclusion`,
+    /// `ObservedOutcome::is_domain_outcome`,
+    /// `SemanticSupport::is_positive_claim`, and
+    /// `CompatibilityAdmission::may_underwrite_general_support`: a bug in any
+    /// of those must not pass its own test.
+    fn intended_axis_decision(
+        evidence: EvidenceValidity,
+        observation: ObservedOutcome,
+        admission: CompatibilityAdmission,
+        support: SemanticSupport,
+        mechanism: CorrectnessMechanism,
+    ) -> Result<(), &'static str> {
+        let evidence_is_valid = evidence == EvidenceValidity::Valid;
+        let observed_a_domain_outcome =
+            matches!(observation, ObservedOutcome::Clean | ObservedOutcome::FailuresObserved);
+
+        // Evidence decides first: clean and failing observations are product
+        // conclusions, and only valid evidence may carry one.
+        if observed_a_domain_outcome && !evidence_is_valid {
+            return Err(
+                "evidence decides first: a clean or failing observation requires valid evidence",
+            );
+        }
+        // Process failure is never valid evidence: the instrument itself
+        // failed, so there is no domain conclusion for evidence to back.
+        if observation == ObservedOutcome::ProcessOrProtocolFailed && evidence_is_valid {
+            return Err("process failure is never valid evidence");
+        }
+        // An admission is a compile-time claim, so it needs valid evidence too.
+        if admission != CompatibilityAdmission::NotAssessed && !evidence_is_valid {
+            return Err("a stated admission requires valid evidence");
+        }
+        // General and partial are positive claims: they assert that semantics
+        // are supported, so each needs valid evidence, an observed domain
+        // outcome, an admission that could carry it, and a mechanism that ran.
+        if matches!(support, SemanticSupport::General | SemanticSupport::Partial) {
+            if !evidence_is_valid {
+                return Err("a positive support claim requires valid evidence");
+            }
+            if !observed_a_domain_outcome {
+                return Err("a positive support claim requires an observed domain outcome");
+            }
+            if matches!(
+                admission,
+                CompatibilityAdmission::Unsupported | CompatibilityAdmission::NotAssessed
+            ) {
+                return Err(
+                    "an unsupported or unassessed admission cannot back a positive support claim",
+                );
+            }
+            if mechanism == CorrectnessMechanism::None {
+                return Err("a positive support claim requires a correctness mechanism");
+            }
+        }
+        // Only `implemented` underwrites `general`.
+        if support == SemanticSupport::General && admission != CompatibilityAdmission::Implemented {
+            return Err("only an implemented admission underwrites general support");
+        }
+        // `fixture_replay` never implies `general`.
+        if support == SemanticSupport::General && mechanism == CorrectnessMechanism::FixtureReplay {
+            return Err("fixture replay proves recorded output, not general semantics");
+        }
+        // `unavailable` names no mechanism: it asserts that no support rail
+        // exists, so any named mechanism contradicts it.
+        if support == SemanticSupport::Unavailable && mechanism != CorrectnessMechanism::None {
+            return Err("unavailable support names no mechanism");
+        }
+        Ok(())
+    }
+
+    const RULE_TABLE_EVIDENCE: [EvidenceValidity; 5] = [
+        EvidenceValidity::Valid,
+        EvidenceValidity::NotProven,
+        EvidenceValidity::Invalid,
+        EvidenceValidity::Stale,
+        EvidenceValidity::Cancelled,
+    ];
+    const RULE_TABLE_OBSERVATION: [ObservedOutcome; 4] = [
+        ObservedOutcome::Clean,
+        ObservedOutcome::FailuresObserved,
+        ObservedOutcome::ProcessOrProtocolFailed,
+        ObservedOutcome::NotAssessed,
+    ];
+    const RULE_TABLE_ADMISSION: [CompatibilityAdmission; 5] = [
+        CompatibilityAdmission::Implemented,
+        CompatibilityAdmission::StaticallyClassified,
+        CompatibilityAdmission::AcceptedDebt,
+        CompatibilityAdmission::Unsupported,
+        CompatibilityAdmission::NotAssessed,
+    ];
+    const RULE_TABLE_SUPPORT: [SemanticSupport; 5] = [
+        SemanticSupport::General,
+        SemanticSupport::Partial,
+        SemanticSupport::Blocked,
+        SemanticSupport::Unavailable,
+        SemanticSupport::NotAssessed,
+    ];
+    const RULE_TABLE_MECHANISM: [CorrectnessMechanism; 5] = [
+        CorrectnessMechanism::None,
+        CorrectnessMechanism::FixtureReplay,
+        CorrectnessMechanism::EirExecution,
+        CorrectnessMechanism::RealPerlOracle,
+        CorrectnessMechanism::CuratedGold,
+    ];
+
+    /// Every combination of the five axis products, in a stable order.
+    fn rule_table_combinations() -> impl Iterator<
+        Item = (
+            EvidenceValidity,
+            ObservedOutcome,
+            CompatibilityAdmission,
+            SemanticSupport,
+            CorrectnessMechanism,
+        ),
+    > {
+        RULE_TABLE_EVIDENCE.into_iter().flat_map(move |evidence| {
+            RULE_TABLE_OBSERVATION.into_iter().flat_map(move |observation| {
+                RULE_TABLE_ADMISSION.into_iter().flat_map(move |admission| {
+                    RULE_TABLE_SUPPORT.into_iter().flat_map(move |support| {
+                        RULE_TABLE_MECHANISM.into_iter().map(move |mechanism| {
+                            (evidence, observation, admission, support, mechanism)
+                        })
+                    })
+                })
+            })
+        })
+    }
+
+    #[test]
+    fn the_constructor_decides_every_axis_combination_as_the_rule_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut checked = 0usize;
+        let mut mismatches: Vec<String> = Vec::new();
+        for (evidence, observation, admission, support, mechanism) in rule_table_combinations() {
+            checked += 1;
+            let intended =
+                intended_axis_decision(evidence, observation, admission, support, mechanism);
+            let decided = ResultAxes::new(evidence, observation, admission, support, mechanism);
+            if intended.is_ok() != decided.is_ok() {
+                mismatches.push(format!(
+                    "{evidence}/{observation}/{admission}/{support}/{mechanism}: table says \
+                     {:?} but constructor says {} ({})",
+                    intended.is_ok(),
+                    decided.is_ok(),
+                    decided.map(|_| String::new()).unwrap_or_else(|e| e.to_string()),
+                ));
+            }
+        }
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if !mismatches.is_empty() {
+            return Err(format!(
+                "the constructor and the independent rule table disagree on {} combination(s):\n{}",
+                mismatches.len(),
+                mismatches.join("\n")
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_published_schema_decides_every_axis_combination_as_the_rule_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let axes_schema = axes_schema()?;
+        let mut checked = 0usize;
+        let mut mismatches: Vec<String> = Vec::new();
+        for (evidence, observation, admission, support, mechanism) in rule_table_combinations() {
+            checked += 1;
+            let value = serde_json::json!({
+                "evidence": evidence.as_str(),
+                "observation": observation.as_str(),
+                "admission": admission.as_str(),
+                "support": support.as_str(),
+                "mechanism": mechanism.as_str(),
+            });
+            let intended =
+                intended_axis_decision(evidence, observation, admission, support, mechanism);
+            let schema_accepts = axes_schema.is_valid(&value);
+            if intended.is_ok() != schema_accepts {
+                mismatches.push(format!(
+                    "{}/{}/{}/{}/{}: table says {:?} but schema says {}",
+                    evidence.as_str(),
+                    observation.as_str(),
+                    admission.as_str(),
+                    support.as_str(),
+                    mechanism.as_str(),
+                    intended.is_ok(),
+                    schema_accepts,
+                ));
+            }
+        }
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if !mismatches.is_empty() {
+            return Err(format!(
+                "the published schema and the independent rule table disagree on {} combination(s):\n{}",
+                mismatches.len(),
+                mismatches.join("\n")
+            ).into());
+        }
+        Ok(())
+    }
+
+    /// Hand-computed acceptance counts for the rule table, derived from the
+    /// issue's rules and not from running any validator.
+    ///
+    /// Per support level, over evidence(5) x observation(4) x admission(5) x
+    /// mechanism(5):
+    /// - `general`: valid x {clean, failures_observed} x implemented x
+    ///   {eir_execution, real_perl_oracle, curated_gold} = 1*2*1*3 = 6
+    ///   (`fixture_replay` excluded, `none` excluded);
+    /// - `partial`: valid x {clean, failures_observed} x {implemented,
+    ///   statically_classified, accepted_debt} x any non-none mechanism =
+    ///   1*2*3*4 = 24;
+    /// - `blocked` and `not_assessed`: only the three evidence rules apply.
+    ///   Surviving (evidence, observation, admission) triples: valid x
+    ///   {clean, failures_observed, not_assessed} x any admission = 15, plus
+    ///   each non-valid evidence x {process_or_protocol_failed, not_assessed}
+    ///   x not_assessed = 8, so 23; times any of 5 mechanisms = 115;
+    /// - `unavailable`: the same 23 triples with mechanism `none` only = 23.
+    ///
+    /// Total: 6 + 24 + 115 + 115 + 23 = 283 accepted of 2500.
+    #[test]
+    fn the_rule_table_is_total_and_matches_hand_computed_acceptance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut checked = 0usize;
+        let mut accepted = 0usize;
+        let mut accepted_by_support: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for (evidence, observation, admission, support, mechanism) in rule_table_combinations() {
+            checked += 1;
+            if intended_axis_decision(evidence, observation, admission, support, mechanism).is_ok()
+            {
+                accepted += 1;
+                *accepted_by_support.entry(support.as_str()).or_insert(0) += 1;
+            }
+        }
+        if checked != 2500 {
+            return Err(
+                format!("the rule table covered {checked} combinations, expected 2500").into()
+            );
+        }
+        if accepted != 283 {
+            return Err(format!(
+                "hand-computed accepted combinations: expected 283, got {accepted}"
+            )
+            .into());
+        }
+        for (support, expected) in [
+            ("general", 6),
+            ("partial", 24),
+            ("blocked", 115),
+            ("not_assessed", 115),
+            ("unavailable", 23),
+        ] {
+            let actual = accepted_by_support.get(support).copied().unwrap_or(0);
+            if actual != expected {
+                return Err(format!(
+                    "{support} accepted combinations: expected {expected}, got {actual}"
+                )
+                .into());
+            }
+        }
         Ok(())
     }
 

@@ -265,7 +265,7 @@ fn walk_security_node(
             walk_security_node(variable, diagnostics, signal_shadowed);
             updated_shadowed
         }
-        NodeKind::OptionalParameter { variable, default_value } => {
+        NodeKind::OptionalParameter { variable, default_value, .. } => {
             walk_security_node(default_value, diagnostics, signal_shadowed);
             let updated_shadowed =
                 if shadows_signal_table(variable) { true } else { signal_shadowed };

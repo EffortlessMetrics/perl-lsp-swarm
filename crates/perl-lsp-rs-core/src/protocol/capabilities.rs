@@ -22,6 +22,33 @@ pub use crate::features::flags::{AdvertisedFeatures, BuildFlags};
 /// Re-export `ServerCapabilities` from `lsp_types` for public access.
 pub use lsp_types::ServerCapabilities;
 
+/// Whether this exact build implements workspace-folder semantics (#8161).
+///
+/// This is the **single** authority for `workspace.workspaceFolders.supported`
+/// across every builder. It describes an implementation fact: the
+/// workspace-folder registry and the `workspace/didChangeWorkspaceFolders`
+/// dispatch route are compiled in unconditionally and no canonical feature id
+/// suppresses them.
+///
+/// It must never be derived from the client's advertised
+/// `workspace.workspaceFolders` bit or from the active folder count — those
+/// stay separate observations. If a profile ever owns a suppression, flip this
+/// through the canonical feature policy; both the runtime builder in
+/// `perl-lsp-rs` and the pure [`EffectiveLspSurface`] model read this constant,
+/// so the two surfaces cannot drift apart.
+///
+/// [`EffectiveLspSurface`]: crate::protocol::effective_surface::EffectiveLspSurface
+pub const SERVER_WORKSPACE_FOLDER_SUPPORT: bool = true;
+
+/// Whether the `workspace/didChangeWorkspaceFolders` dispatch route is
+/// available in this exact build (#8161).
+///
+/// The advertised `changeNotifications` capability must agree with this route:
+/// #8161 forbids advertising folder-change support whose runtime route is
+/// absent in that exact profile. Like [`SERVER_WORKSPACE_FOLDER_SUPPORT`], both
+/// the runtime builder and the pure final-surface model read this one constant.
+pub const WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE: bool = true;
+
 /// Canonical completion trigger characters advertised to LSP clients.
 ///
 /// LSP requires each trigger to be a single character. Multi-character Perl
@@ -802,7 +829,14 @@ mod tests {
     /// workspace symbols without serializing the full detail up-front.
     #[test]
     fn workspace_symbol_provider_advertises_resolve_when_enabled() {
-        let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        // Resolve advertisement requires the parent workspace_symbol request:
+        // the guard withdraws resolve-only flags since #18315 (resolve options
+        // cannot advertise a disabled parent request).
+        let flags = BuildFlags {
+            workspace_symbol: true,
+            workspace_symbol_resolve: true,
+            ..BuildFlags::default()
+        };
         let caps = capabilities_for(flags);
 
         let value = caps.workspace_symbol_provider.as_ref();
@@ -822,6 +856,13 @@ mod tests {
             Some(true),
             "workspaceSymbolProvider.resolveProvider must be true when \
              workspace_symbol_resolve is enabled"
+        );
+
+        // Resolve without the parent request must stay fully withdrawn.
+        let resolve_only = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        assert!(
+            capabilities_for(resolve_only).workspace_symbol_provider.is_none(),
+            "workspace_symbol_resolve alone must not advertise the provider"
         );
     }
 

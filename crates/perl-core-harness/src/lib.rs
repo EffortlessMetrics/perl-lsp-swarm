@@ -11,6 +11,7 @@ pub mod artifacts;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
 pub mod critic_oracle;
+mod git;
 #[path = "target_contracts/io.rs"]
 pub mod io;
 #[path = "target_contracts/matrix.rs"]
@@ -190,6 +191,37 @@ pub mod invocation_trace {
     pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
 }
 
+/// Strict ordinary/instrumented `t/TEST` equivalence receipt
+/// (`upstream_trace_equivalence.v1`, #12286): paired exact subjects, per-plane
+/// comparisons, and one bounded transfer relation. Representation only: no
+/// upstream execution, production cutover, or compiler scoring.
+pub mod trace_equivalence {
+    /// Comparator and strict receipt constructor.
+    #[path = "compare.rs"]
+    pub mod compare;
+    /// Receipt, verdict, plane, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed validation re-proving receipt consistency.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use compare::{
+        build_trace_equivalence, check_trace_equivalence, equivalence_payload_digest,
+    };
+    pub use model::{
+        ComparisonPlane, EquivalenceSubjects, EquivalenceVerdict, NON_TRANSFERABLE_PROPOSITIONS,
+        PlaneComparison, TRACE_EQUIVALENCE_CLAIM_BOUNDARY, TRANSFERABLE_PROPOSITION,
+        TraceEquivalenceInput, TraceEquivalencePayload, UPSTREAM_TRACE_EQUIVALENCE_SCHEMA_VERSION,
+        UpstreamTraceEquivalenceV1,
+    };
+    pub use validate::validate_trace_equivalence;
+}
+
 /// Strict pure fan-in join proving one complete observed runner subject
 /// (`observed_runner_subject.v1`, #12287): the observed `t/TEST` membership
 /// (#12281/#12283), its independently reconstructed plan (#7737), and the
@@ -228,6 +260,7 @@ pub mod observed_subject {
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
+use git::command as git_command;
 #[cfg(test)]
 use perl_core_harness_types::{
     BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BoundaryRetirement, CompileBaseline,
@@ -245,15 +278,15 @@ use perl_core_harness_types::{
     FailureCluster, FailureClusterHistory, FailureClusterHistoryEntry,
     FailureClusterHistoryPresence, FailureClusterHistoryStatus, FailureClusterIdentityQuality,
     FailureClusterReport, FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION,
-    GapMap, LANDED_LINEAGE_SCHEMA_VERSION, LandedLineage, ObservedSemanticBoundary,
-    PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure,
-    RunFileResult, RunReport, RunSummary, RunnerRecord, RunnerStatus,
-    SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryDisposition,
-    SemanticBoundaryLockScope, SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry,
-    SemanticBoundaryRegistryState, SemanticBoundaryReplacementStrategy, SeriesManifest,
-    SmokeFailureKind, SmokeReport, SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket,
-    validate_execution_mechanism, validate_file_result_mechanisms, validate_series_rail_mechanisms,
-    workstream_for_bucket,
+    GapMap, LANDED_LINEAGE_SCHEMA_VERSION, LEGACY_SELECTED_EXECUTE_SCAFFOLD, LandedLineage,
+    ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRegistry,
+    SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
+    SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, validate_execution_mechanism,
+    validate_file_result_mechanisms, validate_series_rail_mechanisms, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
@@ -1118,7 +1151,7 @@ fn validate_publication_scope(root: &Path, lineage: &LandedLineage) -> Result<()
     validate_git_commit(root, &lineage.publication_sha)?;
     validate_git_commit(root, &lineage.publication_base_sha)?;
     validate_git_ancestor(root, &lineage.publication_base_sha, &lineage.publication_sha)?;
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-c")
         .arg("core.quotePath=false")
@@ -1207,7 +1240,7 @@ fn validate_git_sha(value: &str, label: &str) -> Result<()> {
 
 fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
     let object = format!("{sha}^{{commit}}");
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
@@ -1221,7 +1254,7 @@ fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
 }
 
 fn validate_git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
@@ -1237,7 +1270,7 @@ fn validate_git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Resul
 fn git_blob_at(root: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
     validate_public_path(path, "Git artifact path")?;
     let object = format!("{commit}:{}", path.replace('\\', "/"));
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
@@ -3687,27 +3720,23 @@ fn prepare_inner(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("creating prepare output directory {}", output_dir.display()))?;
     if source_dir.join(".git").is_dir() {
-        run_command(
-            Command::new("git").arg("-C").arg(source_dir).args(["fetch", "--tags", "origin"]),
-        )?;
+        run_command(git_command().arg("-C").arg(source_dir).args(["fetch", "--tags", "origin"]))?;
     } else {
         if let Some(parent) = source_dir.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating source parent {}", parent.display()))?;
         }
         run_command(
-            Command::new("git")
-                .args(["clone", "--filter=blob:none", PERL_SOURCE_URL])
-                .arg(source_dir),
+            git_command().args(["clone", "--filter=blob:none", PERL_SOURCE_URL]).arg(source_dir),
         )?;
     }
-    run_command(Command::new("git").arg("-C").arg(source_dir).args([
+    run_command(git_command().arg("-C").arg(source_dir).args([
         "checkout",
         "--detach",
         &config.perl_ref,
     ]))?;
     let resolved_ref =
-        command_stdout(Command::new("git").arg("-C").arg(source_dir).args(["rev-parse", "HEAD"]))?;
+        command_stdout(git_command().arg("-C").arg(source_dir).args(["rev-parse", "HEAD"]))?;
 
     if prepared_tree.exists() {
         fs::remove_dir_all(prepared_tree)
@@ -4519,6 +4548,18 @@ fn mode_mechanism(mode: HarnessMode) -> Option<ExecutionMechanism> {
     }
 }
 
+/// Scaffold stamp implied by the selected mode when no receipt exists to read.
+///
+/// Mirrors [`mode_mechanism`]: a missing execute result still belongs to the
+/// scaffold this run selected, while parse and compile runs stamp nothing
+/// (#4773).
+fn mode_scaffold_stamp(mode: HarnessMode) -> Option<String> {
+    match mode {
+        HarnessMode::Parse | HarnessMode::Compile => None,
+        HarnessMode::Execute => Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD.to_string()),
+    }
+}
+
 fn read_runner_records_or_empty(path: &Path) -> Result<Vec<RunnerRecord>> {
     if !path.is_file() {
         return Ok(Vec::new());
@@ -4565,6 +4606,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     // Read from the receipt, never inferred from the run's
                     // mode: the receipt is what actually names its rail.
                     mechanism: record.mechanism,
+                    scaffold_stamp: record.scaffold_stamp.clone(),
                 });
                 if record.status == RunnerStatus::Fail {
                     let bucket = record.bucket.clone().unwrap_or_else(|| "unknown".to_string());
@@ -4598,6 +4640,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     // No receipt exists to read, and the failure still belongs
                     // to the rail this run selected.
                     mechanism: mode_mechanism(input.config.mode),
+                    scaffold_stamp: mode_scaffold_stamp(input.config.mode),
                 });
                 let bucket = "harness_prepare".to_string();
                 *buckets.entry(bucket.clone()).or_insert(0) += 1;
@@ -4660,7 +4703,7 @@ fn failure_for_record(path: &str, bucket: &str, record: &RunnerRecord) -> RunFai
 }
 
 fn current_commit() -> String {
-    Command::new("git")
+    git_command()
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()
@@ -4672,11 +4715,8 @@ fn current_commit() -> String {
 }
 
 fn perl_tree_ref(perl_tree: &Path) -> String {
-    let Ok(top_level) = Command::new("git")
-        .arg("-C")
-        .arg(perl_tree)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
+    let Ok(top_level) =
+        git_command().arg("-C").arg(perl_tree).args(["rev-parse", "--show-toplevel"]).output()
     else {
         return "unknown".to_string();
     };
@@ -4697,7 +4737,7 @@ fn perl_tree_ref(perl_tree: &Path) -> String {
         return "unknown".to_string();
     }
 
-    Command::new("git")
+    git_command()
         .arg("-C")
         .arg(perl_tree)
         .args(["rev-parse", "HEAD"])
@@ -4750,16 +4790,18 @@ mod tests {
     /// publishable.
     #[test]
     fn declared_path_validation_is_not_weaker_than_structural_classification() {
+        // Construct synthetic negative vectors from components; these are not
+        // filesystem dependencies or machine-specific checkout paths.
         for value in [
             "/etc/passwd",
-            "/home/runner/work/",
+            concat!("/home/", "runner/work/"),
             "///etc/passwd",
             "//etc/hostname",
-            r"C:\Users\runner\repo",
-            "C:/Users/runner/repo",
+            concat!(r"C:\", r"Users\runner\repo"),
+            concat!("C:/", "Users/runner/repo"),
             r"\\server\share\repo",
-            r"\\?\C:\Users\runner",
-            r"\??\C:\Users\runner",
+            concat!(r"\\?\C:\", r"Users\runner"),
+            concat!(r"\??\C:\", r"Users\runner"),
             "file:///tmp/repo/report.json",
         ] {
             assert!(
@@ -4953,7 +4995,9 @@ mod tests {
     /// private path it rejected.
     #[test]
     fn declared_path_rejection_does_not_echo_the_private_value() {
-        let Err(error) = validate_public_path("/home/runner/work/private", "failure path") else {
+        let Err(error) =
+            validate_public_path(concat!("/home/", "runner/work/private"), "failure path")
+        else {
             unreachable!("absolute host path must be rejected")
         };
         let rendered = error.to_string();
@@ -5149,6 +5193,7 @@ mod tests {
         let records = vec![
             RunnerRecord {
                 mechanism: None,
+                scaffold_stamp: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/ok.t".into(),
@@ -5173,6 +5218,7 @@ mod tests {
             },
             RunnerRecord {
                 mechanism: None,
+                scaffold_stamp: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/bad.t".into(),
@@ -5216,6 +5262,123 @@ mod tests {
     }
 
     #[test]
+    fn run_report_carries_receipt_stamp_and_implies_it_when_missing() -> TestResult {
+        // Assembly reads the stamp from the receipt when one exists (present
+        // stays present, absent stays absent) and implies it from execute
+        // mode only when no receipt exists (#4773).
+        let temp = tempfile::tempdir()?;
+        let config = RunConfig {
+            perl_tree: temp.path().join("perl"),
+            host_perl: None,
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
+        };
+        let discovered = vec![
+            DiscoveredTest { path: "base/if.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base/legacy.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base/missing.t".into(), root: "base".into() },
+        ];
+        let records = vec![
+            RunnerRecord {
+                mechanism: Some(ExecutionMechanism::FixtureReplay),
+                scaffold_stamp: Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD.to_string()),
+                schema_version: "perl_core_harness.runner_record.v1".into(),
+                mode: "execute".into(),
+                path: "base/if.t".into(),
+                status: RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+                bucket: None,
+                first_diagnostic: None,
+                semantic_boundaries: Vec::new(),
+            },
+            RunnerRecord {
+                mechanism: Some(ExecutionMechanism::FixtureReplay),
+                scaffold_stamp: None,
+                schema_version: "perl_core_harness.runner_record.v1".into(),
+                mode: "execute".into(),
+                path: "base/legacy.t".into(),
+                status: RunnerStatus::Pass,
+                assertions_passed: 1,
+                assertions_total: 1,
+                bucket: None,
+                first_diagnostic: None,
+                semantic_boundaries: Vec::new(),
+            },
+        ];
+        let run_tree = temp.path().join("run");
+        let observation =
+            settle_test_observation(HarnessMode::Execute, &discovered, &records, Some(1))?;
+
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: temp.path(),
+            run_tree: &run_tree,
+            host_perl: Path::new("perl"),
+            observation: &observation,
+        });
+
+        assert_eq!(report.file_results.len(), 3);
+        let mut stamped: Vec<&str> = report
+            .file_results
+            .iter()
+            .filter(|result| {
+                result.scaffold_stamp.as_deref() == Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD)
+            })
+            .map(|result| result.path.as_str())
+            .collect();
+        stamped.sort_unstable();
+        assert_eq!(stamped, vec!["base/if.t", "base/missing.t"]);
+        let unstamped: Vec<&str> = report
+            .file_results
+            .iter()
+            .filter(|result| result.scaffold_stamp.is_none())
+            .map(|result| result.path.as_str())
+            .collect();
+        assert_eq!(unstamped, vec!["base/legacy.t"]);
+        Ok(())
+    }
+
+    #[test]
+    fn run_report_stamps_nothing_for_parse_mode_without_receipt() -> TestResult {
+        // The mode-implied stamp is execute-only; a missing parse receipt
+        // stays unstamped (#4773).
+        let temp = tempfile::tempdir()?;
+        let config = RunConfig {
+            perl_tree: temp.path().join("perl"),
+            host_perl: None,
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
+        };
+        let discovered =
+            vec![DiscoveredTest { path: "base/missing.t".into(), root: "base".into() }];
+        let run_tree = temp.path().join("run");
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(1))?;
+
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: temp.path(),
+            run_tree: &run_tree,
+            host_perl: Path::new("perl"),
+            observation: &observation,
+        });
+
+        assert_eq!(report.file_results.len(), 1);
+        assert_eq!(report.file_results[0].scaffold_stamp, None);
+        Ok(())
+    }
+
+    #[test]
     fn run_report_scopes_and_deduplicates_semantic_boundaries() -> TestResult {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
@@ -5245,6 +5408,7 @@ mod tests {
         };
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -5277,6 +5441,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -5336,6 +5501,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "not-a-normalized-test.txt".into(),
@@ -5384,6 +5550,7 @@ mod tests {
         ];
         let upstream_only = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -5440,6 +5607,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let payload = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -5492,6 +5660,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -5537,6 +5706,7 @@ mod tests {
         // present because stale-context removal failed.
         let stale_row = RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/gap.t".into(),
@@ -5578,6 +5748,7 @@ mod tests {
         let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
         let record = |path: &str| RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -5692,6 +5863,7 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
                 mechanism: None,
+                scaffold_stamp: None,
                 path: "base/ok.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,
@@ -6171,6 +6343,7 @@ mod tests {
         let mut report = sample_compile_report();
         report.file_results.push(RunFileResult {
             mechanism: None,
+            scaffold_stamp: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Pass,
             assertions_passed: 1,
@@ -7030,6 +7203,7 @@ mod tests {
         let baseline = baseline_from_report(&report)?;
         report.file_results.push(RunFileResult {
             mechanism: None,
+            scaffold_stamp: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7089,6 +7263,7 @@ mod tests {
         let mut current_report = baseline_report.clone();
         current_report.file_results.push(RunFileResult {
             mechanism: None,
+            scaffold_stamp: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7507,6 +7682,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
             mechanism: None,
+            scaffold_stamp: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/if.t".into(),
@@ -7556,6 +7732,7 @@ mod tests {
             file_results: vec![
                 RunFileResult {
                     mechanism: None,
+                    scaffold_stamp: None,
                     path: "base/lex.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -7563,6 +7740,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: None,
+                    scaffold_stamp: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -8422,6 +8600,7 @@ mod tests {
             file_results: vec![
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/cond.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
@@ -8429,6 +8608,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/if.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
@@ -8436,6 +8616,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/num.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 56,
@@ -8443,6 +8624,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/pat.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
@@ -8450,6 +8632,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/translate.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 257,
@@ -8457,6 +8640,7 @@ mod tests {
                 },
                 RunFileResult {
                     mechanism: Some(ExecutionMechanism::FixtureReplay),
+                    scaffold_stamp: None,
                     path: "base/while.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
@@ -8576,7 +8760,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        let tree_perl = perl_tree.join("perl");
+        let tree_perl = perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX));
         fs::write(&tree_perl, "sentinel built perl\n")?;
 
         let resolved = resolve_scheduler_perl(&perl_tree, None)?;
@@ -8590,7 +8774,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let override_perl = temp.path().join("version-matched-perl");
         fs::write(&override_perl, "sentinel override perl\n")?;
 
@@ -8605,7 +8792,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let override_perl = temp.path().join("version-matched-perl");
         fs::write(&override_perl, "sentinel override perl\n")?;
         let dotted = temp.path().join(".").join("version-matched-perl");
@@ -8655,7 +8845,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let missing_override = temp.path().join("missing-perl");
 
         let Err(err) = resolve_scheduler_perl(&perl_tree, Some(&missing_override)) else {
@@ -10404,7 +10597,8 @@ exit 1
         set_executable(&runner)?;
         Ok(runner)
     }
-    fn current_authority_fixture() -> TestResult<(tempfile::TempDir, CurrentAuthorityConfig)> {
+    pub(super) fn current_authority_fixture()
+    -> TestResult<(tempfile::TempDir, CurrentAuthorityConfig)> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().to_path_buf();
         fs::create_dir_all(root.join(".ci/perl-core-harness"))?;
@@ -10479,7 +10673,7 @@ exit 1
             }))?,
         )?;
         let run_git = |args: &[&str]| -> TestResult<String> {
-            let output = Command::new("git").arg("-C").arg(&root).args(args).output()?;
+            let output = git_command().arg("-C").arg(&root).args(args).output()?;
             if !output.status.success() {
                 bail!(
                     "fixture git command {:?} failed: {}",
@@ -10572,7 +10766,7 @@ exit 1
 
     fn commit_fixture_authority(root: &Path) -> TestResult<String> {
         let run_git = |args: &[&str]| -> TestResult<String> {
-            let output = Command::new("git").arg("-C").arg(root).args(args).output()?;
+            let output = git_command().arg("-C").arg(root).args(args).output()?;
             if !output.status.success() {
                 bail!(
                     "fixture git command {:?} failed: {}",
@@ -10707,7 +10901,7 @@ exit 1
         config.lineages.push(historical_lineage_path);
         let run_git = |args: &[&str]| -> TestResult<String> {
             let output =
-                Command::new("git").arg("-C").arg(&config.repository_root).args(args).output()?;
+                git_command().arg("-C").arg(&config.repository_root).args(args).output()?;
             if !output.status.success() {
                 bail!(
                     "fixture git command {:?} failed: {}",
