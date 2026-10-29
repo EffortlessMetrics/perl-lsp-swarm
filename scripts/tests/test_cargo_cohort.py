@@ -463,6 +463,7 @@ class PortableControls(unittest.TestCase):
         instance = self.owner()
         expected_bindings = [hashlib.sha256(path.read_bytes()).hexdigest() for path in self.manifests]
         observed = {}
+        allocation = {}
         reclaim = instance._reclaim
         def observe_then_reclaim(path):
             metadata = path.lstat()
@@ -472,6 +473,10 @@ class PortableControls(unittest.TestCase):
                                          metadata.st_mode, metadata.st_nlink]
             observed['parent_identity'] = [parent.st_dev, parent.st_ino]
             observed['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+            allocation.update(device=metadata.st_dev, inode=metadata.st_ino,
+                              allocated_bytes=metadata.st_blocks * 512,
+                              link_count=0, descriptor_held=True,
+                              open_unlinked_bytes=metadata.st_blocks * 512)
             return reclaim(path)
         with patch.object(instance, '_reclaim', side_effect=observe_then_reclaim):
             row = self.run_portable(instance)
@@ -489,7 +494,9 @@ class PortableControls(unittest.TestCase):
         self.assertEqual(receipts[0]['consumed'], [str(self.exe)])
         self.assertEqual(receipts[0]['product_status'], 0)
         self.assertTrue(receipts[0]['settlement']['tree_settled'])
-        self.assertEqual(receipts[1], {'event':'reclaimed','path':str(self.exe)})
+        self.assertEqual(receipts[1], {'event':'reclaimed','path':str(self.exe), 'held_inode':allocation})
+        self.assertNotEqual(allocation['allocated_bytes'], len(expected_executable))
+        self.assertIsNone(instance.groups[self.exe]['fd'])  # normal close still runs before return
         self.executable()
         with self.assertRaises(cohort.Denied): instance._reclaim(self.exe)
         self.assertTrue(self.exe.exists())
@@ -790,6 +797,7 @@ class PortableControls(unittest.TestCase):
                                              metadata.st_mtime_ns, metadata.st_ctime_ns,
                                              metadata.st_mode, metadata.st_nlink]
                 observed['sha256'] = hashlib.sha256(self.exe.read_bytes()).hexdigest()
+                observed['allocated_bytes'] = metadata.st_blocks * 512
                 observed['parents'] = {str(path): [path.parent.stat().st_dev, path.parent.stat().st_ino]
                                        for path in (self.exe, alias)}
             return launch(tree, command, env, **kwargs)
@@ -808,6 +816,15 @@ class PortableControls(unittest.TestCase):
         self.assertEqual(group['file_identity'][-1],2)
         self.assertEqual({entry['path'] for entry in events[0]['alias_groups'][0]['aliases']},{str(self.exe),str(alias)})
         self.assertEqual({entry['path'] for entry in events[1:]},{str(self.exe),str(alias)})
+        self.assertEqual(len(events), 3)  # one authorization and the same two unlink receipts
+        held = [entry['held_inode'] for entry in events[1:]]
+        self.assertEqual([entry['link_count'] for entry in held], [1, 0])
+        self.assertEqual([entry['open_unlinked_bytes'] for entry in held], [0, observed['allocated_bytes']])
+        self.assertEqual({(entry['device'], entry['inode']) for entry in held},
+                         {tuple(observed['file_identity'][:2])})
+        self.assertTrue(all(entry['descriptor_held'] is True for entry in held))
+        self.assertTrue(all(entry['allocated_bytes'] == observed['allocated_bytes'] for entry in held))
+        self.assertIsNone(instance.groups[self.exe]['fd'])
         self.executable()
         with self.assertRaises(cohort.Denied): instance._reclaim(self.exe)
         self.assertTrue(self.exe.exists())
