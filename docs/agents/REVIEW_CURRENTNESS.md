@@ -148,6 +148,26 @@ Generate it only after the useful review record is complete:
 python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
 ```
 
+`--fixture` and `SEMANTIC_REVIEW_TEST_FIXTURE` are evaluator test inputs. A valid
+fixture invocation exits 1 and reports top-level `NOT_PROVEN` with
+`acquisition_mode: fixture`; its semantic verdict remains in `evaluator_result`.
+Caller-supplied capture timestamps, pagination claims or provenance fields cannot
+promote that result. Marker emission refuses either fixture selector, including an
+empty environment value, before acquisition. The pre-merge guard also refuses that
+environment and requires the live checker envelope to match its repository, PR and
+observed head, passing that head through `--expected-head`.
+
+The supported live route still uses `gh` and its `--paginate --slurp` review
+acquisition. It rejects missing/malformed page envelopes and rows, and head/base
+movement during acquisition. `acquisition_mode: gh_live` identifies that code path;
+it is not signed provenance or authentication of an overridden executable or JSON.
+This source repair does not independently verify provider pagination completeness,
+make review/head observation atomic, qualify another provider transport, or replace
+the sanctioned thread collector and full live classic/ruleset policy union. Denied
+or unreadable acquisition remains `NOT_PROVEN`. Those capability and enforcement
+predicates remain under #17573/#17494; #17495, #15010, #15001 and #16958 retain their
+existing ownership.
+
 The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
 marker is not a requirement to re-review merely because a SHA changed. It makes the
 reviewed subject falsifiable and lets the pre-merge guard distinguish a real cumulative

@@ -148,20 +148,20 @@ pub const NON_CANONICAL_LINES: [&str; 10] = [
 /// formatter's deterministic layout laws *under the client-delivered LSP
 /// options*: the hermetic host (`-Nu NONE`, no vimrc) runs Vim's defaults —
 /// `noexpandtab` — so vim-lsp's format request carries `insertSpaces: false`
-/// and the native formatter indents re-blocked statements with tabs. The
-/// sub header keeps its attached brace (only re-blocked `if` headers are
-/// split onto their own line); the expanded `if` body is one tab deep.
+/// and the native formatter uses one tab per block level. The sub header
+/// keeps its attached brace; its body is one tab deep and the expanded
+/// `if` body is two tabs deep, matching the multiline block layout law.
 pub const CANONICAL_LINES: [&str; 12] = [
     "use strict;",
     "use warnings;",
     "my $seed = 3;",
     "my $value = compute($seed);",
     "sub compute{",
-    "my ($input) = @_;",
-    "if ($input == 1) {",
-    "\treturn $input + 1;",
-    "}",
-    "return $input * 2;",
+    "\tmy ($input) = @_;",
+    "\tif ($input == 1) {",
+    "\t\treturn $input + 1;",
+    "\t}",
+    "\treturn $input * 2;",
     "}",
     "print \"$value\\n\";",
 ];
@@ -1174,16 +1174,37 @@ mod tests {
 
     #[test]
     fn canonical_text_is_the_formatter_shape_of_the_non_canonical_text() {
+        use perl_lsp_rs_core::tooling::perltidy::native::{
+            FormatConfig, NativeFormatter, PerlFormatter,
+        };
+
         let non_canonical = non_canonical_source_text();
         let canonical = canonical_source_text();
         assert_ne!(non_canonical, canonical);
+        // Exercise the production formatter against the independently authored
+        // byte oracle using the pinned Vim client's actual LSP options.
+        let config = FormatConfig { indent_width: 8, use_tabs: true, ..FormatConfig::default() };
+        let formatter = NativeFormatter::new();
+        let applied = formatter.format_document(&non_canonical, &config);
+        assert!(applied.diagnostics.is_empty(), "{:?}", applied.diagnostics);
+        assert!(applied.changed);
+        assert!(!applied.edits.is_empty());
+        assert_eq!(applied.formatted, canonical);
+
+        // The second ordinary save must have canonical bytes and genuinely
+        // reach no-change, rather than repeat the first save's edits.
+        let unchanged = formatter.format_document(&canonical, &config);
+        assert!(unchanged.diagnostics.is_empty(), "{:?}", unchanged.diagnostics);
+        assert_eq!(unchanged.formatted, canonical);
+        assert!(!unchanged.changed);
+        assert!(unchanged.edits.is_empty());
         // Same statements, different layout: the canonical generation expands
-        // the single-line if-block (tab-indented under the hermetic host's
-        // insertSpaces=false options) and normalizes operator and keyword
-        // spacing, while the attached sub brace stays attached. The texts are
-        // shadowing-free so no strict-warning discriminator rides along.
+        // the single-line if-block, nests it inside the sub body, and
+        // normalizes operator and keyword spacing, while the attached sub
+        // brace stays attached. The texts are shadowing-free so no
+        // strict-warning discriminator rides along.
         assert!(canonical.contains(
-            "sub compute{\nmy ($input) = @_;\nif ($input == 1) {\n\treturn $input + 1;\n}"
+            "sub compute{\n\tmy ($input) = @_;\n\tif ($input == 1) {\n\t\treturn $input + 1;\n\t}"
         ));
         assert!(canonical.contains("my $seed = 3;"));
         assert!(canonical.contains("my $value = compute($seed);"));

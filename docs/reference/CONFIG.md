@@ -66,6 +66,11 @@ For v0.13, this per-folder `.perl-lsp.toml` model is the supported multi-root me
 
 The server silently skips the file if it does not exist. If the file exists but contains invalid TOML, the server emits a `window/showMessage` warning and continues with defaults.
 
+Configuration errors distinguish malformed TOML syntax from invalid setting values.
+For example, `include_paths = "lib"` under `[perl]` is valid TOML but an invalid value:
+`include_paths` requires an array such as `["lib"]`. The warning preserves the
+error's line, column, and expected type so you can correct the file.
+
 Unknown keys and sections are silently ignored for forward compatibility.
 
 ### Discovery strategy
@@ -192,8 +197,8 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 | `perltidy_cuddled_else` | `boolean` | (unset) | Cuddled-else style compatibility option. |
 | `perltidy_space_after_keyword` | `boolean` | (unset) | Space-after-keyword compatibility option. |
 | `perltidy_add_trailing_commas` | `boolean` | (unset) | Trailing-comma compatibility option. |
-| `perltidy_vertical_alignment` | `boolean` | (unset) | Vertical-alignment compatibility option. |
-| `perltidy_block_comment_indentation` | `integer` | (unset) | Block-comment indentation compatibility option. |
+| `perltidy_vertical_alignment` | `boolean` | (unset) | Vertical-alignment compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
+| `perltidy_block_comment_indentation` | `integer` | (unset) | Block-comment indentation compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
 | `perltidy_extra_args` | `string[]` | `[]` | Extra arguments for the external perltidy adapter. Ignored by the native formatter. |
 | `perltidy_timeout_secs` | `integer` | (unset) | Timeout in seconds for the external perltidy adapter. |
 

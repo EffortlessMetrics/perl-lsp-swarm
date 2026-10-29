@@ -151,17 +151,17 @@ The repo ends up with a taxonomy of memory, not just a backlog.
 
 For the broader current stack that adds operator commands, skill usage, and
 preserved scout logs on top of `swarm-state`, see
-[KNOWLEDGE_COMPOUNDING_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/KNOWLEDGE_COMPOUNDING_ARCHAEOLOGY.md).
+[KNOWLEDGE_COMPOUNDING_ARCHAEOLOGY.md](KNOWLEDGE_COMPOUNDING_ARCHAEOLOGY.md).
 
 ---
 
 ## Evidence Pointers
 
-- [.claude/swarm-state/README.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
-- [.claude/swarm-state/known-pitfalls.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/known-pitfalls.md)
-- [.claude/swarm-state/discovered-issues.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/discovered-issues.md)
-- [.claude/swarm-state/findings.json](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/findings.json)
-- [.claude/swarm-state/findings.schema.json](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/findings.schema.json)
-- [ISSUE_PR_CROSSLINK_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ISSUE_PR_CROSSLINK_ARCHAEOLOGY.md)
-- [ISSUE_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ISSUE_LABEL_ARCHAEOLOGY.md)
+- [.claude/swarm-state/README.md](../../reference/archive/old-infrastructure/swarm-state/README.md)
+- [.claude/swarm-state/known-pitfalls.md](../../reference/archive/old-infrastructure/swarm-state/known-pitfalls.md)
+- [.claude/swarm-state/discovered-issues.md](../../reference/archive/old-infrastructure/swarm-state/discovered-issues.md)
+- [.claude/swarm-state/findings.json](../../reference/archive/old-infrastructure/swarm-state/findings.json)
+- [.claude/swarm-state/findings.schema.json](../../reference/archive/old-infrastructure/swarm-state/findings.schema.json)
+- [ISSUE_PR_CROSSLINK_ARCHAEOLOGY.md](ISSUE_PR_CROSSLINK_ARCHAEOLOGY.md)
+- [ISSUE_LABEL_ARCHAEOLOGY.md](ISSUE_LABEL_ARCHAEOLOGY.md)
 - `9cc2d3b9a`, `d9aab31bc`, `37ddcf56d`
