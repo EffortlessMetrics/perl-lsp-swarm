@@ -12,7 +12,7 @@
 //! authoritative contract is [`PLSP-SPEC-0025`](../../../../docs/specs/PLSP-SPEC-0025-pir-v0.md).
 
 use crate::SourceLocation;
-use crate::hir::{DerefAggregateKind, DerefOperandKind, HirId, HirScopeId};
+use crate::hir::{DerefAggregateKind, DerefOperandKind, HirId, HirQuoteKind, HirScopeId};
 use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
@@ -559,6 +559,36 @@ pub enum PirOperation {
         /// The lexical being written.
         name: LexicalName,
     },
+    /// Read a per-object `field` of a Perl 5.38+ `class`.
+    ///
+    /// Distinct from [`LexicalRead`](Self::LexicalRead) and
+    /// [`StashRead`](Self::StashRead) because a field is neither a pad slot nor
+    /// a stash slot. Folding it into either would publish a false fact:
+    /// `LexicalRead` is what fact extraction turns into a lexical binding, and
+    /// `StashRead` claims a package-global read. Keeping the reference in the
+    /// IR under its own name preserves it for navigation without asserting
+    /// storage it does not have (#13817).
+    FieldRead {
+        /// The field being read, as sigil plus name.
+        name: LexicalName,
+    },
+    /// Write (initialize or assign) a per-object `field`.
+    ///
+    /// Mirrors [`FieldRead`](Self::FieldRead) for the write direction.
+    FieldWrite {
+        /// The field being written.
+        name: LexicalName,
+    },
+    /// Compound read-modify-write on a per-object `field` (`+=`, `++`, etc.).
+    ///
+    /// Mirrors [`Modify`](Self::Modify) for field slots; the place is evaluated
+    /// once and the operator text is preserved in `op`.
+    FieldModify {
+        /// The field being modified.
+        name: LexicalName,
+        /// The compound operator text.
+        op: String,
+    },
     /// Read a package/stash symbol.
     StashRead {
         /// The symbol being read.
@@ -594,6 +624,22 @@ pub enum PirOperation {
     Literal {
         /// Literal category preserved from HIR.
         kind: PirLiteralKind,
+        /// Scalar payload when the producing HIR carries one (#17538). Both
+        /// producers share one convention: numbers keep the exact lexeme,
+        /// strings keep quote-stripped content, and `Undef`/aggregates carry
+        /// `None`. `None` means the kind has no scalar payload here, never a
+        /// lost value: a first-cohort body leaf always emits `Some` in the
+        /// same lowering generation, so no cross-generation join can
+        /// mismatch it.
+        value: Option<String>,
+        /// String quoting when the token text admits detection. Always `Some`
+        /// for body-produced strings; `None` for non-strings and for
+        /// unquoted, mismatched, or quote-like spellings.
+        quote: Option<HirQuoteKind>,
+        /// Whether the producing node is absent from the source text (parser
+        /// recovery fabrication or valid-idiom desugaring). Consumers must
+        /// treat a flagged payload as supplied, not written.
+        synthesized: bool,
     },
     /// A subroutine or function call.
     Call {
@@ -706,6 +752,9 @@ impl PirOperation {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::FieldModify { .. } => "FieldModify",
+            Self::FieldRead { .. } => "FieldRead",
+            Self::FieldWrite { .. } => "FieldWrite",
             Self::LexicalRead { .. } => "LexicalRead",
             Self::LexicalWrite { .. } => "LexicalWrite",
             Self::StashRead { .. } => "StashRead",
@@ -738,6 +787,9 @@ impl PirOperation {
         "Call",
         "Deref",
         "DynamicBoundary",
+        "FieldModify",
+        "FieldRead",
+        "FieldWrite",
         "LexicalRead",
         "LexicalWrite",
         "Literal",
@@ -1043,6 +1095,9 @@ mod tests {
             "Call",
             "Deref",
             "DynamicBoundary",
+            "FieldModify",
+            "FieldRead",
+            "FieldWrite",
             "LexicalRead",
             "LexicalWrite",
             "Literal",
@@ -1080,7 +1135,12 @@ mod tests {
 
     #[test]
     fn pir_operation_literal_name() {
-        let op = PirOperation::Literal { kind: PirLiteralKind::Hash };
+        let op = PirOperation::Literal {
+            kind: PirLiteralKind::Hash,
+            value: None,
+            quote: None,
+            synthesized: false,
+        };
         assert_eq!(op.name(), "Literal");
         assert_eq!(PirLiteralKind::Hash.name(), "Hash");
     }

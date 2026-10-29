@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Discriminating product-unit promotion proof for scripts/install.sh (#8359).
+# Discriminating product-unit promotion proof for scripts/install.sh (#8359)
+# and selector-commit atomicity proof for the source-only ↔ release transitions
+# described by #14052.
 #
 # Readers of PATH-visible names and of .perl-lsp/current must observe the old
 # complete unit or the new complete unit, never a mixed or partial pair.
@@ -93,6 +95,54 @@ assert_complete_pair() {
     [[ "$pathv" != state=mixed* ]] || return 1
     [[ "$pathv" == *"server_sha256=${want_server}"* ]] || return 1
     [[ "$pathv" == *"dap_sha256=${want_dap}"* ]] || return 1
+}
+
+# Returns 0 when the path is a symlink whose resolved target does not exist.
+# path_visible_member_hash reports `-` for both absent and dangling selectors;
+# tests that care about that distinction use this helper instead.
+is_dangling_selector() {
+    local _path="$1"
+    [ -L "$_path" ] && [ ! -e "$_path" ]
+}
+
+# Stages a complete pair with the executable bit set on both members so tests
+# can prove the published PATH selectors actually run.
+stage_executable_pair() {
+    local dest="$1" server_payload="$2" dap_payload="$3"
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cat > "${dest}/${BIN_NAME}" <<EOF
+#!/usr/bin/env bash
+echo "${server_payload}"
+EOF
+    cat > "${dest}/${DAP_BIN_NAME}" <<EOF
+#!/usr/bin/env bash
+echo "${dap_payload}"
+EOF
+    chmod 0755 "${dest}/${BIN_NAME}" "${dest}/${DAP_BIN_NAME}"
+}
+
+# Verifies a published pair runs through the PATH-visible selectors and
+# yields the expected payloads, asserting executability on top of identity.
+assert_executable_pair() {
+    local server_payload="$1" dap_payload="$2"
+    # A selector must exist as a symlink whose target resolves; a dangling
+    # link to a non-existent candidate is reported as absent by `[ -e ]` but
+    # is not a working PATH-visible name.
+    [ -L "$(path_server)" ] || return 1
+    [ -L "$(path_dap)" ] || return 1
+    [ -e "$(path_server)" ] || return 1
+    [ -e "$(path_dap)" ] || return 1
+    local _server_target _dap_target
+    _server_target="$(readlink -f "$(path_server)")" || return 1
+    _dap_target="$(readlink -f "$(path_dap)")" || return 1
+    [ -x "$_server_target" ] || return 1
+    [ -x "$_dap_target" ] || return 1
+    local _server_out _dap_out
+    _server_out="$("$_server_target" 2>/dev/null)" || return 1
+    _dap_out="$("$_dap_target" 2>/dev/null)" || return 1
+    [ "$_server_out" = "$server_payload" ] || return 1
+    [ "$_dap_out" = "$dap_payload" ] || return 1
 }
 
 printf '=== standalone product-unit promotion (#8359) ===\n'
@@ -603,6 +653,127 @@ if [ "$_term_status" -eq 0 ] \
 else
     fail_case "successful promotion restores the caller TERM trap" \
         "status=$_term_status trap=$_term_saved"
+fi
+
+# --- #14052: source-only ↔ release transition atomicity -----------------------
+# The selectors are created before the current-pointer commits so both names
+#  become visible together, but a failed commit must roll back the DAP name on
+#  the source-only → release path so a non-pair current never coexists with a
+#  dangling PATH-visible adapter.
+
+# Source-only → release commit fault must preserve the source-only current and
+#  keep the DAP selector absent on POSIX (#14052 acceptance).
+setup_root
+stage_server_only "$EXTRACT_DIR" "source-only-server"
+run_promote source
+old_current="$(readlink "${INSTALL_DIR}/.perl-lsp/current" 2>/dev/null || true)"
+old_server_link="$(readlink "$(path_server)" 2>/dev/null || true)"
+stage_pair "$EXTRACT_DIR" "server-b" "dap-b"
+PERL_LSP_INSTALL_FAULT=before_commit
+run_promote release
+unset PERL_LSP_INSTALL_FAULT
+source_current="$(observe_current_product_unit 2>/dev/null || true)"
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [ "$(readlink "${INSTALL_DIR}/.perl-lsp/current" 2>/dev/null || true)" = "$old_current" ] \
+    && [ ! -e "$(path_dap)" ] && [ ! -L "$(path_dap)" ] \
+    && [ "$(readlink "$(path_server)" 2>/dev/null || true)" = "$old_server_link" ] \
+    && ! is_dangling_selector "$(path_server)" \
+    && [[ "$source_current" == *"disposition=advanced_source_server_only"* ]] \
+    && [[ "$source_current" == *"dap_sha256=-"* ]] \
+    && [[ "$LAST_OUTPUT" == *"before_commit"* ]]; then
+    pass "source-only-to-release commit fault preserves source-only current and keeps DAP absent"
+else
+    fail_case "source-only-to-release commit fault preserves source-only current and keeps DAP absent" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT current=$source_current server=$(ls -l "$(path_server)" 2>&1 || true) dap=$(ls -l "$(path_dap)" 2>&1 || true)"
+fi
+
+# First-install commit fault must leave no newly advertised selector that
+#  cannot execute (#14052 acceptance).
+setup_root
+stage_pair "$EXTRACT_DIR" "server-first" "dap-first"
+PERL_LSP_INSTALL_FAULT=before_commit
+run_promote release
+unset PERL_LSP_INSTALL_FAULT
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [ ! -e "$(path_server)" ] && [ ! -L "$(path_server)" ] \
+    && [ ! -e "$(path_dap)" ] && [ ! -L "$(path_dap)" ] \
+    && ! is_dangling_selector "$(path_server)" \
+    && ! is_dangling_selector "$(path_dap)" \
+    && [[ "$LAST_OUTPUT" == *"before_commit"* ]]; then
+    pass "first-install commit fault leaves no newly advertised selector that cannot execute"
+else
+    fail_case "first-install commit fault leaves no newly advertised selector that cannot execute" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT server=$(ls -ld "$(path_server)" 2>&1 || true) dap=$(ls -ld "$(path_dap)" 2>&1 || true)"
+fi
+
+# The path_visible_member_hash observer reports `-` for both absent and
+#  dangling selectors (#14052 falsifier). The helper must distinguish them so
+#  the test infrastructure can catch a half-rolled-back commit.
+setup_root
+stage_pair "$EXTRACT_DIR" "server-a" "dap-a"
+run_promote release
+stage_pair "$EXTRACT_DIR" "server-b" "dap-b"
+run_promote release
+dangling="$(path_dap)"
+rm -f "${INSTALL_DIR}/.perl-lsp/current/${DAP_BIN_NAME}"
+if is_dangling_selector "$dangling" \
+    && [ ! -e "$dangling" ] \
+    && [ "$(path_visible_member_hash "$dangling")" = "-" ]; then
+    pass 'selector observer collapses absent and dangling into "-" so the helper must distinguish them'
+else
+    fail_case 'selector observer collapses absent and dangling into "-" so the helper must distinguish them' \
+        "is_dangling=$? hash=$(path_visible_member_hash "$dangling" 2>&1 || true) exists=$([ -e "$dangling" ] && echo y || echo n) link=$([ -L "$dangling" ] && echo y || echo n)"
+fi
+
+# A successful source-only → release must publish a complete executable pair
+#  without a mixed, dangling, or missing-member observation (#14052 acceptance).
+setup_root
+stage_server_only "$EXTRACT_DIR" "source-server"
+run_promote source
+stage_executable_pair "$EXTRACT_DIR" "exec-server-b" "exec-dap-b"
+run_promote release
+executable_current="$(observe_current_product_unit 2>/dev/null || true)"
+executable_pathv="$(observe_path_visible_product_unit 2>/dev/null || true)"
+if [ "$LAST_STATUS" -eq 0 ] \
+    && assert_executable_pair "exec-server-b" "exec-dap-b" \
+    && [[ "$executable_current" == *"disposition=archive_pair_required"* ]] \
+    && [[ "$executable_pathv" != state=mixed* ]] \
+    && [[ "$executable_pathv" != state=none* ]]; then
+    pass "source-only-to-release success publishes a complete executable pair"
+else
+    fail_case "source-only-to-release success publishes a complete executable pair" \
+        "status=$LAST_STATUS current=$executable_current pathv=$executable_pathv output=$LAST_OUTPUT"
+fi
+
+# A first-install pair must publish a complete executable pair (#14052
+#  acceptance: no newly advertised selector can be unexecutable).
+setup_root
+stage_executable_pair "$EXTRACT_DIR" "exec-server-fresh" "exec-dap-fresh"
+run_promote release
+if [ "$LAST_STATUS" -eq 0 ] \
+    && assert_executable_pair "exec-server-fresh" "exec-dap-fresh"; then
+    pass "first-install release publishes a complete executable pair"
+else
+    fail_case "first-install release publishes a complete executable pair" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT current=$(observe_current_product_unit 2>/dev/null || true)"
+fi
+
+# The accepted test surface must not advertise a PERL_LSP_INSTALL_POINTER
+#  switch; the installer no longer reads that variable. A non-deliberate test
+#  must not reintroduce it (#14052 acceptance). Scoped to the installer
+#  surface so the grep stays bounded.
+: > "$TMP/pointer_hits.txt"
+for _f in "$ROOT/scripts/install.sh" "$ROOT/install.sh" "$ROOT/install.ps1"; do
+    [ -f "$_f" ] || continue
+    if grep -In 'PERL_LSP_INSTALL_POINTER' "$_f" >/dev/null 2>&1; then
+        grep -In 'PERL_LSP_INSTALL_POINTER' "$_f" >> "$TMP/pointer_hits.txt"
+    fi
+done
+if [ -s "$TMP/pointer_hits.txt" ]; then
+    fail_case "no installer reads PERL_LSP_INSTALL_POINTER" \
+        "$(cat "$TMP/pointer_hits.txt")"
+else
+    pass "no installer reads PERL_LSP_INSTALL_POINTER"
 fi
 
 if [ "$FAIL" -ne 0 ]; then

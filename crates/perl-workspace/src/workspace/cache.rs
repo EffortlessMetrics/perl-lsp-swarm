@@ -340,8 +340,12 @@ where
             && let Some(entry) = entries.get(key)
             && entry.is_expired(ttl)
         {
-            // Entry expired, remove it
-            entries.remove(key);
+            // Entry expired, remove it (mirrors peek/remove accounting so
+            // capacity stats do not drift upward on expiry).
+            if let Some(entry) = entries.remove(key) {
+                stats.current_bytes -= entry.size_bytes;
+                stats.current_items = entries.len();
+            }
             if let Some(pos) = access_order.iter().position(|k| k == key) {
                 access_order.remove(pos);
             }
@@ -738,6 +742,26 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
+    }
+
+    #[test]
+    fn test_get_expired_entry_resets_capacity_stats() {
+        let config = CacheConfig {
+            max_items: 10_000,
+            max_bytes: 50 * 1024 * 1024,
+            ttl: Some(std::time::Duration::from_millis(1)),
+        };
+        let cache = BoundedLruCache::<String, String>::new(config);
+        cache.insert_with_size("key1".to_string(), "value1".to_string(), 6);
+        assert_eq!(cache.stats().current_items, 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert_eq!(cache.get(&"key1".to_string()), None);
+
+        let stats = cache.stats();
+        assert_eq!(stats.current_items, 0);
+        assert_eq!(stats.current_bytes, 0);
+        assert_eq!(cache.len(), 0);
     }
 
     #[test]

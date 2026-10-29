@@ -75,7 +75,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::editor_client_compat::{
-    CapabilityBasis, CleanupResult, EvidenceArtifact, JourneyCell, ObservationResult,
+    ArtifactKind, CapabilityBasis, CleanupResult, EvidenceArtifact, JourneyCell, ObservationResult,
 };
 use crate::vim_host_run::vim_host_runner;
 use crate::vim_host_run::{BoundHostPlan, VimHostRunInputs, bind_host_run_plan};
@@ -627,7 +627,7 @@ fn run_host_session(
         &root_markers,
         &lifecycle_env(role, variant),
     )?;
-    let observation = run_owned_process(&mut command, &plan, &layout)?;
+    let mut observation = run_owned_process(&mut command, &plan, &layout)?;
 
     let client_log_bytes = fs::read(layout.client_log()).unwrap_or_default();
     let wire = vim_host_runner::extract_wire_evidence(&client_log_bytes);
@@ -637,7 +637,13 @@ fn run_host_session(
     // owned server child settles on stdin EOF; cleanup is judged from the
     // settled process set, never from the transient immediately after the
     // kill. Retained next to the substrate's own snapshots.
-    let settled_probe_clean = settle_probe(&plan, &layout, ambient_baseline)?;
+    let settled_probe_clean = match settle_probe(&plan, &layout, ambient_baseline)? {
+        Some((clean, artifact)) => {
+            observation.artifacts.push(artifact);
+            Some(clean)
+        }
+        None => None,
+    };
     let ledger = fs::read_to_string(layout.artifact_directory.join("vim/process-ledger.json"))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok());
@@ -657,13 +663,13 @@ fn run_host_session(
 
 /// Probe the process table until the exact candidate needle disappears or the
 /// bounded settle window closes. Returns `None` when the probe is
-/// unavailable on this platform (honest not-proven), `Some(false)` when owned
-/// candidate processes survive the settled window.
+/// unavailable on this platform (honest not-proven), or the observed cleanup
+/// state and its retained artifact when the bounded comparison completes.
 fn settle_probe(
     plan: &VimHostRunPlan,
     layout: &HermeticVimLayout,
     ambient_baseline: Option<&[ProcessProbeLine]>,
-) -> Result<Option<bool>> {
+) -> Result<Option<(bool, EvidenceArtifact)>> {
     // A missing or unparseable journey-level baseline is an instrument gap:
     // the survivor diff below cannot attribute ownership, so the settle stays
     // `not_proven` instead of silently comparing against an empty baseline.
@@ -688,32 +694,76 @@ fn settle_probe(
         } else {
             vim_host_runner::parse_process_snapshot(&settled)
         };
-        let survivors = match parsed {
-            // Same law as the substrate's comparison: a late snapshot line is
-            // a survivor only when it matches the candidate needle AND was
-            // not already running in the ambient baseline. This keeps the
-            // supervisor's own argument vector (which contains the absolute
-            // candidate path) from masquerading as an owned leak.
-            Ok(lines) => vim_host_runner::surviving_processes(ambient_baseline, &lines, &needle),
+        let lines = match parsed {
+            Ok(lines) => lines,
             Err(_) => return Ok(None),
         };
-        if survivors.is_empty() {
+        // Same law as the substrate's comparison: a late snapshot line is
+        // a survivor only when it matches the candidate needle AND was
+        // not already running in the ambient baseline. This keeps the
+        // supervisor's own argument vector (which contains the absolute
+        // candidate path) from masquerading as an owned leak.
+        let survivors = vim_host_runner::surviving_processes(ambient_baseline, &lines, &needle);
+        let clean = survivors.is_empty();
+        if clean || Instant::now() >= deadline {
             let destination = layout.raw_directory.join("processes-settled.txt");
             fs::write(&destination, &settled)
                 .with_context(|| format!("writing {}", destination.display()))?;
-            return Ok(Some(true));
-        }
-        if Instant::now() >= deadline {
-            let destination = layout.raw_directory.join("processes-settled.txt");
-            fs::write(&destination, &settled)
-                .with_context(|| format!("writing {}", destination.display()))?;
-            return Ok(Some(false));
+            let bytes = settled_probe_evidence(ambient_baseline, &lines, &needle, &settled)?;
+            let artifact = vim_host_runner::write_sanitized_artifact(
+                &layout.artifact_directory,
+                "vim/processes-settled.json",
+                ArtifactKind::ProcessLedger,
+                &bytes,
+                plan,
+                layout,
+            )?;
+            return Ok(Some((clean, artifact)));
         }
         std::thread::sleep(Duration::from_millis(500));
         if let Some(Ok(next)) = probe_process_table() {
             settled = next;
         }
     }
+}
+
+/// Retain the comparison inputs for independent audit without uploading
+/// unrelated runner process arguments. Attribution uses the original rows;
+/// the shared artifact writer redacts and bounds only the retained copy.
+fn settled_probe_evidence(
+    ambient_baseline: &[ProcessProbeLine],
+    settled_lines: &[ProcessProbeLine],
+    needle: &str,
+    raw_snapshot: &str,
+) -> Result<Vec<u8>> {
+    let survivors = vim_host_runner::surviving_processes(ambient_baseline, settled_lines, needle);
+    let clean = survivors.is_empty();
+    // Sanitized arguments can collide (including with a literal redaction
+    // token). Hash the original comparison identity before the writer redacts
+    // paths so retained rows still support independent baseline subtraction.
+    let project = |rows: Vec<ProcessProbeLine>| -> Result<Vec<serde_json::Value>> {
+        rows.into_iter()
+            .map(|row| {
+                let raw_args_sha256 = vim_host_runner::bytes_sha256(row.args.as_bytes())?;
+                Ok(serde_json::json!({
+                    "pid": row.pid,
+                    "args": row.args,
+                    "raw_args_sha256": raw_args_sha256,
+                }))
+            })
+            .collect()
+    };
+    Ok(serde_json::to_vec_pretty(&serde_json::json!({
+        "snapshot_scope": "candidate_matches_only",
+        "candidate_needle": needle,
+        "process_probe": "available",
+        "settle_window_ms": SETTLE_PROBE_WINDOW_MS,
+        "raw_snapshot_sha256": vim_host_runner::bytes_sha256(raw_snapshot.as_bytes())?,
+        "ambient_candidate_processes": project(vim_host_runner::surviving_processes(&[], ambient_baseline, needle))?,
+        "settled_candidate_processes": project(vim_host_runner::surviving_processes(&[], settled_lines, needle))?,
+        "settled_probe_clean": clean,
+        "surviving_processes": project(survivors)?,
+    }))?)
 }
 
 /// Compose the journey-level observation the receipt is built from: the
@@ -752,6 +802,13 @@ pub fn aggregate_journey_observation(sessions: &[HostSessionRecord]) -> ProcessO
         };
         let (session_cleanup, session_detail) = match contributed {
             Some((result, detail)) => (result, detail.to_string()),
+            None if matches!(
+                session.role.as_str(),
+                "assertion_failure_session" | "timeout_interruption_session"
+            ) =>
+            {
+                (CleanupResult::NotProven, "forced shape settle probe unavailable".to_string())
+            }
             None => (session.observation.cleanup, session.observation.cleanup_detail.clone()),
         };
         if session_cleanup == CleanupResult::Fail || cleanup == CleanupResult::Fail {
@@ -1411,8 +1468,11 @@ pub fn evaluate_lifecycle_observation(
         }
         _ => true,
     });
-    let any_leak =
-        sessions.iter().any(|session| session.observation.cleanup == CleanupResult::Fail);
+    // Use the same role-aware judgment as the published cleanup. A forced
+    // session's immediate survivor is not a settled leak; an unavailable
+    // settle probe remains unknown even if the raw comparison reports pass.
+    let cleanup = aggregate_journey_observation(sessions).cleanup;
+    let any_leak = cleanup == CleanupResult::Fail;
     // Positive relabel evidence: the control's own host observed a second
     // outgoing `initialize` on its wire — the attempted in-host server
     // restart. Without it the control never exercised its designed false
@@ -1431,7 +1491,11 @@ pub fn evaluate_lifecycle_observation(
         // designed defect injection would itself be an oracle violation, and
         // reporting it as a pass would hide it.
         ObservationResult::Fail
-    } else if all_actionable_ok && workspace_ok && designed_boundaries && !any_leak {
+    } else if all_actionable_ok
+        && workspace_ok
+        && designed_boundaries
+        && cleanup == CleanupResult::Pass
+    {
         // Unreachable for a negative variant (its designed relabel makes the
         // host-reopen cell fail), but kept explicit so no ladder rewrite can
         // ever produce a passing negative control.
@@ -1606,6 +1670,145 @@ fn catalog_evidence(cell_id: &str, sessions: &[HostSessionRecord]) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settled_probe_evidence_retains_the_candidate_comparison_inputs() -> Result<()> {
+        let needle = "/owned/perllsp";
+        // Independent Python hashlib SHA-256 expectations for original args.
+        let supervisor_sha =
+            "sha256:87cb44fa8727ed3255a26bd9f748c7740f39147a002ad48331770693ab3e744c";
+        let stdio_sha = "sha256:a1580948cfee10525293e613db794ba8da48ae4952a4b7bb0ad1b6bf4140eba1";
+        let changed_sha = "sha256:50210aa2c766b1183de16b26f9792fe103d8cd1ae64d55e82863746907d63c67";
+        let baseline = parse_process_snapshot(concat!(
+            "10 supervisor --candidate /owned/perllsp\n",
+            "20 /owned/perllsp --stdio\n",
+            "90 unrelated baseline-arguments\n",
+        ))?;
+        for (snapshot, expected_settled, expected_survivors, clean) in [
+            (
+                concat!(
+                    "10 supervisor --candidate /owned/perllsp\n",
+                    "20 /owned/perllsp --stdio\n",
+                    "21 /owned/perllsp-helper --stdio\n",
+                    "80 unrelated final-arguments\n",
+                ),
+                serde_json::json!([
+                    {"pid":10,"args":"supervisor --candidate <CANDIDATE>","raw_args_sha256":supervisor_sha},
+                    {"pid":20,"args":"<CANDIDATE> --stdio","raw_args_sha256":stdio_sha},
+                ]),
+                serde_json::json!([]),
+                true,
+            ),
+            (
+                concat!(
+                    "10 supervisor --candidate /owned/perllsp\n",
+                    "20 /owned/perllsp --stdio --changed\n",
+                    "30 /owned/perllsp --stdio\n",
+                    "80 unrelated final-arguments\n",
+                ),
+                serde_json::json!([
+                    {"pid":10,"args":"supervisor --candidate <CANDIDATE>","raw_args_sha256":supervisor_sha},
+                    {"pid":20,"args":"<CANDIDATE> --stdio --changed","raw_args_sha256":changed_sha},
+                    {"pid":30,"args":"<CANDIDATE> --stdio","raw_args_sha256":stdio_sha},
+                ]),
+                serde_json::json!([
+                    {"pid":20,"args":"<CANDIDATE> --stdio --changed","raw_args_sha256":changed_sha},
+                    {"pid":30,"args":"<CANDIDATE> --stdio","raw_args_sha256":stdio_sha},
+                ]),
+                false,
+            ),
+        ] {
+            let lines = parse_process_snapshot(snapshot)?;
+            let bytes = settled_probe_evidence(&baseline, &lines, needle, snapshot)?;
+            let dir = tempfile::tempdir()?;
+            let artifact = crate::editor_host::write_artifact(
+                dir.path(),
+                "vim/processes-settled.json",
+                ArtifactKind::ProcessLedger,
+                &bytes,
+                &[crate::editor_host::PathRedaction {
+                    path: PathBuf::from(needle),
+                    token: "<CANDIDATE>",
+                }],
+            )?;
+            let path = dir.path().join(&artifact.id);
+            let retained = fs::read_to_string(&path)?;
+            let evidence: serde_json::Value = serde_json::from_str(&retained)?;
+            ensure!(
+                evidence["ambient_candidate_processes"]
+                    == serde_json::json!([
+                        {"pid":10,"args":"supervisor --candidate <CANDIDATE>","raw_args_sha256":supervisor_sha},
+                        {"pid":20,"args":"<CANDIDATE> --stdio","raw_args_sha256":stdio_sha},
+                    ])
+            );
+            ensure!(
+                evidence["surviving_processes"] == expected_survivors,
+                "unchanged baseline rows are excluded; changed args and new PIDs survive"
+            );
+            ensure!(evidence["settled_candidate_processes"] == expected_settled);
+            ensure!(evidence["settled_probe_clean"] == clean);
+            ensure!(evidence["process_probe"] == "available");
+            ensure!(
+                evidence["raw_snapshot_sha256"]
+                    == vim_host_runner::bytes_sha256(snapshot.as_bytes())?
+            );
+            ensure!(artifact.sha256 == vim_host_runner::file_sha256(&path)?);
+            ensure!(
+                !retained.contains("/owned")
+                    && !retained.contains("unrelated")
+                    && !retained.contains("perllsp-helper"),
+                "only sanitized candidate comparison rows may leave the raw tree"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settled_probe_evidence_preserves_identity_across_redaction_collisions() -> Result<()> {
+        let needle = "/owned/perllsp";
+        let baseline = parse_process_snapshot("20 /owned/perllsp --label /fixture\n")?;
+        let snapshot = "20 /owned/perllsp --label <WORKSPACE>\n";
+        let lines = parse_process_snapshot(snapshot)?;
+        let bytes = settled_probe_evidence(&baseline, &lines, needle, snapshot)?;
+        let dir = tempfile::tempdir()?;
+        let artifact = crate::editor_host::write_artifact(
+            dir.path(),
+            "vim/processes-settled.json",
+            ArtifactKind::ProcessLedger,
+            &bytes,
+            &[
+                crate::editor_host::PathRedaction {
+                    path: PathBuf::from(needle),
+                    token: "<CANDIDATE>",
+                },
+                crate::editor_host::PathRedaction {
+                    path: PathBuf::from("/fixture"),
+                    token: "<WORKSPACE>",
+                },
+            ],
+        )?;
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(&artifact.id))?)?;
+        let ambient = &evidence["ambient_candidate_processes"][0];
+        let settled = &evidence["settled_candidate_processes"][0];
+        ensure!(ambient["pid"] == 20 && settled["pid"] == 20);
+        ensure!(ambient["args"] == "<CANDIDATE> --label <WORKSPACE>");
+        ensure!(ambient["args"] == settled["args"], "sanitized arguments deliberately collide");
+        // Literal SHA-256 expectations were calculated with Python hashlib,
+        // independently of the production hash helper and retained output.
+        ensure!(
+            ambient["raw_args_sha256"]
+                == "sha256:9f1f2e23af63b5d44ab47233f493c0d3bf3d234e29b99be28ec34a941d5bdf27",
+            "retained baseline must preserve the original argument identity"
+        );
+        ensure!(
+            settled["raw_args_sha256"]
+                == "sha256:c7b906f0b3e72df20e49adfa6aa9f0feb268656c34d5d8e1bc5178c54199db70"
+        );
+        ensure!(evidence["surviving_processes"] == serde_json::json!([settled]));
+        ensure!(evidence["settled_probe_clean"] == false);
+        Ok(())
+    }
 
     #[test]
     fn malformed_survivor_ledger_is_not_coerced_to_zero() {

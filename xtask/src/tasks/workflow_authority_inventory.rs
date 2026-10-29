@@ -744,12 +744,12 @@ jobs:
     }
 
     #[test]
-    fn live_droid_records_oidc_write() -> Result<()> {
+    fn live_droid_records_no_oidc_write() -> Result<()> {
         let row = live_row("droid.yml")?;
         let kinds = live_kinds(&row);
         assert!(
-            kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "droid.yml grants id-token: write: {kinds:?}"
+            !kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
+            "droid.yml no longer grants id-token: write: {kinds:?}"
         );
         assert!(
             kinds.contains(&CredentialDerivationKind::EnvInjectedToken),

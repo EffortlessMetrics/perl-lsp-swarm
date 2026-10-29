@@ -46,6 +46,17 @@ jobs:
       # pin.
       VIM_LSP_SUBJECT_MANIFEST: .ci/editor-clients/vim-vim-lsp-subject.v1.json
       PERLLSP_VIM_HOST_RUN_OUT: target/vim-host-runs/ci
+      # Envelope discipline (#15317, #15339): every receipt this workflow
+      # binds must declare the exact wire envelope its producer stamps. A
+      # producer envelope bump, a schema rename, or a plan JSON written to
+      # a receipt.json path must fail typed at the bind site instead of
+      # propagating null lookups as a bound pass. Per the Lane 0 ruling in
+      # #15990 the editor-compat envelope keeps its string schema id; the
+      # consumer asserts the token fail-closed with expected vs found.
+      EDITOR_COMPAT_RECEIPT_SCHEMA: editor_client_compat.v1
+      EDITOR_COMPAT_RECEIPT_GUARD: '(.schema_version // "") as $found | if $found != $expected then error("receipt " + $receipt + ": unsupported schema_version (expected \"" + $expected + "\", found " + ($found | tostring) + ")") else . end'
+      PROMOTED_RECEIPT_SCHEMA: lsp-client-execution-receipt.v1
+      PROMOTED_RECEIPT_GUARD: '(.schema // "") as $found | if $found != $expected then error("receipt " + $receipt + ": unsupported schema (expected \"" + $expected + "\", found " + ($found | tostring) + ")") else . end'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -97,6 +108,8 @@ jobs:
         run: |
           set -euo pipefail
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           cleanup="$(jq -r '.process_cleanup' "${receipt}")"
           echo "host run result: ${result} (cleanup: ${cleanup})"
@@ -151,6 +164,11 @@ jobs:
             echo "::error::policy names a vim actual_client receipt that does not exist: ${receipt}"
             exit 1
           }
+          # The promoted committed receipt is a different envelope than the
+          # journey receipts: assert its own producer-stamped token before
+          # any field is bound from it (#15317 envelope discipline).
+          jq -e --arg receipt "${receipt}" --arg expected "${PROMOTED_RECEIPT_SCHEMA}" "${PROMOTED_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported promoted receipt schema (expected ${PROMOTED_RECEIPT_SCHEMA})"; exit 1; }
           generated="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json"
 
           # 1. The promoted artifact triad must describe the bytes this run produced.
@@ -202,6 +220,8 @@ jobs:
         run: |
           set -euo pipefail
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-canonical/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "bootstrap-diagnostics result: ${result}"
           [ "${result}" = "pass" ]
@@ -236,6 +256,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-defect-absent" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-defect-absent/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "defect_absent control result: ${result}"
           [ "${result}" = "fail" ]
@@ -256,6 +278,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-wrong-root" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/diagnostics-wrong-root/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "wrong_root_decoy control result: ${result}"
           [ "${result}" = "fail" ]
@@ -285,6 +309,8 @@ jobs:
         run: |
           set -euo pipefail
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-canonical/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "freshness-generations result: ${result}"
           [ "${result}" = "pass" ]
@@ -317,6 +343,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-wrong-root" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-wrong-root/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "wrong_root_decoy control result: ${result}"
           [ "${result}" = "fail" ]
@@ -338,6 +366,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-live-reload-claimed" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-live-reload-claimed/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "live_reload_claimed control result: ${result}"
           [ "${result}" = "fail" ]
@@ -359,6 +389,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-ambient-path" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/freshness-ambient-path/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "ambient_path_only control result: ${result}"
           [ "${result}" = "fail" ]
@@ -388,6 +420,8 @@ jobs:
         run: |
           set -euo pipefail
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-canonical/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           cleanup="$(jq -r '.process_cleanup' "${receipt}")"
           echo "recovery-generations result: ${result} (cleanup: ${cleanup})"
@@ -412,6 +446,8 @@ jobs:
           # root_mismatch failure was observed and validated.
           cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant wrong_root_decoy             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-wrong-root"             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-wrong-root/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "wrong_root_decoy control result: ${result}"
           [ "${result}" = "fail" ]
@@ -424,6 +460,8 @@ jobs:
           # automatic recovery).
           cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant auto_recovery_claimed             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-auto-claimed"             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-auto-claimed/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "auto_recovery_claimed control result: ${result}"
           [ "${result}" = "fail" ]
@@ -436,6 +474,8 @@ jobs:
           # failure is the honest outcome.
           cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant replay_skipped_claimed             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-replay-skipped"             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-replay-skipped/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "replay_skipped_claimed control result: ${result}"
           [ "${result}" = "fail" ]
@@ -472,6 +512,8 @@ jobs:
         run: |
           set -euo pipefail
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           cleanup="$(jq -r '.process_cleanup' "${receipt}")"
           echo "host-reopen-lifecycle result: ${result} (cleanup: ${cleanup})"
@@ -516,6 +558,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "server_restart_relabel control result: ${result}"
           [ "${result}" = "fail" ]
@@ -545,6 +589,8 @@ jobs:
         run: |
           set -euo pipefail
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-canonical/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "save-format result: ${result}"
           [ "${result}" = "pass" ]
@@ -588,6 +634,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-manual-comparator" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-manual-comparator/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "manual_comparator_only control result: ${result}"
           [ "${result}" = "fail" ]
@@ -608,6 +656,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-duplicate-owner" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-duplicate-owner/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "duplicate_owner control result: ${result}"
           [ "${result}" = "fail" ]
@@ -626,6 +676,8 @@ jobs:
             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-wrong-root" \
             --timeout-ms 420000
           receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/save-wrong-root/receipt.json"
+          jq -e --arg receipt "${receipt}" --arg expected "${EDITOR_COMPAT_RECEIPT_SCHEMA}" "${EDITOR_COMPAT_RECEIPT_GUARD}" "${receipt}" >/dev/null \
+            || { echo "::error::${receipt}: unsupported editor-compat receipt schema_version (expected ${EDITOR_COMPAT_RECEIPT_SCHEMA})"; exit 1; }
           result="$(jq -r '.result' "${receipt}")"
           echo "wrong_root_decoy control result: ${result}"
           [ "${result}" = "fail" ]

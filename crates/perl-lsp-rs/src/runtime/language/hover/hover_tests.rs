@@ -1189,6 +1189,63 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
     }
 }
 
+fn ranged_violation(uri: &str, version: i32) -> serde_json::Value {
+    json!({
+        "textDocument": { "uri": uri, "version": version },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })
+}
+
+#[test]
+fn hover_does_not_publish_in_flight_predecessor_after_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///workspace/inflight_hover.pl";
+    let predecessor = "require PredHoverMod;\n";
+
+    server.test_apply_did_open(uri, predecessor, 1)?;
+    let snapshot = server
+        .snapshot_user_answer_text(uri)
+        .ok_or("open document must have a usable user-answer snapshot")?;
+    let computed = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?);
+    let value = must_some(computed["contents"]["value"].as_str());
+    assert!(
+        value.contains("PredHoverMod"),
+        "in-flight hover must see the predecessor module: {value}"
+    );
+
+    server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+    assert!(
+        !server.user_answer_text_is_current(uri, snapshot.generation),
+        "ranged violation must invalidate the captured user-answer generation"
+    );
+    let published =
+        server.publish_user_answer_value(uri, snapshot.generation, computed, json!(null));
+    assert!(
+        published.is_null(),
+        "in-flight predecessor hover must not publish after invalidation: {published}"
+    );
+
+    let live = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?;
+    assert!(
+        live.as_ref().is_none_or(serde_json::Value::is_null),
+        "live hover after Full-sync violation must fail closed: {live:?}"
+    );
+    Ok(())
+}
+
 /// `$!` interpolated inside a double-quoted string is a live variable
 /// reference and keeps its variable card; the same text single-quoted or
 /// escaped does not interpolate, and a bareword in the string stays
@@ -1244,5 +1301,66 @@ fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::e
         let value = must_some(card["contents"]["value"].as_str());
         assert!(value.contains("errno"), "expected the `$!` card at +{delta}, got: {value}");
     }
+    Ok(())
+}
+
+/// Editing a defining file without reindexing must not present the old
+/// indexed `Pkg::sub` as a current callable (#16646 review).
+#[cfg(feature = "workspace")]
+#[test]
+fn qualified_callable_hover_fails_closed_when_defining_file_is_stale()
+-> Result<(), Box<dyn std::error::Error>> {
+    let definer_uri = "file:///workspace/lib/StaleCallable.pm";
+    let caller_uri = "file:///workspace/script/stale_callable.pl";
+    let definer_v1 = "package StaleCallable;\nsub run { return 1; }\n1;\n";
+    let definer_v2 = "package StaleCallable;\n1;\n";
+    let caller = "print StaleCallable::run();\n";
+
+    let server = LspServer::new();
+    server.test_apply_did_open(definer_uri, definer_v1, 1)?;
+    server.test_apply_did_open(caller_uri, caller, 1)?;
+    server
+        .test_index_file_in_building_state(definer_uri, definer_v1)
+        .map_err(std::io::Error::other)?;
+    server.test_index_file_in_building_state(caller_uri, caller).map_err(std::io::Error::other)?;
+    server.test_simulate_indexing_complete();
+
+    let run_character = u32::try_from(must_some(caller.find("run")))?;
+    let fresh = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": caller_uri },
+        "position": { "line": 0, "character": run_character }
+    })))?);
+    let fresh_value = must_some(fresh["contents"]["value"].as_str());
+    assert!(
+        fresh_value.contains("Defined in `StaleCallable`")
+            || fresh_value.contains("sub StaleCallable::run"),
+        "fresh index should prove StaleCallable::run, got: {fresh_value}"
+    );
+
+    server
+        .test_replace_document_without_index(definer_uri, definer_v2, 2)
+        .map_err(std::io::Error::other)?;
+    assert!(
+        !server.workspace_index_stale_for_document(caller_uri),
+        "unchanged caller must stay fresh under the per-document helper"
+    );
+    assert!(
+        server.workspace_index_stale_for_any_open_document(),
+        "edited defining file must stale the workspace-wide index"
+    );
+
+    let stale = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": caller_uri },
+        "position": { "line": 0, "character": run_character }
+    })))?);
+    let stale_value = must_some(stale["contents"]["value"].as_str());
+    assert!(
+        !stale_value.contains("Defined in `StaleCallable`"),
+        "stale defining-file index must not prove StaleCallable::run, got: {stale_value}"
+    );
+    assert!(
+        !stale_value.contains("**Subroutine**"),
+        "stale defining-file index must not emit a subroutine card, got: {stale_value}"
+    );
     Ok(())
 }

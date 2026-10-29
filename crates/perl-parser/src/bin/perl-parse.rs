@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use perl_parser::{Node, ParseError, Parser};
 use serde::Serialize;
@@ -20,7 +20,7 @@ struct TotalStats {
     files_parsed: usize,
     files_failed: usize,
     total_bytes: usize,
-    total_time: std::time::Duration,
+    total_time: Duration,
     total_nodes: usize,
     file_details: Vec<FileStats>,
 }
@@ -28,7 +28,7 @@ struct TotalStats {
 struct FileStats {
     name: String,
     bytes: usize,
-    time: std::time::Duration,
+    time: Duration,
     nodes: usize,
     error: bool,
 }
@@ -38,7 +38,7 @@ impl TotalStats {
         Self::default()
     }
 
-    fn add_file(&mut self, name: &str, bytes: usize, time: std::time::Duration, nodes: usize) {
+    fn add_file(&mut self, name: &str, bytes: usize, time: Duration, nodes: usize) {
         self.files_parsed += 1;
         self.total_bytes += bytes;
         self.total_time += time;
@@ -57,43 +57,47 @@ impl TotalStats {
         self.file_details.push(FileStats {
             name: name.to_string(),
             bytes: 0,
-            time: std::time::Duration::ZERO,
+            time: Duration::ZERO,
             nodes: 0,
             error: true,
         });
     }
 
-    fn print(&self) {
-        eprintln!("\n=== Total Statistics ===");
-        eprintln!("Files parsed: {}", self.files_parsed);
-        eprintln!("Files failed: {}", self.files_failed);
-        eprintln!(
+    fn write(&self, out: &mut impl Write) -> io::Result<()> {
+        writeln!(out, "\n=== Total Statistics ===")?;
+        writeln!(out, "Files parsed: {}", self.files_parsed)?;
+        writeln!(out, "Files failed: {}", self.files_failed)?;
+        writeln!(
+            out,
             "Total size: {} bytes ({:.2} KB)",
             self.total_bytes,
             self.total_bytes as f64 / 1024.0
-        );
-        eprintln!("Total time: {:?}", self.total_time);
-        eprintln!("Total nodes: {}", self.total_nodes);
+        )?;
+        writeln!(out, "Total time: {:?}", self.total_time)?;
+        writeln!(out, "Total nodes: {}", self.total_nodes)?;
 
-        if self.files_parsed > 0 {
+        if let Some(avg_nodes) = self.total_nodes.checked_div(self.files_parsed) {
             let avg_speed = self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
-            eprintln!("Average speed: {:.2} MB/s", avg_speed);
-            eprintln!("Average nodes per file: {}", self.total_nodes / self.files_parsed);
+            writeln!(out, "Average speed: {avg_speed:.2} MB/s")?;
+            writeln!(out, "Average nodes per file: {avg_nodes}")?;
         }
 
         if self.file_details.len() > 1 && self.file_details.len() <= 20 {
-            eprintln!("\n=== File Details ===");
+            writeln!(out, "\n=== File Details ===")?;
             for stat in &self.file_details {
                 if stat.error {
-                    eprintln!("{}: FAILED", stat.name);
+                    writeln!(out, "{}: FAILED", stat.name)?;
                 } else {
-                    eprintln!(
+                    writeln!(
+                        out,
                         "{}: {} bytes, {:?}, {} nodes",
                         stat.name, stat.bytes, stat.time, stat.nodes
-                    );
+                    )?;
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -120,6 +124,32 @@ enum OutputFormat {
     UnstableDebug,
 }
 
+/// Parsed argv after the program name.
+///
+/// Help and version are distinct from a runnable request so they can exit as
+/// soon as those flags are seen, matching historical argument-order behavior.
+#[derive(Debug)]
+enum CliRequest {
+    Help,
+    Version,
+    Run(Args),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessStatus {
+    Success,
+    Failure,
+}
+
+impl ProcessStatus {
+    fn code(self) -> i32 {
+        match self {
+            Self::Success => 0,
+            Self::Failure => 1,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct ByteRange {
     start: usize,
@@ -137,59 +167,63 @@ struct LegacyParseSummary {
     limitations: &'static [&'static str],
 }
 
-impl Args {
-    fn parse() -> Result<Self, String> {
-        let mut args = std::env::args().skip(1);
-        let mut inputs = Vec::new();
-        let mut output_format = OutputFormat::LegacySexp;
-        let mut show_stats = false;
-        let mut pretty = false;
-        let mut quiet = false;
-        let mut continue_on_error = false;
+/// Parse argv after the program name.
+///
+/// `--help`/`-h` and `--version`/`-V` return immediately when first seen, so
+/// later flags are not interpreted. That matches the historical process-exit
+/// argument-order behavior.
+fn parse_args<I, S>(args: I) -> Result<CliRequest, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let mut inputs = Vec::new();
+    let mut output_format = OutputFormat::LegacySexp;
+    let mut show_stats = false;
+    let mut pretty = false;
+    let mut quiet = false;
+    let mut continue_on_error = false;
 
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "-h" | "--help" => {
-                    print_help();
-                    std::process::exit(0);
-                }
-                "-V" | "--version" => {
-                    println!("perl-parse v{}", env!("CARGO_PKG_VERSION"));
-                    std::process::exit(0);
-                }
-                "-f" | "--format" => {
-                    let format = args.next().ok_or("Missing format argument")?;
-                    output_format = match format.as_str() {
-                        "sexp" | "s-expression" => OutputFormat::LegacySexp,
-                        "json" => OutputFormat::LegacyJson,
-                        "debug" => OutputFormat::UnstableDebug,
-                        _ => return Err(format!("Unknown format: {}", format)),
-                    };
-                }
-                "-s" | "--stats" => show_stats = true,
-                "-p" | "--pretty" => pretty = true,
-                "-q" | "--quiet" => quiet = true,
-                "-c" | "--continue" => continue_on_error = true,
-                "-" => inputs.push(Input::Stdin),
-                path if path.starts_with('-') => {
-                    return Err(format!("Unknown option: {}", path));
-                }
-                path => {
-                    inputs.push(Input::File(PathBuf::from(path)));
-                }
+    while let Some(arg) = args.next() {
+        match arg.as_ref() {
+            "-h" | "--help" => return Ok(CliRequest::Help),
+            "-V" | "--version" => return Ok(CliRequest::Version),
+            "-f" | "--format" => {
+                let format = args.next().ok_or_else(|| "Missing format argument".to_string())?;
+                output_format = match format.as_ref() {
+                    "sexp" | "s-expression" => OutputFormat::LegacySexp,
+                    "json" => OutputFormat::LegacyJson,
+                    "debug" => OutputFormat::UnstableDebug,
+                    other => return Err(format!("Unknown format: {other}")),
+                };
+            }
+            "-s" | "--stats" => show_stats = true,
+            "-p" | "--pretty" => pretty = true,
+            "-q" | "--quiet" => quiet = true,
+            "-c" | "--continue" => continue_on_error = true,
+            "-" => inputs.push(Input::Stdin),
+            path if path.starts_with('-') => {
+                return Err(format!("Unknown option: {path}"));
+            }
+            path => {
+                inputs.push(Input::File(PathBuf::from(path)));
             }
         }
-
-        if inputs.is_empty() {
-            inputs.push(Input::Stdin);
-        }
-
-        Ok(Args { inputs, output_format, show_stats, pretty, quiet, continue_on_error })
     }
-}
 
-fn print_help() {
-    println!("{}", help_text());
+    if inputs.is_empty() {
+        inputs.push(Input::Stdin);
+    }
+
+    Ok(CliRequest::Run(Args {
+        inputs,
+        output_format,
+        show_stats,
+        pretty,
+        quiet,
+        continue_on_error,
+    }))
 }
 
 fn help_text() -> &'static str {
@@ -233,16 +267,67 @@ EXAMPLES:
 "#
 }
 
+fn write_help(stdout: &mut impl Write) -> io::Result<()> {
+    writeln!(stdout, "{}", help_text())
+}
+
+fn write_version(stdout: &mut impl Write) -> io::Result<()> {
+    writeln!(stdout, "perl-parse v{}", env!("CARGO_PKG_VERSION"))
+}
+
+fn write_usage_error(stderr: &mut impl Write, error: &str) -> io::Result<()> {
+    writeln!(stderr, "Error: {error}")?;
+    writeln!(stderr, "Try 'perl-parse --help' for more information.")
+}
+
 fn main() {
-    let args = match Args::parse() {
-        Ok(args) => args,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            eprintln!("Try 'perl-parse --help' for more information.");
-            std::process::exit(1);
+    let status = match execute(std::env::args().skip(1), &mut io::stdout(), &mut io::stderr()) {
+        Ok(status) => status,
+        Err(_) => {
+            // A failed stdout/stderr sink must not receive another write. Map
+            // the I/O error to a terminal nonzero status at the process boundary.
+            ProcessStatus::Failure
+        }
+    };
+    if status != ProcessStatus::Success {
+        std::process::exit(status.code());
+    }
+}
+
+/// Run the private CLI against injected writers.
+///
+/// Write failures return `Err` and are terminal, including under `--continue`.
+/// Logical failures (usage, unreadable input without `--continue`, parse or
+/// serialization errors) return `Ok(ProcessStatus::Failure)` after the
+/// diagnostic has been written. Output-failure status is nonzero; preserving a
+/// panic's incidental exit code is not required.
+fn execute(
+    argv: impl IntoIterator<Item = impl AsRef<str>>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> io::Result<ProcessStatus> {
+    let request = match parse_args(argv) {
+        Ok(request) => request,
+        Err(error) => {
+            write_usage_error(stderr, &error)?;
+            return Ok(ProcessStatus::Failure);
         }
     };
 
+    match request {
+        CliRequest::Help => {
+            write_help(stdout)?;
+            Ok(ProcessStatus::Success)
+        }
+        CliRequest::Version => {
+            write_version(stdout)?;
+            Ok(ProcessStatus::Success)
+        }
+        CliRequest::Run(args) => run(args, stdout, stderr),
+    }
+}
+
+fn run(args: Args, stdout: &mut impl Write, stderr: &mut impl Write) -> io::Result<ProcessStatus> {
     let mut total_stats = TotalStats::new();
     let mut had_error = false;
 
@@ -253,20 +338,19 @@ fn main() {
         };
 
         if !args.quiet && args.inputs.len() > 1 {
-            eprintln!("=== Parsing {} ===", path_str);
+            writeln!(stderr, "=== Parsing {path_str} ===")?;
         }
 
         let source = match read_input(input) {
             Ok(source) => source,
-            Err(e) => {
-                eprintln!("Error reading {}: {}", path_str, e);
+            Err(error) => {
+                writeln!(stderr, "Error reading {path_str}: {error}")?;
                 if args.continue_on_error {
                     had_error = true;
                     total_stats.add_error(&path_str);
                     continue;
-                } else {
-                    std::process::exit(1);
                 }
+                return Ok(ProcessStatus::Failure);
             }
         };
 
@@ -280,43 +364,41 @@ fn main() {
                 let node_count = ast.count_nodes();
                 if !args.quiet {
                     match render_output(&ast, args.output_format, args.pretty) {
-                        Ok(output) => println!("{output}"),
+                        Ok(output) => writeln!(stdout, "{output}")?,
                         Err(error) => {
-                            eprintln!("Output serialization error in {}: {}", path_str, error);
+                            writeln!(stderr, "Output serialization error in {path_str}: {error}")?;
                             had_error = true;
                             total_stats.add_error(&path_str);
                             if args.continue_on_error {
                                 continue;
                             }
-                            std::process::exit(1);
+                            return Ok(ProcessStatus::Failure);
                         }
                     }
                 }
 
                 total_stats.add_file(&path_str, source.len(), parse_time, node_count);
             }
-            Err(e) => {
+            Err(error) => {
                 if !args.quiet {
-                    eprintln!("\nError in {}:", path_str);
-                    print_error(&e, &source);
+                    writeln!(stderr, "\nError in {path_str}:")?;
+                    write_error(&error, &source, stderr)?;
                 }
                 if args.continue_on_error {
                     had_error = true;
                     total_stats.add_error(&path_str);
                 } else {
-                    std::process::exit(1);
+                    return Ok(ProcessStatus::Failure);
                 }
             }
         }
     }
 
     if args.show_stats {
-        total_stats.print();
+        total_stats.write(stderr)?;
     }
 
-    if had_error {
-        std::process::exit(1);
-    }
+    if had_error { Ok(ProcessStatus::Failure) } else { Ok(ProcessStatus::Success) }
 }
 
 fn render_output(
@@ -466,80 +548,74 @@ fn decode_byte_as_windows_1252(byte: u8) -> char {
     }
 }
 
-fn print_error(error: &ParseError, source: &str) {
-    let mut stderr = io::stderr();
-
+fn write_error(error: &ParseError, source: &str, stderr: &mut impl Write) -> io::Result<()> {
     match error {
         ParseError::UnexpectedToken { expected, found, location } => {
             let (line, col) = position_to_line_col(source, *location);
-            writeln!(stderr, "Parse error: Unexpected token at line {}, column {}", line, col).ok();
-            writeln!(stderr, "  Expected: {}", expected).ok();
-            writeln!(stderr, "  Found: {}", found).ok();
-            print_error_context(source, *location, &mut stderr);
+            writeln!(stderr, "Parse error: Unexpected token at line {line}, column {col}")?;
+            writeln!(stderr, "  Expected: {expected}")?;
+            writeln!(stderr, "  Found: {found}")?;
+            write_error_context(source, *location, stderr)?;
         }
         ParseError::UnexpectedEof => {
-            writeln!(stderr, "Parse error: Unexpected end of input").ok();
+            writeln!(stderr, "Parse error: Unexpected end of input")?;
             if !source.is_empty() {
-                print_error_context(source, source.len() - 1, &mut stderr);
+                write_error_context(source, source.len() - 1, stderr)?;
             }
         }
         ParseError::SyntaxError { message, location } => {
             let (line, col) = position_to_line_col(source, *location);
-            writeln!(stderr, "Parse error: {} at line {}, column {}", message, line, col).ok();
-            print_error_context(source, *location, &mut stderr);
+            writeln!(stderr, "Parse error: {message} at line {line}, column {col}")?;
+            write_error_context(source, *location, stderr)?;
         }
         ParseError::Advisory { message, location } => {
             let (line, col) = position_to_line_col(source, *location);
-            writeln!(stderr, "Parse advisory: {} at line {}, column {}", message, line, col).ok();
-            print_error_context(source, *location, &mut stderr);
+            writeln!(stderr, "Parse advisory: {message} at line {line}, column {col}")?;
+            write_error_context(source, *location, stderr)?;
         }
         ParseError::InvalidNumber { literal } => {
-            writeln!(stderr, "Parse error: Invalid number literal: {}", literal).ok();
+            writeln!(stderr, "Parse error: Invalid number literal: {literal}")?;
         }
         ParseError::InvalidString => {
-            writeln!(stderr, "Parse error: Invalid string literal").ok();
+            writeln!(stderr, "Parse error: Invalid string literal")?;
         }
         ParseError::UnclosedDelimiter { delimiter } => {
-            writeln!(stderr, "Parse error: Unclosed delimiter: {}", delimiter).ok();
+            writeln!(stderr, "Parse error: Unclosed delimiter: {delimiter}")?;
         }
         ParseError::InvalidRegex { message } => {
-            writeln!(stderr, "Parse error: Invalid regex: {}", message).ok();
+            writeln!(stderr, "Parse error: Invalid regex: {message}")?;
         }
         ParseError::LexerError { message } => {
-            writeln!(stderr, "Parse error: Lexer error: {}", message).ok();
+            writeln!(stderr, "Parse error: Lexer error: {message}")?;
         }
         ParseError::RecursionLimit => {
-            writeln!(stderr, "Parse error: Maximum recursion depth exceeded").ok();
+            writeln!(stderr, "Parse error: Maximum recursion depth exceeded")?;
         }
         ParseError::NestingTooDeep { depth, max_depth } => {
-            writeln!(stderr, "Parse error: Nesting too deep ({} > {})", depth, max_depth).ok();
+            writeln!(stderr, "Parse error: Nesting too deep ({depth} > {max_depth})")?;
         }
         ParseError::Cancelled => {
-            writeln!(stderr, "Parse error: Parsing cancelled").ok();
+            writeln!(stderr, "Parse error: Parsing cancelled")?;
         }
         ParseError::Recovered { site, kind, location } => {
             let (line, col) = position_to_line_col(source, *location);
-            writeln!(
-                stderr,
-                "Parse recovery: {:?} at {:?} (line {}, column {})",
-                kind, site, line, col
-            )
-            .ok();
-            print_error_context(source, *location, &mut stderr);
+            writeln!(stderr, "Parse recovery: {kind:?} at {site:?} (line {line}, column {col})")?;
+            write_error_context(source, *location, stderr)?;
         }
         // Forward-compatible fallback for future variants (#2898)
         _ => {
-            writeln!(stderr, "Parse error: {}", error).ok();
+            writeln!(stderr, "Parse error: {error}")?;
         }
     }
+    Ok(())
 }
 
 fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
 
-    for (i, ch) in source.chars().enumerate() {
-        if i >= position {
+    for (byte_index, ch) in source.char_indices() {
+        if byte_index + ch.len_utf8() > position {
             break;
         }
         if ch == '\n' {
@@ -553,30 +629,27 @@ fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
     (line, col)
 }
 
-fn print_error_context(source: &str, position: usize, stderr: &mut io::Stderr) {
+fn write_error_context(source: &str, position: usize, stderr: &mut impl Write) -> io::Result<()> {
     let lines: Vec<&str> = source.lines().collect();
     let (line_num, col_num) = position_to_line_col(source, position);
 
     if line_num > 0 && line_num <= lines.len() {
-        writeln!(stderr).ok();
+        writeln!(stderr)?;
 
-        // Show previous line if available
         if line_num > 1 {
-            writeln!(stderr, "  {} | {}", line_num - 1, lines[line_num - 2]).ok();
+            writeln!(stderr, "  {} | {}", line_num - 1, lines[line_num - 2])?;
         }
 
-        // Show error line
-        writeln!(stderr, "  {} | {}", line_num, lines[line_num - 1]).ok();
+        writeln!(stderr, "  {} | {}", line_num, lines[line_num - 1])?;
 
-        // Show error pointer
-        write!(stderr, "  {} | ", " ".repeat(line_num.to_string().len())).ok();
-        writeln!(stderr, "{}^", " ".repeat(col_num - 1)).ok();
+        write!(stderr, "  {} | ", " ".repeat(line_num.to_string().len()))?;
+        writeln!(stderr, "{}^", " ".repeat(col_num - 1))?;
 
-        // Show next line if available
         if line_num < lines.len() {
-            writeln!(stderr, "  {} | {}", line_num + 1, lines[line_num]).ok();
+            writeln!(stderr, "  {} | {}", line_num + 1, lines[line_num])?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -19,6 +19,12 @@ feature-depth = 1
 
 [advisories]
 ignore = [
+    # RUSTSEC-2024-0449 (unmaintained): unsafe-libyaml reaches only xtask
+    # (publish = false, build-time tooling) through serde_yaml_ng, parsing
+    # repository-controlled YAML. No shipped crate depends on it and no
+    # safe upgrade exists. Bounded exposure, not a claim of no risk.
+    # Durable fix is the xtask YAML migration off serde_yaml_ng, #17720.
+    { id = "RUSTSEC-2024-0449", reason = "unmaintained unsafe-libyaml via serde_yaml_ng in unpublished xtask only; inputs are repository-controlled; no shipped-crate exposure" },
 ]
 
 # -- Licenses ------------------------------------------------------------------
@@ -98,15 +104,15 @@ skip = [
     { crate = "shlex@1.3.0", reason = "bindgen 0.72 (xtask) pins shlex 1.x; cc 1.x build scripts use 2.x" },
 
     # syn: 2.x vs 3.x split (ecosystem transition).
-    # 2.0.117 — most crates use syn 2.x. 3.0.2 — clap_derive (via criterion) pulls syn 3.x.
-    { crate = "syn@2.0.117", reason = "most crates use syn 2.x; clap_derive (criterion) pulls 3.x" },
+    # 2.0.119 — most crates use syn 2.x. 3.0.5 — xtask and perl-ci-hygiene
+    # select syn 3.x directly (verified with cargo tree -i syn@3.0.5).
+    { crate = "syn@2.0.119", reason = "most crates use syn 2.x; xtask and perl-ci-hygiene select syn 3.x directly" },
 
-    # similar: 2.7.0 is selected by insta; xtask directly selects 3.x
-    # (similar = "3.1" in xtask/Cargo.toml, currently resolving to 3.2.0) for
-    # policy/output tooling. This is a test/tooling-only split, not product
-    # runtime weight. Owner: dependency hygiene. Revisit when insta adopts
-    # similar 3.x or xtask no longer needs its direct 3.x API.
-    { crate = "similar@2.7.0", reason = "insta selects similar 2.7.0; xtask directly selects similar 3.x for tooling" },
+    # similar has no skip entry: 2.7.0 reaches the graph only through insta
+    # as a dev-dependency, which the scanned graph excludes, so a skip here
+    # suppresses nothing (cargo-deny reports it as unmatched-skip). xtask
+    # directly selects similar 3.x for tooling. Revisit when insta adopts
+    # similar 3.x or the graph starts including dev-dependencies.
 ]
 
 # Windows platform crate duplicates: windows-sys 0.52 (ring 0.17 tree) pulls in

@@ -4,6 +4,7 @@
 //! detected Perl location and the documented `launch.json` `perlPath` setting.
 
 use perl_dap::{DapMessage, DebugAdapter};
+use perl_tdd_support::must_with;
 use serde_json::json;
 
 fn initialize_adapter(adapter: &mut DebugAdapter) {
@@ -14,18 +15,36 @@ fn initialize_adapter(adapter: &mut DebugAdapter) {
     );
 }
 
+/// An absolute `program` path that does not exist, plus its living tempdir.
+///
+/// Authority-backed launches require an absolute `program` path (#8656),
+/// and a rooted-but-drive-less POSIX spelling such as
+/// `/nonexistent/path/to/script.pl` is *relative* on Windows, so the
+/// absolute-path gate would intercept before the remediation flow these
+/// tests exercise (#17174A). A never-created file inside a tempdir is
+/// absolute on every platform. The caller must keep the returned tempdir
+/// bound so the fixture outlives the launch request.
+fn nonexistent_absolute_program() -> anyhow::Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let tmp = tempfile::tempdir()?;
+    let program = tmp.path().join("nonexistent_launch_remediation_script.pl");
+    assert!(!program.exists(), "fixture program must not exist for the not-found remediation flow");
+    Ok((tmp, program))
+}
+
 /// Launch with a nonexistent program path should yield an error message
 /// that mentions the documented `launch.json` `perlPath` field.
 #[test]
 fn launch_error_names_launch_json_perlpath_setting() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     initialize_adapter(&mut adapter);
+    let (_fixture, program) = nonexistent_absolute_program()?;
 
     let response = adapter.handle_request(
         2,
         "launch",
         Some(json!({
-            "program": "/nonexistent/path/to/script.pl"
+            "program": program.display().to_string()
         })),
     );
 
@@ -58,13 +77,15 @@ fn launch_error_names_launch_json_perlpath_setting() -> anyhow::Result<()> {
 #[test]
 fn launch_error_includes_perl_detection_info() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     initialize_adapter(&mut adapter);
+    let (_fixture, program) = nonexistent_absolute_program()?;
 
     let response = adapter.handle_request(
         2,
         "launch",
         Some(json!({
-            "program": "/nonexistent/path/to/script.pl"
+            "program": program.display().to_string()
         })),
     );
 
@@ -96,9 +117,11 @@ fn launch_error_includes_perl_detection_info() -> anyhow::Result<()> {
 #[test]
 fn repeated_launch_failures_keep_actionable_guidance() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     initialize_adapter(&mut adapter);
+    let (_fixture, program) = nonexistent_absolute_program()?;
     let arguments = Some(json!({
-        "program": "/nonexistent/path/to/script.pl"
+        "program": program.display().to_string()
     }));
 
     let first = adapter.handle_request(2, "launch", arguments.clone());
@@ -157,13 +180,15 @@ fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() -> anyhow::R
     // Only run this assertion when Perl is genuinely not available.
     if resolve_perl_path_with_toolchain().is_err() {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         initialize_adapter(&mut adapter);
+        let (_fixture, program) = nonexistent_absolute_program()?;
 
         let response = adapter.handle_request(
             2,
             "launch",
             Some(json!({
-                "program": "/nonexistent/path/to/script.pl"
+                "program": program.display().to_string()
             })),
         );
 
@@ -184,4 +209,26 @@ fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() -> anyhow::R
     // If Perl is found, the test passes vacuously — the "found" branch is tested by
     // the other tests above.
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

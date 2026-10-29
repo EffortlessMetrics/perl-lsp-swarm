@@ -89,6 +89,55 @@ test_same_owner_refreshes() {
     fi
 }
 
+# ── concurrent acquires on the same branch serialize on flock (#15871) ──────
+# @risk: without the per-branch flock, two concurrent acquires could both
+#        observe "no unexpired lease" and both succeed, with the later mv -f
+#        silently overwriting the earlier owner's lease. That violates the
+#        one-editing-owner-per-branch invariant.
+# @return_path: the per-branch flock serializes the decision window; the
+#        second acquirer waits for the first to release the lock, then sees
+#        the lease held by the first owner and is refused with exit 1.
+# @side_effect: exactly one lease file is written, with one owner.
+test_concurrent_acquires_serialize() {
+    local branch="concurrent-branch"
+    local path="$REVIEW_LEASES_DIR/$(printf '%s' "$branch" | sed -E 's#[^A-Za-z0-9._-]#-#g').json"
+    # Fire two acquires in parallel against the same branch, different owners.
+    # The flock on the per-branch lock file must serialize them: the second
+    # caller waits, then sees the first lease and is refused.
+    (
+        REVIEW_LEASES_DIR="$REVIEW_LEASES_DIR" bash "$LEASE" acquire --branch "$branch" --owner alice --ttl-min 120
+    ) >"$TMPDIR_REVIEW/concurrent-alice.out" 2>&1 &
+    local alice_pid=$!
+    (
+        REVIEW_LEASES_DIR="$REVIEW_LEASES_DIR" bash "$LEASE" acquire --branch "$branch" --owner mallory --ttl-min 120
+    ) >"$TMPDIR_REVIEW/concurrent-mallory.out" 2>&1 &
+    local mallory_pid=$!
+    local alice_exit=0 mallory_exit=0
+    wait "$alice_pid" || alice_exit=$?
+    wait "$mallory_pid" || mallory_exit=$?
+    local alice_out mallory_out
+    alice_out="$(cat "$TMPDIR_REVIEW/concurrent-alice.out")"
+    mallory_out="$(cat "$TMPDIR_REVIEW/concurrent-mallory.out")"
+    # Exactly one exit 0 and one exit 1 (one acquires, one is refused).
+    local winners=0 losers=0
+    [[ "$alice_exit" -eq 0 ]] && winners=$((winners + 1)) || losers=$((losers + 1))
+    [[ "$mallory_exit" -eq 0 ]] && winners=$((winners + 1)) || losers=$((losers + 1))
+    # The refused acquirer's stderr must include the held-by branch + owner.
+    local refused_out
+    if [[ "$alice_exit" -ne 0 ]]; then
+        refused_out="$alice_out"
+    else
+        refused_out="$mallory_out"
+    fi
+    local file_owner="?"
+    [[ -f "$path" ]] && file_owner="$(jq -r '.owner' "$path")"
+    if [[ "$winners" -eq 1 && "$losers" -eq 1 && "$refused_out" == *"REFUSE"* && -n "$file_owner" && "$file_owner" != "?" ]]; then
+        pass "concurrent acquires serialize on flock (one wins, one REFUSE, on-disk owner=$file_owner)"
+    else
+        fail "concurrent-acquire — alice_exit=$alice_exit mallory_exit=$mallory_exit winners=$winners file_owner=$file_owner refused_out=$refused_out"
+    fi
+}
+
 # ── release by the holder, then verify fails ────────────────────────────────
 test_release_then_verify_fails() {
     run acquire --branch rel-branch --owner alice --ttl-min 120
@@ -498,6 +547,7 @@ test_verify_absent_fails
 test_expired_lease_blocks_and_audits
 test_acquire_refuses_other_owner
 test_same_owner_refreshes
+test_concurrent_acquires_serialize
 test_release_then_verify_fails
 test_release_non_holder_refused
 test_lease_json_shape

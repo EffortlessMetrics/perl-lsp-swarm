@@ -823,13 +823,19 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
 
     // Admission: the generation clock must still be able to move.
     //
-    // `RuntimeModuleGenerationClock::apply` saturates at `u64::MAX` and
-    // still reports `Advanced`, while `reference_is_stale` compares
-    // generations strictly (`<`). At exhaustion those two combine into a
-    // fail-open: a mutation would report a generation advance that did not
-    // happen, and every reference minted at `u64::MAX` would stay current
-    // across it — exactly the "old identities survive a possibly applied
-    // outcome" shape the invalidation contract forbids.
+    // `RuntimeModuleGenerationClock::apply` saturates at `u64::MAX`. With
+    // the lower-level saturation guard landed in #14643, a mutating
+    // outcome applied at the ceiling now produces
+    // `{previous: MAX, current: MAX, advanced: false}` and the wire
+    // projector refuses to publish it via `GenerationAdvanceMismatch`,
+    // so the executor no longer needs to second-guess `apply`. It still
+    // refuses here, both to keep this admission authoritative and
+    // because a saturated advance could otherwise let
+    // `reference_is_stale` keep a `MAX`-bound reference current — the
+    // `is_exhausted` clause in `reference_is_stale` closes that hole in
+    // depth, but refusing at admission means no `Reloaded` or
+    // `IndeterminatePossiblyApplied` outcome can ever be minted against
+    // an exhausted clock.
     //
     // `RuntimeModuleGeneration::is_exhausted`'s own doc requires treating
     // everything at that ceiling as stale rather than risking a reused
@@ -2072,6 +2078,10 @@ mod tests {
         mut command: std::process::Command,
         deadline: std::time::Duration,
     ) -> DebuggerProbe {
+        // #15538: the deadline paths below must reach descendants, not only
+        // the direct child. On Unix this makes the child a process-group
+        // leader.
+        crate::process_tree::prepare_owned_command(&mut command);
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => return DebuggerProbe::InstrumentFailed(format!("spawn: {error}")),
@@ -2088,15 +2098,14 @@ mod tests {
                 }
                 Ok(None) => {
                     if std::time::Instant::now() >= expiry {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        // #15538: kill the whole owned tree and reap.
+                        let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                         return DebuggerProbe::TimedOut;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(25));
                 }
                 Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     return DebuggerProbe::InstrumentFailed(format!("try_wait: {error}"));
                 }
             }
@@ -3038,11 +3047,15 @@ mod tests {
 
     /// An exhausted generation clock refuses before mutating.
     ///
-    /// `RuntimeModuleGenerationClock::apply` saturates at `u64::MAX` and
-    /// still reports `Advanced`, while `reference_is_stale` compares
-    /// strictly — so mutating at the ceiling would claim an advance that
-    /// did not happen and leave references minted there current across the
-    /// reload. The executor refuses instead.
+    /// After #14643 the lower-level clock no longer claims an advance at
+    /// the saturating ceiling (`apply` reports `advanced = false` when
+    /// `previous.next() == previous`) and `reference_is_stale` fails
+    /// closed at exhaustion regardless of the bind point, so neither
+    /// invariant relies on this refusal alone. The refusal here is the
+    /// authoritative upstream guard: no `Reloaded` or
+    /// `IndeterminatePossiblyApplied` outcome can ever be minted against
+    /// an exhausted clock, and the wire projector therefore never has to
+    /// consider one.
     #[test]
     fn exhausted_generation_clock_refuses_before_mutating() -> TestResult {
         let plan = admitted_plan()?;

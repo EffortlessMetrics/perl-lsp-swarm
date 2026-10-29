@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Restoring, recreating, or externally editing a dependency file now refreshes diagnostics in open files that use it. Previously only deletions triggered a republish, so a module brought back by git checkout or code generation left stale module-not-found warnings in open editors until the buffer was edited; pull-diagnostics clients are now asked to re-pull as well."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18099"
+  Slug: watched-create-change-republish
+  Breaking: "no"

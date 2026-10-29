@@ -5,6 +5,8 @@ use crate::os_runtime::{candidate_priority, select_path_candidate};
 #[cfg(windows)]
 use crate::os_runtime::{resolve_cmd_exe, resolve_command_invocation, windows_program_priority};
 use crate::*;
+#[cfg(windows)]
+use std::path::Path;
 
 #[test]
 fn test_subprocess_output_success() {
@@ -35,7 +37,7 @@ fn test_mock_runtime() {
     let result = runtime.run_command("perltidy", &["-st"], Some(b"my $x = 1;"));
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert_eq!(output.stdout_lossy(), "formatted code");
 
@@ -56,7 +58,7 @@ fn test_os_runtime_echo() {
     let result = runtime.run_command("echo", &["hello"], None);
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert!(output.stdout_lossy().trim() == "hello");
 }
@@ -100,7 +102,7 @@ fn test_os_runtime_rejects_nul_bytes_in_program_or_args() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let (program, args) = perl_test_must::must(resolve_command_invocation(
         r"C:\Strawberry\perl\bin\perltidy.bat",
         &["-st", "-se"],
     ));
@@ -132,7 +134,7 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_includes_v_off_flag() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let (program, args) = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.bat",
         &["--profile=!TEMP!"],
     ));
@@ -152,7 +154,7 @@ fn test_resolve_command_invocation_includes_v_off_flag() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_preserves_executable_paths() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let (program, args) = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.exe",
         &["--version"],
     ));
@@ -262,8 +264,40 @@ fn test_select_path_candidate_rejects_relative_candidates_on_all_platforms() {
 #[test]
 fn test_select_path_candidate_empty_candidates_returns_none() {
     let cwd = std::env::temp_dir();
-    let result = select_path_candidate(&[], &cwd);
+    let candidates: &[&str] = &[];
+    let result = select_path_candidate(candidates, &cwd);
     assert!(result.is_none(), "empty candidate list must return None; got: {result:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn availability_rejects_absolute_and_separator_bearing_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let existing = std::env::current_exe()?;
+    let existing = existing.to_str().ok_or("current executable path is not UTF-8")?;
+    let missing = r"C:\definitely-not-a-real-tool-14815.exe";
+
+    for command in [
+        existing,
+        missing,
+        r".\tool.exe",
+        r"tools\tool.exe",
+        "tools/tool.exe",
+        "C:tool.exe",
+        "",
+        ".",
+        "..",
+    ] {
+        if crate::command_exists(command) {
+            return Err(format!("bare-name availability admitted path input {command:?}").into());
+        }
+    }
+    for command in [existing, missing] {
+        if crate::resolve_program(command)? != command {
+            return Err("launch resolution must preserve caller-resolved absolute paths".into());
+        }
+    }
+    Ok(())
 }
 
 /// Layer 2 — CWD exclusion: a candidate whose parent is the CWD is rejected.
@@ -329,7 +363,7 @@ fn test_select_path_candidate_planted_cwd_binary_is_rejected_in_favor_of_path() 
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "planted CWD binary must not be selected; legitimate PATH binary must win"
     );
 }
@@ -357,7 +391,7 @@ fn test_select_path_candidate_legitimate_path_binary_resolves() {
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "a legitimate PATH binary must resolve when CWD is different"
     );
 }
@@ -374,7 +408,7 @@ fn test_select_path_candidate_extension_priority_preserved_among_path_candidates
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         ".exe must beat .bat in extension priority ordering"
     );
 }
@@ -414,7 +448,7 @@ fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "relative candidate must be dropped; absolute PATH binary must win"
     );
 }
@@ -446,7 +480,7 @@ fn test_select_path_candidate_extensioned_bare_cwd_binary_rejected_in_favor_of_p
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "extensioned bare name: CWD-planted binary must be rejected; PATH binary must win"
     );
 }
@@ -530,7 +564,11 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         let runtime = OsSubprocessRuntime::new();
         let result = runtime.run_command("pwned.bat", &[], None);
         assert!(result.is_err(), "child must fail closed: {result:?}");
-        println!("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
+        // `writeln!` rather than `println!`: the marker must stay on stdout
+        // (the parent asserts the captured child stdout contains it), and the
+        // workspace clippy gate denies `clippy::print_stdout`.
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), "PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
         return;
     }
 
@@ -607,10 +645,8 @@ fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
-    let (program, _args) = perl_tdd_support::must(resolve_command_invocation(
-        r"C:\tools\perltidy.exe",
-        &["--version"],
-    ));
+    let (program, _args) =
+        perl_test_must::must(resolve_command_invocation(r"C:\tools\perltidy.exe", &["--version"]));
     assert_eq!(program, r"C:\tools\perltidy.exe");
 }
 

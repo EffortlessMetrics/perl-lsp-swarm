@@ -214,6 +214,46 @@ fn test_document_link_resolve_file() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn test_document_link_resolve_absolute_literal_file_paths() -> TestResult {
+    let server = initialized_server();
+    for (path, expected) in [
+        ("C:/Users/me/Hash#Part.pl", "file:///C:/Users/me/Hash%23Part.pl"),
+        ("C:/Users/me/Query?Part.pl", "file:///C:/Users/me/Query%3FPart.pl"),
+        ("C:/Users/me/Percent%23Part.pl", "file:///C:/Users/me/Percent%2523Part.pl"),
+        ("//server/share/Hash#Part.pl", "file://server/share/Hash%23Part.pl"),
+        ("//server/share/Query?Part.pl", "file://server/share/Query%3FPart.pl"),
+        ("//server/share/Percent%23Part.pl", "file://server/share/Percent%2523Part.pl"),
+    ] {
+        let response = server
+            .handle_request(JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(perl_lsp::protocol::JsonRpcId::Integer(91_i64)),
+                method: "documentLink/resolve".to_string(),
+                params: Some(json!({
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 1}
+                    },
+                    "data": {
+                        "type": "file",
+                        "path": path,
+                        "baseUri": "file:///workspace/main.pl"
+                    }
+                })),
+            })
+            .ok_or("missing documentLink/resolve response")?;
+        assert!(response.error.is_none(), "resolve failed for {path}: {response:?}");
+        let result = response.result.ok_or("missing resolved link")?;
+        let target = result["target"].as_str().ok_or("missing file link target")?;
+        assert_eq!(target, expected, "literal path {path}");
+        let parsed = url::Url::parse(target)?;
+        assert!(parsed.query().is_none(), "{path} produced a URI query");
+        assert!(parsed.fragment().is_none(), "{path} produced a URI fragment");
+    }
+    Ok(())
+}
+
 /// Test that already-resolved links pass through unchanged
 #[test]
 fn test_document_link_resolve_already_resolved() -> TestResult {

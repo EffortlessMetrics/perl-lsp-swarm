@@ -510,6 +510,7 @@ const COMMAND_WRAPPERS: &[&str] = &["sudo", "env", "time", "exec", "nice", "comm
 /// or another script, is not visible here. See #14293 for the residual claim.
 /// (Partially addressed for `just` recipes by [`command_invokes_xtask_cli_with_just`];
 /// scripts other than `just` remain un-tracked.)
+#[cfg(test)]
 fn command_invokes_xtask_cli(script: &str) -> bool {
     // Without a recipe table there is nothing to resolve through. Indirection
     // is silently untracked for that callers — same residual as before #15509.
@@ -661,9 +662,7 @@ fn expand_just_in_command(
 fn just_recipe_invoked(tokens: &[String]) -> Option<String> {
     let mut rest = tokens;
     loop {
-        let Some(first) = rest.first().map(String::as_str) else {
-            return None;
-        };
+        let first = rest.first().map(String::as_str)?;
         if is_env_assignment(first) {
             rest = &rest[1..];
             continue;
@@ -788,7 +787,7 @@ fn recipe_header_name(line: &str) -> Option<&str> {
     }
     // Parameters follow the recipe name (`name param:`); only the first
     // whitespace-separated word is the recipe identifier.
-    let name = line[..colon].trim().split_whitespace().next()?;
+    let name = line[..colon].split_whitespace().next()?;
     // A `[settings]` or `export` line would also contain `:`, but those
     // names start with a non-identifier character; gate on a valid recipe
     // identifier so we never confuse the two.
@@ -1781,6 +1780,13 @@ fn normalize_self_hosted_labels(labels: &[Value]) -> Option<String> {
     }
     if label_strs.contains(&"cx43") {
         return Some("self_hosted_cx43".to_string());
+    }
+    // em-ci capability pools (#15957): the lane names a capacity class, not a
+    // physical host, so the declaration token is the pool itself. Physical
+    // labels keep matching their own tokens first, preserving legacy drift
+    // detection for workflows that still name a host.
+    if label_strs.contains(&"self-hosted") && label_strs.contains(&"rust-standard") {
+        return Some("self_hosted_rust_standard".to_string());
     }
     if label_strs.contains(&"self-hosted") && label_strs.contains(&"droid-review") {
         return Some("self_hosted_droid_review".to_string());
@@ -3613,6 +3619,20 @@ labels: [self-hosted, linux, x64, em-ci, cx43, rust-small]
 "#;
         let v: Value = serde_yaml_ng::from_str(yaml)?;
         assert_eq!(normalize_runs_on(&v), Some("self_hosted_cx43".to_string()));
+        Ok(())
+    }
+
+    /// #15957: an em-ci capability-pool lane names a capacity class, not a
+    /// physical host, and normalizes to its own pool token so the isolation
+    /// profile can declare it without re-introducing a physical name.
+    #[test]
+    fn normalize_rust_standard_capability_pool() -> Result<()> {
+        let yaml = r#"
+group: em-ci-small
+labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
+"#;
+        let v: Value = serde_yaml_ng::from_str(yaml)?;
+        assert_eq!(normalize_runs_on(&v), Some("self_hosted_rust_standard".to_string()));
         Ok(())
     }
 

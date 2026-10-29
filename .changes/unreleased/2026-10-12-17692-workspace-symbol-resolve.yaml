@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "workspaceSymbol/resolve now answers spec-shaped client requests instead of returning Method not found, matching the resolve support the server advertises. Rename, prepareRename, and workspace-symbol contract tests assert exact edits, UTF-16 ranges, and symbol results so empty or null responses fail."
+time: 2026-10-12T00:00:00Z
+custom:
+  PR: "17692"
+  Slug: workspace-symbol-resolve
+  Breaking: "no"
