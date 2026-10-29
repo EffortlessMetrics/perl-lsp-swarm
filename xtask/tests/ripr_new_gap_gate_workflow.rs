@@ -1063,11 +1063,11 @@ ripr() {
     script.push_str(subject_git_shim());
     script.push_str("\ncheckout_action\n");
     script.push_str(&annotation);
-    script.push('\n');
+    script.push_str("\n");
     for step_name in executable_steps {
-        script.push('\n');
+        script.push_str("\n");
         script.push_str(&workflow_run_block("ripr-fallback", step_name)?);
-        script.push('\n');
+        script.push_str("\n");
     }
 
     let mut command = Command::new(bash_executable());
@@ -3219,8 +3219,7 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         hosted_cap == "2560",
         "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
     );
-    {
-        let lane = "ripr-selfhosted";
+    for lane in ["ripr-selfhosted"] {
         let cap = workflow_job_env_value(lane, "RIPR_MAX_DIFF_INDEX_FILES")?;
         ensure!(
             cap == "2560",

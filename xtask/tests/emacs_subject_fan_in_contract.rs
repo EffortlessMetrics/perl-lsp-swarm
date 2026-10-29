@@ -956,7 +956,8 @@ fn launch_refusals_are_preserved_across_the_denominator() {
                 timeout_ms: 0,
             };
             let error = emacs_host_run::host_run(Path::new("/nonexistent/repo"), subject, &run)
-                .expect_err("an unadapted subject must refuse before any launch step");
+                .err()
+                .expect("an unadapted subject must refuse before any launch step");
             assert!(
                 error.to_string().contains("no driver adapter yet"),
                 "the refusal must name the missing-adapter boundary for {}: {error}",

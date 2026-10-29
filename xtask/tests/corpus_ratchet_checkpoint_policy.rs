@@ -837,7 +837,7 @@ fn bounded_control_rejects_missing_rust_cache_writer_guard() -> Result<()> {
         .get_mut("with")
         .and_then(Value::as_mapping_mut)
         .ok_or_else(|| anyhow!("bounded Rust cache inputs must be mutable"))?;
-    inputs.remove(Value::String("save-if".into()));
+    inputs.remove(&Value::String("save-if".into()));
 
     let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
         .err()
@@ -1100,7 +1100,7 @@ fn completeness_marker_is_captured_into_outputs() -> Result<()> {
     let outputs = warm.get("outputs").and_then(Value::as_mapping).ok_or_else(|| {
         anyhow!("warm job must publish `outputs.complete` for the gated ratchet leg")
     })?;
-    let bound = "${{ steps.cpan-install.outputs.complete }}".to_string();
+    let bound = format!("${{{{ steps.cpan-install.outputs.complete }}}}");
     assert!(
         outputs
             .iter()
@@ -1236,10 +1236,10 @@ fn no_timeout_minutes_exceeds_base_pin_maxima() -> Result<()> {
                 .iter()
                 .flat_map(|(key, inner)| {
                     let mut found = walk(inner);
-                    if key.as_str() == Some("timeout-minutes")
-                        && let Some(n) = inner.as_i64()
-                    {
-                        found.push(n);
+                    if key.as_str() == Some("timeout-minutes") {
+                        if let Some(n) = inner.as_i64() {
+                            found.push(n);
+                        }
                     }
                     found
                 })

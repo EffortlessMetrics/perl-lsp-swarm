@@ -1139,7 +1139,8 @@ fn source_subject_launch_proceeds_past_the_adapter_boundary() {
         timeout_ms: 0,
     };
     let error = emacs_host_run::host_run(Path::new("/nonexistent/repo"), subject, &run)
-        .expect_err("the nonexistent exact inputs must still fail the run");
+        .err()
+        .expect("the nonexistent exact inputs must still fail the run");
     assert!(
         !error.to_string().contains("no driver adapter yet"),
         "the source subject no longer refuses at the adapter boundary: {error}"

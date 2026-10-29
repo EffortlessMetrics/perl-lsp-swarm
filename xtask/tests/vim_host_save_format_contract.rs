@@ -475,7 +475,7 @@ fn complete_save_event_stream_validates() -> Result<()> {
 #[test]
 fn save_event_repetition_laws_reject_disorder_and_forgeries() -> Result<()> {
     let digest = scratch_digest();
-    let events = complete_save_format_events(&digest)?;
+    let mut events = complete_save_format_events(&digest)?;
     ensure!(validate_driver_events(&events, true).is_ok());
 
     // A settlement whose index skips is rejected.
