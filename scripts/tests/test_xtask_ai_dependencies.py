@@ -48,10 +48,16 @@ class AiDependencyBoundary(unittest.TestCase):
             ("perl-dap", "normal,build"),
             ("perl-lsp-rs", "normal,build"),
             ("perl-parser", "normal,build,dev"),
-            ("perl-lsp-perltidy", "normal,build,dev"),
         ):
             with self.subTest(package=package):
                 self.assert_ai_enabled(graph(package, edges=edges))
+
+    def test_perltidy_test_graph_excludes_core_and_ai_transport(self):
+        resolved = graph("perl-lsp-perltidy", edges="normal,build,dev")
+        self.assertIn("perl-lsp-perltidy", resolved)
+        for name in ("perl-lsp-rs-core", "ureq", "rustls", "ring"):
+            with self.subTest(package="perl-lsp-perltidy", dependency=name):
+                self.assertNotIn(name, resolved)
 
     def test_core_and_server_defaults_remain_ai_capable(self):
         self.assert_ai_enabled(graph("perl-lsp-rs-core"))

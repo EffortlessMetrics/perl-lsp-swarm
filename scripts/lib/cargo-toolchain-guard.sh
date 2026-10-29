@@ -19,7 +19,8 @@
 # unit tests and scripts/tests/test-cargo-safe-toolchain-guard.sh for the
 # entrypoint integration test.
 #
-# Cost: one local `cargo --version` probe. No network, no toolchain installs.
+# Cost: a local Cargo version probe and, for standard rustup proxies, a safe
+# manager help probe. No network or toolchain installs by these rustup probes.
 #
 # Guard contract:
 #   - refuse (exit 78, EX_CONFIG) when no cargo is on PATH, when
@@ -123,6 +124,22 @@ cargo_guard_is_rustup_shim() {
   esac
 }
 
+# Identify standard rustup proxies by file identity, not a path suffix: a
+# direct toolchain Cargo binary or unrelated PATH rustup is not this proxy.
+# Upstream installs its proxies as hardlinks, with a symlink fallback.
+cargo_guard_proxy_manager() {
+  local cargo_path="$1" manager
+  [[ "$cargo_path" == */* && -f "$cargo_path" ]] || return 1
+  for manager in "${cargo_path%/*}/rustup" "${cargo_path%/*}/rustup.exe" \
+    "$(type -P rustup 2>/dev/null || true)"; do
+    if [[ -x "$manager" && "$cargo_path" -ef "$manager" ]]; then
+      printf '%s\n' "$manager"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Succeed when the current shell looks like WSL bash: WSL_DISTRO_NAME in the
 # environment (set by WSL for both login and non-login shells) or a Microsoft
 # kernel marker in /proc/version.
@@ -166,7 +183,7 @@ cargo_guard_print_refusal() {
 # exit CARGO_GUARD_EXIT_CODE. Returns 0 on pass (silent, or with a stderr
 # note for a non-shim cargo that diverges from the pin).
 cargo_toolchain_guard() {
-  local required pin resolved probe actual
+  local required pin resolved probe actual manager manager_help manager_version
   required="$(cargo_guard_required_version)"
   required="${required:-1.95}"
   pin="$(cargo_guard_pin_version)"
@@ -178,14 +195,38 @@ cargo_toolchain_guard() {
     exit "$CARGO_GUARD_EXIT_CODE"
   fi
 
+  # rustup <= 1.27 ignores RUSTUP_AUTO_INSTALL, and even its --version can
+  # install the active toolchain. --help returns before toolchain selection.
+  # 1.28.0 removed implicit installs; 1.28.1 restored them with the opt-out.
+  manager="$(cargo_guard_proxy_manager "$resolved" || true)"
+  if [ -n "$manager" ]; then
+    manager_version=""
+    if manager_help="$(RUSTUP_AUTO_INSTALL=0 "$manager" --help 2>&1)" &&
+      [[ "${manager_help%%$'\n'*}" =~ ^rustup[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$) ]]; then
+      manager_version="${BASH_REMATCH[1]}"
+    fi
+    if ! cargo_guard_version_ge "$manager_version" 1.28.0; then
+      printf 'cargo-toolchain-guard: REFUSED: rustup proxy at %s needs rustup >= 1.28.0 for a probe without toolchain installation (found: %s).\n' "$resolved" "${manager_version:-unverified}" >&2
+      printf '  fix: update rustup explicitly, then retry; the guard will not invoke this cargo proxy.\n' >&2
+      exit "$CARGO_GUARD_EXIT_CODE"
+    fi
+  fi
+
   # Probe from the repository root, not the caller's directory: a rustup shim
   # selects its toolchain from the nearest rust-toolchain.toml relative to the
   # current directory, so a wrapper invoked from inside another pinned Rust
   # project would otherwise be judged against the caller's toolchain rather
   # than the one the entrypoint will actually use after it enters the repo.
-  if ! probe="$(cd "$CARGO_GUARD_REPO_ROOT" 2>/dev/null && "$resolved" --version 2>&1)"; then
+  # Keep this probe local even for legacy callers: a missing pin must refuse
+  # before admission, not trigger rustup downloads. Scope the setting to this
+  # command so the guard does not change its caller's installation policy.
+  if ! probe="$(cd "$CARGO_GUARD_REPO_ROOT" 2>/dev/null && RUSTUP_AUTO_INSTALL=0 "$resolved" --version 2>&1)"; then
     printf 'cargo-toolchain-guard: REFUSED: `%s --version` failed at %s: %s\n' "cargo" "$resolved" "${probe:-<no output>}" >&2
-    printf '  fix: repair or remove this cargo from PATH; the workspace needs >= %s.\n' "$required" >&2
+    printf '  next: inspect the probe error above; a failed probe alone does not establish broken Cargo or PATH. The workspace needs >= %s.\n' "$required" >&2
+    if [ -n "$pin" ]; then
+      printf '  rustup: inspect installed toolchains with `rustup toolchain list` (repository pin: %s). Installing stable alone does not install that pin.\n' "$pin" >&2
+      printf '  if the error reports the pinned toolchain missing: rustup toolchain install %s; then retry this entrypoint.\n' "$pin" >&2
+    fi
     exit "$CARGO_GUARD_EXIT_CODE"
   fi
   actual="$(cargo_guard_parse_version "$probe")"

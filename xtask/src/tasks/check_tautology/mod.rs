@@ -74,6 +74,7 @@ pub fn run(args: CheckTautologyArgs) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn cadence_rows(path: &Path) -> Result<Vec<disposition::CadenceRow>> {
     disposition::cadence_rows(path)
 }
