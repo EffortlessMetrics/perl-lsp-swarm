@@ -90,14 +90,21 @@ decision.
 
 ## Ordinary qualification continuity
 
-Apply #3390's current same-owner rule and the shared development method's
-late-qualification boundary. Keep the useful owning lead through ordinary in-window
-CI wait, result inspection, separate final judgment, authorized protected merge and
-landing read-back. Remote-wait release guidance applies to unnecessary
-child contexts and genuine interruption/capacity/window limits; it does not mandate
-ending a useful lead session. Use supported waits/events or bounded checks, never a
-polling child or scheduled monitor. Missing actual request capability is a producer
-blocker, not an accepted run. No routine queue or auto-merge is introduced.
+Apply #17073/#17900 and the shared development method's selected/staged/live boundary.
+Keep the useful owning lead through affected local proof and substantive review,
+conditional landing authorization before enqueue, actual G qualification, terminal
+inspection and native landing read-back. There is no mandatory post-green approval
+or competing direct merge. Missing verified native capability is `NOT_PROVEN` with
+its producer/cutover blocker, never permission to run ordinary development CI.
+
+Retain useful warm context and the user's selected model; no automatic model switch
+to work around quota or delay. Release unnecessary child contexts. Genuine
+interruption/capacity/window limits get exact candidate/group/run/attempt, limitations,
+next action and wake event. Prefer the original owner's supported resume route when
+reachable; otherwise reconstruct durable evidence and continue authorized work without
+waiting indefinitely for an unreachable owner. Preserve one writer and establish any
+shared-candidate transfer before mutation. Use supported events or bounded checks,
+never a polling child, scheduled monitor or invented acknowledgment protocol.
 
 ## Programme continuity
 

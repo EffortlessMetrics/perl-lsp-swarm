@@ -1,168 +1,94 @@
 ---
 name: merge-reconcile
-description: Require current substantive review and live integration before squash merge, then reconcile the landed or deliberately closed root-held claim without exact-head ceremony.
+description: Reconstruct verified native queue custody and reconcile protected landing or deliberate closure without duplicate merge calls or proof replay.
 ---
 
 # Merge and reconcile
 
-This is the irreversible edge for one root-held claim frame. It may be invoked directly,
-so it must reconstruct or consume both predecessor judgments rather than assuming another
-skill already ran.
+This skill reconciles native protected landing for one root-held claim frame. It may
+be invoked directly, so reconstruct the actual PR state and current authority rather
+than assuming an earlier skill ran. Conditional landing authorization belongs before
+enqueue in the existing `$verify-live-ci` route; this skill makes no direct merge call.
 
 No tracked review receipt, state file, claim digest, private task record, or agent
-identity is authority. Use current GitHub reviews, inline threads and dispositions,
-checks/rulesets/mergeability, the candidate claim, and repository evidence.
+identity is authority. Use current GitHub reviews, complete feedback and dispositions,
+checks/rulesets, actual native custody, candidate meaning and repository evidence.
 
 ## State branch
 
 Inspect the live PR state first.
 
-- `MERGED` → skip merge and reconcile current `main`.
+- `MERGED` → read the durable PR/commit state and reconcile actual M/current main.
 - `CLOSED_UNMERGED` with an evidence-backed close/supersede disposition → reconcile
-  within that disposition.
+  within that disposition; closure is not landing.
 - `CLOSED_UNMERGED` without a durable disposition → `NOT_PROVEN`.
-- `OPEN` → establish substantive review, then live integration, then protected merge.
+- `OPEN` → reconstruct local proof, substantive review, conditional authorization and
+  actual native entry/group/run/attempt through `$verify-live-ci`. Missing verified native
+  capability is `NOT_PROVEN`; do not invoke a legacy direct-merge fallback.
 - unknown or partial state → `NOT_PROVEN`.
 
-## Review predecessor
+For open green G, retain native landing ownership and inspect the existing transition.
+Green alone is not merged. Do not issue a duplicate merge, mandatory post-green
+approval, branch refresh or ordinary CI replay. Landed/closed state enters readback
+reconciliation. Every write still obeys the no-CI event boundary in `$publish-pr`.
 
-For an open PR, establish the current provider-native substantive result before reading
-integration green as permission to merge.
+## Review and authorization predecessor
 
 Read complete paginated feedback with `scripts/reviews/feedback <pr> <owner/repo>`:
-ordinary issue comments, full review bodies (including substantive `COMMENTED` concerns),
-cumulative submitted reviews and useful clean conclusions, localized findings and
-evidence-backed dispositions (terminal `fixed`, `refuted`, `superseded`, and
-`post-merge-follow-up`; non-terminal `current-blocker`, `blocked-by-prerequisite`, and
-`not-proven` whose threads stay open), the current candidate
-claim/production route/proof/limitations, and any material changes since the useful
-review.
+ordinary issue comments, full review bodies including substantive `COMMENTED` concerns,
+cumulative submitted reviews, localized findings and evidence-backed dispositions.
+Retain terminal `fixed`, `refuted`, `superseded` and `post-merge-follow-up` separately
+from open `current-blocker`, `blocked-by-prerequisite` and `not-proven` findings.
 
-Classify:
+Green checks, zero threads, bot approval or author self-certification cannot create
+`REVIEW_CURRENT`. A resolved thread without a visible disposition is not convergence.
+Preserve unaffected semantic review and its original subject; refresh only dimensions
+changed by claim, production route, authority, proof, risk, compatibility or actual
+integration interaction. Use `check-pr-semantic-review-currentness.py --expected-head`
+for the observed H; missing or stale semantic binding is `NOT_PROVEN`.
 
-```text
-REVIEW_CURRENT
-CHANGES_REQUIRED
-NOT_PROVEN
-BLOCKED_BY_PREREQUISITE
-SUPERSEDED_OR_CLOSE
-REVIEW_REQUIRED
-```
+Before enqueue, the accountable root assesses accepted product vision and current
+repository fit and records conditional landing authorization for exact H under
+standing deliver-through-merge authority. Enqueue can lead to automatic protected
+landing. No separate mandatory final judgment follows green G. A bounded reviewer
+does not acquire integration authority solely from its role.
 
-Rules:
+- `REVIEW_REQUIRED` → `$finish-pr` / `$review-pr` for the missing useful judgment.
+- `CHANGES_REQUIRED` → `$address-review-comments`, one writer, affected proof and affected review.
+- `BLOCKED_BY_PREREQUISITE` → preserve the actual prerequisite and wake event.
+- `NOT_PROVEN` → resolve the missing evidence or capability; do not bypass protection.
+- `SUPERSEDED_OR_CLOSE` → reconcile the evidence-backed disposition.
+- `REVIEW_CURRENT` → consume `$verify-live-ci` and the verified native route.
 
-- green checks, `mergeable: true`, zero open threads, bot approval, or author
-  self-certification cannot create `REVIEW_CURRENT`;
-- a resolved thread without a visible evidence-backed disposition does not establish
-  convergence;
-- a useful clean review is valid;
-- later formatting, editorial, generated-receipt, or stronger-test commits do not stale
-  unrelated review dimensions;
-- material claim, production-route, authority, proof, risk, rollback, compatibility,
-  conflict, or integration changes require focused affected review;
-- no exact-head review comment or claim hash is required.
+## Native integration evidence
 
-Routes:
+Reconstruct actual expected H, integration base and ordered constituents, G, required
+producer/app identities and the matching run/attempt. Read the union of applicable
+branch rulesets AND classic branch protection; inability to read one is not proof that
+it is absent. Retain every mandatory selected result and its actual execution.
+Skipped, missing, stale, empty, cross-attempt, cancelled and instrument-failed evidence
+is not passing qualification. Old PR synthetic merge P does not qualify actual G.
 
-- `REVIEW_REQUIRED` → `$finish-pr` / `$final-challenge` / `$orchestrate-work` /
-  `$review-pr`;
-- `CHANGES_REQUIRED` → `$address-review-comments` with one writer, affected proof, and
-  affected re-review;
-- `NOT_PROVEN` → preserve the missing or contradictory evidence;
-- `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and wake event;
-- `SUPERSEDED_OR_CLOSE` → reconcile the evidence-backed disposition;
-- only `REVIEW_CURRENT` may continue to live integration.
+The live policy requires thread resolution: zero unresolved review threads is a
+precondition of protected integration. Enumerate complete threads with
+`scripts/reviews/threads <pr> --unresolved-only --json`; bot and outdated threads count.
+Any open substantive finding or unresolved thread is `MERGE_BLOCKED`, routed through
+`$address-review-comments`. A material adverse finding on a queued candidate must withdraw
+eligibility through the supported native/trusted controls; a prose comment alone is
+insufficient. If that operation is unavailable, report the exact action boundary and
+preserve the finding instead of claiming withdrawal happened.
 
-The accountable root owns this cumulative judgment for the claim frame. A bounded
-review worker does not acquire merge authority.
+`PR_IN_FLIGHT` requires actual matching native custody, not an API acknowledgment,
+ordinary PR run or runner-capacity wait. Reconstruct native state after a lost response
+before retrying. H2 cannot inherit H admission. The expected-head guard protects H;
+it does not freeze base/constituents or prove G. No guessed command is supplied here.
 
-## Integration predecessor
-
-After `REVIEW_CURRENT`, invoke or reconstruct `$verify-live-ci` for the current
-candidate and classify:
-
-```text
-INTEGRATION_READY
-PR_IN_FLIGHT
-MERGE_BLOCKED
-NOT_PROVEN
-```
-
-Before either `INTEGRATION_READY` or `PR_IN_FLIGHT` can be returned, enumerate
-the complete live thread set with
-`scripts/reviews/threads <pr> --unresolved-only --json`. The reported
-`unresolved_count` must be `0`; bot-authored and outdated threads count. Any
-non-zero result is `MERGE_BLOCKED`, routed to `$address-review-comments`, and is never
-`PR_IN_FLIGHT`.
-
-Verify live GitHub facts:
-
-- PR is ready, not draft;
-- the union of applicable branch rulesets and classic branch protection is known,
-  with required contexts and producer/app identity current for the candidate;
-- the sanctioned thread enumerator reports `unresolved_count` of 0;
-- no current `CHANGES_REQUESTED` review remains;
-- deliberately requested reviewers are not still pending where their judgment is part
-  of this claim;
-- mergeability, conflicts, ruleset, queue, and applicable changelog/support state permit
-  merge.
-
-A pending check leaves `REVIEW_CURRENT` intact and returns `PR_IN_FLIGHT`. Do not poll
-unchanged state. A missing, skipped, stale, cancelled, or instrument-failed result is
-not success.
-
-Only this conjunction authorizes the ordinary protected merge path:
-
-```text
-REVIEW_CURRENT
-AND
-INTEGRATION_READY
-→ protected squash merge
-```
-
-The live ruleset requires thread resolution: zero unresolved review threads is a
-precondition of protected integration.
-
-## Protected merge
-
-Use the current head SHA only as compare-and-swap protection at the instant of merge:
-
-```text
-gh pr merge <n> --squash --match-head-commit <current-head-sha>
-```
-
-Re-run `scripts/reviews/threads <pr> --unresolved-only --json` immediately before
-merge. A non-zero `unresolved_count` is `MERGE_BLOCKED`; route through
-`address-review-comments`. Reacquire current head, base applicability, required
-results, review/findings and protection together before the final judgment.
-Read ordinary-comment dispositions as well as thread resolution, and verify semantic
-review binding with `check-pr-semantic-review-currentness.py --expected-head` for this
-observed head. Missing/stale binding or unavailable protection is `NOT_PROVEN`.
-Inspect terminal selected qualification evidence (skipped/draft-no-proof is not passing
-proof), then explicitly assess whether the candidate still fits current repository
-behavior and accepted product vision. Record that separate final judgment before the
-expected-head protected merge. A new substantive finding routes back to repair even
-when the SHA is unchanged. These boundary reads do not require rerunning unchanged
-proof or a full review on every routine push.
-
-Under #3390, pending qualification does not authorize auto-merge, enqueueing, or a
-probe that bypasses missing proof. Retain the owning lead through ordinary in-window
-waits using supported events or bounded checks, then inspect terminal evidence and
-make the separate integration decision. A real interruption gets an exact resumable
-handoff. Never use administrative bypass, an empty push or a waiver invented to save
-time. A bounded writer/reviewer does not gain integration authority from its role.
-
-The expected-head guard prevents racing a moving candidate.
-It does not make review currentness depend on the SHA.
-Refresh only proof, review, and integration dimensions affected by the new commit.
-If the head moves, consume a new explicit request for the selected candidate. Do not inherit old qualification or force an unrelated
-rebase. The expected-head guard protects head identity; it does not atomically freeze
-the base. A successful merge call is not landing evidence: read the durable PR/commit
-state before reconciliation.
-
-For automation-authored PRs whose `pull_request` runs remain `action_required`, green
-`workflow_dispatch` runs on the same head do not substitute for required PR contexts.
-Use an actual trusted approval/identity path or preserve integration as `NOT_PROVEN`.
+G failure/ejection returns to the affected repair or instrument/capacity owner.
+An open green G remains under native landing ownership until actual M is observed.
+`INTEGRATION_READY` does not authorize this skill to make another merge call.
+Retain the useful warm owner through terminal inspection and read-back; a genuine
+interruption gets exact subject/run/attempt, limitations, next action and wake event.
+Do not create an idle polling child or automatically change the selected model.
 
 ## Reconciliation
 

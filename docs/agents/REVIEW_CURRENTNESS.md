@@ -34,32 +34,31 @@ Do not collapse these identities into one freshness rule.
 | Subject | Identity | What can invalidate it |
 | --- | --- | --- |
 | semantic candidate and proof | the cumulative PR change and the named claim/proof subjects | a later PR commit that can change the claim, implementation, production route, or tested seam |
-| base integration | the candidate combined with the current base | an actual conflict or demonstrated combined-tree interaction |
-| live integration status | the current PR head SHA, as the commit GitHub attaches status contexts to | any branch push; required contexts are recorded against a SHA, so a new head has no statuses until runs report against it |
-| merge race | the current PR head SHA | any branch push; this identity is used only for compare-and-swap protection at merge |
+| base integration | the candidate combined with the actual base and ordered merge-group constituents | an actual conflict, changed composition or demonstrated combined-tree interaction |
+| live integration status | exact H for trusted pre-enqueue admission; actual G for native integration qualification | changed H, G, constituents or run/attempt; required contexts remain bound to their evaluated subject and producer |
+| admission race | the current PR head H | any branch push; expected-H protection guards native admission, not semantic review validity or the integration base |
 
 `main` advancing without a conflict or concrete combined-tree interaction changes none
 of the candidate's semantic evidence. A new PR head does not erase completed proof for
-subjects the new commit cannot affect. The merge-race SHA is not a review freshness
+subjects the new commit cannot affect. The admission-race SHA is not a review freshness
 policy.
 
-The third and fourth rows share a SHA but are not the same claim, and the difference
-decides real cases. **Required live statuses remain head-bound integration facts.**
-GitHub records a required context against the commit it ran on, so a successful run on
-an earlier head does not satisfy that context on the current head — not as a matter of
-this contract's preference, but because branch protection reads the current head's
-statuses and finds nothing there.
+**Required live statuses remain subject-bound integration facts.** Trusted admission
+on H and integration qualification on G are different stages. An old PR synthetic
+merge P, H-only result or run on another G cannot substitute for the actual native
+group's required execution. A successful earlier result retains its original subject;
+it does not create a required status on a new subject. Expected-H admission does not
+freeze the base or prove group composition.
 
 That is not a licence to churn, and the distinction is exactly where the two rules meet:
 
 - semantic proof from an earlier head stays usable when the later commits cannot affect
   its subject. Do not re-review or re-run it to manufacture a receipt;
-- a *required* status that has not reported on the current head is **pending**, not
-  green-by-inheritance and not stale. The resolution is to let the run report, which
-  yields `PR_IN_FLIGHT` — never a rebase, an empty commit, or a push to retrigger,
-  except the bounded merge-tree fresh trigger in PLSP-SPEC-0006 "Live required
-  status" (a same-head rerun replays the stale merge snapshot after material base
-  movement).
+- a required status not reported on the actual subject is not green-by-inheritance.
+  `PR_IN_FLIGHT` requires a matching accepted native entry/run/attempt. Missing
+  capability or unproved custody is `NOT_PROVEN`, not a reason for a PR rerun,
+  dispatch, rebase, empty commit or push to manufacture CI. The historical
+  PLSP-SPEC-0006 fresh-trigger exception is superseded by #17073/#17900.
 
 Reading an older green as satisfying a live required check is the failure this row
 exists to prevent. It looks like the no-churn rule and is its opposite: the no-churn
@@ -190,7 +189,9 @@ Substantive review and live integration remain separate. A useful current review
 reach `REVIEW_CURRENT` before checks and mergeability can establish
 `INTEGRATION_READY`.
 
-The live merge decision then remains governed by current GitHub facts:
+Conditional landing authorization precedes enqueue, under the verified native route
+and standing delivery authority. Current GitHub facts govern admission and continued
+eligibility:
 
 - draft state;
 - unresolved review threads;
@@ -207,6 +208,10 @@ those states automatically changes a still-current substantive review.
 
 Green checks or textual mergeability cannot create `REVIEW_CURRENT`. Stale bot or
 human review timestamps may be reported as context. They do not block by themselves.
+An actual same-H adverse finding withdraws eligibility through supported controls;
+prose alone is not withdrawal. Green G proceeds under native landing ownership, with
+no mandatory second approval or duplicate direct merge. Read back actual M before
+claiming delivery. Desired/staged/live boundaries remain in DEVELOPMENT_METHOD.
 
 ## Squash-merge currentness
 
@@ -219,11 +224,10 @@ candidate remains conflict-free
 ```
 
 Do not rebase, update the branch, create empty commits, replay full CI, or rerun review
-merely because `main` advanced. One bounded exception lives in PLSP-SPEC-0006 "Live
-required status": when material base movement changed the merge tree a required
-`pull_request` check evaluates, and a same-head rerun would replay the stale snapshot,
-an empty-commit head bump is the sanctioned fresh trigger — it re-evaluates the changed
-subject rather than manufacturing a status on an unchanged one.
+merely because `main` advanced. Actual changed merge-group composition is qualified
+through the supported native G mechanism. A same-head PR rerun replays its old P;
+it cannot prove the new G. The retired empty-commit fresh-trigger exception does not
+authorize ordinary development CI or branch churn.
 
 If Git reports a real conflict, the later lane resolves it and refreshes only the
 affected proof/review. If an explicit stack or combined-tree check exposes a real
@@ -311,17 +315,16 @@ like coverage while carrying no signal, so genuine regressions land behind it
 unnoticed. Treat a persistently red non-blocking gate as an open question about
 whether it should be required, repaired, or explicitly marked advisory.
 
-## Expected-head merge safety
+## Expected-head admission safety
 
-At the instant of merge, use the current PR head SHA as compare-and-swap protection so
-a branch cannot move between inspection and merge:
+Use the current PR head SHA as compare-and-swap protection at the verified native
+enqueue boundary. #17900 owns the actual supported invocation and read-back; this
+document does not invent a command. Reconstruct native entry/group/run state after
+a lost response before retrying. H2 cannot inherit H's admission.
 
-```text
-gh pr merge <n> --squash --match-head-commit <current-head-sha>
-```
-
-This is merge race protection. It is not review currentness and does not justify
-exact-head review comments, branch refreshes, or CI replay.
+This guards the candidate race, not base/constituent identity or semantic review
+currentness. It does not justify exact-head review comments, branch refreshes, CI
+replay or a competing direct merge after G goes green.
 
 ## Landed reconciliation
 

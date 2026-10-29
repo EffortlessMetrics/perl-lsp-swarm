@@ -92,7 +92,7 @@ KNOWN_SKILLS = frozenset(
 
 # The `main` ruleset (id 16664791) sets `required_review_thread_resolution`, so
 # protected integration with one open bot or outdated thread is blocked. The
-# finishing skills must retain that precondition after routine auto-merge retires.
+# finishing skills must retain that precondition through native queue cutover.
 THREAD_PRECONDITION = "zero unresolved review threads is a precondition of protected integration"
 
 SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
@@ -115,8 +115,8 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "PR_IN_FLIGHT",
         "NOT_PROVEN",
         THREAD_PRECONDITION,
-        "--match-head-commit",
-        "pending qualification does not authorize auto-merge",
+        "conditional landing authorization for exact H",
+        "this skill makes no direct merge call",
         "read the durable PR/commit state",
     ),
     "orchestrate-work": ("NOT_PROVEN", "deliver-pr", "review-pr", "verify-live-ci"),
@@ -139,8 +139,8 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "PR_IN_FLIGHT",
         "MERGE_BLOCKED",
         "NOT_PROVEN",
-        "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
-        "no admissible exact-subject producer means `NOT_PROVEN`",
+        "old PR integration P cannot qualify actual G",
+        "no generic workflow dispatch or ordinary PR rerun fallback",
         THREAD_PRECONDITION,
         "is `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`",
     ),
@@ -651,7 +651,7 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
     def test_missing_merge_tree_producer_refuses_instead_of_pushing(self) -> None:
         for provider in (".agents", ".claude"):
             text = active_text(f"{provider}/skills/verify-live-ci/SKILL.md")
-            self.assertIn("no admissible exact-subject producer means `NOT_PROVEN`", text)
+            self.assertIn("missing capability is `NOT_PROVEN`", text)
             for instruction in ("Authorize one verified-clean empty commit",
                                 "empty-commit head bump", "fresh-trigger exception applies"):
                 self.assertNotIn(instruction, text)

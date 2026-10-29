@@ -45,6 +45,34 @@ Detailed cross-provider contracts remain in
 [`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
 [`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
 
+## Local proof before native queue admission
+
+The October 22 #17073/#17900 user direction supersedes older qualification and
+publication instructions below: no CI on Draft or Ready. Tests and substantive
+review must be green locally in session before enqueue; CI runs on the actual
+merge-group subject G only. Preserve each proof command, result, source/tree and
+limitations separately from reported tests, resource admission and live integration.
+A source review or reported green result does not prove a test executed locally.
+
+Before push, PR creation/update, Ready, submitted review, dispatch, rerun or enqueue,
+inspect the current direct and indirect event graph. If the action would trigger
+ordinary CI, hold that action and prepare a portable local patch and source-bound
+proof for the existing owner. The old installed qualification route is not an
+exception to this user hold. Do not manufacture required-check success, weaken
+selected obligations, change protection/security/credentials or activate the
+incomplete queue to unblock publication.
+
+Only when the existing supported native route and complete effective protection
+are proved live may exact-H local green, current substantive review, resolved
+findings and conditional landing authorization enter expected-H enqueue. A missing
+route, trusted pre-enqueue admission or G producer is NOT_PROVEN with its exact
+owner/capability blocker, not permission to dispatch ordinary CI. Do not invent an
+invocation or treat Ready, acknowledgment or runner waiting as queue custody.
+Verified entry/group/run/attempt supports PR_IN_FLIGHT. Green G proceeds to native
+landing readback and reconciliation without another direct merge or mandatory
+post-green manual pause. A late material finding withdraws eligibility through the
+existing supported controls; prose alone does not prevent automatic landing.
+
 ## Select and run the route
 
 Choose the narrowest applicable public flow:
@@ -169,17 +197,26 @@ PRs, reviews, checks, merges, and repository artifacts after compaction or repla
 Do not poll unchanged remote state.
 
 For the selected candidate, retain the same useful owning lead through an ordinary
-in-window qualification wait, actual result inspection, separate final current-repo
-judgment, authorized protected merge and landing read-back (#3390). Use supported
+exact-H local proof/review and conditional landing authorization before enqueue,
+then actual G inspection and native landing read-back (#3390). Use supported
 waits/events or bounded checks; do not create a polling child or scheduled monitor.
-Release unnecessary child contexts. A real interruption, unusual capacity delay or
-exhausted window gets an exact resumable handoff. When all remaining work has real
+Preserve useful warm context and the user's selected model; no automatic model
+switch for quota or delay. Release unnecessary child contexts. A real interruption,
+unusual capacity delay or exhausted window gets an exact resumable handoff. When all remaining work has real
 external blockers, return those blockers and their wake events instead of maintaining
 an idle watcher. Read `docs/agents/DEVELOPMENT_METHOD.md` for desired/staged/live
-qualification boundaries; existing automatic triggers remain live until coordinated
-cutover. Never invent the missing request command or arm routine auto-merge/queue.
+qualification boundaries. Existing ordinary CI triggers are a publication blocker
+until coordinated cutover, never permission to run them. Never invent the missing
+request command, activate the incomplete queue or substitute generic auto-merge.
 
 ## Useful GitHub handoffs
+
+Every publication/review/comment/closeout below requires a proved no-CI event effect.
+When downstream skills retain ordinary CI, direct merge or mandatory post-green
+approval instructions, hold those actions at `NOT_PROVEN` and preserve portable local
+evidence. Local review cannot fabricate a remote currentness binding; missing binding
+remains a named integration blocker. The native route is source-only until activated
+and proved by its existing owners.
 
 Post or update GitHub only when information remains useful after the current context
 disappears:
@@ -219,7 +256,7 @@ For substantive PRs the native route is:
   BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
 → only REVIEW_CURRENT enters `verify-live-ci`
 → INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | NOT_PROVEN
-→ `merge-reconcile`
+→ inspect native state; landed/closed → `merge-reconcile` readback only; open → retain native landing ownership
 ```
 
 The main thread owns the cumulative judgment and disposition. Review is not diff
@@ -251,7 +288,7 @@ Keep candidate, integration, and landed evidence distinct.
 - unrelated `main` movement with a conflict-free candidate → no rebase, branch refresh,
   full CI replay, or review churn;
 - head SHA change alone → no review invalidation;
-- merge uses current head only as compare-and-swap protection.
+- native admission uses current H as compare-and-swap protection.
 
 Never weaken a test, ratchet, support claim, or required proof merely to obtain green
 status. Missing, partial, stale, contradictory, or instrument-failed evidence is

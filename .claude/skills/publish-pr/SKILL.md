@@ -1,25 +1,41 @@
 ---
 name: publish-pr
-description: Publish one locally complete coherent candidate through a concise GitHub review index, with frequent draft publication and explicit late qualification after substantive review.
+description: Publish one locally complete coherent candidate through a concise GitHub review index, through a verified no-CI publication path before reviewed native queue admission.
 user-invocable: false
 ---
 
 # Publish PR
 
+## Publication effect boundary
+
+Draft and Ready are publication states, not qualification requests. Apply #17073's
+no-development-CI constraint to push, PR creation/update, readiness, submitted review
+and comments, including cheap wrappers. Inspect the actual direct and indirect event
+effects before each type of action. Publish only through a proved no-CI path.
+
+If the installed event graph would run ordinary CI, keep the completed source and
+proof available through a safe source-bearing branch or existing durable surface;
+otherwise retain a portable patch + `NOT_PROVEN` with the exact #17903/#17080/#10065
+cutover blocker. An unreferenced commit or applied-source branch is not a delivered PR
+or protected landing. Do not use skip directives as proof that pull_request_target or
+indirect consumers are suppressed. Do not weaken protection to make publication cheap.
+
+The threshold below governs candidate quality; it never overrides this effect guard.
+Ready does not enqueue. Only the verified #17900 operation may admit an eligible exact
+H after affected local proof, substantive review and conditional landing authorization.
+No live invocation is invented by this skill.
+
 Verify candidate, branch, base, worktree, controlling issue, an equivalent active candidate, and any actual same-branch/worktree writer collision. Do not infer ownership from touched-file or nearby-symbol overlap.
 
 Publish ready only when applicable focused/affected proof and negative protection are current; hardening, simplification, and local candidate review are complete; the worktree is clean; the published file set matches the intended worktree change set — compare `gh pr diff --name-only <n>` or the created PR's file list against the intended changed paths, because a squash or partial stage must not silently drop an intended file; the branch head passes `cargo fmt -p <pkg> -- --check` and its merge-base result is classified — the head check is binding, the base check diagnostic, naming inherited base-redness at publish time so a drift-repair candidate whose base is red by construction still publishes; the issue/claim/contract are current; and Changie/changelog, support, migration, and release dispositions are complete or not applicable.
 
-Otherwise return to `build-candidate`. Use focused draft publication for ongoing collaboration and independent review, as well as named remote-only proof, early visible ownership, or protected integration experiments. Record that reason and its completion condition in the PR body.
+Otherwise return to `build-candidate`. Use focused draft publication for ongoing collaboration and independent review, as well as named collaboration, early visible ownership, or protected integration experiments within the verified no-CI boundary. Record that reason and its completion condition in the PR body.
 
 For an existing draft, inspect the named condition. Once complete, recheck the entire ready threshold and explicitly mark the PR ready through Claude's native GitHub surface or `gh pr ready <n>`. Do not leave a completed draft in a repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair rather than marking ready.
 
-Before changing readiness, inspect the actual workflow triggers. Readiness is not an
-explicit qualification request, but independent producers may still start expensive
-work on that event during partial adoption. Follow the shared development method's
-late-qualification boundary only after substantive review is current; consume the real
-#17900 request operation when available, and report its absence rather than inventing
-one. Preserve all mandatory proof and live protection requirements; publish draft evidence honestly.
+Before changing readiness, recheck the publication effect boundary above. A
+completed draft reason does not permit a CI-triggering Ready transition. Preserve
+mandatory proof and live protection while preparing the next admissible action.
 
 ## PR review index
 
@@ -37,13 +53,13 @@ wrong implementation with negative, stale, failure, recovery, or opposite-direct
 controls; simplify before publication; bound the claim and non-goals; then name risk,
 rollback, and review locations.
 
-When this lane has no local Rust toolchain, check **Hosted-only** in **Hosted proof**
-and name the hosted checks that replace `cargo fmt` / Clippy / tests. Do not claim
-those hosted checks passed until current GitHub evidence exists. "Local Rust proof
-NOT RUN" is the hosted-only mark, not a substitute for naming the checks. Hosted-only
-is a PR-body and reviewer classification; it does not rewrite the ready-publication
-threshold above. Authors without a toolchain still use the named draft exception for
-remote-only proof until hosted evidence exists.
+When this lane has no applicable toolchain, record local proof as **NOT RUN** and
+identify the required commands and execution-environment limitation. Obtain affected
+proof in an admitted environment or through the existing proof owner before enqueue;
+do not trigger ordinary CI to fill missing local proof. Historical **Hosted-only**
+evidence keeps its actual evaluated subject and limitations, but does not grant a
+publication exception or satisfy current local execution by assertion. Proof that is
+not applicable to this candidate is distinguished from unavailable mandatory proof.
 
 ```markdown
 ## Claim
@@ -101,8 +117,8 @@ against the new candidate. Prefer not rebuilding at all — see the currentness 
 ## Routes
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` → run the named experiment or collaboration, then repeat this skill
-- `DRAFT_REASON_COMPLETE` → recheck readiness, mark the PR ready natively, and return `PR_RESUMED`
+- `DRAFT_FOR_NAMED_REASON` → complete the named no-CI collaboration/observation, then repeat this skill
+- `DRAFT_REASON_COMPLETE` → recheck readiness, mark the PR ready only through a proved no-CI path, and return `PR_RESUMED`
 - `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` → `build-candidate`
 - `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume or resolve the conflict
 - `IDENTITY_NOT_PROVEN` → stop for identity repair

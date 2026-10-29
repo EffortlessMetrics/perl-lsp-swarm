@@ -93,19 +93,21 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
             text = normalized(ROOT / relative)
             assert "docs/agents/REVIEW_CURRENTNESS.md" in text
             assert "head SHA change alone → no review invalidation" in text
-            assert "merge uses current head only as compare-and-swap protection" in text
+            assert "native admission uses current H as compare-and-swap protection" in text
             assert "Missing, partial, stale, contradictory, or instrument-failed evidence is `NOT_PROVEN`" in text
 
-    def test_merge_skill_keeps_expected_head_race_protection(self) -> None:
+    def test_native_route_keeps_head_race_protection_without_direct_merge(self) -> None:
         for relative in (
             ".agents/skills/merge-reconcile/SKILL.md",
             ".claude/skills/merge-reconcile/SKILL.md",
         ):
             text = normalized(ROOT / relative)
-            assert "--match-head-commit" in text
-            assert "compare-and-swap" in text
-            assert "It does not make review currentness depend on the SHA." in text
-            assert "Refresh only proof, review, and integration dimensions affected by the new commit." in text
+            assert "expected-head guard protects H" in text
+            assert "H2 cannot inherit H admission" in text
+            assert "does not freeze base/constituents or prove G" in text
+            assert "Preserve unaffected semantic review and its original subject" in text
+            assert "this skill makes no direct merge call" in text
+            assert "gh pr merge" not in text
 
     def test_orchestration_briefs_separate_stable_claim_from_volatile_observation(self) -> None:
         for relative in (

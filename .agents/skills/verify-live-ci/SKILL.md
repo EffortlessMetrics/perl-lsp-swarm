@@ -1,17 +1,45 @@
 ---
 name: verify-live-ci
-description: Evaluate one substantively reviewed PR's live checks, threads, draft state, mergeability, and policy, and produce missing required status without treating CI as review or creating exact-head churn.
+description: Evaluate one substantively reviewed PR's live checks, threads, draft state, mergeability, and policy, and verify native queue custody without treating CI as review or creating exact-head churn.
 ---
 
 # Verify live CI
 
-Request expensive qualification explicitly only after substantive review is current;
-follow the desired/staged/live request boundary in
-`docs/agents/DEVELOPMENT_METHOD.md`. Pushes and readiness changes are not qualification
-requests. Preserve mandatory selected tests and required producer/app identity. Budget
-the full qualifying route toward 20 minutes; report unmet timing or policy constraints
-without dropping proof. Recheck vision/current-repository fit and live protections
-before protected integration. UB Review remains paused; no Tower deployment is implied.
+## Local proof before native queue admission
+
+The October 22 #17073/#17900 user direction supersedes older qualification and
+publication instructions below: no CI on Draft or Ready. Tests and substantive
+review must be green locally in session before enqueue; CI runs on the actual
+merge-group subject G only. Preserve each proof command, result, source/tree and
+limitations separately from reported tests, resource admission and live integration.
+A source review or reported green result does not prove a test executed locally.
+
+Before push, PR creation/update, Ready, submitted review, dispatch, rerun or enqueue,
+inspect the current direct and indirect event graph. If the action would trigger
+ordinary CI, hold that action and prepare a portable local patch and source-bound
+proof for the existing owner. The old installed qualification route is not an
+exception to this user hold. Do not manufacture required-check success, weaken
+selected obligations, change protection/security/credentials or activate the
+incomplete queue to unblock publication.
+
+Only when the existing supported native route and complete effective protection
+are proved live may exact-H local green, current substantive review, resolved
+findings and conditional landing authorization enter expected-H enqueue. A missing
+route, trusted pre-enqueue admission or G producer is NOT_PROVEN with its exact
+owner/capability blocker, not permission to dispatch ordinary CI. Do not invent an
+invocation or treat Ready, acknowledgment or runner waiting as queue custody.
+Verified entry/group/run/attempt supports PR_IN_FLIGHT. Green G proceeds to native
+landing readback and reconciliation without another direct merge or mandatory
+post-green manual pause. A late material finding withdraws eligibility through the
+existing supported controls; prose alone does not prevent automatic landing.
+
+
+Evaluate local green and current substantive review before conditional exact-H landing
+authorization and native enqueue. Preserve mandatory selected tests, trusted admission
+and required producer/app identity. The native route is pending activation; missing
+capability is `NOT_PROVEN`, never permission to request ordinary CI. Budget actual G
+qualification toward 20 minutes without dropping proof. UB Review remains paused;
+no Tower deployment is implied.
 
 This is Codex's live-integration fact and status-production skill. It does not perform,
 infer, or replace the substantive review owned by `$review-pr`.
@@ -89,7 +117,7 @@ SUPERSEDED_OR_CLOSE
 → preserve durable closeout
 
 REVIEW_CURRENT
-→ evaluate live integration facts
+→ require executed local green and evaluate live native admission/protection facts
 ```
 
 Green checks, textual mergeability, zero open threads, bot approval, or author
@@ -104,10 +132,11 @@ MERGE_BLOCKED
 NOT_PROVEN
 ```
 
-- `INTEGRATION_READY` means current protection/integration facts permit the irreversible
-  transition.
+- `INTEGRATION_READY` means actual native landing or deliberate closure is observed
+  and readback/reconciliation can proceed. Open green G stays under native landing ownership. It
+  never authorizes a second direct merge; conditional landing authorization precedes enqueue.
 - `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
-  requested review or an accepted qualification run; no routine queue/auto-merge.
+  requested review or verified native queue entry/group/run/attempt; no generic auto-merge.
 - `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
   review thread of any author, current change request, ruleset failure, or
   prerequisite blocks merge.
@@ -123,55 +152,44 @@ exactly like a substantive one. An unresolved review thread of any author is
 `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`; zero
 unresolved review threads is a precondition of protected integration.
 
-A `$ci-failure-triage` field such as
-`status_production_gap=fresh_integration_subject` is not terminal `NOT_PROVEN`; it is an
-input to the ordered decision below.
+## Native admission and status-production order
 
-## Required-status production order
+This skill owns one admissible next action from one snapshot. Branch mutation belongs
+to the established writer. The following replaces legacy PR-head dispatch/rerun routes:
 
-This skill is the single status-production action owner. It selects, performs, or routes
-one admissible action from one current snapshot. When an action requires branch mutation,
-the established candidate writer alone performs it.
+1. **Local tests or substantive review missing/stale/failed.** Continue affected local
+   proof, review or repair. Do not enqueue, dispatch or rerun CI to fill the gap.
+2. **Native route, trusted pre-enqueue admission, required G producers or complete
+   effective protection unproved.** Return `NOT_PROVEN` with exact owner/capability
+   blocker and portable source-bound evidence. No queue activation or fake success.
+3. **Eligible exact H, route proved live, no known request.** Make conditional landing
+   authorization before invoking only the existing documented expected-H native enqueue.
+   No executable invocation is supplied here because its live capability is unproved.
+4. **Request acknowledgment, lost response or resumed context.** Reconstruct existing
+   native entry/group/run/attempt and actual H/G before another action. Acknowledgment
+   alone is `NOT_PROVEN`, not custody; a moved H cannot inherit old admission.
+5. **Actual matching native entry/G run active.** Return `PR_IN_FLIGHT` with accountable
+   owner and exact wake. An ordinary PR-head run or runner-capacity wait is not queue
+   custody. Existing historical PR runs may be inspected without starting another.
+6. **G failed/ejected or instrument failed.** Preserve the original cause/run/attempt;
+   route affected local repair/review or instrument/capacity work to its owner. A retry
+   requires changed evidence, current eligibility and the supported native mechanism
+   targeting actual G only; no generic workflow dispatch or ordinary PR rerun fallback.
+7. **G green.** Inspect actual selected execution and reconcile native landing M and
+   composition. Do not issue a direct merge, mandatory post-green approval or full replay.
 
-1. **A current-subject run is queued or active.** Read it back against the expected
-   context and subject, then wait for that run. Do not duplicate it. The run counts only
-   when its workflow and reporting identity can publish the missing required context;
-   a queued or active advisory-only run does not satisfy this action.
-2. **The current run is `action_required` or needs trusted approval/identity.** Use the
-   actual trusted approval path before dispatch, rerun, or branch mutation. Re-read the
-   run and return `PR_IN_FLIGHT` only when GitHub confirms the approval/identity
-   transition on the expected subject.
-3. **No current-subject run exists and exact-subject dispatch is admissible.** Dispatch
-   only when the workflow accepts the exact inputs and can publish the missing required
-   context or a trusted receipt live policy admits. Re-read the created run, its inputs,
-   evaluated subject, and reporting identity before waiting. An exact advisory-only run
-   is not a substitute.
-4. **A completed transient or instrument failure can be rerun against the same relevant
-   subject.** Rerun only a run whose workflow and reporting identity can publish the
-   missing required context; a transient failure of an advisory-only run falls through
-   to action 3 or 5. Request one bounded rerun, then re-read a new attempt for that run
-   and subject. A command exit or API success without a new attempt is not
-   `PR_IN_FLIGHT`.
-5. **Material base movement changed a merge-tree subject and the old attempt cannot
-   answer it.** Prefer an admissible exact-subject dispatch that can satisfy the missing
-   required context, with the same read-back as action 3.
-6. **No admissible exact-subject route can evaluate the required changed merge tree.**
-   Return terminal `NOT_PROVEN` with the missing producer, subject, capability or
-   reporting identity. Do not create an empty commit or push to summon qualification.
-   Ordinary pushes communicate development; they are not a qualification button.
-7. **No action can be proven admissible or persisted.** Return terminal `NOT_PROVEN`
-   with the missing policy, subject, capability, reporting identity, or read-back. Do not
-   guess by pushing or call an unobserved action in flight.
+A material adverse finding withdraws eligibility through existing supported controls.
+Do not leave automatic landing eligible while relying on a prose-only objection.
 
 ### Remote-action persistence law
 
 A command invocation, API 2xx, or requested transition is not itself evidence that the
-transition exists. Return `PR_IN_FLIGHT` after approval, dispatch, rerun, or writer
-handoff only when a fresh GitHub read confirms:
+transition exists. Return `PR_IN_FLIGHT` after native enqueue or supported G retry
+only when a fresh GitHub read confirms:
 
 ```text
-expected PR/head or merge subject
-+ expected context/workflow/run identity
+expected H + actual native entry/group/G subject
++ complete ordered constituents and expected context/workflow/run identity
 + expected new state or attempt
 + exact terminal wake event
 ```
@@ -183,8 +201,8 @@ same snapshot; re-read only after the named wake event.
 ## Terminal inspection and ownership
 
 For the selected late qualification, retain one accountable owner through terminal
-run/attempt inspection, then the separate vision/current-repository judgment and
-protected merge decision. Use supported completion events or bounded checks during
+run/attempt inspection and native landing reconciliation. Conditional product/scope
+and protected landing authorization must already precede enqueue. Use supported completion events or bounded checks during
 the ordinary wait window. Do not return an ownerless `PR_IN_FLIGHT` merely because a
 worker ended. On a real interruption, name `continuation_owner`, `next_action`, the
 exact request/head/merge subject and run/attempt, pending contexts and `wake_event` in
@@ -198,7 +216,8 @@ subject? Inspect result/log/artifact content, not only the badge. `SKIPPED`, `NE
 is green. Preserve not-applicable separately with policy evidence; mandatory selected
 proof still needs actual execution. Carry required union and reporting identity through
 terminal results; do not drop the slow tail. Then return the evidence to
-`$merge-reconcile` for its final current-repository/vision and protection judgment.
+`$merge-reconcile` for actual native landing readback and objective reconciliation
+only; its legacy direct-merge/post-green approval instructions do not apply.
 
 ## Live evidence classification
 
@@ -211,17 +230,13 @@ evidence rule:
   commits cannot affect the tested subject. It is not a status attached to the live
   SHA, but the SHA mismatch does not erase what the run established;
 - when a later PR commit can affect the tested subject, rerun only the affected proof;
-- a required status that is missing or pending on the live PR head is a GitHub
-  integration fact. Request a job rerun where appropriate without mutating the branch.
-  Never rebase, push an empty commit, or replay unrelated CI merely to manufacture a
-  current status;
-- a rerun of a merge-tree-evaluated check replays its original merge snapshot. After
-  material base movement, request an admissible explicit producer for the changed
-  subject. If that producer is unavailable, no admissible exact-subject producer means
-  `NOT_PROVEN`; preserve the named capability blocker. Historical empty-commit
-  workarounds do not authorize push-triggered qualification under the current contract.
-  Query main's own head check-runs when evidence suggests a base-owned failure before
-  repairing branch-locally.
+- a required status missing or pending on H is an integration fact. Resolve trusted
+  no-CI pre-enqueue admission through its owner, or return `NOT_PROVEN`; do not request
+  a PR job rerun, dispatch, empty commit or branch refresh to manufacture the status;
+- old PR integration P cannot qualify actual G. Recomposition/base/constituent changes
+  require the existing native mechanism to evaluate the changed G, or `NOT_PROVEN`.
+  An ordinary PR rerun cannot answer that subject. Inspect main's own existing results
+  when evidence suggests a base-owned failure before repairing branch-locally.
 
 
 Classify failures as candidate-owned, base-owned, integration interaction,
@@ -279,13 +294,19 @@ purpose governs the rebase.
 
 ## Routes
 
+Publication, review submission and durable updates require a proved no-CI effect.
+If a downstream skill asks for ordinary CI, direct merge or mandatory post-green
+approval, hold that action and return the exact `NOT_PROVEN` boundary with local proof.
+
+
 - `REVIEW_REQUIRED` → `$review-pr`
 - `REVIEW_FINDINGS_OPEN` / `CHANGES_REQUIRED` → `$address-review-comments`
 - `REVIEW_SCOPE_CHANGED` → `$review-pr` for affected dimensions
-- `DRAFT` → `$publish-pr`
+- `DRAFT` → continue permitted local work; `$publish-pr` only through a proved
+  no-CI path, otherwise portable patch + `NOT_PROVEN`
 - `PENDING` / `PR_IN_FLIGHT` → return exact pending transition to `$finish-pr` or `$deliver-goal`
 - `PRODUCT_OR_TEST_FAILURE` → `$build-candidate`, then affected proof/review
 - `CONFLICT` / `INTEGRATION_INTERACTION` → repair affected seam, then affected proof and `$review-pr`
 - `BLOCKED_BY_PREREQUISITE` / `MERGE_BLOCKED` → preserve exact blocker
 - `INSTRUMENT_FAILURE` / `NOT_PROVEN` → name missing reliable evidence
-- `INTEGRATION_READY` → `$merge-reconcile`
+- `INTEGRATION_READY` → inspect native state; landed/closed → `$merge-reconcile` readback only; open → retain native landing ownership

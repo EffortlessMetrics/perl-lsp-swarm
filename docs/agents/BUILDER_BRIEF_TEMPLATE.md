@@ -89,27 +89,29 @@ cargo machete           # Unused dependency check
 Claim-only deletions (no guard output) are rejected by reviewer-deep. See
 [QUEUE_CONVERGENCE_DOCTRINE.md](../reference/QUEUE_CONVERGENCE_DOCTRINE.md) Rule 3.
 
-### 4. Merge only by a separate exact-head judgment
+### 4. Authorize native landing before enqueue
 
-Do not arm auto-merge or enqueue a PR. Under #3390, qualification completion
-has no merge side effect: the owning lead makes a separate merge judgment on
-the qualified head and merges with the current head SHA as compare-and-swap
-protection:
+Under #17073/#17900, finish affected local proof and substantive review, then make
+conditional landing authorization for exact H before the verified native enqueue.
+The native G result may cause automatic protected landing. No routine post-green
+approval or direct merge call is added. Ready remains review availability, not a CI
+request. Do not trigger ordinary development CI, including cheap wrappers, or use
+generic auto-merge to approximate a native queue that is not proved live.
 
-```bash
-gh pr merge <PR> --squash --match-head-commit <current-head-sha>
-```
+Consume the existing finish-pr → verify-live-ci → merge-reconcile route. Missing
+trusted admission, complete protection or actual G producers is `NOT_PROVEN` with
+its precise cutover owner. These instructions do not authorize activating settings
+or guessing an invocation. A late material finding must withdraw eligibility through
+the supported native/trusted controls; a prose objection cannot prevent landing.
 
-Verify the landing immediately after:
+Verify actual landing before claiming delivery:
 
 ```bash
 gh pr view <PR> --json state,mergedAt,mergeCommit
 ```
 
-An armed auto-merge lands the moment the slowest required check turns green,
-before that final judgment can catch a late substantive finding (#18057). If a
-PR already has `autoMergeRequest` armed, disarm it and merge explicitly once
-required checks pass and unresolved review threads are zero.
+Green alone is not merged. Inspect M, its actual parent/composition and the landed
+claim. Do not replay full qualification during ordinary landed reconciliation.
 
 ### 5. Windows `core.longpaths` requirement
 

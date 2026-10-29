@@ -1,9 +1,28 @@
 ---
 name: publish-pr
-description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, with frequent draft publication and explicit late qualification after substantive review.
+description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, through a verified no-CI publication path before reviewed native queue admission.
 ---
 
 # Publish PR
+
+## Publication effect boundary
+
+Draft and Ready are publication states, not qualification requests. Apply #17073's
+no-development-CI constraint to push, PR creation/update, readiness, submitted review
+and comments, including cheap wrappers. Inspect the actual direct and indirect event
+effects before each type of action. Publish only through a proved no-CI path.
+
+If the installed event graph would run ordinary CI, keep the completed source and
+proof available through a safe source-bearing branch or existing durable surface;
+otherwise retain a portable patch + `NOT_PROVEN` with the exact #17903/#17080/#10065
+cutover blocker. An unreferenced commit or applied-source branch is not a delivered PR
+or protected landing. Do not use skip directives as proof that pull_request_target or
+indirect consumers are suppressed. Do not weaken protection to make publication cheap.
+
+The threshold below governs candidate quality; it never overrides this effect guard.
+Ready does not enqueue. Only the verified #17900 operation may admit an eligible exact
+H after affected local proof, substantive review and conditional landing authorization.
+No live invocation is invented by this skill.
 
 Verify branch, worktree, candidate, base, and controlling issue identity. Confirm no equivalent active PR or real writer collision exists.
 
@@ -36,7 +55,7 @@ If this threshold is not met, return to `$build-candidate` rather than opening a
 
 Use focused draft publication for ongoing collaboration and independent review, as well as:
 
-- remote-only proof or platform behavior;
+- platform observations that have a verified no-CI route;
 - real branch collaboration;
 - early visible ownership that prevents duplicate work;
 - a protected integration experiment whose remote behavior is the subject.
@@ -45,12 +64,9 @@ Record the exact draft reason and its completion condition in the PR body.
 
 For an existing draft, inspect that named condition. When it is complete, re-evaluate the full ready-publication threshold and explicitly mark the PR ready through the provider's native GitHub action (for example `gh pr ready <n>` or the equivalent connector operation). Do not leave a completed draft in a self-repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair instead of marking ready.
 
-Before changing readiness, inspect the actual workflow triggers. Readiness is not an
-explicit qualification request, but independent producers may still start expensive
-work on that event during partial adoption. Follow the shared development method's
-late-qualification boundary only after substantive review is current; consume the real
-#17900 request operation when available, and report its absence rather than inventing
-one. Preserve all mandatory proof and live protection requirements; publish draft evidence honestly.
+Before changing readiness, recheck the publication effect boundary above. A
+completed draft reason does not permit a CI-triggering Ready transition. Preserve
+mandatory proof and live protection while preparing the next admissible action.
 
 ## PR review index
 
@@ -69,13 +85,13 @@ wrong implementation with negative, stale, failure, recovery, or opposite-direct
 controls; simplify before publication; bound the claim and non-goals; then name risk,
 rollback, and review locations.
 
-When this lane has no local Rust toolchain, check **Hosted-only** in **Hosted proof**
-and name the hosted checks that replace `cargo fmt` / Clippy / tests. Do not claim
-those hosted checks passed until current GitHub evidence exists. "Local Rust proof
-NOT RUN" is the hosted-only mark, not a substitute for naming the checks. Hosted-only
-is a PR-body and reviewer classification; it does not rewrite the ready-publication
-threshold above. Authors without a toolchain still use the named draft exception for
-remote-only proof until hosted evidence exists.
+When this lane has no applicable toolchain, record local proof as **NOT RUN** and
+identify the required commands and execution-environment limitation. Obtain affected
+proof in an admitted environment or through the existing proof owner before enqueue;
+do not trigger ordinary CI to fill missing local proof. Historical **Hosted-only**
+evidence keeps its actual evaluated subject and limitations, but does not grant a
+publication exception or satisfy current local execution by assertion. Proof that is
+not applicable to this candidate is distinguished from unavailable mandatory proof.
 
 ```markdown
 ## Claim
@@ -131,8 +147,8 @@ rebuilding — see the currentness contract.
 ## Routes
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `$address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` → run the required remote experiment or collaboration, then repeat this skill
-- `DRAFT_REASON_COMPLETE` → recheck readiness, mark the PR ready natively, and return `PR_RESUMED`
+- `DRAFT_FOR_NAMED_REASON` → complete the named no-CI collaboration/observation, then repeat this skill
+- `DRAFT_REASON_COMPLETE` → recheck readiness, mark the PR ready only through a proved no-CI path, and return `PR_RESUMED`
 - `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` → `$build-candidate`
 - `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume or resolve the mechanical conflict
 - `IDENTITY_NOT_PROVEN` → stop and resolve branch/candidate identity

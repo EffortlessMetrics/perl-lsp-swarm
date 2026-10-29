@@ -1,10 +1,39 @@
 ---
 name: finish-pr
-description: Carry one selected pull request through publication, feedback repair, Claude-native substantive review, live integration, squash merge, and reconciliation.
+description: Carry one selected pull request through publication, feedback repair, Claude-native substantive review, conditional native queue admission, and landed reconciliation.
 argument-hint: "[PR number, branch, or candidate]"
 ---
 
 # Finish PR
+
+## Local proof before native queue admission
+
+The October 22 #17073/#17900 user direction supersedes older qualification and
+publication instructions below: no CI on Draft or Ready. Tests and substantive
+review must be green locally in session before enqueue; CI runs on the actual
+merge-group subject G only. Preserve each proof command, result, source/tree and
+limitations separately from reported tests, resource admission and live integration.
+A source review or reported green result does not prove a test executed locally.
+
+Before push, PR creation/update, Ready, submitted review, dispatch, rerun or enqueue,
+inspect the current direct and indirect event graph. If the action would trigger
+ordinary CI, hold that action and prepare a portable local patch and source-bound
+proof for the existing owner. The old installed qualification route is not an
+exception to this user hold. Do not manufacture required-check success, weaken
+selected obligations, change protection/security/credentials or activate the
+incomplete queue to unblock publication.
+
+Only when the existing supported native route and complete effective protection
+are proved live may exact-H local green, current substantive review, resolved
+findings and conditional landing authorization enter expected-H enqueue. A missing
+route, trusted pre-enqueue admission or G producer is NOT_PROVEN with its exact
+owner/capability blocker, not permission to dispatch ordinary CI. Do not invent an
+invocation or treat Ready, acknowledgment or runner waiting as queue custody.
+Verified entry/group/run/attempt supports PR_IN_FLIGHT. Green G proceeds to native
+landing readback and reconciliation without another direct merge or mandatory
+post-green manual pause. A late material finding withdraws eligibility through the
+existing supported controls; prose alone does not prevent automatic landing.
+
 
 Carry one coherent acceptance-and-rollback candidate through its current GitHub state.
 The main Claude thread remains the accountable orchestrator for this root-held claim frame. Do
@@ -33,7 +62,7 @@ The main Claude thread retains:
 - substantive review sufficiency and cumulative candidate judgment;
 - candidate/base/integration failure ownership;
 - whether a remote state is in flight, blocked, or not proven;
-- the protected merge and current-main reconciliation decision.
+- exact-H conditional landing authorization before enqueue and landed reconciliation.
 
 ### Delegable read-only work
 
@@ -82,7 +111,7 @@ A stale or missing binding is `NOT_PROVEN`; refresh affected review rather than
 replaying every lens or treating the old green review as current. Preserve unaffected
 proof with its original subject. This check verifies binding, not finding disposition.
 
-At a CI handoff ask: who owns terminal inspection and the final judgment? Carry the
+At a CI handoff ask: who owns terminal inspection and landed reconciliation? Carry the
 selected request, head/merge subject, run/attempt, pending contexts, accountable owner,
 next action and exact wake event in the existing return packet. An unowned in-flight
 handoff is `NOT_PROVEN`; keep the invoking owner until a named receiver accepts it.
@@ -94,11 +123,13 @@ Enter at the earliest useful point:
 
 ```text
 no PR + publication-ready candidate
-→ `publish-pr`
+→ inspect event graph; ordinary CI effect → portable patch + `NOT_PROVEN`
+→ only a proved no-CI publication path may enter `publish-pr`
 
-draft with a real remote-proof, collaboration, or protected-experiment purpose
-→ complete that purpose
-→ `publish-pr`
+draft with a real collaboration or protected-experiment purpose
+→ complete permitted local work; do not use Draft/Ready to request CI
+→ inspect event graph; only a proved no-CI path may enter `publish-pr`
+→ otherwise portable patch + `NOT_PROVEN`
 
 substantive human/bot/CI findings or failed candidate proof
 → `address-review-comments`
@@ -112,7 +143,8 @@ candidate is mutable and no useful current substantive review exists
 
 `CHANGES_REQUIRED`
 → `address-review-comments`
-→ one writer publishes the joined repair wave once when candidate bytes must change
+→ one writer prepares the joined repair wave locally when candidate bytes must change
+→ publish only through a proved no-CI path; otherwise portable patch + `NOT_PROVEN`
 → affected proof/challenge/review only for changed or stale dimensions
 
 no candidate or claim change + no stale review dimension
@@ -120,11 +152,12 @@ no candidate or claim change + no stale review dimension
 → continue at the earliest genuinely missing judgment
 
 `REVIEW_CURRENT`
-→ stabilize the reviewed candidate head for required CI
+→ require executed local green proof and stabilize the reviewed candidate
+→ exact-H conditional landing judgment before any native enqueue
 → `verify-live-ci`
 
 `INTEGRATION_READY`
-→ `merge-reconcile`
+→ inspect native state; landed/closed → `merge-reconcile` readback only; open → retain native landing ownership
 
 merged or deliberately closed but unreconciled
 → `merge-reconcile`
@@ -145,7 +178,7 @@ authority, named skill, falsifiers, read-only boundary, sufficient evidence, and
 non-goals.
 
 The main Claude thread joins evidence rather than votes, inspects the load-bearing seams, and
-publishes one cumulative `review-pr` judgment. Reviewers do not authorize merge. One
+records locally one cumulative `review-pr` judgment. Reviewers do not authorize merge. One
 integrating writer repairs accepted findings.
 
 ## Review-forward repair
@@ -172,7 +205,8 @@ observation basis, decides finding validity separately from current-candidate ad
 joins the review wave, and promotes only repeated mechanisms to bounded failure classes.
 One writer integrates admitted source/proof changes, runs affected proof and—when a
 class was promoted—its class-level falsifier, rereads the complete governing semantic
-units and dependent claims, and publishes one candidate update.
+units and dependent claims, and prepares one candidate update. Publish only through
+a proved no-CI path; otherwise retain the portable patch and source-bound proof.
 
 The repair-wave packet must state `candidate_changed`, `claim_changed`, and
 `stale_review_dimensions`. `candidate_changed` means a semantic candidate change
@@ -220,25 +254,28 @@ actual #17900 qualification operation through `verify-live-ci`. Missing capabili
 is `NOT_PROVEN` with its producer blocker; a push or Ready toggle is not a request.
 Keep mandatory selected proof and reporting identity intact during staged cutover.
 
-Record an accepted matching run/attempt as `PR_IN_FLIGHT`. Keep the same useful lead
-through an ordinary in-window wait, terminal result inspection, separate final
-vision/current-repository judgment, protected merge and landing read-back. Use supported
-waits/events or bounded checks without a polling child. A real interruption, unusual
-capacity delay or exhausted window gets an exact resumable handoff. Pending checks do
-not stale otherwise current substantive review.
+Before enqueue require executed local green proof, `REVIEW_CURRENT`, complete feedback
+and zero unresolved threads of any author, actual native route/protection and trusted
+admission, and conditional exact-H product/scope and landing authorization. Missing
+capability returns `NOT_PROVEN`; do not activate the incomplete queue. Enqueue can
+land automatically. No generic auto-merge substitutes for verified native entry.
 
-Do not arm routine auto-merge or enqueue. Qualification completion has no merge side
-effect. Before explicit integration, require `REVIEW_CURRENT`, current mandatory
-results and live protection, and zero unresolved threads of any author. An open thread
-is `MERGE_BLOCKED`, routed through `address-review-comments`, not a pending-run excuse.
-The actual protected merge and read-back remain single-sourced in `merge-reconcile`.
+Record `PR_IN_FLIGHT` only after matching native entry/group/run/attempt readback.
+Keep the same useful lead through terminal inspection and native landing readback.
+Green G is not landed M: reconcile actual composition and objective completion through
+`merge-reconcile` in readback-only mode. Do not invoke its legacy direct-merge or
+mandatory post-green judgment path. A late material finding must withdraw eligibility
+through supported controls; do not assume a manual pause before native landing.
+Use supported waits/events or bounded checks without a polling child. Pending checks
+do not stale otherwise current substantive review. A real interruption gets an exact
+resumable handoff with receiver acceptance.
 
 The live ruleset requires thread resolution: zero unresolved review threads is a
 precondition of protected integration.
 
 ## Useful GitHub boundary
 
-Publish candidate-wide route/proof/limitation changes in the PR body or a compact PR
+Only through a proved no-CI path, publish candidate-wide route/proof/limitation changes in the PR body or a compact PR
 comment; localized findings inline; finding dispositions in replies before resolution;
 one cumulative submitted review; one material remote wait/wake update when another
 context needs it; and landed-effect/residual-claim closeout on the issue.
@@ -249,10 +286,18 @@ rather than copying them.
 
 ## Routes
 
+Every publication, comment, review submission, closeout or repair handoff below is
+subject to the no-CI effect check above. If a downstream skill prescribes an ordinary
+CI request or direct merge, stop that action at `NOT_PROVEN` and retain local evidence.
+Local review is still substantive when submission is held; do not fabricate a remote
+binding. A missing supported binding remains an integration blocker.
+
+
 ### Publication
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` → complete the reason, then `publish-pr`
+- `DRAFT_FOR_NAMED_REASON` → complete permitted local work; `publish-pr` only
+  through a proved no-CI path, otherwise portable patch + `NOT_PROVEN`
 - `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` →
   `build-candidate`
 - `DUPLICATE_OR_WRITER_COLLISION` → reuse the equivalent candidate or resolve the
@@ -294,7 +339,7 @@ rather than copying them.
 - `CONFLICT` / `INTEGRATION_INTERACTION` → repair the affected seam, then affected
   proof and review
 - `INSTRUMENT_FAILURE` / `NOT_PROVEN` → preserve the missing reliable evidence
-- `INTEGRATION_READY` → `merge-reconcile`
+- `INTEGRATION_READY` → inspect native state; landed/closed → `merge-reconcile` readback only; open → retain native landing ownership
 
 ### Merge and closeout
 

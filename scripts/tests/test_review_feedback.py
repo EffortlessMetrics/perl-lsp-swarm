@@ -262,7 +262,7 @@ class FinishingSkillScenarios(unittest.TestCase):
                 self.assertIn('A stale or missing binding is `NOT_PROVEN`', text)
                 self.assertIn('Preserve unaffected proof with its original subject', text)
 
-    def test_badge_is_not_execution_and_final_judgment_is_separate(self):
+    def test_badge_is_not_execution_and_authorization_precedes_enqueue(self):
         for provider, text in self.texts('verify-live-ci'):
             with self.subTest(provider=provider):
                 self.assertIn('branch rulesets AND classic branch protection', text)
@@ -271,8 +271,97 @@ class FinishingSkillScenarios(unittest.TestCase):
         for provider, text in self.texts('merge-reconcile'):
             with self.subTest(provider=provider):
                 self.assertIn('accepted product vision', text)
-                self.assertIn('Record that separate final judgment', text)
+                self.assertIn('Before enqueue, the accountable root', text)
+                self.assertIn('conditional landing authorization for exact H', text)
+                self.assertNotIn('gh pr merge', text)
                 self.assertIn('read the durable PR/commit state', text)
+
+
+class NativeQueueRouteControls(unittest.TestCase):
+    """Source-route controls, not agent compliance or native integration proof."""
+    def text(self, provider, skill):
+        return ' '.join((ROOT / provider / 'skills' / skill / 'SKILL.md').read_text().split())
+
+    def test_publication_edges_have_local_effect_guard(self):
+        for provider in ('.agents', '.claude'):
+            for skill in ('finish-pr', 'verify-live-ci'):
+                text = self.text(provider, skill)
+                self.assertNotRegex(text, r'`DRAFT` → `\$?publish-pr`')
+                self.assertNotRegex(text, r'complete the reason, then `\$?publish-pr`')
+                self.assertNotRegex(text, r'publication-ready candidate → `\$?publish-pr`')
+                self.assertIn('proved no-CI path', text)
+                self.assertIn('portable patch + `NOT_PROVEN`', text)
+                self.assertIn('downstream skill', text)
+
+    def test_reviewed_no_run_cannot_fall_back_to_ordinary_ci(self):
+        for provider in ('.agents', '.claude'):
+            text = self.text(provider, 'verify-live-ci')
+            self.assertIn('## Native admission and status-production order', text)
+            order = text.split('## Native admission and status-production order', 1)[1].split('### Remote-action persistence law', 1)[0]
+            self.assertLess(order.index('Local tests or substantive review'), order.index('Eligible exact H'))
+            self.assertLess(order.index('complete effective protection'), order.index('Eligible exact H'))
+            self.assertIn('conditional landing authorization before', order)
+            self.assertIn('missing capability', text.lower())
+            for forbidden in ('Dispatch only when', 'Request one bounded rerun',
+                              'Prefer an admissible exact-subject dispatch',
+                              'Request a job rerun where appropriate'):
+                self.assertNotIn(forbidden, text)
+            self.assertIn('do not request a PR job rerun', text)
+
+    def test_acknowledgment_missing_h_status_and_changed_g_refuse(self):
+        for provider in ('.agents', '.claude'):
+            text = self.text(provider, 'verify-live-ci')
+            self.assertIn('Acknowledgment alone is `NOT_PROVEN`', text)
+            self.assertIn('moved H cannot inherit old admission', text)
+            self.assertIn('expected H + actual native entry/group/G subject', text)
+            self.assertIn('complete ordered constituents', text)
+            self.assertIn('old PR integration P cannot qualify actual G', text)
+            self.assertIn('no generic workflow dispatch or ordinary PR rerun fallback', text)
+            self.assertIn('trusted no-CI pre-enqueue admission', text)
+
+    def test_green_open_is_not_direct_merge_or_post_green_approval(self):
+        for provider in ('.agents', '.claude'):
+            for skill in ('finish-pr', 'verify-live-ci'):
+                text = self.text(provider, skill)
+                self.assertNotRegex(text, r'`INTEGRATION_READY` → `\$?merge-reconcile`')
+                self.assertIn('landed/closed', text)
+                self.assertIn('open → retain native landing ownership', text)
+                self.assertNotIn('Qualification completion has no merge side effect', text)
+                self.assertNotIn('then the separate vision/current-repository judgment', text)
+            self.assertIn('material adverse finding withdraws eligibility', self.text(provider, 'verify-live-ci'))
+        root = ' '.join((ROOT / 'AGENTS.md').read_text().split())
+        self.assertNotIn('separate final current-repo judgment', root)
+        self.assertIn('conditional landing authorization before enqueue', root)
+        self.assertIn('landed/closed', root)
+
+    def test_shared_and_downstream_routes_cannot_restore_retired_actions(self):
+        """A correct finish banner cannot mask an operative downstream fallback."""
+        for provider in ('.agents', '.claude'):
+            publish = self.text(provider, 'publish-pr')
+            merge = self.text(provider, 'merge-reconcile')
+            self.assertIn('Publish only through a proved no-CI path', publish)
+            self.assertIn('threshold below governs candidate quality; it never overrides', publish)
+            self.assertIn('do not trigger ordinary CI to fill missing local proof', publish)
+            self.assertIn('this skill makes no direct merge call', merge)
+            self.assertIn('open green G', merge)
+            self.assertIn('H2 cannot inherit H admission', merge)
+            self.assertIn('read the durable PR/commit state', merge)
+            self.assertNotIn('gh pr merge', merge)
+            for skill in ('deliver-pr', 'deliver-goal', 'orchestrate-work'):
+                text = self.text(provider, skill)
+                self.assertIn('conditional landing authorization before enqueue', text)
+                self.assertIn('no automatic model switch', text)
+                self.assertNotIn('No routine queue or auto-merge is introduced', text)
+        for name in ('AGENTS.md', 'CLAUDE.md'):
+            text = ' '.join((ROOT / name).read_text().split())
+            self.assertIn('## Local proof before native queue admission', text)
+            self.assertIn('landed/closed', text)
+            self.assertIn('no automatic model switch', text)
+        currentness = ' '.join((ROOT / 'docs/agents/REVIEW_CURRENTNESS.md').read_text().split())
+        self.assertIn('actual G for native integration qualification', currentness)
+        self.assertNotIn('an empty-commit head bump is the sanctioned fresh trigger', currentness)
+        for name in ('REVIEW_CURRENTNESS.md', 'BUILDER_BRIEF_TEMPLATE.md'):
+            self.assertNotIn('gh pr merge', (ROOT / 'docs/agents' / name).read_text())
 
 
 if __name__ == '__main__':
