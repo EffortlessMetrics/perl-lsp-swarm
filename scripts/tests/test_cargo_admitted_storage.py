@@ -2,14 +2,21 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/cargo_admitted.py")
 safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
+NATIVE_TREE = safe.ClippyTree
+NATIVE_LAUNCH = safe.call_clippy
+
+
+def git_output(path):
+    return os.fsencode(path) + b"\n"
 
 
 class AdmissionTests(unittest.TestCase):
@@ -21,6 +28,13 @@ class AdmissionTests(unittest.TestCase):
         self.paths = {"target": self.slot / "target", "build": self.slot / "build",
                       "cargo_home": self.root / "home", "temp": self.root / "temp"}
         self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
+        # Storage policy fixtures substitute the process seam; actual Linux
+        # ownership is independently exercised by test_cargo_admitted_builtin_tree.
+        self.tree = Mock()
+        self.tree.finish.return_value = {"tree_settled": True, "cancelled": False}
+        self.enterContext(patch.object(safe, "ClippyTree", return_value=self.tree))
+        self.enterContext(patch.object(safe, "call_clippy", side_effect=
+            lambda command, env, lock, tree, **kw: safe.subprocess.call(command, env=env)))
 
     def run_safe(self, args, call=None):
         with patch.dict(os.environ, self.env, clear=True), \
@@ -57,7 +71,7 @@ class AdmissionTests(unittest.TestCase):
             destination = self.root / component
             env = dict(self.env, DEVPLANE=str(destination), HOME=str(self.root), USERPROFILE=str(self.root))
             with patch.dict(os.environ, env, clear=True), \
-                 patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo")), \
+                 patch.object(safe.subprocess, "check_output", return_value=git_output(self.root / "repo")), \
                  patch.object(safe.subprocess, "call") as cargo:
                 self.assertEqual(safe.main(["check"]), 75)
                 cargo.assert_not_called()
@@ -66,7 +80,7 @@ class AdmissionTests(unittest.TestCase):
             destination = self.root / (name + "-{workspace-root}")
             env = dict(self.env, DEVPLANE=str(self.slot), HOME=str(self.root), USERPROFILE=str(self.root), **{name: str(destination)})
             with patch.dict(os.environ, env, clear=True), \
-                 patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo")), \
+                 patch.object(safe.subprocess, "check_output", return_value=git_output(self.root / "repo")), \
                  patch.object(safe.subprocess, "call") as cargo:
                 self.assertEqual(safe.main(["check"]), 75)
                 cargo.assert_not_called()
@@ -130,6 +144,53 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.run_safe(["build"]), 75)
         self.assertFalse(self.slot.exists())
 
+    def test_percent_ceiling_names_max_used_pct_not_zero_shortfall(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        # 356 GiB free is far above the 40 GiB floor, but 91.3% used >= 85%.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 3740*gib, 356*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], {})
+        message = str(caught.exception)
+        self.assertIn("MAX_USED_PCT", message)
+        self.assertIn("max_used_pct=85", message)
+        self.assertNotIn("insufficient disk headroom", message)
+        self.assertNotIn("shortfall_bytes=0", message)
+        self.assertNotIn("shortfall_bytes", caught.exception.details)
+        self.assertEqual(caught.exception.details["max_used_pct"], 85.0)
+        self.assertGreater(caught.exception.details["pct_shortfall_bytes"], 0)
+        self.assertEqual(caught.exception.details["additional_free_bytes_needed"],
+                         caught.exception.details["pct_shortfall_bytes"])
+
+    def test_percent_ceiling_exact_boundary_reports_one_byte_remedy(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        # Exactly 85% used: gate denies, and the remedy must be 1 byte, not 0.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib, 150*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], {})
+        self.assertEqual(caught.exception.details["additional_free_bytes_needed"], 1)
+        # Freeing the reported amount makes the same gate pass.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib - 1, 150*gib + 1)):
+            report = safe.check_capacity([self.slot], {})
+        self.assertIn("destinations", report)
+
+    def test_absolute_floor_still_names_headroom_with_positive_shortfall(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        env = {"MIN_FREE_GB": "40", "MAX_USED_PCT": "100"}
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4086*gib, 10*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], env)
+        message = str(caught.exception)
+        self.assertIn("insufficient disk headroom", message)
+        self.assertIn("shortfall_bytes=", message)
+        self.assertNotIn("shortfall_bytes=0", message)
+        self.assertEqual(caught.exception.details["shortfall_bytes"], 30*gib)
+
     def test_byte_budget_is_in_emitted_resource_descriptor(self):
         import contextlib
         import io
@@ -142,7 +203,7 @@ class AdmissionTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4016*gib, 80*gib)), contextlib.redirect_stderr(output):
             self.assertEqual(self.run_safe(["check"]), 0)
-        descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+        descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
         self.assertEqual(descriptor["admission"]["policy"], "byte-budget")
         self.assertEqual(descriptor["admission"]["evidence_reference"], self.env["CARGO_STORAGE_BUDGET_EVIDENCE"])
         self.assertTrue(all(row["headroom_bytes"] == 20*gib for row in descriptor["admission"]["destinations"]))
@@ -190,8 +251,12 @@ class AdmissionTests(unittest.TestCase):
     def test_cancellation_retains_exclusive_resource_lease(self):
         def cancel(*args, **kw):
             raise KeyboardInterrupt()
-        with self.assertRaises(KeyboardInterrupt):
-            self.run_safe(["run"], cancel)
+        self.tree.finish.return_value = {"tree_settled": False}
+        if sys.platform == "linux":
+            self.assertEqual(self.run_safe(["run"], cancel), 75)
+        else:
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_safe(["run"], cancel)
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertEqual(self.run_safe(["test"]), 75)
 
@@ -221,6 +286,7 @@ class AdmissionTests(unittest.TestCase):
     def test_cancel_or_failed_spawn_retains_lease_without_pid_stealing(self):
         def fail(*args, **kw):
             raise OSError("spawn failed")
+        self.tree.finish.return_value = {"tree_settled": False}
         self.assertEqual(self.run_safe(["build"], fail), 75)
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertEqual(self.run_safe(["build"]), 75)
@@ -234,18 +300,20 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse((self.slot / "cargo-active").exists())
 
     def test_abnormal_child_exit_retains_lease(self):
+        self.tree.finish.return_value = {"tree_settled": False}
         for code in (-9, 3221225786, 9):
             # Fresh fixture slot for each termination status; never clear a
             # retained production lease just to make a retry pass.
             self.slot = self.root / ("terminated-" + str(code))
             self.paths = {name: self.slot / name for name in self.paths}
-            self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code), code)
+            self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code),
+                             75 if sys.platform == "linux" else code)
             self.assertTrue((self.slot / "cargo-active").exists())
             self.assertEqual(self.run_safe(["check"]), 75)
 
     def test_bounded_common_repository_identity_and_explicit_override_refusal(self):
         env = {"DEVPLANE": str(self.root), "CARGO_HOME": str(self.root / "cargo")}
-        with patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo.git")):
+        with patch.object(safe.subprocess, "check_output", return_value=git_output(self.root / "repo.git")):
             first = safe.resource_plan(env)
             self.assertEqual(first, safe.resource_plan(env))
             with self.assertRaises(safe.Denied):
@@ -258,7 +326,7 @@ class AdmissionTests(unittest.TestCase):
         import json
         repo = self.root / "repo"
         linked = self.root / "linked"
-        env = os.environ.copy()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1")
         def git(*args, cwd=self.root):
             subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
@@ -280,14 +348,231 @@ class AdmissionTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.dict(os.environ, env, clear=True), patch.object(safe.subprocess, "call", return_value=0), contextlib.redirect_stderr(output):
                     self.assertEqual(safe.main(["check"]), 0)
-                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
                 self.assertEqual(Path(descriptor["worktree"]), worktree.resolve())
                 self.assertNotEqual(Path(descriptor["worktree"]), nested)
                 descriptors.append(descriptor)
         finally:
             os.chdir(previous)
         for name in ("target", "build"):
-            self.assertEqual(descriptors[0]["resources"][name], descriptors[1]["resources"][name])
+            self.assertNotEqual(descriptors[0]["resources"][name], descriptors[1]["resources"][name])
+        self.assertEqual(descriptors[0]["lease"], descriptors[1]["lease"])
+        self.assertEqual(descriptors[0]["resources"]["cargo_home"], descriptors[1]["resources"]["cargo_home"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX permits trailing whitespace in directory names")
+    def test_real_git_whitespace_paths_keep_distinct_private_state(self):
+        repo = self.root / "repo"
+        # Git permits trailing space/tab in a separate common directory too.
+        # Trailing newlines in gitdir files are not supported by Git itself.
+        common = self.root / "common \t"
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1",
+                   DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            env.pop(key, None)
+        def git(*args, cwd=self.root):
+            return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True).stdout
+        git("init", "-b", "main", "--separate-git-dir", str(common), str(repo))
+        git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "--allow-empty", "-m", "fixture", cwd=repo)
+        trees = [self.root / ("tree" + suffix) for suffix in ("", " ", "\t", "\n", "\r")]
+        for index, tree in enumerate(trees):
+            git("worktree", "add", "-b", "linked-" + str(index), str(tree), cwd=repo)
+        plans = []
+        previous = Path.cwd()
+        try:
+            for tree in trees:
+                os.chdir(tree)
+                # Check the real Git protocol, including its one terminal LF.
+                self.assertEqual(git("rev-parse", "--show-toplevel", cwd=tree), os.fsencode(tree.resolve()) + b"\n")
+                self.assertEqual(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=tree), os.fsencode(common.resolve()) + b"\n")
+                with patch.dict(os.environ, env, clear=True):
+                    self.assertEqual(safe.git_path("--path-format=absolute", "--git-common-dir"), common.resolve())
+                    plan = safe.resource_plan(env)
+                self.assertEqual(plan[0], tree.resolve())
+                plans.append(plan)
+        finally:
+            os.chdir(previous)
+        self.assertEqual(len({plan[1] for plan in plans}), 1)
+        for name in ("target", "build"):
+            self.assertEqual(len({plan[2][name] for plan in plans}), len(trees))
+        self.assertFalse(plans[0][1].exists())
+
+    def test_git_path_requires_one_terminator_without_stripping_path_bytes(self):
+        with patch.object(safe.subprocess, "check_output", return_value=os.fsencode(self.root)):
+            with self.assertRaises(safe.Denied):
+                safe.git_path("--show-toplevel")
+        if os.name != "nt":
+            # Two LF bytes are a valid trailing LF in the path plus Git's LF.
+            path = self.root / "tree\n"
+            with patch.object(safe.subprocess, "check_output", return_value=git_output(path)):
+                self.assertEqual(safe.git_path("--show-toplevel"), path.resolve())
+
+    def test_real_git_location_overrides_refuse_before_allocation(self):
+        repo, other = self.root / "repo", self.root / "other"
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1",
+                   DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        for path in (repo, other):
+            subprocess.run(["git", "init", "-q", str(path)], env=env, check=True, capture_output=True)
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            env.pop(name, None)
+        selectors = {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other),
+                     "GIT_COMMON_DIR": str(other / ".git")}
+        previous = Path.cwd()
+        try:
+            os.chdir(repo)
+            redirected = dict(env, **selectors)
+            # Real negative control: Git's view is no longer Cargo's CWD.
+            result = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], env=redirected)
+            if os.name == "nt":
+                # Git spells native Windows separators with forward slashes.
+                self.assertTrue(result.endswith(b"\n"))
+                self.assertEqual(Path(os.fsdecode(result[:-1])).resolve(), other.resolve())
+            else:
+                self.assertEqual(result, git_output(other.resolve()))
+            for selection in (selectors, *({name: selected} for name, value in selectors.items() for selected in (value, ""))):
+                with patch.dict(os.environ, dict(env, **selection), clear=True), \
+                     patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}) as capacity, \
+                     patch.object(safe.subprocess, "call", return_value=0) as cargo:
+                    self.assertEqual(safe.main(["check"]), 75)
+                    capacity.assert_not_called()
+                    cargo.assert_not_called()
+                self.assertFalse((self.root / "plane").exists())
+        finally:
+            os.chdir(previous)
+
+    @unittest.skipIf(os.name == "nt", "POSIX filename bytes may be non-UTF-8")
+    def test_real_git_non_utf8_common_and_worktree_paths_are_lossless(self):
+        repo = self.root / os.fsdecode(b"repo-\xff")
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1",
+                   DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
+            env.pop(name, None)
+        subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True, capture_output=True)
+        previous = Path.cwd()
+        try:
+            os.chdir(repo)
+            with patch.dict(os.environ, env, clear=True):
+                first = safe.resource_plan(env)
+                self.assertEqual(first, safe.resource_plan(env))
+            self.assertEqual(os.fsencode(first[0]), os.fsencode(repo.resolve()))
+            self.assertNotEqual(first[2]["target"], first[2]["build"])
+            self.assertFalse(first[1].exists())
+        finally:
+            os.chdir(previous)
+
+    def test_same_named_worktrees_and_stale_shared_overrides(self):
+        env = {"DEVPLANE": str(self.root / "plane"), "CARGO_HOME": str(self.root / "cargo")}
+        common = str(self.root / "repo.git")
+        plans = []
+        for worktree in (self.root / "one" / "same", self.root / "two" / "same"):
+            with patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]):
+                plans.append(safe.resource_plan(env))
+        self.assertEqual(plans[0][1], plans[1][1])  # unchanged exclusion domain
+        for name, variable in (("target", "CARGO_TARGET_DIR"), ("build", "CARGO_BUILD_BUILD_DIR")):
+            self.assertNotEqual(plans[0][2][name], plans[1][2][name])
+            with patch.object(safe.subprocess, "check_output", side_effect=[git_output(plans[0][0]), git_output(common)]):
+                self.assertEqual(safe.resource_plan(dict(env, **{variable: str(plans[0][2][name])})), plans[0])
+            for stale in (plans[1][2][name], plans[0][1] / name):
+                with patch.object(safe.subprocess, "check_output", side_effect=[git_output(plans[0][0]), git_output(common)]):
+                    with self.assertRaises(safe.Denied):
+                        safe.resource_plan(dict(env, **{variable: str(stale)}))
+        self.assertFalse(plans[0][1].exists())
+
+    def test_legacy_resources_and_common_lease_are_preserved(self):
+        worktree, common = str(self.root / "repo"), str(self.root / "repo.git")
+        env = dict(self.env, DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"),
+                   HOME=str(self.root), USERPROFILE=str(self.root))
+        with patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]):
+            _, slot, paths = safe.resource_plan(env)
+        for name in ("target", "build"):
+            legacy = slot / name
+            legacy.mkdir(parents=True)
+            (legacy / "evidence").write_bytes(b"retain exact legacy bytes")
+        lease = slot / "cargo-active"
+        lease.mkdir()
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]), \
+             patch.object(safe.subprocess, "call") as cargo:
+            self.assertEqual(safe.main(["check"]), 75)
+            cargo.assert_not_called()
+        self.assertTrue(lease.is_dir())
+        for name in ("target", "build"):
+            self.assertFalse(paths[name].exists())
+            self.assertEqual((slot / name / "evidence").read_bytes(), b"retain exact legacy bytes")
+
+    @unittest.skipUnless(os.environ.get("CARGO_ADMITTED_REAL_BUILD_TEST") == "1",
+                         "set CARGO_ADMITTED_REAL_BUILD_TEST=1 for the offline Cargo A/B/A regression")
+    def test_real_cargo_alternating_worktrees_preserve_dependency_behavior(self):
+        """Exercise real Cargo; a shared intermediate directory fails this oracle.
+
+        Disk policy is separately fixture-tested above. This test patches only its
+        observation so a tiny offline build does not pretend to admit a host budget.
+        It does not touch any existing repository, target, or user Cargo defaults.
+        """
+        import contextlib
+        import io
+        import json
+        repo, linked = self.root / "repo", self.root / "linked"
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            env.pop(name, None)
+        env.update(DEVPLANE=str(self.root / "plane"), TMPDIR=str(self.root / "tmp"),
+                   CARGO_NET_OFFLINE="true", CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="2",
+                   GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1")
+        def run(command, cwd):
+            result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout.strip()
+        def write(path, text):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        run(["git", "init", "-b", "main", str(repo)], self.root)
+        write(repo / "Cargo.toml", '[workspace]\nmembers=["app","core"]\nresolver="2"\n')
+        write(repo / "core/Cargo.toml", '[package]\nname="identity-core"\nversion="0.1.0"\nedition="2021"\n')
+        write(repo / "core/src/lib.rs", 'pub fn value() -> u32 { 1 }\n')
+        write(repo / "app/Cargo.toml", '[package]\nname="identity-app"\nversion="0.1.0"\nedition="2021"\n[dependencies]\nidentity-core={path="../core"}\n')
+        write(repo / "app/src/main.rs", 'fn main() { println!("{}", identity_core::value()); }\n')
+        run(["cargo", "generate-lockfile", "--offline"], repo)
+        run(["git", "add", "."], repo)
+        run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+             "commit", "-m", "old behavior"], repo)
+        run(["git", "worktree", "add", "-b", "changed", str(linked)], repo)
+        write(linked / "core/src/lib.rs", 'pub fn value() -> u32 { 2 }\n')
+        # Both worktrees, including the changed library, exist before the first
+        # build. No source touching/backdating is needed to expose the stale hit.
+        descriptors = []
+        previous = Path.cwd()
+        try:
+            for worktree, expected in ((repo, "1"), (linked, "2"), (repo, "1")):
+                os.chdir(worktree)
+                output = io.StringIO()
+                with patch.dict(os.environ, env, clear=True), \
+                     patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}), \
+                     patch.object(safe, "ClippyTree", NATIVE_TREE), \
+                     patch.object(safe, "call_clippy", NATIVE_LAUNCH), \
+                     contextlib.redirect_stderr(output):
+                    self.assertEqual(safe.main(["build", "-p", "identity-app", "--offline", "--locked"]), 0)
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
+                if sys.platform == "linux":
+                    settlement = json.loads(output.getvalue().split("cargo-admitted Cargo settlement: ", 1)[1].splitlines()[0])
+                    self.assertTrue(settlement["tree_settled"])
+                    self.assertTrue(settlement["lease_released"])
+                    self.assertEqual(settlement["proof"], "kernel ECHILD (__WALL)")
+                descriptors.append(descriptor)
+                executable = Path(descriptor["resources"]["target"]) / "debug" / ("identity-app.exe" if os.name == "nt" else "identity-app")
+                # This one test owns the TemporaryDirectory and runs builds
+                # sequentially: no next build starts before this assertion ends.
+                # It proves source isolation, not concurrent/post-lease consumers.
+                self.assertEqual(run([str(executable)], worktree), expected)
+        finally:
+            os.chdir(previous)
+        for name in ("target", "build"):
+            self.assertNotEqual(descriptors[0]["resources"][name], descriptors[1]["resources"][name])
+            self.assertEqual(descriptors[0]["resources"][name], descriptors[2]["resources"][name])
+        self.assertEqual(descriptors[0]["lease"], descriptors[1]["lease"])
 
     def test_nonfinite_policy_refused(self):
         for key in ("MIN_FREE_GB", "MAX_USED_PCT"):

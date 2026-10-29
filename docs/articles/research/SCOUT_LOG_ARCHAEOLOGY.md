@@ -26,8 +26,8 @@ fully digested archaeology.
 
 The committed scout-log surface currently contains:
 
-- [2026-03-19-v0.12.0-readiness.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md)
-- [2026-03-19-install-experience.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-install-experience.md)
+- [2026-03-19-v0.12.0-readiness.md](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-v0.12.0-readiness.md)
+- [2026-03-19-install-experience.md](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-install-experience.md)
 
 Both are clearly session-scoped research artifacts:
 
@@ -45,7 +45,7 @@ research receipts after the higher-level story has already been written up.
 
 ## 2. They Are Not The Same Thing As `swarm-state`
 
-[`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
+[`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md)
 is explicit that `swarm-state` is for durable coordination knowledge:
 
 - `swarm-queue.json` for overlap tracking
@@ -149,11 +149,11 @@ That stack is what turns one swarm run into material future runs can build on.
 
 ## Evidence Pointers
 
-- [`.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md)
-- [`.claude/logs/scouts/2026-03-19-install-experience.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/logs/scouts/2026-03-19-install-experience.md)
-- [`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
-- [SWARM_STATE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_STATE_ARCHAEOLOGY.md)
-- [SWARM_MEMORY_TAXONOMY_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_MEMORY_TAXONOMY_ARCHAEOLOGY.md)
-- [INSTALL_SURFACE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/INSTALL_SURFACE_ARCHAEOLOGY.md)
-- [ALPHA_READINESS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ALPHA_READINESS_ARCHAEOLOGY.md)
+- [`.claude/logs/scouts/2026-03-19-v0.12.0-readiness.md`](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-v0.12.0-readiness.md)
+- [`.claude/logs/scouts/2026-03-19-install-experience.md`](../../reference/archive/old-infrastructure/logs/scouts/2026-03-19-install-experience.md)
+- [`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md)
+- [SWARM_STATE_ARCHAEOLOGY.md](SWARM_STATE_ARCHAEOLOGY.md)
+- [SWARM_MEMORY_TAXONOMY_ARCHAEOLOGY.md](SWARM_MEMORY_TAXONOMY_ARCHAEOLOGY.md)
+- [INSTALL_SURFACE_ARCHAEOLOGY.md](INSTALL_SURFACE_ARCHAEOLOGY.md)
+- [ALPHA_READINESS_ARCHAEOLOGY.md](ALPHA_READINESS_ARCHAEOLOGY.md)
 - commit `344c6a591`

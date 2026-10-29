@@ -345,6 +345,7 @@ fn windows_1252_codepoint(byte: u8) -> u32 {
 mod tests {
     use super::*;
     use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
+    use perl_test_must::{must_err_with, must_with};
 
     fn make_analyzer(max_cache_entries: usize) -> CriticAnalyzer {
         let config = CriticConfig { max_cache_entries, ..Default::default() };
@@ -389,8 +390,10 @@ mod tests {
             b"Cannot load perlcritic config from .perlcriticrc at line 3\n".to_vec(),
             1,
         ));
-        let error = analyze_with(&mut analyzer, "t.pl", "1;\n")
-            .expect_err("a perlcritic that failed must not report a clean file");
+        let error = must_err_with(
+            analyze_with(&mut analyzer, "t.pl", "1;\n"),
+            "a perlcritic that failed must not report a clean file",
+        );
         assert!(
             error.contains("perlcritic failed (exit 1)"),
             "the message must carry the exit status, got: {error}"
@@ -417,8 +420,10 @@ mod tests {
             stderr: Vec::new(),
             status_code: 2,
         });
-        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
-            .expect("violations reported with exit status 2 are not a tool failure");
+        let violations = must_with(
+            analyze_with(&mut analyzer, "t.pl", "1;\n"),
+            "violations reported with exit status 2 are not a tool failure",
+        );
         assert_eq!(violations.len(), 1, "the violation must survive the guard");
     }
 
@@ -432,8 +437,10 @@ mod tests {
             stderr: b"Perltidy state file error\n".to_vec(),
             status_code: 1,
         });
-        let error = analyze_with(&mut analyzer, "t.pl", "1;\n")
-            .expect_err("exit status 1 must be reported as a tool failure");
+        let error = must_err_with(
+            analyze_with(&mut analyzer, "t.pl", "1;\n"),
+            "exit status 1 must be reported as a tool failure",
+        );
         assert!(
             error.contains("perlcritic failed"),
             "the error must identify the tool failure, got: {error}"
@@ -443,8 +450,10 @@ mod tests {
     #[test]
     fn a_clean_success_is_unaffected() {
         let mut analyzer = analyzer_returning(MockResponse::success(b"t.pl: 1: ok\n".to_vec()));
-        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
-            .expect("a successful run must not become an error");
+        let violations = must_with(
+            analyze_with(&mut analyzer, "t.pl", "1;\n"),
+            "a successful run must not become an error",
+        );
         assert!(violations.is_empty(), "expected no violations, got {violations:?}");
     }
 

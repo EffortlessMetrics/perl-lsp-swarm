@@ -1,0 +1,9 @@
+project: product
+component: Commands
+kind: Fixed
+body: "Server-spawned Perl subprocesses no longer inherit the LSP stdin pipe. On Windows, every console child of the language server that held that inherited handle blocked inside process initialization until killed, so perl.runFile, perl.runScript, perl.runTests, perl.runTestSub, perl.runSubtest, and the perl fallback always burned their full 30-second timeout and returned no output, and the system-@INC probe silently timed out. Children now get the null device on stdin at every spawn seam (execute-command runner, @INC/version probes, and the shared subprocess runtime), so short scripts run in well under a second."
+time: 2026-10-04T00:00:00Z
+custom:
+  PR: "17305"
+  Slug: lsp-child-stdin-17305
+  Breaking: "no"
