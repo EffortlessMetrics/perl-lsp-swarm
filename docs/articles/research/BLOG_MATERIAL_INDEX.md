@@ -345,6 +345,6 @@ Microcrate Architecture → Isolated Crates → Parallel Agents
 **Confidence Level**: 100% (all findings verified against git log)
 
 **Files Generated**:
-- `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/DEVELOPMENT_ARCHAEOLOGY.md` (4,200 words)
-- `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/ERA_TIMELINE.md` (8,000 words)
-- `/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/BLOG_MATERIAL_INDEX.md` (this file)
+- `docs/articles/research/DEVELOPMENT_ARCHAEOLOGY.md` (4,200 words)
+- `docs/articles/research/ERA_TIMELINE.md` (8,000 words)
+- `docs/articles/research/BLOG_MATERIAL_INDEX.md` (this file)

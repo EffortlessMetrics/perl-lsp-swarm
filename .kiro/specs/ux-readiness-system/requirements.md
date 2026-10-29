@@ -1,5 +1,9 @@
 # Requirements Document
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../../../docs/agents/AUTHORITY_STATUS.md); current product status: [Current product status](../../../docs/project/CURRENT_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../../../docs/agents/AUTHORITY_STATUS.md).
+
 ## Introduction
 
 The Measured UX Readiness System transforms perl-lsp's existing UX testing contract into a fully wired measurement, classification, trending, and release-gating pipeline on master. The north star: when a user opens a real Perl project and performs normal editor actions, does perl-lsp respond correctly, quickly, and stably? This system provides the infrastructure to answer that question with measured evidence at every commit, PR, nightly, and release boundary.
