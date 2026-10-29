@@ -227,10 +227,6 @@ For large workspaces, tune limits conservatively:
 workspaceSymbolCap = 100
 referencesCap = 200
 completionCap = 50
-astCacheMaxEntries = 50
-maxIndexedFiles = 5000
-maxTotalSymbols = 250000
-workspaceScanDeadlineMs = 20000
 referenceSearchDeadlineMs = 1500
 ```
 
@@ -456,8 +452,6 @@ Reduce result and indexing limits only after confirming the correct server/root:
 workspaceSymbolCap = 100
 referencesCap = 200
 completionCap = 50
-maxIndexedFiles = 5000
-maxTotalSymbols = 250000
 ```
 
 ### Tree-sitter or highlighting problems

@@ -87,7 +87,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000015f9c",
               "content_digest": "00000000000000000000000000000000000000000000000000000000000dbc1f",
-              "reference": "child packets #9001012/#9001013 receipts"
+              "reference": "child packets #9001012/#9001013 receipts",
+              "schema_version": "landing_proof.v1"
             }
           },
           "controller.fanin.evidence": {
@@ -96,7 +97,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000015f9d",
               "content_digest": "00000000000000000000000000000000000000000000000000000000000dbc29",
-              "reference": "controller fan-in receipt binding child outcomes"
+              "reference": "controller fan-in receipt binding child outcomes",
+              "schema_version": "landing_proof.v1"
             }
           }
         },

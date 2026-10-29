@@ -14,13 +14,23 @@ fn is_windows_drive_path(path: &str) -> bool {
     bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
+fn append_literal_file_segments(mut base: url::Url, path: &str) -> Option<String> {
+    // PathSegmentsMut encodes `%` as well as URI delimiters in each filename
+    // component. Url::parse would treat an already-looking escape as encoded.
+    base.path_segments_mut().ok()?.pop_if_empty().extend(path.split('/'));
+    Some(base.to_string())
+}
+
 fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
-    if file_path.starts_with("//") {
-        return url::Url::parse(&format!("file:{file_path}")).ok().map(|url| url.to_string());
+    if let Some(unc_path) = file_path.strip_prefix("//") {
+        let (host, path) = unc_path.split_once('/').unwrap_or((unc_path, ""));
+        let base = url::Url::parse(&format!("file://{host}/")).ok()?;
+        return append_literal_file_segments(base, path);
     }
 
     if is_windows_drive_path(file_path) {
-        return url::Url::parse(&format!("file:///{file_path}")).ok().map(|url| url.to_string());
+        let base = url::Url::parse(&format!("file:///{}/", &file_path[..2])).ok()?;
+        return append_literal_file_segments(base, &file_path[3..]);
     }
 
     if Path::new(file_path).is_absolute()
@@ -30,10 +40,8 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
     }
 
     let base_url = url::Url::parse(base_uri).ok()?;
-    if let Ok(target_url) = base_url.join(file_path) {
-        return Some(target_url.to_string());
-    }
-
+    // A quoted require path is a literal filename. URL joining interprets
+    // `#`, `?`, and `%` as URI syntax rather than characters in that name.
     if let Ok(base_path) = base_url.to_file_path()
         && let Some(parent) = base_path.parent()
     {
@@ -43,7 +51,8 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
         }
     }
 
-    None
+    // Preserve URL-relative resolution for non-file document schemes.
+    base_url.join(file_path).ok().map(|url| url.to_string())
 }
 
 fn normalize_document_link_file_path(file_path: &str) -> Cow<'_, str> {
@@ -339,6 +348,13 @@ mod tests {
             "//server/share/lib/Thing.pm",
         );
         assert_eq!(resolved, Some("file://server/share/lib/Thing.pm".to_string()));
+    }
+
+    #[test]
+    fn resolve_file_link_target_keeps_non_file_uri_joining() {
+        let resolved =
+            resolve_file_link_target("https://example.test/project/file.pl", "lib/Thing.pl");
+        assert_eq!(resolved, Some("https://example.test/project/lib/Thing.pl".to_string()));
     }
 
     #[test]

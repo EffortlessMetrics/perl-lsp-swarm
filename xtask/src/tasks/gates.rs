@@ -1160,7 +1160,7 @@ fn plan_pr_fast_gates(
         }
     };
 
-    let non_rust_diff = is_non_rust_diff(&scope);
+    let non_rust_diff = is_unowned_non_rust_diff(&scope);
     let fallback_used = !non_rust_diff && selected_package_names(&scope).is_empty();
     let fallback_reason = if fallback_used {
         Some("ci-scope produced no package scope for a Rust-relevant diff".to_string())
@@ -1236,7 +1236,7 @@ fn build_pr_fast_plan_from_scope_with_targets(
     fallback_reason: Option<String>,
     target_index: Option<&PackageTargetIndex>,
 ) -> Result<GatePlan> {
-    let non_rust_diff = scope.as_ref().is_some_and(is_non_rust_diff);
+    let non_rust_diff = scope.as_ref().is_some_and(is_unowned_non_rust_diff);
     let package_names = scope.as_ref().map(selected_package_names).unwrap_or_default();
     let package_args = package_args_from_names(&package_names);
 
@@ -1282,7 +1282,7 @@ fn build_pr_fast_plan_from_scope_with_targets(
                         selected.push(PlannedGate {
                             role,
                             reason: format!(
-                                "code diff selected packages: {}",
+                                "scope selected packages: {}",
                                 gate_package_names.join(", ")
                             ),
                             gate: render_package_args(gate, &gate_package_args)?,
@@ -1363,8 +1363,11 @@ fn pr_fast_role(gate: &GateDefinition) -> Result<GatePlanningRole> {
     })
 }
 
-fn is_non_rust_diff(scope: &ScopeOutput) -> bool {
+/// Filename class can skip Rust proof only when ci-scope selected no owner.
+/// Policy/fixture inputs can be non-Rust while their contracts belong to Rust packages.
+fn is_unowned_non_rust_diff(scope: &ScopeOutput) -> bool {
     matches!(scope.diff_class.as_str(), "prose_only" | "docs_as_code" | "ci_config")
+        && selected_package_names(scope).is_empty()
 }
 
 fn scope_skip_reason(scope: Option<&ScopeOutput>) -> String {
@@ -1478,7 +1481,7 @@ fn package_scoped_reason(gate: &GateDefinition, package_names: &[String]) -> Opt
 }
 
 fn package_scoped_skip_reason(gate: &GateDefinition, scope: Option<&ScopeOutput>) -> String {
-    if scope.is_some_and(is_non_rust_diff) {
+    if scope.is_some_and(is_unowned_non_rust_diff) {
         return scope_skip_reason(scope);
     }
     let packages =
@@ -4865,6 +4868,143 @@ gates:
     }
 
     #[test]
+    fn vscode_types_inputs_reach_routed_fence_test() -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gate = policy
+            .gates
+            .iter()
+            .find(|gate| gate.name == "unit_routed_full")
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing routed test gate"))?;
+        let metadata = serde_json::json!({
+            "packages": [{"name": "xtask", "id": "xtask 0.1.0",
+                "manifest_path": "/workspace/xtask/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
+        });
+        for (file, selected) in [
+            ("vscode-extension/package.json", true),
+            (".github/dependabot.yml", true),
+            ("vscode-extension/README.md", false),
+            ("vscode-extension/tsconfig.json", false),
+        ] {
+            let scope = crate::tasks::ci_scope::classify_files(
+                &[file.to_string()],
+                &metadata,
+                "/workspace",
+            )?;
+            let plan = build_pr_fast_plan_from_scope(
+                GateTier::PrFast,
+                "origin/main".to_string(),
+                vec![gate.clone()],
+                Some(scope),
+                true,
+                false,
+                None,
+            )?;
+            assert_eq!(!plan.selected.is_empty(), selected, "wrong routing for {file}");
+            if selected {
+                assert!(
+                    plan.selected[0].gate.command.contains("--tests -p xtask"),
+                    "{file} must run xtask integration tests, including the types fence"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pr_fast_non_rust_owned_inputs_reach_routed_integration_tests() -> color_eyre::eyre::Result<()>
+    {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gate = policy
+            .gates
+            .iter()
+            .find(|gate| gate.name == "unit_routed_full")
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing routed test gate"))?;
+        assert!(gate.required, "the routed integration cohort must remain required in its tier");
+        let metadata = serde_json::json!({
+            "packages": [{"name": "xtask", "id": "xtask 0.1.0",
+                "manifest_path": "/workspace/xtask/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
+        });
+        for file in [".ci/gate-policy.yaml", ".ci/policies/required-checks.toml"] {
+            let scope = crate::tasks::ci_scope::classify_files(
+                &[file.to_string()],
+                &metadata,
+                "/workspace",
+            )?;
+            assert_eq!(scope.diff_class, "ci_config", "the input remains non-Rust: {file}");
+            assert_eq!(
+                super::selected_package_names(&scope),
+                vec!["xtask"],
+                "owner missing: {file}"
+            );
+            let plan = super::plan_pr_fast_gates(
+                &root,
+                vec![gate.clone()],
+                "origin/main".to_string(),
+                Some(scope),
+            )?;
+            assert_eq!(selected_gate_names(&plan), vec!["unit_routed_full"], "lost proof: {file}");
+            assert!(
+                plan.selected[0].gate.command.contains("--tests -p xtask"),
+                "{file} must execute its owner's integration contracts"
+            );
+            assert!(!plan.fallback_used, "explicit owner must not select broad fallback: {file}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pr_fast_owned_non_rust_bin_only_input_uses_target_metadata() -> color_eyre::eyre::Result<()>
+    {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gates: Vec<_> = policy
+            .gates
+            .into_iter()
+            .filter(|gate| matches!(gate.name.as_str(), "unit_scoped" | "unit_routed_full"))
+            .collect();
+        assert_eq!(gates.len(), 2, "both library and integration selectors must be present");
+        let metadata = serde_json::json!({
+            "packages": [{"name": "perl-core-test-runner", "id": "perl-core-test-runner 0.1.0",
+                "manifest_path": "/workspace/crates/perl-core-test-runner/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "perl-core-test-runner 0.1.0", "deps": []}]}
+        });
+        let scope = crate::tasks::ci_scope::classify_files(
+            &["crates/perl-core-test-runner/tests/fixtures/selector_input.json".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert_eq!(scope.diff_class, "docs_as_code");
+        assert_eq!(super::selected_package_names(&scope), vec!["perl-core-test-runner"]);
+
+        // A partial repair that honors ownership but omits target indexing
+        // wrongly selects --lib for this package, which has only bin targets.
+        let without_metadata = build_pr_fast_plan_from_scope(
+            GateTier::PrFast,
+            "origin/main".to_string(),
+            gates.clone(),
+            Some(scope.clone()),
+            true,
+            false,
+            None,
+        )?;
+        assert!(selected_gate_names(&without_metadata).contains(&"unit_scoped".to_string()));
+
+        let plan = super::plan_pr_fast_gates(&root, gates, "origin/main".to_string(), Some(scope))?;
+        assert_eq!(selected_gate_names(&plan), vec!["unit_routed_full"]);
+        assert!(plan.selected[0].gate.command.contains("--tests -p perl-core-test-runner"));
+        assert_eq!(skipped_gate_names(&plan), vec!["unit_scoped"]);
+        assert!(plan.skipped[0].reason.contains("no ci-scope selected packages have a lib target"));
+        assert!(!plan.fallback_used);
+        Ok(())
+    }
+
+    #[test]
     fn pr_fast_docs_as_code_keeps_always_on_and_skips_rust_lanes() -> color_eyre::eyre::Result<()> {
         let gates = vec![
             pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
@@ -7730,7 +7870,10 @@ error: aborting due to previous error
         let cohort_gate = &policy.gates[cohort];
         assert_eq!(
             cohort_gate.command,
-            "cargo build -p perllsp --locked && cargo test --locked --tests {package_args}"
+            // #16194: the test step exports the binary the build step just
+            // produced; the env-wrapped shape keeps is_cargo_test_command
+            // recognition and the ubuntu gate shell intact.
+            "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests {package_args}"
         );
         assert_eq!(cohort_gate.timeout_seconds, 1500);
         assert_eq!(cohort_gate.retry_count, 1);

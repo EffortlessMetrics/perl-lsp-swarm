@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Loop variables declared with for my are now indexed as lexicals in the semantic symbol table, so analyzer-backed definition and hover resolution returns the variable instead of falling back to the enclosing subroutine."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18042"
+  Slug: foreach-my-indexing
+  Breaking: "no"

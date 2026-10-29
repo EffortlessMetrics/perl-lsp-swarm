@@ -6,6 +6,9 @@
 # Additionally, `@{u}` (upstream tracking ref) can be stale or missing, causing
 # scripts that rely on it to fail silently.
 #
+# Colliding untracked files are moved to a timestamped salvage packet under the
+# git dir (never deleted) before the merge is retried, so the pull is recoverable.
+#
 # Usage:
 #   scripts/safe-pull.sh              # pull from origin/main
 #   scripts/safe-pull.sh my-branch    # pull from origin/my-branch
@@ -49,13 +52,19 @@ MERGE_OUTPUT=$(git merge "${REMOTE}/${BRANCH}" 2>&1) && {
 }
 
 # Merge failed — check what kind of failure
-if echo "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
+if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
   # Untracked file conflicts: git refused to start the merge, so no cleanup needed.
   # Extract conflicting file paths from the error message.
-  # Git formats these as indented file paths between the error header and footer.
-  CONFLICTING_FILES=$(echo "${MERGE_OUTPUT}" \
-    | grep -E '^\t' \
-    | sed 's/^\t//')
+  # Git formats these as tab-indented file paths between the error header and footer.
+  # NOTE: `\t` is not a portable regex tab escape — GNU grep ERE does not
+  # interpret it (verified on grep 3.0 and 3.11), so match a literal tab.
+  # The `|| true` keeps `set -e`/`pipefail` from exiting inside this
+  # assignment when nothing matches, so the graceful fallback below stays
+  # reachable instead of dying silently with no message.
+  TAB="$(printf '\t')"
+  CONFLICTING_FILES=$(printf '%s\n' "${MERGE_OUTPUT}" \
+    | grep -E "^${TAB}" \
+    | sed "s/^${TAB}//" || true)
 
   if [ -z "${CONFLICTING_FILES}" ]; then
     echo "ERROR: Detected untracked file conflict but could not parse file list."
@@ -64,18 +73,82 @@ if echo "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; then
     exit 1
   fi
 
-  echo "==> Removing conflicting untracked files:"
+  # Git reports collision paths relative to the worktree root, but this script
+  # may run from any subdirectory. Act from the root so existence checks and
+  # moves resolve the same files git named.
+  TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "${TOPLEVEL}" ] || ! cd "${TOPLEVEL}"; then
+    echo "ERROR: Could not resolve the worktree root; refusing to touch conflicting files."
+    exit 1
+  fi
+
+  # The tab-indented parser above also matches git's "local changes ... would
+  # be overwritten" block: a merge blocked by tracked dirty files (alone or
+  # mixed with untracked collisions) lists tracked paths here. Salvaging those
+  # would relocate committed-file edits out of the tree and let the retry
+  # report success on a mangled checkout. Validate every candidate against the
+  # index BEFORE moving anything; any tracked path aborts the pull untouched.
+  TRACKED_OFFENDERS=""
+  while IFS= read -r f; do
+    if [ -n "${f}" ] && git ls-files --error-unmatch -- ":(literal)${f}" >/dev/null 2>&1; then
+      TRACKED_OFFENDERS="${TRACKED_OFFENDERS}${f}
+"
+    fi
+  done <<< "${CONFLICTING_FILES}"
+  if [ -n "${TRACKED_OFFENDERS}" ]; then
+    echo "ERROR: Refusing to salvage: these conflicting files have tracked changes."
+    echo "Commit or stash them before pulling; nothing was moved."
+    printf '%s' "${TRACKED_OFFENDERS}"
+    exit 1
+  fi
+
+  # Salvage boundary (issue #17403): colliding paths are UNTRACKED, so git has
+  # no record of their content. Move each one into a timestamped salvage packet
+  # (same packet convention as clean-worktrees.sh recovery packets) instead of
+  # deleting it, so the pull stays recoverable. The packet lives under the git
+  # dir so the merge retry below can never collide with it.
+  GIT_DIR="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+  if [ -z "${GIT_DIR}" ]; then
+    echo "ERROR: Could not resolve the git dir; refusing to touch conflicting files."
+    exit 1
+  fi
+  # mktemp -d (not timestamp-pid mkdir) so two salvages can never share a
+  # packet: a reused packet dir would let the second mv silently overwrite the
+  # first salvage's same-named file.
+  SALVAGE_PARENT="${GIT_DIR}/safe-pull-salvage"
+  if ! mkdir -p "${SALVAGE_PARENT}"; then
+    echo "ERROR: Could not create salvage parent ${SALVAGE_PARENT}; refusing to touch conflicting files."
+    exit 1
+  fi
+  SALVAGE_DIR="$(mktemp -d "${SALVAGE_PARENT}/$(date -u +%Y-%m-%dT%H-%M-%SZ)-XXXXXX" 2>/dev/null || true)"
+  if [ -z "${SALVAGE_DIR}" ] || [ ! -d "${SALVAGE_DIR}" ]; then
+    echo "ERROR: Could not create salvage directory under ${SALVAGE_PARENT}; refusing to touch conflicting files."
+    exit 1
+  fi
+  echo "==> Salvaging conflicting untracked files:"
+  echo "    salvage -> ${SALVAGE_DIR}"
   while IFS= read -r f; do
     if [ -n "${f}" ]; then
-      echo "  rm ${f}"
-      rm -f "${f}"
+      if [ ! -e "${f}" ] && [ ! -L "${f}" ]; then
+        echo "  skip ${f} (no longer present)"
+        continue
+      fi
+      if ! mkdir -p -- "${SALVAGE_DIR}/$(dirname -- "${f}")"; then
+        echo "ERROR: Could not create salvage path for ${f}; aborting before the retry."
+        exit 1
+      fi
+      echo "  salvage ${f}"
+      if ! mv -- "${f}" "${SALVAGE_DIR}/${f}"; then
+        echo "ERROR: Could not salvage ${f} to ${SALVAGE_DIR}/${f}; aborting before the retry."
+        exit 1
+      fi
     fi
   done <<< "${CONFLICTING_FILES}"
 
-  # Retry the merge after removing conflicts
+  # Retry the merge after salvaging conflicts
   echo "==> Retrying merge..."
   git merge "${REMOTE}/${BRANCH}"
-  echo "Pull succeeded after removing untracked conflicts."
+  echo "Pull succeeded after salvaging untracked conflicts to ${SALVAGE_DIR}."
   exit 0
 fi
 

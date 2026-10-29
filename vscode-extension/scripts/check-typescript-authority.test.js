@@ -453,7 +453,12 @@ void test('an ignoreDeprecations inherited through extends is caught', () => {
     for (const entry of ['package.json', 'package-lock.json', ...TSCONFIG_FILES]) {
       fs.copyFileSync(path.join(EXTENSION_ROOT, entry), path.join(root, entry));
     }
-    fs.symlinkSync(path.join(EXTENSION_ROOT, 'node_modules'), path.join(root, 'node_modules'));
+    // A directory junction avoids requiring elevated symlink privileges on Windows.
+    fs.symlinkSync(
+      path.join(EXTENSION_ROOT, 'node_modules'),
+      path.join(root, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
     fs.mkdirSync(path.join(root, 'src'), { recursive: true });
     fs.writeFileSync(path.join(root, 'src', 'index.ts'), 'export const ok = 1;\n');
 

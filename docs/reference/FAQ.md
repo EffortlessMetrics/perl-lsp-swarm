@@ -135,25 +135,11 @@ For performance tuning options (cache sizes, deadline budgets, file limits), see
 
 ### Are there workspace size limits?
 
-By default, perl-lsp indexes up to 10,000 files and 500,000 total symbols. For large monorepos, increase these via LSP settings:
-
-```json
-{
-  "perl": {
-    "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 120000
-    }
-  }
-}
-```
-
-See [CONFIG.md](CONFIG.md) for the full limits reference.
+The workspace index has internal limits of 10,000 files and 500,000 total symbols; LSP settings cannot raise these caps. If your workspace reaches a cap, open a narrower workspace folder containing the Perl source you need, then restart the server. [CONFIG.md](CONFIG.md) lists supported `perl.limits` settings. For degraded-index diagnosis, see the [large-workspace troubleshooting guide](../large-workspaces/TROUBLESHOOTING.md).
 
 ### What if the server is slow on startup?
 
-The initial workspace scan budget is 30 seconds by default. If your workspace has many files, increase `perl.limits.workspaceScanDeadlineMs`. You can also use `.perl-lspignore` to exclude directories that don't contain Perl source.
+The initial workspace scan is bounded by internal deadlines. If your workspace has many files, use `.perl-lspignore` to exclude directories that don't contain Perl source.
 
 ---
 

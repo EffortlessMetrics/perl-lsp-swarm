@@ -1116,13 +1116,14 @@ fn test_relaunch_after_terminate_no_stale_state() -> TestResult {
     let _ = wait_cleanup_event(&rx, "terminated", 200);
 
     // Attempt a new launch. Non-existent path → fails at file-exists check.
-    let launch = adapter.handle_request(
-        3,
-        "launch",
-        Some(json!({
-            "program": "/nonexistent/path/to/script_lifecycle_c5.pl"
-        })),
-    );
+    // Authority-backed launches require an absolute `program` path (#8656) and
+    // a bare `/nonexistent/...` is not absolute on Windows, so anchor the
+    // absent file inside a unique retained temp directory — that also makes
+    // nonexistence independent of machine state.
+    let dir = tempdir()?;
+    let nonexistent = dir.path().join("script_lifecycle_c5.pl");
+    let nonexistent = nonexistent.to_str().map(str::to_string).unwrap_or_default();
+    let launch = adapter.handle_request(3, "launch", Some(json!({ "program": nonexistent })));
 
     match launch {
         DapMessage::Response { success: false, command, message, .. } => {

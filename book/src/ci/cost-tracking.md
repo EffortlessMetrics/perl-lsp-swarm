@@ -58,7 +58,7 @@ Based on typical perl-lsp CI runs:
 |-----|----------|----------|------|---------|
 | Mutation testing | Linux | 20 min | $0.160 | `ci:mutation` |
 | Benchmarks | Linux | 5 min | $0.040 | `ci:bench` |
-| Coverage analysis | Linux | 8 min | $0.064 | `ci:coverage` |
+| Coverage analysis | Linux | 8 min | $0.064 | Schedule/manual only |
 | macOS validation | macOS | 10 min | $0.800 | `ci:mac` |
 | Full LSP tests | Linux | 4 min | $0.032 | Code changes |
 | Property tests | Linux | 6 min | $0.048 | `ci:property` |
@@ -277,7 +277,7 @@ concurrency:
 |-----|---------|-------------|
 | Mutation testing | `ci:mutation` | Before releases, major refactors |
 | Benchmarks | `ci:bench` | Performance-critical changes |
-| Coverage | `ci:coverage` | Quarterly health checks |
+| Coverage | Schedule/manual only | Quarterly health checks |
 | macOS | `ci:mac` | Platform-specific features only |
 
 **Example workflow**:
@@ -334,42 +334,32 @@ jobs:
 
 ## Monitoring
 
-### Using `scripts/ci-cost-monitor.sh`
+### Monitoring CI cost
 
-**Note**: This script doesn't exist yet. Below is the specification for creating it.
+Run the XTASK implementation directly:
 
 ```bash
-#!/bin/bash
-# scripts/ci-cost-monitor.sh
-# Estimates CI costs from GitHub Actions API
-
-# Usage:
-#   bash scripts/ci-cost-monitor.sh [--month YYYY-MM] [--repo owner/name]
-
-# Fetch workflow runs for the month
-# Calculate total minutes per runner type
-# Multiply by pricing
-# Output cost breakdown and trends
+cargo xtask ci-cost-monitor
 ```
 
-**Planned implementation** (Issue #211 Phase 3):
+If you prefer using the shim script, it delegates to the same command:
 
 ```bash
-# Show current month costs
+# Via shim
 bash scripts/ci-cost-monitor.sh
+```
 
-# Output:
-# CI Cost Report (2025-01)
-# ========================
-# Linux:    127 min × $0.008 = $1.02
-# Windows:   45 min × $0.016 = $0.72
-# macOS:      0 min × $0.080 = $0.00
-# ────────────────────────────────────
-# Total:                       $1.74
-#
-# PRs:        18
-# Avg/PR:     $0.097
-# Trend:      ↓ 12% vs last month
+Examples:
+
+```bash
+# Show costs for the last 30 days
+cargo xtask ci-cost-monitor
+
+# Show JSON output for CI automation
+cargo xtask ci-cost-monitor --json
+
+# Show costs for the last 7 days
+cargo xtask ci-cost-monitor --days 7
 ```
 
 ### Reading GitHub Billing Reports
@@ -487,7 +477,7 @@ Use third-party tools:
   - Cost: $0.04/run
   - Time: ~5 minutes
 
-- 🏷️ **Coverage** (`ci:coverage`)
+- 🕒 **Coverage** (schedule/manual only)
   - When: Quarterly health checks
   - Cost: $0.06/run
   - Time: ~8 minutes
@@ -498,7 +488,7 @@ Use third-party tools:
   - Time: ~10 minutes
 
 - 🏷️ **Full LSP tests** (auto-triggers on code changes)
-  - When: Changes to `crates/perl-lsp/` or `crates/perl-parser/src/lsp/`
+  - When: Changes to `crates/perl-lsp-rs/` or `crates/perl-parser/src/lsp/`
   - Cost: $0.03/run
   - Time: ~4 minutes
 
@@ -567,10 +557,10 @@ Use this checklist when adding new workflows or jobs:
 
 ## Related Documentation
 
-- **[CI_LOCAL_VALIDATION.md](CI_LOCAL_VALIDATION.md)** - Local-first validation workflow
-- **[CI.md](CI.md)** - GitHub Actions architecture
-- **[CI_TEST_LANES.md](CI_TEST_LANES.md)** - Test lane organization
-- **[COMMANDS_REFERENCE.md](../reference/COMMANDS_REFERENCE.md)** - Full command catalog
+- **[CI_LOCAL_VALIDATION.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CI_LOCAL_VALIDATION.md)** - Local-first validation workflow
+- **[CI.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CI.md)** - GitHub Actions architecture
+- **[CI_TEST_LANES.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CI_TEST_LANES.md)** - Test lane organization
+- **[COMMANDS_REFERENCE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md)** - Full command catalog
 - **Issue #211** - CI Pipeline Cleanup (tracking issue)
 
 ---
