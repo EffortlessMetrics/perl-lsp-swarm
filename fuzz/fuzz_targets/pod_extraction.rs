@@ -21,9 +21,10 @@ fn assert_doc_well_formed(doc: &PodDoc, source: &str) {
     if let Some(syn) = &doc.synopsis {
         assert!(syn.len() <= len, "synopsis field longer than source");
     }
-    if let Some(desc) = &doc.description {
-        assert!(desc.len() <= len, "description field longer than source");
-    }
+    // Description is intentionally not asserted (#17984 contract): it is
+    // the sole markdown field, so percent-encoded L<> targets may
+    // legitimately expand it past its source paragraph. Name, synopsis,
+    // and method bodies are plain display text and stay bounded above.
     for (key, body) in &doc.methods {
         assert!(key.len() <= len, "method key longer than source");
         assert!(body.len() <= len, "method body longer than source");

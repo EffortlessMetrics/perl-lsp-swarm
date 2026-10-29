@@ -20,7 +20,7 @@ an AI-native codebase. Truth maintenance became an engineering subsystem.
 
 The repo names the original failure modes directly.
 
-[`docs/project/LESSONS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/LESSONS.md)
+[`docs/project/LESSONS.md`](../../project/LESSONS.md)
 records:
 
 - overstated LSP coverage
@@ -37,7 +37,7 @@ driven.
 
 ## 2. The Repo Separates Truth From Planning On Purpose
 
-[`docs/project/CURRENT_STATUS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
+[`docs/project/CURRENT_STATUS.md`](../../project/CURRENT_STATUS.md)
 defines itself as the evidence document and gives a formal truth contract:
 
 - `Cargo.toml` for release-line truth
@@ -60,7 +60,7 @@ evidence surfaces and planning surfaces.
 
 The anti-drift story starts before `status-check`.
 
-[`docs/project/FEATURE_GOVERNANCE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/FEATURE_GOVERNANCE.md)
+[`docs/project/FEATURE_GOVERNANCE.md`](../../project/FEATURE_GOVERNANCE.md)
 explains why a hand-maintained feature inventory would drift by design:
 
 - runtime behavior
@@ -91,7 +91,7 @@ well before the repo uses the later `status-check` language.
 
 ## 4. October 2025 Makes Documentation Truth Explicit
 
-[`docs/project/DOCUMENTATION_TRUTH_SYSTEM.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/DOCUMENTATION_TRUTH_SYSTEM.md)
+[`docs/project/DOCUMENTATION_TRUTH_SYSTEM.md`](../../project/DOCUMENTATION_TRUTH_SYSTEM.md)
 documents the first clearly named docs-truth system.
 
 Commit history shows:
@@ -125,7 +125,7 @@ This is the point where the repo stops merely generating truth artifacts and
 starts treating drift as a recurring systems problem with named prevention.
 
 The language in
-[`docs/project/CLAUDE_MD_EVOLUTION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CLAUDE_MD_EVOLUTION.md)
+[`docs/project/CLAUDE_MD_EVOLUTION.md`](../../project/CLAUDE_MD_EVOLUTION.md)
 matches that reading closely:
 
 - metrics are computed, not hand-edited
@@ -147,13 +147,13 @@ The `justfile` wires truth maintenance directly into local workflows:
 
 The enforcement layer is executable:
 
-- [`xtask/src/tasks/update_status.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/update_status.rs)
+- [`xtask/src/tasks/update_status.rs`](../../../xtask/src/tasks/update_status/mod.rs)
   regenerates status sections and roadmap metrics
-- [`xtask/src/tasks/features.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/features.rs)
+- [`xtask/src/tasks/features.rs`](../../../xtask/src/tasks/features.rs)
   checks catalog invariants and compliance drift
-- [`xtask/src/tasks/gates.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/gates.rs)
+- [`xtask/src/tasks/gates.rs`](../../../xtask/src/tasks/gates.rs)
   emits, diffs, and blocks on gate receipts
-- [`xtask/src/tasks/receipts.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/receipts.rs)
+- [`xtask/src/tasks/receipts.rs`](../../../xtask/src/tasks/receipts.rs)
   replaces the earlier script-based receipt generation
 
 The repo is progressively moving from "remember the rules" to "run the rule
@@ -165,7 +165,7 @@ engine."
 
 The receipt system is not just a pile of JSON files.
 
-[`.ci/receipt.schema.json`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.ci/receipt.schema.json)
+[`.ci/receipt.schema.json`](../../../.ci/receipt.schema.json)
 defines the structure of gate evidence. `xtask gates` uses that structure for:
 
 - execution metadata
@@ -226,16 +226,16 @@ is about whether the repo has made drift mechanically difficult.
 
 ## Evidence Pointers
 
-- [CURRENT_STATUS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
-- [LESSONS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/LESSONS.md)
-- [FEATURE_GOVERNANCE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/FEATURE_GOVERNANCE.md)
-- [DOCUMENTATION_TRUTH_SYSTEM.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/DOCUMENTATION_TRUTH_SYSTEM.md)
-- [CLAUDE_MD_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CLAUDE_MD_EVOLUTION.md)
-- [METRICS_PROVENANCE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/METRICS_PROVENANCE.md)
-- [justfile](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/justfile)
-- [xtask/src/tasks/update_status.rs](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/update_status.rs)
-- [xtask/src/tasks/features.rs](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/features.rs)
-- [xtask/src/tasks/gates.rs](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/gates.rs)
-- [xtask/src/tasks/receipts.rs](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/receipts.rs)
-- [receipt.schema.json](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.ci/receipt.schema.json)
+- [CURRENT_STATUS.md](../../project/CURRENT_STATUS.md)
+- [LESSONS.md](../../project/LESSONS.md)
+- [FEATURE_GOVERNANCE.md](../../project/FEATURE_GOVERNANCE.md)
+- [DOCUMENTATION_TRUTH_SYSTEM.md](../../project/DOCUMENTATION_TRUTH_SYSTEM.md)
+- [CLAUDE_MD_EVOLUTION.md](../../project/CLAUDE_MD_EVOLUTION.md)
+- [METRICS_PROVENANCE.md](../../project/METRICS_PROVENANCE.md)
+- [justfile](../../../justfile)
+- [xtask/src/tasks/update_status.rs](../../../xtask/src/tasks/update_status/mod.rs)
+- [xtask/src/tasks/features.rs](../../../xtask/src/tasks/features.rs)
+- [xtask/src/tasks/gates.rs](../../../xtask/src/tasks/gates.rs)
+- [xtask/src/tasks/receipts.rs](../../../xtask/src/tasks/receipts.rs)
+- [receipt.schema.json](../../../.ci/receipt.schema.json)
 - commits `206c3fdde`, `25f0b29a5`, `a1981069b`

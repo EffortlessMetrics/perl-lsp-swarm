@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "A mutating substitution or transliteration target is now marked read-modify-write in body HIR, matching compound assignment, so write and data-flow queries can see that the target variable is reassigned. Non-destructive /r forms still mark the target as a plain read."
+time: 2026-10-21T00:00:00Z
+custom:
+  PR: "18240"
+  Slug: substitution-target-rmw
+  Breaking: "no"

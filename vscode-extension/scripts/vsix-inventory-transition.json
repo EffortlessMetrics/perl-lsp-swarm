@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16531,
-  "reason": "4th heal re-measure: main advanced by #16595 (folder-scoped include paths) and #16766 (formatter and VSIX inventory restore), so this claim's update-lifecycle body (+6698 bytes in the bundled out/extension.js) is re-measured from the exact healed merge-tip archive on top of main's accepted baseline; size-only, no packaged file added or removed.",
-  "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "candidate_baseline_file_sha256": "1a4514a5e317f815c7d763a7bd23f3c469e6f5b4ba1cf7efc45c1376e94b0268",
-  "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
-  "candidate_inventory_sha256": "7a56e613af73034704487cf8a5e445a16dde9c24db4e1d86112fcc60dbe43d83"
+  "owner_issue": 18098,
+  "reason": "Re-measured from the produced package: main grew package.json (+232) and out/extension.js (+326) through #18277 and follow-up merges without a transition landing; receipt projected_actual (31 files, 1935713 bytes) taken verbatim as the new baseline.",
+  "base_baseline_file_sha256": "3bcfabd00546bfaf90ab7b8e3747bda209a1ce3ae7d3727efccaa44d18c0cd2d",
+  "base_inventory_sha256": "c4572b1b9cb93803976ba3612ef45ed46be12b156bf5b5905b0305e6e7b27ec4",
+  "candidate_baseline_file_sha256": "daa7d4775e6e0aa1aa026b08bf6e2b6f1483004be2da8d8272d211e247ea8d42",
+  "candidate_inventory_sha256": "4ed08e537a58d83824d48ac7cff1c4aa058516f02d9858333018995ed39c3735"
 }

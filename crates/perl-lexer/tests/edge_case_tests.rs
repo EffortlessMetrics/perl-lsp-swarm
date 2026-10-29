@@ -75,6 +75,83 @@ fn split_adjacent_single_quote_pattern_keeps_quote_for_string() -> R {
 }
 
 #[test]
+fn leading_apostrophe_variable_is_one_identifier() -> R {
+    // `$'b` is `$main::b` (empty first package segment), not the `$'`
+    // postmatch variable plus a bareword. Verified against perl 5.42.2:
+    // `$main::b = 42; print $'b` prints 42.
+    let sig = significant("$x = $'b;");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'b"),
+        "leading apostrophe variable should stay one token: {sig:?}"
+    );
+    assert!(
+        !sig.iter().any(|token| token.text.as_ref() == "$'"),
+        "postmatch token must not split the qualified name: {sig:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn second_apostrophe_without_segment_opens_string() -> R {
+    // `$'b'c` continues the qualified name (another separator segment),
+    // but `$'b';` must not absorb the trailing apostrophe into the token:
+    // in Perl it opens a string there.
+    let chained = significant("$'b'c;");
+    assert!(
+        chained.iter().any(|token| token.text.as_ref() == "$'b'c"),
+        "chained separator segments should stay one token: {chained:?}"
+    );
+    let terminated = significant("$'b';");
+    assert!(
+        terminated.iter().any(|token| token.text.as_ref() == "$'b"),
+        "qualified name should end before the string apostrophe: {terminated:?}"
+    );
+    assert!(
+        !terminated.iter().any(|token| token.text.as_ref() == "$'b'"),
+        "trailing apostrophe must not join the variable token: {terminated:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn colon_tail_apostrophe_without_segment_opens_string() -> R {
+    // `$'b::c';` must end the variable at `c`: the trailing apostrophe
+    // opens a string, it does not join the qualified name.
+    let sig = significant("$'b::c';");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'b::c"),
+        "qualified name should end before the string apostrophe: {sig:?}"
+    );
+    assert!(
+        !sig.iter().any(|token| token.text.as_ref() == "$'b::c'"),
+        "trailing apostrophe must not join the variable token: {sig:?}"
+    );
+    // The trailing input is not dropped: it lexes as its own (here
+    // unterminated) string token after the variable.
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "';"),
+        "trailing apostrophe input should remain a separate token: {sig:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn bare_postmatch_apostrophe_stays_special_variable() -> R {
+    // Bare `$'` with no identifier start after it remains the postmatch
+    // special variable.
+    let sig = significant("print $';");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'"),
+        "bare postmatch should stay one special-variable token: {sig:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn legacy_apostrophe_package_separator_stays_identifier() -> R {
     let first = first_significant("Foo'Bar::baz").ok_or("missing identifier")?;
     assert!(
@@ -1591,6 +1668,20 @@ fn sigil_deref_chained_does_not_suppress_regex_after_brace() -> R {
         has_regex,
         "expected a Regex token after sigil-deref chain, got: {:?}",
         toks.iter().map(|t| (&t.token_type, t.text.as_ref())).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn apostrophe_digit_suffix_does_not_swallow_string() -> R {
+    let sig = significant("$'b'9';");
+    assert!(
+        sig.iter().any(|token| token.text.as_ref() == "$'b"),
+        "variable should end at the second apostrophe: {sig:?}"
+    );
+    assert!(
+        !sig.iter().any(|token| token.text.as_ref() == "$'b'9'"),
+        "string quote must not be swallowed into the variable: {sig:?}"
     );
     Ok(())
 }

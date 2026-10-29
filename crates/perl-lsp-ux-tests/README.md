@@ -83,8 +83,14 @@ cargo test -p perl-lsp-ux-tests
 
 The local `just ux-tests` and `just ux-tests-full` recipes build
 `target/debug/perl-lsp` first and set `PERL_LSP_BIN` automatically. Raw
-`cargo test` runs still require a prebuilt binary or an explicit
-`PERL_LSP_BIN=/path/to/perl-lsp`.
+`cargo test` runs work with a prebuilt binary alone: the harness
+auto-discovers the candidate via `resolve_binary()` — explicit
+`PERL_LSP_BIN` override, then a walk from the test executable to
+`target/<profile>/perl-lsp`, then `CARGO_TARGET_DIR`, then a
+`CARGO_MANIFEST_DIR` workspace walk, then `PATH`. Scenarios without a
+resolvable binary skip, except the exact-process lifecycle proofs, which
+fail loudly by design; set `PERL_LSP_UX_REQUIRE_BINARY=1` to turn every
+silent skip into a hard failure.
 
 To force integration-gated tests (if present):
 
