@@ -1,0 +1,8 @@
+diff --git a/lib/Tally.pm b/lib/Tally.pm
+--- a/lib/Tally.pm
++++ b/lib/Tally.pm
+@@ -7,3 +7,4 @@
+
+ sub second {
++    my $extra = 2;
+     return $extra;

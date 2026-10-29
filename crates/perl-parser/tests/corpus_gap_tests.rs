@@ -544,4 +544,48 @@ mod corpus_gap_tests {
 
         Ok(())
     }
+
+    fn collect_kind_names(node: &perl_parser::ast::Node, out: &mut Vec<String>) {
+        out.push(node.kind.kind_name().to_string());
+        node.for_each_child(|child| collect_kind_names(child, out));
+    }
+
+    // #16192: the broad project corpus must exercise the targetless goto
+    // family landed in #15879 — the childless `TargetlessGoto` node carries
+    // the omitted operand, with no fabricated label, synthesized target, or
+    // recovery children in the parsed fixture.
+    #[test]
+    fn targetless_goto_corpus_fixture_emits_targetlessgoto()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = resolve_corpus_path("targetless_goto.pl")?;
+        let content = read_corpus_source(&path)?;
+        let mut parser = Parser::new(&content);
+        let ast = match parser.parse() {
+            Ok(ast) => ast,
+            Err(e) => return Err(format!("targetless_goto.pl must parse cleanly: {e}").into()),
+        };
+
+        let mut kinds = Vec::new();
+        collect_kind_names(&ast, &mut kinds);
+        let count = |name: &str| kinds.iter().filter(|k| k.as_str() == name).count();
+
+        assert!(
+            count("TargetlessGoto") >= 3,
+            "targetless_goto.pl must exercise the bare, short-circuit, and \
+             statement-modifier targetless forms, found {} TargetlessGoto nodes",
+            count("TargetlessGoto")
+        );
+        assert!(
+            count("Goto") >= 2,
+            "targetless_goto.pl keeps targeted label/sub gotos for contrast, \
+             found {} Goto nodes",
+            count("Goto")
+        );
+        assert_eq!(
+            count("MissingExpression") + count("Error"),
+            0,
+            "targetless goto must be a legal omission, not parser recovery"
+        );
+        Ok(())
+    }
 }

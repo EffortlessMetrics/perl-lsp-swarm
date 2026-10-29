@@ -48,25 +48,13 @@
 //! server latency is a separate concern with its own authority. The loop is
 //! still bounded: at most one further evaluation happens once the bound passes.
 //!
-//! # Where the typed reason survives — and where it does not
+//! # Typed wait outcomes
 //!
-//! [`WaitEnd`] is produced by every wait here, but not every *caller* keeps it.
-//! Be precise about which layer you are relying on:
-//!
-//! - **Kept.** The substrate itself, and `UxClient::wait_for_response`, which
-//!   folds the reason (plus the child's real exit status) into its error.
-//! - **Discarded today.** The convenience wrappers above it collapse the
-//!   outcome to a plain value: `DiagnosticsTracker`'s waits end in `.ok()`,
-//!   `UxHarness::wait_for_active_document_ready` and
-//!   `wait_for_index_ready_event_after` in `.is_ok()`, and
-//!   `wait_for_diagnostics` / `wait_for_latest_diagnostics` in
-//!   `.unwrap_or_default()`. A scenario calling those still cannot tell a
-//!   closed stream from an expired bound.
-//!
-//! So "the harness can tell you why a wait ended" is true of this module and
-//! the request path, and not yet true end to end. Propagating the reason
-//! through those wrappers changes their signatures and their call sites, and is
-//! tracked as remaining work on the still-open #13319 rather than claimed here.
+//! [`WaitEnd`] is retained by diagnostics and readiness wrappers so a scenario
+//! can distinguish a live deadline from an orderly server close or transport
+//! failure. `UxClient::wait_for_response` folds the reason (plus the child's
+//! real exit status) into its request error. A successful empty diagnostics
+//! publication remains distinct from every unsuccessful wait outcome.
 
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -148,6 +136,14 @@ impl WaitEnd {
         matches!(self, Self::Deadline { .. })
     }
 }
+
+impl std::fmt::Display for WaitEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.describe())
+    }
+}
+
+impl std::error::Error for WaitEnd {}
 
 /// A consistent, lock-free view of the inbox at one sequence point.
 #[derive(Debug, Clone)]

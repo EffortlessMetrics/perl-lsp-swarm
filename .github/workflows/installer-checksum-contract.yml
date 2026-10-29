@@ -9,6 +9,7 @@ on:
       - 'scripts/tests/test-installer-checksum-required.sh'
       - 'scripts/tests/test-installer-archive-safety.sh'
       - 'scripts/tests/test-installer-product-unit-promotion.sh'
+      - 'scripts/tests/test-installer-verify-install.sh'
       - 'scripts/tests/lib/standalone_archive_fixtures.py'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
@@ -21,6 +22,7 @@ on:
       - 'scripts/tests/test-installer-checksum-required.sh'
       - 'scripts/tests/test-installer-archive-safety.sh'
       - 'scripts/tests/test-installer-product-unit-promotion.sh'
+      - 'scripts/tests/test-installer-verify-install.sh'
       - 'scripts/tests/lib/standalone_archive_fixtures.py'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
@@ -50,7 +52,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Parse shell sources
-        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh scripts/tests/test-installer-archive-safety.sh scripts/tests/test-installer-product-unit-promotion.sh
+        run: bash -n scripts/install.sh scripts/tests/test-installer-checksum-required.sh scripts/tests/test-installer-archive-safety.sh scripts/tests/test-installer-product-unit-promotion.sh scripts/tests/test-installer-verify-install.sh
 
       - name: Run checksum negative controls
         run: bash scripts/tests/test-installer-checksum-required.sh
@@ -90,3 +92,6 @@ jobs:
 
       - name: Run product-unit promotion controls
         run: bash scripts/tests/test-installer-product-unit-promotion.sh
+
+      - name: Run verify-install fail-closed controls
+        run: bash scripts/tests/test-installer-verify-install.sh

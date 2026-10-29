@@ -1,11 +1,17 @@
-# Crate structure
+# Crate Architecture Guide — retired compatibility pointer
 
-This mdBook page is a compatibility pointer. The current crate map and ownership boundaries are maintained in the repository sources:
+This file was a v0.8.8-era combined crate inventory and Claude swarm-control guide. It is no longer a current architecture authority: the workspace, compiler-backed product model, crate boundaries, and agent runtime have all changed materially since it was written.
 
-- [Architecture overview](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md)
-- [Workspace manifest](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml)
-- [Parser-core README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-parser-core/README.md)
-- [LSP-core README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-lsp-rs-core/README.md)
-- [Server README](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/crates/perl-lsp-rs/README.md)
+Use the current sources instead:
 
-The links are absolute so the page remains valid when the deployment script copies it into the book tree.
+- [`../../CLAUDE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CLAUDE.md) — current Claude repository operating contract;
+- [`../../AGENTS.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/AGENTS.md) — current provider front door and agent roster;
+- [`../../docs/reference/ARCHITECTURE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md) — current system and crate architecture;
+- [`../../docs/reference/ORCHESTRATION_DOCTRINE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ORCHESTRATION_DOCTRINE.md) — orchestration and routing model;
+- [`../../docs/agents/IMPLEMENTATION_WORKER.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/agents/IMPLEMENTATION_WORKER.md) — provider-neutral implementation method;
+- package-local `AGENTS.md` / `CLAUDE.md` files — domain ownership, constraints, and focused commands;
+- current Cargo manifests and source — actual workspace membership and public crate seams.
+
+Project `.claude/settings.json` does not grant shared shell permissions or enforce the development lifecycle, and the repository has retired project-level Claude/Codex hooks. GitHub issues, PRs, reviews, threads, checks, rulesets, and merges carry live transaction state; provider-native skills provide just-in-time procedure.
+
+The original detailed guide remains available through Git history for archaeology. Do not use its crate metrics, performance claims, role catalogue, command list, hook guarantees, or worktree doctrine as current truth.

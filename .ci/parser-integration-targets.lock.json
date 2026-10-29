@@ -32,8 +32,28 @@
       "invocation_sha256": "89a8d90d0dc752d12e064b1702b4faabf0c0f60bc26f332c9eb86a43cca00faf"
     },
     {
+      "id": "parser.hir.control_flow",
+      "invocation_sha256": "7758308f8ddcb5108f8a46179e6a260317db59e2262f3f7ba96293397b6e85cd"
+    },
+    {
       "id": "parser.hir.postfix_modifiers",
       "invocation_sha256": "0fee291736275420f9ae5585dc370bc6f42cc37990f5b6c27c3edf7d26ff3f9e"
+    },
+    {
+      "id": "parser.hir.program_body_geometry",
+      "invocation_sha256": "ac08211a9da5df905d3b9e3f8dec9b215503a1ad6a6ebb1404326ede42892af0"
+    },
+    {
+      "id": "parser.hir.program_body_parity",
+      "invocation_sha256": "7ca2ad26ba07a0df246e74e8098de6e5e808266bfb321e2af0d888b044e74859"
+    },
+    {
+      "id": "parser.hir.program_body_regex",
+      "invocation_sha256": "cfa2459045abfd0ac2ed2268eecf2a73e7b8d3daedfca278eea5bd99aeb55155"
+    },
+    {
+      "id": "parser.hir.scalar_literal_payloads",
+      "invocation_sha256": "019e0b5c3e5f5a7aebd947137c83abb04323627e47360b6a16d897a0192d65a2"
     },
     {
       "id": "parser.incremental.accuracy",
@@ -62,6 +82,18 @@
     {
       "id": "parser.literals.structural",
       "invocation_sha256": "fced33575430f695ffe154bbbcf0fdb3fe026c6bed9a1ce116dd8927c9cd013c"
+    },
+    {
+      "id": "parser.loops.c_style_separator_recovery",
+      "invocation_sha256": "8ec1ec0814cba27119a4f1e036ecc056eeeaed6f234ab25388da16cf00a25b7b"
+    },
+    {
+      "id": "parser.loops.foreach_declaration_list",
+      "invocation_sha256": "2cd42c7d4fa70b28541edfec54093f23c25557dc5d6758b942a300e784ada9c6"
+    },
+    {
+      "id": "parser.output.adjacent_call",
+      "invocation_sha256": "e554a06ded99768caa9108ed255b09ba7f367bed72727628f96f7c913bca920c"
     },
     {
       "id": "parser.pir.branch_body",

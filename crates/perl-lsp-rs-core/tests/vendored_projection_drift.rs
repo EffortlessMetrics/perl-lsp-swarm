@@ -1,21 +1,15 @@
-//! Vendored catalog projection drift guard (#7029).
+//! Vendored catalog projection drift guard (#7029 / #9199).
 //!
 //! Root `features.toml` is the single human-edited authority. Each crate-local
 //! `features_sot.toml` is a deterministic byte projection of that authority so
-//! standalone/packaged builds resolve an identical catalog. This test fails
-//! when a vendored copy drifts from the authority; regenerate with
-//! `cargo xtask features regen-vendored`.
+//! standalone/packaged builds resolve an identical catalog. This live-tree test
+//! fails when any crate-local fallback drifts; regenerate with
+//! `cargo xtask features regen-vendored`. Fixture-level negative controls live
+//! in `xtask/tests/vendored_catalog_projections.rs`.
 
 use std::path::{Path, PathBuf};
 
 use perl_tdd_support::{must, must_some};
-
-const VENDORED_PATHS: &[&str] = &[
-    "crates/perl-lsp-rs/features_sot.toml",
-    "crates/perl-lsp-rs-core/features_sot.toml",
-    "crates/perl-parser/features_sot.toml",
-    "crates/perl-dap/features_sot.toml",
-];
 
 fn workspace_root() -> PathBuf {
     must_some(Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).map(Path::to_path_buf))
@@ -28,17 +22,47 @@ fn read_bytes(path: &Path) -> Vec<u8> {
     )
 }
 
+fn crate_local_fallbacks(root: &Path) -> Vec<PathBuf> {
+    let crates = root.join("crates");
+    let entries = must(
+        std::fs::read_dir(&crates)
+            .map_err(|error| format!("cannot read {}: {error}", crates.display())),
+    );
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = must(entry.map_err(|error| format!("cannot read crates/ entry: {error}")));
+        let file_type = must(
+            entry
+                .file_type()
+                .map_err(|error| format!("cannot stat {}: {error}", entry.path().display())),
+        );
+        if !file_type.is_dir() {
+            continue;
+        }
+        let candidate = entry.path().join("features_sot.toml");
+        if candidate.is_file() {
+            paths.push(candidate);
+        }
+    }
+    paths.sort();
+    paths
+}
+
 #[test]
 fn every_vendored_projection_is_byte_identical_to_the_authority() {
     let root = workspace_root();
     let authority = read_bytes(&root.join("features.toml"));
+    let projections = crate_local_fallbacks(&root);
+    assert!(
+        !projections.is_empty(),
+        "workspace must retain crate-local features_sot.toml fallbacks (#9199)"
+    );
 
     let mut drifted = Vec::new();
-    for relative in VENDORED_PATHS {
-        let path = root.join(relative);
-        let vendored = read_bytes(&path);
+    for path in &projections {
+        let vendored = read_bytes(path);
         if vendored != authority {
-            drifted.push((*relative).to_string());
+            drifted.push(path.display().to_string());
         }
     }
 

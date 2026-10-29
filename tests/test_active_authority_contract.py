@@ -90,10 +90,10 @@ KNOWN_SKILLS = frozenset(
     }
 )
 
-# The `main` ruleset (id 16664791) sets `required_review_thread_resolution`, so an
-# armed auto-merge with one open bot or outdated thread never fires and reports no
-# failure. The finishing skills must state the precondition in identical words.
-THREAD_PRECONDITION = "zero unresolved review threads is a precondition of arming auto-merge"
+# The `main` ruleset (id 16664791) sets `required_review_thread_resolution`, so
+# protected integration with one open bot or outdated thread is blocked. The
+# finishing skills must retain that precondition after routine auto-merge retires.
+THREAD_PRECONDITION = "zero unresolved review threads is a precondition of protected integration"
 
 SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
     "address-review-comments": ("NOT_PROVEN", "final-challenge", THREAD_PRECONDITION),
@@ -116,8 +116,8 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "NOT_PROVEN",
         THREAD_PRECONDITION,
         "--match-head-commit",
-        "autoMergeRequest",
-        "Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms",
+        "pending qualification does not authorize auto-merge",
+        "read the durable PR/commit state",
     ),
     "orchestrate-work": ("NOT_PROVEN", "deliver-pr", "review-pr", "verify-live-ci"),
     "prepare-issue": ("PLAN_READY", "NOT_PROVEN", "prepare-proof"),
@@ -140,7 +140,7 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "MERGE_BLOCKED",
         "NOT_PROVEN",
         "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
-        "re-evaluates the current tree and is the honest action",
+        "no admissible exact-subject producer means `NOT_PROVEN`",
         THREAD_PRECONDITION,
         "is `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`",
     ),
@@ -647,6 +647,14 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
             for marker in SEMANTIC_PARITY_MARKERS[skill]:
                 self.assertIn(marker, codex, f"{codex_path} is missing semantic invariant {marker!r}")
                 self.assertIn(marker, claude, f"{claude_path} is missing semantic invariant {marker!r}")
+
+    def test_missing_merge_tree_producer_refuses_instead_of_pushing(self) -> None:
+        for provider in (".agents", ".claude"):
+            text = active_text(f"{provider}/skills/verify-live-ci/SKILL.md")
+            self.assertIn("no admissible exact-subject producer means `NOT_PROVEN`", text)
+            for instruction in ("Authorize one verified-clean empty commit",
+                                "empty-commit head bump", "fresh-trigger exception applies"):
+                self.assertNotIn(instruction, text)
 
     def test_documented_worktree_root_is_ignored(self) -> None:
         protocol = active_text(WORKTREE_PROTOCOL)

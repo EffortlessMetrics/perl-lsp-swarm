@@ -256,13 +256,15 @@ impl DapPeerBridge {
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            Some(DapRequestRoute::Launch) => {
-                let params = parse_launch(arguments.as_ref());
-                match self.backend.launch(params) {
+            Some(DapRequestRoute::Launch) => match parse_launch(arguments.as_ref()) {
+                Ok(params) => match self.backend.launch(params) {
                     Ok(_) => out.push(self.response(request_seq, command, true, None, None)),
                     Err(e) => out.push(self.error(request_seq, command, e)),
+                },
+                Err(message) => {
+                    out.push(self.response(request_seq, command, false, None, Some(message)))
                 }
-            }
+            },
             Some(DapRequestRoute::Attach) => {
                 let params = parse_attach(arguments.as_ref());
                 match self.backend.attach(params) {
@@ -1028,9 +1030,45 @@ fn parse_initialize(args: Option<&Value>) -> InitializeBackendParams {
     }
 }
 
-fn parse_launch(args: Option<&Value>) -> LaunchBackendParams {
+/// Read `stopOnEntry` without coercion (#18027): absent or null means
+/// false; any other non-boolean is a typed refusal, never a silent false.
+fn typed_stop_on_entry(args: &Value) -> Result<bool, String> {
+    match args.get("stopOnEntry") {
+        None | Some(Value::Null) => Ok(false),
+        Some(value) => {
+            value.as_bool().ok_or_else(|| "Invalid stopOnEntry: expected a boolean".to_string())
+        }
+    }
+}
+
+fn parse_launch(args: Option<&Value>) -> Result<LaunchBackendParams, String> {
     let mut params = LaunchBackendParams::default();
     if let Some(a) = args {
+        // Admit the typed launch options without coercion (#18027), mirroring
+        // `DebugAdapter::parse_launch_typed_options`: a present-but-wrong-typed
+        // value refuses the launch instead of silently changing behavior
+        // while the response still reports success. Error text names options
+        // and, for `env`, the offending key only; values are never echoed.
+        params.stop_on_entry = typed_stop_on_entry(a)?;
+        // `LaunchBackendParams` has no timeout slot and the peer owns the
+        // debuggee process, so no watchdog can be armed in this mode.
+        // Refuse a positive request instead of accepting it silently
+        // (#18055); absent/null/zero keep the previous admitted behavior.
+        match a.get("debuggeeTimeoutSeconds") {
+            None | Some(Value::Null) => {}
+            Some(value) => {
+                let timeout = value.as_u64().ok_or_else(|| {
+                    "Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string()
+                })?;
+                if timeout > 0 {
+                    return Err(
+                        "debuggeeTimeoutSeconds is not supported in --external-peer mode: \
+                         the peer owns the debuggee process and no watchdog can be armed"
+                            .to_string(),
+                    );
+                }
+            }
+        }
         if let Some(p) = a.get("program").and_then(Value::as_str) {
             params.program = p.into();
         }
@@ -1038,18 +1076,29 @@ fn parse_launch(args: Option<&Value>) -> LaunchBackendParams {
             params.args = arr.iter().filter_map(|v| v.as_str().map(ToString::to_string)).collect();
         }
         params.cwd = a.get("cwd").and_then(Value::as_str).map(Into::into);
-        if let Some(obj) = a.get("env").and_then(Value::as_object) {
-            params.env = obj
-                .iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect();
+        match a.get("env") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(entries)) => {
+                let mut env = std::collections::HashMap::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let value = value.as_str().ok_or_else(|| {
+                        format!("Invalid env value for '{key}': expected a string")
+                    })?;
+                    env.insert(key.clone(), value.to_string());
+                }
+                params.env = env;
+            }
+            Some(_) => {
+                return Err(
+                    "Invalid env: expected an object mapping names to string values".to_string()
+                );
+            }
         }
         if let Some(arr) = a.get("includePaths").and_then(Value::as_array) {
             params.include_paths = arr.iter().filter_map(|v| v.as_str().map(Into::into)).collect();
         }
-        params.stop_on_entry = a.get("stopOnEntry").and_then(Value::as_bool).unwrap_or(false);
     }
-    params
+    Ok(params)
 }
 
 fn parse_attach(args: Option<&Value>) -> AttachBackendParams {
@@ -1136,13 +1185,7 @@ fn category_str(c: OutputCategory) -> &'static str {
 }
 
 fn evaluate_context(c: &str) -> EvaluateContext {
-    match c {
-        "watch" => EvaluateContext::Watch,
-        "repl" => EvaluateContext::Repl,
-        "hover" => EvaluateContext::Hover,
-        "variables" => EvaluateContext::Variables,
-        other => EvaluateContext::Other(other.to_string()),
-    }
+    EvaluateContext::from_dap_label(c)
 }
 
 #[cfg(test)]
@@ -1170,6 +1213,11 @@ mod tests {
         /// Counts real `step_in` calls that reached the backend, so a refused
         /// targeted `stepIn` is observed directly rather than inferred (#9069).
         step_in_calls: Arc<AtomicUsize>,
+        /// Counts real `launch` calls that reached the backend, so a refused
+        /// launch is observed directly rather than inferred (#18027).
+        launch_calls: Arc<AtomicUsize>,
+        /// Last launch params the backend received, for admission checks.
+        last_launch: Arc<std::sync::Mutex<Option<LaunchBackendParams>>>,
     }
 
     impl DebugBackend for ScriptBackend {
@@ -1182,7 +1230,11 @@ mod tests {
         fn initialize(&mut self, _p: InitializeBackendParams) -> BackendResult<()> {
             Ok(())
         }
-        fn launch(&mut self, _p: LaunchBackendParams) -> BackendResult<LaunchResult> {
+        fn launch(&mut self, p: LaunchBackendParams) -> BackendResult<LaunchResult> {
+            self.launch_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if let Ok(mut slot) = self.last_launch.lock() {
+                *slot = Some(p);
+            }
             Ok(LaunchResult { success: true })
         }
         fn attach(&mut self, _p: AttachBackendParams) -> BackendResult<AttachResult> {
@@ -1289,6 +1341,137 @@ mod tests {
 
     fn bridge() -> DapPeerBridge {
         DapPeerBridge::new(Box::new(ScriptBackend::default()))
+    }
+
+    fn recording_bridge()
+    -> (DapPeerBridge, Arc<AtomicUsize>, Arc<std::sync::Mutex<Option<LaunchBackendParams>>>) {
+        let backend = ScriptBackend::default();
+        let launch_calls = Arc::clone(&backend.launch_calls);
+        let last_launch = Arc::clone(&backend.last_launch);
+        (DapPeerBridge::new(Box::new(backend)), launch_calls, last_launch)
+    }
+
+    /// #18027 (peer-bridge path): wrong-typed `stopOnEntry`,
+    /// `debuggeeTimeoutSeconds`, and `env` entries refuse instead of being
+    /// coerced by `as_bool`/`as_u64`/`filter_map`; absent/null and
+    /// well-typed values keep their exact meaning.
+    #[test]
+    fn parse_launch_refuses_wrong_typed_options_without_coercion() {
+        let parse = |args: Value| parse_launch(Some(&args));
+        assert_eq!(
+            parse(json!({ "stopOnEntry": "true" })),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "stopOnEntry": 1 })),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": "30" })),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": -5 })),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": 1.5 })),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "env": ["A=1"] })),
+            Err("Invalid env: expected an object mapping names to string values".to_string())
+        );
+        let env_err =
+            parse(json!({ "env": { "SECRET_TOKEN": 987654321 } })).err().unwrap_or_default();
+        assert!(env_err.contains("SECRET_TOKEN"), "error names the key: {env_err}");
+        assert!(!env_err.contains("987654321"), "error must not echo the value: {env_err}");
+        assert_eq!(env_err, "Invalid env value for 'SECRET_TOKEN': expected a string");
+
+        assert!(
+            matches!(parse(json!({})), Ok(p) if !p.stop_on_entry && p.env.is_empty()),
+            "absent options admit defaults"
+        );
+        assert!(
+            parse(json!({ "stopOnEntry": null, "debuggeeTimeoutSeconds": null, "env": null }))
+                .is_ok(),
+            "null options admit defaults"
+        );
+        assert!(
+            matches!(
+                parse(json!({
+                    "stopOnEntry": true,
+                    "env": { "A": "1" }
+                })),
+                Ok(p) if p.stop_on_entry && p.env.get("A").map(String::as_str) == Some("1")
+            ),
+            "well-typed options admit with values intact"
+        );
+        assert!(parse_launch(None).is_ok());
+    }
+
+    /// #18055: a positive `debuggeeTimeoutSeconds` cannot be honored in
+    /// external-peer mode (no watchdog slot; the peer owns the process),
+    /// so it refuses instead of being silently dropped. Zero means no
+    /// watchdog was requested and still admits.
+    #[test]
+    fn parse_launch_refuses_positive_timeout_it_cannot_enforce() {
+        let parse = |args: Value| parse_launch(Some(&args));
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": 30 })),
+            Err("debuggeeTimeoutSeconds is not supported in --external-peer mode: \
+                 the peer owns the debuggee process and no watchdog can be armed"
+                .to_string())
+        );
+        assert!(parse(json!({ "debuggeeTimeoutSeconds": 0 })).is_ok(), "zero admits");
+    }
+
+    /// A refused launch never reaches the backend; a well-typed one does,
+    /// with its typed values intact.
+    #[test]
+    fn launch_dispatch_refuses_wrong_typed_options_before_the_backend_runs() -> Result<(), String> {
+        for (args, expected) in [
+            (json!({ "stopOnEntry": "true" }), "Invalid stopOnEntry: expected a boolean"),
+            (
+                json!({ "debuggeeTimeoutSeconds": "30" }),
+                "Invalid debuggeeTimeoutSeconds: expected a non-negative integer",
+            ),
+            (
+                json!({ "env": { "SECRET_TOKEN": 987654321 } }),
+                "Invalid env value for 'SECRET_TOKEN': expected a string",
+            ),
+            (
+                json!({ "debuggeeTimeoutSeconds": 30 }),
+                "debuggeeTimeoutSeconds is not supported in --external-peer mode: \
+                 the peer owns the debuggee process and no watchdog can be armed",
+            ),
+        ] {
+            let (mut b, launch_calls, _) = recording_bridge();
+            let out = b.dispatch(2, "launch", Some(args));
+            assert_eq!(out.len(), 1, "a refused launch emits only its response: {out:?}");
+            match &out[0] {
+                DapMessage::Response { success, message, .. } => {
+                    assert!(!success, "wrong-typed launch must fail: {out:?}");
+                    let message = message.as_deref().unwrap_or_default();
+                    assert_eq!(message, expected);
+                    assert!(!message.contains("987654321"), "no env value echo: {message}");
+                }
+                other => return Err(format!("expected a response, got {other:?}")),
+            }
+            assert_eq!(launch_calls.load(AtomicOrdering::SeqCst), 0, "backend must not run");
+        }
+
+        let (mut b, launch_calls, last_launch) = recording_bridge();
+        let out =
+            b.dispatch(2, "launch", Some(json!({ "stopOnEntry": true, "env": { "A": "1" } })));
+        let (_, ok, _) = as_response(&out[0])?;
+        assert!(ok, "well-typed launch must succeed: {out:?}");
+        assert_eq!(launch_calls.load(AtomicOrdering::SeqCst), 1);
+        let recorded = last_launch.lock().map_err(|_| "last_launch poisoned".to_string())?.clone();
+        let recorded = must_some(recorded.as_ref());
+        assert!(recorded.stop_on_entry);
+        assert_eq!(recorded.env.get("A").map(String::as_str), Some("1"));
+        Ok(())
     }
 
     #[test]
@@ -1593,6 +1776,7 @@ mod tests {
             events: Vec::new(),
             evaluate_calls: Arc::clone(&calls),
             step_in_calls: Arc::new(AtomicUsize::new(0)),
+            ..Default::default()
         }));
 
         let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
@@ -1788,6 +1972,7 @@ mod tests {
             events: Vec::new(),
             evaluate_calls: Arc::new(AtomicUsize::new(0)),
             step_in_calls: Arc::clone(&calls),
+            ..Default::default()
         }));
 
         // #9069: `supportsStepInTargetsRequest` is negotiated false, so a

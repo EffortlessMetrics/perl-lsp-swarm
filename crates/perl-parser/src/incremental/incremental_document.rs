@@ -333,12 +333,20 @@ impl IncrementalDocument {
     }
 
     /// Generate hash for a node (for content-based caching)
+    ///
+    /// The hash mixes the node discriminant, its source span, direct payloads,
+    /// and direct-child identity so distinct nodes of the same kind at
+    /// different spans (or with different children) do not collide and
+    /// overwrite each other in `by_content`. It stays O(degree) per node so
+    /// `cache_subtrees` remains O(n) overall.
     fn hash_node(&self, node: &Node) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
         std::mem::discriminant(&node.kind).hash(&mut hasher);
+        node.location.start.hash(&mut hasher);
+        node.location.end.hash(&mut hasher);
 
         match &node.kind {
             NodeKind::Number { value } => value.hash(&mut hasher),
@@ -347,6 +355,12 @@ impl IncrementalDocument {
             NodeKind::Identifier { name } => name.hash(&mut hasher),
             _ => {}
         }
+
+        node.for_each_child(|child| {
+            std::mem::discriminant(&child.kind).hash(&mut hasher);
+            child.location.start.hash(&mut hasher);
+            child.location.end.hash(&mut hasher);
+        });
 
         hasher.finish()
     }
@@ -599,6 +613,21 @@ mod tests {
     }
 
     #[test]
+    fn test_by_content_keeps_distinct_same_value_literals() -> Result<(), IncrementalDocumentError>
+    {
+        let source = "my $x = 1; my $y = 1;";
+        let doc = IncrementalDocument::new(source.to_string())?;
+        let ones = doc
+            .subtree_cache
+            .by_content
+            .values()
+            .filter(|node| matches!(&node.kind, NodeKind::Number { value } if value == "1"))
+            .count();
+        assert_eq!(ones, 2, "identical literals at distinct spans must not collide");
+        Ok(())
+    }
+
+    #[test]
     fn test_cache_priority_preservation() -> Result<(), IncrementalDocumentError> {
         let source = r#"
             package MyPackage;
@@ -649,7 +678,10 @@ mod tests {
             my $global_var = "test";
         "#;
         let mut doc = IncrementalDocument::new(source.to_string())?;
-        doc.set_cache_max_size(2);
+        // The fixture holds three critical nodes (one package + two subs), so
+        // size the cache to the critical set: pressure must evict
+        // non-critical nodes while keeping every critical symbol.
+        doc.set_cache_max_size(3);
         let package_preserved = doc
             .subtree_cache
             .by_content
