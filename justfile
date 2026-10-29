@@ -1542,7 +1542,7 @@ swarm-summary:
 # Check for machine-specific paths in documentation
 ci-doc-paths:
     @echo "🔍 Checking documentation paths..."
-    @cargo xtask ci-hygiene check-doc-paths docs
+    @cargo run --quiet -p perl-ci-hygiene --bin perl-ci-hygiene --locked -- check-doc-paths docs
     @echo "✅ Documentation paths check passed"
 
 # Verify publication facts against live codebase metrics (informational, non-blocking)

@@ -5597,7 +5597,7 @@
       "normalized_snippet": "Ok(_) => panic!(\"expected outright parse failure for `{code}`\"),",
       "selector_identity": "invocation:e8d55bd23f5b3760:occurrence:1",
       "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-parser-core/tests/fix_qualified_loop_control_label_16296.rs",
@@ -5606,7 +5606,7 @@
       "normalized_snippet": "Err(err) => panic!(\"expected clean parse for `{code}`, got: {err:?}\"),",
       "selector_identity": "invocation:d958e5e104cf2cdc:occurrence:1",
       "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-parser-core/tests/fix_orphaned_else_recovery_16300.rs",

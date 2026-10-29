@@ -62,11 +62,25 @@ fn open_consumer_fixture() -> Result<
     (LspServer, OutputCapture, String, String, std::path::PathBuf, tempfile::TempDir),
     Box<dyn std::error::Error>,
 > {
+    open_consumer_fixture_with_dependency(true)
+}
+
+/// Fixture variant: with `write_dependency = false` the consumer starts
+/// stale (the module it uses does not exist yet), for CREATED-event tests.
+#[cfg(feature = "workspace")]
+fn open_consumer_fixture_with_dependency(
+    write_dependency: bool,
+) -> Result<
+    (LspServer, OutputCapture, String, String, std::path::PathBuf, tempfile::TempDir),
+    Box<dyn std::error::Error>,
+> {
     let (server, output) = server_with_output_capture();
     let dir = tempfile::tempdir()?;
     std::fs::create_dir_all(dir.path().join("lib").join("Local"))?;
     let alpha_path = dir.path().join("lib").join("Local").join("Alpha.pm");
-    std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    if write_dependency {
+        std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    }
 
     let folder_uri =
         url::Url::from_directory_path(dir.path()).map_err(|_| "invalid folder URI")?.to_string();
@@ -234,4 +248,171 @@ fn file_operation_delete_republishes_open_consumer_diagnostics()
         std::thread::sleep(Duration::from_millis(10));
     }
     Ok(())
+}
+
+// -------------------------------------------------------------------------
+// CREATED/CHANGED batch tail (#17332 remainder)
+//
+// The DELETED tail above republishes open consumers after eviction, but a
+// dependency that appears (restore/checkout) or changes (package rename)
+// earned no tail: push consumers kept stale findings and pull consumers
+// were never asked to re-pull. These tests pin the mirrored tail on both
+// delivery exits — the immediate fallback in `handle_did_change_watched_files`
+// and the debounced `handle_watched_file_batch`.
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "workspace")]
+fn is_publish_for(message: &Value, publish_keys: &[String]) -> bool {
+    message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+        && message
+            .pointer("/params/uri")
+            .and_then(Value::as_str)
+            .is_some_and(|uri| publish_keys.iter().any(|key| key == uri))
+}
+
+#[cfg(feature = "workspace")]
+fn message_has_pl701(message: &Value) -> bool {
+    message.pointer("/params/diagnostics").and_then(Value::as_array).is_some_and(|diagnostics| {
+        diagnostics.iter().any(|diagnostic| diagnostic.get("code") == Some(&json!("PL701")))
+    })
+}
+
+/// Wait until a publish for the consumer at or after `from` matches the
+/// requested PL701 presence; returns the message count at that point.
+#[cfg(feature = "workspace")]
+fn wait_for_publish(
+    output: &OutputCapture,
+    publish_keys: &[String],
+    from: usize,
+    want_pl701: bool,
+    what: &str,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let messages = output.messages()?;
+        let found = messages.iter().skip(from).any(|message| {
+            is_publish_for(message, publish_keys) && { message_has_pl701(message) == want_pl701 }
+        });
+        if found {
+            return Ok(messages.len());
+        }
+        assert!(Instant::now() < deadline, "{what}: tail {messages:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn watched_dependency_create_clears_stale_consumer_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, app_uri, alpha_uri, alpha_path, _dir) =
+        open_consumer_fixture_with_dependency(false)?;
+    let publish_keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+
+    // Baseline: without the dependency the open consumer is stale (PL701).
+    let baseline_len = wait_for_publish(&output, &publish_keys, 0, true, "baseline never stale")?;
+
+    // Create the dependency on disk, then deliver the watched CREATED event.
+    std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    server.handle_did_change_watched_files(Some(json!({
+        "changes": [{ "uri": alpha_uri, "type": 1 }]
+    })))?;
+
+    wait_for_publish(
+        &output,
+        &publish_keys,
+        baseline_len,
+        false,
+        "watched CREATED never cleared the open consumer",
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn watched_dependency_change_clears_stale_consumer_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    // PL701 module resolution is filesystem-based, so a CHANGED event can
+    // only change a consumer's findings when the file's existence changed;
+    // watchers commonly report a newly appeared file as Changed (created
+    // before watcher registration, or coalesced by the client).
+    let (server, output, app_uri, alpha_uri, alpha_path, _dir) =
+        open_consumer_fixture_with_dependency(false)?;
+    let publish_keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+
+    // Baseline: without the dependency the open consumer is stale (PL701).
+    let baseline_len = wait_for_publish(&output, &publish_keys, 0, true, "baseline never stale")?;
+
+    // Create the dependency on disk, then deliver the watched CHANGED event.
+    std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    server.handle_did_change_watched_files(Some(json!({
+        "changes": [{ "uri": alpha_uri, "type": 2 }]
+    })))?;
+
+    wait_for_publish(
+        &output,
+        &publish_keys,
+        baseline_len,
+        false,
+        "watched CHANGED never cleared the open consumer",
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn watched_batch_create_clears_stale_consumer_diagnostics() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (server, output, app_uri, alpha_uri, alpha_path, _dir) =
+        open_consumer_fixture_with_dependency(false)?;
+    let publish_keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+
+    let baseline_len = wait_for_publish(&output, &publish_keys, 0, true, "baseline never stale")?;
+
+    // The debounced exit: the debouncer delivers CREATED/CHANGED URIs here.
+    std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    server.handle_watched_file_batch(vec![alpha_uri]);
+
+    wait_for_publish(
+        &output,
+        &publish_keys,
+        baseline_len,
+        false,
+        "watched batch never cleared the open consumer",
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn watched_create_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, _app_uri, alpha_uri, alpha_path, _dir) =
+        open_consumer_fixture_with_dependency(false)?;
+    // Mirror the existing watched-delete pull fixture: a refresh request is
+    // only sent to a client that advertised refresh support.
+    server.client_capabilities.lock().diagnostic_refresh_support = true;
+    server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
+    server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    server.handle_did_change_watched_files(Some(json!({
+        "changes": [{ "uri": alpha_uri, "type": 1 }]
+    })))?;
+
+    // A pull client receives no push; it must be asked to re-pull.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let messages = output.messages()?;
+        let refreshed = messages.iter().any(|message| {
+            message.get("method").and_then(Value::as_str) == Some("workspace/diagnostic/refresh")
+        });
+        if refreshed {
+            return Ok(());
+        }
+        assert!(
+            Instant::now() < deadline,
+            "watched CREATED never requested a pull refresh: {messages:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

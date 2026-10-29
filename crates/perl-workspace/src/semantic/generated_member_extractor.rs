@@ -616,9 +616,9 @@ fn expand_symbol_list(raw: &str) -> Vec<String> {
             c => c,
         };
         if let (Some(start), Some(end)) = (raw.find(open), raw.rfind(close))
-            && start < end
+            && start + open.len_utf8() <= end
         {
-            return raw[start + 1..end]
+            return raw[start + open.len_utf8()..end]
                 .split_whitespace()
                 .filter(|name| !name.is_empty())
                 .map(str::to_string)
@@ -779,6 +779,14 @@ mod tests {
         assert!(!defines_item("let id = stable_id(1);", "fn", "stable_id"));
         assert!(!defines_item("use super::x::{NameCandidate};", "struct", "NameCandidate"));
         assert!(!defines_item("fn stable_identity() {}", "fn", "stable_id"));
+    }
+
+    #[test]
+    fn expand_symbol_list_handles_multibyte_qw_delimiters_without_panic() {
+        // Regression for #17988: the qw open delimiter may be a multi-byte
+        // char, so slicing must advance by its UTF-8 length, not one byte.
+        assert_eq!(expand_symbol_list("qw\u{2022}alpha beta\u{2022}"), vec!["alpha", "beta"]);
+        assert_eq!(expand_symbol_list("qw(alpha beta)"), vec!["alpha", "beta"]);
     }
 
     fn extract_from_source(source: &str) -> Vec<GeneratedMemberFact> {
