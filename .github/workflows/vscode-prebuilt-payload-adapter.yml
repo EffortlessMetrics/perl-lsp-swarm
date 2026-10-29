@@ -5,11 +5,34 @@ on:
     branches: [main, master]
     paths:
       - 'scripts/prepare_vsix_prebuilt_payload.py'
+      - 'scripts/requirements-release.txt'
+      - 'scripts/release_topology_json.py'
+      - 'scripts/release_vsix_mapping.py'
+      - 'scripts/generate_release_topology.py'
+      - 'schemas/release_topology.*.schema.json'
+      - 'schemas/vsix_candidate_payload.*.schema.json'
+      - 'fixtures/rc_vsix_binding/**'
+      - 'vscode-extension/package-lock.json'
+      - 'vscode-extension/scripts/check-vsix-prebuilt-payload.js'
+      - 'vscode-extension/scripts/check-vsix-prebuilt-payload.test.js'
+      - 'vscode-extension/scripts/check-vsix-inventory-transition.js'
+      - 'vscode-extension/scripts/check-vsix-inventory-transition.test.js'
+      - 'vscode-extension/scripts/package-command.test.js'
+      - 'vscode-extension/src/test/vsixPackageProjection.test.ts'
       - 'scripts/release_archive_members.py'
       - 'scripts/release_build_identity.py'
       - 'scripts/release_package_evidence.py'
       - 'scripts/release_terminal_manifest.py'
       - 'scripts/test_prepare_vsix_prebuilt_payload.py'
+      - 'scripts/test_generate_release_topology.py'
+      - 'scripts/test_release_build_identity.py'
+      - 'scripts/test_release_topology_json.py'
+      - 'schemas/release_build_identity.v1.schema.json'
+      - 'schemas/release_build_identity_receipt.v1.schema.json'
+      - 'docs/reference/downstream-dap-integrations.json'
+      - 'vscode-extension/src/downloader.ts'
+      - 'vscode-extension/scripts/check-vsix-inventory.js'
+      - 'vscode-extension/scripts/vsix-inventory-baseline.json'
       - 'vscode-extension/package.json'
       - 'vscode-extension/scripts/reporter.js'
       - 'vscode-extension/scripts/toolchain-doctor.js'
@@ -41,10 +64,21 @@ jobs:
       - name: Setup repository Node authority
         uses: ./.github/actions/setup-vscode-toolchain
         with:
-          install-dependencies: 'false'
+          install-dependencies: 'true'
+
+      - name: Setup release schema Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
 
       - name: Install pinned release schema dependencies
         run: python3 -m pip install -r scripts/requirements-release.txt
 
       - name: Run release evidence to VSIX adapter tests
         run: python3 -m unittest scripts.test_prepare_vsix_prebuilt_payload -v
+
+      - name: Run mapped packaging and archive tests
+        working-directory: vscode-extension
+        run: |
+          node --test scripts/check-vsix-prebuilt-payload.test.js scripts/check-vsix-inventory-transition.test.js
+          node --test --test-name-pattern='mapped' scripts/package-command.test.js

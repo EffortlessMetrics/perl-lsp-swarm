@@ -294,6 +294,98 @@ fn parent_rules_enforced() -> FixtureResult {
     Ok(())
 }
 
+/// Transport must not give a file/global scope a parent.
+#[test]
+fn deserialized_file_scope_rejects_parent() -> Result<(), Box<dyn std::error::Error>> {
+    let file = file_scope(subject("doc-1", "gen-1")?)?;
+    let mut wire = serde_json::to_value(&file)?;
+    wire["parent_fingerprint"] = serde_json::json!("parent");
+    let decoded: SemanticScopeIdentity = serde_json::from_value(wire)?;
+    assert_eq!(
+        decoded.validate(),
+        Err(SemanticIdentityContractError::ContradictoryStatus(
+            "file/global scope cannot have a parent scope"
+        ))
+    );
+    Ok(())
+}
+
+/// A child without its owning parent cannot pass post-transport validation.
+#[test]
+fn deserialized_child_scope_requires_parent() -> Result<(), Box<dyn std::error::Error>> {
+    let subject_gen = subject("doc-1", "gen-1")?;
+    let file = file_scope(subject_gen.clone())?;
+    for kind in [SemanticScopeKind::LexicalBlock, SemanticScopeKind::NamedSubroutine] {
+        let child = SemanticScopeIdentity::new(
+            subject_gen.clone(),
+            kind,
+            None,
+            Some(file.fingerprint()),
+            SemanticSourceAnchor::new(SemanticAnchorRole::Header, "child-header", 0)?,
+            None,
+            SemanticScopeRecovery::Exact,
+        )?;
+        let mut wire = serde_json::to_value(&child)?;
+        wire["parent_fingerprint"] = serde_json::Value::Null;
+        let decoded: SemanticScopeIdentity = serde_json::from_value(wire)?;
+        assert_eq!(
+            decoded.validate(),
+            Err(SemanticIdentityContractError::MissingCompanion(
+                "SemanticScopeIdentity.parent_fingerprint"
+            )),
+            "{kind:?} must retain its parent"
+        );
+    }
+    Ok(())
+}
+
+/// Presence alone does not make a blank parent fingerprint an identity.
+#[test]
+fn deserialized_scope_rejects_blank_parent() -> Result<(), Box<dyn std::error::Error>> {
+    let subject_gen = subject("doc-1", "gen-1")?;
+    let file = file_scope(subject_gen.clone())?;
+    for kind in [SemanticScopeKind::LexicalBlock, SemanticScopeKind::NamedSubroutine] {
+        let child = SemanticScopeIdentity::new(
+            subject_gen.clone(),
+            kind,
+            None,
+            Some(file.fingerprint()),
+            SemanticSourceAnchor::new(SemanticAnchorRole::Header, "child-header", 0)?,
+            None,
+            SemanticScopeRecovery::Exact,
+        )?;
+        for blank in ["", " \t\n", "\u{2003}"] {
+            let mut wire = serde_json::to_value(&child)?;
+            wire["parent_fingerprint"] = serde_json::json!(blank);
+            let decoded: SemanticScopeIdentity = serde_json::from_value(wire)?;
+            assert_eq!(
+                decoded.validate(),
+                Err(SemanticIdentityContractError::EmptyIdentityField(
+                    "SemanticScopeIdentity.parent_fingerprint"
+                )),
+                "{kind:?} must reject blank parent {blank:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Valid file and child identities remain valid and unchanged after transport.
+#[test]
+fn deserialized_scope_preserves_valid_parent_relationships()
+-> Result<(), Box<dyn std::error::Error>> {
+    let subject_gen = subject("doc-1", "gen-1")?;
+    let file = file_scope(subject_gen.clone())?;
+    let child = child_scope(subject_gen, &file, "helper", 0)?;
+    for scope in [file, child] {
+        let decoded: SemanticScopeIdentity = serde_json::from_value(serde_json::to_value(&scope)?)?;
+        decoded.validate()?;
+        assert_eq!(decoded.fingerprint(), scope.fingerprint());
+        assert_eq!(decoded, scope);
+    }
+    Ok(())
+}
+
 /// Duplicate requested fact families fail the work-subject contract.
 #[test]
 fn duplicate_fact_families_rejected() -> FixtureResult {

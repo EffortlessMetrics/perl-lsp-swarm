@@ -1,0 +1,10 @@
+# E1 case manifest: lane-termination classifier mapping oracle.
+kind = "classifier"
+description = "Truncated scan of a pass-claiming log with a teardown marker; fails closed."
+mode = "log-file"
+mutant_verdict = "kill"
+mutation = "byte cap truncates the scan mid-log"
+max_bytes = 200
+base_expected_class = "infra-no-proof"
+also_expect = { partial_read = "true" }
+inputs = ["lane.log"]

@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Clarify reserved MCP feedback and show Claude Code LSP plugin setup and read-only diagnosis commands.
+time: 2026-10-09T00:49:45Z
+custom:
+  PR: "17489"
+  Slug: mcp-recovery-guidance
+  Breaking: "no"

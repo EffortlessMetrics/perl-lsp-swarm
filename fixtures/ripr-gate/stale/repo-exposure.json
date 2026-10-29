@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1",
+  "tool": "ripr",
+  "kind": "pr_evidence",
+  "scope": "diff",
+  "base": "origin/main",
+  "base_sha": "e1-base-sha-0000000000000000000000000000000000000001",
+  "head": "HEAD",
+  "head_sha": "e1-stale-head-sha-never-matches-runtime-head",
+  "summary": {
+    "changed_files": 1,
+    "weakly_exposed": 0,
+    "reachable_unrevealed": 0,
+    "no_static_path": 0,
+    "severe_gaps": 0
+  }
+}

@@ -9,8 +9,9 @@
 #       ^^^^^^^^^^^^^ source.perl
 >
 >sub greet {
-#^^^ source.perl keyword.other.perl
-#   ^^^^^^^^^ source.perl
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^^^^ source.perl meta.declaration.subroutine.perl
+#          ^^ source.perl
 >    my ($self, $name) = @_;
 #^^^^ source.perl
 #    ^^ source.perl keyword.other.perl
