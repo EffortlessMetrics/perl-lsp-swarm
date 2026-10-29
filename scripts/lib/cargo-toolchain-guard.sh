@@ -222,7 +222,11 @@ cargo_toolchain_guard() {
   # command so the guard does not change its caller's installation policy.
   if ! probe="$(cd "$CARGO_GUARD_REPO_ROOT" 2>/dev/null && RUSTUP_AUTO_INSTALL=0 "$resolved" --version 2>&1)"; then
     printf 'cargo-toolchain-guard: REFUSED: `%s --version` failed at %s: %s\n' "cargo" "$resolved" "${probe:-<no output>}" >&2
-    printf '  fix: repair or remove this cargo from PATH; the workspace needs >= %s.\n' "$required" >&2
+    printf '  next: inspect the probe error above; a failed probe alone does not establish broken Cargo or PATH. The workspace needs >= %s.\n' "$required" >&2
+    if [ -n "$pin" ]; then
+      printf '  rustup: inspect installed toolchains with `rustup toolchain list` (repository pin: %s). Installing stable alone does not install that pin.\n' "$pin" >&2
+      printf '  if the error reports the pinned toolchain missing: rustup toolchain install %s; then retry this entrypoint.\n' "$pin" >&2
+    fi
     exit "$CARGO_GUARD_EXIT_CODE"
   fi
   actual="$(cargo_guard_parse_version "$probe")"
