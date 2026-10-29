@@ -132,6 +132,7 @@ pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::EscapesWorkspace(
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::ExternalInvalidCharacters
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::ExternalRelative
 pub perl_lsp_rs_core::config::RejectedClientIncludePathReason::ExternalUnauthorized(perl_lsp_rs_core::config::UnauthorizedExternalIncludePathSource)
+pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::dedup_key(&self) -> &'static str
 pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::clone(&self) -> perl_lsp_rs_core::config::RejectedClientIncludePathReason
 pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::eq(&self, other: &perl_lsp_rs_core::config::RejectedClientIncludePathReason) -> bool
 pub fn perl_lsp_rs_core::config::RejectedClientIncludePathReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -461,6 +462,8 @@ pub perl_lsp_rs_core::config::ServerConfig::telemetry_enabled: bool
 pub fn perl_lsp_rs_core::config::ServerConfig::apply_perltidy_native_options(&mut self, options: &perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion)
 pub fn perl_lsp_rs_core::config::ServerConfig::effective_critic_state(&self, owning_root: core::option::Option<&str>) -> perl_lsp_rs_core::config::EffectiveCriticState
 pub fn perl_lsp_rs_core::config::ServerConfig::invalid_client_setting_values(settings: &serde_json::value::Value) -> alloc::vec::Vec<perl_lsp_rs_core::config::InvalidClientSetting>
+pub fn perl_lsp_rs_core::config::ServerConfig::pending_client_notices_len(&self) -> usize
+pub fn perl_lsp_rs_core::config::ServerConfig::take_client_notices(&mut self) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::ServerConfig::update_from_value(&mut self, settings: &serde_json::value::Value)
 pub fn perl_lsp_rs_core::config::ServerConfig::clone(&self) -> perl_lsp_rs_core::config::ServerConfig
 pub fn perl_lsp_rs_core::config::ServerConfig::default() -> perl_lsp_rs_core::config::ServerConfig
@@ -3167,6 +3170,7 @@ pub perl_lsp_rs_core::providers::completion::CompletionContext::in_use_statement
 pub perl_lsp_rs_core::providers::completion::CompletionContext::position: usize
 pub perl_lsp_rs_core::providers::completion::CompletionContext::prefix: alloc::string::String
 pub perl_lsp_rs_core::providers::completion::CompletionContext::prefix_start: usize
+pub perl_lsp_rs_core::providers::completion::CompletionContext::suffix_end: usize
 pub perl_lsp_rs_core::providers::completion::CompletionContext::trigger_character: core::option::Option<char>
 pub fn perl_lsp_rs_core::providers::CompletionContext::clone(&self) -> perl_lsp_rs_core::providers::CompletionContext
 pub fn perl_lsp_rs_core::providers::CompletionContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -8496,6 +8500,7 @@ pub perl_lsp_rs_core::providers::CompletionContext::in_use_statement: bool
 pub perl_lsp_rs_core::providers::CompletionContext::position: usize
 pub perl_lsp_rs_core::providers::CompletionContext::prefix: alloc::string::String
 pub perl_lsp_rs_core::providers::CompletionContext::prefix_start: usize
+pub perl_lsp_rs_core::providers::CompletionContext::suffix_end: usize
 pub perl_lsp_rs_core::providers::CompletionContext::trigger_character: core::option::Option<char>
 pub fn perl_lsp_rs_core::providers::CompletionContext::clone(&self) -> perl_lsp_rs_core::providers::CompletionContext
 pub fn perl_lsp_rs_core::providers::CompletionContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -9951,6 +9956,7 @@ pub perl_lsp_rs_core::runtime::launcher::LaunchAction::PerltidyCompatReport
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::PerltidyCompatReport::profile: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::diff_path: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::head: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LaunchAction::RiprFacts::out: alloc::string::String
@@ -9981,6 +9987,8 @@ pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::MissingValue
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::MissingValue::option: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::ParserDiagnostic
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::ParserDiagnostic::rendered: alloc::string::String
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::UnexpectedPositionals
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::UnexpectedPositionals::tokens: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::UnknownOption
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::UnknownOption::option: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::UnknownOption::suggestion: core::option::Option<alloc::string::String>
@@ -10036,6 +10044,7 @@ pub perl_lsp_rs_core::runtime::launcher::LspArgs::log: bool
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::perlcritic_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::perltidy_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_diff: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_facts: bool
 pub perl_lsp_rs_core::runtime::launcher::LspArgs::ripr_head: core::option::Option<alloc::string::String>
@@ -10300,6 +10309,7 @@ pub perl_lsp_rs_core::runtime::LaunchAction::PerltidyCompatReport
 pub perl_lsp_rs_core::runtime::LaunchAction::PerltidyCompatReport::profile: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::diff_path: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::head: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LaunchAction::RiprFacts::out: alloc::string::String
@@ -10330,6 +10340,8 @@ pub perl_lsp_rs_core::runtime::LaunchParseError::MissingValue
 pub perl_lsp_rs_core::runtime::LaunchParseError::MissingValue::option: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::ParserDiagnostic
 pub perl_lsp_rs_core::runtime::LaunchParseError::ParserDiagnostic::rendered: alloc::string::String
+pub perl_lsp_rs_core::runtime::LaunchParseError::UnexpectedPositionals
+pub perl_lsp_rs_core::runtime::LaunchParseError::UnexpectedPositionals::tokens: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LaunchParseError::UnknownOption
 pub perl_lsp_rs_core::runtime::LaunchParseError::UnknownOption::option: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::UnknownOption::suggestion: core::option::Option<alloc::string::String>
@@ -10426,6 +10438,7 @@ pub perl_lsp_rs_core::runtime::LspArgs::log: bool
 pub perl_lsp_rs_core::runtime::LspArgs::perlcritic_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::perltidy_compat_report: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_base: core::option::Option<alloc::string::String>
+pub perl_lsp_rs_core::runtime::LspArgs::ripr_diff: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_fact_classes: alloc::string::String
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_facts: bool
 pub perl_lsp_rs_core::runtime::LspArgs::ripr_head: core::option::Option<alloc::string::String>

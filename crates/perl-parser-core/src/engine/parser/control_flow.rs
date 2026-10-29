@@ -342,6 +342,14 @@ impl<'a> Parser<'a> {
         {
             self.advance_token()?; // consume )
             let body = self.parse_block()?;
+            let continue_block = if self.peek_kind() == Some(TokenKind::Continue)
+                && self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftBrace)
+            {
+                self.advance_token()?; // consume 'continue'
+                Some(Box::new(self.parse_block()?))
+            } else {
+                None
+            };
             let end = self.previous_position();
 
             // Create implicit $_ variable, retaining the declaration in the list.
@@ -355,7 +363,7 @@ impl<'a> Parser<'a> {
                     variable: Box::new(implicit_var),
                     list,
                     body: Box::new(body),
-                    continue_block: None, // No continue block for implicit foreach
+                    continue_block,
                 },
                 SourceLocation { start, end },
             );
@@ -738,6 +746,35 @@ impl<'a> Parser<'a> {
             // Check for optional variable
             let var = if self.peek_kind() == Some(TokenKind::LeftParen) {
                 self.consume_token()?; // consume '('
+                // A declarator keyword in the head redeclares the
+                // automatically declared catch variable (`catch (my $e)`):
+                // never accepted by Perl, and named by 5.44 as
+                // `Can't redeclare catch variable as "%s"`. Record the
+                // typed diagnostic on the keyword, then keep parsing the
+                // variable so the catch binding is retained exactly as
+                // for the bare form and no ordinary lexical declaration
+                // is created for the rejected head (#13333).
+                if matches!(
+                    self.peek_kind(),
+                    Some(TokenKind::My | TokenKind::Our | TokenKind::State)
+                ) {
+                    let keyword_token = self.consume_token()?;
+                    // Only a keyword actually followed by a variable is a
+                    // redeclaration; `catch (my)` has no variable to
+                    // redeclare and stays on the ordinary malformed-head
+                    // path instead of claiming one was present.
+                    let variable_follows = self.peek_kind() == Some(TokenKind::ScalarSigil)
+                        || self.tokens.peek()?.text.starts_with('$');
+                    if variable_follows {
+                        self.record_error(ParseError::CatchVariableRedeclaration {
+                            keyword: keyword_token.text.to_string(),
+                            range: SourceLocation {
+                                start: keyword_token.start(),
+                                end: keyword_token.end(),
+                            },
+                        });
+                    }
+                }
                 let var_name = if self.peek_kind() == Some(TokenKind::ScalarSigil)
                     || self.tokens.peek()?.text.starts_with('$')
                 {

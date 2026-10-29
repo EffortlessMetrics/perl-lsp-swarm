@@ -124,7 +124,13 @@ fn complete_use_or_structural_context(
     }
 
     if !context.in_string && is_method_arrow_context(context) {
-        methods::add_method_completions(completions, context, source, &provider.symbol_table);
+        methods::add_method_completions(
+            completions,
+            context,
+            source,
+            &provider.symbol_table,
+            provider.type_engine.as_ref(),
+        );
         workspace::add_workspace_method_completions(
             completions,
             context,
@@ -503,13 +509,25 @@ fn complete_indirect_method_context(
         &provider.used_modules,
         filepath.unwrap_or(""),
     );
-    methods::add_method_completions(&mut probe, &synth, source, &provider.symbol_table);
+    methods::add_method_completions(
+        &mut probe,
+        &synth,
+        source,
+        &provider.symbol_table,
+        provider.type_engine.as_ref(),
+    );
     if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_ref())) {
         return false;
     }
 
     let inserted_start = completions.len();
-    methods::add_method_completions(completions, &synth, source, &provider.symbol_table);
+    methods::add_method_completions(
+        completions,
+        &synth,
+        source,
+        &provider.symbol_table,
+        provider.type_engine.as_ref(),
+    );
     workspace::add_workspace_method_completions(
         completions,
         &synth,

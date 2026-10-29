@@ -68,7 +68,7 @@ ropey.workspace = true
 perl-module = { workspace = true }
 # Wave Final PR B: perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing
 perl-lexer = { workspace = true }
-perl-lsp-rs-core = { workspace = true }
+perl-lsp-rs-core = { workspace = true, default-features = true }
 
 # Process management
 # Note: tokio-process not needed (using tokio::process)

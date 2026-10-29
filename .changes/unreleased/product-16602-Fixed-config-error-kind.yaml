@@ -1,0 +1,4 @@
+component: "Developer experience"
+kind: Fixed
+body: "Project configuration errors now distinguish malformed TOML syntax from invalid setting value types, preserving the filename, location, and expected-type guidance in doctor errors and editor warnings (#16602)."
+time: 2026-10-13T02:34:28Z
