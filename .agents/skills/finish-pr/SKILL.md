@@ -225,10 +225,9 @@ do not retain an ever-growing diary of superseded intermediate defects.
 After the affected final challenge and substantive review return `REVIEW_CURRENT`, keep
 the reviewed candidate head stable while required checks evaluate it. Reopen mutation
 only for a current candidate defect, material claim contradiction, candidate-owned
-required-check failure, actual merge conflict, demonstrated combined-tree interaction,
-or the bounded fresh merge-tree re-evaluation selected by `$verify-live-ci` under the
-currentness contract. `$verify-live-ci` remains the sole action owner for that exception;
-this skill does not prescribe an empty commit independently.
+required-check failure, actual merge conflict, or demonstrated combined-tree
+interaction. Native recomposition of G does not require mutating H: the verified native producer evaluates actual G. There is no
+empty-commit or ordinary PR-rerun exception.
 
 Do not mutate the stabilized head for duplicate corroboration, wording preference,
 reviewer quota or availability, optional stronger proof that cannot change the current

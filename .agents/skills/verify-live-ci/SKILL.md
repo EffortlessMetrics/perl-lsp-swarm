@@ -132,17 +132,21 @@ MERGE_BLOCKED
 NOT_PROVEN
 ```
 
-- `INTEGRATION_READY` means actual native landing or deliberate closure is observed
-  and readback/reconciliation can proceed. Open green G stays under native landing ownership. It
+- `INTEGRATION_READY` means current required actual-G qualification and effective
+  protection permit native landing. It does not mean the PR has landed or closed.
+  Open green G stays under native landing ownership until actual M is observed. This
   never authorizes a second direct merge; conditional landing authorization precedes enqueue.
-- `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
-  requested review or verified native queue entry/group/run/attempt; no generic auto-merge.
+- `PR_IN_FLIGHT` means GitHub owns a verified native entry/group/run/attempt for the
+  selected H/G and a named pending qualification or landing transition; no generic auto-merge.
+  Pre-enqueue requested review returns `REVIEW_REQUIRED` with the exact review wait;
+  it does not establish native custody.
 - `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
   review thread of any author, current change request, ruleset failure, or
   prerequisite blocks merge.
 - `NOT_PROVEN` means API/check/policy/instrument identity is missing or unreliable.
 
-Pending checks leave substantive review current while integration is `PR_IN_FLIGHT`.
+Pending checks on a verified native G leave substantive review current while
+integration is `PR_IN_FLIGHT`. An ordinary pending PR check does not prove custody.
 
 Read the unresolved thread count with `scripts/reviews/threads <pr> --unresolved-only
 --json` and require `unresolved_count` of 0 before `INTEGRATION_READY`. The `main`
