@@ -1,0 +1,9 @@
+project: product
+component: CI and developer tooling
+kind: Fixed
+body: "Recognise a `#[cfg(test)] mod` collapsed onto a single physical line as the test-scope boundary in the CI hygiene scanners. The boundary reader required a module head to end in `{` or `;`, so a compact test module matched neither the inline nor the declared spelling, the boundary resolved to no-boundary, and production checks scanned through test-only code and reported it as production findings. A new head predicate answers whether a line declares a module without disturbing the nesting-stack predicate, which still requires an opening brace at end of line."
+time: 2026-09-27T00:00:00Z
+custom:
+  PR: "16521"
+  Slug: compact-cfg-test-module-boundary
+  Breaking: "no"

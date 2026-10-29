@@ -5,6 +5,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
+import textwrap
 import sys
 import tempfile
 import unittest
@@ -65,91 +68,6 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         args = Args()
         args.baseline_root = self.root
         return args
-
-
-
-    def gh_aw_safe_outputs_workflow(
-        self,
-        *,
-        detection_gate: bool = True,
-        push_token: str | None = None,
-        extra_step: str = "",
-    ) -> str:
-        checkout_sha = "a" * 40
-        setup_sha = "b" * 40
-        token = push_token or ratchet.GH_AW_PUSH_TOKEN
-        metadata = json.dumps(
-            {
-                "schema_version": "v4",
-                "frontmatter_hash": "a9350cf6a6b596635b33a5199de7e5689bc44818394e69d72684e034d307ce08",
-                "body_hash": "cdc940a963151e984eebadb6fbb0b21430c045598de29328b00111d9d29bb577",
-                "compiler_version": "v0.88.7",
-                "strict": True,
-                "agent_id": "claude",
-                "agent_model": "MiniMax-M3",
-                "engine_versions": {"claude": "2.1.247"},
-            },
-            separators=(",", ":"),
-        )
-        manifest = json.dumps(
-            {
-                "version": 1,
-                "actions": [
-                    {"repo": "actions/checkout", "sha": checkout_sha},
-                    {"repo": "github/gh-aw-actions/setup", "sha": setup_sha},
-                ],
-            },
-            separators=(",", ":"),
-        )
-        condition = "needs.agent.result != 'skipped'"
-        if detection_gate:
-            condition += " && needs.detection.result == 'success'"
-        return (
-            f"# gh-aw-metadata: {metadata}\n"
-            f"# gh-aw-manifest: {manifest}\n"
-            "name: generated\n"
-            "on: [workflow_dispatch]\n"
-            "permissions: {}\n"
-            "jobs:\n"
-            "  safe_outputs:\n"
-            "    needs:\n"
-            "      - activation\n"
-            "      - agent\n"
-            "      - detection\n"
-            f"    if: {condition}\n"
-            "    permissions:\n"
-            "      contents: write\n"
-            "      issues: write\n"
-            "      pull-requests: write\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
-            "      - name: Checkout repository\n"
-            f"        if: {condition} && contains(needs.agent.outputs.output_types, 'create_pull_request')\n"
-            f"        uses: actions/checkout@{checkout_sha}\n"
-            "        with:\n"
-            "          persist-credentials: true\n"
-            f"          token: {token}\n"
-            "      - name: Configure Git credentials\n"
-            f"        if: {condition} && contains(needs.agent.outputs.output_types, 'create_pull_request')\n"
-            "        env:\n"
-            f"          GIT_TOKEN: {token}\n"
-            f"        run: {ratchet.GH_AW_CONFIGURE_GIT_COMMAND}\n"
-            f"{extra_step}"
-        )
-
-    def approve_gh_aw_fixture(self, relative: str, content: str) -> None:
-        previous = ratchet.GH_AW_LOCK_FILE_DIGESTS.get(relative)
-        ratchet.GH_AW_LOCK_FILE_DIGESTS[relative] = ratchet._normalized_lines_digest(
-            content.splitlines()
-        )
-
-        def restore() -> None:
-            if previous is None:
-                ratchet.GH_AW_LOCK_FILE_DIGESTS.pop(relative, None)
-            else:
-                ratchet.GH_AW_LOCK_FILE_DIGESTS[relative] = previous
-
-        self.addCleanup(restore)
 
     def test_detects_mutable_external_action_in_composite_action(self) -> None:
         self.write(
@@ -255,15 +173,6 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertNotIn("checkout_persists_credentials_on_write_surface", self.rules())
 
-
-
-    def test_explicit_empty_permissions_mapping_is_clean(self) -> None:
-        self.write(
-            ".github/workflows/deny-all.yml",
-            "name: deny all\non: [workflow_dispatch]\npermissions: {}\njobs: {}\n",
-        )
-        self.assertNotIn("unsupported_security_yaml_indirection", self.rules())
-
     def test_nonempty_permissions_flow_map_remains_rejected(self) -> None:
         self.write(
             ".github/workflows/flow-permissions.yml",
@@ -271,59 +180,61 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertIn("unsupported_security_yaml_indirection", self.rules())
 
-    def test_accepts_exact_reviewed_gh_aw_lock(self) -> None:
-        relative = ".github/workflows/generated.lock.yml"
-        content = self.gh_aw_safe_outputs_workflow()
-        self.approve_gh_aw_fixture(relative, content)
-        self.write(relative, content)
-        rules = self.rules()
-        self.assertNotIn("unsupported_security_yaml_indirection", rules)
-        self.assertNotIn("checkout_persists_credentials_on_write_surface", rules)
-
-    def test_any_gh_aw_lock_change_restores_persisted_credential_finding(self) -> None:
-        relative = ".github/workflows/generated.lock.yml"
-        reviewed = self.gh_aw_safe_outputs_workflow()
-        self.approve_gh_aw_fixture(relative, reviewed)
-        changed = reviewed.replace("name: generated", "name: changed", 1)
-        self.write(relative, changed)
-        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
-
-    def test_extra_gh_aw_publisher_step_restores_finding(self) -> None:
-        relative = ".github/workflows/generated.lock.yml"
-        reviewed = self.gh_aw_safe_outputs_workflow()
-        self.approve_gh_aw_fixture(relative, reviewed)
-        changed = self.gh_aw_safe_outputs_workflow(
-            extra_step="      - name: Unreviewed push\n        run: git push origin HEAD\n"
-        )
-        self.write(relative, changed)
-        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
-
-    def test_gh_aw_publisher_checkout_requires_detection_gate(self) -> None:
-        relative = ".github/workflows/generated.lock.yml"
-        reviewed = self.gh_aw_safe_outputs_workflow()
-        self.approve_gh_aw_fixture(relative, reviewed)
-        self.write(relative, self.gh_aw_safe_outputs_workflow(detection_gate=False))
-        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
-
-    def test_gh_aw_publisher_checkout_requires_canonical_push_token(self) -> None:
-        relative = ".github/workflows/generated.lock.yml"
-        reviewed = self.gh_aw_safe_outputs_workflow()
-        self.approve_gh_aw_fixture(relative, reviewed)
+    def test_gh_aw_generated_lock_safe_outputs_checkout_is_accepted(self) -> None:
+        # gh-aw emits persist-credentials: true on exactly one checkout, the
+        # safe_outputs create_pull_request step, always shaped with the
+        # GH_AW_GITHUB_TOKEN token expression; the lock file is regenerated
+        # and diffed by the compile-check workflow, so the ratchet cannot
+        # require a different shape.
         self.write(
-            relative,
-            self.gh_aw_safe_outputs_workflow(
-                push_token="$" + "{{ secrets.OTHER_TOKEN }}"
-            ),
+            ".github/workflows/minimax-coding-agent.lock.yml",
+            '# gh-aw-metadata: {"schema_version":"v4","compiler_version":"v0.88.7"}\n'
+            "# This file was automatically generated by gh-aw (v0.88.7). DO NOT EDIT.\n"
+            "name: minimax-coding-agent\non: [workflow_dispatch]\npermissions: {}\n"
+            "jobs:\n  create_pull_request:\n    permissions:\n      contents: write\n"
+            "    runs-on: ubuntu-latest\n    steps:\n"
+            "      - name: Checkout repository\n"
+            "        uses: actions/checkout@" + "a" * 40 + "\n        with:\n"
+            "          persist-credentials: true\n          fetch-depth: 0\n"
+            "          token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}\n",
+        )
+        self.assertNotIn("checkout_persists_credentials_on_write_surface", self.rules())
+
+    def test_gh_aw_lock_other_checkout_persist_is_still_flagged(self) -> None:
+        # Inside a genuine lock file, only the safe_outputs push checkout is
+        # exempt; an unrelated checkout with persisted credentials fails.
+        self.write(
+            ".github/workflows/minimax-coding-agent.lock.yml",
+            '# gh-aw-metadata: {"schema_version":"v4","compiler_version":"v0.88.7"}\n'
+            "name: minimax-coding-agent\non: [workflow_dispatch]\npermissions: {}\n"
+            "jobs:\n  agent:\n    permissions:\n      contents: write\n"
+            "    runs-on: ubuntu-latest\n    steps:\n"
+            "      - name: Checkout repository\n"
+            "        uses: actions/checkout@" + "a" * 40 + "\n        with:\n"
+            "          persist-credentials: true\n          fetch-depth: 0\n",
         )
         self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
 
-    def test_gh_aw_lock_allowance_is_path_bound(self) -> None:
-        reviewed_path = ".github/workflows/reviewed.lock.yml"
-        other_path = ".github/workflows/other.lock.yml"
-        content = self.gh_aw_safe_outputs_workflow()
-        self.approve_gh_aw_fixture(reviewed_path, content)
-        self.write(other_path, content)
+    def test_spoofed_gh_aw_marker_workflow_is_still_flagged(self) -> None:
+        # A candidate-controlled gh-aw marker comment in an ordinary workflow
+        # (no .lock.yml identity, no metadata header) must not open the hole.
+        self.write(
+            ".github/workflows/agent.yml",
+            "# This file was automatically generated by gh-aw (v0.88.7). DO NOT EDIT.\n"
+            "name: agent\non: [workflow_dispatch]\npermissions: {}\njobs:\n  push:\n"
+            "    permissions:\n      contents: write\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - uses: actions/checkout@" + "a" * 40
+            + "\n        with:\n          persist-credentials: true\n"
+            "          token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}\n",
+        )
         self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
+
+    def test_empty_permissions_map_is_deny_all_not_indirection(self) -> None:
+        self.write(
+            ".github/workflows/deny.yml",
+            "name: deny\non: [workflow_dispatch]\npermissions: {}\njobs: {}\n",
+        )
+        self.assertNotIn("unsupported_security_yaml_indirection", self.rules())
 
     def test_detects_floating_cargo_install_in_list_form_run(self) -> None:
         self.write(
@@ -531,6 +442,165 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         first = [finding.as_dict() for finding in ratchet.scan(self.root)]
         second = [finding.as_dict() for finding in ratchet.scan(self.root)]
         self.assertEqual(first, second)
+
+
+@unittest.skipUnless(shutil.which("git") and shutil.which("bash"), "requires Git and Bash")
+class WorkflowSecurityApplicabilityTests(unittest.TestCase):
+    """Execute the trusted workflow import step against real divergent Git trees."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.env = dict(os.environ, GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.com",
+                        GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.com",
+                        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                        GITHUB_ENV=str(self.root / "env"),
+                        GITHUB_STEP_SUMMARY=str(self.root / "summary"), PR_NUMBER="7")
+        self.git("init", "-q")
+        self.git("remote", "add", "origin", str(self.repo))
+        for path in ratchet.CONTROL_SOURCE_PATHS:
+            self.write(path, "# inert fixture control\n")
+        self.workflow = ".github/workflows/release.yml"
+        self.bad = "name: release\non: [workflow_dispatch]\njobs:\n  release:\n    steps:\n      - run: echo '${{ github.event.inputs.version }}'\n"
+        self.good = self.bad.replace("${{ github.event.inputs.version }}", "$INPUT_VERSION")
+        self.write(self.workflow, self.bad)
+        self.baseline()
+        self.ancestor = self.commit("old debt")
+        source = MODULE_PATH.parents[2] / ".github/workflows/workflow-security-ratchet.yml"
+        step = source.read_text().split("      - name: Import exact PR head as inert Git data\n", 1)[1]
+        step = step.split("      - name: ", 1)[0]
+        self.script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        self.assertIn('git fetch', self.script)
+        self.assertIn('git archive', self.script)
+
+    def git(self, *args: str) -> str:
+        return subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null", *args],
+                                       cwd=self.repo, env=self.env, text=True,
+                                       stderr=subprocess.PIPE).strip()
+
+    def write(self, path: str, data: str) -> None:
+        dest = self.repo / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(data)
+
+    def baseline(self) -> None:
+        ratchet.write_baseline(self.repo, self.repo / ".ci/workflow-security-baseline.json", Args())
+
+    def commit(self, message: str) -> str:
+        self.git("add", ".")
+        self.git("commit", "-qm", message)
+        return self.git("rev-parse", "HEAD")
+
+    def repaired_base(self) -> str:
+        self.write(self.workflow, self.good)
+        self.baseline()
+        return self.commit("repair debt")
+
+    def run_import(self, base: str, head: str, *, git_error: str = "") -> subprocess.CompletedProcess:
+        self.git("update-ref", "refs/pull/7/head", head)
+        self.git("checkout", "--detach", "-q", base)
+        env = dict(self.env, BASE_SHA=base, HEAD_SHA=head)
+        if git_error:
+            # A failed diff must not be confused with its ordinary 'changed' exit 1.
+            bindir = self.root / "bin"
+            bindir.mkdir()
+            wrapper = bindir / "git"
+            wrapper.write_text('#!/bin/bash\nif [ "$1" = "' + git_error +
+                               '" ]; then exit 128; fi\nexec "' + shutil.which("git") + '" "$@"\n')
+            wrapper.chmod(0o755)
+            env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+        return subprocess.run(["bash", "-c", self.script], cwd=self.repo, env=env,
+                              text=True, capture_output=True, timeout=20)
+
+    def assert_scanned_and_rejected(self, base: str, head: str) -> None:
+        result = self.run_import(base, head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "env").exists())
+        candidate = self.repo / "candidate"
+        self.assertTrue(candidate.is_dir())
+        args = Args()
+        args.baseline_root = self.repo
+        self.assertEqual(ratchet.check(candidate, self.repo / ".ci/workflow-security-baseline.json",
+                                       None, args, exact=False), 1)
+        self.assertIn("expression_in_run_source", [f.rule for f in ratchet.scan(candidate)])
+
+    def test_stale_docs_head_skips_debt_retired_on_base(self) -> None:
+        base = self.repaired_base()
+        self.git("checkout", "--detach", "-q", self.ancestor)
+        self.write("README.md", "docs only\n")
+        head = self.commit("docs")
+        result = self.run_import(base, head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / "env").exists(), result.stdout + result.stderr)
+        self.assertEqual((self.root / "env").read_text(), "SCOPED_NOOP=true\n")
+        self.assertFalse((self.repo / "candidate").exists())
+
+    def test_explicit_reintroduction_from_repaired_ancestor_is_rejected(self) -> None:
+        base = self.repaired_base()
+        self.write(self.workflow, self.bad)
+        self.baseline()  # A matching candidate baseline cannot authorize the reintroduction.
+        head = self.commit("restore retired debt")
+        self.assert_scanned_and_rejected(base, head)
+
+    def test_new_expression_with_matching_candidate_baseline_is_rejected(self) -> None:
+        base = self.repaired_base()
+        self.write(".github/workflows/new.yml", self.bad)
+        self.baseline()
+        head = self.commit("new debt")
+        self.assert_scanned_and_rejected(base, head)
+
+    def test_stale_control_change_remains_applicable(self) -> None:
+        base = self.repaired_base()
+        self.git("checkout", "--detach", "-q", self.ancestor)
+        self.write(self.workflow, self.bad + "# changed control\n")
+        head = self.commit("stale control change")
+        self.assert_scanned_and_rejected(base, head)
+
+    def assert_stale_control_only_is_applicable(self, path: str) -> None:
+        base = self.repaired_base()
+        self.git("checkout", "--detach", "-q", self.ancestor)
+        target = self.repo / path
+        self.write(path, target.read_text() + "\n")
+        head = self.commit("control-only change")
+        self.assert_scanned_and_rejected(base, head)
+
+    def test_baseline_only_change_remains_applicable(self) -> None:
+        self.assert_stale_control_only_is_applicable(".ci/workflow-security-baseline.json")
+
+    def test_checker_only_change_remains_applicable(self) -> None:
+        self.assert_stale_control_only_is_applicable("scripts/ci/workflow_security_ratchet.py")
+
+    def test_test_only_change_remains_applicable(self) -> None:
+        self.assert_stale_control_only_is_applicable("scripts/ci/test_workflow_security_ratchet.py")
+
+    def assert_closed(self, base: str, head: str, *, git_error: str = "") -> None:
+        result = self.run_import(base, head, git_error=git_error)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.root / "env").exists())
+        self.assertFalse((self.repo / "candidate").exists())
+
+    def test_missing_ancestry_fails_closed(self) -> None:
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        unrelated = self.git("commit-tree", tree, "-m", "unrelated root")
+        self.assert_closed(self.ancestor, unrelated)
+
+    def test_ambiguous_ancestry_fails_closed(self) -> None:
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        left = self.git("commit-tree", tree, "-p", self.ancestor, "-m", "left")
+        right = self.git("commit-tree", tree, "-p", self.ancestor, "-m", "right")
+        base = self.git("commit-tree", tree, "-p", left, "-p", right, "-m", "merge one")
+        head = self.git("commit-tree", tree, "-p", right, "-p", left, "-m", "merge two")
+        self.assertEqual(len(self.git("merge-base", "--all", base, head).splitlines()), 2)
+        self.assert_closed(base, head)
+
+    def test_diff_failure_fails_closed(self) -> None:
+        self.assert_closed(self.ancestor, self.ancestor, git_error="diff")
+
+    def test_merge_base_failure_fails_closed(self) -> None:
+        self.assert_closed(self.ancestor, self.ancestor, git_error="merge-base")
 
 
 if __name__ == "__main__":

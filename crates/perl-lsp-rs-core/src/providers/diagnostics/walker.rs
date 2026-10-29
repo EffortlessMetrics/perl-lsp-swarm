@@ -307,6 +307,8 @@ mod tests {
             ),
             Node::new(
                 NodeKind::OptionalParameter {
+                    default_operator: "=".into(),
+                    default_operator_span: Default::default(),
                     variable: Box::new(leaf_variable(61, "opt")),
                     default_value: Box::new(leaf_number(62)),
                 },
@@ -318,6 +320,7 @@ mod tests {
             ),
             Node::new(
                 NodeKind::NamedParameter {
+                    default_operator_span: None,
                     variable: Box::new(leaf_variable(64, "named")),
                     external_name: String::new(),
                     default_operator: None,

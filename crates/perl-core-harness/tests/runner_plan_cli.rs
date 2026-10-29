@@ -1,7 +1,7 @@
 //! CLI proof for the runner-plan binary: argument contracts, declared
 //! scheduling parsing, receipt writing, and exact summary output.
 
-use perl_tdd_support::{must, must_some};
+use perl_test_must::{must, must_some};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/unsupported_fact_catalog.v1.schema.json",
+  "title": "Unsupported-fact catalog v1",
+  "description": "Stable machine-readable catalog of unsupported fact classes (PLSP-SPEC-0038, #4770). The executable contract is the xtask unsupported_fact_catalog loader (slice 1) and the compiler-profile unsupported --check validator (slice 2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "unsupported_fact_catalog.v1"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class_id",
+        "owning_layer",
+        "trigger_rule",
+        "distinctions",
+        "compile_acceptance_blocks",
+        "downstream_blocks",
+        "allowed_provider_behaviors",
+        "curated_gold_treatment",
+        "oracle_result_class",
+        "oracle_promotion_effect",
+        "profile_boundary_behavior",
+        "owner_issue",
+        "history"
+      ],
+      "properties": {
+        "class_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "description": "Stable class ID (SPEC-0038 I1-I4). Profile-scoped classes carry the outside_profile suffix."
+        },
+        "owning_layer": {
+          "$ref": "#/$defs/owning_layer"
+        },
+        "trigger_rule": {
+          "type": "string",
+          "description": "Recognition rule, precise enough to implement."
+        },
+        "distinctions": {
+          "$ref": "#/$defs/distinctions"
+        },
+        "compile_acceptance_blocks": {
+          "type": "boolean",
+          "description": "Whether compile acceptance blocks on this class (SPEC-0038 E2: always explicit)."
+        },
+        "downstream_blocks": {
+          "type": "boolean",
+          "description": "Whether downstream static facts block or require qualification (SPEC-0038 E2)."
+        },
+        "allowed_provider_behaviors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provider_behavior"
+          },
+          "description": "Subset of the 4-value provider behavior vocabulary. There is no exact behavior: provider exactness cannot bypass a blocking class (SPEC-0038 E3)."
+        },
+        "curated_gold_treatment": {
+          "type": "string",
+          "description": "Expected curated-gold handling for the class."
+        },
+        "oracle_result_class": {
+          "$ref": "#/$defs/oracle_result_class"
+        },
+        "oracle_promotion_effect": {
+          "$ref": "#/$defs/oracle_promotion_effect"
+        },
+        "profile_boundary_behavior": {
+          "type": "string",
+          "description": "Executable-profile boundary behavior for the class."
+        },
+        "owner_issue": {
+          "type": "string",
+          "description": "Owning issue or permanent claim boundary."
+        },
+        "history": {
+          "$ref": "#/$defs/history"
+        }
+      }
+    },
+    "owning_layer": {
+      "type": "string",
+      "enum": [
+        "parser",
+        "hir",
+        "pir",
+        "semantic",
+        "provider",
+        "oracle",
+        "eir"
+      ]
+    },
+    "distinctions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "not_dynamic_boundary",
+        "not_low_confidence",
+        "not_stale_evidence",
+        "not_fallback",
+        "nearest_neighbor"
+      ],
+      "properties": {
+        "not_dynamic_boundary": {
+          "type": "string",
+          "description": "Why this class is not a DynamicBoundary disposition."
+        },
+        "not_low_confidence": {
+          "type": "string",
+          "description": "Why this class is not low confidence."
+        },
+        "not_stale_evidence": {
+          "type": "string",
+          "description": "Why this class is not stale evidence."
+        },
+        "not_fallback": {
+          "type": "string",
+          "description": "Why this class is not a provider fallback outcome."
+        },
+        "nearest_neighbor": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "description": "Nearest neighboring class ID (explicit separation target)."
+        }
+      }
+    },
+    "provider_behavior": {
+      "type": "string",
+      "enum": [
+        "block",
+        "fallback",
+        "advisory",
+        "require_confirmation"
+      ]
+    },
+    "oracle_result_class": {
+      "type": "string",
+      "enum": [
+        "oracle_agrees",
+        "compiler_missing",
+        "compiler_extra",
+        "range_mismatch",
+        "provenance_mismatch",
+        "confidence_or_freshness_mismatch",
+        "dynamic_or_unsupported",
+        "oracle_ambient_unbounded",
+        "stale_or_partial",
+        "unknown"
+      ],
+      "description": "Shared with oracle_receipt.v1. The unknown result class projects to blocks_promotion, never to agreement, support, or known limitation (SPEC-0038 E1/P4)."
+    },
+    "oracle_promotion_effect": {
+      "type": "string",
+      "enum": [
+        "supports_promotion",
+        "blocks_promotion",
+        "known_limitation",
+        "unknown"
+      ],
+      "description": "Shared with oracle_receipt.v1."
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "introduced_in"
+      ],
+      "properties": {
+        "introduced_in": {
+          "type": "string",
+          "description": "Catalog version that introduced the class."
+        },
+        "migrations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Migration records (rename/split/merge mappings per SPEC-0038 I1). Empty when the class never migrated."
+        }
+      }
+    }
+  }
+}

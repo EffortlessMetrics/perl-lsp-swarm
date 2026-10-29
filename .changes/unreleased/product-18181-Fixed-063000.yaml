@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Coalesce duplicate reference spans for method calls into the name token and emit one canonical URI spelling per document."
+time: 2026-10-20T06:30:00Z
+custom:
+  PR: "18181"
+  Slug: references-dedupe-uri
+  Breaking: "no"

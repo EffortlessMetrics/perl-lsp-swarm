@@ -1,0 +1,9 @@
+project: product
+component: CI and developer tooling
+kind: Fixed
+body: "`scripts/ci/learned_estimate.py` stdout JSON now carries `schema_version` (`learned_estimate.v1`) on every emission path, including missing-history, decode-error, and non-object history, so a later consumer can refuse an unfamiliar shape. This token is the CLI producer field; it is not the history file's integer `schema_version`, and `pr_plan.py` still does not read this stdout."
+time: 2026-09-28T12:00:00Z
+custom:
+  PR: "16699"
+  Slug: learned-estimate-stdout-schema-version
+  Breaking: "no"
