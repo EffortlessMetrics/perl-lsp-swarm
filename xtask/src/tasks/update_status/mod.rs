@@ -332,8 +332,24 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
         }
         eprintln!("Run `just status-update`");
         eprintln!("Then re-run `just ci-gate`");
-        return Err(eyre!("{} file(s) out of date", files_to_update.len()));
+        let outdated: Vec<&str> = files_to_update.iter().map(|(name, _, _)| *name).collect();
+        return Err(eyre!("{}", format_outdated_files(&outdated)));
     }
 
     Ok(())
+}
+
+/// Format the outdated-document summary carried by the `update-status --check`
+/// error.
+///
+/// The count prefix is retained for legacy parity with receipts that already
+/// read `N file(s) out of date`. The repository-relative names follow it so
+/// the durable error identifies *which* files to repair instead of only
+/// counting them: the stderr notices are not part of the receipt evidence, so
+/// a count-only error loses the repair target (#18141).
+pub(crate) fn format_outdated_files(names: &[&str]) -> String {
+    if names.is_empty() {
+        return "0 file(s) out of date".to_string();
+    }
+    format!("{} file(s) out of date: {}", names.len(), names.join(", "))
 }
