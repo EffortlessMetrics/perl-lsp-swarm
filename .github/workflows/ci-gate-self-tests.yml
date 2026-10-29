@@ -108,6 +108,10 @@ on:
       - 'scripts/ci/test_evaluate_ci_gate.py'
       - 'scripts/ci/request_qualification.py'
       - 'scripts/ci/test_request_qualification.py'
+      - 'scripts/ci/candidate_readiness.py'
+      - 'scripts/ci/test_candidate_readiness.py'
+      - 'scripts/ci/qualification_publication.py'
+      - 'scripts/ci/test_qualification_publication.py'
       - '.github/workflows/qualification-rehearsal.yml'
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
@@ -443,7 +447,7 @@ jobs:
         run: python3 -m unittest tests.test_semantic_review_currentness
 
       - name: Run staged qualification request/result adapter tests
-        run: python3 -B -m unittest scripts.ci.test_request_qualification
+        run: python3 -B -m unittest scripts.ci.test_request_qualification scripts.ci.test_candidate_readiness scripts.ci.test_qualification_publication
 
       - name: Run ci-gate evaluation oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_evaluate_ci_gate
