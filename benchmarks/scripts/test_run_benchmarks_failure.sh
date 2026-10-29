@@ -16,7 +16,8 @@ ok() { PASS=$((PASS + 1)); echo "ok: $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; }
 
 # Stub cargo: fails for bench targets listed in $FAIL_BENCHES (space-separated
-# substring match), else prints one parseable criterion line and succeeds.
+# substring match), exits 0 with no parseable timing for $ZERO_BENCHES, else
+# prints one parseable criterion line and succeeds.
 make_stub() {
     local dir=$1
     cat > "$dir/cargo" <<'EOF'
@@ -35,6 +36,18 @@ for want in ${FAIL_BENCHES:-}; do
                 *) echo "error: stub cargo failing for $want" >&2 ;;
             esac
             exit 101
+        fi
+    done
+done
+for want in ${ZERO_BENCHES:-}; do
+    for arg in "$@"; do
+        if [[ "$arg" == *"$want"* ]]; then
+            case "${STUB_ZERO_MODE:-empty}" in
+                noise) echo "Criterion produced an unexpected transcript" ;;
+                malformed) echo "stub_bench  time:   [not-a-time]" ;;
+                *) : ;;
+            esac
+            exit 0
         fi
     done
 done
@@ -221,6 +234,105 @@ json_get "$OUT" ripr _error | grep -q "spinner frame one last frame" \
     && ok "_error folds CR redraws to spaces" \
     || bad "_error mishandles CR redraws"
 unset STUB_FAIL_MODE
+
+# Case 7: zero-exit transcripts with no parsed timing fail explicitly
+# (#18219). Empty, noise, and malformed output are all zero-result.
+export FAIL_BENCHES=""
+export ZERO_BENCHES="ripr_facts_benchmark"
+for mode in empty noise malformed; do
+    export STUB_ZERO_MODE="$mode"
+    if PATH="$STUB:$PATH" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+        bad "zero-exit $mode run exited 0; expected nonzero"
+    else
+        ok "zero-exit $mode run exits nonzero"
+    fi
+    if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT" 2>/dev/null; then
+        ok "zero-exit $mode output is valid JSON"
+    else
+        bad "zero-exit $mode output is not valid JSON"
+    fi
+    [[ "$(json_get "$OUT" ripr _status)" == "failed" ]] \
+        && ok "zero-exit $mode category carries _status=failed" \
+        || bad "zero-exit $mode category missing _status=failed"
+    json_get "$OUT" ripr _error | grep -q "ripr_facts_benchmark" \
+        && ok "zero-exit $mode _error names the bench target" \
+        || bad "zero-exit $mode _error does not name the bench target"
+    json_get "$OUT" ripr _error | grep -q "no parsed timing results" \
+        && ok "zero-exit $mode _error reports absence of timing results" \
+        || bad "zero-exit $mode _error does not report absence of timing results"
+    grep -q "benchmark categories failed: ripr" "$ERR" \
+        && ok "zero-exit $mode stderr names the failed category" \
+        || bad "zero-exit $mode stderr does not name the failed category"
+done
+unset STUB_ZERO_MODE
+
+# Case 7b: unfiltered zero-exit run marks every selected category.
+export ZERO_BENCHES="benchmark"
+export STUB_ZERO_MODE="noise"
+if PATH="$STUB:$PATH" bash "$RUNNER" >"$OUT" 2>"$ERR"; then
+    bad "unfiltered zero-exit run exited 0; expected nonzero"
+else
+    ok "unfiltered zero-exit run exits nonzero"
+fi
+ALL_MARKED=1
+for cat in parser lexer lsp index ripr; do
+    if [[ "$(json_get "$OUT" "$cat" _status)" != "failed" ]]; then
+        ALL_MARKED=0
+    fi
+done
+[[ "$ALL_MARKED" -eq 1 ]] \
+    && ok "all five categories marked failed in unfiltered zero-exit run" \
+    || bad "unfiltered zero-exit run left a category unmarked"
+grep -q "benchmark categories failed: parser lexer lsp index ripr" "$ERR" \
+    && ok "zero-exit stderr names all failed categories in order" \
+    || bad "zero-exit stderr does not name all failed categories"
+unset STUB_ZERO_MODE
+
+# Case 8: zero-exit failure is recorded in an --output file as valid JSON.
+export ZERO_BENCHES="ripr_facts_benchmark"
+export STUB_ZERO_MODE="noise"
+OUTFILE=$(mktemp)
+if PATH="$STUB:$PATH" bash "$RUNNER" --category ripr --output "$OUTFILE" >"$OUT" 2>"$ERR"; then
+    bad "zero-exit output-file run exited 0; expected nonzero"
+else
+    ok "zero-exit output-file run exits nonzero"
+fi
+if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUTFILE" 2>/dev/null; then
+    ok "zero-exit output-file is valid JSON"
+else
+    bad "zero-exit output-file is not valid JSON"
+fi
+[[ "$(json_get "$OUTFILE" ripr _status)" == "failed" ]] \
+    && ok "zero-exit output-file category carries _status=failed" \
+    || bad "zero-exit output-file category missing _status=failed"
+json_get "$OUTFILE" ripr _error | grep -q "no parsed timing results" \
+    && ok "zero-exit output-file _error reports absence of timing results" \
+    || bad "zero-exit output-file _error does not report absence of timing results"
+rm -f "$OUTFILE"
+unset STUB_ZERO_MODE
+
+# Case 9: partial zero-exit run preserves valid categories and fails.
+export ZERO_BENCHES="ripr_facts_benchmark"
+export STUB_ZERO_MODE="empty"
+if PATH="$STUB:$PATH" bash "$RUNNER" >"$OUT" 2>"$ERR"; then
+    bad "partial zero-exit run exited 0; expected nonzero"
+else
+    ok "partial zero-exit run exits nonzero"
+fi
+[[ "$(json_get "$OUT" ripr _status)" == "failed" ]] \
+    && ok "zero-result category marked in partial run" \
+    || bad "zero-result category not marked in partial run"
+[[ -n "$(json_get "$OUT" parser stub_bench)" ]] \
+    && ok "valid category keeps its entries in partial zero-exit run" \
+    || bad "valid category lost its entries in partial zero-exit run"
+[[ -z "$(json_get "$OUT" parser _status)" ]] \
+    && ok "valid category has no _status marker in partial zero-exit run" \
+    || bad "valid category carries a spurious _status marker in partial zero-exit run"
+grep -q "benchmark categories failed: ripr" "$ERR" \
+    && ok "partial zero-exit stderr names only the failed category" \
+    || bad "partial zero-exit stderr does not name the failed category"
+unset STUB_ZERO_MODE
+unset ZERO_BENCHES
 
 rm -rf "$STUB" "$OUT" "$ERR" "$ARGS_LOG"
 echo "---"
