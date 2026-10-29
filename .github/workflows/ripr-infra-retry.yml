@@ -1,9 +1,11 @@
-# ripr-infra-retry - bounded automatic retry of runner-evicted ripr lanes
+# ripr-infra-retry - bounded automatic retry of classified infra-no-proof lanes
 #
-# #6807 slice 2: the ripr gate (ripr.yml) classifies a lane killed by the
-# platform (shutdown signal / SIGTERM / exit 143 / API cancellation) as
-# infra-no-proof and leaves a `ripr-gate-classification` artifact holding that
-# verdict. This workflow fires when a ripr run completes with failure and, if
+# Historical #6807 slice 2: the ripr gate (ripr.yml) uses positive teardown
+# evidence (shutdown signal / API cancellation / lost communication, or the
+# guarded failed-lane steps state) to classify infra-no-proof. SIGTERM / exit
+# 143 alone is diagnostic, not sufficient authority. The gate leaves a
+# `ripr-gate-classification` artifact holding that verdict. This workflow fires
+# when a ripr run completes with failure and, if
 # and only if the gate's own classification artifact says infra-no-proof,
 # reruns the failed jobs once for the same exact SHA — an infra kill leaves
 # the evaluated tree unchanged, so a rerun re-runs the same head.
@@ -78,20 +80,6 @@ jobs:
               for line in "$@"; do echo "- ${line}"; done
             } >> "$GITHUB_STEP_SUMMARY"
           }
-
-          # Bound: exactly one automatic retry. A retried completion arrives
-          # here with run_attempt >= 2 and takes the manual path instead.
-          if [ "${RUN_ATTEMPT}" != "1" ]; then
-            # #12563: surface the exhausted bound loudly as NOT_PROVEN — no
-            # terminal receipt exists for this SHA and no further automation
-            # will run for it.
-            echo "RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted"
-            echo "::error::NOT_PROVEN (#12563): ripr run ${RUN_ID} was still infra-evicted on attempt ${RUN_ATTEMPT}; the single automatic same-head retry is exhausted. No proof exists for this SHA until a manual \`gh run rerun ${RUN_ID} --failed\` completes."
-            echo "::notice::run attempt ${RUN_ATTEMPT} — automatic retry is exhausted; use the gate's documented manual rerun for this head."
-            summary "decision: \`skip (retry bound reached — manual rerun path applies)\`" \
-                    "verdict: \`not-proven-infra-retry-exhausted (NOT_PROVEN)\`"
-            exit 0
-          fi
 
           # Locate the gate's classification artifact. Absence means the gate
           # did not classify this as infra-no-proof (genuine ripr failure, or
@@ -178,6 +166,21 @@ jobs:
           if [ "${current_lane_job_name}" != "${lane_name}" ]; then
             echo "::notice::classification lane name does not match current run attempt ${RUN_ATTEMPT} — no automatic retry."
             summary "decision: \`skip (lane job name mismatch)\`"
+            exit 0
+          fi
+
+          # This current attempt now has a validated infra-no-proof artifact
+          # and lane identity. Only that evidence supports an exhausted claim.
+          # Bound: exactly one automatic retry. A retried completion arrives
+          # here with run_attempt >= 2 and takes the manual path instead.
+          if [ "${RUN_ATTEMPT}" != "1" ]; then
+            # #12563: surface this validated attempt as NOT_PROVEN without
+            # inferring eviction cause or proof status outside this attempt.
+            echo "RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted"
+            echo "::error::NOT_PROVEN (#12563): ripr run ${RUN_ID} validated attempt ${RUN_ATTEMPT} is classified infra-no-proof; the single automatic same-head retry is exhausted. Verify the latest run state before a manual \`gh run rerun ${RUN_ID} --failed\`."
+            echo "::notice::run attempt ${RUN_ATTEMPT} — automatic retry is exhausted; use the gate's documented manual rerun for this head."
+            summary "decision: \`skip (retry bound reached — manual rerun path applies)\`" \
+                    "verdict: \`not-proven-infra-retry-exhausted (NOT_PROVEN)\`"
             exit 0
           fi
 

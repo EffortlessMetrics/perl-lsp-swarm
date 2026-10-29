@@ -28,9 +28,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use assert_cmd::Command as AssertCommand;
 use std::fs;
-use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
 mod git_test_support;
@@ -125,6 +123,43 @@ fn hostile_global(dir: &Path, name: &str, body: &str) -> Result<std::path::PathB
     let path = dir.join(name);
     fs::write(&path, body)?;
     Ok(path)
+}
+
+/// A signing control must exercise Git's signing decision without invoking
+/// the user's GPG installation, credentials, or persistent daemons.
+fn refusing_signer(dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    let name = if cfg!(windows) { "refusing signer.cmd" } else { "refusing signer" };
+    let program = dir.join(name);
+    let attempts = dir.join(format!("{name}.attempts"));
+    #[cfg(windows)]
+    fs::write(
+        &program,
+        "@echo off\r\necho attempted-signing>>\"%~f0.attempts\"\r\necho fixture signer refused signing 1>&2\r\nexit /b 1\r\n",
+    )?;
+    #[cfg(not(windows))]
+    {
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf 'attempted-signing\\n' >> \"$0.attempts\"\nprintf 'fixture signer refused signing\\n' >&2\nexit 1\n",
+        )?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok((program, attempts))
+}
+
+fn assert_signer_refusal(output: &std::process::Output, attempts: &Path) -> Result<()> {
+    ensure!(!output.status.success(), "owned signer must refuse the legacy commit");
+    ensure!(
+        String::from_utf8_lossy(&output.stderr).contains("fixture signer refused signing"),
+        "legacy refusal must reach the owned signer, not an unrelated spawn failure: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(
+        fs::read_to_string(attempts)?.lines().collect::<Vec<_>>() == ["attempted-signing"],
+        "legacy signing must invoke the owned signer exactly once"
+    );
+    Ok(())
 }
 
 /// The canonical fixture commit through the hermetic harness. Returns the
@@ -332,45 +367,36 @@ fn relocated_git_system_attributes_are_scrubbed() -> Result<()> {
 #[test]
 fn hostile_global_signing_cannot_change_fixture_commits() -> Result<()> {
     let tmp = tempfile::tempdir()?;
+    let (program, attempts) = refusing_signer(tmp.path())?;
     let global = hostile_global(tmp.path(), "hostile-global", "[commit]\n\tgpgsign = true\n")?;
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
-    let (head, _) = hermetic_commit(&hermetic, &hermetic_repo, "content\n", &global)?;
+    hermetic.init_repo(&hermetic_repo)?;
+    // Keep the sentinel reachable even when the planted global input is scrubbed.
+    hermetic.git(&hermetic_repo, &["config", "gpg.program", &config_path_value(&program)])?;
+    let (head, pinned) = hermetic_commit(&hermetic, &hermetic_repo, "content\n", &global)?;
     let commit_object = hermetic.git(&hermetic_repo, &["cat-file", "commit", "HEAD"])?;
-    assert!(
-        !commit_object.contains("gpgsig"),
-        "hermetic fixture commit must stay unsigned under hostile global signing"
+    ensure!(
+        !commit_object.contains("gpgsig") && !attempts.exists(),
+        "hermetic fixture must remain unsigned without invoking the owned signer"
     );
+    ensure!(committed_blob_id(&hermetic, &hermetic_repo)? == pinned);
+    let (expected, _) =
+        hermetic_commit(&hermetic, &tmp.path().join("baseline-repo"), "content\n", &global)?;
+    ensure!(head == expected, "hostile signing must preserve the unsigned fixture identity");
 
     let legacy_repo = tmp.path().join("legacy-repo");
     legacy_init(&legacy_repo, &global)?;
+    legacy_git(&legacy_repo, &["config", "gpg.program", &config_path_value(&program)], &global)?;
     stage_legacy_subject(&legacy_repo, &global, "content\n")?;
-    let legacy_outcome =
-        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &global);
-    match legacy_outcome {
-        Ok(_) => {
-            let object = legacy_git(&legacy_repo, &["cat-file", "commit", "HEAD"], &global)?;
-            assert!(
-                object.contains("gpgsig"),
-                "legacy harness must not silently produce the unsigned fixture commit \
-                 under hostile global signing"
-            );
-            ensure!(
-                legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &global)? != head,
-                "hostile global signing must not reproduce the pinned hermetic identity"
-            );
-        }
-        Err(error) => {
-            // Without a usable signing key the legacy harness fails outright:
-            // the exact false failure class from #13110.
-            ensure!(
-                error.to_string().to_ascii_lowercase().contains("sign"),
-                "legacy refusal must be attributable to signing, not an unrelated empty-repo or \
-                 fixture failure: {error}"
-            );
-        }
-    }
+    let (mut legacy, _scope) =
+        legacy_command(&legacy_repo, &["commit", "-m", "hostile control subject"], &global)?;
+    assert_signer_refusal(&legacy.output()?, &attempts)?;
+    ensure!(
+        legacy_git(&legacy_repo, &["rev-parse", "--verify", "HEAD"], &global).is_err(),
+        "refused legacy signing must not create a commit"
+    );
     Ok(())
 }
 
@@ -711,10 +737,12 @@ fn hostile_line_ending_configuration_cannot_change_the_pinned_tree() -> Result<(
 #[test]
 fn hostile_command_scoped_config_injection_is_scrubbed() -> Result<()> {
     let tmp = tempfile::tempdir()?;
+    let (program, attempts) = refusing_signer(tmp.path())?;
     let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
 
     let hermetic_repo = tmp.path().join("hermetic-repo");
     hermetic.init_repo(&hermetic_repo)?;
+    hermetic.git(&hermetic_repo, &["config", "gpg.program", &config_path_value(&program)])?;
     fs::write(hermetic_repo.join("tracked.txt"), "content\n")?;
     hermetic.git(&hermetic_repo, &["add", "tracked.txt"])?;
     let mut protected = StdCommand::new("git");
@@ -734,14 +762,18 @@ fn hostile_command_scoped_config_injection_is_scrubbed() -> Result<()> {
     let head = hermetic.git(&hermetic_repo, &["rev-parse", "HEAD"])?;
     let commit_object = hermetic.git(&hermetic_repo, &["cat-file", "commit", "HEAD"])?;
     ensure!(
-        !commit_object.contains("gpgsig"),
+        !commit_object.contains("gpgsig") && !attempts.exists(),
         "hermetic harness must scrub command-scoped commit.gpgsign injection"
     );
 
-    // The same injection through the legacy harness must fail or sign.
+    // The same injection must reach the refusing signer through the legacy harness.
     let legacy_repo = tmp.path().join("legacy-repo");
     let global = hostile_global(tmp.path(), "empty-global", "")?;
     legacy_init(&legacy_repo, &global)?;
+    legacy_git(&legacy_repo, &["config", "gpg.program", &config_path_value(&program)], &global)?;
+    let (expected, _) =
+        hermetic_commit(&hermetic, &tmp.path().join("baseline-repo"), "content\n", &global)?;
+    ensure!(head == expected, "scrubbed injection must preserve the unsigned fixture identity");
     fs::write(legacy_repo.join("tracked.txt"), "content\n")?;
     legacy_git(&legacy_repo, &["add", "tracked.txt"], &global)?;
     let (mut injected, _scope) =
@@ -750,26 +782,11 @@ fn hostile_command_scoped_config_injection_is_scrubbed() -> Result<()> {
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
         .env("GIT_CONFIG_VALUE_0", "true");
-    let output = injected.output()?;
-    if output.status.success() {
-        let object = legacy_git(&legacy_repo, &["cat-file", "commit", "HEAD"], &global)?;
-        ensure!(
-            object.contains("gpgsig"),
-            "legacy harness must not silently produce the unsigned commit under \
-             command-scoped signing injection"
-        );
-        ensure!(
-            legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &global)? != head,
-            "command-scoped signing injection must not reproduce the pinned identity"
-        );
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
-        ensure!(
-            stderr.contains("sign"),
-            "legacy refusal must be attributable to injected signing, not an unrelated failure: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    assert_signer_refusal(&injected.output()?, &attempts)?;
+    ensure!(
+        legacy_git(&legacy_repo, &["rev-parse", "--verify", "HEAD"], &global).is_err(),
+        "refused injected signing must not create a commit"
+    );
     Ok(())
 }
 

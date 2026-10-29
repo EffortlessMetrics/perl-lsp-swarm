@@ -95,7 +95,7 @@ class RetryWorkflowTests(unittest.TestCase):
                  attempt="1", classification="infra-no-proof", gate_run="987",
                  gate_attempt="1", gate_head=MERGE_SHA, job_id="456", job_name=LANE,
                  live_state="1 completed", artifact_id="123", missing_file=False,
-                 event_head=SOURCE_SHA):
+                 event_head=SOURCE_SHA, gate_job_id="456", gate_lane=LANE):
         with tempfile.TemporaryDirectory(prefix="ripr-retry-proof-") as directory:
             work = Path(directory)
             bindir = work / "bin"
@@ -108,7 +108,7 @@ class RetryWorkflowTests(unittest.TestCase):
             archive = work / "classification.zip"
             fields = (f"classification={classification}\nhead_sha={gate_head}\n"
                       f"run_id={gate_run}\nrun_attempt={gate_attempt}\n"
-                      f"lane_name={LANE}\nlane_job_id=456\n")
+                      f"lane_name={gate_lane}\nlane_job_id={gate_job_id}\n")
             with zipfile.ZipFile(archive, "w") as fixture:
                 fixture.writestr("missing.env" if missing_file else "ripr-gate-classification.env", fields)
             summary = work / "summary"
@@ -196,6 +196,31 @@ class RetryWorkflowTests(unittest.TestCase):
                        {"artifact_id": ""}, {"missing_file": True}):
             with self.subTest(kwargs=kwargs):
                 self.exercise(retry=False, **kwargs)
+
+    def test_current_second_attempt_infra_exhaustion_is_evidence_bound(self):
+        calls, summary, output = self.exercise(retry=False, attempt="2", gate_attempt="2")
+        self.assertIn("/attempts/2/jobs", calls)
+        self.assertIn("not-proven-infra-retry-exhausted", summary)
+        self.assertIn("validated attempt 2 is classified infra-no-proof", output)
+        self.assertIn("single automatic same-head retry is exhausted", output)
+        self.assertIn("Verify the latest run state before a manual", output)
+        self.assertNotIn("still infra-evicted", output)
+        self.assertNotIn("No proof exists for this SHA", output)
+        self.assertNotIn("/git/ref/", calls)
+
+    def test_second_attempt_without_current_infra_evidence_has_no_exhaustion_claim(self):
+        for kwargs in ({"classification": "ripr-failure"},
+                       {"classification": "configured-timeout-no-proof"},
+                       {"gate_run": "986"}, {"gate_attempt": "1"},
+                       {"gate_attempt": ""}, {"gate_head": "invalid"},
+                       {"gate_job_id": ""}, {"gate_lane": ""},
+                       {"job_id": "457"}, {"job_name": "another lane"},
+                       {"artifact_id": ""}, {"missing_file": True}):
+            with self.subTest(kwargs=kwargs):
+                options = {"gate_attempt": "2", **kwargs}
+                _, summary, output = self.exercise(retry=False, attempt="2", **options)
+                self.assertNotIn("not-proven-infra-retry-exhausted", summary + output)
+                self.assertNotIn("still infra-evicted", output)
 
 
 if __name__ == "__main__":

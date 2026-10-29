@@ -1127,6 +1127,7 @@ fn write_retry_artifact(path: &std::path::Path, artifact_mode: &str) -> Result<(
             )?;
         }
         "valid"
+        | "valid-attempt-two"
         | "download-failure"
         | "missing"
         | "missing-attempt"
@@ -1144,7 +1145,7 @@ fn write_retry_artifact(path: &std::path::Path, artifact_mode: &str) -> Result<(
             };
             let attempt = match artifact_mode {
                 "missing-attempt" => "",
-                "stale-attempt" => "run_attempt=2\n",
+                "stale-attempt" | "valid-attempt-two" => "run_attempt=2\n",
                 _ => "run_attempt=1\n",
             };
             let lane_job_id = if artifact_mode == "stale-job" { "97002" } else { "97001" };
@@ -2166,10 +2167,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
         run_retry_case("valid", "2")?;
     if !stale_attempt_two.status.success()
         || stale_attempt_two_posted
-        || !stale_attempt_two_output.contains("single automatic same-head retry is exhausted")
+        || !stale_attempt_two_output.contains("classification attempt (1)")
+        || stale_attempt_two_output.contains("RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted")
     {
         bail!(
-            "attempt-1 artifact delivered for attempt 2 must remain exhausted:\n{stale_attempt_two_output}"
+            "attempt-1 artifact delivered for attempt 2 must be rejected without an exhaustion claim:\n{stale_attempt_two_output}"
         );
     }
     let (in_progress, in_progress_output, in_progress_posted) = run_retry_case_with_live(
@@ -2228,7 +2230,7 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             "a nonempty arbitrary token must not satisfy the production token binding:\n{arbitrary_token_output}"
         );
     }
-    let (exhausted, exhausted_output, exhausted_posted) = run_retry_case("valid", "2")?;
+    let (exhausted, exhausted_output, exhausted_posted) = run_retry_case("valid-attempt-two", "2")?;
     if !exhausted.status.success()
         || !exhausted_output.contains("RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted")
         || exhausted_posted
@@ -2486,7 +2488,6 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
     );
     for marker in [
         "The runner has received a shutdown signal",
-        "Process completed with exit code 143.",
         "The operation was canceled",
         "quality gate failed; see receipt",
         // #16431: annotation-only marker for the hosted-runner evictions that
@@ -2496,6 +2497,22 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
         assert!(
             classifier.contains(marker),
             "classifier must pin its exact evidence markers: {marker}"
+        );
+    }
+
+    // Exit 143 carries diagnostic counts, not independent infra authority.
+    assert!(
+        classifier.contains("sigterm143_matches="),
+        "exit 143 must retain its diagnostic counter"
+    );
+    for control in [
+        "lone log 143 fails closed",
+        "lone log 143 remains diagnostic",
+        "lone API 143 remains diagnostic",
+    ] {
+        assert!(
+            self_test.contains(control),
+            "the executable classifier suite must retain the exit-143 boundary control: {control}"
         );
     }
 
