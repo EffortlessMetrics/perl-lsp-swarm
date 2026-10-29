@@ -7,7 +7,7 @@
 
 use perl_parser_core::ast::Node;
 use perl_position_tracking::WireRange;
-use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolExtractor, SymbolKind, SymbolTable};
+use perl_semantic_analyzer::symbol::{ScopeKind, Symbol, SymbolExtractor, SymbolKind, SymbolTable};
 use perl_semantic_facts::{
     AnchorId, Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind,
     ProviderFactTrace, ProviderFallbackState, ProviderSurface,
@@ -74,7 +74,19 @@ pub fn source_backed_document_symbols_from_ast(
     let declarations = extract_symbol_decls(ast, None);
     let mut declaration_names: DeclarationNames<'_> = HashMap::new();
     for declaration in &declarations {
-        if matches!(declaration.kind, SymbolKind::Package | SymbolKind::Subroutine) {
+        // ADJUST blocks deliberately use a Method node without a name span.
+        // Keep that unported block shape on the compatibility path; a named
+        // `method ADJUST` has an anchor and participates in the exact join.
+        if declaration.kind == SymbolKind::Method
+            && declaration.name == "ADJUST"
+            && declaration.anchor_span.is_none()
+        {
+            continue;
+        }
+        if matches!(
+            declaration.kind,
+            SymbolKind::Package | SymbolKind::Subroutine | SymbolKind::Method
+        ) {
             let key = (
                 declaration.kind,
                 declaration.full_span.0,
@@ -95,123 +107,328 @@ pub fn source_backed_document_symbols_from_ast(
     source_backed_document_symbols_from_table(&symbol_table, source, &declaration_names)
 }
 
+fn is_namespace_container(symbol: &Symbol) -> bool {
+    matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role)
+}
+
+fn is_container(symbol: &Symbol) -> bool {
+    is_namespace_container(symbol)
+        || matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method)
+}
+
+/// A framework namespace symbol synthesized by the extractor at an import
+/// or call site (e.g. the `EV` class from `use EV`, or the
+/// `Plack::Middleware::*` package from `enable 'Session'`). The extractor
+/// marks these with a `framework=<Name>` declaration or attribute; real
+/// package/class/role declarations carry neither. A synthesized symbol
+/// declares no package region: it must not terminate the enclosing
+/// statement package's extent or absorb following symbols.
+fn is_synthesized_framework(symbol: &Symbol) -> bool {
+    symbol.declaration.as_deref().is_some_and(|d| d.starts_with("framework="))
+        || symbol.attributes.iter().any(|a| a.starts_with("framework="))
+}
+
+/// Extent of a namespace container, as byte offsets.
+///
+/// A block-form package/class has a `ScopeKind::Package` scope whose
+/// location starts at the declaration; that scope location already covers
+/// the whole `package Foo { ... }` / `class Foo { ... }` construct, so it is
+/// the extent. Statement-form packages create no scope, so their extent is
+/// derived from the sorted namespace starts: it runs from the declaration
+/// to the next namespace container declared in the same enclosing scope
+/// (`scope_id`), or to the end of that enclosing scope (global scope has
+/// end 0, which falls back to EOF).
+fn namespace_extents(
+    symbols: &[Symbol],
+    symbol_table: &SymbolTable,
+    source: &str,
+) -> Vec<(usize, usize)> {
+    let mut extents: Vec<(usize, usize)> =
+        symbols.iter().map(|s| (s.location.start, s.location.end)).collect();
+    let namespace: Vec<usize> = symbols
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| is_namespace_container(s))
+        .map(|(idx, _)| idx)
+        .collect();
+    // A block-form container does not terminate an enclosing statement
+    // package: after `package Inner { ... }` the outer package resumes.
+    let block_extents: Vec<Option<usize>> = namespace
+        .iter()
+        .map(|&idx| {
+            let start = symbols[idx].location.start;
+            symbol_table
+                .scopes
+                .values()
+                .filter(|scope| {
+                    scope.kind == ScopeKind::Package
+                        && scope.location.start == start
+                        && scope.location.end > start
+                })
+                .map(|scope| scope.location.end)
+                .max()
+        })
+        .collect();
+    for (position, &idx) in namespace.iter().enumerate() {
+        let symbol = &symbols[idx];
+        let start = symbol.location.start;
+        if is_synthesized_framework(symbol) {
+            // Synthesized framework namespaces own only their import/call
+            // span; they are not region boundaries (handled by the
+            // next_same_level filter below as well).
+            extents[idx] = (start, symbol.location.end.min(source.len()));
+            continue;
+        }
+        if let Some(block_end) = block_extents[position] {
+            extents[idx] = (start, block_end.max(symbol.location.end).min(source.len()));
+            continue;
+        }
+        let enclosing_end = symbol_table
+            .scopes
+            .get(&symbol.scope_id)
+            .map(|scope| scope.location.end)
+            .filter(|end| *end > start)
+            .unwrap_or(source.len());
+        let next_same_level = namespace
+            .iter()
+            .enumerate()
+            .filter(|(other_position, _)| block_extents[*other_position].is_none())
+            .map(|(_, &other)| other)
+            .filter(|&other| other != idx)
+            .filter(|&other| !is_synthesized_framework(&symbols[other]))
+            .filter(|&other| {
+                symbols[other].scope_id == symbol.scope_id && symbols[other].location.start > start
+            })
+            .map(|other| symbols[other].location.start)
+            .min()
+            .unwrap_or(enclosing_end);
+        let end = enclosing_end.min(next_same_level).max(symbol.location.end).min(source.len());
+        extents[idx] = (start, end);
+    }
+    extents
+}
+
+struct PendingSymbol {
+    document_symbol: DocumentSymbol,
+    start: usize,
+    end: usize,
+    extent: (usize, usize),
+    container: bool,
+}
+
+fn sort_pending_indices(indices: &mut [usize], pending: &[Option<PendingSymbol>]) {
+    // #18111: (priority, start, end, name) ties must not fall through to the
+    // HashMap-derived bucket order of the flattened symbol table; `kind` is
+    // the final deterministic tiebreak. Order only — no entry or kind changes.
+    indices.sort_by(|&a, &b| {
+        let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
+            return std::cmp::Ordering::Equal;
+        };
+        (
+            left.document_symbol.sort_priority,
+            left.start,
+            left.end,
+            left.document_symbol.name.as_str(),
+            left.document_symbol.kind,
+        )
+            .cmp(&(
+                right.document_symbol.sort_priority,
+                right.start,
+                right.end,
+                right.document_symbol.name.as_str(),
+                right.document_symbol.kind,
+            ))
+    });
+}
+
+fn assemble_document_symbol(
+    index: usize,
+    pending: &mut [Option<PendingSymbol>],
+    children_by_parent: &[Vec<usize>],
+) -> Option<DocumentSymbol> {
+    let mut node = pending[index].take()?;
+    let mut child_indices = children_by_parent[index].clone();
+    sort_pending_indices(&mut child_indices, pending);
+    let mut children = Vec::new();
+    for child_index in child_indices {
+        if let Some(child) = assemble_document_symbol(child_index, pending, children_by_parent) {
+            children.push(child);
+        }
+    }
+    node.document_symbol.children = children;
+    Some(node.document_symbol)
+}
+
 fn source_backed_document_symbols_from_table(
     symbol_table: &SymbolTable,
     source: &str,
     declaration_names: &DeclarationNames<'_>,
 ) -> DocumentSymbolLiveResult {
-    let mut symbols_by_scope: HashMap<ScopeId, Vec<Symbol>> = HashMap::new();
-    for symbols in symbol_table.symbols.values() {
-        for symbol in symbols {
-            if is_source_backed(symbol, source) {
-                symbols_by_scope.entry(symbol.scope_id).or_default().push(symbol.clone());
-            }
+    let mut all_symbols: Vec<Symbol> = symbol_table
+        .symbols
+        .values()
+        .flat_map(|symbols| symbols.iter().cloned())
+        .filter(|symbol| is_source_backed(symbol, source))
+        .collect();
+    all_symbols.sort_by(|a, b| {
+        (a.location.start, a.location.end, a.name.as_str(), a.scope_id).cmp(&(
+            b.location.start,
+            b.location.end,
+            b.name.as_str(),
+            b.scope_id,
+        ))
+    });
+
+    // #18111: a `has` attribute and its synthesized same-name accessor share
+    // (name, span, scope); keep only the attribute in the outline. Accessors
+    // with a distinct name/span and explicit subs are unaffected. The symbol
+    // table itself is untouched, so definition/hover still see the accessor.
+    {
+        let attribute_keys: HashSet<(String, usize, usize, usize)> = all_symbols
+            .iter()
+            .filter(|s| s.declaration.as_deref() == Some("has") && s.kind == SymbolKind::scalar())
+            .map(|s| (s.name.clone(), s.location.start, s.location.end, s.scope_id))
+            .collect();
+        if !attribute_keys.is_empty() {
+            all_symbols.retain(|s| {
+                !(s.declaration.as_deref() == Some("has")
+                    && s.kind == SymbolKind::Subroutine
+                    && attribute_keys.contains(&(
+                        s.name.clone(),
+                        s.location.start,
+                        s.location.end,
+                        s.scope_id,
+                    )))
+            });
         }
     }
 
-    let empty_vec = Vec::new();
-    let global_symbols = symbols_by_scope.get(&0).unwrap_or(&empty_vec);
-    let mut raw = Vec::new();
-    let mut fact_traces = Vec::new();
+    let extents = namespace_extents(&all_symbols, symbol_table, source);
 
-    for symbol in global_symbols {
+    let mut fact_traces = Vec::new();
+    let mut pending: Vec<Option<PendingSymbol>> = Vec::new();
+    for (symbol, extent) in all_symbols.iter().zip(extents.iter()) {
+        let range_override = if is_namespace_container(symbol) { Some(*extent) } else { None };
         if let Some(document_symbol) = source_backed_document_symbol(
             symbol,
-            symbol_table,
-            &symbols_by_scope,
             source,
             declaration_names,
             &mut fact_traces,
+            range_override,
         ) {
-            raw.push(document_symbol);
+            pending.push(Some(PendingSymbol {
+                document_symbol,
+                start: symbol.location.start,
+                end: symbol.location.end,
+                extent: *extent,
+                container: is_container(symbol),
+            }));
+        } else {
+            // Keep indices aligned with the extent/parent computation.
+            pending.push(None);
         }
     }
 
-    // De-duplicate: a symbol that was collected as a child of some container must
-    // not also appear at the top level.  Without this guard, a `package Foo;`
-    // statement at byte offset 0 matches the global scope (also start=0) in the
-    // children-search, causing every global-scope sibling to appear BOTH as a
-    // child of `Foo` AND as a flat top-level entry — the duplication bug in #1519.
-    // We identify duplicates by (line, character) of the symbol's start position,
-    // which is unique within a source file.
-    let child_starts: HashSet<(u32, u32)> = raw
+    // Containers in a deterministic order for tie-breaking equal extents.
+    let mut containers: Vec<usize> = pending
         .iter()
-        .flat_map(|sym| sym.children.iter())
-        .map(|c| (c.range.start.line, c.range.start.character))
+        .enumerate()
+        .filter(|(_, node)| node.as_ref().is_some_and(|node| node.container))
+        .map(|(idx, _)| idx)
         .collect();
-    let output: Vec<DocumentSymbol> = raw
-        .into_iter()
-        .filter(|sym| !child_starts.contains(&(sym.range.start.line, sym.range.start.character)))
-        .collect();
+    containers.sort_by(|&a, &b| {
+        let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
+            return std::cmp::Ordering::Equal;
+        };
+        (left.extent.0, std::cmp::Reverse(left.extent.1), left.document_symbol.name.as_str()).cmp(
+            &(
+                right.extent.0,
+                std::cmp::Reverse(right.extent.1),
+                right.document_symbol.name.as_str(),
+            ),
+        )
+    });
+    let mut container_rank: Vec<Option<usize>> = vec![None; pending.len()];
+    for (rank, idx) in containers.iter().enumerate() {
+        container_rank[*idx] = Some(rank);
+    }
+
+    // Parent each symbol under the innermost container containing it.
+    // Containers must be fully contained by their parent (with an earlier
+    // rank breaking equal-extent ties) so the result is a forest.
+    let mut children_by_parent: Vec<Vec<usize>> = vec![Vec::new(); pending.len()];
+    let mut roots: Vec<usize> = Vec::new();
+    for index in 0..pending.len() {
+        let Some(node) = &pending[index] else { continue };
+        let (node_start, node_extent, node_container) = (node.start, node.extent, node.container);
+        let mut best: Option<usize> = None;
+        let mut best_key: Option<(usize, std::cmp::Reverse<usize>, usize)> = None;
+        for &candidate in &containers {
+            if candidate == index {
+                continue;
+            }
+            let Some(parent) = &pending[candidate] else { continue };
+            if parent.extent.0 > node_start || node_start >= parent.extent.1 {
+                continue;
+            }
+            if !node_container && node.end > parent.extent.1 {
+                // A leaf that starts inside but extends past the candidate
+                // parent is not contained by it; leave it for a wider
+                // container or the top level instead of misparenting it.
+                continue;
+            }
+            if node_container {
+                if parent.extent.0 > node_extent.0 || node_extent.1 > parent.extent.1 {
+                    continue;
+                }
+                if parent.extent == node_extent && container_rank[candidate] > container_rank[index]
+                {
+                    continue;
+                }
+            }
+            let key = (
+                parent.extent.1 - parent.extent.0,
+                std::cmp::Reverse(parent.extent.0),
+                container_rank[candidate].unwrap_or(usize::MAX),
+            );
+            if best_key.is_none_or(|current| key < current) {
+                best_key = Some(key);
+                best = Some(candidate);
+            }
+        }
+        match best {
+            Some(parent) => children_by_parent[parent].push(index),
+            None => roots.push(index),
+        }
+    }
+
+    // Top level stays in source order; only children use the priority sort.
+    roots.sort_by(|&a, &b| {
+        let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
+            return std::cmp::Ordering::Equal;
+        };
+        (left.start, left.end, left.document_symbol.name.as_str()).cmp(&(
+            right.start,
+            right.end,
+            right.document_symbol.name.as_str(),
+        ))
+    });
+    let mut output = Vec::new();
+    for root in roots {
+        if let Some(symbol) = assemble_document_symbol(root, &mut pending, &children_by_parent) {
+            output.push(symbol);
+        }
+    }
 
     DocumentSymbolLiveResult { symbols: output, fact_traces }
 }
 
 fn source_backed_document_symbol(
     symbol: &Symbol,
-    symbol_table: &SymbolTable,
-    symbols_by_scope: &HashMap<ScopeId, Vec<Symbol>>,
     source: &str,
     declaration_names: &DeclarationNames<'_>,
     fact_traces: &mut Vec<ProviderFactTrace>,
-) -> Option<DocumentSymbol> {
-    if !is_source_backed(symbol, source) {
-        return None;
-    }
-    let selection_range = symbol_name_range(source, symbol, declaration_names)?;
-
-    let mut children = Vec::new();
-    if symbol.kind == SymbolKind::Package
-        || symbol.kind == SymbolKind::Class
-        || symbol.kind == SymbolKind::Subroutine
-    {
-        for (scope_id, scope) in &symbol_table.scopes {
-            if scope.location.start == symbol.location.start {
-                if let Some(child_symbols) = symbols_by_scope.get(scope_id) {
-                    for child in child_symbols {
-                        if child.location == symbol.location
-                            && child.kind == symbol.kind
-                            && child.name == symbol.name
-                        {
-                            continue;
-                        }
-                        if let Some(child_symbol) =
-                            source_backed_leaf_symbol(child, source, declaration_names, fact_traces)
-                        {
-                            children.push((
-                                document_symbol_priority(child),
-                                child.location.start,
-                                child.location.end,
-                                child_symbol,
-                            ));
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    children.sort_by_key(|(priority, start, end, _)| (*priority, *start, *end));
-    let children = children.into_iter().map(|(_, _, _, child)| child).collect();
-
-    fact_traces.push(source_backed_trace());
-    Some(DocumentSymbol {
-        name: document_symbol_name(symbol),
-        detail: document_symbol_detail(symbol),
-        kind: document_symbol_kind(symbol),
-        range: symbol_range(source, symbol),
-        selection_range,
-        children,
-        sort_priority: document_symbol_priority(symbol),
-    })
-}
-
-fn source_backed_leaf_symbol(
-    symbol: &Symbol,
-    source: &str,
-    declaration_names: &DeclarationNames<'_>,
-    fact_traces: &mut Vec<ProviderFactTrace>,
+    range_override: Option<(usize, usize)>,
 ) -> Option<DocumentSymbol> {
     if !is_source_backed(symbol, source) {
         return None;
@@ -223,7 +440,9 @@ fn source_backed_leaf_symbol(
         name: document_symbol_name(symbol),
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
-        range: symbol_range(source, symbol),
+        range: range_override
+            .map(|(start, end)| WireRange::from_byte_offsets(source, start, end))
+            .unwrap_or_else(|| symbol_range(source, symbol)),
         selection_range,
         children: Vec::new(),
         sort_priority: document_symbol_priority(symbol),
@@ -252,25 +471,38 @@ fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
     WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end)
 }
 
-/// Project existing canonical package/subroutine name spans. Known missing,
+/// Project existing canonical package/subroutine/named-method spans. Known missing,
 /// conflicting or invalid anchors cannot fall back to source-search inference.
 fn symbol_name_range(
     source: &str,
     symbol: &Symbol,
     declaration_names: &DeclarationNames<'_>,
 ) -> Option<WireRange> {
-    let key = (symbol.kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
-    if let Some(declaration) = declaration_names.get(&key) {
-        let declaration = (*declaration)?;
-        let (start, end) = declaration.anchor_span?;
-        if start >= end
-            || start < declaration.full_span.0
-            || end > declaration.full_span.1
-            || source.get(start..end).is_none()
-        {
-            return None;
+    // The compatibility extractor reclassifies a framework `package` as
+    // Class or Role, while its canonical declaration record stays Package
+    // (#17924). A reclassified namespace therefore retries the Package key
+    // with the same exact name and full span; the fail-closed handling of a
+    // present record (conflicting/missing/invalid anchor) is unchanged.
+    // Native class/role declarations have no Package record at the same
+    // span, so they still take the compatibility path below.
+    let lookup_kinds: &[SymbolKind] = match symbol.kind {
+        SymbolKind::Class | SymbolKind::Role => &[symbol.kind, SymbolKind::Package],
+        _ => &[symbol.kind],
+    };
+    for &lookup_kind in lookup_kinds {
+        let key = (lookup_kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
+        if let Some(declaration) = declaration_names.get(&key) {
+            let declaration = (*declaration)?;
+            let (start, end) = declaration.anchor_span?;
+            if start >= end
+                || start < declaration.full_span.0
+                || end > declaration.full_span.1
+                || source.get(start..end).is_none()
+            {
+                return None;
+            }
+            return Some(WireRange::from_byte_offsets(source, start, end));
         }
-        return Some(WireRange::from_byte_offsets(source, start, end));
     }
     // Compatibility for unported declaration families and synthesized symbols
     // (phasers, typeglob callables, framework members, etc.). This bounded slice
@@ -623,6 +855,348 @@ mod tests {
         Ok(())
     }
 
+    fn tree_names(symbols: &[DocumentSymbol]) -> Vec<String> {
+        let mut names = Vec::new();
+        for sym in symbols {
+            names.push(sym.name.clone());
+            names.extend(tree_names(&sym.children));
+        }
+        names
+    }
+
+    fn top_names(symbols: &[DocumentSymbol]) -> Vec<&str> {
+        symbols.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    fn child_names(symbol: &DocumentSymbol) -> Vec<&str> {
+        symbol.children.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    fn assert_ranges_contained(symbols: &[DocumentSymbol]) {
+        for sym in symbols {
+            for child in &sym.children {
+                let parent_start = (sym.range.start.line, sym.range.start.character);
+                let parent_end = (sym.range.end.line, sym.range.end.character);
+                let child_start = (child.range.start.line, child.range.start.character);
+                let child_end = (child.range.end.line, child.range.end.character);
+                assert!(
+                    parent_start <= child_start && child_end <= parent_end,
+                    "child {} {:?} must be contained in parent {} {:?}",
+                    child.name,
+                    child.range,
+                    sym.name,
+                    sym.range
+                );
+            }
+            assert_ranges_contained(&sym.children);
+        }
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_multiple_statement_packages()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Alpha;\nsub a_fn { 1 }\npackage Beta;\nsub b_fn { 2 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["Alpha", "Beta"], "tree: {:?}", result.symbols);
+        let alpha = result.symbols.iter().find(|s| s.name == "Alpha").ok_or("no Alpha")?;
+        let beta = result.symbols.iter().find(|s| s.name == "Beta").ok_or("no Beta")?;
+        assert_eq!(child_names(alpha), vec!["a_fn"]);
+        assert_eq!(child_names(beta), vec!["b_fn"]);
+        let names = tree_names(&result.symbols);
+        for expected in ["Alpha", "Beta", "a_fn", "b_fn"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == expected).count(),
+                1,
+                "{expected} once: {names:?}"
+            );
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_nested_block_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package Outer;\nsub outer_fn { 1 }\n{\n    package Inner;\n    sub inner_fn { 2 }\n}\nsub outer_fn2 { 3 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["Outer"], "tree: {:?}", result.symbols);
+        let outer = result.symbols.iter().find(|s| s.name == "Outer").ok_or("no Outer")?;
+        assert_eq!(
+            child_names(outer),
+            vec!["Inner", "outer_fn", "outer_fn2"],
+            "outer children: {:?}",
+            outer.children
+        );
+        let inner = outer.children.iter().find(|s| s.name == "Inner").ok_or("no Inner")?;
+        assert_eq!(child_names(inner), vec!["inner_fn"]);
+        let names = tree_names(&result.symbols);
+        for expected in ["Outer", "Inner", "outer_fn", "inner_fn", "outer_fn2"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == expected).count(),
+                1,
+                "{expected} once: {names:?}"
+            );
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_role_container() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "package Speakable;\nuse Moose::Role;\nrequires 'speak';\nsub helper { 1 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["Speakable"], "tree: {:?}", result.symbols);
+        let role = result.symbols.iter().find(|s| s.name == "Speakable").ok_or("no Speakable")?;
+        let children = child_names(role);
+        assert!(
+            children.contains(&"helper"),
+            "helper under Speakable: {children:?} tree {:?}",
+            result.symbols
+        );
+        // `requires 'speak'` may be represented under its bare name if at all.
+        let names = tree_names(&result.symbols);
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "helper").count(),
+            1,
+            "helper once: {names:?}"
+        );
+        if names.iter().any(|n| n == "speak") {
+            assert!(children.contains(&"speak"), "speak under Speakable: {children:?}");
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbols_parent_by_extent_symbols_before_first_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub early { 1 }\npackage Later;\nsub later_fn { 2 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(
+            top_names(&result.symbols),
+            vec!["early", "Later"],
+            "tree: {:?}",
+            result.symbols
+        );
+        let later = result.symbols.iter().find(|s| s.name == "Later").ok_or("no Later")?;
+        assert_eq!(child_names(later), vec!["later_fn"]);
+        let names = tree_names(&result.symbols);
+        for expected in ["early", "Later", "later_fn"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == expected).count(),
+                1,
+                "{expected} once: {names:?}"
+            );
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    /// #18111: top-level and child outline order must be deterministic.
+    ///
+    /// The fixture combines the two probe shapes that permuted across
+    /// processes before the deterministic sorts: a global variable and a sub
+    /// declared before the first package (symbols that used to follow the
+    /// symbol-table HashMap bucket order at the top level), and two
+    /// Class::Tiny attribute batches whose members all share one
+    /// `use Class::Tiny` span, so the child sort keys tie beyond
+    /// (priority, start, end) and used to keep HashMap insertion order.
+    /// Every iteration rebuilds the table from a fresh parse, so the symbol
+    /// table's HashMaps re-seed; the exact pinned order must hold each time.
+    #[test]
+    fn document_symbols_order_deterministic_multiple_packages_shared_class_tiny_span()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $global_thing = 1;\nsub before_pkg { 2 }\npackage Alpha;\nuse Class::Tiny qw(zeta alpha middle);\nsub method1 { 1 }\npackage Beta;\nuse Class::Tiny qw(zulu able mike);\nsub method2 { 2 }\n";
+        // LSP SymbolKind numeric values below: 5 = Class, 7 = Property,
+        // 12 = Function, 13 = Variable.
+        let expected_top: Vec<(&str, u32)> =
+            vec![("$global_thing", 13), ("before_pkg", 12), ("Alpha", 5), ("Beta", 5)];
+        let expected_children: Vec<(&str, Vec<(&str, u32)>)> = vec![
+            ("Alpha", vec![("alpha", 7), ("middle", 7), ("zeta", 7), ("method1", 12)]),
+            ("Beta", vec![("able", 7), ("mike", 7), ("zulu", 7), ("method2", 12)]),
+        ];
+        let mut pinned: Option<Vec<DocumentSymbol>> = None;
+        for _ in 0..32 {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            let top_identities: Vec<(&str, u32)> =
+                result.symbols.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+            assert_eq!(
+                top_identities, expected_top,
+                "top-level order and kinds must be pinned: {:?}",
+                result.symbols
+            );
+            for (package, children) in &expected_children {
+                let symbol = result
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == *package)
+                    .ok_or_else(|| format!("no {package} symbol"))?;
+                let child_identities: Vec<(&str, u32)> =
+                    symbol.children.iter().map(|c| (c.name.as_str(), c.kind)).collect();
+                assert_eq!(
+                    child_identities, *children,
+                    "{package} children must be pinned: shared-span Class::Tiny attributes sort by name, then the method: {:?}",
+                    symbol.children
+                );
+            }
+            assert_ranges_contained(&result.symbols);
+            if let Some(previous) = &pinned {
+                assert_eq!(
+                    &result.symbols, previous,
+                    "the complete outline must be identical for every fresh HashMap seeding"
+                );
+            }
+            pinned = Some(result.symbols);
+        }
+        Ok(())
+    }
+
+    /// #18111: `kind` is the final child-order tiebreak. When
+    /// (priority, start, end, name) tie exactly, the lower LSP `SymbolKind`
+    /// number must sort first regardless of the input (HashMap bucket) order;
+    /// a stable sort without the `kind` comparison would keep the input
+    /// order instead.
+    #[test]
+    fn child_sort_kind_tiebreak_orders_full_key_tie_from_either_input_order() {
+        let tied = |kind: u32| PendingSymbol {
+            document_symbol: DocumentSymbol {
+                name: "twin".to_string(),
+                detail: String::new(),
+                kind,
+                range: perl_position_tracking::WireRange {
+                    start: perl_position_tracking::WirePosition { line: 0, character: 0 },
+                    end: perl_position_tracking::WirePosition { line: 1, character: 6 },
+                },
+                selection_range: perl_position_tracking::WireRange {
+                    start: perl_position_tracking::WirePosition { line: 0, character: 4 },
+                    end: perl_position_tracking::WirePosition { line: 0, character: 8 },
+                },
+                children: Vec::new(),
+                sort_priority: CALLABLE_DOCUMENT_SYMBOL_PRIORITY,
+            },
+            start: 0,
+            end: 20,
+            extent: (0, 20),
+            container: false,
+        };
+        // LSP SymbolKind values: 7 = Property, 12 = Function.
+        let pending = vec![Some(tied(12)), Some(tied(7))];
+        let mut forward = vec![0, 1];
+        sort_pending_indices(&mut forward, &pending);
+        assert_eq!(forward, vec![1usize, 0], "kind 7 (Property) must precede kind 12 (Function)");
+        let mut reversed = vec![1usize, 0];
+        sort_pending_indices(&mut reversed, &pending);
+        assert_eq!(
+            reversed,
+            vec![1usize, 0],
+            "the `kind` tiebreak, not the input order, must decide a full-key tie"
+        );
+    }
+
+    /// Review regression (#18184): `use EV` synthesizes a framework class
+    /// symbol at the import site. It declares no package region, so it
+    /// must not end P's extent or absorb the following sub.
+    #[test]
+    fn document_symbols_framework_import_does_not_steal_package_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package P;\nuse EV;\nsub helper { 1 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let package = result.symbols.iter().find(|s| s.name == "P").ok_or("no P")?;
+        assert!(
+            child_names(package).contains(&"helper"),
+            "helper must stay under P: {:?}",
+            result.symbols
+        );
+        assert!(
+            !child_names(package).contains(&"EV") || {
+                let ev = package.children.iter().find(|s| s.name == "EV").ok_or("EV vanished")?;
+                ev.children.is_empty()
+            },
+            "synthetic EV under P must own nothing: {:?}",
+            result.symbols
+        );
+        let names = tree_names(&result.symbols);
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "helper").count(),
+            1,
+            "helper once: {names:?}"
+        );
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    /// Review regression (#18184): the Plack middleware package
+    /// synthesized by `enable 'Session'` carries its framework marker in
+    /// attributes, not declaration. It must not steal P's members either.
+    #[test]
+    fn document_symbols_plack_enable_does_not_steal_package_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "package P;\nuse Plack::Builder;\nbuilder {\n    enable 'Session';\n};\nsub helper { 1 }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let package = result.symbols.iter().find(|s| s.name == "P").ok_or("no P")?;
+        assert!(
+            child_names(package).contains(&"helper"),
+            "helper must stay under P: {:?}",
+            result.symbols
+        );
+        let names = tree_names(&result.symbols);
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "helper").count(),
+            1,
+            "helper once: {names:?}"
+        );
+        for symbol in &result.symbols {
+            if symbol.name == "Plack::Middleware::Session" {
+                assert!(
+                    symbol.children.iter().all(|c| c.name != "helper"),
+                    "synthetic middleware must not own helper: {:?}",
+                    symbol.children
+                );
+            }
+        }
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
+    /// Review regression (#18184): locals of a `method` belong under the
+    /// method, not beside it as class members.
+    #[test]
+    fn document_symbols_method_locals_nest_under_method() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source =
+            "class C {\n    method f {\n        my $x = 1;\n    }\n    method g {\n    }\n}\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        assert_eq!(top_names(&result.symbols), vec!["C"], "tree: {:?}", result.symbols);
+        let class = result.symbols.iter().find(|s| s.name == "C").ok_or("no C")?;
+        let children = child_names(class);
+        assert!(children.contains(&"f"), "f under C: {children:?}");
+        assert!(children.contains(&"g"), "g under C: {children:?}");
+        assert!(
+            !children.iter().any(|name| name.contains('x')),
+            "no local directly under C: {children:?}"
+        );
+        let method = class.children.iter().find(|s| s.name == "f").ok_or("no f")?;
+        let locals = child_names(method);
+        assert!(
+            locals.iter().any(|name| name.contains('x')),
+            "local under f: {locals:?} tree {:?}",
+            result.symbols
+        );
+        let names = tree_names(&result.symbols);
+        assert_eq!(names.iter().filter(|n| n.contains('x')).count(), 1, "local once: {names:?}");
+        assert_ranges_contained(&result.symbols);
+        Ok(())
+    }
+
     #[test]
     fn document_symbol_shadow_traces_explicit_syntax_fact() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -854,6 +1428,72 @@ mod tests {
         Ok(())
     }
 
+    fn find_named<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+        for symbol in symbols {
+            if symbol.name == name {
+                return Some(symbol);
+            }
+            if let Some(found) = find_named(&symbol.children, name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn framework_package_name_selection_keeps_package_anchor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #17924: the compatibility extractor reclassifies a framework
+        // package as Class/Role, but the outline selection must stay on the
+        // declared name (chars 8-11), not slide into the `package` keyword
+        // (chars 4-7, the first substring occurrence of "age").
+        // (framework module, expected wire kind: Class = 5, Role = 11)
+        for (module, expected_kind) in [
+            ("Moo", 5),
+            ("Moose", 5),
+            ("Moo::Role", 11),
+            ("Moose::Role", 11),
+            ("Role::Tiny", 11),
+            ("Class::Tiny", 5),
+        ] {
+            let source = format!("package age {{ use {module}; }}");
+            let ast = must(Parser::new(&source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, &source);
+            let symbol = find_named(&result.symbols, "age")
+                .ok_or_else(|| format!("expected 'age' symbol for {module}"))?;
+            assert_eq!(
+                (symbol.selection_range.start.line, symbol.selection_range.start.character),
+                (0, 8),
+                "{module}: selection must start at the declared name"
+            );
+            assert_eq!(
+                (symbol.selection_range.end.line, symbol.selection_range.end.character),
+                (0, 11),
+                "{module}: selection must end after the declared name"
+            );
+            assert_eq!(
+                symbol.kind, expected_kind,
+                "{module}: wire kind stays the reclassified Class/Role kind"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn plain_package_name_selection_keeps_package_anchor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "package age;";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let symbol = find_named(&result.symbols, "age").ok_or("expected 'age' package symbol")?;
+        assert_eq!(
+            (symbol.selection_range.start.character, symbol.selection_range.end.character),
+            (8, 11)
+        );
+        assert_eq!(symbol.kind, 2, "plain package keeps Module kind");
+        Ok(())
+    }
+
     #[test]
     fn test_symbol_name_range_scalar_variable() -> Result<(), Box<dyn std::error::Error>> {
         let source = "my $counter = 0;";
@@ -1041,6 +1681,97 @@ mod tests {
             check_children_ranges(&child.children)?;
         }
         Ok(())
+    }
+
+    fn flatten_names(symbols: &[DocumentSymbol]) -> Vec<&DocumentSymbol> {
+        let mut out = Vec::new();
+        for s in symbols {
+            out.push(s);
+            out.extend(flatten_names(&s.children));
+        }
+        out
+    }
+
+    #[test]
+    fn moose_has_attribute_not_duplicated_as_accessor() {
+        let source = "package Widget;\nuse Moose;\nhas name => (is => 'ro', isa => 'Str');\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        let named: Vec<_> = flat.iter().filter(|s| s.name == "name").collect();
+        assert_eq!(named.len(), 1, "expected exactly one `name`, got: {flat:?}");
+        assert_eq!(named[0].kind, 7, "kept symbol must be the attribute (Field)");
+        assert!(
+            named[0].detail.contains("is=ro") && named[0].detail.contains("isa=Str"),
+            "attribute detail preserved, got: {:?}",
+            named[0].detail
+        );
+    }
+
+    #[test]
+    fn moose_has_explicit_reader_kept() {
+        let source =
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro', reader => 'get_name');\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(flat.iter().filter(|s| s.name == "name").count(), 1);
+        assert_eq!(
+            flat.iter().filter(|s| s.name == "get_name").count(),
+            1,
+            "explicit reader kept: {flat:?}"
+        );
+    }
+
+    #[test]
+    fn moose_has_same_name_explicit_reader_collapses_to_attribute() {
+        // An explicit reader named exactly like the attribute is the same
+        // callable the default accessor would mint, at the same span; the
+        // outline keeps the single attribute entry (#18111).
+        for source in [
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro', reader => 'name');\n",
+            "package Widget;\nuse Moose;\nhas name => (is => 'bare', reader => 'name');\n",
+        ] {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            let flat = flatten_names(&result.symbols);
+            let named: Vec<_> = flat.iter().filter(|s| s.name == "name").collect();
+            assert_eq!(named.len(), 1, "exactly one `name` for {source:?}: {flat:?}");
+            assert_eq!(named[0].kind, 7, "kept entry is the attribute for {source:?}");
+        }
+    }
+
+    #[test]
+    fn moose_has_plus_explicit_sub_same_name_different_span_kept() {
+        let source =
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro');\nsub name { return 1; }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(
+            flat.iter().filter(|s| s.name == "name").count(),
+            2,
+            "attribute + explicit sub kept: {flat:?}"
+        );
+    }
+
+    #[test]
+    fn moose_has_list_keeps_both_attributes() {
+        let source = "package Widget;\nuse Moose;\nhas [qw(a b)] => (is => 'ro');\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(flat.iter().filter(|s| s.name == "a").count(), 1, "{flat:?}");
+        assert_eq!(flat.iter().filter(|s| s.name == "b").count(), 1, "{flat:?}");
+    }
+
+    #[test]
+    fn duplicate_name_at_different_spans_kept() {
+        let source = "sub name { return 1; }\nsub name { return 2; }\n";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let flat = flatten_names(&result.symbols);
+        assert_eq!(flat.iter().filter(|s| s.name == "name").count(), 2, "{flat:?}");
     }
 
     #[test]
