@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientStart = jest.fn(() => new Promise<void>(() => undefined));
 const mockLanguageClientStop = jest.fn(async () => undefined);
@@ -136,9 +137,11 @@ describe('workspace trust activation gate (#4631)', () => {
 
     try {
       const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-      // The mocked client never spawns this executable; use a real file so
-      // production path validation also succeeds on Unix.
-      const serverPath = process.execPath;
+      const serverPath = path.join(
+        extensionRoot,
+        process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+      );
+      writeFakeTool(serverPath);
       mockConfig(serverPath);
 
       await activate(makeContext(extensionRoot));
@@ -158,7 +161,11 @@ describe('workspace trust activation gate (#4631)', () => {
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
 
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = process.execPath;
+    const serverPath = path.join(
+      extensionRoot,
+      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+    );
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -186,7 +193,11 @@ describe('workspace trust activation gate (#4631)', () => {
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
 
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = process.execPath;
+    const serverPath = path.join(
+      extensionRoot,
+      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+    );
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -214,7 +225,11 @@ describe('workspace trust activation gate (#4631)', () => {
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
 
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = process.execPath;
+    const serverPath = path.join(
+      extensionRoot,
+      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+    );
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -232,7 +247,11 @@ describe('workspace trust activation gate (#4631)', () => {
     // turning one failure into a cascade of unrelated ones.
     try {
       const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-      const serverPath = process.execPath;
+      const serverPath = path.join(
+        extensionRoot,
+        process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+      );
+      writeFakeTool(serverPath);
       mockConfig(serverPath);
 
       const activation = activate(makeContext(extensionRoot));

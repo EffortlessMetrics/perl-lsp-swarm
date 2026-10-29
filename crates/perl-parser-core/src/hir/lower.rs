@@ -4421,9 +4421,15 @@ impl<'a> BodyBuilder2<'a> {
             // Compound declarations such as `my $x += $x` can put a cloned
             // assignment in `initializer` instead. Its LHS is the declaration
             // place, not a second ordinary occurrence or a second write.
+            // The repetition operator is the exception: `my $value x= 3`
+            // keeps the generic declaration shape (a simple declaration
+            // assignment of the `x=` result) pinned by
+            // repetition_assignment_preserves_hir_declaration_reachability,
+            // so it falls through to the generic initializer branch below.
             (Some(init_node), _)
                 if !is_legacy_call
                     && initializer_is_target_assignment(init_node, binding_node)
+                    && !matches!(&init_node.kind, NodeKind::Assignment { op, .. } if op == "x=")
                     && binding.is_some() =>
             {
                 binding.map(|id| self.lower_assignment_with_declared_place(init_node, id))

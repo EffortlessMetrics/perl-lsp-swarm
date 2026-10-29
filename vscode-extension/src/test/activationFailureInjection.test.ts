@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientCtor = jest.fn(() => ({
   initializeResult: { capabilities: {} },
@@ -277,9 +278,11 @@ function mockConfig(serverPath: string): void {
 function makeExtensionRoot(): string {
   const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-inject-'));
   createdRoots.push(extensionRoot);
-  // The mocked client never spawns this executable; use a real file so
-  // production path validation also succeeds on Unix.
-  const serverPath = process.execPath;
+  const serverPath = path.join(
+    extensionRoot,
+    process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+  );
+  writeFakeTool(serverPath);
   mockConfig(serverPath);
   return extensionRoot;
 }

@@ -678,6 +678,10 @@ export function _restartServerForTest(context: vscode.ExtensionContext): Promise
   return restartServer(context);
 }
 
+/** Test the settings prompt through its production recovery action. @internal */
+export function _promptForClientRefreshForTest(context: vscode.ExtensionContext): Promise<void> {
+  return promptForClientRefresh(context);
+}
 export async function syncPerlCriticConfiguration(
   activeClient: Pick<LanguageClient, 'sendNotification'> | undefined = client,
   documentUri?: vscode.Uri,
@@ -1486,7 +1490,7 @@ async function runExtensionActivation(
       },
       onReconstructConfigurationChanged: async (event) => {
         if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
-          await refreshTestAdapter(context);
+          await refreshTestAdapter();
         }
 
         if (
@@ -2292,7 +2296,7 @@ function clientStateForLifecycle(state: LifecycleState): ClientState {
 }
 
 async function finalizeStartedLanguageClient(
-  context: vscode.ExtensionContext,
+  _context: vscode.ExtensionContext,
   startedClient: LanguageClient,
   generation: number,
 ): Promise<void> {
@@ -2340,7 +2344,7 @@ async function finalizeStartedLanguageClient(
   healthWidget?.setName(serverInfo?.name);
   healthWidget?.setVersion(serverInfo?.version);
 
-  await refreshTestAdapter(context);
+  await refreshTestAdapter();
   assertCurrent();
   refreshStreamingController(startedClient);
   try {
@@ -3428,7 +3432,7 @@ async function formatDocumentOnSave(document: vscode.TextDocument): Promise<vsco
   return edits ?? [];
 }
 
-async function refreshTestAdapter(context: vscode.ExtensionContext) {
+async function refreshTestAdapter() {
   if (testAdapter) {
     testAdapter.dispose();
     testAdapter = undefined;
@@ -3441,7 +3445,6 @@ async function refreshTestAdapter(context: vscode.ExtensionContext) {
   }
 
   testAdapter = new PerlTestAdapter();
-  context.subscriptions.push(testAdapter);
   outputChannel.info('Perl test integration enabled.');
 }
 
@@ -4013,7 +4016,7 @@ async function promptForClientRefresh(context: vscode.ExtensionContext) {
   );
 
   if (choice === 'Restart Now') {
-    await restartServer(context);
+    await restartServerFromExplicitRecovery(context);
   }
 }
 

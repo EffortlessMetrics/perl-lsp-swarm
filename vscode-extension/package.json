@@ -519,11 +519,11 @@
               5
             ],
             "enumDescriptions": [
-              "Severity 1 - very permissive",
-              "Severity 2 - permissive",
-              "Severity 3 - balanced default",
-              "Severity 4 - strict",
-              "Severity 5 - very strict"
+              "Severity 1 - report all severities (most diagnostics)",
+              "Severity 2 - report severity 2 and above",
+              "Severity 3 - report severity 3 and above (default)",
+              "Severity 4 - report severity 4 and above",
+              "Severity 5 - report only severity 5 (fewest diagnostics)"
             ],
             "default": 3,
             "scope": "resource",
@@ -573,11 +573,11 @@
               5
             ],
             "enumDescriptions": [
-              "Severity 1 - very permissive",
-              "Severity 2 - permissive",
-              "Severity 3 - balanced default",
-              "Severity 4 - strict",
-              "Severity 5 - very strict"
+              "Severity 1 - report all severities (most diagnostics)",
+              "Severity 2 - report severity 2 and above",
+              "Severity 3 - report severity 3 and above (default)",
+              "Severity 4 - report severity 4 and above",
+              "Severity 5 - report only severity 5 (fewest diagnostics)"
             ],
             "default": 3,
             "scope": "resource",
@@ -1495,12 +1495,12 @@
     "ajv": "^8.20.0",
     "jest": "^30.5.2",
     "jszip": "^3.10.2",
-    "mocha": "^12.0.2",
+    "mocha": "^12.0.3",
     "ovsx": "1.1.1",
-    "oxfmt": "0.66.0",
-    "oxlint": "1.81.0",
-    "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.11",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "oxlint-tsgolint": "7.0.2004",
+    "rolldown": "1.2.13",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"
