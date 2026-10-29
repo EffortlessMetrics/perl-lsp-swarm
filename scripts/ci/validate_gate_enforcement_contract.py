@@ -87,6 +87,7 @@ class Workflow(NamedTuple):
     path_filtered_events: frozenset[str]
     jobs: dict[str, Job]
     source_shape_supported: bool = True
+    dispatch_lines: tuple[int, ...] = ()
 
 
 def _indent(line: str) -> int:
@@ -423,6 +424,11 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
         None,
     )
     jobs: dict[str, Job] = {}
+    dispatch_source = "\n".join("" if line.lstrip().startswith("#") else line for line in lines)
+    dispatch_lines = tuple(sorted({dispatch_source.count("\n", 0, match.start()) + 1
+                                  for match in re.finditer(
+                                      r"\bworkflow(?:\s|\\\r?\n)+run\b|\bcreateWorkflowDispatch\b|"
+                                      r"\bcreateDispatchEvent\b|/dispatches\b", dispatch_source)}))
     # This existing parser deliberately supports a narrow block syntax. The
     # opt-in diagnostic must not certify edges hidden in unsupported shapes.
     source_shape_supported = jobs_index is not None and sum(
@@ -441,7 +447,10 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
                     source_shape_supported = False
         for position, (start, job_id) in enumerate(starts):
             end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
-            jobs[job_id] = _read_job(lines, start, end, job_id)
+            if job_id in jobs:
+                source_shape_supported = False
+            else:
+                jobs[job_id] = _read_job(lines, start, end, job_id)
     return Workflow(
         path=relative,
         sha256=_sha256(path),
@@ -449,6 +458,10 @@ def read_workflow(root: Path, raw_path: str) -> Workflow:
         path_filtered_events=path_filtered_events,
         jobs=jobs,
         source_shape_supported=source_shape_supported,
+        # Evidence hints, not a shell/JavaScript interpreter. An indication is
+        # unresolved even behind an if/false guard; arbitrary helpers remain
+        # outside the proof ceiling of this static diagnostic.
+        dispatch_lines=dispatch_lines,
     )
 
 
@@ -673,11 +686,28 @@ def qualification_source_findings(
 ) -> list[Finding]:
     """Staged entry-source diagnostic, never trusted runtime admission.
 
-    Reuse the existing catalog. Step-script/indirect dispatch and request/result
-    provenance are outside this narrow static seam and remain NOT_PROVEN.
+    Reuse the complete catalog for incoming reusable edges. Neither conditions
+    nor a manual caller establish request provenance. Executable helpers are
+    not interpreted, and static success is never runtime admission.
     """
     findings: list[Finding] = []
-    for path in sorted(set(selected)):
+    selected = set(selected)
+    if not selected:
+        return findings
+    # Reverse closure catches a caller of a caller, even if only the final
+    # qualification entry was selected. Cycles terminate without hiding edges.
+    callers = set(selected)
+    while True:
+        expanded = callers | {
+            path for path, workflow in workflows.items()
+            if any(job.reusable_workflow and job.reusable_workflow.startswith("./")
+                   and job.reusable_workflow[2:] in callers
+                   for job in workflow.jobs.values())
+        }
+        if expanded == callers:
+            break
+        callers = expanded
+    for path in sorted(selected):
         workflow = workflows.get(path)
         if workflow is None:
             findings.append(Finding("qualification_source_missing", path, "selected source is absent from the tracked workflow catalog"))
@@ -691,6 +721,27 @@ def qualification_source_findings(
         for job in workflow.jobs.values():
             if job.reusable_workflow is not None:
                 findings.append(Finding("qualification_unresolved_reusable", f"{path}:{job.job_id}", "reusable or merged job needs separate request-provenance/edge assessment"))
+    for path, workflow in sorted(workflows.items()):
+        if path in callers - selected:
+            findings.append(Finding("qualification_unresolved_caller", path,
+                                    "incoming reusable path reaches selected qualification; request provenance is not established"))
+        if path not in selected and (not workflow.source_shape_supported or not workflow.events
+                or any(not EVENT_NAME.fullmatch(event) for event in workflow.events) or any(
+                not job.source_shape_supported for job in workflow.jobs.values())):
+            findings.append(Finding("qualification_catalog_unsupported", path,
+                                    "unselected source shape may hide an incoming edge"))
+        if "workflow_run" in workflow.events:
+            findings.append(Finding("qualification_unresolved_result_path", path,
+                                    "workflow_run requires originating request/run/subject/trust assessment; finalization is not banned"))
+        for line in workflow.dispatch_lines:
+            findings.append(Finding("qualification_unresolved_dispatch", f"{path}:{line}",
+                                    "dispatch indication requires request/subject assessment, including through helper scripts"))
+        for job in workflow.jobs.values():
+            target = job.reusable_workflow
+            if path not in selected and target is not None and (
+                    not target.startswith("./") or target[2:] not in workflows):
+                findings.append(Finding("qualification_catalog_unresolved_reusable", f"{path}:{job.job_id}",
+                                        "missing, remote, dynamic or merged reusable target cannot be excluded from incoming paths"))
     return findings
 
 
@@ -801,7 +852,15 @@ def validate(root: Path, policy_path: Path, *, qualification_sources: Iterable[s
     if selected_sources:
         result.update({
             "qualification_sources": selected_sources,
-            "qualification_source_scope": "selected entry events and job-level reusable edges only",
+            "qualification_source_scope": "selected events, catalog reusable callers and literal dispatch/result indications; helpers unresolved",
+            "qualification_catalog": [
+                {"path": path, "events": sorted(workflow.events),
+                 "role": "selected-qualification" if path in selected_sources else "unresolved-not-selected",
+                 "reusable_edges": [{"job": job.job_id, "target": job.reusable_workflow}
+                                    for job in workflow.jobs.values() if job.reusable_workflow is not None],
+                 "dispatch_lines": list(workflow.dispatch_lines)}
+                for path, workflow in sorted(workflows.items())
+            ],
             "qualification_status": "NOT_PROVEN",
         })
     return result
@@ -860,7 +919,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(f"- exact static subject: {result['subject_sha256']} at repository {result['subjects']['repository_sha']}")
             print("- live GitHub enforcement remains a separate authenticated NOT_PROVEN input")
         if args.qualification_source:
-            print("- selected source shape only; request acceptance, H2 invalidation, indirect step dispatch and deployed qualification remain NOT_PROVEN")
+            print("- static catalog perimeter only; request acceptance, H2 invalidation, helper execution and deployed qualification remain NOT_PROVEN")
     return 0 if result["status"] == "SUCCESS" else 1
 
 
