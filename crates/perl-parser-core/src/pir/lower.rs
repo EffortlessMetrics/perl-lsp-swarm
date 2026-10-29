@@ -1234,8 +1234,31 @@ impl BodyLowerer {
     /// Walk the operand of a regex-family operation (#7136).
     ///
     /// An implicit default topic has no operand expression to walk.
-    fn lower_regex_target(&mut self, body: &HirBody, target: &HirRegexTarget, file: &HirFile) {
+    fn lower_regex_target(
+        &mut self,
+        body: &HirBody,
+        target: &HirRegexTarget,
+        op_text: &'static str,
+        file: &HirFile,
+    ) {
         if let HirRegexTarget::Bound { expr, .. } = target {
+            // A mutating substitution/transliteration target is a
+            // read-modify-write variable (#14639). Emit its Modify fact
+            // directly, as compound assignment does, instead of routing it
+            // through the read/write path whose fail-closed guard would
+            // record an RmwVariableFallthrough gap and no node.
+            if let Some(HirExpr::Variable(v)) = body.expr(*expr)
+                && v.access == AccessMode::ReadModifyWrite
+            {
+                // No source range means fail-closed, as in `lower_expr`:
+                // emit nothing rather than a Modify anchored at offset 0.
+                let Some(range) = body.source_map.expr_ranges.get(expr.0 as usize).copied() else {
+                    return;
+                };
+                let v = v.clone();
+                self.lower_variable_modify(&v, op_text.to_string(), range, file);
+                return;
+            }
             self.lower_expr(body, *expr, file);
         }
     }
@@ -1633,17 +1656,17 @@ impl BodyLowerer {
 
             HirExpr::Match(op) => {
                 *self.unsupported.entry("Match").or_insert(0) += 1;
-                self.lower_regex_target(body, &op.target, file);
+                self.lower_regex_target(body, &op.target, "=~", file);
             }
 
             HirExpr::Substitution(op) => {
                 *self.unsupported.entry("Substitution").or_insert(0) += 1;
-                self.lower_regex_target(body, &op.target, file);
+                self.lower_regex_target(body, &op.target, "s///", file);
             }
 
             HirExpr::Transliteration(op) => {
                 *self.unsupported.entry("Transliteration").or_insert(0) += 1;
-                self.lower_regex_target(body, &op.target, file);
+                self.lower_regex_target(body, &op.target, "tr///", file);
             }
 
             HirExpr::Literal(literal) => {
@@ -1836,6 +1859,8 @@ impl BodyLowerer {
     ///   never called, so the Variable node itself never reaches `lower_expr`.
     /// - The operand of `HirExpr::Unary { mode: ReadModifyWrite }` — same pattern:
     ///   `lower_variable_modify` is called directly.
+    /// - The target of a mutating `s///`/`tr///` (#14639) — intercepted by
+    ///   `lower_regex_target`, which calls `lower_variable_modify` directly.
     ///
     /// Therefore this function only needs to handle `Read` and `Write` access. If a
     /// future HIR change routes an RMW Variable here, the early-return below ensures
