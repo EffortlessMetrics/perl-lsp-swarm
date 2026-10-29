@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Document links for absolute drive and UNC require paths now apply literal parent-directory components while preserving filename URI encoding and directory targets."
+time: 2026-10-22T00:00:00Z
+custom:
+  PR: "18324"
+  Slug: document-link-parent-segments
+  Breaking: "no"
