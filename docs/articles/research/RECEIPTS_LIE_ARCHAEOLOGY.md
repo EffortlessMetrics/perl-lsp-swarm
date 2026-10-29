@@ -15,7 +15,7 @@ early.
 
 ## 1. The Principle Appears In The Talk Before It Hardens In Repo Policy
 
-[Q3_SWARM_TALK_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_TALK_ARCHAEOLOGY.md)
+[Q3_SWARM_TALK_ARCHAEOLOGY.md](Q3_SWARM_TALK_ARCHAEOLOGY.md)
 already records the warning in plain language:
 
 - trusted change matters more than cheap code generation
@@ -23,7 +23,7 @@ already records the warning in plain language:
 - receipts can still lie if the instrument is weak
 
 The same framing survives in
-[CASEBOOK.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CASEBOOK.md),
+[CASEBOOK.md](../../project/CASEBOOK.md),
 which treats scar stories and evidence quality as part of the repo's operating
 memory rather than as embarrassing exceptions.
 
@@ -130,7 +130,7 @@ That is exactly what the talk warned about.
 By March 2026, the repo has far better status accounting and much stronger
 receipt culture. But the same lesson appears again.
 
-[CURRENT_STATUS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
+[CURRENT_STATUS.md](../../project/CURRENT_STATUS.md)
 shows a mature evidence posture, yet the period still produces follow-up work on
 the validity of the measuring surfaces themselves:
 
@@ -146,7 +146,7 @@ And the March learning issues around parser work make the failure mode explicit:
 
 Those issues document that `assert_clean_parse()` was missing `(ERROR ` in its
 marker list while a shared `ERROR_MARKERS` constant already existed nearby in
-[crates/perl-parser-core/tests/cpan_test_helpers/mod.rs](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-parser-core/tests/cpan_test_helpers/mod.rs).
+[crates/perl-parser-core/tests/cpan_test_helpers/mod.rs](../../../crates/perl-parser-core/tests/cpan_test_helpers/mod.rs).
 
 That is the same structural lesson as `#209`, expressed on a different surface:
 
@@ -182,14 +182,14 @@ promoting those discoveries into better control surfaces.
 
 ## Evidence Pointers
 
-- [Q3_SWARM_TALK_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_TALK_ARCHAEOLOGY.md)
-- [TRUSTED_CHANGE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md)
-- [PROVENANCE_RECEIPTS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PROVENANCE_RECEIPTS_ARCHAEOLOGY.md)
-- [CASEBOOK.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CASEBOOK.md)
-- [CURRENT_STATUS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
+- [Q3_SWARM_TALK_ARCHAEOLOGY.md](Q3_SWARM_TALK_ARCHAEOLOGY.md)
+- [TRUSTED_CHANGE_ARCHAEOLOGY.md](TRUSTED_CHANGE_ARCHAEOLOGY.md)
+- [PROVENANCE_RECEIPTS_ARCHAEOLOGY.md](PROVENANCE_RECEIPTS_ARCHAEOLOGY.md)
+- [CASEBOOK.md](../../project/CASEBOOK.md)
+- [CURRENT_STATUS.md](../../project/CURRENT_STATUS.md)
 - [PR #209](https://github.com/EffortlessMetrics/perl-lsp/pull/209)
 - [Issue #207](https://github.com/EffortlessMetrics/perl-lsp/issues/207)
 - [Issue #210](https://github.com/EffortlessMetrics/perl-lsp/issues/210)
 - [PR #1950](https://github.com/EffortlessMetrics/perl-lsp/pull/1950)
-- [cpan_test_helpers/mod.rs](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-parser-core/tests/cpan_test_helpers/mod.rs)
+- [cpan_test_helpers/mod.rs](../../../crates/perl-parser-core/tests/cpan_test_helpers/mod.rs)
 - `63aa3050d`, `5445b566d`, `9ecf3acc8`, `2d7a5c26e`, `6c438af25`

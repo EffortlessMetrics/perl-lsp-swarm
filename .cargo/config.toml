@@ -13,6 +13,11 @@ t2 = "test -- --test-threads=2"
 [build]
 rustflags = []
 
+# Lossless ELF debug compression on the pinned native Linux compiler-driver
+# route. Keep line tables and backtraces; other targets retain their defaults.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--compress-debug-sections=zlib"]
+
 [env]
 RUST_BACKTRACE = "1"
 

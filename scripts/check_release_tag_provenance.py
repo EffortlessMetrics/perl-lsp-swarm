@@ -4,7 +4,9 @@
 The default mode is network-free and validates the manifest's shape and internal
 contracts. `--verify-git` additionally resolves local tag refs and checks the
 pinned commit and predecessor relationship. CI callers using that mode must
-fetch tags and full history first.
+fetch tags and full history first. `--prepare-git` fetches only the required
+manifest refs from origin, then runs the same verification; it changes no Git
+configuration and never replaces an existing tag.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+
+from git_environment import isolated_git_env
 
 try:
     import tomllib
@@ -206,6 +210,7 @@ def validate_manifest(data: dict[str, Any]) -> list[str]:
 def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo_root), *args],
+        env=isolated_git_env(),
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -226,6 +231,12 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], l
 
     if shutil.which("git") is None:
         return (["git executable not found on PATH"], [])
+
+    shallow = _git(repo_root, "rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0:
+        return ([f"cannot inspect git history: {shallow.stderr.strip()}"], [])
+    if shallow.stdout.strip() != "false":
+        return (["full history unavailable: shallow checkout; run --prepare-git first"], [])
 
     drift_errors: list[str] = []
     unresolvable: list[str] = []
@@ -378,6 +389,55 @@ def verify_git_refs(data: dict[str, Any], repo_root: Path) -> tuple[list[str], l
     return drift_errors, unresolvable
 
 
+def prepare_git_refs(data: dict[str, Any], repo_root: Path) -> list[str]:
+    """Restore declared live refs without changing config or replacing local tags.
+
+    Audited orphan rows remain the verifier's responsibility. Fetch failures and
+    subsequent pin/lineage drift must remain failures, even if Git fetched objects.
+    """
+    errors = validate_manifest(data)
+    if errors:
+        return errors
+    if shutil.which("git") is None:
+        return ["git executable not found on PATH"]
+
+    shallow = _git(repo_root, "rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0:
+        return [f"cannot inspect git history: {shallow.stderr.strip()}"]
+    is_shallow = shallow.stdout.strip() == "true"
+    refs: list[str] = []
+    for row in data["tag"]:
+        if row.get("unresolvable") is True:
+            continue
+        ref = f"refs/tags/{row['name']}"
+        present = _git(repo_root, "show-ref", "--verify", "--quiet", ref)
+        if present.returncode == 1:
+            refs.append(f"{ref}:{ref}")
+        elif present.returncode != 0:
+            errors.append(f"cannot inspect {ref}: {present.stderr.strip()}")
+        else:
+            pinned = _git(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
+            if pinned.returncode != 0 or pinned.stdout.strip() != row["current_sha"]:
+                errors.append(f"{ref} conflicts with manifest pin; existing tag preserved")
+            elif is_shallow:
+                # Fetch history without updating a valid local tag object,
+                # even if origin has reannotated the same pinned commit.
+                refs.append(ref)
+    if errors:
+        return errors
+    if refs:
+        options = [
+            "--atomic", "--no-tags", "--no-prune",
+            "--no-recurse-submodules", "--no-write-fetch-head", "--refmap=",
+        ]
+        if is_shallow:
+            options.append("--unshallow")
+        fetched = _git(repo_root, "fetch", *options, "origin", *refs)
+        if fetched.returncode != 0:
+            return [f"required release refs unavailable from origin: {fetched.stderr.strip()}"]
+    return []
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -385,16 +445,22 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("policy/release-tag-provenance.toml"),
     )
-    parser.add_argument(
+    git_mode = parser.add_mutually_exclusive_group()
+    git_mode.add_argument(
         "--verify-git",
         action="store_true",
         help="resolve local tags and verify pinned SHA and ancestry",
+    )
+    git_mode.add_argument(
+        "--prepare-git",
+        action="store_true",
+        help="fetch required manifest refs/full history from origin, then verify locally",
     )
     parser.add_argument(
         "--repo-root",
         type=Path,
         default=Path("."),
-        help="local git checkout used by --verify-git",
+        help="local git checkout used by --verify-git or --prepare-git",
     )
     return parser.parse_args()
 
@@ -408,8 +474,8 @@ def main() -> int:
         return 1
 
     unresolvable: list[str] = []
-    errors = validate_manifest(data)
-    if args.verify_git and not errors:
+    errors = prepare_git_refs(data, args.repo_root) if args.prepare_git else validate_manifest(data)
+    if (args.verify_git or args.prepare_git) and not errors:
         drift, unresolvable = verify_git_refs(data, args.repo_root)
         errors.extend(drift)
 
@@ -420,7 +486,7 @@ def main() -> int:
         return 1
 
     tag_count = len(data.get("tag", []))
-    mode = "manifest + local git" if args.verify_git else "manifest"
+    mode = "manifest + local git" if args.verify_git or args.prepare_git else "manifest"
     unresolvable_note = ""
     if unresolvable:
         unresolvable_note = (

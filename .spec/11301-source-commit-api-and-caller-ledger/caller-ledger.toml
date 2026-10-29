@@ -147,7 +147,13 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 #   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
 #     112 -> 111 (-1): the composed-role test rewrite re-seeds one fixture
 #     through the canonical initial API.
-compatibility_baseline = 707
+# Reconciled 707 -> 705 for #17212 after #17206 (squash 2264c4fcfb):
+#   crates/perl-workspace/benches/workspace_index_benchmark.rs
+#     33 -> 31 (-2): the initial batch seed now calls index_initial_files_batch;
+#     repeated updates call index_live_file and check typed Accepted/NoOp outcomes.
+# The squash parent 04baae9ae8 has 707 compatibility calls; the landed tree has
+# 705. No other file changes its compatibility count or caller identity.
+compatibility_baseline = 705
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -213,6 +219,7 @@ caller_paths = [
   "crates/perl-parser/tests/workspace_index_tests.rs",
   "crates/perl-semantic-analyzer/src/analysis/index.rs",
   "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",
+  "crates/perl-workspace/benches/support/index_real_corpus.rs",
   "crates/perl-workspace/benches/workspace_index_benchmark.rs",
   "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
   "crates/perl-workspace/src/workspace/workspace_index.rs",
@@ -232,6 +239,7 @@ caller_paths = [
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/package_scope_references.rs",
   "crates/perl-workspace/tests/quickorm_generated_member.rs",
   "crates/perl-workspace/tests/quickorm_workspace_receipt.rs",
   "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",

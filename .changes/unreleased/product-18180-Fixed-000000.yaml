@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Keep the last import line inside the imports folding range so folding a use/no block no longer drops its final import."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18180"
+  Slug: folding-imports-endline
+  Breaking: "no"

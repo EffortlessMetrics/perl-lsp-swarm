@@ -130,6 +130,124 @@ fn required_step_wiring(
     Ok(())
 }
 
+/// Shards select helper binaries in their gate commands. PR Smoke's focused
+/// integration consumer builds every binary inside its own shorter watchdog,
+/// so its package-wide preparation is retained. Full compile proof is separate.
+fn runner_warmup_wiring(workflow: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed: Value = serde_yaml_ng::from_str(workflow)?;
+    for (job_name, consumer_name, expected_command) in [
+        ("pr-smoke", "Resolve immutable CI subject", "cargo build -p xtask --locked"),
+        (
+            "merge-gate-shards",
+            "Run merge-gate shard with receipts",
+            "cargo build -p xtask --bin xtask --locked",
+        ),
+    ] {
+        let steps = parsed
+            .get("jobs")
+            .and_then(|jobs| jobs.get(job_name))
+            .and_then(|job| job.get("steps"))
+            .and_then(Value::as_sequence)
+            .ok_or("xtask consumer has no steps")?;
+        let warmups = steps
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| step.get("name").and_then(Value::as_str) == Some("Warm xtask"))
+            .collect::<Vec<_>>();
+        let [(warmup_index, warmup)] = warmups.as_slice() else {
+            return Err("xtask consumer must have exactly one warm-up".into());
+        };
+        if warmup.get("if").is_some() || warmup.get("continue-on-error").is_some() {
+            return Err("xtask warm-up must execute and propagate failure".into());
+        }
+        let consumer_index = steps
+            .iter()
+            .position(|step| step.get("name").and_then(Value::as_str) == Some(consumer_name))
+            .ok_or("xtask consumer is absent")?;
+        if *warmup_index >= consumer_index {
+            return Err("xtask must be built before its consumer".into());
+        }
+        let command = warmup.get("run").and_then(Value::as_str).ok_or("warm-up has no run")?;
+        if command.lines().count() != 1 || command.trim() != expected_command {
+            return Err("xtask warm-up must retain the consumer's locked target selection".into());
+        }
+    }
+    required_step_wiring(
+        &workflow.replace("\r\n", "\n"),
+        "      - name: Compile all targets (catches integration-test + bench bit-rot)",
+        "        run: just check-all-targets",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn xtask_warmup_selects_only_shard_runner_and_preserves_all_target_proof()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow = fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?;
+    runner_warmup_wiring(&workflow)
+}
+
+#[test]
+fn xtask_warmup_contract_rejects_broad_build_and_missing_proof()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow =
+        fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    let runner = "cargo build -p xtask --bin xtask --locked";
+    // Start with the accepted shape even before the production command changes,
+    // so the red-first run separately exercises the instrument's controls.
+    let shard = job_block(&workflow, "merge-gate-shards").ok_or("missing shard job")?;
+    let qualified =
+        workflow.replacen(shard, &shard.replacen("cargo build -p xtask --locked", runner, 1), 1);
+    runner_warmup_wiring(&qualified)?;
+    for replacement in [
+        "cargo build -p xtask --locked",
+        "cargo build -p xtask --bin worktree-cleanup --locked",
+        "cargo build -p xtask --bin xtask",
+        "cargo build -p xtask --bin xtask --all-targets --locked",
+    ] {
+        let mutant = qualified.replacen(runner, replacement, 1);
+        assert!(runner_warmup_wiring(&mutant).is_err(), "accepted {replacement}");
+    }
+    let smoke_narrowed = qualified.replacen("cargo build -p xtask --locked", runner, 1);
+    assert!(runner_warmup_wiring(&smoke_narrowed).is_err(), "moved bulk smoke preparation");
+    for (from, to) in [
+        ("name: Warm xtask", "name: Omitted warm-up"),
+        ("run: just check-all-targets", "run: echo no-proof"),
+        ("  check-all-targets:\n", "  check-all-targets:\n    continue-on-error: true\n"),
+    ] {
+        let mutant = qualified.replace("\r\n", "\n").replacen(from, to, 1);
+        assert_ne!(mutant, qualified.replace("\r\n", "\n"));
+        assert!(runner_warmup_wiring(&mutant).is_err(), "accepted missing or optional proof");
+    }
+    for field in ["if: false", "continue-on-error: true"] {
+        let mutant = qualified.replacen(
+            "        run: cargo build -p xtask --bin xtask --locked",
+            &format!("        {field}\n        run: {runner}"),
+            1,
+        );
+        assert!(runner_warmup_wiring(&mutant).is_err(), "accepted optional warm-up");
+    }
+    let multiline = qualified.replacen(
+        "run: cargo build -p xtask --bin xtask --locked",
+        "run: |\n          cargo build -p xtask\n          --bin xtask --locked",
+        1,
+    );
+    assert!(runner_warmup_wiring(&multiline).is_err(), "accepted two shell commands");
+    let normalized = qualified.replace("\r\n", "\n");
+    for (job_name, command) in
+        [("pr-smoke", "cargo build -p xtask --locked"), ("merge-gate-shards", runner)]
+    {
+        let warmup = format!("      - name: Warm xtask\n        run: {command}\n");
+        let job = job_block(&normalized, job_name).ok_or("missing consumer job")?;
+        let removed = job.replacen(&warmup, "", 1);
+        assert_ne!(removed, job, "order mutation did not remove the warm-up");
+        let reordered_job = format!("{removed}{warmup}");
+        let reordered = normalized.replacen(job, &reordered_job, 1);
+        assert!(runner_warmup_wiring(&reordered).is_err(), "accepted late warm-up");
+    }
+    Ok(())
+}
+
 #[test]
 fn workflow_policy_cli_wiring_is_required() -> Result<(), Box<dyn std::error::Error>> {
     let ci =
@@ -543,6 +661,45 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
 
 #[path = "support/draft_routed_result.rs"]
 mod draft_routed_result;
+
+#[test]
+fn windows_platform_smoke_executes_public_powershell_completion_before_library_smoke()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    let workflow: Value = serde_yaml_ng::from_str(&ci)?;
+    let run = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("windows-platform-smoke"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                (step.get("name")?.as_str()? == "Run Windows portability smoke")
+                    .then(|| step.get("run")?.as_str())
+                    .flatten()
+            })
+        })
+        .ok_or("windows platform smoke has no named run command")?;
+    let lines: Vec<_> = run.lines().map(str::trim).collect();
+    let completion = lines
+        .iter()
+        .position(|line| {
+            *line == "cargo test -p perllsp --test powershell_completion --locked -- --exact generated_powershell_completion_works_without_profile_namespace_imports --test-threads=1"
+        })
+        .ok_or("Windows smoke must execute the public completion regression, not compile or echo it")?;
+    let library = lines
+        .iter()
+        .position(|line| *line == "cargo test $WINDOWS_TEST_CRATES --locked --lib")
+        .ok_or("Windows smoke must retain its library execution")?;
+    assert!(completion < library, "unrelated library failures must not suppress the regression");
+    assert_eq!(
+        lines[completion - 1],
+        "if [[ \" $WINDOWS_TEST_CRATES \" == *\" -p perllsp \"* ]]; then"
+    );
+    assert_eq!(lines[completion + 1], "fi");
+    Ok(())
+}
 
 #[test]
 fn rust_small_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {

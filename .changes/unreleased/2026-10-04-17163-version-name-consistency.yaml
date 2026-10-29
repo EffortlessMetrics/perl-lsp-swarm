@@ -1,0 +1,21 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: >-
+  The perllsp binary now self-identifies consistently across every CLI surface.
+  `--info`, the `--doctor` report, and the `--doctor --dev-environment`,
+  `--doctor --external-tools`, and `--doctor --critic-compatibility` headers used
+  to hard-code the crate name `perl-lsp` while `--version`, `--help`, and the
+  startup banner followed the name the binary was invoked under, so the same
+  `perllsp.exe` answered `perllsp 0.17.0` to `--version` and `perl-lsp 0.17.0` to
+  `--info`. All identity lines now take the invocation name from the single
+  source run_cli already uses for `--version` and `--help`. Output shapes are
+  unchanged: the `--info` block keeps its line layout, doctor headers keep their
+  `=` underline spanning the header, and every body line, JSON surface, and the
+  `perl_lsp.binary_identity.v1` packet are byte-identical. The LSP `initialize`
+  `serverInfo.name` remains the fixed protocol identity `perl-lsp`.
+time: 2026-10-04T00:00:00Z
+custom:
+  PR: ""
+  Slug: version-name-consistency
+  Breaking: "no"

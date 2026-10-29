@@ -154,7 +154,16 @@ impl DebugAdapter {
                 &output,
             );
             let (frames, arguments) = Self::parse_stack_frames_from_text(input);
-            let frames = Self::filter_user_visible_frames(frames);
+            // The framed `T` report's first line names the debugger's own
+            // `DB::DB` frame when execution is suspended inside called code;
+            // its position is the true suspension point, while the topmost
+            // user frame's `called from` position names the call site
+            // (#17171). Reconcile before the internal frame is filtered away.
+            let suspension = Self::suspension_position_from_internal_frames(&frames);
+            let frames = Self::reconcile_top_frame_with_suspension_position(
+                Self::filter_user_visible_frames(frames),
+                suspension.as_ref(),
+            );
             match Self::rebind_generation_frame_ids(
                 frames,
                 arguments,
@@ -722,6 +731,66 @@ mod pagination_tests {
             || frame.get("line").and_then(Value::as_i64) != Some(7)
         {
             return Err(format!("unexpected first framed snapshot: {frame}").into());
+        }
+        Ok(())
+    }
+
+    /// Regression for #17171: suspended inside a called sub, the framed `T`
+    /// report opens with the debugger's own `DB::DB` frame carrying the true
+    /// suspension line (9), while the first user frame's `called from`
+    /// position names the call site (12). The topmost user-visible frame
+    /// must report the suspension line and source, not the call site.
+    #[test]
+    fn framed_stack_trace_reports_suspension_line_not_the_call_site()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let adapter = Arc::new(DebugAdapter::new());
+        install_stack_trace_test_session(&adapter, Vec::new())?;
+        let worker = {
+            let adapter = Arc::clone(&adapter);
+            std::thread::spawn(move || {
+                adapter.handle_stack_trace(1, 1, Some(json!({ "threadId": 1 })))
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("initial stackTrace query was not submitted".into());
+        }
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test(
+            "@ = DB::DB called from file 'F:/dbg/hello.pl' line 9",
+        );
+        adapter.push_recent_output_line_for_test(
+            "$ = main::add(2, 3) called from file 'F:/dbg/hello.pl' line 12",
+        );
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let response = worker.join().map_err(|_| "stackTrace worker panicked")?;
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err(format!("unexpected stackTrace response: {response:?}").into());
+        };
+        let frames =
+            body.get("stackFrames").and_then(Value::as_array).ok_or("missing stackFrames")?;
+        if body.get("totalFrames") != Some(&json!(1)) {
+            return Err(format!("internal DB:: frame must stay filtered out: {body}").into());
+        }
+        let frame = frames.first().ok_or("topmost user frame was missing")?;
+        if frame.get("name").and_then(Value::as_str) != Some("main::add")
+            || frame.get("line").and_then(Value::as_i64) != Some(9)
+        {
+            return Err(format!(
+                "top frame must be main::add at the suspension line 9, got: {frame}"
+            )
+            .into());
+        }
+        if frame.get("source").and_then(|source| source.get("path")).and_then(Value::as_str)
+            != Some("F:/dbg/hello.pl")
+        {
+            return Err(format!("top frame source must be the suspension file: {frame}").into());
         }
         Ok(())
     }
