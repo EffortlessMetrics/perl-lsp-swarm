@@ -1,0 +1,36 @@
+name: Review Disposition Replay Self-Test
+
+on:
+  pull_request:
+    paths:
+      - scripts/reviews/disposition
+      - scripts/tests/test-review-disposition-replay.py
+      - .github/workflows/review-disposition-replay.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/reviews/disposition
+      - scripts/tests/test-review-disposition-replay.py
+      - .github/workflows/review-disposition-replay.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: disposition-replay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    name: Disposition replay controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise the real helper against offline mutation spies
+        run: |
+          bash -n scripts/reviews/disposition
+          python3 scripts/tests/test-review-disposition-replay.py -v

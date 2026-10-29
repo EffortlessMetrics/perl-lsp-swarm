@@ -1,0 +1,9 @@
+project: product
+component: Continuous integration
+kind: Fixed
+body: "Every `cargo xtask` invocation replayed ~200KB (1030+) of the intentional Phase-1 `missing_docs` baseline warnings to stderr before the command ran: stable cargo re-emits the cached diagnostics of every fresh workspace-local unit and offers no suppression knob (`-q` does not gate `replay_output_cache`; `build.warnings` needs nightly `-Zwarnings`), and xtask cannot discipline its parent cargo's pre-main output. `scripts/xtask-quiet.sh` is the supported quiet dispatch for agent queries: it builds `xtask` with stderr captured, surfaces build failures verbatim with cargo's exit status, and on success execs the freshly built binary directly so the command's own stdout/stderr arrive untouched (measured 200052B → 0B on `ci doctor --help` and `ci explain`; fresh rustc errors still surface, exit 101 propagated). The `missing_docs` burn-down itself remains the separate follow-up programme deferred by #4911."
+time: 2026-10-04T00:00:00Z
+custom:
+  PR: "17267"
+  Slug: xtask-quiet-dispatch
+  Breaking: "no"
