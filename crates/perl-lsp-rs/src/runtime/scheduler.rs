@@ -2398,6 +2398,12 @@ mod tests {
             arrival_seq: 1,
             dedup_key: extract_dedup_key("textDocument/hover", Some(&params), priority),
             freshness: extract_freshness(&server, "textDocument/hover", Some(&params), priority),
+            // Neither the barrier predicate nor the freshness refresh reads the
+            // ingress authority, so the inert default keeps this test about
+            // freshness alone. Reserving a real one would advance the admission
+            // watermark as a side effect and make a freshness test depend on
+            // ingress ordering it never asserts on.
+            dispatch_context: RequestDispatchContext::default(),
         };
 
         assert!(refresh_after_mutation_barrier(&queued));
