@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("check-pr-semantic-review-currentness.py")
 SPEC = importlib.util.spec_from_file_location("semantic_currentness", SCRIPT)
@@ -193,7 +195,7 @@ class HostLocaleDecodingTests(unittest.TestCase):
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         payload = json.dumps(
-            [
+            [[
                 {
                     "user": {"login": "reviewer", "type": "User"},
                     "state": "COMMENTED",
@@ -201,7 +203,7 @@ class HostLocaleDecodingTests(unittest.TestCase):
                     "commit_id": "a" * 40,
                     "submitted_at": "2026-08-12T00:00:00Z",
                 }
-            ],
+            ]],
             ensure_ascii=False,
         )
         metadata = json.dumps({"headRefOid": "b" * 40, "baseRefOid": "c" * 40})
@@ -378,6 +380,176 @@ class MarkerResultTests(unittest.TestCase):
             )
         self.assertEqual(0, code)
         self.assertIn("semantic-review:v1", stdout.getvalue())
+
+
+class AcquisitionBoundaryTests(unittest.TestCase):
+    """Caller data can exercise semantics, but cannot qualify the live subject."""
+
+    def setUp(self) -> None:
+        self.tmp, self.root, self.base, self.head = setup_repo()
+        self.addCleanup(self.tmp.cleanup)
+        # Derive the fixture from Git bytes independently of the checker digest.
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "--full-index", self.base, self.head],
+            cwd=self.root, check=True, capture_output=True,
+        ).stdout
+        self.row = review(42, self.root, self.base, self.head,
+                          digest=hashlib.sha256(diff).hexdigest())._asdict()
+        self.fixture = self.root / "review.json"
+        self.fixture.write_text(json.dumps({"head": self.head, "reviews": [self.row]}))
+
+    def cli(self, *options):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(["42", "o/r", "--root", str(self.root), *options])
+        return code, stdout.getvalue()
+
+    def test_fixture_verdict_cannot_qualify_production(self):
+        for via_env in (False, True):
+            with self.subTest(via_env=via_env), patch.dict(os.environ, {}, clear=True):
+                options = ["--fixture", str(self.fixture)]
+                if via_env:
+                    os.environ["SEMANTIC_REVIEW_TEST_FIXTURE"] = str(self.fixture)
+                    options = []
+                with patch.object(module, "fetch_pr", side_effect=AssertionError("live read")):
+                    code, raw = self.cli(*options)
+                result = json.loads(raw)
+                self.assertEqual(1, code)
+                self.assertEqual("NOT_PROVEN", result["classification"])
+                self.assertEqual("fixture", result["acquisition_mode"])
+                self.assertEqual("REVIEW_CURRENT", result["evaluator_result"]["classification"])
+
+    def test_forged_fixture_provenance_is_still_test_only(self):
+        payload = json.loads(self.fixture.read_text())
+        payload.update(acquisition_mode="gh_live", repo="o/r", pr=42,
+                       pagination_complete=True, captured_at="2099-01-01T00:00:00Z")
+        self.fixture.write_text(json.dumps(payload))
+        code, raw = self.cli("--fixture", str(self.fixture))
+        self.assertEqual(1, code)
+        self.assertEqual("NOT_PROVEN", json.loads(raw)["classification"])
+
+    def test_marker_refuses_fixture_selection_before_acquisition(self):
+        for selection in ("flag", "env", "empty_env"):
+            with self.subTest(selection=selection), patch.dict(os.environ, {}, clear=True):
+                options = ["--emit-marker", "--result", "REVIEW_CURRENT"]
+                if selection == "flag":
+                    options += ["--fixture", str(self.fixture)]
+                else:
+                    os.environ["SEMANTIC_REVIEW_TEST_FIXTURE"] = (
+                        "" if selection == "empty_env" else str(self.fixture))
+                with patch.object(module, "fetch_pr", return_value=(self.head, self.base, [])) as fetch:
+                    code, raw = self.cli(*options)
+                self.assertEqual(2, code)
+                self.assertNotIn("semantic-review:v1", raw)
+                fetch.assert_not_called()
+
+    def test_empty_fixture_environment_cannot_fall_back_to_live(self):
+        with patch.dict(os.environ, {"SEMANTIC_REVIEW_TEST_FIXTURE": ""}), \
+                patch.object(module, "fetch_pr", return_value=(self.head, self.base, [])) as fetch:
+            code, raw = self.cli()
+        self.assertEqual(2, code)
+        self.assertEqual("NOT_PROVEN", json.loads(raw)["classification"])
+        fetch.assert_not_called()
+
+    def live_cli(self, pages, *, metadata=None, expected_head=None):
+        provider_row = {
+            "user": {"login": "reviewer", "type": "User"}, "state": "COMMENTED",
+            "body": self.row["body"], "commit_id": self.head,
+            "submitted_at": self.row["submitted_at"],
+        }
+        if pages == "valid":
+            pages = [[provider_row]]
+        actual_run = module._run
+        calls = []
+        metas = iter(metadata or [{"headRefOid": self.head, "baseRefOid": self.base}] * 2)
+
+        def provider(args, **kwargs):
+            if args[0] != "gh":
+                return actual_run(args, **kwargs)
+            calls.append(args)
+            payload = next(metas) if args[1] == "pr" else pages
+            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+        options = [] if expected_head is None else ["--expected-head", expected_head]
+        with patch.object(module, "_run", side_effect=provider):
+            code, raw = self.cli(*options)
+        return code, json.loads(raw), calls
+
+    def test_live_subject_positive_control(self):
+        code, result, calls = self.live_cli("valid")
+        self.assertEqual(0, code)
+        self.assertEqual("REVIEW_CURRENT", result["classification"])
+        self.assertEqual("gh_live", result["acquisition_mode"])
+        self.assertEqual("o/r", result["repo"])
+        self.assertEqual(self.head, result["current_head"])
+        self.assertIn("--paginate", calls[1])
+        self.assertIn("--slurp", calls[1])
+
+    def test_expected_head_drift_is_refused(self):
+        code, result, _ = self.live_cli("valid", expected_head=self.base)
+        self.assertEqual(2, code)
+        self.assertEqual("NOT_PROVEN", result["classification"])
+
+    def test_expected_head_positive_control_and_marker_refusal(self):
+        code, result, _ = self.live_cli("valid", expected_head=self.head)
+        self.assertEqual(0, code)
+        self.assertEqual("REVIEW_CURRENT", result["classification"])
+        with patch.object(module, "fetch_pr", return_value=(self.head, self.base, [])):
+            code, raw = self.cli("--emit-marker", "--result", "REVIEW_CURRENT",
+                                 "--expected-head", self.base)
+        self.assertEqual(2, code)
+        self.assertNotIn("semantic-review:v1", raw)
+
+    def test_empty_review_page_is_a_valid_blocking_observation(self):
+        code, result, _ = self.live_cli([[]])
+        self.assertEqual(1, code)
+        self.assertEqual("NOT_PROVEN", result["classification"])
+
+    def test_transport_denial_never_becomes_a_verdict(self):
+        with patch.object(module, "_run", side_effect=subprocess.CalledProcessError(
+                1, ["gh", "pr", "view"], stderr="Forbidden")):
+            code, raw = self.cli()
+        self.assertEqual(2, code)
+        self.assertEqual("NOT_PROVEN", json.loads(raw)["classification"])
+
+    def test_malformed_metadata_is_an_instrument_failure(self):
+        for metadata in ([], {}, {"headRefOid": 1, "baseRefOid": self.base},
+                         {"headRefOid": "", "baseRefOid": self.base}):
+            with self.subTest(metadata=metadata):
+                code, result, _ = self.live_cli("valid", metadata=[metadata])
+                self.assertEqual(2, code)
+                self.assertEqual("NOT_PROVEN", result["classification"])
+
+    def test_head_movement_during_acquisition_is_refused(self):
+        code, result, _ = self.live_cli("valid", metadata=[
+            {"headRefOid": self.head, "baseRefOid": self.base},
+            {"headRefOid": self.base, "baseRefOid": self.base},
+        ])
+        self.assertEqual(2, code)
+        self.assertEqual("NOT_PROVEN", result["classification"])
+
+    def test_malformed_or_missing_pages_are_never_filtered(self):
+        valid = {"user": {"login": "reviewer", "type": "User"}, "state": "COMMENTED",
+                 "body": self.row["body"], "commit_id": self.head,
+                 "submitted_at": self.row["submitted_at"]}
+        for pages in ([], [valid], [valid, []], [[valid, None]], [[valid], {"errors": []}],
+                      [[valid, {**valid, "body": None}]], [[valid, {**valid, "commit_id": ""}]],
+                      [[valid, {**valid, "submitted_at": ""}]], [[valid, {**valid, "state": ""}]],
+                      {"errors": ["Forbidden"]}):
+            with self.subTest(pages=pages):
+                code, result, _ = self.live_cli(pages)
+                self.assertEqual(2, code)
+                self.assertEqual("NOT_PROVEN", result["classification"])
+
+    def test_malformed_fixture_is_an_instrument_failure(self):
+        for payload in ([], {"head": self.head}, {"head": 123, "reviews": []},
+                        {"head": self.head, "reviews": [None]},
+                        {"head": self.head, "reviews": [{**self.row, "body": None}]}):
+            with self.subTest(payload=payload):
+                self.fixture.write_text(json.dumps(payload))
+                code, raw = self.cli("--fixture", str(self.fixture))
+                self.assertEqual(2, code)
+                self.assertEqual("NOT_PROVEN", json.loads(raw)["classification"])
 
 
 class SemanticReviewCurrentnessTests(unittest.TestCase):
@@ -822,9 +994,10 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
             code = module.main(
                 ["42", "o/r", "--root", str(root), "--fixture", str(fixture)]
             )
-        self.assertEqual(0, code)
+        self.assertEqual(1, code)
         payload = json.loads(stdout.getvalue())
-        self.assertEqual("REVIEW_CURRENT", payload["classification"])
+        self.assertEqual("NOT_PROVEN", payload["classification"])
+        self.assertEqual("REVIEW_CURRENT", payload["evaluator_result"]["classification"])
         self.assertEqual("semantic_review_currentness.v1", payload["schema_version"])
 
 
@@ -866,7 +1039,8 @@ class StdoutSchemaVersionTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertIsInstance(payload, dict)
         self.assertEqual("NOT_PROVEN", payload["classification"])
-        self.assertEqual("no_substantive_review_currentness_marker", payload["reason"])
+        self.assertEqual("fixture_evaluation_only", payload["reason"])
+        self.assertEqual("no_substantive_review_currentness_marker", payload["evaluator_result"]["reason"])
         self.assertEqual(module.SCHEMA_VERSION, payload["schema_version"])
         self.assertEqual(42, payload["pr"])
 
@@ -916,9 +1090,10 @@ class StdoutSchemaVersionTests(unittest.TestCase):
         code, payload = self._run_main(
             ["42", "o/r", "--root", str(root), "--fixture", str(fixture)]
         )
-        self.assertEqual(0, code)
+        self.assertEqual(1, code)
         self.assertIsInstance(payload, dict)
-        self.assertEqual("injected_stale_schema", payload["reason"])
+        self.assertEqual("injected_stale_schema", payload["evaluator_result"]["reason"])
+        self.assertEqual(module.SCHEMA_VERSION, payload["evaluator_result"]["schema_version"])
         self.assertEqual(module.SCHEMA_VERSION, payload["schema_version"])
         self.assertNotEqual("stale.v0", payload["schema_version"])
 

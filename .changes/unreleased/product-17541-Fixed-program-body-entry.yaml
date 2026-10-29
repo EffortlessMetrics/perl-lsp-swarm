@@ -1,0 +1,9 @@
+project: product
+component: Parser
+kind: Fixed
+body: Make the public complete-program HIR body entry reuse canonical lowering, preserving structured expressions, source maps and scope-derived bindings. Non-Program AST fragments retain their documented legacy behavior.
+time: 2026-10-10T22:48:00Z
+custom:
+  PR: "17541"
+  Slug: program-body-entry
+  Breaking: "no"

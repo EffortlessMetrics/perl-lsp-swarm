@@ -116,7 +116,15 @@ impl FoldingRangeExtractor {
         let mut depth = 0usize;
         let mut current_offset = 0usize;
 
-        for line in text.lines() {
+        // Iterate with the line terminator included so byte accounting
+        // preserves the actual terminator length: CRLF lines lose a byte
+        // per line under a fixed `+ 1` advance, drifting every later
+        // offset and potentially landing inside a multi-byte character
+        // (#18034). `split_inclusive('\n')` yields the same logical lines
+        // as `str::lines()` for LF and CRLF text.
+        for chunk in text.split_inclusive('\n') {
+            let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+            let line = line.strip_suffix('\r').unwrap_or(line);
             let line_start_offset = current_offset;
             let line_end_offset = current_offset + line.len();
             let trimmed = line.trim_start();
@@ -158,8 +166,9 @@ impl FoldingRangeExtractor {
                 }
             }
 
-            // Move to next line (account for newline character)
-            current_offset = line_end_offset + 1; // +1 for the newline
+            // Move to the next line by the full source chunk, terminator
+            // included (one byte for LF, two for CRLF).
+            current_offset += chunk.len();
         }
 
         ranges
@@ -789,5 +798,54 @@ mod tests {
         let source = "    # region Indented\n    code\n    # endregion\n";
         let ranges = FoldingRangeExtractor::extract_region_markers(source);
         assert_eq!(ranges.len(), 1, "Should support indented region markers");
+    }
+
+    /// CRLF lines carry a two-byte terminator; a fixed one-byte advance
+    /// drifts every later offset (#18034). These fixtures pin exact byte
+    /// offsets, including an end offset that previously landed inside
+    /// the crab's UTF-8 bytes.
+    #[test]
+    fn extract_region_markers_crlf_preserves_byte_offsets() {
+        // "#region" (7) + CRLF (2); "#endregion 🦀" = 10 + 1 + 4 bytes.
+        let source = "#region\r\n#endregion 🦀";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 24));
+        assert!(source.is_char_boundary(ranges[0].end_offset));
+        assert_eq!(&source[ranges[0].start_offset..ranges[0].end_offset], source);
+
+        // A preceding CRLF line shifts the region start by its full width.
+        let source = "# pre\r\n#region\r\n#endregion";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (7, 26));
+
+        // LF control: one-byte terminators keep the historical offsets.
+        let source = "#region\n#endregion 🦀";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 23));
+    }
+
+    #[test]
+    fn extract_region_markers_mixed_endings_and_nesting() {
+        let source = "#region\r\ncode\n#endregion\r\n";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 24));
+
+        let source = "#region\r\n#region\r\n#endregion\r\n#endregion";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 2);
+        // Inner range is pushed first when its closing marker is reached.
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (9, 28));
+        assert_eq!((ranges[1].start_offset, ranges[1].end_offset), (0, 40));
+
+        // Malformed Perl inside matched markers changes nothing: the scan
+        // is text-only and must stay byte-exact through the recovery path.
+        let source = "#region\r\nmy $x = (\r\n#endregion";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 30));
     }
 }

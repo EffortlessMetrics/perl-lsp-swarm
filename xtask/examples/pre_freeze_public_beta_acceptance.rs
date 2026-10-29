@@ -39,6 +39,10 @@ struct Args {
     /// Explicit topology adapter input, required for v2; never inferred from the packet.
     #[arg(long)]
     topology_requirements: Option<PathBuf>,
+    /// Emit the deterministic first-hour profile index over the validated v2
+    /// bundle. Index only; never a new qualification authority.
+    #[arg(long)]
+    profile_index: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -407,20 +411,31 @@ fn main() -> Result<()> {
         == Some(xtask::pre_freeze_public_beta_acceptance::SCHEMA)
     {
         use xtask::pre_freeze_public_beta_acceptance::{
-            TopologyRequirements, parse_v2, validate_v2,
+            TopologyRequirements,
+            first_hour_profile::{FirstHourFacts, index_first_hour},
+            parse_v2, validate_v2,
         };
         let path = args.topology_requirements.ok_or_else(|| {
             color_eyre::eyre::eyre!("v2 requires --topology-requirements; no authority is inferred")
         })?;
         let requirements: TopologyRequirements = serde_json::from_slice(&fs::read(path)?)?;
         let packet = parse_v2(&bytes).map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
-        let report = validate_v2(&packet, &requirements)
-            .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
-        writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&report)?)?;
+        if args.profile_index {
+            let index = index_first_hour(&packet, &requirements, &FirstHourFacts::unobserved())
+                .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
+            writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&index)?)?;
+        } else {
+            let report = validate_v2(&packet, &requirements)
+                .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
+            writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&report)?)?;
+        }
         return Ok(());
     }
     if args.topology_requirements.is_some() {
         bail!("topology requirements apply only to v2; legacy input remains historical");
+    }
+    if args.profile_index {
+        bail!("profile index applies only to v2; legacy input remains historical");
     }
     let packet: Packet = serde_json::from_slice(&bytes)?;
     let recommendation = validate(&packet)?;

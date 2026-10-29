@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Withdraw workspace-symbol capability advertisement when the workspace-symbol feature is disabled, including resolve options that previously kept the disabled parent advertised.
+time: 2026-10-22T09:53:52Z
+custom:
+  PR: "18325"
+  Slug: workspace-symbol-disabled-advertisement
+  Breaking: "no"
