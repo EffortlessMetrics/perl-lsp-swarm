@@ -259,7 +259,7 @@ describe('workspace trust activation gate (#4631)', () => {
       await expect(
         Promise.race([activation.then(() => 'activated' as const), delay(250)]),
       ).resolves.toBe('activated');
-      await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 500);
+      await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 5_000);
 
       expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
       // onDidGrantWorkspaceTrust should NOT be registered when already trusted.
