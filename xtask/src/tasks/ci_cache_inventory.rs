@@ -2005,17 +2005,18 @@ mod tests {
     //! `workflow_policy_lint` reachability primitives.
 
     use super::*;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use serde_json::json;
 
     fn project_root() -> PathBuf {
-        crate::utils::project_root().expect("resolve project root")
+        must_with(crate::utils::project_root(), "resolve project root")
     }
 
     fn write_file(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("mkdir fixture parent");
+            must_with(fs::create_dir_all(parent), "mkdir fixture parent");
         }
-        fs::write(path, content).expect("write fixture file");
+        must_with(fs::write(path, content), "write fixture file");
     }
 
     fn fixture_workflows_dir(
@@ -2029,9 +2030,10 @@ mod tests {
     }
 
     fn find_row<'a>(rows: &'a [CacheFamilyRow], workflow: &str, job: &str) -> &'a CacheFamilyRow {
-        rows.iter()
-            .find(|row| row.workflow == workflow && row.job == job)
-            .unwrap_or_else(|| panic!("no row for {workflow}/{job} in {rows:#?}"))
+        must_some_with(
+            rows.iter().find(|row| row.workflow == workflow && row.job == job),
+            format!("no row for {workflow}/{job} in {rows:#?}"),
+        )
     }
 
     #[test]
@@ -2077,12 +2079,17 @@ mod tests {
         let root = project_root();
         let workflows = root.join(".github/workflows");
         let actions = root.join(".github/actions");
-        let inventory = derive_families_in_dirs(&workflows, Some(&actions))
-            .expect("derive real repo inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&workflows, Some(&actions)),
+            "derive real repo inventory",
+        );
 
-        let manifest_raw = fs::read_to_string(root.join(".ci/ci-cache/cache-inventory.v1.json"))
-            .expect("read checked-in cache inventory manifest");
-        let manifest: JsonValue = serde_json::from_str(&manifest_raw).expect("parse manifest JSON");
+        let manifest_raw = must_with(
+            fs::read_to_string(root.join(".ci/ci-cache/cache-inventory.v1.json")),
+            "read checked-in cache inventory manifest",
+        );
+        let manifest: JsonValue =
+            must_with(serde_json::from_str(&manifest_raw), "parse manifest JSON");
 
         let mut diffs = diff_inventory(
             &inventory.families,
@@ -2106,17 +2113,21 @@ mod tests {
         let workflows = root.join(".github/workflows");
         let actions = root.join(".github/actions");
         let inventory =
-            derive_families_in_dirs(&workflows, Some(&actions)).expect("derive inventory");
-        let digest = workflow_tree_digest_for(&workflows, Some(&actions))
-            .expect("compute workflow tree digest");
+            must_with(derive_families_in_dirs(&workflows, Some(&actions)), "derive inventory");
+        let digest = must_with(
+            workflow_tree_digest_for(&workflows, Some(&actions)),
+            "compute workflow tree digest",
+        );
         let receipt = build_receipt(&inventory, digest);
-        let receipt_json = serde_json::to_value(&receipt).expect("serialize receipt");
+        let receipt_json = must_with(serde_json::to_value(&receipt), "serialize receipt");
 
-        let schema_raw = fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json"))
-            .expect("read ci_cache_receipt schema");
-        let schema: JsonValue = serde_json::from_str(&schema_raw).expect("parse schema JSON");
+        let schema_raw = must_with(
+            fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json")),
+            "read ci_cache_receipt schema",
+        );
+        let schema: JsonValue = must_with(serde_json::from_str(&schema_raw), "parse schema JSON");
         let validator =
-            jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
+            must_with(jsonschema::validator_for(&schema), "compile ci_cache_receipt schema");
         let errors: Vec<String> =
             validator.iter_errors(&receipt_json).map(|error| error.to_string()).collect();
         assert!(errors.is_empty(), "receipt violates its own schema: {errors:?}");
@@ -2126,13 +2137,15 @@ mod tests {
     fn failed_instrument_receipt_also_validates_against_schema() {
         let root = project_root();
         let receipt = build_failed_receipt("fixture: parser failure");
-        let receipt_json = serde_json::to_value(&receipt).expect("serialize failed receipt");
+        let receipt_json = must_with(serde_json::to_value(&receipt), "serialize failed receipt");
 
-        let schema_raw = fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json"))
-            .expect("read ci_cache_receipt schema");
-        let schema: JsonValue = serde_json::from_str(&schema_raw).expect("parse schema JSON");
+        let schema_raw = must_with(
+            fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json")),
+            "read ci_cache_receipt schema",
+        );
+        let schema: JsonValue = must_with(serde_json::from_str(&schema_raw), "parse schema JSON");
         let validator =
-            jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
+            must_with(jsonschema::validator_for(&schema), "compile ci_cache_receipt schema");
         let errors: Vec<String> =
             validator.iter_errors(&receipt_json).map(|error| error.to_string()).collect();
         assert!(errors.is_empty(), "failed-instrument receipt violates its own schema: {errors:?}");
@@ -2141,17 +2154,21 @@ mod tests {
     #[test]
     fn contradictory_ok_errors_shapes_fail_schema() {
         let root = project_root();
-        let schema_raw = fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json"))
-            .expect("read ci_cache_receipt schema");
-        let schema: JsonValue = serde_json::from_str(&schema_raw).expect("parse schema JSON");
+        let schema_raw = must_with(
+            fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json")),
+            "read ci_cache_receipt schema",
+        );
+        let schema: JsonValue = must_with(serde_json::from_str(&schema_raw), "parse schema JSON");
         let validator =
-            jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
+            must_with(jsonschema::validator_for(&schema), "compile ci_cache_receipt schema");
         let is_valid = |value: &JsonValue| {
             validator.iter_errors(value).map(|error| error.to_string()).collect::<Vec<_>>()
         };
 
-        let receipt_json = serde_json::to_value(&build_failed_receipt("fixture: parser failure"))
-            .expect("serialize failed receipt");
+        let receipt_json = must_with(
+            serde_json::to_value(build_failed_receipt("fixture: parser failure")),
+            "serialize failed receipt",
+        );
         assert!(
             is_valid(&receipt_json).is_empty(),
             "producer failed receipt must stay schema-valid"
@@ -2174,8 +2191,10 @@ mod tests {
 
     #[test]
     fn check_mode_rejects_receipt_combination() {
-        let error = run(true, Some(PathBuf::from("fixture-receipt.json")), None, "v1")
-            .expect_err("--check combined with --receipt must fail loudly");
+        let error = must_err_with(
+            run(true, Some(PathBuf::from("fixture-receipt.json")), None, "v1"),
+            "--check combined with --receipt must fail loudly",
+        );
         assert!(
             error.to_string().contains("--receipt"),
             "the rejection must name the ignored option: {error:#}"
@@ -2185,8 +2204,10 @@ mod tests {
     #[test]
     fn ci_nightly_test_coverage_and_fuzz_are_statically_excluded_not_violations() {
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         for job in ["test-coverage", "fuzz"] {
             let row = find_row(&inventory.families, "ci-nightly.yml", job);
             assert_eq!(
@@ -2205,8 +2226,10 @@ mod tests {
     #[test]
     fn ripr_hosted_and_fallback_save_guard_is_reviewed_exception() {
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         for job in ["ripr-github", "ripr-fallback"] {
             let row = find_row(&inventory.families, "ripr.yml", job);
             assert_eq!(
@@ -2220,8 +2243,10 @@ mod tests {
     #[test]
     fn post_merge_status_is_not_candidate_event() {
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let row = find_row(&inventory.families, "post-merge-status.yml", "generate");
         assert_eq!(row.candidate_event_reachability, CandidateEventReachability::NotCandidateEvent);
     }
@@ -2234,8 +2259,10 @@ mod tests {
         // an actual guard was checked and holds) even when their own
         // `save_authority_source` is `absent`.
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let row = find_row(&inventory.families, "post-merge-status.yml", "generate");
         assert_eq!(row.writer_disposition, WriterDisposition::NotCandidateReachable);
         assert_ne!(row.writer_disposition, WriterDisposition::TrustedGuarded);
@@ -2244,8 +2271,10 @@ mod tests {
     #[test]
     fn em_ci_routed_rust_ref_only_guard_is_trusted_guarded() {
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         for job in ["rust-small-github", "rust-small-fallback"] {
             let row = find_row(&inventory.families, "em-ci-routed-rust.yml", job);
             assert_eq!(
@@ -2264,8 +2293,10 @@ mod tests {
         // enter a save path, so it is `restore_only` with `not_proven`
         // byte provenance — recorded honestly, not a violation.
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let row = find_row(&inventory.families, "docs-pr-build.yml", "build");
         assert_eq!(
             row.writer_disposition,
@@ -2285,8 +2316,10 @@ mod tests {
         // top-level `||` branch establishes the equality, so the row
         // carries both dimensions as `trusted_guarded`, not a violation.
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let row = find_row(
             &inventory.families,
             "vscode-current-source-linux-smoke.yml",
@@ -2314,8 +2347,10 @@ mod tests {
         // `not_proven` — not a demonstrated candidate write, and not
         // `trusted_guarded` either, since it genuinely has no save guard.
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let row = find_row(&inventory.families, "post-publish-smoke.yml", "smoke");
         assert_eq!(row.candidate_event_reachability, CandidateEventReachability::Reachable);
         assert_eq!(row.save_authority_source, SaveAuthoritySource::Absent);
@@ -2353,10 +2388,10 @@ jobs:
     /// 1. An active cache action with no manifest row must be reported as drift.
     #[test]
     fn negative_control_1_active_site_missing_from_manifest_is_drift() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "sample.yml", SAMPLE_CACHE_WORKFLOW);
         let inventory =
-            derive_families_in_dirs(&workflows, None).expect("derive fixture inventory");
+            must_with(derive_families_in_dirs(&workflows, None), "derive fixture inventory");
         assert_eq!(inventory.families.len(), 1);
 
         let diffs = diff_inventory(&inventory.families, &json!([]));
@@ -2397,19 +2432,19 @@ jobs:
 "#;
 
     /// 2. The optional `sccache` step inside `setup-rust` must never be counted
-    /// as an active (or dormant) cache site, even though the composite action
-    /// that embeds it has an active caller. The composite's Swatinem step
-    /// itself has an active caller, so it is an active-site row (`families`),
-    /// not dormant.
+    ///    as an active (or dormant) cache site, even though the composite action
+    ///    that embeds it has an active caller. The composite's Swatinem step
+    ///    itself has an active caller, so it is an active-site row (`families`),
+    ///    not dormant.
     #[test]
     fn negative_control_2_dormant_optional_sccache_is_never_a_cache_site() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "caller.yml", CALLER_USES_SETUP_RUST);
         let actions_dir = tmp.path().join(".github/actions");
         write_file(&actions_dir.join("setup-rust/action.yml"), SETUP_RUST_WITH_SCCACHE);
 
         let inventory =
-            derive_families_in_dirs(&workflows, Some(&actions_dir)).expect("derive inventory");
+            must_with(derive_families_in_dirs(&workflows, Some(&actions_dir)), "derive inventory");
         let all_actions: Vec<&str> = inventory
             .families
             .iter()
@@ -2451,16 +2486,16 @@ jobs:
 "#;
 
     /// 3. A run-unique checkpoint output path must not be silently dropped from
-    /// a row: a manifest that only lists the stable path is drift.
+    ///    a row: a manifest that only lists the stable path is drift.
     #[test]
     fn negative_control_3_run_unique_output_path_omission_is_drift() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "corpus.yml", RUN_UNIQUE_CHECKPOINT_WORKFLOW);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(row.cached_paths.len(), 2, "fixture must expose both paths: {row:#?}");
 
-        let mut truncated = serde_json::to_value(row).expect("serialize row");
+        let mut truncated = must_with(serde_json::to_value(row), "serialize row");
         truncated["cached_paths"] = json!(["target/corpus"]);
         let diffs = diff_inventory(&inventory.families, &json!([truncated]));
         assert!(
@@ -2470,13 +2505,13 @@ jobs:
     }
 
     /// 4. A direct `actions/cache/save` writer omitted from the manifest must
-    /// drift, and it must be visible in `direct_save_writers`, not silently
-    /// folded into the Swatinem-implicit count.
+    ///    drift, and it must be visible in `direct_save_writers`, not silently
+    ///    folded into the Swatinem-implicit count.
     #[test]
     fn negative_control_4_direct_save_writer_omission_is_drift_and_counted() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "corpus.yml", RUN_UNIQUE_CHECKPOINT_WORKFLOW);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let denominator = compute_denominator(&inventory);
         assert_eq!(
             denominator.direct_save_writers, 1,
@@ -2503,17 +2538,17 @@ jobs:
 "#;
 
     /// 5. Losing `pull_request_target` reachability (a manifest row claiming
-    /// `not_candidate_event` for a `pull_request_target`-triggered site) must
-    /// drift.
+    ///    `not_candidate_event` for a `pull_request_target`-triggered site) must
+    ///    drift.
     #[test]
     fn negative_control_5_pull_request_target_reachability_loss_is_drift() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "target.yml", PULL_REQUEST_TARGET_WORKFLOW);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(row.candidate_event_reachability, CandidateEventReachability::Reachable);
 
-        let mut understated = serde_json::to_value(row).expect("serialize row");
+        let mut understated = must_with(serde_json::to_value(row), "serialize row");
         understated["candidate_event_reachability"] = json!("not_candidate_event");
         let diffs = diff_inventory(&inventory.families, &json!([understated]));
         assert!(
@@ -2523,8 +2558,8 @@ jobs:
     }
 
     /// 6. A canonical-looking ref-only guard under `pull_request_target` must
-    /// classify as `not_proven`, never `trusted_guarded` — `github.ref` reports
-    /// the *base* ref under `pull_request_target`, not proof of which tree ran.
+    ///    classify as `not_proven`, never `trusted_guarded` — `github.ref` reports
+    ///    the *base* ref under `pull_request_target`, not proof of which tree ran.
     #[test]
     fn negative_control_6_pull_request_target_ref_only_guard_is_not_proven() {
         let workflow = r#"
@@ -2540,9 +2575,9 @@ jobs:
           shared-key: pr-target-ref-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "target.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(row.save_authority_source, SaveAuthoritySource::RefGuard);
         assert_ne!(
@@ -2571,9 +2606,9 @@ jobs:
           shared-key: negated-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref != 'refs/heads/main' }}
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "negated.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_ne!(
             row.save_authority_source,
@@ -2612,9 +2647,9 @@ jobs:
           shared-key: formatted-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "formatted.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(
             row.save_authority_source,
@@ -2636,8 +2671,10 @@ jobs:
     #[test]
     fn pr_candidate_set_format_guard_is_trusted_guarded() {
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let row = find_row(&inventory.families, "pr-candidate-set.yml", "reconcile");
         assert_eq!(
             row.save_authority_source,
@@ -2648,8 +2685,8 @@ jobs:
     }
 
     /// 7. A checked-in row asserting trusted producer state (`trusted_tree` +
-    /// a fabricated producer) for a real candidate-writer violation must be
-    /// rejected as drift, not accepted as a laundering of candidate bytes.
+    ///    a fabricated producer) for a real candidate-writer violation must be
+    ///    rejected as drift, not accepted as a laundering of candidate bytes.
     #[test]
     fn negative_control_7_fabricated_trusted_provenance_is_rejected() {
         // Anchor on a fixture-derived violation row, not a live workflow:
@@ -2666,14 +2703,14 @@ jobs:
     steps:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "unguarded.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(row.writer_disposition, WriterDisposition::CandidateWriterViolation);
         assert_eq!(row.cached_byte_provenance, CachedByteProvenance::CandidateTree);
 
-        let mut laundered = serde_json::to_value(row).expect("serialize row");
+        let mut laundered = must_with(serde_json::to_value(row), "serialize row");
         laundered["cached_byte_provenance"] = json!("trusted_tree");
         laundered["artifact_provenance"] = json!("release-orchestration.yml/publish");
         let diffs = diff_inventory(&inventory.families, &json!([laundered]));
@@ -2685,7 +2722,7 @@ jobs:
     }
 
     /// 8. An ambiguous save guard (no event, ref, or content-success anchor)
-    /// must classify as `not_proven`, never `trusted_guarded`.
+    ///    must classify as `not_proven`, never `trusted_guarded`.
     #[test]
     fn negative_control_8_ambiguous_save_authority_is_not_proven() {
         let workflow = r#"
@@ -2701,9 +2738,9 @@ jobs:
           shared-key: ambiguous-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ inputs.custom_flag == 'yes' }}
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "ambiguous.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(row.save_authority_source, SaveAuthoritySource::NotProven);
         assert_ne!(row.writer_disposition, WriterDisposition::TrustedGuarded);
@@ -2711,13 +2748,15 @@ jobs:
     }
 
     /// 9. Nothing in the receipt path may auto-label a restore/save as work
-    /// avoided: every observation must stay `not_proven`, because there is no
-    /// live telemetry hook behind it.
+    ///    avoided: every observation must stay `not_proven`, because there is no
+    ///    live telemetry hook behind it.
     #[test]
     fn negative_control_9_work_avoided_never_auto_labels() {
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let digest = "0".repeat(64);
         let receipt = build_receipt(&inventory, digest);
         assert!(!receipt.observations.is_empty());
@@ -2733,15 +2772,18 @@ jobs:
     }
 
     /// 10. The manifest never stores a hand-coded denominator total, and
-    /// changing exactly one row's classification changes only that row's diff
-    /// plus the derived counts — never a hidden second row.
+    ///     changing exactly one row's classification changes only that row's diff
+    ///     plus the derived counts — never a hidden second row.
     #[test]
     fn negative_control_10_no_hard_coded_denominator_and_isolated_row_drift() {
         let root = project_root();
-        let manifest_raw = fs::read_to_string(root.join(".ci/ci-cache/cache-inventory.v1.json"))
-            .expect("read checked-in manifest");
-        let manifest: JsonValue = serde_json::from_str(&manifest_raw).expect("parse manifest JSON");
-        let top_level = manifest.as_object().expect("manifest must be a JSON object");
+        let manifest_raw = must_with(
+            fs::read_to_string(root.join(".ci/ci-cache/cache-inventory.v1.json")),
+            "read checked-in manifest",
+        );
+        let manifest: JsonValue =
+            must_with(serde_json::from_str(&manifest_raw), "parse manifest JSON");
+        let top_level = must_some_with(manifest.as_object(), "manifest must be a JSON object");
         for forbidden in ["denominator", "active_total", "total", "count"] {
             assert!(
                 !top_level.contains_key(forbidden),
@@ -2751,10 +2793,10 @@ jobs:
 
         // Two independent sites, so isolation can be proven: mutating one must
         // never move the other's row diff.
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "sample.yml", SAMPLE_CACHE_WORKFLOW);
         write_file(&workflows.join("other.yml"), SAMPLE_CACHE_WORKFLOW);
-        let before = derive_families_in_dirs(&workflows, None).expect("derive before");
+        let before = must_with(derive_families_in_dirs(&workflows, None), "derive before");
         assert_eq!(before.families.len(), 2, "fixture must expose two independent cache sites");
 
         let mut mutated = before.clone();
@@ -2771,7 +2813,7 @@ jobs:
             "mutating one row's capability must move the derived denominator"
         );
 
-        let before_json = serde_json::to_value(&before.families).expect("serialize before");
+        let before_json = must_with(serde_json::to_value(&before.families), "serialize before");
         let diffs = diff_inventory(&mutated.families, &before_json);
         assert_eq!(diffs.len(), 1, "exactly one row must differ, got: {diffs:?}");
         assert!(
@@ -2781,32 +2823,33 @@ jobs:
     }
 
     /// 11. A stale receipt (built against a workflow tree that has since
-    /// changed) must carry a different `workflow_tree_digest` — a consumer
-    /// diffing digests must be able to reject it rather than accept it as
-    /// current.
+    ///     changed) must carry a different `workflow_tree_digest` — a consumer
+    ///     diffing digests must be able to reject it rather than accept it as
+    ///     current.
     #[test]
     fn negative_control_11_stale_tree_digest_mismatch_is_detectable() {
-        let tmp_a = tempfile::tempdir().expect("tempdir a");
+        let tmp_a = must_with(tempfile::tempdir(), "tempdir a");
         let workflows_a = fixture_workflows_dir(&tmp_a, "sample.yml", SAMPLE_CACHE_WORKFLOW);
-        let digest_a = workflow_tree_digest_for(&workflows_a, None).expect("digest a");
+        let digest_a = must_with(workflow_tree_digest_for(&workflows_a, None), "digest a");
 
-        let tmp_b = tempfile::tempdir().expect("tempdir b");
+        let tmp_b = must_with(tempfile::tempdir(), "tempdir b");
         let mutated = SAMPLE_CACHE_WORKFLOW.replace("sample-", "sample-v2-");
         let workflows_b = fixture_workflows_dir(&tmp_b, "sample.yml", &mutated);
-        let digest_b = workflow_tree_digest_for(&workflows_b, None).expect("digest b");
+        let digest_b = must_with(workflow_tree_digest_for(&workflows_b, None), "digest b");
 
         assert_ne!(digest_a, digest_b, "a changed workflow tree must change the digest");
 
-        let digest_a_again = workflow_tree_digest_for(&workflows_a, None).expect("digest a again");
+        let digest_a_again =
+            must_with(workflow_tree_digest_for(&workflows_a, None), "digest a again");
         assert_eq!(digest_a, digest_a_again, "an unchanged tree must reproduce the same digest");
     }
 
     /// 12. A parser/instrument failure must error out of derivation — it must
-    /// never be silently represented as `status: ok` with an empty `families`
-    /// array, which would read as "no caches" instead of "no evidence".
+    ///     never be silently represented as `status: ok` with an empty `families`
+    ///     array, which would read as "no caches" instead of "no evidence".
     #[test]
     fn negative_control_12_instrument_failure_never_reads_as_no_caches() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let missing_workflows = tmp.path().join(".github/workflows");
         let result = derive_families_in_dirs(&missing_workflows, None);
         assert!(
@@ -2842,9 +2885,9 @@ jobs:
     steps:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "default.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(row.capability, Capability::RestoreAndSave);
         assert_eq!(row.save_authority_source, SaveAuthoritySource::Absent);
@@ -2871,8 +2914,10 @@ jobs:
         // substrings `pull_request`/`head_ref` are absent from this text, so
         // a text-only check would wrongly call it `trusted`.
         let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
+        let inventory = must_with(
+            derive_families_in_dirs(&root.join(".github/workflows"), None),
+            "derive inventory",
+        );
         let row = find_row(&inventory.families, "docs-pr-build.yml", "build");
         assert_eq!(row.candidate_event_reachability, CandidateEventReachability::Reachable);
         assert_ne!(
@@ -2899,9 +2944,9 @@ jobs:
         with:
           shared-key: push-only-${{ hashFiles('Cargo.lock') }}
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "push-only.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = &inventory.families[0];
         assert_eq!(row.candidate_event_reachability, CandidateEventReachability::NotCandidateEvent);
         assert_eq!(row.key_authority, KeyAuthority::Trusted);
@@ -2953,9 +2998,9 @@ jobs:
         // workflow that also runs on pull_request is candidate-reachable and
         // must not read as `statically_excluded` (the lint crate's PR-only
         // exclusion answer is narrower than this inventory's question).
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "mixed.yml", MERGE_GROUP_ONLY_JOB_WORKFLOW);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = find_row(&inventory.families, "mixed.yml", "merge-group-cache");
         assert_eq!(row.candidate_event_reachability, CandidateEventReachability::Reachable);
         assert_eq!(row.writer_disposition, WriterDisposition::CandidateWriterViolation);
@@ -2967,9 +3012,9 @@ jobs:
         // provably false under every candidate trigger in that set.
         let workflow = MERGE_GROUP_ONLY_JOB_WORKFLOW
             .replace("if: github.event_name == 'merge_group'", "if: github.event_name == 'push'");
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "mixed.yml", &workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = find_row(&inventory.families, "mixed.yml", "merge-group-cache");
         assert_eq!(
             row.candidate_event_reachability,
@@ -3036,13 +3081,13 @@ jobs:
     fn uncalled_composite_cache_row_stays_dormant() {
         // `dormant` is reserved for composites with no active caller, per
         // `docs/ci/cache-policy.md`.
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "unrelated.yml", PUSH_ONLY_UNGUARDED);
         let actions_dir = tmp.path().join(".github/actions");
         write_file(&actions_dir.join("setup-uncalled/action.yml"), UNCALLED_COMPOSITE_WITH_CACHE);
 
         let inventory =
-            derive_families_in_dirs(&workflows, Some(&actions_dir)).expect("derive inventory");
+            must_with(derive_families_in_dirs(&workflows, Some(&actions_dir)), "derive inventory");
         assert_eq!(
             inventory.families.len(),
             1,
@@ -3080,9 +3125,9 @@ jobs:
         with:
           save-if: ${{ false }}
 "#;
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "never-saves.yml", workflow);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
         let row = find_row(&inventory.families, "never-saves.yml", "never-saves");
         let observation = observation_for(row);
         assert!(
@@ -3097,10 +3142,11 @@ jobs:
         // The manifest is claimed to *equal* the derived inventory: a field
         // the deriver no longer emits (obsolete or fabricated) must fail
         // the drift gate instead of silently surviving regeneration.
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = must_with(tempfile::tempdir(), "tempdir");
         let workflows = fixture_workflows_dir(&tmp, "sample.yml", PUSH_ONLY_UNGUARDED);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
-        let mut fabricated = serde_json::to_value(&inventory.families[0]).expect("serialize row");
+        let inventory = must_with(derive_families_in_dirs(&workflows, None), "derive inventory");
+        let mut fabricated =
+            must_with(serde_json::to_value(&inventory.families[0]), "serialize row");
         fabricated["writer_disposition_override"] = json!("trusted_guarded");
 
         let diffs = diff_inventory(&inventory.families, &json!([fabricated]));
@@ -3117,7 +3163,7 @@ jobs:
     #[test]
     fn api_version_pin_rejects_unknown_versions() {
         assert!(ensure_supported_api_version("v1").is_ok());
-        let error = ensure_supported_api_version("v2").expect_err("v2 must fail loudly");
+        let error = must_err_with(ensure_supported_api_version("v2"), "v2 must fail loudly");
         assert!(
             error.to_string().contains("unsupported --api-version `v2`"),
             "the error must name the rejected pin: {error}"

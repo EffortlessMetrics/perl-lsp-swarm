@@ -110,6 +110,8 @@ if (-not $InstallerSucceeded) {
 '@ | Set-Content -LiteralPath $Harness -Encoding utf8
 
 $Payload = Join-Path $TempRoot "archive.zip"
+$ServerFixture = Join-Path $TempRoot "perllsp.exe"
+& (Join-Path $PSScriptRoot 'new-install-ps1-native-fixture.ps1') -Path $ServerFixture
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 if (Test-Path -LiteralPath $Payload) {
@@ -118,7 +120,7 @@ if (Test-Path -LiteralPath $Payload) {
 $Zip = [System.IO.Compression.ZipFile]::Open($Payload, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
     $Files = @{
-        "perllsp.exe" = [Text.Encoding]::ASCII.GetBytes("test server")
+        "perllsp.exe" = [IO.File]::ReadAllBytes($ServerFixture)
         "perl-dap.exe" = [Text.Encoding]::ASCII.GetBytes("test dap")
         "README.md" = [Text.Encoding]::ASCII.GetBytes("readme`n")
         "LICENSE-APACHE" = [Text.Encoding]::ASCII.GetBytes("apache`n")

@@ -172,6 +172,82 @@ class Domain6FragmentTest(unittest.TestCase):
             ],
         )
 
+    def test_range_holder_cache_is_bounded_and_exactly_scoped(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("domain6_cache_generator", GENERATOR)
+        self.assertIsNotNone(spec)
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        calls = []
+
+        def query(*args, cwd):
+            calls.append((args, cwd))
+            return f"result-{len(calls)}\n"
+
+        root = REPO_ROOT.resolve()
+        cache = generator.RangeHolderCache(root, "start-a", "head-a", query, 3)
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-1",))
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-1",))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(cache.holders("blob-b", "path-a"), ("result-2",))
+        self.assertEqual(cache.holders("blob-a", "path-b"), ("result-3",))
+        cache.start_sha = "start-b"
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-4",))
+        cache.start_sha = "start-a"
+        cache.observed_head = "head-b"
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-5",))
+        cache.observed_head = "head-a"
+        cache.repo_root = root.parent
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-6",))
+        cache.repo_root = root
+
+        def alternate_query(*args, cwd):
+            calls.append((args, cwd))
+            return "alternate-result\n"
+
+        cache.query = alternate_query
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("alternate-result",))
+        cache.query = query
+        # The original entry was evicted after exceeding the three-entry cap.
+        self.assertEqual(cache.holders("blob-a", "path-a"), ("result-8",))
+        fresh_render = generator.RangeHolderCache(root, "start-a", "head-a", query)
+        self.assertEqual(fresh_render.holders("blob-a", "path-a"), ("result-9",))
+        self.assertLessEqual(len(cache._values), 3)
+        self.assertEqual(calls[0][1], root)
+
+    def test_range_holder_cache_retains_query_until_eviction(self) -> None:
+        import gc
+        import importlib.util
+        import weakref
+
+        spec = importlib.util.spec_from_file_location("domain6_query_lifetime", GENERATOR)
+        self.assertIsNotNone(spec)
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+
+        class Query:
+            __hash__ = None
+
+            def __init__(self, result):
+                self.result = result
+
+            def __call__(self, *args, cwd):
+                return self.result
+
+        first = Query("first\n")
+        first_ref = weakref.ref(first)
+        cache = generator.RangeHolderCache(REPO_ROOT, "start", "head", first, 1)
+        self.assertEqual(cache.holders("blob", "path"), ("first",))
+        cache.query = Query("second\n")
+        del first
+        gc.collect()
+        self.assertIsNotNone(first_ref())
+        self.assertEqual(cache.holders("blob", "path"), ("second",))
+        gc.collect()
+        self.assertIsNone(first_ref())
+        self.assertEqual(len(cache._values), 1)
+
     def test_record_counts(self) -> None:
         counts = self.doc["record_counts"]
         self.assertEqual(counts["non_merge"], 682)
@@ -251,6 +327,17 @@ class Domain6FragmentTest(unittest.TestCase):
         text = ARTIFACT.read_text(encoding="utf-8")
         for marker in ("domain6-fragment.v1.yaml", "AppData", "/tmp/domain6"):
             self.assertNotIn(marker, text)
+
+    def test_artifact_does_not_quote_piped_install_ps1(self) -> None:
+        # #16559: the closeout may name the #5461/#4348 ban without reproducing
+        # the executable `install.ps1 | iex` form the install-surface check
+        # forbids on active surfaces.
+        text = ARTIFACT.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "install.ps1 | iex",
+            text,
+            "closeout quotes the forbidden piped install.ps1 form",
+        )
 
     def test_digest_valid(self) -> None:
         payload = dict(self.doc)

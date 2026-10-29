@@ -172,10 +172,9 @@ fn unknown_disabled_feature_ids_are_preserved_not_silently_dropped() {
 }
 
 #[test]
-fn workspace_symbol_resolve_overrides_simple_shape_after_suppression() {
-    // Resolve survives while the simple flag is suppressed: advertisement
-    // remains, in resolve shape (builder parity — there is no separate
-    // suppression ID for the resolve variant).
+fn workspace_symbol_parent_suppression_withdraws_resolve_advertisement() {
+    // The resolve flag survives configuration suppression, but it can only
+    // select options while the parent feature remains available.
     let mut disabled = BTreeSet::new();
     disabled.insert("lsp.workspace_symbol".to_string());
     let mut inputs = bare_inputs(FeatureProfile::All);
@@ -183,12 +182,14 @@ fn workspace_symbol_resolve_overrides_simple_shape_after_suppression() {
     let surface = build_ok(&inputs);
     assert_eq!(
         surface.server_capabilities.get("workspaceSymbolProvider"),
-        Some(&serde_json::json!({ "resolveProvider": true })),
-        "resolve-only advertisement stays Static"
+        None,
+        "resolve must not resurrect a disabled parent"
     );
     assert_eq!(
         surface.families.get(&CapabilityFamily::WorkspaceSymbol),
-        Some(&FamilyOutcome::Static),
+        Some(&FamilyOutcome::Suppressed(SuppressionReason::DisabledByConfiguration {
+            feature_id: "lsp.workspace_symbol".to_string(),
+        })),
     );
 
     // Both shipped profiles carry the resolve variant, so the resolve shape

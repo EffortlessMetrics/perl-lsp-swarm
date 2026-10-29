@@ -43,7 +43,9 @@ pub(crate) fn apply_text_edit_to_state(state: &mut IncrementalState, edit: &Edit
 /// generation.
 ///
 /// Canonical path: restore the nearest persisted generation-bound checkpoint at
-/// or before the edit start without replaying any old byte. Bounded fallback:
+/// or before the touching token's start without replaying any old byte. An edit
+/// at a token's end can extend that token, so its trailing checkpoint is stale.
+/// This boundary does not account for longer lexer lookahead. Bounded fallback:
 /// reproduce complete live state by replaying the old prefix to the nearest
 /// boundary; those replayed bytes are reported honestly in the receipt.
 fn select_restart(
@@ -52,21 +54,21 @@ fn select_restart(
     state: &IncrementalState,
     edit: &Edit,
 ) -> Result<SelectedRestart> {
-    if let Some(live_checkpoint) = state
-        .stored_lex_checkpoints()
-        .iter()
-        .rev()
-        .filter(|stored| stored.summary.byte <= edit.start_byte)
-        .find_map(|stored| stored.prepare_for_edit(old_source, old_digest, edit))
-    {
-        return Ok(SelectedRestart { live_checkpoint, old_prefix_bytes_replayed: 0 });
-    }
-
     let boundary = state
         .tokens()
         .iter()
         .find(|token| token.end >= edit.start_byte)
         .map_or(edit.start_byte, |token| token.start);
+    if let Some(live_checkpoint) = state
+        .stored_lex_checkpoints()
+        .iter()
+        .rev()
+        .filter(|stored| stored.summary.byte <= boundary)
+        .find_map(|stored| stored.prepare_for_edit(old_source, old_digest, edit))
+    {
+        return Ok(SelectedRestart { live_checkpoint, old_prefix_bytes_replayed: 0 });
+    }
+
     let Some(summary) = state.find_lex_checkpoint(boundary).copied() else {
         anyhow::bail!("No lexer restart boundary found");
     };
@@ -98,7 +100,9 @@ pub(crate) fn apply_single_edit(
     apply_text_edit_to_state(state, edit)?;
 
     // Surviving old-generation checkpoints carry forward only when every
-    // behavior-bearing offset provably survives the edit. The edited generation
+    // behavior-bearing offset provably survives the edit. Checkpoints at and
+    // after the restart are regenerated, even if they precede the edit itself.
+    // The edited generation
     // identity is computed once for the whole carry-forward set.
     let new_digest = ContentDigest::of_bytes(state.source().as_bytes());
     let lexed =
@@ -106,6 +110,7 @@ pub(crate) fn apply_single_edit(
     let mut stored_checkpoints = state
         .stored_lex_checkpoints()
         .iter()
+        .take_while(|checkpoint| checkpoint.summary.byte < restart_byte)
         .filter_map(|checkpoint| {
             checkpoint.transform_for_generation(
                 &old_source,
