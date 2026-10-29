@@ -762,7 +762,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
-          toolchain: stable
+          # The real-toolchain fixture runs from this repo's pinned root.
+          # Guard probes refuse missing pins rather than installing them.
+          toolchain: '1.95.0'
 
       - name: Run guard decision-function and coverage self-test
         run: bash scripts/tests/test-cargo-toolchain-guard.sh
