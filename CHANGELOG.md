@@ -167,6 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep POD-shaped regex text out of local subroutine discovery, preserving
+  division for later undeclared names and declarations after the pattern (#17440).
+
 #### LSP integration
 
 - **"Find All References" no longer silently degrades for its default request
@@ -256,6 +259,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stale `Child` `variablesReference`s are short-circuited on a cache miss
   after resume**, instead of serving a reference from before the resume.
   (#3369)
+- **Runtime-module generation clock fails closed at the saturating ceiling.**
+  `RuntimeModuleGenerationClock::apply` no longer reports `advanced = true`
+  when `next()` saturates at `u64::MAX` (the generation did not actually move),
+  `GenerationAdvance::is_contiguous` now rejects an advance that claims to move
+  without moving, and `reference_is_stale` returns `true` whenever the current
+  generation is exhausted. Together with the existing executor admission
+  refusal (`execute_reload` already refuses at an exhausted clock before
+  mutating), the wire projector now refuses any attempt to publish
+  `{previous: MAX, current: MAX, advanced: true}` via
+  `GenerationAdvanceMismatch`, and any retained reference becomes stale at
+  exhaustion independent of its bind point. (#14643)
 
 #### Diagnostics
 

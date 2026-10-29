@@ -231,7 +231,7 @@ fn write_ripr_plus_receipt(path: &Path, head: &str, unresolved: u64) -> TestResu
     write_json(
         path,
         json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "ripr_plus_baseline",
             "head": head,
             "unresolved": unresolved,

@@ -1893,6 +1893,33 @@
       ]
     },
     {
+      "id": "inline_completion_position_encoding_guard",
+      "scenario_file": "ux_scenario_63_inline_completion_position_encoding_guard.rs",
+      "subsystem_owner": "editor_trust",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": true,
+        "first_useful_result": false,
+        "protocol_goldens": false
+      },
+      "user_journey": "request inline completion on a non-BMP trigger line with a UTF-8-preferring client and record session-pinned UTF-16 position-encoding ghost text",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate"
+      ],
+      "expected_outcomes": [
+        "session keeps the advertised position encoding pinned to utf-16 even when the client prefers utf-8",
+        "loop binding candidate derives from the session's utf-16 position encoding over non-BMP content",
+        "encoding-guard inline completions avoid raw byte-offset decoding artifacts and forbidden insert texts"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "manual_editor_smoke",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
       "id": "project_control_flow_inline_completion_quality",
       "scenario_file": "ux_scenario_63_project_control_flow_inline_completion_quality.rs",
       "subsystem_owner": "editor_trust",
@@ -2168,6 +2195,32 @@
         "dynamic $event_name header values and ordinary templates/ strings produce no HX-* completion item",
         "probe fixtures open without parse-error diagnostics while a broken control file still publishes a parser-family diagnostic",
         "template attribute completion, editor/host smoke, hover, and header-value completion remain unsupported in this scenario"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
+      "id": "completion_during_indexing",
+      "scenario_file": "ux_scenario_71_completion_during_indexing.rs",
+      "subsystem_owner": "workspace_indexing",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": false,
+        "first_useful_result": false,
+        "protocol_goldens": false
+      },
+      "user_journey": "request completion while a workspace scan is visibly in progress, then continue editing and navigating after indexing ends",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate"
+      ],
+      "expected_outcomes": [
+        "progress begins and reaches a partial indexing report before the bounded completion response",
+        "indexing reaches a terminal readiness state and ends its progress token",
+        "hover, definition, references, completion, didOpen, didChange, and shutdown remain responsive"
       ],
       "confidence_signals": [
         "first_five_minutes_harness",

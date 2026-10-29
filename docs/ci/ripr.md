@@ -32,6 +32,39 @@ until the final enforcement slice. The workflow still runs for
 every PR when it is ready for review so docs-only, policy-only, workflow-only,
 and code PRs all carry current proof receipts.
 
+## PR integration comparison identity
+
+With explicit `--pr-head H`, the existing producer interprets `--base A` as
+immutable event provenance and `--head E` as the evaluated integration commit.
+E must be the clean current checkout, have exactly two parents, and have H as its
+second parent. Its first parent P must descend from A. Diff-scoped evidence and
+guidance analyze **P...E**, the effect of integrating the candidate on that base.
+This excludes unrelated A-to-P mainline changes while retaining merge-resolution
+changes present in E, including changes absent from raw H. A candidate change
+neutralized in E is absent from this integration delta; this does not prove H
+separately. Missing or contradictory history refuses qualification.
+
+PR and guidance receipts retain their outer A/H/E provenance and a
+`comparison_subject` with version `ripr-pr-comparison.v1`, event A, raw H,
+comparison P, evaluated E and E's tree. The existing committed-diff receipt names
+P/E. The analyzer receives P as explicit metadata alongside that exact diff,
+and contradictory raw metadata refuses. PR evidence also binds the raw analysis digest; clean and degraded guidance
+can reuse it only after current subject, committed-diff and raw-byte validation.
+Legacy PR receipts cannot satisfy the new contract.
+
+RIPR-consuming quality gates receive independent `--ripr-pr-head H`, recompute
+that identity from Git and require both receipts to agree. Recovery commands
+retain H. PR mode requires the existing repository-wide receipt on E; the
+optional baseline override remains available for ordinary non-PR gates. Coverage-only
+mode continues to ignore RIPR receipts. A refused new gate generation invalidates
+its previous output instead of leaving an old success artifact.
+
+Without explicit PR-head input, existing commit-range semantics remain unchanged,
+including two-parent merge commits. This focused comparison repair does not change
+thresholds, required contexts, analyzer placement, permissions, reporting authority
+or the broader trusted-evaluator rollout under #15294. Installing this source does
+not qualify an older workflow attempt or activate #17903's staged cutover.
+
 ## What ripr does
 
 For each changed Rust function, ripr asks the mutation-testing-shaped question
@@ -59,6 +92,37 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 
 ---
 
+## Perl fact-packet surface
+
+The sections above describe the Rust-lane gate. The Perl facts the lane can
+consume are produced separately by the `perl-ripr-facts` crate as a
+`ripr-perl-facts-v1` packet:
+
+- `perllsp --ripr-facts [--ripr-schema <ver> --ripr-root <path> --ripr-base
+  <ref> --ripr-head <ref> --ripr-fact-classes <list> --ripr-out <path>
+  --ripr-diff <file>]` — batch export flag; records base/head opaquely and
+  exits without starting the LSP server. Base/head never derive a diff, but
+  `--ripr-diff` accepts caller-supplied diff text for diff-owned `changes[]`
+  (#17152); without it `changes[]` is empty with a `no-diff-supplied`
+  limitation.
+- `perl-ripr-facts ripr-facts --schema <ver> --root <path> [--base <ref>]
+  [--head <ref>] [--fact-classes <list>] [--diff <cwd-relative-diff>] --out
+  <out>` — standalone binary; accepts caller-supplied diff text for
+  diff-owned `changes[]`, like `perllsp --ripr-diff`.
+- `build_ripr_facts_packet(&RiprFactsRequest)` — structured batch API; reads
+  workspace files but performs no output writes and spawns no processes.
+  Library and managed-producer callers can also supply diff text directly via
+  `RiprFactsRequest.diff` (or `run_ripr_facts_with_diff`) without staging a
+  file or spawning the binary.
+
+Contract: [`crates/perl-ripr-facts/README.md`](../../crates/perl-ripr-facts/README.md),
+schema [`schemas/ripr-perl-facts-v1.schema.json`](../../schemas/ripr-perl-facts-v1.schema.json).
+Exit `0` means "a packet was written" (a zero-fact packet reads
+`unavailable`); consumers must read `packet_status` and `limitations[]` —
+never infer success from emptiness.
+
+---
+
 ## When it runs
 
 - Every PR targeting `master` or `main`.
@@ -75,18 +139,31 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 ## Behavior
 
 - When a ripr evidence lane is killed by platform runner teardown instead of
-  failing on findings (#6807, #12563, #12771), the gate classifies the lane log
-  through `scripts/ci/classify-ripr-lane-termination` and emits a
+  failing on findings (#6807, #12563, #12771, #16431), the gate classifies the
+  lane log through `scripts/ci/classify-ripr-lane-termination` and emits a
   machine-checkable `RIPR_GATE_VERDICT` into its run log. The boundary: a
   genuine gap receipt ("quality gate failed") always classifies ripr-failure,
-  so real reds are never auto-retried; only positive teardown evidence (runner
-  shutdown signal, exit-143, or operation-canceled) yields
+  so real reds are never auto-retried; only positive teardown evidence yields
   `classification=infra-no-proof`, handed to `ripr-infra-retry.yml` strictly as
   data for exactly one automatic same-head retry while run attempt is 1. A
   second eviction surfaces `RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted`
-  loudly and falls back to the documented manual rerun. Silenced or unreadable
-  lane logs fail closed to ripr-failure. The gate never greens on absent
-  evidence.
+  loudly and falls back to the documented manual rerun. The gate never greens
+  on absent evidence.
+  When the bounded lane-log fetch fails or comes back with neither a receipt
+  nor teardown markers (#16431), the gate falls back to API-side evidence for
+  the same lane job — its check-run annotations (including the hosted-runner
+  "lost communication" notice, which evictions leave on no in-log marker) and
+  its steps state (a failed job with a started-but-never-concluded step). The
+  classifier's `--api-evidence` mode applies the same positive-marker boundary;
+  unreadable or marker-free evidence still fails closed. Every classified lane
+  failure leaves a `ripr-gate-classification` artifact carrying its class and
+  reason. When the artifact is absent, the gate's classification step did not
+  produce a file — which points at a gate-side failure, though it is not by
+  itself proof of any single cause: paths that exit before classification and
+  upload-step skip conditions also leave no artifact (the upload step ignores
+  missing files). The authoritative signal is the classification content when
+  the artifact exists; consumers such as ripr-infra-retry treat absence as
+  no-arm and surface NOT_PROVEN rather than guessing a class.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
 - Produces the repo-wide RIPR+ baseline receipt at
   `target/receipts/quality/ripr-plus.json`.

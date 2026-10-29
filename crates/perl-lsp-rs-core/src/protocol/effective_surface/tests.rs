@@ -17,7 +17,9 @@ use super::{
     SuppressionReason, SurfaceInputs, WatcherPlanDecision, WatcherWithholdReason,
 };
 use crate::features::policy::FeatureProfile;
-use crate::protocol::capabilities::{capabilities_json, get_supported_commands};
+use crate::protocol::capabilities::{
+    SERVER_WORKSPACE_FOLDER_SUPPORT, capabilities_json, get_supported_commands,
+};
 use crate::protocol::final_surface_inventory::{census_profiles, flatten_surface_pointers};
 use perl_test_must::{must_err_with, must_some_with, must_with};
 
@@ -170,10 +172,9 @@ fn unknown_disabled_feature_ids_are_preserved_not_silently_dropped() {
 }
 
 #[test]
-fn workspace_symbol_resolve_overrides_simple_shape_after_suppression() {
-    // Resolve survives while the simple flag is suppressed: advertisement
-    // remains, in resolve shape (builder parity — there is no separate
-    // suppression ID for the resolve variant).
+fn workspace_symbol_parent_suppression_withdraws_resolve_advertisement() {
+    // The resolve flag survives configuration suppression, but it can only
+    // select options while the parent feature remains available.
     let mut disabled = BTreeSet::new();
     disabled.insert("lsp.workspace_symbol".to_string());
     let mut inputs = bare_inputs(FeatureProfile::All);
@@ -181,12 +182,14 @@ fn workspace_symbol_resolve_overrides_simple_shape_after_suppression() {
     let surface = build_ok(&inputs);
     assert_eq!(
         surface.server_capabilities.get("workspaceSymbolProvider"),
-        Some(&serde_json::json!({ "resolveProvider": true })),
-        "resolve-only advertisement stays Static"
+        None,
+        "resolve must not resurrect a disabled parent"
     );
     assert_eq!(
         surface.families.get(&CapabilityFamily::WorkspaceSymbol),
-        Some(&FamilyOutcome::Static),
+        Some(&FamilyOutcome::Suppressed(SuppressionReason::DisabledByConfiguration {
+            feature_id: "lsp.workspace_symbol".to_string(),
+        })),
     );
 
     // Both shipped profiles carry the resolve variant, so the resolve shape
@@ -823,16 +826,32 @@ fn file_operation_intersection_follows_normalized_facts() {
     assert!(operations.contains_key("didDelete"));
     assert_eq!(
         surface.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
-        Some(&serde_json::json!(true)),
+        Some(&serde_json::json!(SERVER_WORKSPACE_FOLDER_SUPPORT)),
     );
 
-    // Without folder support the server-side flag flips off.
-    let mut no_folders = inputs;
+    // #8161: the server's `supported` describes server implementation truth,
+    // so the client's own workspaceFolders fact must not flip it. The expected
+    // value is the shared constant rather than a literal, so a profile-owned
+    // suppression moves the model, the runtime builder and this proof together
+    // instead of leaving a stale `true` behind. Independence from the client is
+    // still proven by holding the client fact at false/absent below while the
+    // server bit stays at implementation truth.
+    let mut no_folders = inputs.clone();
     no_folders.client.workspace_folders = ClientFact::DeclaredFalse;
-    let flipped = build_ok(&no_folders);
+    let declared_false = build_ok(&no_folders);
     assert_eq!(
-        flipped.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
-        Some(&serde_json::json!(false)),
+        declared_false.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
+        Some(&serde_json::json!(SERVER_WORKSPACE_FOLDER_SUPPORT)),
+        "client DeclaredFalse must not un-implement server workspace folders"
+    );
+
+    let mut absent_folders = inputs;
+    absent_folders.client.workspace_folders = ClientFact::Absent;
+    let absent = build_ok(&absent_folders);
+    assert_eq!(
+        absent.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
+        Some(&serde_json::json!(SERVER_WORKSPACE_FOLDER_SUPPORT)),
+        "client Absent must not un-implement server workspace folders"
     );
 }
 

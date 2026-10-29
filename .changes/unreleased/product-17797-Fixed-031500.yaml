@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: "Core builds without the optional AI transport retain typed inline-completion budget errors, and xtask avoids compiling unused HTTP/TLS dependencies while product AI features remain enabled."
+time: 2026-10-13T03:15:00Z
+custom:
+  PR: "17797"
+  Slug: xtask-ai-feature-boundary
+  Breaking: "no"

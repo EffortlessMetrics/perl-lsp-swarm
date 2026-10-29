@@ -1,0 +1,195 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v007-fallback-allowed-new-branch",
+  "contract_generation": 1,
+  "route": "first_party_posix",
+  "mode": "release_archive",
+  "requested_product_unit": "server_only",
+  "effective_product_unit": "server_only",
+  "effective_path_policy": "persist",
+  "resolved_subject_digest": "sha256:a302384b2431255cef1dd06ed4ab2116d89c8c30bbac8e49703b4852c47cc4ac",
+  "fallback_subject_digest": "sha256:912d03274da0a7d07b3990ce2b9101d163fce4f504167b5ed96f6c2c4e7d9a5b",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "failed",
+      "reason_family": "transport_failed"
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "outcome": "succeeded",
+      "reason_family": "none"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:a302384b2431255cef1dd06ed4ab2116d89c8c30bbac8e49703b4852c47cc4ac",
+      "terminal_result": "failed",
+      "reason_family": "transport_failed"
+    },
+    {
+      "branch_id": "branch-fallback-1",
+      "subject_digest": "sha256:912d03274da0a7d07b3990ce2b9101d163fce4f504167b5ed96f6c2c4e7d9a5b",
+      "terminal_result": "succeeded",
+      "reason_family": "none"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:601a42f02931781d27de5fd4f037e6d0467db45e0c6ce33d36f20fec79467b5e",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "result": "failed",
+      "reason_family": "transport_failed",
+      "receipt_digest": "sha256:72a3611fad0e2c91726a826b39787d4371ab86a327b176b1496a145e8483cd8c",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:f64c47d70797e899c30d9151ab20d658cff73edd3a241e0162b8665e7adf25b4",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "source_build",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:54fd09325475c1d36862ff0b170040d4a0b63140121d712a5527393444c57642",
+      "predecessor_digests": [
+        "sha256:f64c47d70797e899c30d9151ab20d658cff73edd3a241e0162b8665e7adf25b4"
+      ],
+      "artifacts": [
+        "artifact-built-v007-fallback"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "executable_observation",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:d1dc9e19a1f209f72c0865f38e0eb0b64819c9b9fe25b52b6ad7b85527cc7949",
+      "predecessor_digests": [
+        "sha256:54fd09325475c1d36862ff0b170040d4a0b63140121d712a5527393444c57642"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "promotion",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:8611837acb77fe5d156a5f5c733455ced450c24baf05369412c1edbdb2ee0af9",
+      "predecessor_digests": [
+        "sha256:d1dc9e19a1f209f72c0865f38e0eb0b64819c9b9fe25b52b6ad7b85527cc7949"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "path_persistence",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:cc69925234f723ba5e76e50869c606f604804bc6166f82dd659d46a32bd98519",
+      "predecessor_digests": [
+        "sha256:8611837acb77fe5d156a5f5c733455ced450c24baf05369412c1edbdb2ee0af9"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "fresh_process_observation",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:ae9c4530054be093e9a55c7d6496c9468cc59db883c40a2cb518d0d39a0a6602",
+      "predecessor_digests": [
+        "sha256:cc69925234f723ba5e76e50869c606f604804bc6166f82dd659d46a32bd98519"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "installed_transition",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:bdb41122a06ca77af600a01e1553c654fc37fb614c99c0c097017fa368b9d99c",
+      "predecessor_digests": [
+        "sha256:ae9c4530054be093e9a55c7d6496c9468cc59db883c40a2cb518d0d39a0a6602"
+      ]
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "transport",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "checksum_integrity",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "archive_manifest_and_staging",
+      "authorization": "mode_authorized"
+    },
+    {
+      "attempt_id": "attempt-a1-fb",
+      "branch_id": "branch-fallback-1",
+      "stage_id": "provenance",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [
+    {
+      "level": "promotion_reached",
+      "kind": "promoted"
+    },
+    {
+      "level": "path_persisted",
+      "kind": "path_persisted"
+    },
+    {
+      "level": "installed_claim",
+      "kind": "installed_claim"
+    }
+  ],
+  "side_effect_ceiling": "installed_claim",
+  "claim_ceiling": "installed_release_claim",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "succeeded",
+    "stage_id": "installed_transition",
+    "reason_family": "none",
+    "action_class": "none"
+  },
+  "redaction_disposition": "roles_only"
+}

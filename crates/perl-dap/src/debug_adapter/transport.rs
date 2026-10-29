@@ -7,6 +7,7 @@ use super::{
     Arc, AtomicBool, ContentLengthFramer, DapMessage, DebugAdapter, EVENT_QUEUE_CAPACITY, Mutex,
     Read, Write, io, lock_or_recover, sync_channel, thread,
 };
+use perl_lsp_rs_core::transport::framing::FramingError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::time::Duration;
@@ -557,6 +558,14 @@ impl DebugAdapter {
                     let body = match framer.try_next() {
                         Ok(Some(body)) => body,
                         Ok(None) => break,
+                        Err(error @ FramingError::FrameTooLarge { .. }) => {
+                            // The rejected body has no trusted next-frame boundary.
+                            // Stop intake before its bytes can be dispatched as requests.
+                            break 'transport Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                error,
+                            ));
+                        }
                         Err(error) => {
                             tracing::warn!(%error, "Failed to parse DAP transport frame");
                             continue;
@@ -2417,6 +2426,77 @@ mod framing_tests {
         let result = adapter.run_with_io(Cursor::new(input), SharedBuf::new());
         let _ = result;
         Ok(())
+    }
+
+    struct CountedReader {
+        input: Cursor<Vec<u8>>,
+        reads: Arc<AtomicUsize>,
+        chunk_size: usize,
+    }
+
+    impl BoundedRead for CountedReader {
+        fn read_with_timeout(
+            &mut self,
+            target: &mut [u8],
+            _timeout: Duration,
+        ) -> io::Result<Option<usize>> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            let amount = target.len().min(self.chunk_size);
+            self.input.read(&mut target[..amount]).map(Some)
+        }
+    }
+
+    #[test]
+    fn test_transport_oversized_header_stops_without_reading_body() {
+        for length in [perl_lsp_rs_core::transport::framing::MAX_FRAME_SIZE + 1, usize::MAX] {
+            let header = format!("Content-Length: {length}\r\n\r\n").into_bytes();
+            let header_len = header.len();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let input = CountedReader {
+                input: Cursor::new(header),
+                reads: Arc::clone(&reads),
+                chunk_size: header_len,
+            };
+            let output = SharedBuf::new();
+            let result = DebugAdapter::new().run_with_io(input, output.clone());
+
+            assert_eq!(
+                result.as_ref().err().map(io::Error::kind),
+                Some(io::ErrorKind::InvalidData)
+            );
+            assert_eq!(reads.load(Ordering::Relaxed), 1, "must not read the rejected body");
+            assert!(output.bytes_snapshot().is_empty(), "header alone cannot dispatch a request");
+        }
+    }
+
+    #[test]
+    fn test_transport_oversized_body_cannot_dispatch_embedded_requests() {
+        let length = perl_lsp_rs_core::transport::framing::MAX_FRAME_SIZE + 1;
+        let header = format!("Content-Length: {length}\r\n\r\n").into_bytes();
+        let header_len = header.len();
+        let mut bytes = header;
+        bytes.extend(framed_request(1, "initialize", Some(json!({"adapterID": "perl"}))));
+        bytes.extend(framed_request(2, "disconnect", None));
+
+        // Body bytes already buffered, body bytes on a later read, and a
+        // fragmented header must all terminate at the same oversized declaration.
+        for chunk_size in [bytes.len(), header_len, header_len - 1] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let input = CountedReader {
+                input: Cursor::new(bytes.clone()),
+                reads: Arc::clone(&reads),
+                chunk_size,
+            };
+            let output = SharedBuf::new();
+            let result = DebugAdapter::new().run_with_io(input, output.clone());
+
+            assert!(output.bytes_snapshot().is_empty(), "rejected body dispatched a request");
+            assert_eq!(
+                result.as_ref().err().map(io::Error::kind),
+                Some(io::ErrorKind::InvalidData)
+            );
+            assert_eq!(reads.load(Ordering::Relaxed), header_len.div_ceil(chunk_size));
+        }
     }
 
     // ── 4. Valid header + malformed JSON body ──────────────────────────────────
