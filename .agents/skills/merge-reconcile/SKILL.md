@@ -29,7 +29,9 @@ Inspect the live PR state first.
 For an open PR, establish the current provider-native substantive result before reading
 integration green as permission to merge.
 
-Read cumulative submitted reviews and useful clean conclusions, localized findings and
+Read complete paginated feedback with `scripts/reviews/feedback <pr> <owner/repo>`:
+ordinary issue comments, full review bodies (including substantive `COMMENTED` concerns),
+cumulative submitted reviews and useful clean conclusions, localized findings and
 evidence-backed dispositions (terminal `fixed`, `refuted`, `superseded`, and
 `post-merge-follow-up`; non-terminal `current-blocker`, `blocked-by-prerequisite`, and
 `not-proven` whose threads stay open), the current candidate
@@ -96,7 +98,8 @@ non-zero result is `MERGE_BLOCKED`, routed to `$address-review-comments`, and is
 Verify live GitHub facts:
 
 - PR is ready, not draft;
-- required checks are current for the candidate;
+- the union of applicable branch rulesets and classic branch protection is known,
+  with required contexts and producer/app identity current for the candidate;
 - the sanctioned thread enumerator reports `unresolved_count` of 0;
 - no current `CHANGES_REQUESTED` review remains;
 - deliberately requested reviewers are not still pending where their judgment is part
@@ -117,6 +120,9 @@ INTEGRATION_READY
 → protected squash merge
 ```
 
+The live ruleset requires thread resolution: zero unresolved review threads is a
+precondition of protected integration.
+
 ## Protected merge
 
 Use the current head SHA only as compare-and-swap protection at the instant of merge:
@@ -125,46 +131,34 @@ Use the current head SHA only as compare-and-swap protection at the instant of m
 gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
 
-zero unresolved review threads is a precondition of arming auto-merge. Re-run
-`scripts/reviews/threads <pr> --unresolved-only --json` immediately before the
-command. If `unresolved_count` is non-zero, return `MERGE_BLOCKED` and route to
-`$address-review-comments`.
+Re-run `scripts/reviews/threads <pr> --unresolved-only --json` immediately before
+merge. A non-zero `unresolved_count` is `MERGE_BLOCKED`; route through
+`address-review-comments`. Reacquire current head, base applicability, required
+results, review/findings and protection together before the final judgment.
+Read ordinary-comment dispositions as well as thread resolution, and verify semantic
+review binding with `check-pr-semantic-review-currentness.py --expected-head` for this
+observed head. Missing/stale binding or unavailable protection is `NOT_PROVEN`.
+Inspect terminal selected qualification evidence (skipped/draft-no-proof is not passing
+proof), then explicitly assess whether the candidate still fits current repository
+behavior and accepted product vision. Record that separate final judgment before the
+expected-head protected merge. A new substantive finding routes back to repair even
+when the SHA is unchanged. These boundary reads do not require rerunning unchanged
+proof or a full review on every routine push.
 
-When the required union is still pending, arm auto-merge with the current head SHA:
+Under #3390, pending qualification does not authorize auto-merge, enqueueing, or a
+probe that bypasses missing proof. Retain the owning lead through ordinary in-window
+waits using supported events or bounded checks, then inspect terminal evidence and
+make the separate integration decision. A real interruption gets an exact resumable
+handoff. Never use administrative bypass, an empty push or a waiver invented to save
+time. A bounded writer/reviewer does not gain integration authority from its role.
 
-```text
-gh pr merge <n> --auto --squash --match-head-commit <current-head-sha>
-```
-
-The command request is not evidence that GitHub persisted the transition. Immediately
-re-read the live PR. Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms a
-non-null `autoMergeRequest` for the same PR, the unchanged current head, and the squash
-method. If the request is absent, the head moved, or the method differs, return
-`MERGE_BLOCKED` or `NOT_PROVEN` with the observed state; do not report auto-merge as
-armed.
-
-A confirmed auto-merge request leaves `REVIEW_CURRENT` intact and returns
-`PR_IN_FLIGHT`. The read-back and current-head compare-and-swap prevent a command success
-or stale branch observation from stranding the claim behind a transition GitHub never
-accepted. That prevents racing a moving branch. It does not make review currentness
-depend on the SHA.
-
-If the head moves before merge, re-read the candidate. Refresh only proof, review, and
-integration dimensions affected by the new commit. Never use administrative bypass to
-discover what is failing or to outrun unresolved review/integration evidence.
-
-If an armed auto-merge has not fired, one manual probe merge through the REST endpoint
-(`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash -f
-sha=<current-head-sha>`) is the sanctioned no-polling probe only after the required
-union is green on the head SHA, or after an explicit evidence-backed waiver is recorded
-on the PR/issue naming the head SHA it was issued against and every unmet requirement.
-A waiver authorizes a probe of that head only; after any head movement the waiver is
-void until re-issued for the new head. A waiver recorded merely to save wall-clock is
-not a waiver.
-
-The **accountable root** records any such waiver, owns the compare-and-swap transition,
-and either merges or arms auto-merge. A bounded writer/reviewer does not inherit this
-authority merely because it handled the claim's candidate.
+The expected-head guard prevents racing a moving candidate.
+It does not make review currentness depend on the SHA.
+Refresh only proof, review, and integration dimensions affected by the new commit.
+If the head moves, consume a new explicit request for the selected candidate. Do not inherit old qualification or force an unrelated
+rebase. The expected-head guard protects head identity; it does not atomically freeze
+the base. A successful merge call is not landing evidence: read the durable PR/commit
+state before reconciliation.
 
 For automation-authored PRs whose `pull_request` runs remain `action_required`, green
 `workflow_dispatch` runs on the same head do not substitute for required PR contexts.
@@ -228,7 +222,9 @@ After merge or evidence-backed deliberate closure:
 4. update durable contracts, proof, support claims, and changelog only within the
    proven boundary;
 5. preserve partial or residual work explicitly;
-6. release the claim's worktree through the allocator/root that owns it;
+6. return the claim's worktree **and external Cargo target/build resources** to
+   the allocator/root, with a disposition for each canonical path: `released`,
+   `retained with reason`, or `awaiting owner verification`;
 7. update the root-held claim frame and expose the next coherent claim to `$deliver-goal`.
 
 Release local mutation resources on every terminal outcome—merged, superseded,
@@ -241,8 +237,38 @@ inside it. Keep a worktree only when it holds state that exists nowhere else:
 uncommitted changes, unpushed commits, or detached useful state outside the base. A
 fully pushed open PR is reconstructable with `git worktree add`.
 
-Use `bash scripts/cleanup-completed-worktrees.sh --dry-run` to classify safe residue
-before applying cleanup. Do not persist runtime topology, task state, or merge-check
+Carry resource paths and the Cargo lease from `cargo-admitted` in the existing
+root-held claim frame; do not create another ownership database. Cancellation,
+failure, and loss of a worker require the same resource return as success. A
+completed build normally retains its bounded reusable cache with a reason;
+completion is not automatic deletion authority. Unknown ownership, active artifact
+consumers, dirty/untracked/ignored evidence, and detached/unpushed commits retain
+resources pending verification. Age or a missing PID is never sufficient release
+proof. Keep the common Cargo slot assigned through any external artifact consumer;
+`cargo-admitted run/test` holds it through its child, but independent later execution
+requires a separately admitted owner-held lifetime.
+
+For OpenClaw-allocated work, carry the existing native task ID and node ID or
+worker identity. Attach or reference the current worktree and both resolved Cargo
+target/build paths, with each resource's disposition and evidence-retention reason,
+in the existing native terminal status. Task success or cancellation is not cleanup
+authority. Reuse native ownership/status rather than adding a task registry or
+status manager; `cargo-active` is only local exclusion. The bridge owner owns the
+concrete adapter once its native interface is established; this repository contract
+does not define API fields or implement bridge dispatch/status recovery.
+
+Reconcile with a read-only proposal joining Git's registered worktrees and the
+root's known external resource paths. Record path, owner certainty, unique-state
+checks, estimated allocation, and proposed action. Missing paths are metadata
+candidates, not permission to prune. Request exact cleanup authorization, recheck
+concurrency, and preserve branches and shared Git stores. Never invoke the legacy
+`target-gc.sh --apply` or forceful worktree-manager cleanup as this release step.
+See [Cargo storage admission](../../../docs/agents/CARGO_STORAGE.md).
+
+Use `bash scripts/cleanup-completed-worktrees.sh --dry-run` for advisory
+classification only. It uses stale refs and does not inventory ignored evidence;
+its proposals are not cleanup clearance. Verify exact remote preservation, ignored
+contents and active ownership separately before any specifically authorized action. Do not persist runtime topology, task state, or merge-check
 polling as closeout evidence.
 
 ## Supersession carries its corrections

@@ -114,7 +114,9 @@ for OpenCode clients, even when OpenCode advertises the
 `textDocument/diagnostic` (pull) capability. This is because OpenCode currently
 relies on push diagnostics for its agent feedback loop. If you see diagnostics
 in OpenCode's output but not via a pull-based diagnostic UI, this is expected;
-see `capabilities.rs` `is_opencode_client` for the rationale.
+see the initialize-handler comment in
+`crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs` that records this
+OpenCode push-diagnostics rationale.
 
 - If no Perl files activate the server, verify the file extension is listed in
   `opencode.json`.

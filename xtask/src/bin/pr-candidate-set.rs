@@ -1485,7 +1485,7 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-21T00:00:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let mut owned = claim(
+        let owned = claim(
             ClaimState::Reconciled,
             vec![candidate(10, Relationship::CurrentCandidate, None)],
         );

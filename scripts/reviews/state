@@ -84,7 +84,15 @@ fi
 CLASSIFICATION="$(jq -r '.formal_review.classification // "NOT_PROVEN"' <<<"$JSON")"
 CONVERGED="$(jq -r '.converged // false' <<<"$JSON")"
 HEAD="$(jq -r '.headRefOid // ""' <<<"$JSON")"
-SUBMITTED_HUMAN_REVIEW_COUNT="$(jq -r '.submitted_human_review_count // 0' <<<"$JSON")"
+# Prefer the honestly-named count. The `// 0` fallback chain keeps this
+# projection working against a parent that predates #15035, where only the
+# `submitted_human_review_count` alias is present. The alias is deprecated:
+# it claims "all submitted human reviews", but the value is a
+# non-dismissed, non-bot count over GitHub's latest-per-user `latestReviews`
+# projection. See check-pr-review-convergence for the full derivation.
+NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT="$(jq -r \
+    '.non_dismissed_latest_nonbot_review_count // .submitted_human_review_count // 0' \
+    <<<"$JSON")"
 
 # Native facts can converge; they cannot establish substantive review. Both
 # converged classifications therefore project to the same state, and the
@@ -108,13 +116,14 @@ jq -n \
     --arg state "$STATE" \
     --arg classification "$CLASSIFICATION" \
     --argjson converged "$CONVERGED" \
-    --argjson submittedReviews "$SUBMITTED_HUMAN_REVIEW_COUNT" \
+    --argjson submittedReviews "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" \
     '{
       pr: ($pr | tonumber? // $pr),
       observed_head: $head,
       state: $state,
       formal_review_classification: $classification,
       converged: $converged,
+      non_dismissed_latest_nonbot_review_count: $submittedReviews,
       submitted_human_review_count: $submittedReviews,
       review_currentness: "NOT_PROVEN",
       semantic_currentness_required: true,

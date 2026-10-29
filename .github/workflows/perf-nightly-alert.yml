@@ -1,0 +1,100 @@
+name: Perf Nightly Alert
+
+# Human-visible alert path for nightly benchmark regressions (#17354). The
+# benchmark job itself runs at contents:read and must never gain write scopes
+# (#6028: it executes candidate-adjacent code), so this separate workflow
+# reacts to its completion via workflow_run, which runs in the default-branch
+# context with its own minimal permissions.
+
+on:
+  workflow_run:
+    workflows: ["CI (Nightly)"]
+    types: [completed]
+
+permissions:
+  actions: read
+  issues: write
+
+concurrency:
+  group: perf-nightly-alert
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    name: Perf Nightly Alert
+    # Scheduled runs only: label-gated and manual runs are watched live by
+    # their requester, and alerting on them would spam the rolling issue.
+    if: github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download nightly benchmark results
+        id: dl
+        # The artifact may be absent (cancelled run, setup failure before
+        # upload): report that truthfully below instead of failing here.
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: benchmark-results-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/nightly-bench
+
+      - name: Upsert rolling regression issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          BENCH_DIR: ${{ runner.temp }}/nightly-bench
+          DL_OUTCOME: ${{ steps.dl.outcome }}
+        run: |
+          set -euo pipefail
+          token="nightly-run $RUN_ID attempt $RUN_ATTEMPT"
+          {
+            echo "## Perf Nightly Alert"
+            echo "Source: $token on \`$HEAD_SHA\` ($RUN_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$DL_OUTCOME" != "success" ]; then
+            echo "Benchmark-results artifact absent (download outcome: $DL_OUTCOME); cannot evaluate regressions." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          alert="$BENCH_DIR/alert.md"
+          if [ ! -f "$alert" ]; then
+            echo "No alert.md in nightly results; the nightly run itself carries infra failures." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! grep -qE '^### (🔴 Critical Regressions|⚠️ Performance Regressions)' "$alert"; then
+            echo "No critical/regression sections in alert.md; nothing to file." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          title="[perf] nightly benchmark regressions (rolling)"
+          # in:title is a phrase search, not an exact match: compare full titles.
+          existing=$(gh issue list --state open --search "$title in:title" --limit 100 --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          # Full sections between headings (no -A40 row cap); truncate only the
+          # issue excerpt, never silently.
+          excerpt=$(awk '/^### (🔴 Critical Regressions|⚠️ Performance Regressions)/ { cap=1 } cap && /^## / { exit } cap && /^### / && $0 !~ /Regressions/ { exit } cap { print }' "$alert")
+          if [ "$(printf '%s\n' "$excerpt" | wc -l)" -gt 400 ]; then
+            excerpt="$(printf '%s\n' "$excerpt" | head -400; printf '\n...\n(truncated at 400 lines; full table in the nightly run artifact: %s)' "$RUN_URL")"
+          fi
+          # GitHub rejects issue bodies over 65536 chars; cap bytes too (the
+          # 400-line cap alone does not bound pathological row widths).
+          if [ "$(printf '%s' "$excerpt" | wc -c)" -gt 60000 ]; then
+            excerpt="$(printf '%s' "$excerpt" | head -c 60000; printf '\n...\n(truncated at 60000 bytes; full table in the nightly run artifact: %s)' "$RUN_URL")"
+          fi
+          body=$(printf 'Nightly regressions on `%s` (%s).\n\n%s\n\n**Run:** %s' "$HEAD_SHA" "$token" "$excerpt" "$RUN_URL")
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body "$body" --label performance --label benchmark
+            exit 0
+          fi
+          # Dedupe by run identity, not source SHA: consecutive nightlies on an
+          # unchanged commit produce distinct runs that must each be reported.
+          # Bash substring match (no gh-to-grep pipe, so no SIGPIPE/pipefail
+          # false negative on long histories).
+          prior=$(gh issue view "$existing" --json body,comments --jq '[.body, (.comments // [] | .[].body)] | join("\n")')
+          if [[ "$prior" == *"$token"* ]]; then
+            echo "$token already reported on #$existing; skipping duplicate." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh issue comment "$existing" --body "$body"

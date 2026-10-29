@@ -41,11 +41,11 @@ Many gates roll up under a single lane (e.g. all `pr_fast` gates contribute to t
 number of gates (e.g. `lsp_tier_a`) span two lanes.
 
 Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
-which is the authority for these counts. Last refreshed 2026-09-23 (addition of
-`unsafe_prod_check` to the `merge_gate` tier; #16215):
+which is the authority for these counts. Last refreshed 2026-09-29 (addition of
+the hosted Windows installed first-hour lane; #16987):
 
 - 95 gates in `.ci/gate-policy.yaml`
-- 25 lanes in `policy/ci-lanes.toml`
+- 26 lanes in `policy/ci-lanes.toml`
 - 95 / 95 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
@@ -72,7 +72,8 @@ which is the authority for these counts. Last refreshed 2026-09-23 (addition of
 
 Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_latest`,
 `merge_gate_aggregate`, `lsp_memory_smoke`, `windows_guardrails`, `ripr_advisory`,
-`memory_plateau`, `vscode_smoke_matrix`, `droid_auto_review`, `critic_rule_proof`.
+`memory_plateau`, `vscode_smoke_matrix`, `vscode_installed_first_hour_windows`,
+`droid_auto_review`, `critic_rule_proof`.
 These either have no `.ci/gate-policy.yaml` entry (workflow-level controls, not
 gates) or run under standalone workflows.
 
@@ -84,7 +85,7 @@ blocks the required lane even though no `CI Gate shard` context is itself a
 required check. See
 [Merge-ready protocol → the main-red refusal](./merge-ready-protocol.md#the-main-red-refusal-makes-advisory-gate-shards-de-facto-required-16196).
 
-The two lists above partition the lane set: 14 mapped + 11 unmapped = 25 lanes,
+The two lists above partition the lane set: 14 mapped + 12 unmapped = 26 lanes,
 matching the count block. Both are checkable against
 `scripts/ci/validate_gate_lane_mapping.py` and `policy/ci-lanes.toml`; if the
 arithmetic stops reconciling, this page has drifted from its stated authority.

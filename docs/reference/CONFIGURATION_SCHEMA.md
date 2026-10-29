@@ -123,6 +123,14 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           },
           "default": ["lib", ".", "local/lib/perl5"]
         },
+        "discoverySkippedDirs": {
+          "type": "array",
+          "description": "Additional exact directory names skipped during workspace discovery; not globs or paths",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "useSystemInc": {
           "type": "boolean",
           "description": "Include interpreter startup @INC (the result of `perl -e 'print join(\"\\n\", @INC)'`) in module resolution. Independent of PERL5LIB, which is controlled by usePerl5lib.",
@@ -343,47 +351,12 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "maximum": 2000,
           "default": 500
         },
-        "astCacheMaxEntries": {
-          "type": "integer",
-          "description": "Maximum number of AST cache entries (LRU eviction)",
-          "minimum": 10,
-          "maximum": 500,
-          "default": 100
-        },
-        "astCacheTtlSecs": {
-          "type": "integer",
-          "description": "AST cache TTL in seconds",
-          "minimum": 10,
-          "maximum": 3600,
-          "default": 300
-        },
-        "symbolCacheMaxEntries": {
-          "type": "integer",
-          "description": "Maximum symbol cache entries",
-          "minimum": 10,
-          "maximum": 10000,
-          "default": 1000
-        },
-        "maxIndexedFiles": {
-          "type": "integer",
-          "description": "Maximum number of files to index in workspace",
-          "minimum": 100,
-          "maximum": 100000,
-          "default": 10000
-        },
         "maxSymbolsPerFile": {
           "type": "integer",
           "description": "Maximum symbols indexed per file",
           "minimum": 100,
           "maximum": 50000,
           "default": 5000
-        },
-        "maxTotalSymbols": {
-          "type": "integer",
-          "description": "Maximum total symbols across all indexed files",
-          "minimum": 10000,
-          "maximum": 1000000,
-          "default": 500000
         },
         "parseStormThreshold": {
           "type": "integer",
@@ -397,13 +370,6 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "description": "Skip files larger than this in bytes (default: 1 MB)",
           "minimum": 1024,
           "default": 1048576
-        },
-        "workspaceScanDeadlineMs": {
-          "type": "integer",
-          "description": "Deadline (ms) for initial workspace folder scan",
-          "minimum": 5000,
-          "maximum": 120000,
-          "default": 30000
         },
         "fileIndexDeadlineMs": {
           "type": "integer",
@@ -476,6 +442,20 @@ Directories to search for Perl modules, relative to the workspace root.
 - All paths must be relative to workspace root
 - Paths must not contain `..` segments
 - Maximum depth: 10 levels
+
+#### `perl.workspace.discoverySkippedDirs`
+
+| Property | Value |
+|----------|-------|
+| Type | `string[]` |
+| Default | `[]` |
+| Source | `crates/perl-lsp-rs-core/src/config/mod.rs` |
+
+Additional exact directory names to skip during workspace discovery. Names
+match individual directory components, not globs or paths, and add to the
+built-in skip list. Untracked files ignored by Git remain absent from Git's
+listing even when an `includePaths` entry points into a skipped directory.
+The project configuration equivalent is `[perl].discovery_skipped_dirs`.
 
 #### `perl.workspace.useSystemInc`
 
@@ -835,103 +815,7 @@ Maximum number of completion items to return.
 
 #### Index Limits
 
-##### `perl.limits.astCacheMaxEntries`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `100` |
-| Minimum | `10` |
-| Maximum | `500` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Maximum number of AST cache entries. Uses LRU eviction when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "astCacheMaxEntries": 50
-    }
-  }
-}
-```
-
-##### `perl.limits.maxIndexedFiles`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `10000` |
-| Minimum | `100` |
-| Maximum | `100000` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Maximum number of files to index in workspace. Skips older/less-used files when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "maxIndexedFiles": 5000
-    }
-  }
-}
-```
-
-##### `perl.limits.maxTotalSymbols`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `500000` |
-| Minimum | `10000` |
-| Maximum | `1000000` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Maximum total symbols across all indexed files. Uses LRU eviction when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "maxTotalSymbols": 250000
-    }
-  }
-}
-```
-
 #### Deadline Limits
-
-##### `perl.limits.workspaceScanDeadlineMs`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `30000` |
-| Minimum | `5000` |
-| Maximum | `120000` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Deadline (ms) for workspace folder scan. Returns partial index when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "workspaceScanDeadlineMs": 20000
-    }
-  }
-}
-```
 
 ##### `perl.limits.referenceSearchDeadlineMs`
 
@@ -1138,10 +1022,6 @@ export PERL5LIB="/path/to/lib:/another/path"
       "workspaceSymbolCap": 100,
       "referencesCap": 200,
       "completionCap": 50,
-      "astCacheMaxEntries": 50,
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 250000,
-      "workspaceScanDeadlineMs": 20000,
       "referenceSearchDeadlineMs": 1500
     }
   }
