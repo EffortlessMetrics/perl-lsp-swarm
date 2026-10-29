@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Recognize audited pure path-detector fixture spans and the executable benchmark comparison script in staged commit checks while retaining machine-path and unexpected executable rejection."
+time: 2026-10-22T00:00:00Z
+custom:
+  PR: "18311"
+  Slug: staged-fixture-precision
+  Breaking: "no"
