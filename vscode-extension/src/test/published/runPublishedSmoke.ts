@@ -177,6 +177,33 @@ function selectedVsixSha256(installTarget: string): string | undefined {
   return crypto.createHash('sha256').update(fs.readFileSync(installTarget)).digest('hex');
 }
 
+function snapshotInstallTarget(
+  source: ExtensionSource,
+  installTarget: string,
+  downloadDir: string,
+): { installTarget: string; vsixSha256?: string } {
+  if (source === 'marketplace') {
+    return { installTarget };
+  }
+  // Capture once before installation. The private child directory preserves the
+  // archive basename without replacing an Open VSX download in its parent.
+  const bytes = fs.readFileSync(installTarget);
+  const vsixSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const snapshotDir = fs.mkdtempSync(path.join(downloadDir, 'vsix-snapshot-'));
+  const snapshotPath = path.join(snapshotDir, path.basename(installTarget));
+  fs.writeFileSync(snapshotPath, bytes, { flag: 'wx' });
+  return { installTarget: snapshotPath, vsixSha256 };
+}
+
+function assertVsixSnapshot(installTarget: string, vsixSha256: string | undefined): void {
+  if (vsixSha256 === undefined) {
+    return;
+  }
+  if (selectedVsixSha256(installTarget) !== vsixSha256) {
+    throw new Error(`Published VSIX snapshot changed or disappeared: ${installTarget}`);
+  }
+}
+
 function publishedSource(): ExtensionSource {
   const source = envValue('PERL_LSP_PUBLISHED_EXTENSION_SOURCE') || 'marketplace';
   if (source === 'marketplace' || source === 'open-vsx' || source === 'vsix') {
@@ -353,6 +380,7 @@ async function installExtension(
   installTarget: string,
   userDataDir: string,
   extensionsDir: string,
+  vsixSha256: string | undefined,
 ): Promise<void> {
   const resolvedCliArgs = resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
   const cliPath = resolvedCliArgs[0];
@@ -372,6 +400,7 @@ async function installExtension(
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', cliPath, ...args] : args;
   try {
     await retryPublishedInstall(() => {
+      assertVsixSnapshot(installTarget, vsixSha256);
       const result = spawnSync(command, commandArgs, {
         encoding: 'utf8',
         windowsHide: true,
@@ -537,12 +566,22 @@ async function main(): Promise<void> {
       vscodeVersion,
       downloadAndUnzipVSCode,
     );
-    const installTarget = await resolveInstallTarget(source, downloadDir);
+    const { installTarget, vsixSha256 } = snapshotInstallTarget(
+      source,
+      await resolveInstallTarget(source, downloadDir),
+      downloadDir,
+    );
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
     configureActivationFailureSmoke(userDataDir);
     configureCrashRecoverySmoke(userDataDir);
-    await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
-    const vsixSha256 = selectedVsixSha256(installTarget);
+    await installExtension(
+      vscodeExecutablePath,
+      installTarget,
+      userDataDir,
+      extensionsDir,
+      vsixSha256,
+    );
+    assertVsixSnapshot(installTarget, vsixSha256);
     const extensionTestsEnv: NodeJS.ProcessEnv = {
       ...process.env,
       PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
@@ -562,6 +601,7 @@ async function main(): Promise<void> {
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
     } else {
+      extensionTestsEnv.PERL_LSP_PUBLISHED_VSIX_PATH = installTarget;
       extensionTestsEnv.PERL_LSP_VSIX_SHA256 = vsixSha256;
     }
 

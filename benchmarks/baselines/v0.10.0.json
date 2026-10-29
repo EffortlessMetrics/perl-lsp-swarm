@@ -323,6 +323,44 @@
         "high_ns": 11.806,
         "unit": "ns"
       }
+    },
+    "ripr": {
+      "small": {
+        "description": "RIPR packet build, small fixture (packet_build/small)",
+        "mean_us": 1425.748,
+        "low_us": 1398.289,
+        "high_us": 1453.372,
+        "unit": "µs",
+        "target": "<100ms",
+        "meets_target": true
+      },
+      "medium": {
+        "description": "RIPR packet build, medium fixture (packet_build/medium)",
+        "mean_us": 10969.845,
+        "low_us": 10795.99,
+        "high_us": 11138.642,
+        "unit": "µs",
+        "target": "<1000ms",
+        "meets_target": true
+      },
+      "packet_build/large": {
+        "description": "RIPR packet build, large fixture",
+        "mean_us": 55477.503,
+        "low_us": 54382.817,
+        "high_us": 56592.003,
+        "unit": "µs",
+        "target": "<10000ms",
+        "meets_target": true
+      },
+      "packet_fingerprint/large": {
+        "description": "RIPR packet fingerprint, large input",
+        "mean_us": 224.505,
+        "low_us": 220.482,
+        "high_us": 228.445,
+        "unit": "µs",
+        "target": "<100ms",
+        "meets_target": true
+      }
     }
   },
   "performance_targets": {
