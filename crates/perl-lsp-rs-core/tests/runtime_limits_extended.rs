@@ -57,39 +57,11 @@ fn maximum_result_caps() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn zero_cache_entries() -> Result<(), Box<dyn std::error::Error>> {
-    let mut limits = LspLimits::default();
-    limits.ast_cache_max_entries = 0;
-    limits.symbol_cache_max_entries = 0;
-
-    assert_eq!(limits.ast_cache_max_entries, 0);
-    assert_eq!(limits.symbol_cache_max_entries, 0);
-    Ok(())
-}
-
-#[test]
-fn maximum_cache_entries() -> Result<(), Box<dyn std::error::Error>> {
-    let mut limits = LspLimits::default();
-    let max_val = usize::MAX;
-
-    limits.ast_cache_max_entries = max_val;
-    limits.symbol_cache_max_entries = max_val;
-
-    assert_eq!(limits.ast_cache_max_entries, max_val);
-    assert_eq!(limits.symbol_cache_max_entries, max_val);
-    Ok(())
-}
-
-#[test]
 fn zero_index_limits() -> Result<(), Box<dyn std::error::Error>> {
     let mut limits = LspLimits::default();
-    limits.max_indexed_files = 0;
     limits.max_symbols_per_file = 0;
-    limits.max_total_symbols = 0;
 
-    assert_eq!(limits.max_indexed_files, 0);
     assert_eq!(limits.max_symbols_per_file, 0);
-    assert_eq!(limits.max_total_symbols, 0);
     Ok(())
 }
 
@@ -98,13 +70,9 @@ fn maximum_index_limits() -> Result<(), Box<dyn std::error::Error>> {
     let mut limits = LspLimits::default();
     let max_val = usize::MAX;
 
-    limits.max_indexed_files = max_val;
     limits.max_symbols_per_file = max_val;
-    limits.max_total_symbols = max_val;
 
-    assert_eq!(limits.max_indexed_files, max_val);
     assert_eq!(limits.max_symbols_per_file, max_val);
-    assert_eq!(limits.max_total_symbols, max_val);
     Ok(())
 }
 
@@ -130,24 +98,6 @@ fn maximum_parse_storm_threshold() -> Result<(), Box<dyn std::error::Error>> {
 // Edge Cases: Zero and Maximum TTL
 // =============================================================================
 
-#[test]
-fn zero_ttl() -> Result<(), Box<dyn std::error::Error>> {
-    let mut limits = LspLimits::default();
-    limits.ast_cache_ttl_secs = 0;
-
-    assert_eq!(limits.ast_cache_ttl_secs, 0);
-    Ok(())
-}
-
-#[test]
-fn maximum_ttl() -> Result<(), Box<dyn std::error::Error>> {
-    let mut limits = LspLimits::default();
-    limits.ast_cache_ttl_secs = u64::MAX;
-
-    assert_eq!(limits.ast_cache_ttl_secs, u64::MAX);
-    Ok(())
-}
-
 // =============================================================================
 // Edge Cases: Zero Deadlines
 // =============================================================================
@@ -155,7 +105,6 @@ fn maximum_ttl() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn zero_deadlines() -> Result<(), Box<dyn std::error::Error>> {
     let mut limits = LspLimits::default();
-    limits.workspace_scan_deadline = Duration::from_millis(0);
     limits.file_index_deadline = Duration::from_millis(0);
     limits.reference_search_deadline = Duration::from_millis(0);
     limits.regex_scan_deadline = Duration::from_millis(0);
@@ -164,7 +113,6 @@ fn zero_deadlines() -> Result<(), Box<dyn std::error::Error>> {
     limits.code_lens_resolve_deadline = Duration::from_millis(0);
     limits.completion_deadline = Duration::from_millis(0);
 
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_millis(0));
     assert_eq!(limits.file_index_deadline, Duration::from_millis(0));
     assert_eq!(limits.reference_search_deadline, Duration::from_millis(0));
     assert_eq!(limits.regex_scan_deadline, Duration::from_millis(0));
@@ -178,7 +126,6 @@ fn zero_deadlines() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn maximum_deadlines() -> Result<(), Box<dyn std::error::Error>> {
     let mut limits = LspLimits::default();
-    limits.workspace_scan_deadline = Duration::from_secs(u64::MAX);
     limits.file_index_deadline = Duration::from_secs(u64::MAX);
     limits.reference_search_deadline = Duration::from_secs(u64::MAX);
     limits.regex_scan_deadline = Duration::from_secs(u64::MAX);
@@ -187,7 +134,6 @@ fn maximum_deadlines() -> Result<(), Box<dyn std::error::Error>> {
     limits.code_lens_resolve_deadline = Duration::from_secs(u64::MAX);
     limits.completion_deadline = Duration::from_secs(u64::MAX);
 
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_secs(u64::MAX));
     assert_eq!(limits.file_index_deadline, Duration::from_secs(u64::MAX));
     assert_eq!(limits.reference_search_deadline, Duration::from_secs(u64::MAX));
     assert_eq!(limits.regex_scan_deadline, Duration::from_secs(u64::MAX));
@@ -197,11 +143,9 @@ fn maximum_deadlines() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn microsecond_deadlines() -> Result<(), Box<dyn std::error::Error>> {
     let mut limits = LspLimits::default();
-    limits.workspace_scan_deadline = Duration::from_micros(1);
     limits.file_index_deadline = Duration::from_micros(100);
     limits.reference_search_deadline = Duration::from_micros(500);
 
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_micros(1));
     assert_eq!(limits.file_index_deadline, Duration::from_micros(100));
     assert_eq!(limits.reference_search_deadline, Duration::from_micros(500));
     Ok(())
@@ -226,25 +170,6 @@ fn large_workspace_retains_defaults() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-#[test]
-fn large_workspace_cache_defaults() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = LspLimits::large_workspace();
-
-    assert_eq!(limits.ast_cache_max_entries, 100);
-    assert_eq!(limits.symbol_cache_max_entries, 1000);
-    Ok(())
-}
-
-#[test]
-fn large_workspace_overrides() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = LspLimits::large_workspace();
-
-    assert_eq!(limits.max_indexed_files, 50_000);
-    assert_eq!(limits.max_total_symbols, 2_000_000);
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_mins(2));
-    Ok(())
-}
-
 // =============================================================================
 // Constrained Environment Preset Edge Cases
 // =============================================================================
@@ -264,10 +189,6 @@ fn constrained_result_caps_defaults() -> Result<(), Box<dyn std::error::Error>> 
 fn constrained_overrides() -> Result<(), Box<dyn std::error::Error>> {
     let limits = LspLimits::constrained();
 
-    assert_eq!(limits.ast_cache_max_entries, 50);
-    assert_eq!(limits.max_indexed_files, 5_000);
-    assert_eq!(limits.max_total_symbols, 100_000);
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_secs(15));
     assert_eq!(limits.reference_search_deadline, Duration::from_secs(1));
     Ok(())
 }
@@ -284,10 +205,6 @@ fn update_with_zero_values() -> Result<(), Box<dyn std::error::Error>> {
             "workspaceSymbolCap": 0,
             "referencesCap": 0,
             "completionCap": 0,
-            "astCacheMaxEntries": 0,
-            "maxIndexedFiles": 0,
-            "maxTotalSymbols": 0,
-            "workspaceScanDeadlineMs": 0,
             "referenceSearchDeadlineMs": 0
         }
     });
@@ -297,10 +214,6 @@ fn update_with_zero_values() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(limits.workspace_symbol_cap, 0);
     assert_eq!(limits.references_cap, 0);
     assert_eq!(limits.completion_cap, 0);
-    assert_eq!(limits.ast_cache_max_entries, 0);
-    assert_eq!(limits.max_indexed_files, 0);
-    assert_eq!(limits.max_total_symbols, 0);
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_millis(0));
     assert_eq!(limits.reference_search_deadline, Duration::from_millis(0));
     Ok(())
 }
@@ -314,10 +227,6 @@ fn update_with_huge_values() -> Result<(), Box<dyn std::error::Error>> {
             "workspaceSymbolCap": large_num,
             "referencesCap": large_num,
             "completionCap": large_num,
-            "astCacheMaxEntries": large_num,
-            "maxIndexedFiles": large_num,
-            "maxTotalSymbols": large_num,
-            "workspaceScanDeadlineMs": large_num,
             "referenceSearchDeadlineMs": large_num
         }
     });
@@ -327,10 +236,6 @@ fn update_with_huge_values() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(limits.workspace_symbol_cap, large_num as usize);
     assert_eq!(limits.references_cap, large_num as usize);
     assert_eq!(limits.completion_cap, large_num as usize);
-    assert_eq!(limits.ast_cache_max_entries, large_num as usize);
-    assert_eq!(limits.max_indexed_files, large_num as usize);
-    assert_eq!(limits.max_total_symbols, large_num as usize);
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_millis(large_num));
     assert_eq!(limits.reference_search_deadline, Duration::from_millis(large_num));
     Ok(())
 }
@@ -455,8 +360,7 @@ fn update_subset_of_fields() -> Result<(), Box<dyn std::error::Error>> {
 
     let settings = serde_json::json!({
         "limits": {
-            "workspaceSymbolCap": 350,
-            "maxIndexedFiles": 15000
+            "workspaceSymbolCap": 350
         }
     });
 
@@ -464,25 +368,6 @@ fn update_subset_of_fields() -> Result<(), Box<dyn std::error::Error>> {
 
     assert_eq!(limits.workspace_symbol_cap, 350);
     assert_eq!(limits.references_cap, 500); // unchanged
-    assert_eq!(limits.max_indexed_files, 15000);
-    assert_eq!(limits.max_total_symbols, 500_000); // unchanged
-    Ok(())
-}
-
-#[test]
-fn update_only_deadline() -> Result<(), Box<dyn std::error::Error>> {
-    let mut limits = LspLimits::default();
-
-    let settings = serde_json::json!({
-        "limits": {
-            "workspaceScanDeadlineMs": 5000
-        }
-    });
-
-    limits.update_from_value(&settings);
-
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_secs(5));
-    assert_eq!(limits.file_index_deadline, Duration::from_secs(5)); // unchanged
     Ok(())
 }
 
@@ -500,15 +385,9 @@ fn clone_preserves_all_fields() -> Result<(), Box<dyn std::error::Error>> {
         code_lens_cap: 222,
         diagnostics_per_file_cap: 333,
         inlay_hints_cap: 444,
-        ast_cache_max_entries: 555,
-        ast_cache_ttl_secs: 666,
-        symbol_cache_max_entries: 777,
-        max_indexed_files: 888,
         max_symbols_per_file: 999,
-        max_total_symbols: 1111,
         parse_storm_threshold: 2222,
         max_file_size_bytes: 3333,
-        workspace_scan_deadline: Duration::from_secs(30),
         file_index_deadline: Duration::from_secs(5),
         reference_search_deadline: Duration::from_secs(2),
         regex_scan_deadline: Duration::from_secs(1),
@@ -526,7 +405,6 @@ fn clone_preserves_all_fields() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(original.workspace_symbol_cap, cloned.workspace_symbol_cap);
     assert_eq!(original.references_cap, cloned.references_cap);
     assert_eq!(original.completion_cap, cloned.completion_cap);
-    assert_eq!(original.max_indexed_files, cloned.max_indexed_files);
     assert_eq!(original.return_partial_on_timeout, cloned.return_partial_on_timeout);
     assert_eq!(original.include_open_docs_when_degraded, cloned.include_open_docs_when_degraded);
     Ok(())
@@ -667,11 +545,9 @@ fn symbol_constraints_interaction() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set per-file symbol limit higher than total
     limits.max_symbols_per_file = 10_000;
-    limits.max_total_symbols = 5_000;
 
     // Both should be settable independently (no validation in the struct)
     assert_eq!(limits.max_symbols_per_file, 10_000);
-    assert_eq!(limits.max_total_symbols, 5_000);
 
     Ok(())
 }
@@ -680,13 +556,9 @@ fn symbol_constraints_interaction() -> Result<(), Box<dyn std::error::Error>> {
 fn file_and_symbol_constraints() -> Result<(), Box<dyn std::error::Error>> {
     let mut limits = LspLimits::default();
 
-    limits.max_indexed_files = 1;
     limits.max_symbols_per_file = 1;
-    limits.max_total_symbols = 1;
 
-    assert_eq!(limits.max_indexed_files, 1);
     assert_eq!(limits.max_symbols_per_file, 1);
-    assert_eq!(limits.max_total_symbols, 1);
 
     Ok(())
 }
@@ -713,9 +585,6 @@ fn update_with_nested_json_preserves_structure() -> Result<(), Box<dyn std::erro
 
     assert_eq!(limits.workspace_symbol_cap, 250);
     assert_eq!(limits.references_cap, 450);
-
-    // Other sections should not affect limits
-    assert_eq!(limits.max_indexed_files, 10_000);
 
     Ok(())
 }
@@ -770,36 +639,3 @@ fn update_can_override_previous() -> Result<(), Box<dyn std::error::Error>> {
 // =============================================================================
 // TTL and Cache Interaction
 // =============================================================================
-
-#[test]
-fn cache_ttl_zero_vs_nonzero() -> Result<(), Box<dyn std::error::Error>> {
-    let mut limits1 = LspLimits::default();
-    limits1.ast_cache_ttl_secs = 0;
-
-    let mut limits2 = LspLimits::default();
-    limits2.ast_cache_ttl_secs = 300;
-
-    assert_eq!(limits1.ast_cache_ttl_secs, 0);
-    assert_eq!(limits2.ast_cache_ttl_secs, 300);
-
-    Ok(())
-}
-
-#[test]
-fn cache_size_and_ttl_independent() -> Result<(), Box<dyn std::error::Error>> {
-    let mut limits = LspLimits::default();
-
-    limits.ast_cache_max_entries = 50;
-    limits.ast_cache_ttl_secs = 100;
-
-    assert_eq!(limits.ast_cache_max_entries, 50);
-    assert_eq!(limits.ast_cache_ttl_secs, 100);
-
-    limits.ast_cache_max_entries = 200;
-    limits.ast_cache_ttl_secs = 600;
-
-    assert_eq!(limits.ast_cache_max_entries, 200);
-    assert_eq!(limits.ast_cache_ttl_secs, 600);
-
-    Ok(())
-}

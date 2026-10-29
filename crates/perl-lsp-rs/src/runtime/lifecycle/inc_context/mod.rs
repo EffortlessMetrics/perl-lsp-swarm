@@ -60,7 +60,7 @@ impl EffectiveIncContext {
     #[must_use]
     #[allow(dead_code)]
     pub(crate) fn search_display_paths(&self) -> Vec<ModuleSearchPathDisplay> {
-        display::search_display_paths(&self.effective_roots)
+        display::search_display_paths(&self.effective_roots, &self.root)
     }
 
     /// Returns `true` if `symbol_uri` is directly reachable through one of the
@@ -599,6 +599,8 @@ mod tests {
         let script = workspace.join("script").join("run.pl");
         std::fs::create_dir_all(script.parent().ok_or("missing script parent")?)?;
 
+        std::fs::create_dir_all(workspace.join("t").join("lib"))?;
+        std::fs::create_dir_all(workspace.join("lib"))?;
         let workspace_uri = file_uri(&workspace)?;
         let doc_uri = file_uri(&script)?;
         let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();

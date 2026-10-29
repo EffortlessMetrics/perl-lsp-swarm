@@ -29,6 +29,13 @@ hosted checks and the commit they actually evaluated. A status attaches to the
 commit it ran on; that fact does not create a branch-refresh, empty-commit, or
 full-CI replay rule for unaffected proof.
 
+When the author has no local Rust toolchain, mark the PR hosted-only in
+**Hosted proof** rather than burying "Local Rust proof NOT RUN" in prose.
+Reviewers: missing proof (no local result and no named hosted check) is not
+broken proof (a named check failed, cancelled after start, or is
+instrument-failed). Hosted-only means wait on the named hosted checks; do not
+file cargo fmt/clippy/test as BLOCKING solely because local proof was not run.
+
 Attribute a failing check before treating it as a candidate defect, and note that
 this cuts both ways. A cancelled run reached no verdict; a run that genuinely
 failed stays a finding until the seam it names actually changed, so a later
@@ -55,6 +62,31 @@ See docs/agents/REVIEW_CURRENTNESS.md.
 
 ## Proof
 <!-- Exact focused commands, tests, fixtures, external oracle, and observed results. Distinguish pass/fail/not-run/NOT_PROVEN. -->
+
+## Hosted proof
+<!-- Named GitHub Actions checks that exercise this claim, and the commit they
+actually evaluated. Fill this section whenever local Rust proof was not run.
+Do not call hosted CI an "exact-head proof authority."
+
+Author mark: check Hosted-only when this lane has no local Rust toolchain so
+reviewers treat cargo-not-run as wait-for-hosted-log, not as a candidate defect.
+
+Proof states (pick one per named check; missing proof is not broken proof;
+cancelled and instrument-failed are not broken):
+- run-and-pass: the named check passed on the named commit
+- hosted-only pending: author marked hosted-only; hosted checks have not reached a terminal result
+- missing: no named hosted check exists yet for this claim
+- broken: the named check failed with a candidate-attributable result
+- cancelled / no verdict: the named check was cancelled or never completed; wait for a current run
+- instrument-failed / NOT_PROVEN: the instrument could not produce a reliable result; not a code defect
+- skipped-by-policy: name why; do not report as passed
+-->
+- [ ] Hosted-only: no local Rust toolchain; named hosted checks are the first-class proof
+- Named hosted checks:
+- Commit SHA evaluated:
+- Check run URL(s):
+- Result per check: run-and-pass / hosted-only pending / missing / broken / cancelled / instrument-failed / skipped-by-policy / NOT_PROVEN
+- Why local proof was not run (hosted-only only):
 
 ## Test hardening
 <!-- What realistic wrong implementation was challenged? What negative, stale, failure, recovery, or opposite-direction control was added or already existed? -->
@@ -116,10 +148,18 @@ See docs/agents/REVIEW_CURRENTNESS.md.
 - [ ] Trust-lane PRs name promotion, fallback, blocker, and receipt boundaries.
 - [ ] I ran the cheapest discriminating proof first.
 - [ ] Focused and affected proof covers the candidate's changed semantic subjects; unaffected completed proof remains usable.
-- [ ] `cargo fmt --all -- --check` — clean or N/A.
-- [ ] Affected Clippy/test commands are listed under **Proof**.
+- [ ] `cargo fmt --all -- --check` — clean, N/A, or hosted-only (named under **Hosted proof**).
+- [ ] Affected Clippy/test commands are listed under **Proof**, or hosted-only names the hosted checks that replace them.
+- [ ] Hosted-only PRs check the hosted-only box and fill **Hosted proof**.
 - [ ] UX-visible errors are actionable and the applicable UX/native proof is listed.
 - [ ] Required generated artifacts/contracts are current.
+
+### Reviewer proof classification
+<!-- Reviewers classify proof before treating local-not-run as blocking. Missing proof is not broken proof. -->
+- [ ] Proof state: run-and-pass / hosted-only / missing / broken
+- [ ] "Local Rust proof NOT RUN" is not BLOCKING when **Hosted proof** names the hosted checks and the commit they evaluated.
+- [ ] Missing proof (no local result and no named hosted check) is distinct from broken proof (a named check failed with a candidate-attributable result). Cancelled and instrument-failed runs are not broken.
+- [ ] Hosted-only PRs wait on the named hosted checks; do not file cargo fmt/clippy/test as BLOCKING solely because the author lacked a local toolchain.
 
 ## Quality-gate effect
 <!-- Complete when this touches proof-gated code, receipts, coverage/RIPR policy, CI, or test evidence. Otherwise N/A. -->

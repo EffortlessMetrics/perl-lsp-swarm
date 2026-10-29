@@ -32,7 +32,7 @@ artifact is grounds for the action to be reverted.
 | Claim type | Required artifact |
 |------------|-------------------|
 | **Merge claim** ("this is merged", "already landed") | Merge commit SHA. Verified by: `gh pr view NNN --json mergedAt,mergeCommit` or `git log origin/main --oneline | grep <sha>`. |
-| **CI claim** ("CI is green", "checks pass") | CI check run URL + conclusion field. Example: `gh pr checks NNN --json name,state,detailsUrl`. |
+| **CI claim** ("CI is green", "checks pass") | CI check run URL + conclusion field. Example: `gh pr checks NNN --json name,state,link`. |
 | **Superseded claim** ("superseded by PR N", "already fixed upstream") | Landing-proof receipt from `cargo xtask landing-proof --commit <sha> --canonical-main origin/main --format json` pasted verbatim, **plus** separate semantic completion evidence — landing proof alone is never sufficient. See [CLOSE_PROOF_POLICY.md](CLOSE_PROOF_POLICY.md) (Three Distinct Proof Layers). |
 | **Fix claim** ("this test now passes", "bug is fixed") | Test name + test run output (pass line from `cargo test` or CI log). |
 | **Release claim** ("shipped in v0.N.M", "available in latest release") | Receipt file path (e.g. `.receipts/v0.N.M-release.md`) or public channel URL (crates.io, GitHub Releases page). |

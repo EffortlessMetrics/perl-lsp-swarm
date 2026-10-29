@@ -30,6 +30,13 @@ fn spawn_child(
     cmd.args(resolved_args.iter().map(String::as_str));
     if stdin.is_some() {
         cmd.stdin(Stdio::piped());
+    } else {
+        // No input: pin the null device. A child of a long-lived server must
+        // never inherit the server's stdin — for the LSP that handle is the
+        // JSON-RPC transport, which the child would consume, and on Windows a
+        // console child holding that inherited pipe handle blocks inside
+        // process initialization until it is killed (#17305).
+        cmd.stdin(Stdio::null());
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

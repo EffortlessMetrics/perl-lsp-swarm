@@ -295,13 +295,17 @@ def cross_config_path(root: Path) -> Path:
     )
 
 
-def load_cross_passthrough(path: Path) -> list[str]:
+def load_cross_toml(path: Path) -> dict[str, Any]:
     try:
         value = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise BuildIdentityError(
             f"release Cross config is invalid: {path}"
         ) from error
+    return value
+
+
+def cross_passthrough_from_config(value: Mapping[str, Any]) -> list[str]:
     build = value.get("build")
     if not isinstance(build, dict):
         raise BuildIdentityError(
@@ -322,14 +326,7 @@ def load_cross_passthrough(path: Path) -> list[str]:
     return list(passthrough)
 
 
-def load_cross_image(path: Path, target: str) -> str:
-    """Return the reviewed container image pinned for one cross target."""
-    try:
-        value = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise BuildIdentityError(
-            f"release Cross config is invalid: {path}"
-        ) from error
+def cross_image_from_config(value: Mapping[str, Any], target: str) -> str:
     targets = value.get("target")
     row = targets.get(target) if isinstance(targets, dict) else None
     if not isinstance(row, dict):
@@ -343,6 +340,15 @@ def load_cross_image(path: Path, target: str) -> str:
             f"release Cross config target.{target}.image must be a string"
         )
     return image
+
+
+def load_cross_passthrough(path: Path) -> list[str]:
+    return cross_passthrough_from_config(load_cross_toml(path))
+
+
+def load_cross_image(path: Path, target: str) -> str:
+    """Return the reviewed container image pinned for one cross target."""
+    return cross_image_from_config(load_cross_toml(path), target)
 
 
 def validate_cross_image(image: str, target: str) -> str:
@@ -364,25 +370,36 @@ def validate_cross_image(image: str, target: str) -> str:
     return image
 
 
+def validate_identity_passthrough(passthrough: Sequence[str]) -> None:
+    expected = list(IDENTITY_ENV_KEYS)
+    if passthrough == expected:
+        return
+    missing = [key for key in expected if key not in passthrough]
+    extra = [key for key in passthrough if key not in expected]
+    details: list[str] = []
+    if missing:
+        details.append(f"missing={missing}")
+    if extra:
+        details.append(f"extra={extra}")
+    if not details:
+        details.append("order differs from IDENTITY_ENV_KEYS")
+    raise BuildIdentityError(
+        "release Cross config must enroll exact identity passthrough: "
+        + "; ".join(details)
+    )
+
+
 def validate_cross_config(path: Path, target: str) -> str:
     """Prove the closed identity env enrollment and image pin are exact."""
-    passthrough = load_cross_passthrough(path)
-    expected = list(IDENTITY_ENV_KEYS)
-    if passthrough != expected:
-        missing = [key for key in expected if key not in passthrough]
-        extra = [key for key in passthrough if key not in expected]
-        details: list[str] = []
-        if missing:
-            details.append(f"missing={missing}")
-        if extra:
-            details.append(f"extra={extra}")
-        if not details and passthrough != expected:
-            details.append("order differs from IDENTITY_ENV_KEYS")
-        raise BuildIdentityError(
-            "release Cross config must enroll exact identity passthrough: "
-            + "; ".join(details)
-        )
-    return validate_cross_image(load_cross_image(path, target), target)
+    value = load_cross_toml(path)
+    validate_identity_passthrough(cross_passthrough_from_config(value))
+    return validate_cross_image(cross_image_from_config(value, target), target)
+
+
+def reviewed_cross_pin(root: Path, target: str) -> tuple[Path, str]:
+    """Return the reviewed Cross.toml path and its validated image pin."""
+    config = cross_config_path(root)
+    return config, validate_cross_config(config, target)
 
 
 # The one cross variable this adapter sets itself. `prepare` writes it to
@@ -475,8 +492,7 @@ def toolchain_digest(
     payload = b"rustc\0" + rustc + b"\0runner\0" + runner_version
     if runner == "cross":
         reject_cross_ambient_overrides(target, env)
-        config = cross_config_path(root)
-        image = validate_cross_config(config, target)
+        config, image = reviewed_cross_pin(root, target)
         # Bind the pinned image structurally, not only through config bytes:
         # the digest must move when the selected container moves, and must not
         # depend on unrelated edits elsewhere in the reviewed config being the
@@ -543,7 +559,8 @@ def validate_topology(
 ) -> None:
     version = topology.get("schema")
     if type(version) not in (int, float) or version not in ((1, 2, 4) if allow_mapped_rc else (1, 2)):
-        raise BuildIdentityError("release topology schema must be 1 or 2")
+        allowed = "1 or 2 or 4" if allow_mapped_rc else "1 or 2"
+        raise BuildIdentityError(f"release topology schema must be {allowed}")
     if version == 4:
         if __package__:
             from .release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
@@ -704,8 +721,7 @@ def build_environment(
                 "cross builds require workspace root for CROSS_CONFIG"
             )
         reject_cross_ambient_overrides(identity.target, env)
-        config = cross_config_path(root)
-        validate_cross_config(config, identity.target)
+        config = reviewed_cross_pin(root, identity.target)[0]
         env["CROSS_CONFIG"] = str(config)
         # Defence in depth for the subprocesses this adapter spawns. The
         # workflow's own `$BUILD_CMD build` step does not pass through here,
@@ -732,8 +748,7 @@ def append_github_env(
                 raise BuildIdentityError(
                     "cross builds require workspace root for CROSS_CONFIG"
                 )
-            config = cross_config_path(root)
-            validate_cross_config(config, identity.target)
+            config = reviewed_cross_pin(root, identity.target)[0]
             handle.write(f"CROSS_CONFIG={config}\n")
 
 

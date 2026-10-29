@@ -160,7 +160,8 @@ pub(crate) struct ReadFreshness {
     pub uri: String,
     /// Generation counter as observed at ingress. `None` when the
     /// document was not yet open at ingress (e.g. a hover arriving before
-    /// the matching `didOpen`); in that case freshness is not enforced.
+    /// the matching `didOpen`); delivery still checks that the URI remains
+    /// closed, so a disk-snapshot response cannot race over a live buffer.
     pub document_generation: Option<u32>,
     /// Generation counter identity captured at ingress. A close/reopen can
     /// reuse the numeric generation, so the allocation identity is part of
@@ -359,6 +360,18 @@ struct QueuedRead {
     /// generation observed at ingress so the dispatcher can detect that
     /// the document moved on before this read had a chance to run.
     freshness: Option<ReadFreshness>,
+}
+
+/// Re-capture freshness after prior mutations when ingress could not see the
+/// document yet. This preserves request ordering for `didOpen` followed by a
+/// position request while keeping later opens subject to final delivery checks.
+fn refresh_after_mutation_barrier(queued: &QueuedRead) -> bool {
+    queued.wait_for_seq > 0
+        && (queued.request.method == "textDocument/completion"
+            || queued
+                .freshness
+                .as_ref()
+                .is_some_and(|freshness| freshness.document_generation.is_none()))
 }
 
 impl PartialEq for QueuedRead {
@@ -923,6 +936,24 @@ impl Scheduler {
         };
 
         let Some(captured) = freshness.document_generation else {
+            // A disk-snapshot request entered before `didOpen`. Recheck while
+            // holding the document-store lock and enqueue under that same lock
+            // so an open mutation cannot slip between the guard and delivery.
+            let normalized_uri = server.normalize_uri_key(&freshness.uri);
+            let documents = server.documents.lock();
+            if documents.contains_key(&normalized_uri) {
+                // The hover handler can observe the newly opened document and
+                // deliberately publish null instead of its disk result. Keep
+                // that safe fallback successful for clients whose didOpen
+                // notification was still being applied at request ingress.
+                // Any non-null result may contain disk-derived data and must
+                // still be rejected.
+                if response.result.as_ref().is_some_and(serde_json::Value::is_null) {
+                    Self::send_response(&server.outbound, response);
+                    return None;
+                }
+                return Some(StaleReason::DocumentInstanceChanged);
+            }
             Self::send_response(&server.outbound, response);
             return None;
         };
@@ -987,8 +1018,7 @@ impl Scheduler {
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
     ) {
-        let refresh_after_barrier =
-            queued.request.method == "textDocument/completion" && queued.wait_for_seq > 0;
+        let refresh_after_barrier = refresh_after_mutation_barrier(&queued);
 
         // Stale check 1: position dedupe — newer same-position request supersedes.
         if let Some(ref key) = queued.dedup_key
@@ -1837,6 +1867,34 @@ mod tests {
     }
 
     #[test]
+    fn unopened_hover_refreshes_freshness_after_prior_did_open() -> Result<(), JsonRpcError> {
+        let server = crate::LspServer::new();
+        let uri = "file:///hover-did-open-barrier.pl";
+        let params = position_params_at(uri, 0, 4);
+        let priority = request_priority("textDocument/hover");
+        let queued = QueuedRead {
+            request: JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(81)),
+                method: "textDocument/hover".to_string(),
+                params: Some(params.clone()),
+            },
+            wait_for_seq: 1,
+            priority,
+            arrival_seq: 1,
+            dedup_key: extract_dedup_key("textDocument/hover", Some(&params), priority),
+            freshness: extract_freshness(&server, "textDocument/hover", Some(&params), priority),
+        };
+
+        assert!(refresh_after_mutation_barrier(&queued));
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+        let refreshed =
+            must_some(Scheduler::refresh_read_freshness(&server, queued.freshness.as_ref()));
+        assert_eq!(refreshed.document_generation, Some(1));
+        Ok(())
+    }
+
+    #[test]
     fn extract_freshness_none_for_other_priority() {
         let server = crate::LspServer::new();
         let params = position_params("file:///x.pl");
@@ -2093,6 +2151,54 @@ mod tests {
         assert!(
             !output.contains("\"id\":78"),
             "post-handler stale completion result must not be delivered; output={output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn disk_snapshot_response_is_rejected_after_did_open() -> Result<(), JsonRpcError> {
+        let (server, output) = server_with_captured_output();
+        let uri = "file:///closed-hover-open-race.pl";
+        let freshness = make_freshness(uri, None, None);
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&freshness),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(79)),
+                    result: Some(serde_json::json!({ "contents": "disk" })),
+                    error: None,
+                },
+            ),
+            Some(StaleReason::DocumentInstanceChanged)
+        );
+        let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
+        assert!(!output.contains("\"id\":79"), "stale disk response was sent: {output}");
+        Ok(())
+    }
+
+    #[test]
+    fn null_hover_after_did_open_remains_a_successful_fallback() -> Result<(), JsonRpcError> {
+        let (server, _output) = server_with_captured_output();
+        let uri = "file:///closed-hover-open-race.pl";
+        let freshness = make_freshness(uri, None, None);
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&freshness),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(80)),
+                    result: Some(serde_json::Value::Null),
+                    error: None,
+                },
+            ),
+            None
         );
         Ok(())
     }

@@ -338,6 +338,6 @@ The script includes a fallback parser but full YAML support is recommended.
 
 ## Related Documentation
 
-- [Gate Policy](../.ci/gate-policy.yaml) - CI gate configuration
-- [Receipt Schema](../.ci/receipt.schema.json) - Receipt JSON structure
-- [CLAUDE.md](../CLAUDE.md) - Development workflow
+- [Gate Policy](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/.ci/gate-policy.yaml) - CI gate configuration
+- [Receipt Schema](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/.ci/receipt.schema.json) - Receipt JSON structure
+- [CLAUDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CLAUDE.md) - Development workflow

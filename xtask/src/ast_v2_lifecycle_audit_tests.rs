@@ -119,7 +119,7 @@ fn the_committed_audit_contract_loads_and_reconciles() -> Result<()> {
     assert_eq!(audit.ruling(), "absorb");
     assert_eq!(audit.public_item_count(), 39);
     assert_eq!(audit.reexport_count(), 6);
-    assert_eq!(audit.consumer_count(), 37);
+    assert_eq!(audit.consumer_count(), 36);
     Ok(())
 }
 
@@ -402,24 +402,6 @@ fn a_docs_only_reference_is_not_classified_as_production_use() -> Result<()> {
     let row = row_mut(&mut value, "consumers", "consumer_id", "c:lexer-tokenizer-doc")?;
     row["role"] = Value::String("production_implementation".to_string());
     assert_rejected(&value, "names no symbols")
-}
-
-#[test]
-fn the_unused_lexer_dev_dependency_is_recorded_rather_than_read_as_use() -> Result<()> {
-    let value = real_value()?;
-    let row = value["consumers"]
-        .as_array()
-        .ok_or_else(|| color_eyre::eyre::eyre!("missing consumers"))?
-        .iter()
-        .find(|row| row.get("consumer_id").and_then(Value::as_str) == Some("c:lexer-manifest"))
-        .ok_or_else(|| color_eyre::eyre::eyre!("no c:lexer-manifest row"))?;
-    let proposition = row["proposition"].as_str().unwrap_or_default();
-    assert!(
-        proposition.contains("no matching use"),
-        "the lexer row must record that the declared dev-dependency has no matching use"
-    );
-    assert_eq!(row["role"].as_str(), Some("package_dependency"));
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

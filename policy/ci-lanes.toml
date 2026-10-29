@@ -13,7 +13,7 @@ schema_version = 1
 policy = "ci-lanes"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-07"
+updated = "2026-09-29"
 
 # -----------------------------------------------------------------------------
 # Frontdoor / control lanes
@@ -214,6 +214,19 @@ default_pr = false
 blocking = false
 labels = ["ci:vscode-matrix", "full-ci"]
 branches = ["master"]
+duplicate_of = []
+
+[lane.vscode_installed_first_hour_windows]
+description = "Hosted Windows first-hour installed LSP/VSIX byte identity."
+intent = "installed distribution evidence"
+runner = "windows_latest"
+base_lem = 70
+default_pr = false
+blocking = false
+labels = []
+branches = ["main", "master", "codex/6056-installed-identity"]
+paths = ["vscode-extension/**", "crates/perl-lsp*/**", "crates/perllsp/**", "crates/perl-dap/**", "Cargo.toml", "Cargo.lock", ".github/workflows/vscode-installed-first-hour-windows.yml"]
+outputs = ["target/receipts/vscode-smoke/installed-first-hour-windows/**"]
 duplicate_of = []
 
 [lane.coverage]

@@ -948,3 +948,23 @@ fn deserialized_receipt_intake_rejects_noncanonical_artifact_digest_spelling() -
     ensure(validate_observed_discovery_receipt(&matrix, &receipt))?;
     Ok(())
 }
+
+#[test]
+fn selector_arguments_admit_switches_only_upstream_internal_selection() -> Result<()> {
+    // #6665: `selector_test_core` names upstream-internal selection (13
+    // recursive roots plus the core MANIFEST population, switch `--core`).
+    // Pinned t/TEST expands that population only on the zero-file-argument
+    // path, so the admitted argv is the switches alone.
+    let matrix = matrix()?;
+    let entry = find_entry(&matrix, "selector_test_core")?;
+    let arguments = crate::observed_discovery::capture::selector_arguments(&matrix, entry)
+        .map_err(|error| eyre!(error))?;
+    assert_eq!(arguments, vec!["--core".to_string()]);
+
+    // Ordinary component targets keep their verbatim selector spelling.
+    let base = find_entry(&matrix, "component_base")?;
+    let arguments = crate::observed_discovery::capture::selector_arguments(&matrix, base)
+        .map_err(|error| eyre!(error))?;
+    assert_eq!(arguments, vec!["base".to_string()]);
+    Ok(())
+}

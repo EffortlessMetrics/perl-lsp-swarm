@@ -72,13 +72,13 @@ cargo test -p perl-parser semantic::tests
 **Key Test Modules**:
 - Parser unit tests: `/crates/perl-parser/src/lib.rs` (semantic analysis, AST validation)
 - Lexer unit tests: `/crates/perl-lexer/src/lib.rs` (tokenization, Unicode handling)
-- LSP unit tests: `/crates/perl-lsp/src/lib.rs` (protocol handling, state management)
+- LSP unit tests: `/crates/perl-lsp-rs/src/lib.rs` (protocol handling, state management)
 
 ### 2. Integration Tests (*Diataxis: Tutorial*)
 
 **Purpose**: Test component interactions, LSP protocol compliance, and cross-module behavior.
 
-**Location**: `crates/perl-lsp/tests/lsp_*.rs` and `crates/perl-parser/tests/*_tests.rs`
+**Location**: `crates/perl-lsp-rs/tests/lsp_*.rs` and `crates/perl-parser/tests/*_tests.rs`
 
 **Examples**:
 ```bash
@@ -156,7 +156,7 @@ proptest! {
 
 **Purpose**: Full workflow validation including LSP server lifecycle, client communication, and workspace operations.
 
-**Location**: `crates/perl-lsp/tests/lsp_comprehensive_e2e_test.rs`
+**Location**: `crates/perl-lsp-rs/tests/lsp_comprehensive_e2e_test.rs`
 
 **Examples**:
 ```bash
@@ -433,7 +433,7 @@ cargo nextest run --profile ci --workspace
 ```toml
 [profile.ci.overrides]
 # LSP tests need more time in CI
-filter = 'package(perl-lsp)'
+filter = 'package(perl-lsp-rs)'
 slow-timeout = { period = "120s", terminate-after = 3 }
 threads-required = 2
 ```
@@ -481,6 +481,8 @@ cargo nextest run --profile local-fast --workspace
 ```
 
 **Purpose**: Rapid iteration during development with balanced parallelization.
+
+For a practical editor/watch walkthrough, see [Continuous Testing](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/CONTINUOUS_TESTING.md).
 
 ---
 
@@ -852,7 +854,7 @@ jobs:
       - uses: actions/checkout@<COMMIT_SHA> # v4
       - uses: dtolnay/rust-toolchain@<COMMIT_SHA> # stable
         with:
-          toolchain: 1.90.0
+          toolchain: 1.95.0
 
       - uses: Swatinem/rust-cache@<COMMIT_SHA> # v2
         with:
@@ -897,7 +899,7 @@ jobs:
 ```yaml
 test:
   stage: test
-  image: rust:1.90
+  image: rust:1.95
   variables:
     RUST_TEST_THREADS: "2"
     CARGO_NET_RETRY: "4"
@@ -982,7 +984,7 @@ RUST_TEST_THREADS=2 cargo test -p perl-parser --test mutation_hardening_tests
 ```
 
 **Quality Metrics**:
-- **Mutation Score**: 87% (improved from ~70% in PR #153)
+- **Mutation Score**: 87% (improved from the historical ~70% baseline)
 - **Test Suites**: 7 mutation hardening test files
 - **Coverage**: 147 tests for comprehensive edge case coverage
 
@@ -1073,7 +1075,7 @@ cargo tarpaulin --workspace --exclude-files '**/prop_*.rs' --out Html
   ...
 
 🟡 Top 10 files with most eprintln! calls:
-  crates/perl-lsp/tests/common/mod.rs: 12
+  crates/perl-lsp-rs/tests/common/mod.rs: 12
   ...
 ```
 
@@ -1147,8 +1149,7 @@ RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 
 ## Related Documentation
 
-- **[Threading Configuration Guide](../how-to/THREADING_CONFIGURATION_GUIDE.md)**: Adaptive threading deep dive
-- **[Commands Reference](COMMANDS_REFERENCE.md)**: Comprehensive build/test commands
-- **[CI Documentation](../project/CI.md)**: CI/CD pipeline architecture
-- **[LSP Implementation Guide](LSP_IMPLEMENTATION_GUIDE.md)**: LSP testing patterns
-- **[Ignored Tests Index](ci/IGNORED_TESTS_INDEX.md)**: BrokenPipe test tracking
+- **[Threading Configuration Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/THREADING_CONFIGURATION_GUIDE.md)**: Adaptive threading deep dive
+- **[Commands Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md)**: Comprehensive build/test commands
+- **[CI Documentation](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CI.md)**: CI/CD pipeline architecture
+- **[LSP Implementation Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/LSP_IMPLEMENTATION_GUIDE.md)**: LSP testing patterns
