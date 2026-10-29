@@ -8760,7 +8760,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        let tree_perl = perl_tree.join("perl");
+        let tree_perl = perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX));
         fs::write(&tree_perl, "sentinel built perl\n")?;
 
         let resolved = resolve_scheduler_perl(&perl_tree, None)?;
@@ -8774,7 +8774,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let override_perl = temp.path().join("version-matched-perl");
         fs::write(&override_perl, "sentinel override perl\n")?;
 
@@ -8789,7 +8792,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let override_perl = temp.path().join("version-matched-perl");
         fs::write(&override_perl, "sentinel override perl\n")?;
         let dotted = temp.path().join(".").join("version-matched-perl");
@@ -8839,7 +8845,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let missing_override = temp.path().join("missing-perl");
 
         let Err(err) = resolve_scheduler_perl(&perl_tree, Some(&missing_override)) else {
