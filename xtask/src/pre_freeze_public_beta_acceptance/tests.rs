@@ -1,3 +1,6 @@
+use super::first_hour_profile::{
+    FirstHourFacts, ProfileObserver, WINDOW_FIRST_15, WINDOW_FIRST_60, index_first_hour,
+};
 use super::*;
 
 fn fixture() -> (PacketV2, TopologyRequirements) {
@@ -571,5 +574,386 @@ fn blocked_refusals_and_withdrawals_still_require_proposition_reasons() -> Resul
             .reason = None;
         rejected(&packet, &requirements)?;
     }
+    Ok(())
+}
+
+fn wrapper_rejected(
+    packet: &PacketV2,
+    requirements: &TopologyRequirements,
+    facts: &FirstHourFacts,
+) -> Result<()> {
+    ensure!(index_first_hour(packet, requirements, facts).is_err(), "invalid bundle indexed");
+    Ok(())
+}
+
+#[test]
+fn first_hour_wrapper_retains_complete_canonical_report_and_permanent_ceiling() -> Result<()> {
+    let (packet, requirements) = fixture();
+    let facts = FirstHourFacts::unobserved();
+    let index = index_first_hour(&packet, &requirements, &facts)?;
+    let canonical = validate_v2(&packet, &requirements)?;
+    ensure!(index.bundle_recommendation == Recommendation::Ready, "wrapper must project Ready");
+    ensure!(
+        index.installed_qualification == InstalledQualification::NotProven,
+        "wrapper must never qualify installed execution"
+    );
+    ensure!(
+        index.canonical_report.bundle_recommendation == canonical.bundle_recommendation,
+        "wrapper must retain exact canonical recommendation"
+    );
+    ensure!(
+        serde_json::to_value(&index.canonical_report.evidence_requirements)?
+            == serde_json::to_value(&canonical.evidence_requirements)?,
+        "wrapper must retain exact canonical obligations"
+    );
+    for category in [
+        AdapterCategory::TopologyBinding,
+        AdapterCategory::ArtifactProvenance,
+        AdapterCategory::HostSelection,
+        AdapterCategory::InstalledJourney,
+        AdapterCategory::FirstTenMinutes,
+        AdapterCategory::Preparation,
+        AdapterCategory::Mechanism,
+    ] {
+        ensure!(
+            index.canonical_report.evidence_requirements.iter().any(|e| e.category == category),
+            "lost canonical obligation {category:?}"
+        );
+    }
+    ensure!(index.windows.len() == 6, "two observers times three windows");
+    for window in &index.windows {
+        ensure!(window.status == Status::NotProven, "unobserved window must stay not_proven");
+        ensure!(!window.missing.is_empty(), "missing checklist required");
+        for item in &window.missing {
+            ensure!(
+                !item.contains("missing:") && !item.contains("sha256") && !item.contains("000000"),
+                "checklist must not impersonate a receipt: {item}"
+            );
+        }
+        ensure!(
+            window.evidence.iter().all(|o| o.owner_kind == "cell"),
+            "window evidence is a cell selector only"
+        );
+    }
+    let joined =
+        index.windows.iter().flat_map(|w| w.missing.iter().cloned()).collect::<Vec<_>>().join("\n");
+    for phrase in [
+        "public instruction",
+        "conventional AND dynamic",
+        "server/DAP/VSIX",
+        "clean-profile",
+        "root/document/session",
+        "first-useful",
+        "no concrete",
+    ] {
+        ensure!(joined.contains(phrase), "missing checklist must name {phrase}");
+    }
+    ensure!(
+        index.canonical_rows == ROWS.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+        "wrapper lost canonical rows"
+    );
+    ensure!(
+        index.canonical_cells == CELLS.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+        "wrapper lost canonical cells"
+    );
+    ensure!(index.profile_digest.starts_with("sha256:") && index.profile_digest.len() == 71);
+    ensure!(index.phase == packet.phase && index.source_version == packet.source_version);
+    ensure!(index.target_release == packet.target_release);
+    for declared in &index.declared_rows {
+        let row = packet.rows.iter().find(|row| row.id == declared.row_id).context("row")?;
+        ensure!(declared.platform == row.platform && declared.host_role == row.host_role);
+        ensure!(declared.vscode_version == row.vscode_version);
+        ensure!(declared.clean_profile_id == row.clean_profile_id);
+        ensure!(declared.configuration_identity == row.configuration_identity);
+        ensure!(serde_json::to_value(&declared.fixtures)? == serde_json::to_value(&row.fixtures)?);
+        ensure!(declared.artifacts == row.artifacts && declared.subject == row.subject);
+    }
+    ensure!(index.declared_artifacts.len() == packet.artifacts.len());
+    Ok(())
+}
+
+#[test]
+fn first_hour_wrapper_inherits_canonical_rejections_and_stale_ready() -> Result<()> {
+    let (base, requirements) = fixture();
+    let facts = FirstHourFacts::unobserved();
+    let mut wrong_target = base.clone();
+    wrong_target.artifacts.first_mut().context("artifact")?.target = "windows-x64".into();
+    wrapper_rejected(&wrong_target, &requirements, &facts)?;
+    let mut wrong_subject = base.clone();
+    cell(&mut wrong_subject)?.evidence.first_mut().context("ref")?.subject.candidate_id =
+        "other".into();
+    wrapper_rejected(&wrong_subject, &requirements, &facts)?;
+    let mut missing_row = base.clone();
+    missing_row.rows.pop();
+    wrapper_rejected(&missing_row, &requirements, &facts)?;
+    let mut duplicate_cell = base.clone();
+    let cloned = row(&mut duplicate_cell)?.cells.first().context("cell")?.clone();
+    row(&mut duplicate_cell)?.cells.push(cloned);
+    wrapper_rejected(&duplicate_cell, &requirements, &facts)?;
+    let mut missing_observation = base.clone();
+    missing_observation.first_ten_minutes.observed_rows.push("windows_x64_current_stable".into());
+    wrapper_rejected(&missing_observation, &requirements, &facts)?;
+    let mut wrong_provenance = base.clone();
+    wrong_provenance.artifacts.first_mut().context("artifact")?.provenance =
+        Provenance::WorkspaceOutput;
+    wrapper_rejected(&wrong_provenance, &requirements, &facts)?;
+    let mut wrong_dap = base.clone();
+    row(&mut wrong_dap)?.artifacts.perl_dap = "windows-dap".into();
+    wrapper_rejected(&wrong_dap, &requirements, &facts)?;
+    let mut lost_floor = base.clone();
+    lost_floor.rows.retain(|r| r.id != "linux_x64_minimum_supported");
+    wrapper_rejected(&lost_floor, &requirements, &facts)?;
+
+    for counter in [
+        "wrong_binary_or_artifact",
+        "partial_or_checksum_invalid_install",
+        "false_exact",
+        "stale_exact",
+        "unsafe_edit",
+        "unexplained_successful_empty",
+        "mixed_generation_result",
+        "cross_root_leakage",
+        "orphaned_candidate_process",
+        "silent_product_failure",
+        "false_repair_diagnosis",
+        "optional_tool_false_requirement",
+    ] {
+        let mut value = serde_json::to_value(&base)?;
+        value
+            .get_mut("zero_budget_counts")
+            .and_then(serde_json::Value::as_object_mut)
+            .context("counters")?
+            .insert(counter.into(), serde_json::json!(1));
+        let mut stale = parse_v2(&serde_json::to_vec(&value)?)?;
+        ensure!(
+            stale.freeze_recommendation == Recommendation::Ready,
+            "stale fixture must keep declared Ready"
+        );
+        wrapper_rejected(&stale, &requirements, &facts)?;
+        stale.freeze_recommendation = Recommendation::Blocked;
+        let index = index_first_hour(&stale, &requirements, &facts)?;
+        ensure!(
+            index.bundle_recommendation == Recommendation::Blocked
+                && index.canonical_report.bundle_recommendation == Recommendation::Blocked,
+            "correct Blocked must project as Blocked for {counter}"
+        );
+        ensure!(
+            index.windows.iter().all(|w| w.status == Status::NotProven),
+            "blocked bundle must never qualify a window"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn first_hour_wrapper_observer_negative_controls_and_3600s_ceiling() -> Result<()> {
+    let (packet, requirements) = fixture();
+    for observer in [ProfileObserver::NewHuman, ProfileObserver::FreshAgent] {
+        let mut facts = FirstHourFacts::unobserved();
+        match observer {
+            ProfileObserver::NewHuman => facts.human.guided_expert = true,
+            ProfileObserver::FreshAgent => facts.agent.guided_expert = true,
+        }
+        wrapper_rejected(&packet, &requirements, &facts)?;
+    }
+    let mut swapped = FirstHourFacts::unobserved();
+    swapped.human.observer = ProfileObserver::FreshAgent;
+    swapped.agent.observer = ProfileObserver::NewHuman;
+    wrapper_rejected(&packet, &requirements, &swapped)?;
+
+    for field in ["checkout", "rescue", "hidden"] {
+        let mut facts = FirstHourFacts::unobserved();
+        match field {
+            "checkout" => facts.agent.checkout_inspection = true,
+            "rescue" => facts.agent.private_rescue = true,
+            _ => facts.agent.hidden_assistance = true,
+        }
+        wrapper_rejected(&packet, &requirements, &facts)?;
+        facts.agent.recorded_interventions = 1;
+        wrapper_rejected(&packet, &requirements, &facts)?;
+        facts.agent.intervention_details =
+            vec![format!("{field} assistance; unmet public instruction: use public route only")];
+        let index = index_first_hour(&packet, &requirements, &facts)?;
+        ensure!(
+            index.windows.iter().all(|w| w.status == Status::NotProven),
+            "{field} rescue must stay not_proven"
+        );
+        let summary = index
+            .observers
+            .iter()
+            .find(|o| o.observer == ProfileObserver::FreshAgent)
+            .context("agent summary")?;
+        ensure!(
+            summary.intervention_details.join(" ").contains("unmet public instruction"),
+            "{field} must expose unmet public instruction"
+        );
+    }
+
+    for (seconds, synthetic) in [(30, true), (0, true), (3599, false), (3600, false)] {
+        let mut facts = FirstHourFacts::unobserved();
+        facts.human.observed_60min_seconds = seconds;
+        facts.human.synthetic_mechanism_only = synthetic;
+        facts.agent.observed_60min_seconds = seconds;
+        facts.agent.synthetic_mechanism_only = synthetic;
+        let index = index_first_hour(&packet, &requirements, &facts)?;
+        for window in index.windows.iter().filter(|w| w.window == WINDOW_FIRST_60) {
+            ensure!(
+                window.status == Status::NotProven && !window.missing.is_empty(),
+                "{seconds}s synthetic={synthetic} filled 60-minute observation"
+            );
+        }
+        ensure!(
+            index.installed_qualification == InstalledQualification::NotProven,
+            "elapsed seconds must never qualify installed execution"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn first_hour_wrapper_interventions_require_details_without_assistance_flags() -> Result<()> {
+    let (packet, requirements) = fixture();
+    index_first_hour(&packet, &requirements, &FirstHourFacts::unobserved())?;
+    for observer in [ProfileObserver::NewHuman, ProfileObserver::FreshAgent] {
+        let detail = format!("{observer:?}: public instruction did not explain the recovery step");
+        for case in ["missing", "blank", "mixed_blank", "zero_count", "recorded"] {
+            let mut facts = FirstHourFacts::unobserved();
+            let fact = match observer {
+                ProfileObserver::NewHuman => &mut facts.human,
+                ProfileObserver::FreshAgent => &mut facts.agent,
+            };
+            fact.recorded_interventions = match case {
+                "zero_count" => 0,
+                "recorded" => 2,
+                _ => 1,
+            };
+            fact.intervention_details = match case {
+                "missing" => Vec::new(),
+                "blank" => vec![" \t".into()],
+                "mixed_blank" => vec![detail.clone(), " \t".into()],
+                _ => vec![detail.clone()],
+            };
+            let result = index_first_hour(&packet, &requirements, &facts);
+            if case != "recorded" {
+                let error = result.err().context(format!(
+                    "{observer:?} {case} intervention explanation was accepted"
+                ))?;
+                ensure!(error.to_string().contains("intervention"), "unexpected failure: {error}");
+                continue;
+            }
+            let index = result?;
+            let summary =
+                index.observers.iter().find(|s| s.observer == observer).context("observer")?;
+            ensure!(
+                summary.recorded_interventions == 2
+                    && summary.intervention_details == [detail.clone()]
+            );
+            ensure!(
+                !summary.checkout_inspection
+                    && !summary.private_rescue
+                    && !summary.hidden_assistance
+            );
+            let windows: Vec<_> = index.windows.iter().filter(|w| w.observer == observer).collect();
+            ensure!(windows.len() == 3, "observer window omitted");
+            for window in windows {
+                let reason = window.reason.as_deref().context("window reason")?;
+                ensure!(
+                    reason.contains("interventions recorded (2)") && reason.contains(&detail),
+                    "recorded intervention omitted from {observer:?} {} reason",
+                    window.window
+                );
+                ensure!(window.status == Status::NotProven, "intervention promoted observation");
+            }
+            ensure!(
+                index
+                    .windows
+                    .iter()
+                    .filter(|w| w.observer != observer)
+                    .all(|w| !w.reason.as_deref().is_some_and(|r| r.contains(&detail))),
+                "intervention details crossed observers"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn first_hour_wrapper_safe_refusal_and_deterministic_order() -> Result<()> {
+    let (base, requirements) = fixture();
+    let mut packet = base.clone();
+    let target = row(&mut packet)?
+        .cells
+        .iter_mut()
+        .find(|c| c.id == "safe_rename_or_refusal")
+        .context("refusal cell")?;
+    target.proposition = Proposition::SafeRefusal;
+    target.reason = Some("synthetic accepted-claim obligation".into());
+    let index = index_first_hour(&packet, &requirements, &FirstHourFacts::unobserved())?;
+    ensure!(
+        index.bundle_recommendation == Recommendation::Ready,
+        "safe refusal must not become failure"
+    );
+    ensure!(
+        index
+            .canonical_report
+            .evidence_requirements
+            .iter()
+            .any(|e| e.owner_id == "safe_rename_or_refusal"
+                && e.category == AdapterCategory::AcceptedClaim),
+        "accepted-claim refusal obligation lost"
+    );
+    let refusal_windows: Vec<_> =
+        index.windows.iter().filter(|w| w.window == WINDOW_FIRST_15).collect();
+    ensure!(!refusal_windows.is_empty(), "15-minute window missing");
+    for window in refusal_windows {
+        ensure!(
+            window.evidence.iter().any(|o| o.owner_id == "safe_rename_or_refusal"
+                && o.category == AdapterCategory::AcceptedClaim),
+            "accepted-claim refusal selector lost"
+        );
+    }
+
+    let original = serde_json::to_value(index_first_hour(
+        &base,
+        &requirements,
+        &FirstHourFacts::unobserved(),
+    )?)?;
+    let mut reordered = base.clone();
+    reordered.rows.reverse();
+    reordered.artifacts.reverse();
+    reordered.mechanisms.reverse();
+    reordered.preparation.reverse();
+    for row in &mut reordered.rows {
+        row.cells.reverse();
+    }
+    let reordered_index = serde_json::to_value(index_first_hour(
+        &reordered,
+        &requirements,
+        &FirstHourFacts::unobserved(),
+    )?)?;
+    ensure!(original == reordered_index, "wrapper output depends on input ordering");
+    Ok(())
+}
+
+#[test]
+fn first_hour_wrapper_mechanism_consistency_not_runtime_acceptance() -> Result<()> {
+    let (base, requirements) = fixture();
+    let mut packet = base.clone();
+    let mechanism = packet.mechanisms.first_mut().context("mechanism")?;
+    mechanism.status = Status::Limited;
+    mechanism.reason = Some("synthetic mechanism limitation".into());
+    wrapper_rejected(&packet, &requirements, &FirstHourFacts::unobserved())?;
+    packet.freeze_recommendation = Recommendation::NotProven;
+    let index = index_first_hour(&packet, &requirements, &FirstHourFacts::unobserved())?;
+    ensure!(
+        index.bundle_recommendation == Recommendation::NotProven
+            && index.canonical_report.bundle_recommendation == Recommendation::NotProven,
+        "mechanism limitation must project as NotProven"
+    );
+    ensure!(
+        index.windows.iter().all(|w| w.status == Status::NotProven)
+            && index.installed_qualification == InstalledQualification::NotProven,
+        "mechanism consistency is not runtime acceptance"
+    );
     Ok(())
 }
