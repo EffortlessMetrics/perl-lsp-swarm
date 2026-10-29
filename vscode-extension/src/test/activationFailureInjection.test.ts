@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientCtor = jest.fn(() => ({
   initializeResult: { capabilities: {} },
@@ -281,7 +282,7 @@ function makeExtensionRoot(): string {
     extensionRoot,
     process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
   );
-  fs.writeFileSync(serverPath, '');
+  writeFakeTool(serverPath);
   mockConfig(serverPath);
   return extensionRoot;
 }

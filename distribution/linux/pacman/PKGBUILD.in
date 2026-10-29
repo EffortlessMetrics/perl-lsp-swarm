@@ -6,7 +6,7 @@ arch=('__PACMAN_ARCH__')
 url='__PACKAGE_HOMEPAGE__'
 license=('__PACKAGE_LICENSE__')
 depends=('glibc')
-source=("__SOURCE_TARBALL__")
+source=("__DOWNLOAD_URL__")
 sha256sums=('__DOWNLOAD_SHA256__')
 
 package() {

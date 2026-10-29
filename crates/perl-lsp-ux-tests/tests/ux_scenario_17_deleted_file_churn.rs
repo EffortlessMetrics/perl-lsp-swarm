@@ -56,9 +56,10 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() -> Result<()
     harness
         .open_file("main.pl", SCRIPT_SOURCE)
         .map_err(|error| format!("didOpen should succeed: {error}"))?;
+    let ready = harness.wait_for_index_ready(Duration::from_secs(20));
     assert!(
-        harness.wait_for_index_ready(Duration::from_secs(20)),
-        "Expected workspace index to become ready before querying ModuleGone"
+        ready.is_ok(),
+        "Expected workspace index to become ready before querying ModuleGone: {ready:?}"
     );
 
     let cursor = harness.position_cursor("main.pl", 5, 25);

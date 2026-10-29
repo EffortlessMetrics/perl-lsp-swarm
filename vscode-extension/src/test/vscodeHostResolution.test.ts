@@ -53,6 +53,47 @@ describe('VS Code host resolution receipts', () => {
     expect(classifyHostResolutionError(new Error('unexpected resolver abort'))).toBe('runner');
   });
 
+  test('classifies temporary DNS failures from codes and wrapped messages as network blocks', () => {
+    expect(
+      classifyHostResolutionError(
+        Object.assign(new Error('host lookup failed'), { code: 'EAI_AGAIN' }),
+      ),
+    ).toBe('network');
+    expect(
+      classifyHostResolutionError(new Error('getaddrinfo EAI_AGAIN update.code.visualstudio.com')),
+    ).toBe('network');
+  });
+
+  test('persists temporary DNS rejection as blocked network without changing host or error', async () => {
+    const root = tempReceiptRoot();
+    const error = Object.assign(new Error('getaddrinfo EAI_AGAIN update.code.visualstudio.com'), {
+      code: 'EAI_AGAIN',
+    });
+    const resolver = jest.fn(async () => {
+      throw error;
+    });
+    try {
+      await expect(downloadVsCodeHostOrWriteFailureReceipt(root, '1.125.0', resolver)).rejects.toBe(
+        error,
+      );
+      expect(resolver).toHaveBeenCalledTimes(1);
+      expect(resolver).toHaveBeenCalledWith({ version: '1.125.0' });
+      expect(
+        JSON.parse(fs.readFileSync(path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT_NAME), 'utf8')),
+      ).toMatchObject({
+        outcome: 'blocked',
+        stage: 'vscode_host_resolution',
+        requested_version: '1.125.0',
+        platform: process.platform,
+        arch: process.arch,
+        disposition: 'network',
+        error: error.message,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('treats HTTP 404 and Invalid version catalog misses as unavailable, not network', () => {
     expect(
       classifyHostResolutionError(

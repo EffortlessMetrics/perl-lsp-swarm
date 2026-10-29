@@ -33,7 +33,13 @@ verify-reachability or verify-duplicate prompt. If the second pass disagrees,
 escalate to sonnet reviewer — do not resolve the disagreement at haiku tier.
 
 **Output:** `target/reconciliation/wave-N-classifications.json` — one ledger row per PR.
-Schema: [pr-ledger.schema.json](pr-ledger.schema.json).
+Schema: `pr-triage.v1` — the row type `cargo xtask pr-ledger generate` emits. Boundary: the
+wave worklist lives under `target/` and is never committed, so the batch validator
+`cargo xtask agent ledgers validate` (contract: `xtask/src/tasks/agent_ledgers.rs`) only
+globs the committed `docs/agents/ledgers/*.jsonl`; each generated row is machine-checked
+at the `pr-ledger generate` row-emission seam instead. The competing
+`docs/agents/pr-ledger.schema.json` was retired (#15557); its structured
+`close_proof` contract now lives in that validator and CLOSE_PROOF_POLICY.md.
 
 ---
 
@@ -69,12 +75,13 @@ divergence from parallel development.
 | # | Phase | Model | Output artifact |
 |---|-------|-------|-----------------|
 | 1 | Diff source vs swarm main | haiku | `target/reconciliation/source-diff-summary.md` |
-| 2 | Classify each divergence | haiku (Template 1) | Ledger rows with `sync_direction` |
+| 2 | Classify each divergence | haiku (Template 1) | Ledger rows with sync direction in `evidence` |
 | 3 | Port swarm->source candidates | builder (sonnet) | Port PRs opened against source repo |
 | 4 | Port source->swarm candidates | builder (sonnet) | Port PRs opened against swarm repo |
 | 5 | Verify convergence | haiku (verify-reachability) | Confirmation that synced commits are in ancestry |
 
-**sync_direction values (from pr-ledger schema):**
+**Sync direction — pr-triage rows carry it in `evidence` (e.g. `sync:swarm->source`);
+the retired schema's dedicated `sync_direction` field no longer exists (#15557):**
 - `swarm->source`: swarm has a fix the source needs.
 - `source->swarm`: source has a fix the swarm needs.
 - `none`: divergence is intentional or cosmetic.

@@ -3,7 +3,7 @@
 ## Crate Overview
 
 - **Tier**: 6 (composition crate — pure language-processing; no LSP provider dependencies)
-- **Version**: workspace (currently 0.12.3)
+- **Version**: tracks the workspace version.
 - **Purpose**: Central hub crate that aggregates and re-exports the core parser, semantic analyzer, workspace indexer, and refactoring engine into a single public API surface. Also provides the `perl-parse` CLI binary.
 
 ## Commands
@@ -97,5 +97,7 @@ let model = analyzer.analyze(&ast);
 - This crate is a **composition layer**; almost all logic lives in the upstream microcrates. Edits to parser behaviour belong in `perl-parser-core`, semantic logic in `perl-semantic-analyzer`, etc.
 - `#![deny(unsafe_code)]` and `#![warn(missing_docs)]` are enforced.
 - The LSP server runtime lives in `perl-lsp`; LSP provider implementations live in `perl-lsp-*` crates. This crate is a pure language-processing composition layer with no LSP provider dependencies.
-- `doctest = false` in `[lib]` — doc examples are validated through dedicated test files, not rustdoc.
+- `doctest = false` in `[lib]` — doc examples are validated through dedicated test files, not rustdoc. Two consequences worth knowing before writing a doc example here:
+  - That field is **not** an exclusion from an explicit `cargo test --doc`. Measured on the pinned toolchain, it only removes doctests from the default `cargo test` target selection; `cargo test -p perl-parser --doc` still collects them. What actually keeps this crate's doctests unrun is that no gate names it on the `doctest_contract_proof` route.
+  - A negative type-level contract therefore must **not** be written as a `compile_fail` doctest in this crate; it would be enforced by nothing. Put it in an integration test the gates already build, using `static_assertions::assert_not_impl_any!`. `tests/incremental_state_read_only_authority.rs` is the worked example, and `doctest_enforcement` fails CI if a `compile_fail` fence appears here anyway.
 - WASM target excludes `walkdir`, `dead_code_detector`, `workspace_refactor`, and `error_classifier`.

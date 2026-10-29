@@ -13,7 +13,7 @@
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
-use perl_pragma::PragmaTracker;
+use perl_pragma::{PragmaState, PragmaTracker};
 
 use super::super::internal_types::{Diagnostic, RelatedInformation};
 use super::super::walker::walk_node;
@@ -149,7 +149,29 @@ fn is_version_literal(arg: &str) -> bool {
 /// This function checks if 'use strict' and 'use warnings' pragmas are present
 /// in the code and generates warning diagnostics if they are missing.
 /// It also detects misspelled pragma names and provides "Did you mean?" suggestions.
+/// Public entry point: derives the pragma timeline from `node` itself, so a
+/// caller cannot pair this tree with another tree's pragma state.
+///
+/// Production diagnostics use [`check_strict_warnings_with_pragma_map`]
+/// instead, having already validated that the generation-owned analysis
+/// describes this exact tree (#7286).
 pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    check_strict_warnings_with_pragma_map(node, &PragmaTracker::build(node), diagnostics);
+}
+
+/// Crate-internal variant taking a caller-supplied pragma timeline.
+///
+/// Deliberately not public: nothing in the signature can prove `pragma_map`
+/// was derived from `node`, so the only callers permitted are those that have
+/// already established that binding. The sole such caller is
+/// `DiagnosticsProvider`, which reaches this only after
+/// `DocumentDiagnosticAnalysis::matches` has bound the analysis to this exact
+/// tree and source.
+pub(crate) fn check_strict_warnings_with_pragma_map(
+    node: &Node,
+    pragma_map: &[(std::ops::Range<usize>, PragmaState)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     // Do not suggest strict/warnings for empty, whitespace-only, comment-only,
     // or shebang-only files — the file has no executable content yet.
     if let NodeKind::Program { statements } = &node.kind
@@ -158,11 +180,10 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         return;
     }
 
-    let pragma_map = PragmaTracker::build(node);
     // Query the top-level pragma state (after all scoped blocks have exited).
     // This avoids the false-negative from .any() which sees eval-interior ranges.
     // signatures_strict is included to honour `use feature 'signatures'` (#4038).
-    let top_level_state = PragmaTracker::final_state(&pragma_map);
+    let top_level_state = PragmaTracker::final_state(pragma_map);
     let mut has_strict = top_level_state.strict_vars
         || top_level_state.strict_subs
         || top_level_state.strict_refs

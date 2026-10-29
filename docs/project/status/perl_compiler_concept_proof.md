@@ -11,8 +11,8 @@ Initial proof-obligation matrix for every concept row in the #6657 seed; not com
 - Concept schema: `perl_compiler_concepts.v1`
 - Proof policy schema: `perl_compiler_proof_policy.v1`
 - Complete: `false`
-- Concept obligations: `28`
-- Proof cells: `308`
+- Concept obligations: `31`
+- Proof cells: `341`
 
 **Claim boundary:** A required_missing row is an explicit gap, not evidence. Deferred and not_observable are separate from satisfied. Each row's composition_dimensions are author-declared and validated only against the proof policy vocabulary; they are not yet derived from the campaigns covering the concept's family (#10214).
 
@@ -20,27 +20,27 @@ Initial proof-obligation matrix for every concept row in the #6657 seed; not com
 
 | Status | Count |
 | --- | ---: |
-| `required_missing` | 252 |
+| `required_missing` | 279 |
 | `satisfied` | 0 |
-| `deferred` | 28 |
+| `deferred` | 31 |
 | `not_observable` | 1 |
-| `not_applicable` | 27 |
+| `not_applicable` | 30 |
 
 ## Proof-class counts
 
 | Proof class | Required missing | Satisfied | Deferred | Not observable | Not applicable | Total |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `positive_gold` | 28 | 0 | 0 | 0 | 0 | 28 |
-| `negative_gold` | 28 | 0 | 0 | 0 | 0 | 28 |
-| `boundary_gold` | 28 | 0 | 0 | 0 | 0 | 28 |
-| `recovery_gold` | 27 | 0 | 0 | 0 | 1 | 28 |
-| `hir_snapshot` | 28 | 0 | 0 | 0 | 0 | 28 |
-| `pir_snapshot` | 25 | 0 | 0 | 0 | 3 | 28 |
-| `verifier_mutation` | 25 | 0 | 0 | 0 | 3 | 28 |
-| `effects_world_fixture` | 8 | 0 | 0 | 0 | 20 | 28 |
-| `eir_differential` | 0 | 0 | 28 | 0 | 0 | 28 |
-| `real_perl_oracle` | 27 | 0 | 0 | 1 | 0 | 28 |
-| `composition_coverage` | 28 | 0 | 0 | 0 | 0 | 28 |
+| `positive_gold` | 31 | 0 | 0 | 0 | 0 | 31 |
+| `negative_gold` | 31 | 0 | 0 | 0 | 0 | 31 |
+| `boundary_gold` | 31 | 0 | 0 | 0 | 0 | 31 |
+| `recovery_gold` | 30 | 0 | 0 | 0 | 1 | 31 |
+| `hir_snapshot` | 31 | 0 | 0 | 0 | 0 | 31 |
+| `pir_snapshot` | 28 | 0 | 0 | 0 | 3 | 31 |
+| `verifier_mutation` | 28 | 0 | 0 | 0 | 3 | 31 |
+| `effects_world_fixture` | 8 | 0 | 0 | 0 | 23 | 31 |
+| `eir_differential` | 0 | 0 | 31 | 0 | 0 | 31 |
+| `real_perl_oracle` | 30 | 0 | 0 | 1 | 0 | 31 |
+| `composition_coverage` | 31 | 0 | 0 | 0 | 0 | 31 |
 
 ## Concept obligations
 
@@ -73,6 +73,9 @@ Initial proof-obligation matrix for every concept row in the #6657 seed; not com
 | `regex.transliteration` | #4848 | `access_mode`, `dynamic_boundary`, `evaluation_order`, `hidden_effect`, `implicit_topic`, `match_state` | 9 | 1 | 0 | 1 | 0 | #4848, #6689 |
 | `source.data_section` | #6675 | `incremental_edit`, `io_capability`, `package_scope`, `recovery_state`, `source_region` | 8 | 1 | 0 | 2 | 0 | #6675, #6689 |
 | `source.ellipsis` | #6675 | `control_flow`, `exception_flow`, `feature_state`, `perl_version`, `recovery_state` | 9 | 1 | 0 | 1 | 0 | #6675, #6689 |
+| `values.noninterpolating_string` | #6658 | `evaluation_demand`, `recovery_state`, `value_context`, `value_shape` | 9 | 1 | 0 | 1 | 0 | #17538, #6658, #6689 |
+| `values.plain_decimal` | #6658 | `evaluation_demand`, `recovery_state`, `value_context`, `value_shape` | 9 | 1 | 0 | 1 | 0 | #17538, #6658, #6689 |
+| `values.undef` | #6658 | `evaluation_demand`, `recovery_state`, `value_context`, `value_shape` | 9 | 1 | 0 | 1 | 0 | #17538, #6658, #6689 |
 | `values.v_string` | #6658 | `feature_state`, `perl_version`, `recovery_state`, `value_context`, `value_shape` | 9 | 1 | 0 | 1 | 0 | #6658, #6689 |
 
 ## Missing proof by concept
@@ -104,6 +107,9 @@ Initial proof-obligation matrix for every concept row in the #6657 seed; not com
 - **`regex.transliteration` (#4848):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
 - **`source.data_section` (#6675):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `effects_world_fixture`, `real_perl_oracle`, `composition_coverage`
 - **`source.ellipsis` (#6675):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
+- **`values.noninterpolating_string` (#6658):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
+- **`values.plain_decimal` (#6658):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
+- **`values.undef` (#6658):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
 - **`values.v_string` (#6658):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
 
 ## Evidence index
@@ -143,4 +149,7 @@ Initial proof-obligation matrix for every concept row in the #6657 seed; not com
 | `regex.transliteration` |  |
 | `source.data_section` |  |
 | `source.ellipsis` |  |
+| `values.noninterpolating_string` |  |
+| `values.plain_decimal` |  |
+| `values.undef` |  |
 | `values.v_string` |  |

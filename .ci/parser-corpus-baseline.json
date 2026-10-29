@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.3.0",
+  "schema_version": 1,
   "commit": "f201b498c",
   "timestamp": "2026-05-18T20:28:21.038313964+00:00",
   "corpus_profile": "system",

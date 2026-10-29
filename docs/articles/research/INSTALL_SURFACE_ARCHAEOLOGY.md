@@ -17,10 +17,10 @@ All claims below were checked against tracked repo files on `2026-03-19`.
 
 The repository exposed multiple installation paths in parallel:
 
-- release archive installers via [`install.sh`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/install.sh) and [`install.ps1`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/install.ps1)
-- manual/editor-facing setup via [`docs/how-to/INSTALLATION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/how-to/INSTALLATION.md)
-- editor-specific deep dives via [`docs/how-to/EDITOR_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/how-to/EDITOR_SETUP.md), [`docs/EDITORS/NEOVIM_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/EDITORS/NEOVIM_SETUP.md), and [`docs/EDITORS/HELIX_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/EDITORS/HELIX_SETUP.md)
-- VS Code managed-binary discovery in [`vscode-extension/src/extension.ts`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/vscode-extension/src/extension.ts) and [`vscode-extension/src/downloader.ts`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/vscode-extension/src/downloader.ts)
+- release archive installers via [`install.sh`](../../../install.sh) and [`install.ps1`](../../../install.ps1)
+- manual/editor-facing setup via [`docs/how-to/INSTALLATION.md`](../../how-to/INSTALLATION.md)
+- editor-specific deep dives via [`docs/how-to/EDITOR_SETUP.md`](../../how-to/EDITOR_SETUP.md), [`docs/EDITORS/NEOVIM_SETUP.md`](../../EDITORS/NEOVIM_SETUP.md), and [`docs/EDITORS/HELIX_SETUP.md`](../../EDITORS/HELIX_SETUP.md)
+- VS Code managed-binary discovery in [`vscode-extension/src/extension.ts`](../../../vscode-extension/src/extension.ts) and [`vscode-extension/src/downloader.ts`](../../../vscode-extension/src/downloader.ts)
 
 That matters because the launch surface is not just `cargo install`. It is a
 stack:
@@ -34,7 +34,7 @@ stack:
 
 ## 2. CLI Verification Was Already A First-Class Contract
 
-The CLI contract in [`crates/perl-lsp-launcher/src/lib.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp-launcher/src/lib.rs)
+The CLI contract in [`crates/perl-lsp-launcher/src/lib.rs`](../../../crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs)
 already treats install verification as part of the product surface:
 
 - `--health` prints `ok <version>`
@@ -42,7 +42,7 @@ already treats install verification as part of the product surface:
 - `--version` prints version and git tag
 - `--feature-profile` exposes the runtime capability profile directly in the CLI
 
-The user-facing docs mirror that. [`docs/how-to/INSTALLATION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/how-to/INSTALLATION.md)
+The user-facing docs mirror that. [`docs/how-to/INSTALLATION.md`](../../how-to/INSTALLATION.md)
 explicitly tells users to run:
 
 - `perllsp --health`
@@ -62,9 +62,9 @@ That is historically useful because it shows install trust moving away from
 
 The runtime path is also revealing.
 
-[`crates/perl-lsp-rs/src/main.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp-rs/src/main.rs)
+[`crates/perl-lsp-rs/src/main.rs`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/82715c4b9a3c079bfa9354b39fb2fd1470b0535e/crates/perl-lsp-rs/src/main.rs)
 uses the launcher crate to decide between `--health`, `--info`, `--check`,
-and server startup. [`crates/perl-lsp-launcher/src/lib.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp-launcher/src/lib.rs)
+and server startup. [`crates/perl-lsp-launcher/src/lib.rs`](../../../crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs)
 shows that normal server startup only emits explicit startup logs when logging
 is enabled.
 
@@ -81,7 +81,7 @@ health checks instead of relying on visible startup chatter.
 
 ## 4. VS Code Discovery Order Encoded A Trust Policy
 
-[`vscode-extension/src/extension.ts`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/vscode-extension/src/extension.ts)
+[`vscode-extension/src/extension.ts`](../../../vscode-extension/src/extension.ts)
 implements a four-step discovery order:
 
 1. user-configured `perl-lsp.serverPath`
@@ -110,8 +110,8 @@ separate concerns.
 The installer scripts and extension downloader also show that the repo was
 trying to make installation auditable rather than purely convenient.
 
-[`install.sh`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/install.sh)
-and [`install.ps1`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/install.ps1)
+[`install.sh`](../../../install.sh)
+and [`install.ps1`](../../../install.ps1)
 both:
 
 - resolve a release tag
@@ -122,7 +122,7 @@ both:
 - verify the install via `--version`
 
 The VS Code downloader in
-[`vscode-extension/src/downloader.ts`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/vscode-extension/src/downloader.ts)
+[`vscode-extension/src/downloader.ts`](../../../vscode-extension/src/downloader.ts)
 extends the same pattern with managed release discovery, optional internal
 download base URLs, checksum verification, and HTTPS-only protections for
 remote downloads.
@@ -153,13 +153,13 @@ same public-facing trust boundary as CI gates and receipts.
 
 ## Evidence Pointers
 
-- [`install.sh`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/install.sh)
-- [`install.ps1`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/install.ps1)
-- [`docs/how-to/INSTALLATION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/how-to/INSTALLATION.md)
-- [`docs/how-to/EDITOR_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/how-to/EDITOR_SETUP.md)
-- [`docs/EDITORS/NEOVIM_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/EDITORS/NEOVIM_SETUP.md)
-- [`docs/EDITORS/HELIX_SETUP.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/EDITORS/HELIX_SETUP.md)
-- [`crates/perl-lsp-launcher/src/lib.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp-launcher/src/lib.rs)
-- [`crates/perl-lsp-rs/src/main.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/crates/perl-lsp-rs/src/main.rs)
-- [`vscode-extension/src/extension.ts`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/vscode-extension/src/extension.ts)
-- [`vscode-extension/src/downloader.ts`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/vscode-extension/src/downloader.ts)
+- [`install.sh`](../../../install.sh)
+- [`install.ps1`](../../../install.ps1)
+- [`docs/how-to/INSTALLATION.md`](../../how-to/INSTALLATION.md)
+- [`docs/how-to/EDITOR_SETUP.md`](../../how-to/EDITOR_SETUP.md)
+- [`docs/EDITORS/NEOVIM_SETUP.md`](../../EDITORS/NEOVIM_SETUP.md)
+- [`docs/EDITORS/HELIX_SETUP.md`](../../EDITORS/HELIX_SETUP.md)
+- [`crates/perl-lsp-launcher/src/lib.rs`](../../../crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs)
+- [`crates/perl-lsp-rs/src/main.rs`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/82715c4b9a3c079bfa9354b39fb2fd1470b0535e/crates/perl-lsp-rs/src/main.rs)
+- [`vscode-extension/src/extension.ts`](../../../vscode-extension/src/extension.ts)
+- [`vscode-extension/src/downloader.ts`](../../../vscode-extension/src/downloader.ts)

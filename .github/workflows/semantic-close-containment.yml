@@ -18,8 +18,14 @@
 #
 # Exit contract: 0 = pass (containment level only), 2 = high-confidence
 # contradiction (the check fails with the suggested non-terminal relation),
-# 3 = NOT_PROVEN/instrument failure (the check fails; it never passes on
-# missing or broken evidence).
+# 3 = NOT_PROVEN (a terminal relation was checked against its issue subject
+# and could not be proven — a verdict about the pull request), 4 = instrument
+# failure (the validator could not evaluate the pull request at all, or could
+# not publish what it evaluated — NOT a finding against the pull request).
+# The check fails on 2, 3 and 4 alike; it never passes on missing or broken
+# evidence. 3 and 4 were one code until #16214, which is why they are spelled
+# out here: a reader outside the web UI sees only the number, and the job
+# summary carrying the detail is not served by the REST API.
 #
 # Trigger note: `pull_request_target` lets the base-owned workflow execute the
 # validator after the workflow is present on the base.
@@ -115,7 +121,7 @@ jobs:
           fi
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -124,9 +130,9 @@ jobs:
 
       - name: Replay immutable CP00 fixtures (instrument self-test)
         # Expected-contradiction fixtures legitimately exit 2; anything else
-        # non-zero (3 = NOT_PROVEN/instrument failure, crashes, expectation
-        # mismatches surfaced as 3) fails this step, so broken evidence can
-        # never masquerade as a pass.
+        # non-zero (3 = NOT_PROVEN verdict, 4 = instrument failure, crashes,
+        # expectation mismatches) fails this step, so broken evidence can never
+        # masquerade as a pass. 3 and 4 were the same code until #16214.
         run: |
           set -u
           bin="target/debug/semantic-close-containment"
@@ -151,14 +157,76 @@ jobs:
             exit 1
           fi
 
+          # #16214: the contract that a validator which cannot do its job exits
+          # differently from one that reached a verdict is only worth anything
+          # if it holds for the real binary. No fixture reaches exit 3 or 4 --
+          # every one lands on 0 or 2, which the replay above re-measures on
+          # each run -- so this is the only place the instrument failure path
+          # is exercised end to end.
+          rc=0
+          env -u GITHUB_EVENT_PATH "$bin" >/dev/null 2>"${RUNNER_TEMP:-/tmp}/scc-selftest-stderr.txt" || rc=$?
+          if [ "${rc}" -ne 4 ]; then
+            printf '::error::a validator that cannot evaluate anything must exit 4, got %s\n' "${rc}"
+            exit 1
+          fi
+          if ! grep -q '^INSTRUMENT_FAILURE ' "${RUNNER_TEMP:-/tmp}/scc-selftest-stderr.txt"; then
+            echo "::error::an instrument failure must name itself on stderr"
+            exit 1
+          fi
+          echo "Instrument-failure path exits 4 and names itself."
+
       - name: Evaluate terminal relations (untrusted PR text stays data)
         if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
-        # pipefail keeps the validator's exit contract (0/2/3) authoritative
-        # while the same report — including the #15640 snapshot receipt
-        # (updated_at, live head SHA, title/body digest) — lands in the job
-        # summary as evidence of what this run actually evaluated.
+        # The report — including the #15640 snapshot receipt (updated_at, live
+        # head SHA, title/body digest) — still lands in the job summary as
+        # evidence of what this run actually evaluated. What is new (#16214) is
+        # that the exit code is classified into an annotation: the job summary
+        # is not served by the REST API, so a reader outside the web UI used to
+        # see only "Process completed with exit code 3" and could not tell a
+        # verdict about the pull request from a failure of the validator.
         run: |
           set -uo pipefail
-          target/debug/semantic-close-containment | tee "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          report="${RUNNER_TEMP:-/tmp}/scc-report.txt"
+          errors="${RUNNER_TEMP:-/tmp}/scc-stderr.txt"
+          rc=0
+          target/debug/semantic-close-containment >"${report}" 2>"${errors}" || rc=$?
+          # The report is the evidence this step claims to publish, so a
+          # failed write is a failure of the step, not a detail. On main the
+          # validator was piped straight into `tee` under `pipefail`, which
+          # failed the step on a write error; splitting the run into
+          # capture-then-classify (#16214) put the validator's status in `rc`
+          # and left `tee` unchecked. Missing evidence is NOT_PROVEN, so guard
+          # it explicitly rather than relying on the pipeline shape.
+          if ! tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" <"${report}"; then
+            printf '::error title=semantic close containment instrument failure::the report could not be published to the job summary -- the verdict below has no evidence behind it\n'
+            cat "${errors}" >&2
+            exit 4
+          fi
+          cat "${errors}" >&2
+
+          # Message data escaping per GitHub's workflow-command rules. The
+          # validator already replaces every control character in its output,
+          # so this guards the percent only, and guards it in the one place
+          # runner text reaches a command.
+          first_error="$(head -n 1 "${errors}" | tr -d '\r' | sed 's/%/%25/g')"
+
+          case "${rc}" in
+            0)
+              echo "semantic close containment: no contradiction found"
+              ;;
+            2)
+              printf '::error title=semantic close containment::a terminal relation contradicts its issue subject (exit 2) -- a finding against this pull request\n'
+              ;;
+            3)
+              printf '::error title=semantic close containment::a terminal relation could not be proven (exit 3) -- a verdict about this pull request, see the job summary for the relation and reason\n'
+              ;;
+            4)
+              printf '::error title=semantic close containment instrument failure::the validator could not evaluate this pull request (exit 4) -- NOT a finding against it: %s\n' "${first_error:-no detail on stderr}"
+              ;;
+            *)
+              printf '::error title=semantic close containment crashed::unclassified exit %s -- outside the documented 0/2/3/4 contract: %s\n' "${rc}" "${first_error:-no detail on stderr}"
+              ;;
+          esac
+          exit "${rc}"

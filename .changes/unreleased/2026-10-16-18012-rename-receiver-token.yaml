@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Workspace method rename preserves a same-named scalar receiver and its arguments, including Unicode names, instead of editing the receiver in place of the method."
+time: 2026-10-16T07:43:15Z
+custom:
+  PR: "18012"
+  Slug: rename-receiver-token-17448
+  Breaking: "no"

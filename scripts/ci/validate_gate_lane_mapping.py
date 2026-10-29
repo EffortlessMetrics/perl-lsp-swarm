@@ -106,9 +106,20 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # workflows (#14628). Lives in the policy shard so deleting one of those
     # path-filtered workflows cannot silently stop enforcement.
     "docs_agents_contract_workflows": {"lanes": ["merge_gate_shards"]},
+    # #13774: the doctest route executes the workspace's compile_fail contracts
+    # in the required policy shard, and the ratchet keeps the route's package
+    # list a floor. Both ride the same shard, so both share its economics.
+    "doctest_contract_proof": {"lanes": ["merge_gate_shards"]},
+    "doctest_enforcement": {"lanes": ["merge_gate_shards"]},
     # The agent-ledger validator (#15380) runs in the required merge-gate
     # policy shard, so it shares that shard's economics.
     "agent_ledgers_validate": {"lanes": ["merge_gate_shards"]},
+    # The production-unsafe SAFETY-reasoning ratchet (#16215) runs in the
+    # required merge-gate policy shard, so it shares that shard's economics.
+    "unsafe_prod_check": {"lanes": ["merge_gate_shards"]},
+    # The code-action generation ledger ratchet runs in the required merge-gate
+    # policy shard (#15764), so its economics live on this lane.
+    "code_action_generation_ledger": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
@@ -127,6 +138,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "nested_lock_check": {"lanes": ["pr_smoke"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
+    "completion_candidate_ledger": {"lanes": ["merge_gate_shards"]},
     "lint_policy": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},

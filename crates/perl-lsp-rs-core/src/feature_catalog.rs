@@ -993,14 +993,33 @@ mod tests {
             .ancestors()
             .nth(2)
             .ok_or("cannot resolve workspace root from CARGO_MANIFEST_DIR")?;
-        let catalog_files = [
-            "crates/perl-lsp-rs/features_sot.toml",
-            "crates/perl-lsp-rs-core/features_sot.toml",
-            "crates/perl-parser/features_sot.toml",
-            "crates/perl-dap/features_sot.toml",
-        ];
-        for relative in catalog_files {
-            let path = workspace_root.join(relative);
+        let crates_dir = workspace_root.join("crates");
+        let mut catalog_files = Vec::new();
+        for entry in fs::read_dir(&crates_dir).map_err(|e| format!("reading crates/: {e}"))? {
+            let entry = entry.map_err(|e| format!("reading crates/ entry: {e}"))?;
+            if !entry
+                .file_type()
+                .map_err(|e| format!("stat {}: {e}", entry.path().display()))?
+                .is_dir()
+            {
+                continue;
+            }
+            let candidate = entry.path().join("features_sot.toml");
+            if candidate.is_file() {
+                catalog_files.push(candidate);
+            }
+        }
+        catalog_files.sort();
+        assert!(
+            !catalog_files.is_empty(),
+            "workspace must retain crate-local features_sot.toml fallbacks (#9199)"
+        );
+        for path in catalog_files {
+            let relative = path
+                .strip_prefix(workspace_root)
+                .map_err(|_| format!("{} is not under the workspace root", path.display()))?
+                .display()
+                .to_string();
             let raw = fs::read_to_string(&path).map_err(|e| format!("reading {relative}: {e}"))?;
             assert!(
                 !raw.contains("compliance_percent"),

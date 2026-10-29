@@ -1152,6 +1152,8 @@ fn sexp_signature_parameters() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 Node::new(
                     NodeKind::OptionalParameter {
+                        default_operator: "=".into(),
+                        default_operator_span: Default::default(),
                         variable: Box::new(var_node("$", "y")),
                         default_value: Box::new(num_node("0")),
                     },

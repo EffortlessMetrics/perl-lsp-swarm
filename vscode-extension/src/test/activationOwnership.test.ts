@@ -493,19 +493,14 @@ describe('transactional production activation (#7854)', () => {
     }
   });
 
-  test('the registered file-creation listener actually populates a created file (#14547)', async () => {
-    // The rest of this suite proves the listener was *registered* and is
-    // disposed with the attempt. That leaves the callback itself unexercised:
-    // replacing the handler body with a no-op kept every other test in the
-    // extension suite green, so nothing connected activation to the
-    // boilerplate behaviour. This drives the registered callback end to end.
+  test('ordinary file creation does not insert boilerplate (#14451)', async () => {
     process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-activation-'));
 
     await activate(makeContext(extensionRoot));
 
     const registrations = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls;
-    expect(registrations.length).toBeGreaterThan(1);
+    expect(registrations).toHaveLength(1);
     const createdFileEvent = { files: [vscode.Uri.file('/ws/lib/Wired.pm')] };
     for (const registration of registrations) {
       const onDidCreateFiles = registration[0] as (
@@ -514,15 +509,7 @@ describe('transactional production activation (#7854)', () => {
       await onDidCreateFiles(createdFileEvent);
     }
 
-    const applyEdit = vscode.workspace.applyEdit as jest.Mock;
-    // The exact edit assertion below is also a negative control for replacing
-    // the boilerplate handler with a no-op: dispatching every listener must
-    // still produce exactly one boilerplate edit.
-    expect(applyEdit).toHaveBeenCalledTimes(1);
-    const edit = applyEdit.mock.calls[0]?.[0] as {
-      inserts: Array<{ uri: { fsPath: string }; newText: string }>;
-    };
-    expect(edit.inserts.map((insert) => insert.uri.fsPath)).toEqual(['/ws/lib/Wired.pm']);
-    expect(edit.inserts[0]?.newText).toContain('package Wired;');
+    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+    expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
   });
 });
