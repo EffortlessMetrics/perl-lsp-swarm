@@ -51,10 +51,7 @@ impl IssueContract {
     /// Parse a contract document. Structural validation is separate so that
     /// mis-typed documents and semantically invalid ones are distinguishable.
     pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
-        serde_json::from_str(json).map_err(|error| CloseProofError::Schema {
-            field: "issue_contract".to_string(),
-            message: error.to_string(),
-        })
+        super::wire::from_json_str(json, "issue_contract")
     }
 
     /// Deterministic serialization; a second generation produces no diff.
@@ -395,4 +392,239 @@ pub fn compute_denominator_digest(rows: &[DenominatorRow]) -> Result<String, Clo
 
 pub(crate) fn hex_digest(digest: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Additive, untrusted full identity material around an unchanged v1 contract.
+///
+/// Hash integrity is separate from authority. The caller must independently
+/// obtain current accepted sources; this envelope cannot authenticate itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContractIdentityEnvelope {
+    pub schema_version: String,
+    pub contract: IssueContract,
+    pub context: super::model::ContractIdentityContext,
+    pub full_contract_digest: String,
+}
+
+impl ContractIdentityEnvelope {
+    pub fn from_json_str(json: &str) -> Result<Self, CloseProofError> {
+        super::wire::from_json_str(json, "issue_contract_identity")
+    }
+
+    pub fn to_canonical_json(&self) -> Result<String, CloseProofError> {
+        canonical_json(&self.canonicalized())
+    }
+
+    /// Validate representation and hash integrity, never adoption or trust.
+    pub fn validate(&self) -> Result<(), CloseProofError> {
+        self.validate_material()?;
+        if !is_digest_hex(&self.full_contract_digest) {
+            return Err(CloseProofError::Digest {
+                message: "full_contract_digest is not 64 lowercase hex characters".to_string(),
+            });
+        }
+        if self.compute_full_contract_digest()? != self.full_contract_digest {
+            return Err(CloseProofError::Digest {
+                message: "full_contract_digest does not describe this envelope".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Compute declared identity; the result grants no authority.
+    ///
+    /// `issue_contract_identity.v1` hashes the canonical envelope with an empty
+    /// digest slot, prefixed by its schema identity and a NUL separator. The
+    /// legacy row denominator digest retains its existing meaning.
+    pub fn compute_full_contract_digest(&self) -> Result<String, CloseProofError> {
+        self.validate_material()?;
+        let mut material = self.canonicalized();
+        material.full_contract_digest.clear();
+        let encoded = canonical_json(&material)?;
+        let mut hasher = Sha256::new();
+        hasher.update(super::model::CONTRACT_IDENTITY_SCHEMA_V1.as_bytes());
+        hasher.update([0]);
+        hasher.update(encoded.as_bytes());
+        Ok(hex_digest(&hasher.finalize()))
+    }
+
+    fn validate_material(&self) -> Result<(), CloseProofError> {
+        use super::model::CONTRACT_IDENTITY_SCHEMA_V1;
+        use std::collections::BTreeSet;
+
+        if self.schema_version != CONTRACT_IDENTITY_SCHEMA_V1 {
+            return Err(CloseProofError::Schema {
+                field: "schema_version".to_string(),
+                message: format!("expected `{CONTRACT_IDENTITY_SCHEMA_V1}`"),
+            });
+        }
+        self.contract.validate()?;
+        validate_string_set(
+            "transfer_policy.conditions",
+            &self.contract.transfer_policy.conditions,
+        )?;
+        validate_string_set("domain_evidence_refs", &self.contract.domain_evidence_refs)?;
+        let context = &self.context;
+        validate_string_set("context.limitations", &context.limitations)?;
+        validate_string_set(
+            "context.permitted_transferred_rows",
+            &context.permitted_transferred_rows,
+        )?;
+        let rows = self.contract.row_ids();
+        for row in &context.permitted_transferred_rows {
+            if !rows.contains(&row.as_str()) {
+                return Err(CloseProofError::Coverage {
+                    message: format!("permitted transfer references unknown row `{row}`"),
+                });
+            }
+        }
+        if !self.contract.transfer_policy.permitted
+            && !context.permitted_transferred_rows.is_empty()
+        {
+            return Err(CloseProofError::Coverage {
+                message: "disabled transfer policy declares permitted rows".to_string(),
+            });
+        }
+        let expected: BTreeSet<_> = self.contract.mandatory_children.iter().collect();
+        let mut actual = BTreeSet::new();
+        for relation in &context.child_relations {
+            if !is_stable_token(&relation.relation_class) || relation.child.number == 0 {
+                return Err(CloseProofError::Schema {
+                    field: "context.child_relations".to_string(),
+                    message: "child relation requires a stable class and positive issue"
+                        .to_string(),
+                });
+            }
+            if !actual.insert(&relation.child) {
+                return Err(CloseProofError::Coverage {
+                    message: "duplicate child relation identity".to_string(),
+                });
+            }
+        }
+        if expected != actual {
+            return Err(CloseProofError::Coverage {
+                message: "child relation declarations must cover exactly the mandatory children"
+                    .to_string(),
+            });
+        }
+        validate_source_set("context.linked_authorities", &context.linked_authorities)?;
+        let mut ruling_ids = BTreeSet::new();
+        for ruling in &context.accepted_rulings {
+            validate_source_identity("context.accepted_rulings.source", &ruling.source)?;
+            validate_source_identity("context.accepted_rulings.review", &ruling.review)?;
+            if !ruling_ids.insert(ruling.source.identity.as_str()) {
+                return Err(CloseProofError::Coverage {
+                    message: "duplicate accepted ruling source identity".to_string(),
+                });
+            }
+            if !is_stable_token(&ruling.ruling_type) || ruling.changed_propositions.is_empty() {
+                return Err(CloseProofError::Schema {
+                    field: "context.accepted_rulings".to_string(),
+                    message: "rulings require a stable type and explicit changed propositions"
+                        .to_string(),
+                });
+            }
+            validate_source_set("context.accepted_rulings.supersedes", &ruling.supersedes)?;
+            validate_string_set(
+                "context.accepted_rulings.changed_propositions",
+                &ruling.changed_propositions,
+            )?;
+        }
+        if let Some(legacy) = &self.contract.identity.accepted_ruling
+            && !context
+                .accepted_rulings
+                .iter()
+                .any(|r| r.source.identity == legacy.identity && r.source.digest == legacy.digest)
+        {
+            return Err(CloseProofError::Identity {
+                message: "legacy ruling is absent or contradictory in the declared ruling set"
+                    .to_string(),
+            });
+        }
+        for (field, identity) in [
+            ("context.compiler_generation", &context.compiler_generation),
+            ("context.schema_generation", &context.schema_generation),
+            ("context.policy_generation", &context.policy_generation),
+        ] {
+            validate_source_identity(field, identity)?;
+        }
+        if let Some(adoption) = &context.adoption_record {
+            validate_source_identity("context.adoption_record", adoption)?;
+        }
+        Ok(())
+    }
+
+    fn canonicalized(&self) -> Self {
+        let mut value = self.clone();
+        value.contract.allowed_close_modes.sort();
+        value.contract.denominator.sort_by(|a, b| a.row_id.cmp(&b.row_id));
+        value.contract.negative_controls.sort_by(|a, b| a.control_id.cmp(&b.control_id));
+        value.contract.mandatory_children.sort();
+        value.contract.transfer_policy.conditions.sort();
+        value.contract.domain_evidence_refs.sort();
+        let context = &mut value.context;
+        context.child_relations.sort_by(|a, b| a.child.cmp(&b.child));
+        context.permitted_transferred_rows.sort();
+        context.linked_authorities.sort_by(|a, b| a.identity.cmp(&b.identity));
+        context.accepted_rulings.sort_by(|a, b| a.source.identity.cmp(&b.source.identity));
+        for ruling in &mut context.accepted_rulings {
+            ruling.supersedes.sort_by(|a, b| a.identity.cmp(&b.identity));
+            ruling.changed_propositions.sort();
+        }
+        context.limitations.sort();
+        value
+    }
+}
+
+fn validate_string_set(field: &str, values: &[String]) -> Result<(), CloseProofError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        if value.trim().is_empty() {
+            return Err(CloseProofError::Schema {
+                field: field.to_string(),
+                message: "set entries must not be empty".to_string(),
+            });
+        }
+        if !seen.insert(value) {
+            return Err(CloseProofError::Coverage {
+                message: format!("duplicate entry in `{field}`"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_identity(
+    field: &str,
+    value: &super::model::SourceIdentity,
+) -> Result<(), CloseProofError> {
+    if value.identity.trim().is_empty() || value.identity.trim() != value.identity {
+        return Err(CloseProofError::Schema {
+            field: field.to_string(),
+            message: "source identity must be nonempty without surrounding whitespace".to_string(),
+        });
+    }
+    if !is_digest_hex(&value.digest) {
+        return Err(CloseProofError::Digest {
+            message: format!("`{field}.digest` is not 64 lowercase hex characters"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_source_set(
+    field: &str,
+    values: &[super::model::SourceIdentity],
+) -> Result<(), CloseProofError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        validate_source_identity(field, value)?;
+        if !seen.insert(value.identity.as_str()) {
+            return Err(CloseProofError::Coverage {
+                message: format!("duplicate source identity in `{field}`"),
+            });
+        }
+    }
+    Ok(())
 }
