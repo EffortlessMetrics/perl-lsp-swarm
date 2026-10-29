@@ -211,7 +211,7 @@ pub fn add_test_more_completions(
                 sort_text: Some(Cow::Owned(format!("2_{}", function.name))),
                 filter_text: Some(Cow::Borrowed(function.name)),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::for_authored_body(function.snippet),
                 label_details: None,

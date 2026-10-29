@@ -93,9 +93,9 @@ infrastructure legible.
 
 ## Evidence Pointers
 
-- [.claude/agents2/agent-customizer.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents2/agent-customizer.md)
-- [.claude/agents3/issue-to-draft.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/issue-to-draft.md)
-- [.claude/agents3/draft-to-pr.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/draft-to-pr.md)
-- [.claude/agents3/pr-to-merge.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/pr-to-merge.md)
-- [docs/project/AGENTIC_DEV.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md)
-- [docs/project/AGENTIC_DEVELOPMENT.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEVELOPMENT.md)
+- [.claude/agents2/agent-customizer.md](../../reference/archive/agents-history/agents2/agent-customizer.md)
+- [.claude/agents3/issue-to-draft.md](../../reference/archive/agents-history/agents3/issue-to-draft.md)
+- [.claude/agents3/draft-to-pr.md](../../reference/archive/agents-history/agents3/draft-to-pr.md)
+- [.claude/agents3/pr-to-merge.md](../../reference/archive/agents-history/agents3/pr-to-merge.md)
+- [docs/project/AGENTIC_DEV.md](../../project/AGENTIC_DEV.md)
+- [docs/project/AGENTIC_DEVELOPMENT.md](../../project/AGENTIC_DEVELOPMENT.md)

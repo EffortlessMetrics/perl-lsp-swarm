@@ -252,6 +252,9 @@ enum ReportFailure {
     /// Discovery or spawn itself failed. The message is already a
     /// user-facing one-line diagnosis with no hidden child output.
     Message(String),
+    /// A captured verdict and diagnostic detail. Cargo retains its existing
+    /// detail bound without changing the Perl/tool probe representation.
+    Detailed { summary: String, detail: String },
 }
 
 impl ReportFailure {
@@ -281,10 +284,11 @@ impl ReportFailure {
                 }
             }
             Self::Message(message) => message.clone(),
+            Self::Detailed { summary, .. } => summary.clone(),
         }
     }
 
-    /// The full machine-readable detail `--json` preserves.
+    /// The machine-readable detail `--json` preserves.
     fn detail(&self) -> String {
         match self {
             Self::VersionProbe { label, status, stderr } => {
@@ -297,13 +301,21 @@ impl ReportFailure {
                 detail
             }
             Self::Message(message) => message.clone(),
+            Self::Detailed { detail, .. } => detail.clone(),
+        }
+    }
+
+    fn with_bounded_detail(self, max_chars: usize) -> Self {
+        Self::Detailed {
+            summary: self.summary(),
+            detail: truncate_for_detail(&self.detail(), max_chars),
         }
     }
 }
 
-/// The `error` field keeps its JSON string shape and still carries the full
-/// stderr, but the status wording inside it is normalized exactly like the
-/// human line (#16525): consumers comparing the old doubled phrasing
+/// The `error` field keeps its JSON string shape and retains child stderr
+/// for diagnosis, subject to Cargo's existing detail bound. Status wording is
+/// normalized like the human line (#16525): consumers comparing the old doubled phrasing
 /// (`exited with status exit code: N`) see the new single clause.
 impl Serialize for ReportFailure {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -834,7 +846,7 @@ struct CargoToolchainReport {
     provenance: &'static str,
     meets_workspace_pin: Option<bool>,
     honors_toolchain_file: Option<bool>,
-    error: Option<String>,
+    error: Option<ReportFailure>,
     fix: Option<String>,
 }
 
@@ -2031,15 +2043,25 @@ fn shell_cargo_report_from_output(
                 (false, Ok(probe)) => {
                     failed_probe_cargo_report(flavor, probe.cargo_path, Ok(process_output))
                 }
-                (_, Err(parse_error)) => failed_probe_cargo_report(
-                    flavor,
-                    None,
-                    Err(format!(
-                        "shell cargo probe output was invalid: {parse_error}; exit status {}; stderr: {}",
-                        process_output.status,
-                        decode_shell_output(&process_output.stderr).trim()
-                    )),
-                ),
+                (_, Err(parse_error)) => {
+                    let status = probe_status_clause(&process_output.status);
+                    let stderr = decode_shell_output(&process_output.stderr);
+                    let mut detail =
+                        format!("shell cargo probe output was invalid: {parse_error}; {status}");
+                    if !stderr.trim().is_empty() {
+                        detail.push_str("; stderr: ");
+                        detail.push_str(stderr.trim());
+                    }
+                    // Even exit 0 can carry an invalid record. Keep the parse
+                    // diagnosis separate from a failed version probe, and point
+                    // to JSON because the parse reason is withheld here too.
+                    let summary = format!(
+                        "shell cargo probe output was invalid ({status}); re-run with --json added for probe detail"
+                    );
+                    let failure = ReportFailure::Detailed { summary, detail }
+                        .with_bounded_detail(DETAIL_MAX_CHARS);
+                    cargo_probe_error_report(flavor, None, failure)
+                }
             }
         }
         // The shell probe failed before emitting a complete record, so there
@@ -2057,17 +2079,25 @@ fn failed_probe_cargo_report(
     binary: Option<PathBuf>,
     output: ProbeOutput,
 ) -> CargoToolchainReport {
-    let detail = match output {
-        Ok(process_output) => truncate_for_detail(
-            &format!(
-                "probe exited with status {}; stderr: {}",
-                process_output.status,
-                decode_shell_output(&process_output.stderr).trim()
-            ),
-            DETAIL_MAX_CHARS,
-        ),
-        Err(spawn_error) => truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS),
+    let failure = match output {
+        Ok(process_output) => ReportFailure::version_probe(
+            "cargo",
+            &process_output.status,
+            decode_shell_output(&process_output.stderr).as_bytes(),
+        )
+        .with_bounded_detail(DETAIL_MAX_CHARS),
+        Err(spawn_error) => {
+            ReportFailure::Message(truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS))
+        }
     };
+    cargo_probe_error_report(flavor, binary, failure)
+}
+
+fn cargo_probe_error_report(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    failure: ReportFailure,
+) -> CargoToolchainReport {
     CargoToolchainReport {
         flavor,
         status: STATUS_PROBE_ERROR,
@@ -2076,7 +2106,7 @@ fn failed_probe_cargo_report(
         provenance: PROVENANCE_UNKNOWN,
         meets_workspace_pin: None,
         honors_toolchain_file: None,
-        error: Some(detail),
+        error: Some(failure),
         fix: None,
     }
 }
@@ -2096,7 +2126,7 @@ fn finish_reachable_cargo_report_with_context(
         .and_then(|path| classify_cargo_provenance_with_context(path, context));
     let (status, meets_workspace_pin) = reachable_cargo_status(provenance, parsed_version);
     let error = if parsed_version.is_none() {
-        Some(cargo_version_probe_error(version_output))
+        Some(ReportFailure::Message(cargo_version_probe_error(version_output)))
     } else {
         None
     };
@@ -2147,7 +2177,7 @@ fn unreachable_cargo_report(flavor: &'static str, detail: &str) -> CargoToolchai
         provenance: PROVENANCE_UNKNOWN,
         meets_workspace_pin: None,
         honors_toolchain_file: None,
-        error: Some(detail.to_string()),
+        error: Some(ReportFailure::Message(detail.to_string())),
         fix: cargo_fix_line(flavor, STATUS_MISSING),
     }
 }
@@ -2372,7 +2402,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport, command_name: &s
             render_optional_bool(cargo.honors_toolchain_file)
         ));
         if let Some(error) = &cargo.error {
-            out.push_str(&format!("      error: {error}\n"));
+            out.push_str(&format!("      error: {}\n", error.summary()));
         }
         if let Some(fix) = &cargo.fix {
             out.push_str(&format!("      Fix: {fix}\n"));
@@ -3830,7 +3860,7 @@ mod tests {
         assert_eq!(report.status, STATUS_PROBE_ERROR);
         assert_eq!(report.meets_workspace_pin, None);
         assert_eq!(report.fix, None);
-        let error = report.error.ok_or("unparseable cargo error")?;
+        let error = report.error.ok_or("unparseable cargo error")?.detail();
         assert!(error.contains("unparseable version banner"));
         assert!(error.contains("cargo development-build"));
         assert!(error.chars().count() <= DETAIL_MAX_CHARS + 80);
@@ -4206,6 +4236,309 @@ mod tests {
         std::process::Output { status, stdout: stdout.to_vec(), stderr: stderr.to_vec() }
     }
 
+    // Literal exit codes are encoded as native wait statuses; unlike
+    // synthetic_process_output(false), exit 29 is not signal 29 on Unix.
+    fn cargo_exit_output(stdout: &[u8], stderr: &[u8], exit_code: u8) -> std::process::Output {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        #[cfg(unix)]
+        let raw = i32::from(exit_code) << 8;
+        #[cfg(windows)]
+        let raw = u32::from(exit_code);
+
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    fn environment_with_cargo(cargo: CargoToolchainReport) -> DevEnvironmentReport {
+        let mut report = synthetic_dev_environment_report();
+        report.cargo_toolchains = vec![cargo];
+        report
+    }
+
+    #[test]
+    fn cargo_probe_nonzero_output_separates_human_summary_from_json_detail() -> TestResult {
+        let output = cargo_exit_output(b"", b"cargo-child-stderr-sentinel", 29);
+        assert_eq!(output.status.code(), Some(29));
+        let cargo = cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            PathBuf::from("resolved-cargo"),
+            Ok(output),
+            None,
+        );
+        assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+        assert_eq!(cargo.path.as_deref(), Some("resolved-cargo"));
+        assert!(cargo.fix.is_none());
+        let report = environment_with_cargo(cargo);
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(
+            "error: version probe failed (exit code 29); re-run with --json added for probe detail"
+        ));
+        assert!(!rendered.contains("cargo-child-stderr-sentinel"));
+        assert!(!rendered.contains("exited with status"));
+        assert_eq!(rendered.matches("exit code 29").count(), 1);
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some(
+                "cargo version probe exited with exit code 29; stderr: cargo-child-stderr-sentinel"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_empty_stderr_does_not_offer_hidden_detail() -> TestResult {
+        let report = environment_with_cargo(cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            PathBuf::from("resolved-cargo"),
+            Ok(cargo_exit_output(b"", b" \r\n\t", 29)),
+            None,
+        ));
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains("error: version probe failed (exit code 29)\n"));
+        assert!(!rendered.contains("--json"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some("cargo version probe exited with exit code 29")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_invalid_shell_record_has_own_diagnosis_at_zero_and_nonzero_exit() -> TestResult {
+        for (code, clause) in [(0, "exit code 0"), (29, "exit code 29")] {
+            for stderr in [b"shell-child-stderr-sentinel".as_slice(), b"".as_slice()] {
+                let cargo = shell_cargo_report_from_output(
+                    FLAVOR_GIT_BASH,
+                    Ok(cargo_exit_output(b"unterminated", stderr, code)),
+                );
+                assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+                assert!(cargo.path.is_none());
+                assert!(cargo.fix.is_none());
+                let report = environment_with_cargo(cargo);
+                let rendered = render_dev_environment_report(&report, "perllsp");
+                assert!(rendered.contains(&format!(
+                    "error: shell cargo probe output was invalid ({clause}); re-run with --json added for probe detail"
+                )));
+                assert!(!rendered.contains("version probe failed"));
+                assert!(!rendered.contains("shell-child-stderr-sentinel"));
+                assert_eq!(rendered.matches(clause).count(), 1);
+                let json = serde_json::to_value(&report)?;
+                let detail = json
+                    .pointer("/cargo_toolchains/0/error")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("Cargo parse failure must serialize as a JSON string")?;
+                let suffix =
+                    if stderr.is_empty() { "" } else { "; stderr: shell-child-stderr-sentinel" };
+                assert_eq!(
+                    detail,
+                    format!(
+                        "shell cargo probe output was invalid: shell cargo probe omitted its NUL record terminator; {clause}{suffix}"
+                    )
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_json_detail_remains_bounded_after_summary_separation() -> TestResult {
+        let stderr = format!("start-sentinel{}end-sentinel", "x".repeat(500));
+        for malformed in [false, true] {
+            let output = cargo_exit_output(b"unterminated", stderr.as_bytes(), 29);
+            let cargo = if malformed {
+                shell_cargo_report_from_output(FLAVOR_GIT_BASH, Ok(output))
+            } else {
+                cargo_report_from_output(
+                    FLAVOR_NATIVE_SHELL,
+                    PathBuf::from("resolved-cargo"),
+                    Ok(output),
+                    None,
+                )
+            };
+            let report = environment_with_cargo(cargo);
+            let rendered = render_dev_environment_report(&report, "perllsp");
+            assert!(!rendered.contains("start-sentinel"));
+            let json = serde_json::to_value(&report)?;
+            let detail = json
+                .pointer("/cargo_toolchains/0/error")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("Cargo failure detail must stay a string")?;
+            // Existing Cargo policy is 240 characters plus an ellipsis. A
+            // prefix-only cap or unbounded VersionProbe would exceed 243.
+            assert_eq!(detail.chars().count(), 243);
+            assert!(detail.ends_with("..."));
+            assert!(detail.contains("start-sentinel"));
+            assert!(!detail.contains("end-sentinel"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_preserves_decoded_utf16_shell_stderr() -> TestResult {
+        let stderr: Vec<u8> = "\u{feff}shell-provider-utf16-sentinel\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let report = environment_with_cargo(cargo_report_from_output(
+            FLAVOR_WSL,
+            PathBuf::from("resolved-cargo"),
+            Ok(cargo_exit_output(b"", &stderr, 29)),
+            None,
+        ));
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(!rendered.contains("shell-provider-utf16-sentinel"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some(
+                "cargo version probe exited with exit code 29; stderr: shell-provider-utf16-sentinel"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_spawn_and_timeout_remain_execution_failures() -> TestResult {
+        for detail in ["failed to start provider: fixture spawn error", "command timed out"] {
+            let cargo = cargo_report_from_output(
+                FLAVOR_NATIVE_SHELL,
+                PathBuf::from("resolved-cargo"),
+                Err(detail.to_string()),
+                None,
+            );
+            assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+            assert_eq!(cargo.path.as_deref(), Some("resolved-cargo"));
+            assert!(cargo.version.is_none());
+            assert!(cargo.fix.is_none());
+            let report = environment_with_cargo(cargo);
+            assert!(
+                render_dev_environment_report(&report, "perllsp")
+                    .contains(&format!("error: {detail}\n"))
+            );
+            let json = serde_json::to_value(&report)?;
+            assert_eq!(
+                json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+                Some(detail)
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_probe_failure_can_be_diagnosed_and_retried_after_repair() -> TestResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir()?;
+        let cargo_path = temp.path().join("cargo");
+        std::fs::write(
+            &cargo_path,
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo-retry-fixture: repair local provider' >&2\nexit 29\n",
+        )?;
+        std::fs::set_permissions(&cargo_path, std::fs::Permissions::from_mode(0o700))?;
+        let probe = || {
+            let mut command = Command::new(&cargo_path);
+            command.arg("--version").current_dir(temp.path());
+            run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS)
+        };
+
+        let output =
+            probe().map_err(|error| format!("failure fixture did not execute: {error}"))?;
+        assert_eq!(output.status.code(), Some(29));
+        let cargo = cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            cargo_path.clone(),
+            Ok(output),
+            Some(temp.path()),
+        );
+        assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+        assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
+        let report = environment_with_cargo(cargo);
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(
+            "error: version probe failed (exit code 29); re-run with --json added for probe detail"
+        ));
+        assert!(!rendered.contains("cargo-retry-fixture"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some(
+                "cargo version probe exited with exit code 29; stderr: cargo-retry-fixture: repair local provider"
+            )
+        );
+
+        // Repair only the failed provider, then repeat the same command/path.
+        std::fs::write(
+            &cargo_path,
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo 1.95.0 (repaired fixture)'\n",
+        )?;
+        let output =
+            probe().map_err(|error| format!("repaired fixture did not execute: {error}"))?;
+        assert_eq!(output.status.code(), Some(0));
+        let cargo = cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            cargo_path.clone(),
+            Ok(output),
+            Some(temp.path()),
+        );
+        assert_eq!(cargo.status, STATUS_PRESENT);
+        assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
+        assert_eq!(cargo.version.as_deref(), Some("cargo 1.95.0 (repaired fixture)"));
+        assert!(cargo.error.is_none());
+        assert!(cargo.fix.is_none());
+        let report = environment_with_cargo(cargo);
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(!rendered.contains("version probe failed"));
+        assert!(!rendered.contains("cargo-retry-fixture"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(json.pointer("/cargo_toolchains/0/error"), Some(&serde_json::Value::Null));
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_preserves_abnormal_process_status() -> TestResult {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        #[cfg(unix)]
+        let (raw, expected, forbidden) = (15, "signal: 15", "exit code 0");
+        #[cfg(windows)]
+        let (raw, expected, forbidden) = (0xc0000142, "0xc0000142", "-1073741502");
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let report = environment_with_cargo(cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            PathBuf::from("resolved-cargo"),
+            Ok(output),
+            None,
+        ));
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(expected));
+        assert!(!rendered.contains(forbidden));
+        let json = serde_json::to_value(&report)?;
+        let detail = json
+            .pointer("/cargo_toolchains/0/error")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("abnormal status detail must stay a string")?;
+        assert!(detail.contains(expected));
+        assert!(!detail.contains(forbidden));
+        Ok(())
+    }
+
     #[test]
     fn shell_cargo_probe_parser_preserves_empty_and_relative_context() -> TestResult {
         let output = concat!(
@@ -4243,9 +4576,10 @@ mod tests {
             FLAVOR_WSL,
             Ok(synthetic_process_output(output.as_bytes(), b"", true)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_MISSING
             || report.path.is_some()
-            || report.error.as_deref() != Some("cargo was not found in this shell")
+            || error.as_deref() != Some("cargo was not found in this shell")
             || report.fix.is_none()
         {
             return Err(
@@ -4299,9 +4633,10 @@ mod tests {
             FLAVOR_GIT_BASH,
             Ok(synthetic_process_output(output.as_bytes(), b"cargo failed", false)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_PROBE_ERROR
             || report.path.as_deref() != Some("/usr/bin/cargo")
-            || !report.error.as_deref().is_some_and(|error| error.contains("cargo failed"))
+            || !error.as_deref().is_some_and(|error| error.contains("cargo failed"))
         {
             return Err(format!("failed shell record lost evidence: {report:?}").into());
         }
@@ -4314,12 +4649,10 @@ mod tests {
             FLAVOR_GIT_BASH,
             Ok(synthetic_process_output(b"", b"cargo command not found", false)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_PROBE_ERROR
             || report.path.is_some()
-            || !report
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("cargo command not found"))
+            || !error.as_deref().is_some_and(|error| error.contains("cargo command not found"))
         {
             return Err(format!("failed shell startup lost evidence: {report:?}").into());
         }
@@ -4333,11 +4666,16 @@ mod tests {
                 FLAVOR_GIT_BASH,
                 Ok(synthetic_process_output(b"unterminated", b"provider detail", success)),
             );
-            let error = report.error.as_deref().ok_or("malformed record lost its error")?;
+            let error = report.error.as_ref().ok_or("malformed record lost its error")?.detail();
+            #[cfg(unix)]
+            let failed_status = "signal: 1";
+            #[cfg(windows)]
+            let failed_status = "exit code 1";
+            let expected_status = if success { "exit code 0" } else { failed_status };
             if report.status != STATUS_PROBE_ERROR
                 || report.path.is_some()
                 || !error.contains("shell cargo probe omitted its NUL record terminator")
-                || !error.contains("exit status")
+                || !error.contains(expected_status)
                 || !error.contains("provider detail")
             {
                 return Err(format!("malformed record lost evidence: {report:?}").into());

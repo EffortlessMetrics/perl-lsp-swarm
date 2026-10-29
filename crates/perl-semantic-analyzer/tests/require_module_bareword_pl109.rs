@@ -224,6 +224,48 @@ fn other_require_forms_are_not_reclassified_as_module_barewords() {
     }
 }
 
+/// #17094: perlsyn says comment text is ignored through the end of the line.
+/// Expected classification is independent of the helper's source scan.
+#[test]
+fn require_comment_parentheses_do_not_emit_pl109() {
+    let cases = [
+        ("use strict;\nrequire # ( note\n DBI;\n", "DBI"),
+        ("use strict;\r\nrequire # ( note\r\n DBI;\r\n", "DBI"),
+        ("use strict;\nrequire # ( café\n # ( another note\n Foo::Bar;\n", "Foo::Bar"),
+    ];
+    for (code, module) in cases {
+        assert_require_operand_role(code, &[module]);
+        let issues = scope_issues_strict(code);
+        assert!(
+            unquoted_names(&issues).is_empty(),
+            "comment parentheses must not introduce PL109 in {code:?}: {:?}",
+            unquoted_names(&issues)
+        );
+    }
+}
+
+#[test]
+fn require_comment_parentheses_keep_real_expression_pl109_and_token_span() {
+    let cases = [
+        ("use strict;\nrequire # ( note\n (DBI);\n", "DBI"),
+        ("use strict;\r\nrequire ( # ( note\r\n DBI);\r\n", "DBI"),
+        ("use strict;\nrequire # ( note\n (Foo . \"/Bar.pm\");\n", "Foo"),
+    ];
+    for (code, name) in cases {
+        let issues = scope_issues_strict(code);
+        assert_eq!(
+            unquoted_names(&issues),
+            [name],
+            "real parentheses and computed operands remain expression barewords in {code:?}"
+        );
+        assert_eq!(
+            unquoted_span_text(code, &issues, name),
+            Some(name),
+            "comment trivia must not move the PL109 range off its token in {code:?}"
+        );
+    }
+}
+
 #[test]
 fn parenthesized_require_operand_stays_an_expression_bareword() {
     // Oracle: perl 5.38.2

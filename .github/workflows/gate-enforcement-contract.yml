@@ -34,6 +34,7 @@ jobs:
             scripts/ci/test_gate_enforcement_app_bindings.py \
             scripts/ci/test_reconcile_github_enforcement_snapshot.py \
             scripts/ci/test_observe_github_enforcement.py \
+            scripts/ci/test_check_release_required_ci.py \
             scripts/ci/test_required_checks_doc_contract.py
           test_status=$?
           python3 scripts/ci/validate_gate_enforcement_contract.py \

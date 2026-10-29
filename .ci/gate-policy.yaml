@@ -1332,7 +1332,9 @@ gates:
     tier: merge_gate
     description: "Bounded parser integration proof with a non-shrinking target manifest (#6107)"
     required: true
-    command: python3 scripts/ci/run_parser_integration.py
+    command: >-
+      python3 scripts/ci/test_run_parser_integration.py
+      && python3 scripts/ci/run_parser_integration.py
     timeout_seconds: 900
     retry_count: 0
     budgets:

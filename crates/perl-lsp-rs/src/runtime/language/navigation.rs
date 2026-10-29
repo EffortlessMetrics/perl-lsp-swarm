@@ -1345,9 +1345,23 @@ fn semantic_definition_query_symbol(
 
 #[cfg(feature = "workspace")]
 fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, group: usize) -> bool {
-    regex
-        .captures_iter(text)
-        .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
+    regex_capture_text_at_cursor(regex, text, cursor, group).is_some()
+}
+
+/// The captured text of `group` when the cursor sits inside that capture of
+/// some match, else `None`. `cursor_in_regex_capture` is the yes/no shape of
+/// the same question; callers that need to know *what* was captured use this.
+#[cfg(feature = "workspace")]
+fn regex_capture_text_at_cursor<'a>(
+    regex: &regex::Regex,
+    text: &'a str,
+    cursor: usize,
+    group: usize,
+) -> Option<&'a str> {
+    regex.captures_iter(text).find_map(|cap| {
+        let matched = cap.get(group)?;
+        (cursor >= matched.start() && cursor <= matched.end()).then_some(matched.as_str())
+    })
 }
 
 /// Which `::`-separated component of a fully-qualified name the cursor is on.
@@ -1534,6 +1548,25 @@ fn same_file_definition_matches_qualification(
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
     ) || (definition.kind == crate::symbol::SymbolKind::Constant
         && definition.declaration.as_deref() == Some("constant"));
+    // A missing named CodeRef can otherwise select its containing route/sub
+    // through SemanticModel's general symbol-at-position fallback.
+    if let Some(node) = crate::declaration::find_node_at_offset(ast, offset)
+        && let crate::ast::NodeKind::AmperCall { name, .. } = &node.kind
+        && !name.is_empty()
+        && !name.starts_with(['$', '@', '%'])
+    {
+        let matches_name = definition.name == *name
+            || definition.qualified_name == *name
+            // Leading `::` addresses Perl's root namespace: `::handler`
+            // denotes `main::handler`, and `::App::handler` denotes App's sub.
+            || name.strip_prefix("::").is_some_and(|absolute_name| {
+                definition.qualified_name.strip_prefix("main::").unwrap_or(&definition.qualified_name)
+                    == absolute_name
+            });
+        if !is_callable || !matches_name {
+            return false;
+        }
+    }
     let Ok(regex) = get_fqn_regex() else {
         return true;
     };
@@ -2095,7 +2128,7 @@ impl LspServer {
                         // empty rather than falling through to the workspace-index lookup —
                         // the index is @INC-unaware and would surface files that `no lib`
                         // has cancelled. Fixes #8537.
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),
@@ -2138,7 +2171,7 @@ impl LspServer {
                         return Ok(Some(json!([])));
                     }
                     EarlyDefinitionTarget::Module(module_name) => {
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),
@@ -2664,14 +2697,14 @@ impl LspServer {
                         if !cursor_on_arrow_method {
                             let current_package =
                                 crate::declaration::current_package_at(ast, offset);
-                            if let Some(symbol_key) =
+                            let cursor_symbol_key =
                                 crate::declaration::symbol_at_cursor_with_source(
                                     ast,
                                     offset,
                                     current_package,
                                     &doc.text,
-                                )
-                            {
+                                );
+                            if let Some(symbol_key) = cursor_symbol_key {
                                 let workspace_symbol_key =
                                     super::to_workspace_symbol_key(&symbol_key);
                                 let import_source =
@@ -2690,6 +2723,33 @@ impl LspServer {
                                         && workspace_symbol_key.sigil.is_none(),
                                 ) {
                                     return Ok(Some(json!([lsp_location])));
+                                }
+                            } else if let Some(argument_key) =
+                                crate::declaration::method_argument_bareword_key(
+                                    ast,
+                                    offset,
+                                    current_package,
+                                    &doc.text,
+                                )
+                            {
+                                // #17158: the cursor sits on a bareword argument
+                                // of a method call — the hash key in
+                                // `Animal->new(name => ...)` — which is not the
+                                // call's method. It may still name a sub of the
+                                // receiver's package (`Animal::name`); that
+                                // name-exact resolution wins. When no such sub
+                                // exists the request falls through and stays an
+                                // honest empty result rather than jumping to a
+                                // different symbol's declaration.
+                                if let Some(result) = lookup_workspace_definition(
+                                    self.coordinator(),
+                                    argument_key.pkg.as_ref(),
+                                    argument_key.name.as_ref(),
+                                    Some(uri),
+                                    true,
+                                ) && workspace_index_is_fresh()
+                                {
+                                    return Ok(Some(result));
                                 }
                             }
                         }
@@ -2859,6 +2919,49 @@ impl LspServer {
                                     | crate::symbol::SymbolKind::Method
                             )
                         {
+                            return Ok(Some(json!([])));
+                        }
+                        // #18110: an unresolvable `->method` selector has no
+                        // same-file definition. The semantic analyzer falls
+                        // back to the sub whose span contains the cursor —
+                        // the enclosing sub — which is not the method's
+                        // definition. Reject exactly that artifact: the
+                        // cursor sits on a method selector and the offered
+                        // callable both encloses the cursor and does not
+                        // carry the method's name (same-name recursion still
+                        // navigates to its own declaration).
+                        let var_method_re = get_var_method_regex()?;
+                        let cursor_method_name = regex_capture_text_at_cursor(
+                            get_arrow_method_regex()?,
+                            &text_around,
+                            cursor_in_text,
+                            2,
+                        )
+                        .or_else(|| {
+                            regex_capture_text_at_cursor(
+                                var_method_re,
+                                &text_around,
+                                cursor_in_text,
+                                2,
+                            )
+                        });
+                        if let Some(method_name) = cursor_method_name
+                            && matches!(
+                                definition.kind,
+                                crate::symbol::SymbolKind::Subroutine
+                                    | crate::symbol::SymbolKind::Method
+                            )
+                            && definition.location.start <= offset
+                            && offset <= definition.location.end
+                            && definition.name != method_name
+                        {
+                            tracing::debug!(
+                                offset,
+                                method = %method_name,
+                                enclosing = %definition.name,
+                                "Suppressing same-file enclosing-sub fallback for an \
+                                 unresolvable method call (#18110)"
+                            );
                             return Ok(Some(json!([])));
                         }
                         // #17252: use the typed semantic identity at this tier.
@@ -5032,6 +5135,42 @@ mod tests {
         Ok((result, receipt))
     }
 
+    /// #18110: goto-definition on an unresolvable `->method` selector must not
+    /// return the enclosing sub. The same-file tier's semantic fallback answers
+    /// an unknown method name with the sub containing the cursor; the same-file
+    /// tier has to refuse that artifact instead of jumping the editor to the
+    /// top of the sub it is already in.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn unresolvable_method_selector_refuses_instead_of_returning_the_enclosing_sub()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/gotodef-18110-widget.pm";
+        let text = "package Widget;\nsub check {\n    my ($self) = @_;\n    return $self->isa('Widget');\n}\n";
+        server.test_apply_did_open(uri, text, 1)?;
+        server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        // Cursor on the `isa` selector (line 3, character 18). Before the fix
+        // this answered `sub check`'s own span (line 1 through line 4).
+        let (result, _receipt) = goto_definition_request_receipt(&server, uri, 3, 18)?;
+        assert!(
+            result.as_ref().is_some_and(Value::is_null)
+                || result.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty),
+            "an unresolvable `$self->isa` must refuse without the enclosing sub, got {result:?}"
+        );
+
+        // Control: the sub's own name still navigates to its declaration.
+        let (known, _receipt) = goto_definition_request_receipt(&server, uri, 1, 8)?;
+        let known = known.ok_or("goto-def on a declared sub name must answer")?;
+        assert_eq!(
+            known.pointer("/0/range/start/line").and_then(Value::as_u64),
+            Some(1),
+            "goto-def on `check` must land on its declaration, got {known:?}"
+        );
+        Ok(())
+    }
+
     /// Cross-file definition must not consume predecessor workspace facts while
     /// a Full-sync violation is outstanding, and must recover after an admitted
     /// full replacement plus index catch-up (#8129).
@@ -5695,5 +5834,160 @@ mod tests {
             second.emit_core_module_notice_once("strict"),
             "the guard is instance-level: a second server session must still emit"
         );
+    }
+
+    /// #17158: goto-definition with the cursor on a hash-key word inside a
+    /// constructor's argument list must not resolve to the constructor.
+    ///
+    /// `Animal->new(name => 'Generic')` spans its argument list with one
+    /// `MethodCall` node; the cursor on `name` used to inherit the call's
+    /// method identity and land inside `sub new` — a confidently wrong
+    /// target. The exact-name resolution (`Animal::name`, declared in the
+    /// receiver's package) must win; a bareword that names no sub must stay
+    /// an honest empty result. A cursor on the method token itself keeps
+    /// resolving to the method, and an argument word that merely spells the
+    /// receiver's name is still an argument, not the receiver.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_on_a_constructor_hash_key_never_resolves_the_constructor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::runtime::LspServer;
+
+        let server = LspServer::new();
+        let animal_uri = "file:///workspace/animal-17158/lib/Animal.pm";
+        let main_uri = "file:///workspace/animal-17158/main.pl";
+        let animal_text = "package Animal;\nuse strict; use warnings;\n\nsub new {\n    my ($class, %args) = @_;\n    my $self = { name => $args{name} || 'generic' };\n    return bless $self, $class;\n}\n\nsub name {\n    my ($self) = @_;\n    return $self->{name};\n}\n\nsub Animal {\n    my ($self) = @_;\n    return 'Animal';\n}\n\n1;\n";
+        let main_text = "use lib 'lib';\nuse Animal;\n\nmy $generic = Animal->new(name => 'Generic');\nmy $other = Animal->new(zznomatch => 'x');\nmy $collide = Animal->new(Animal => 1);\n";
+
+        server.test_apply_did_open(animal_uri, animal_text, 1)?;
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server
+            .test_index_file_in_building_state(animal_uri, animal_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(main_uri, main_text)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let new_decl_line = animal_text
+            .lines()
+            .position(|l| l.starts_with("sub new {"))
+            .ok_or("fixture must declare sub new")? as u64;
+        let name_decl_line = animal_text
+            .lines()
+            .position(|l| l.starts_with("sub name {"))
+            .ok_or("fixture must declare sub name")? as u64;
+
+        let definition_at =
+            |line: u32, character: u32| -> Result<Option<Value>, Box<dyn std::error::Error>> {
+                Ok(server.handle_definition(Some(json!({
+                    "textDocument": {"uri": main_uri},
+                    "position": {"line": line, "character": character}
+                })))?)
+            };
+
+        let targets =
+            |result: Option<Value>| -> Result<Vec<(String, u64, u64)>, Box<dyn std::error::Error>> {
+                let Some(value) = result else { return Ok(Vec::new()) };
+                if value.is_null() {
+                    return Ok(Vec::new());
+                }
+                let locations = value.as_array().ok_or("definition result is not an array")?;
+                locations
+                    .iter()
+                    .map(|location| {
+                        Ok((
+                            location["uri"].as_str().ok_or("missing uri")?.to_string(),
+                            location["range"]["start"]["line"].as_u64().ok_or("start line")?,
+                            location["range"]["end"]["line"].as_u64().ok_or("end line")?,
+                        ))
+                    })
+                    .collect()
+            };
+
+        // Cursor on the hash key `name` (line 3, the word after `new(`).
+        let hash_key_char = main_text
+            .lines()
+            .nth(3)
+            .unwrap_or("")
+            .find("name")
+            .ok_or("fixture must carry the hash key")? as u32;
+        let hash_key_targets = targets(definition_at(3, hash_key_char)?)?;
+        assert!(
+            !hash_key_targets.is_empty(),
+            "the exact-name sub exists (Animal::name), so the hash-key cursor resolves to it"
+        );
+        assert!(
+            hash_key_targets
+                .iter()
+                .all(|(uri, start, _)| uri == animal_uri && *start == name_decl_line),
+            "the hash-key cursor must resolve to sub name, not the constructor; got {hash_key_targets:?}"
+        );
+
+        // Same shape, a bareword that names no sub: honest empty, never the
+        // constructor.
+        let bare_char = main_text
+            .lines()
+            .nth(4)
+            .unwrap_or("")
+            .find("zznomatch")
+            .ok_or("fixture must carry the unmatched key")? as u32;
+        let unmatched = targets(definition_at(4, bare_char)?)?;
+        assert!(
+            unmatched
+                .iter()
+                .all(|(uri, start, _)| !(*uri == animal_uri && *start == new_decl_line)),
+            "a hash key naming no sub must not fall through to the constructor; got {unmatched:?}"
+        );
+
+        // A cursor on the method token itself still resolves to the method.
+        let method_char = main_text
+            .lines()
+            .nth(3)
+            .unwrap_or("")
+            .find("->new(")
+            .ok_or("fixture must carry the method call")? as u32
+            + 3;
+        let method_targets = targets(definition_at(3, method_char)?)?;
+        assert!(
+            method_targets.iter().all(|(uri, ..)| uri == animal_uri),
+            "the method token cursor must resolve into Animal.pm; got {method_targets:?}"
+        );
+        assert!(
+            method_targets
+                .iter()
+                .any(|(_, start, end)| { *start <= new_decl_line && new_decl_line <= *end }),
+            "the method token cursor must reach sub new; got {method_targets:?}"
+        );
+
+        // An argument bareword that SPELLS the receiver's name (`Animal` in
+        // `Animal->new(Animal => 1)`) is positional evidence, not a receiver
+        // cursor. Classifying by word text alone used to hand the cursor the
+        // call's method identity, so goto-definition landed on the
+        // constructor `new` instead of the argument's exact-name sub.
+        let animal_decl_line = animal_text
+            .lines()
+            .position(|l| l.starts_with("sub Animal {"))
+            .ok_or("fixture must declare sub Animal")? as u64;
+        let collide_char = main_text
+            .lines()
+            .nth(5)
+            .unwrap_or("")
+            .rfind("Animal")
+            .ok_or("fixture must carry the receiver-named argument")?
+            as u32;
+        let collide_targets = targets(definition_at(5, collide_char)?)?;
+        assert!(
+            !collide_targets.is_empty(),
+            "the exact-name sub exists (Animal::Animal), so the argument cursor resolves to it"
+        );
+        assert!(
+            collide_targets
+                .iter()
+                .all(|(uri, start, _)| uri == animal_uri && *start == animal_decl_line),
+            "an argument spelling the receiver name must resolve to sub Animal, not the constructor; got {collide_targets:?}"
+        );
+
+        Ok(())
     }
 }

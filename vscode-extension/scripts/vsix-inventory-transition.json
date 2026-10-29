@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 10307,
-  "reason": "Re-anchor the #10307 remediation UX transition onto main's #17333 wave-4 + #17041 proxy-aware transport baseline: the merged candidate composes main's +21572-byte bundle growth (1709937 -> 1731509) with this PR's binary-identity remediation UX for a measured out/extension.js of 1736217 (total 1921480); no members were added or removed",
-  "base_baseline_file_sha256": "6f23a8c37892a55b556ef3505fa064ddba164ba29e3801429e6c0893f5c35161",
-  "candidate_baseline_file_sha256": "08c38ce7363722e1c100902772b6f2410ed3c5113a47456c51115ee346ea93a2",
-  "base_inventory_sha256": "9169e50dced95244e40f4999b33738282226fe8efb56cf6968726b73315c3789",
-  "candidate_inventory_sha256": "471063cbaca00782af8cd09fab050998148eee1840f1b4a89c7cfdf115c2b2bb"
+  "owner_issue": 18098,
+  "reason": "Re-measured from the produced package: main grew package.json (+232) and out/extension.js (+326) through #18277 and follow-up merges without a transition landing; receipt projected_actual (31 files, 1935713 bytes) taken verbatim as the new baseline.",
+  "base_baseline_file_sha256": "3bcfabd00546bfaf90ab7b8e3747bda209a1ce3ae7d3727efccaa44d18c0cd2d",
+  "base_inventory_sha256": "c4572b1b9cb93803976ba3612ef45ed46be12b156bf5b5905b0305e6e7b27ec4",
+  "candidate_baseline_file_sha256": "daa7d4775e6e0aa1aa026b08bf6e2b6f1483004be2da8d8272d211e247ea8d42",
+  "candidate_inventory_sha256": "4ed08e537a58d83824d48ac7cff1c4aa058516f02d9858333018995ed39c3735"
 }

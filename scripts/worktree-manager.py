@@ -1149,11 +1149,17 @@ def release(
 def stale_slot(slot: dict[str, Any], stale_days: int) -> bool:
     if slot.get("status") not in {"idle", "active", "dirty"}:
         return False
-    last_released = slot.get("last_released_at")
-    if not last_released:
+    # A recorded owner is a live lease: never stale-prune an owned slot,
+    # however old. Only `release` (or an explicit --force) ends that lease.
+    if slot.get("owner"):
+        return False
+    # A slot whose lane died before `release` has no release timestamp;
+    # age ownerless slots from last allocation/use instead of never stale.
+    aged_from = slot.get("last_released_at") or slot.get("last_used_at")
+    if not aged_from:
         return False
     try:
-        released = datetime.fromisoformat(last_released.replace("Z", "+00:00"))
+        released = datetime.fromisoformat(aged_from.replace("Z", "+00:00"))
     except ValueError:
         return False
     age = datetime.now(timezone.utc) - released.astimezone(timezone.utc)
@@ -1204,11 +1210,26 @@ def cleanup(
         if not should_prune and slot.get("status") == "idle" and branch != "HEAD":
             should_prune = branch_merged(branch) and open_pr_number(branch) is None
 
+        if should_prune and worktree_dirty(slot_path):
+            # Re-checked immediately before removal: uncommitted work is
+            # never discarded by automatic pruning, however stale the slot.
+            print(f"kept dirty slot={slot.get('slot_id')} path={slot.get('path')} branch={branch}")
+            kept.append(slot)
+            continue
+
         if should_prune:
             if args.dry_run:
                 print(f"would prune slot={slot.get('slot_id')} path={slot.get('path')} branch={branch}")
             else:
-                git(["worktree", "remove", "--force", str(slot_path)], check=False)
+                removal = git(["worktree", "remove", str(slot_path)], check=False)
+                if removal.returncode != 0 and not worktree_dirty(slot_path):
+                    # Clean but non-forced removal refused (e.g. ignored
+                    # files): one forced retry, still result-checked.
+                    removal = git(["worktree", "remove", "--force", str(slot_path)], check=False)
+                if removal.returncode != 0:
+                    print(f"kept slot={slot.get('slot_id')} path={slot.get('path')}: worktree removal failed")
+                    kept.append(slot)
+                    continue
                 if branch != "HEAD":
                     git(["branch", "-D", branch], check=False)
             pruned += 1
