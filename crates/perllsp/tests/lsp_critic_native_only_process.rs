@@ -101,12 +101,7 @@ fn file_uri(path: &Path) -> Result<String> {
         .map_err(|()| anyhow::anyhow!("cannot make file URI for {}", path.display()))
 }
 
-fn request(
-    client: &mut RealProcessClient,
-    id: &str,
-    method: &str,
-    params: Value,
-) -> Result<Value> {
+fn request(client: &mut RealProcessClient, id: &str, method: &str, params: Value) -> Result<Value> {
     client.request(json!(id), method, params, Duration::from_secs(15))
 }
 
@@ -235,6 +230,7 @@ fn perlcritic_project_engine_cannot_invoke_successful_external_tool() -> Result<
 }
 
 #[test]
-fn perlcritic_project_engine_cannot_hide_failed_external_tool_behind_native_fallback() -> Result<()> {
+fn perlcritic_project_engine_cannot_hide_failed_external_tool_behind_native_fallback() -> Result<()>
+{
     run_unopened("perlcritic", 73, false)
 }
