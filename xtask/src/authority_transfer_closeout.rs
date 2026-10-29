@@ -767,7 +767,7 @@ fn bind_packet_subjects(request: &CloseoutRequest) -> Vec<Violation> {
 /// implementation contract stores it as `repository.name`; the review
 /// contract as `subject.repository.name`; the module-internal observation,
 /// frontier, and manifest contracts as a flat `repository` string.
-fn packet_repository<'a>(role: ArtifactRole, value: &'a serde_json::Value) -> Option<&'a str> {
+fn packet_repository(role: ArtifactRole, value: &serde_json::Value) -> Option<&str> {
     match role {
         ArtifactRole::BuilderPacket => {
             value.pointer("/repository/name").and_then(serde_json::Value::as_str)
@@ -1875,7 +1875,7 @@ mod tests {
     }
 
     fn artifact(role: ArtifactRole, path: &str, contents: &str) -> ArtifactInput {
-        ArtifactInput { role: role, path: path.to_string(), contents: contents.to_string() }
+        ArtifactInput { role, path: path.to_string(), contents: contents.to_string() }
     }
 
     /// A canonical packet body carrying the schema discriminator and the

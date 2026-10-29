@@ -124,7 +124,7 @@ pub(crate) fn pre_push_hook_script() -> &'static str {
 # Hook logic version (#17431 review wave 3): bump the integer below on EVERY
 # guard-logic change. Self-heal only upgrades (checkout > installed) and
 # never downgrades; unmarked legacy hooks count as version 0.
-# pre-push-hook-version: 1
+# pre-push-hook-version: 3
 
 set -euo pipefail
 
@@ -290,6 +290,34 @@ fi
 # ci-gate, since the test suite and workspace-wide rustfmt check are
 # pointless for prose-only changes and can fail spuriously on Windows (#4047).
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Bind gate children to this worktree before clearing Git's hook-local selectors.
+# Fixture Git commands must discover their own repositories from their cwd.
+VALIDATION_GIT_DIR="$(git rev-parse --absolute-git-dir)" || exit 1
+VALIDATION_COMMON_DIR="$(git rev-parse --git-common-dir)" || exit 1
+[ -n "$VALIDATION_COMMON_DIR" ] || exit 1
+VALIDATION_COMMON_DIR="$(cd -- "$VALIDATION_COMMON_DIR" && pwd -P)" || exit 1
+VALIDATION_LOCAL_ENV="$(git rev-parse --local-env-vars)" || exit 1
+if [ -z "$REPO_ROOT" ] || [ -z "$VALIDATION_GIT_DIR" ] || [ -z "$VALIDATION_COMMON_DIR" ] || [ -z "$VALIDATION_LOCAL_ENV" ]; then
+    echo "pre-push validation worktree binding is incomplete; refusing gates" >&2
+    exit 1
+fi
+run_validation_child() (
+    local name actual_root actual_git_dir actual_common_dir
+    for name in $VALIDATION_LOCAL_ENV; do
+        unset "$name"
+    done
+    cd -- "$REPO_ROOT" || return
+    actual_root="$(git rev-parse --show-toplevel)" || return
+    actual_git_dir="$(git rev-parse --absolute-git-dir)" || return
+    actual_common_dir="$(git rev-parse --git-common-dir)" || return
+    [ -n "$actual_common_dir" ] || return 1
+    actual_common_dir="$(cd -- "$actual_common_dir" && pwd -P)" || return
+    if [ "$actual_root" != "$REPO_ROOT" ] || [ "$actual_git_dir" != "$VALIDATION_GIT_DIR" ] || [ "$actual_common_dir" != "$VALIDATION_COMMON_DIR" ]; then
+        echo "pre-push validation worktree binding changed; refusing gates" >&2
+        return 1
+    fi
+    "$@"
+)
 DOC_ONLY=true
 TEST_FILES_CHANGED=false
 HAS_DIFFABLE_REF=false
@@ -462,7 +490,7 @@ if [ "$SINGLE_CRATE_ALL_UNDER_CRATES" = true ] && [ "$SINGLE_CRATE_COUNT" = "1" 
     GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
     trap 'rm -f "$GATE_LOG"' EXIT
     set +e
-    run_single_crate_gate 2>&1 | tee "$GATE_LOG"
+    run_validation_child run_single_crate_gate 2>&1 | tee "$GATE_LOG"
     GATE_STATUS=${PIPESTATUS[0]}
     set -e
     if [ "$GATE_STATUS" -ne 0 ]; then
@@ -484,7 +512,7 @@ echo ""
 if [ "$TEST_FILES_CHANGED" = true ] && [ -f "$REPO_ROOT/scripts/update-current-status.py" ]; then
     echo "📊 Test files changed — checking if docs/project/status/ is up to date..."
     if command -v python3 &>/dev/null; then
-        python3 "$REPO_ROOT/scripts/update-current-status.py" 2>/dev/null || true
+        run_validation_child python3 "$REPO_ROOT/scripts/update-current-status.py" 2>/dev/null || true
         if ! git diff --quiet -- docs/project/status/ 2>/dev/null; then
             echo ""
             echo "⚠️  docs/project/status/ has stale test counts!"
@@ -514,7 +542,7 @@ run_gate() {
 }
 
 set +e
-run_gate 2>&1 | tee "$GATE_LOG"
+run_validation_child run_gate 2>&1 | tee "$GATE_LOG"
 GATE_STATUS=${PIPESTATUS[0]}
 set -e
 
@@ -893,7 +921,7 @@ mod tests {
         // upgrades (and refuses that one push).
         let hook = pre_push_hook_script();
         for marker in [
-            "# pre-push-hook-version: 1",
+            "# pre-push-hook-version: 3",
             "hook_version()",
             "\"$checkout_version\" -gt \"$installed_version\"",
             "keeping the installed hook. Update this branch/worktree",
@@ -915,6 +943,45 @@ mod tests {
             !hook.contains("cp \"$REPO_ROOT_FOR_HOOK/hooks/pre-push\" \"$0\""),
             "hook must not copy directly over the installed hook"
         );
+    }
+
+    // The generated hook guards its validation children with `command -v
+    // python3`, a POSIX-only name (Windows ships `python.exe`), so the
+    // end-to-end fixture below can only hold on unix.
+    #[cfg(unix)]
+    #[test]
+    fn generated_pre_push_validation_children_preserve_outer_repository() -> Result<()> {
+        let area = std::env::temp_dir().join(format!(
+            "hook-validation-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&area)?;
+        let hook = area.join("generated-pre-push");
+        fs::write(&hook, pre_push_hook_script())?;
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/tests/test_pre_push_validation_child.py");
+        let output = Command::new("python3")
+            .arg(script)
+            .arg("--hook")
+            .arg(&hook)
+            .arg("--evidence")
+            .arg(&area)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "generated hook qualification failed; evidence {}\nstdout: {}\nstderr: {}",
+            area.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // This run is deliberately retained under the caller's task TEMP.
+        // Print the success path too so its owner can manage evidence retention.
+        std::io::Write::write_all(
+            &mut std::io::stderr(),
+            format!("retained generated hook evidence: {}\n", area.display()).as_bytes(),
+        )?;
+        Ok(())
     }
 
     #[test]
