@@ -18,6 +18,7 @@ mod tasks;
 #[cfg(test)]
 mod test_support;
 mod types;
+use tasks::cargo_failure_digest;
 #[cfg(feature = "legacy")]
 use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
@@ -915,6 +916,23 @@ enum Commands {
         /// Validate the generated summary instead of rewriting it.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Render each non-success gate's failing tests, panic location and repro
+    /// command from a merge-gate shard summary and its per-gate logs.
+    GateFailureDigest {
+        /// Shard summary written by scripts/ci/run_gate_shard.py.
+        #[arg(long)]
+        summary: PathBuf,
+        /// Directory holding <gate>.log for each executed gate.
+        #[arg(long, default_value = "target/receipts/logs")]
+        logs: PathBuf,
+        /// Markdown destination; replaced, never appended to.
+        #[arg(long, default_value = "target/receipts/gate-failure-digest.md")]
+        out: PathBuf,
+        /// Also print the digest to stdout.
+        #[arg(long)]
+        print: bool,
     },
 
     /// Report the RIPR suppression ledger's own lifecycle dates against today.
@@ -6261,6 +6279,14 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
             ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
         }
+        Commands::GateFailureDigest { summary, logs, out, print } => {
+            cargo_failure_digest::run(cargo_failure_digest::GateFailureDigestConfig {
+                summary,
+                logs,
+                out,
+                print,
+            })
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }
@@ -6272,7 +6298,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             benchmarks::run_benchmarks(output, quick, category)
         }
         Commands::BenchCompare { fail_on_regression } => {
-            benchmarks::compare_benchmarks(fail_on_regression)
+            let code = benchmarks::compare_benchmarks(fail_on_regression)?;
+            if code != 0 {
+                // The comparator already explained an input refusal or verdict.
+                // This CLI boundary propagates its status without an eyre
+                // backtrace; launch failures still use the normal error path.
+                std::process::exit(code);
+            }
+            Ok(())
         }
         Commands::BenchFormat { receipt, markdown } => {
             benchmarks::format_benchmarks(receipt, markdown)
