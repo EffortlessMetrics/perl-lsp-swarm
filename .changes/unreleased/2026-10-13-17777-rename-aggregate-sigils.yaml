@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Lexical array and hash renames preserve scalar element-access sigils, avoiding accidental slices while leaving unrelated and shadowed bindings unchanged."
+time: 2026-10-13T02:40:51Z
+custom:
+  PR: "17792"
+  Slug: lexical-aggregate-rename-sigils-17777
+  Breaking: "no"

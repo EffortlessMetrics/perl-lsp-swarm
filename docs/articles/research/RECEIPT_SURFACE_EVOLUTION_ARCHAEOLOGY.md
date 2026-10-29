@@ -101,7 +101,7 @@ This is where receipt format becomes receipt contract.
 
 The machine-enforced surface is visible in three repo files.
 
-[`.ci/receipt.schema.json`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.ci/receipt.schema.json)
+[`.ci/receipt.schema.json`](../../../.ci/receipt.schema.json)
 defines the shape of the receipt. It requires:
 
 - `schema_version`
@@ -112,12 +112,12 @@ defines the shape of the receipt. It requires:
 It also forces the receipt to carry execution context such as commit SHA,
 branch, toolchain, platform, environment, and per-gate results.
 
-[`xtask/src/tasks/gates.rs`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/gates.rs)
+[`xtask/src/tasks/gates.rs`](../../../xtask/src/tasks/gates.rs)
 is the typed runner. It reads `.ci/gate-policy.yaml`, executes gate tiers,
 captures timing and status, and serializes the receipt structure from code
 rather than from ad hoc shell output.
 
-[`scripts/run-gates.sh`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/scripts/run-gates.sh)
+[`scripts/run-gates.sh`](../../../scripts/run-gates.sh)
 is the older bridge surface. It still emits a JSON receipt, but in shell form
 and with a much thinner contract. The existence of both surfaces shows the
 transition clearly: shell proof first, typed proof later.
@@ -131,11 +131,11 @@ report.
 
 The contract is not hidden in local tooling.
 
-[`docs/forensics/prompts/measurement-auditor.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/forensics/prompts/measurement-auditor.md)
+[`docs/forensics/prompts/measurement-auditor.md`](../../forensics/prompts/measurement-auditor.md)
 formalizes the rule that a metric without commands, receipts, and git context
 is not trustworthy. It is explicitly about auditability and reproducibility.
 
-[`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md)
+[`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md)
 turns that into the project philosophy: AI-native work is receipt-based, not
 trust-based.
 
@@ -170,15 +170,15 @@ enforced proof, to audited proof.
 
 ## Evidence Pointers
 
-- [PR_REVIEW_RECEIPT_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_RECEIPT_ARCHAEOLOGY.md)
-- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
-- [RECEIPTS_LIE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/RECEIPTS_LIE_ARCHAEOLOGY.md)
-- [VALIDATOR_BLIND_SPOT_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/VALIDATOR_BLIND_SPOT_ARCHAEOLOGY.md)
-- [PROVENANCE_RECEIPTS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PROVENANCE_RECEIPTS_ARCHAEOLOGY.md)
+- [PR_REVIEW_RECEIPT_ARCHAEOLOGY.md](PR_REVIEW_RECEIPT_ARCHAEOLOGY.md)
+- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
+- [RECEIPTS_LIE_ARCHAEOLOGY.md](RECEIPTS_LIE_ARCHAEOLOGY.md)
+- [VALIDATOR_BLIND_SPOT_ARCHAEOLOGY.md](VALIDATOR_BLIND_SPOT_ARCHAEOLOGY.md)
+- [PROVENANCE_RECEIPTS_ARCHAEOLOGY.md](PROVENANCE_RECEIPTS_ARCHAEOLOGY.md)
 - [PR #209](https://github.com/EffortlessMetrics/perl-lsp/pull/209)
 - [PR #274](https://github.com/EffortlessMetrics/perl-lsp/pull/274)
 - [PR #533](https://github.com/EffortlessMetrics/perl-lsp/pull/533)
 - [Issue #210](https://github.com/EffortlessMetrics/perl-lsp/issues/210)
-- [receipt.schema.json](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.ci/receipt.schema.json)
-- [gates.rs](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/xtask/src/tasks/gates.rs)
-- [run-gates.sh](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/scripts/run-gates.sh)
+- [receipt.schema.json](../../../.ci/receipt.schema.json)
+- [gates.rs](../../../xtask/src/tasks/gates.rs)
+- [run-gates.sh](../../../scripts/run-gates.sh)
