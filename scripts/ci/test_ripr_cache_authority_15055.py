@@ -50,6 +50,10 @@ RECEIPT_CACHE_MARKER_GUARD = (
 RECEIPT_CACHE_ADJUDICATOR = "Adjudicate receipt cache exactness"
 RECEIPT_CACHE_EXACT_GUARD = ' && [ "${RIPR_RECEIPT_CACHE_HIT:-}" = "true" ]'
 RECEIPT_SCAN = "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json"
+OBSERVED_RECEIPT_SCAN = (
+    'bash scripts/ci/observe-xtask-build.sh host-baseline '
+    '"$RIPR_FRESHNESS_HANDOFF/xtask-builds" -- ' + RECEIPT_SCAN
+)
 RECEIPT_MARKER_NAME = ".ripr-plus-fresh"
 RECEIPT_CACHE_JOBS = ("ripr-github", "ripr-fallback")
 SELFHOSTED_CACHE_DIR = "RIPR_CACHE_DIR: /mnt/ci-cache/" + FACT_CACHE_DIRNAME
@@ -361,8 +365,13 @@ def validate_receipt_cache_contract(source: list[str]) -> None:
         # Whole line, not substring: the validate step's `--check` invocation
         # contains the produce command as a prefix, so a containment test
         # would count it as a second producer.
-        receipt_steps = [i for i, text in names
-                         if any(line.strip() == RECEIPT_SCAN for line in text.splitlines())]
+        accepted_scans = {RECEIPT_SCAN}
+        if job == "ripr-github":
+            accepted_scans.add(OBSERVED_RECEIPT_SCAN)
+        # Count invocations, including duplicates within one step. Only this
+        # exact observer/phase/output and unchanged Cargo argv are accepted.
+        receipt_steps = [i for i, text in names for line in text.splitlines()
+                         if line.strip() in accepted_scans]
         if len(receipt_steps) != 1:
             raise AssertionError(f"{job} must run the repo-wide receipt scan exactly once")
         receipt = names[receipt_steps[0]][1]
@@ -656,6 +665,39 @@ class RiprCacheAuthorityTests(unittest.TestCase):
     def test_receipt_cache_is_exact_head_and_fresh_only(self) -> None:
         validate_receipt_cache_contract(self.source)
         validate_cache_family_accounting(self.source)
+
+    def test_observed_receipt_scan_keeps_exact_producer_contract(self) -> None:
+        text = "\n".join(self.source)
+        self.assertIn(OBSERVED_RECEIPT_SCAN, text)
+        validate_receipt_cache_contract(self.source)
+        # The original unwrapped production spelling remains valid too.
+        validate_receipt_cache_contract(
+            text.replace(OBSERVED_RECEIPT_SCAN, RECEIPT_SCAN, 1).splitlines()
+        )
+        mutations = {
+            "wrong phase": OBSERVED_RECEIPT_SCAN.replace("host-baseline", "host-guidance"),
+            "wrong output": OBSERVED_RECEIPT_SCAN.replace("/xtask-builds", "/other-output"),
+            "wrong observer": OBSERVED_RECEIPT_SCAN.replace("observe-xtask-build.sh", "other.sh"),
+            "missing argv boundary": OBSERVED_RECEIPT_SCAN.replace(" -- cargo", " cargo"),
+            "validation is not production": OBSERVED_RECEIPT_SCAN + " --check",
+            "different receipt": OBSERVED_RECEIPT_SCAN.replace("ripr-plus.json", "other.json"),
+            "different source scope": OBSERVED_RECEIPT_SCAN + " --baseline-commit HEAD~1",
+            "duplicate wrapped producer": OBSERVED_RECEIPT_SCAN + "\n            " + OBSERVED_RECEIPT_SCAN,
+            "duplicate unwrapped producer": OBSERVED_RECEIPT_SCAN + "\n            " + RECEIPT_SCAN,
+            "missing producer": "true",
+        }
+        for name, replacement in mutations.items():
+            with self.subTest(mutation=name):
+                mutated = text.replace(OBSERVED_RECEIPT_SCAN, replacement, 1)
+                self.assertNotEqual(text, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_receipt_cache_contract(mutated.splitlines())
+        fallback = "\n".join(block(self.source, "ripr-fallback", 2))
+        self.assertIn(RECEIPT_SCAN, fallback)
+        with self.assertRaises(AssertionError):
+            validate_receipt_cache_contract(text.replace(
+                fallback, fallback.replace(RECEIPT_SCAN, OBSERVED_RECEIPT_SCAN, 1), 1
+            ).splitlines())
 
     def test_receipt_cache_mutations_fail_closed(self) -> None:
         """#16431 negative controls for the exact-head receipt memoization."""

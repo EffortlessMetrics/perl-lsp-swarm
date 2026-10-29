@@ -1,0 +1,279 @@
+{
+  "schema": "project_check_selection_policy.v1",
+  "policy_id": "project_check_selection.v1:ca71877ab70353c47ea6afe849cda6cf74751a28ea4be8537ee8e58fcf88e462",
+  "implementation_status": "decision-only; not implemented",
+  "controller": 11266,
+  "consumer": 10756,
+  "rows": [
+    {
+      "id": "root-directory",
+      "disposition": "retain",
+      "rule": "One explicitly requested directory is the scan subject; files/missing roots are operational failures. Canonicalize that root once before traversal; an explicit root symlink names the resolved directory.",
+      "current": "Current metadata follows an explicit root symlink, rejects files/missing roots with exit 1, and retains the supplied spelling.",
+      "rationale": "One root bounds a static CLI result; canonical identity is separate from presentation.",
+      "owner": 10756
+    },
+    {
+      "id": "root-excluded-name",
+      "disposition": "retain",
+      "rule": "An explicitly requested root is traversed even when its basename is excluded; exclusions apply only below root.",
+      "current": "Depth-zero exemption traverses all eight excluded-name roots.",
+      "rationale": "Explicit user choice must not silently become no_inputs.",
+      "owner": 10756
+    },
+    {
+      "id": "extensions",
+      "disposition": "retain",
+      "rule": "Admit only regular-file logical paths with exactly lowercase pm, pl, or t extensions; no content/shebang probe.",
+      "current": "Only .pm/.pl/.t; upper/mixed case, .cgi/.psgi/.xs/templates and extensionless shebangs omitted.",
+      "rationale": "Bound the native parser subject to the existing families; widening requires a new policy identity and parser-capability decision.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-local",
+      "disposition": "retain",
+      "rule": "Skip descendant directory basename local, case sensitively.",
+      "current": "Skipped at any descendant depth.",
+      "rationale": "Carton/cpanm dependency trees; explicit dependency root remains possible.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-blib",
+      "disposition": "retain",
+      "rule": "Skip descendant directory basename blib, case sensitively.",
+      "current": "Skipped at any descendant depth.",
+      "rationale": "Duplicated Perl build output.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-vendor",
+      "disposition": "retain",
+      "rule": "Skip descendant directory basename vendor, case sensitively.",
+      "current": "Skipped at any descendant depth.",
+      "rationale": "Vendored dependency source outside the initial own-source report.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-node_modules",
+      "disposition": "retain",
+      "rule": "Skip descendant directory basename node_modules, case sensitively.",
+      "current": "Skipped at any descendant depth.",
+      "rationale": "Dependency/build tree unrelated to native Perl subject.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-git",
+      "disposition": "retain",
+      "rule": "Skip descendant directory basename .git, case sensitively.",
+      "current": "Skipped at any descendant depth.",
+      "rationale": "Version-control metadata.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-target",
+      "disposition": "retain",
+      "rule": "Skip descendant directory basename target, case sensitively.",
+      "current": "Skipped at any descendant depth.",
+      "rationale": "Build output; preserves current finite source selection rationale.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-build",
+      "disposition": "retain",
+      "rule": "Skip descendant directory basename .build, case sensitively.",
+      "current": "Skipped at any descendant depth.",
+      "rationale": "Module::Build output.",
+      "owner": 10756
+    },
+    {
+      "id": "exclude-auto",
+      "disposition": "correct",
+      "rule": "Remove auto from the initial canonical exclusion list; traverse ordinary descendant auto directories.",
+      "current": "Skipped by basename, including lib/auto and user source named auto.",
+      "rationale": "auto can contain user-owned .pm/.pl/.t source; XS artifacts are already outside admitted extensions. Legacy alias may retain its named compatibility exclusion.",
+      "owner": 10756
+    },
+    {
+      "id": "hidden-ignore",
+      "disposition": "retain",
+      "rule": "Admit hidden paths except declared exclusions. Do not consult ignore files or spawn Git; do not add workspace-index hidden/cache exclusions implicitly.",
+      "current": "Hidden source, ignored files and extra workspace-noise names are admitted.",
+      "rationale": "Stable disk-only subject regardless of Git availability/tracked state; ignored own source must remain visible.",
+      "owner": 10756
+    },
+    {
+      "id": "symlinks",
+      "disposition": "refuse",
+      "rule": "Below the canonical explicit root, do not follow file or directory symlinks. Record an encountered link as skipped_by_policy with stable symlink-refused reason; do not inspect its target.",
+      "current": "File/directory links, aliases, excluded-target shortcuts and outside-root targets are followed; dangling/ancestor loops are reported.",
+      "rationale": "Bound traversal to the declared root without importing target/alias semantics. Root symlink is explicitly resolved by root-directory.",
+      "owner": 10756
+    },
+    {
+      "id": "outside-loop",
+      "disposition": "refuse",
+      "rule": "No implicit outside-root traversal or descendant link loops. Refused links remain explicit evidence; an external tree needs its own explicit root in a separate invocation.",
+      "current": "Outside files/directories are selected; ancestry loops become unscanned paths, yet exit may be 0.",
+      "rationale": "No hidden expansion of project subject; skipping a declared refused link is complete under this policy.",
+      "owner": 10756
+    },
+    {
+      "id": "hardlinks",
+      "disposition": "retain",
+      "rule": "Represent distinct root-relative regular-file paths separately even if device/inode match; avoid cross-platform physical identity deduplication.",
+      "current": "Two hardlink names are counted twice.",
+      "rationale": "CLI findings attach to logical paths; physical aliases are not stable portable identity. Symlink aliases are refused separately.",
+      "owner": 10756
+    },
+    {
+      "id": "path-identity",
+      "disposition": "correct",
+      "rule": "On Linux preserve exact relative component bytes with reversible presentation; sort by raw relative bytes and use / separators. Do not key identity by lossy display, Unicode normalization, or case folding.",
+      "current": "Supplied root spelling persists; non-UTF-8 names display as U+FFFD and distinct paths can collide.",
+      "rationale": "An exact selected denominator requires reversible identities. Machine encoding belongs to #11269; no project machine envelope is added here.",
+      "owner": 10756
+    },
+    {
+      "id": "unreadable",
+      "disposition": "correct",
+      "rule": "Selected file read failure retains a selected, unevaluated subject. Traversal failure retains an operational path with unknown descendant count; mark incomplete. Never infer how many unseen files exist.",
+      "current": "File read failure counts as blocking; unreadable subtree has an unscanned row outside denominator; percentage may pass.",
+      "rationale": "Preserve selected/evaluated/unknown separation; #10766 owns canonical exit 2 and legacy compatibility exceptions.",
+      "owner": 10756
+    },
+    {
+      "id": "no-input",
+      "disposition": "correct",
+      "rule": "Zero selected files is no_inputs; no percentage or strict-clean claim. A traversal error also marks incomplete.",
+      "current": "Empty/only-loop/unreadable-root reports can return exit 0.",
+      "rationale": "Canonical completeness cannot be vacuous; #10766 owns exit mapping and legacy alias compatibility.",
+      "owner": 10766
+    },
+    {
+      "id": "ordering",
+      "disposition": "correct",
+      "rule": "Collect a bounded static selection plan and sort paths by exact Linux root-relative bytes before evaluation/projection; sort operational rows by the same identity plus stable reason.",
+      "current": "No sorting of walker/file findings; creation order can affect rendered error order.",
+      "rationale": "Deterministic text/machine parity cannot depend on filesystem iteration.",
+      "owner": 10756
+    },
+    {
+      "id": "movement",
+      "disposition": "correct",
+      "rule": "Do not claim an atomic filesystem snapshot. A detected disappearance/replacement/read error remains incomplete with its subject; record read identity/freshness without asserting undetectable races were observed.",
+      "current": "Selection metadata and read are separate calls; no snapshot/freshness token or race callback.",
+      "rationale": "#10756 must carry detected movement; parser/evaluation freshness design belongs to that owner. Concurrent race details remain not proven here.",
+      "owner": 10756
+    },
+    {
+      "id": "budget-cancellation",
+      "disposition": "correct",
+      "rule": "Require a finite internal selection plan: at most 10000 selected paths, 100000 visited entries, depth 128, and 60 seconds discovery elapsed; check cancellation between entries. Any exhaustion/cancellation returns partial evidence and incomplete, never success. No CLI options are implied.",
+      "current": "No configured discovery cap/callback/deadline; files parsed inline and accumulated findings can grow.",
+      "rationale": "Conservative initial admission ceilings, not measured capacity guarantees. Entry limits include unsupported files; parser/source-byte admission is a separate required #10756/#10897 decision before canonical completeness.",
+      "owner": 10756
+    },
+    {
+      "id": "platforms",
+      "disposition": "defer",
+      "rule": "This receipt qualifies non-root Linux only. Native Windows drive/UNC, macOS case/normalization and permission semantics require independent fixtures before support claims.",
+      "current": "No native Windows/macOS measurements were performed.",
+      "rationale": "A Unix path fixture cannot qualify another OS; #10756 and #10792 own follow-up qualification.",
+      "owner": 10756
+    },
+    {
+      "id": "multi-root",
+      "disposition": "defer",
+      "rule": "One explicit root per invocation in v1. Multiple roots, configured include roots and cross-root identity are out of scope.",
+      "current": "Current CLI accepts one project directory.",
+      "rationale": "Avoid importing workspace indexing/include-path policy into a bounded static checker.",
+      "owner": 10756
+    },
+    {
+      "id": "no-execution",
+      "disposition": "retain",
+      "rule": "Discovery and native parsing must not execute project Perl or modules; no Git or Perl process is needed for the selected set.",
+      "current": "Native parser/read route plus tested PATH traps and BEGIN marker; exhaustive syscall audit not claimed.",
+      "rationale": "Real-Perl compatibility belongs to #1780; this decision establishes no installed/release/editor transport proof.",
+      "owner": 10756
+    }
+  ],
+  "architecture": {
+    "chosen": "Retain CLI-owned static selection in #10756; extract a small policy-driven plan/result boundary without introducing another general scanner or workspace index.",
+    "alternatives": [
+      {
+        "id": "current-project-walker",
+        "source": "crates/perl-lsp-rs/src/cli/check_project.rs",
+        "assessment": "Native, disk-only, exact legacy pm/pl/t and exclusion behavior; inline parsing, unsorted traversal, links and incomplete-success require explicit migration.",
+        "decision": "retain ownership, correct named policy rows through #10756/#10766"
+      },
+      {
+        "id": "workspace-discovery",
+        "source": "crates/perl-workspace/src/discovery/mod.rs; crates/perl-lsp-rs/src/runtime/file_discovery.rs",
+        "assessment": "Git subprocess and fallback can select different sets; broader case-insensitive source/shebang/XS families, include roots, sorting and cancellation, but ignored paths/traversal errors can vanish; DiscoveryResult lacks operational path evidence and finite entry budget. Does not itself run an index, yet importing its default semantics into CLI changes authority.",
+        "decision": "refuse wholesale reuse for v1; reuse only separately proven pure lower-level primitives without default workspace policy"
+      },
+      {
+        "id": "source-and-ignore-predicates",
+        "source": "crates/perl-parser-core/src/syntax/source_file.rs; crates/perl-workspace/src/ignore/mod.rs",
+        "assessment": "Pure extension/name predicates exist, but canonical editor families and workspace skip names differ from CLI v1; extensionless path helper reads disk.",
+        "decision": "do not silently reuse wider predicates or content probes; keep explicit versioned CLI policy rows"
+      },
+      {
+        "id": "new-general-filesystem-service",
+        "source": "alternative design, no implementation",
+        "assessment": "Could expose finite deterministic error-aware selection, but adds a new generic authority before a second static consumer exists.",
+        "decision": "defer general service; smallest extraction under existing #10756 ownership"
+      }
+    ],
+    "migration": [
+      "#10756 preserves the legacy report under a named compatibility selection identity while carrying explicit incomplete/path/read evidence; no silent legacy behavior switch.",
+      "#10756/#10766 implement canonical v1 selection and strict/report completeness deliberately. Correct/refuse rows are future migration obligations, not claims of implemented behavior.",
+      "#10897 owns canonical parser evaluation; #10809 owns typed category projection; #11269/#11270 consume the accepted result once, without rewalking/reparsing.",
+      "The legacy alias remains text-only under #11270; older #7233 JSON proposal is superseded for projects by the later controller and its current reconciliation comment."
+    ],
+    "reverse_when": [
+      "An existing discovery API can produce the same versioned static selection, reversible paths, finite budgets and complete operational evidence without Git/index/default-policy coupling.",
+      "Independent native-platform evidence requires a platform-specific path identity or exclusion amendment.",
+      "Another real static consumer demonstrates that a generic service removes semantic duplication rather than only shortening code."
+    ]
+  },
+  "selection": {
+    "root_kind": "directory",
+    "root_count": 1,
+    "root_symlinks": "canonicalize_explicit_root_once",
+    "file_extensions": [
+      "pm",
+      "pl",
+      "t"
+    ],
+    "case": "exact",
+    "descendant_exclusions": [
+      "local",
+      "blib",
+      "vendor",
+      "node_modules",
+      ".git",
+      "target",
+      ".build"
+    ],
+    "hidden_paths": "include_except_declared_exclusions",
+    "ignore_files": "not_consulted",
+    "descendant_symlinks": "refuse_with_skipped_by_policy_evidence",
+    "hardlinks": "distinct_logical_paths",
+    "linux_identity": "reversible_relative_bytes",
+    "linux_order": "raw_relative_bytes",
+    "unreadable_or_detected_movement": "incomplete_with_subject_evidence",
+    "no_selected_files": "no_inputs"
+  },
+  "discovery_budget": {
+    "max_selected_paths": 10000,
+    "max_visited_entries": 100000,
+    "max_depth": 128,
+    "max_elapsed_seconds": 60,
+    "cancellation_checkpoint": "between_entries",
+    "exhaustion": "incomplete_with_partial_evidence",
+    "qualification": "conservative_policy_choice_not_measured_capacity",
+    "parser_admission_owner": 10897
+  }
+}

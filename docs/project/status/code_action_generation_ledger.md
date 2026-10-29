@@ -52,7 +52,6 @@ order; when it does not, it falls through to a single degraded text generation.
 | 6 | `provider_original` | ast | production |
 | 7 | `provider_enhanced` | ast | production |
 | 8 | `disabled_extract_placeholder` | both | production |
-| 9 | `test_generator` | ast | production |
 | 10 | `source_fix_all_aggregate` | ast | production |
 | 11 | `text_fallback` | no_ast | production |
 | — | `legacy_critic` | none | unreachable_stub |
@@ -66,6 +65,18 @@ and splices them back in place; the stage-10 aggregate is constructed by
 `build_source_fix_all` inside the owned `finalize_code_action_candidate`
 helper, which the check verifies as an explicit helper edge rather than by an
 in-handler literal.
+
+Stage 9 is retired: the #17304 repair removed the `test_generator` generation.
+It offered a command-only `perl.generateTest` action ("Generate test for
+'<sub>'") that was registered in no executeCommand dispatch, no
+`executeCommandProvider` advertisement, and no editor extension, so executing
+the offered action always failed with `-32601 Unknown command`. The offer and
+its `source:test_generation` family are gone; `InternalCodeActionKind::Source`
+no longer has a producer and is recorded under `unreachable_kinds`.
+
+Stage 11 keeps only its inline strict/warnings pragma producer: the no-AST
+branch's command-only debug-print and convert-globals offers were removed by
+the same #17304 repair for the same executor-less reason.
 
 Stage 8 is called from *both* branches — once on the AST path and once again in
 the degraded no-AST branch — so it is the only generation besides
@@ -107,17 +118,15 @@ handler does not satisfy it.
 | native_critic | quickfix:critic_finding | canonical_candidate | — |
 | legacy_critic | none:unreachable_stub | retire_candidate | — |
 | provider_original | quickfix:hardcoded_shebang | canonical_candidate | — |
-| provider_enhanced | refactor.extract.variable:variable | canonical_candidate | — |
-| provider_original | refactor.extract.variable:variable | redundant_behavior | — |
-| provider_enhanced | refactor.extract.subroutine:subroutine | canonical_candidate | — |
-| provider_original | refactor.extract.subroutine:subroutine | redundant_behavior | — |
-| provider_original | refactor.extract.variable:basic_fallback | shadow_only_candidate | — |
-| disabled_extract_placeholder | refactor.extract.variable:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
+| provider_enhanced | refactor.extract:variable | canonical_candidate | — |
+| provider_original | refactor.extract:variable | redundant_behavior | — |
+| provider_enhanced | refactor.extract:subroutine | canonical_candidate | — |
+| provider_original | refactor.extract:subroutine | redundant_behavior | — |
+| provider_original | refactor.extract:basic_fallback | shadow_only_candidate | — |
+| disabled_extract_placeholder | refactor.extract:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
 | provider_enhanced | refactor.rewrite:enhanced_transforms | canonical_candidate | — |
 | provider_original | refactor.rewrite:enhanced_transforms | redundant_behavior | — |
-| text_fallback | refactor.rewrite:text_fallback | compatibility_only | canonical_route_has_no_degraded_path_equivalent |
 | provider_original | source.modernize:modernize | canonical_candidate | — |
-| test_generator | source:test_generation | canonical_candidate | — |
 | source_fix_all_aggregate | source.fixAll:aggregate | canonical_candidate | — |
 | lsp_compat_stub | none:unreachable_stub | retire_candidate | — |
 
@@ -184,10 +193,10 @@ pins the same fact at the protocol surface.
 
 What remains is `current_parsed()` returning `None` because the current
 generation has no published parse snapshot yet — a timing window, not a source
-shape. No corpus fixture can pin that without racing the parser, so both
-`text_fallback` rows carry a `proof_gap` instead of a fixture. #9189 must not
-treat them as parity-proven, and #9190 should decide whether a generation
-reachable only inside that window is worth keeping at all.
+shape. No corpus fixture can pin that without racing the parser, so the
+remaining `text_fallback` row carries a `proof_gap` instead of a fixture.
+#9189 must not treat it as parity-proven, and #9190 should decide whether a
+generation reachable only inside that window is worth keeping at all.
 
 ### The legacy critic engine is retired
 
@@ -231,11 +240,12 @@ updated alongside the routing change.
 ### Three CodeActionKinds are serializable but unreachable
 
 `handle_code_action` maps `InternalCodeActionKind::Refactor` to `"refactor"`,
-`RefactorInline` to `"refactor.inline"`, and the legacy generic
-`RefactorExtract` variants to `"refactor.extract"`. No production producer
-constructs those variants. The live extract producers emit
-`"refactor.extract.variable"` or `"refactor.extract.subroutine"` instead;
-the generic mappings remain serializable but unreachable in practice.
+`RefactorInline` to `"refactor.inline"`, and `Source` to `"source"`, but no
+producer anywhere in the workspace constructs any of the three. Refactor and
+RefactorInline were dead mappings from the start; `Source` lost its last
+producer when the #17304 repair removed the `test_generator` generation. All
+three kinds are dead mappings: reachable in the serializer, unreachable in
+practice.
 
 They are recorded in `unreachable_kinds` rather than left implicit, because the
 drift check requires every kind literal in the handler to be either a
@@ -291,8 +301,8 @@ The corpus covers the outcome classes #9188 requires:
 | refactor families | `cac-parity-enhanced-rewrite-transform-publishes-an-edit` |
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
-| identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-test-generation-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
-| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `refactor.extract.subroutine:subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract.variable:basic_fallback` carry a `proof_gap` instead of a parity fixture — five rows |
+| identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
+| recorded gap (`NOT_PROVEN`) | the remaining `text_fallback` row, `refactor.extract:subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract:basic_fallback` carry a `proof_gap` instead of a parity fixture — four rows |
 
 Every `cac-parity-*` id named anywhere on this page is checked against the
 ledger's routes. This table previously named a fixture that had been renamed,

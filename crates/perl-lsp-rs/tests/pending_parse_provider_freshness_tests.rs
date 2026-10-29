@@ -942,3 +942,143 @@ fn sub_foo_to_bar_cross_provider_freshness_canary_real_async_worker() -> TestRes
 
     Ok(())
 }
+
+/// #17775: completion must not pair the stale generation-1 AST with the
+/// generation-2 text while the real parse worker is paused mid-publish.
+/// The stale pairing made instance methods (`post`/`post_form` for a newly
+/// added `HTTP::Tiny->new` binding) intermittently disappear behind a
+/// confident, complete generic-only list. While the parse is pending,
+/// completion must answer with its bounded current-text fallback and mark
+/// the list incomplete; once the worker publishes, the same request must
+/// return the instance methods.
+#[test]
+fn completion_does_not_pair_stale_ast_with_new_text_real_async_worker() -> TestResult {
+    let (server, _legend) = fresh_server_with_real_worker_and_legend()?;
+    let uri = "file:///pending_parse_completion_17775.pl";
+
+    server.test_apply_did_open(uri, "my $http;\n$http->po\n", 1)?;
+    assert_eq!(server.test_document_generation(uri), Some(1));
+
+    server.test_parse_worker_arm_barrier(uri, 2);
+    server.test_apply_did_change(
+        uri,
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http->po\n",
+        42,
+    )?;
+    server.test_parse_worker_wait_until_paused();
+    assert_eq!(
+        server.test_document_generation(uri),
+        Some(2),
+        "didChange must bump the text generation before returning"
+    );
+
+    let completion_gap = server.test_handle_completion(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 2, "character": 9 }
+    })))?;
+    let gap_labels = completion_labels(&completion_gap);
+    assert!(
+        !gap_labels.iter().any(|label| label == "post" || label == "post_form"),
+        "gap: instance methods must not be claimed from the stale AST; got: {completion_gap:?}"
+    );
+    assert_eq!(
+        completion_gap
+            .as_ref()
+            .and_then(|value| value.get("isIncomplete"))
+            .and_then(Value::as_bool),
+        Some(true),
+        "gap: completion must mark the bounded fallback incomplete, not present \
+         a stale-AST answer as final; got: {completion_gap:?}"
+    );
+
+    // Production dispatch routes completion to the cancellable handler;
+    // it must honor the same gap contract.
+    let completion_gap_cancellable = server.test_handle_completion_cancellable(
+        Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 9 }
+        })),
+        None,
+    )?;
+    assert_eq!(
+        completion_gap_cancellable
+            .as_ref()
+            .and_then(|value| value.get("isIncomplete"))
+            .and_then(Value::as_bool),
+        Some(true),
+        "gap: cancellable completion must also mark the bounded fallback incomplete; \
+         got: {completion_gap_cancellable:?}"
+    );
+    assert!(
+        !completion_labels(&completion_gap_cancellable)
+            .iter()
+            .any(|label| label == "post" || label == "post_form"),
+        "gap: cancellable completion must not claim instance methods from the stale AST; \
+         got: {completion_gap_cancellable:?}"
+    );
+
+    server.test_parse_worker_release_barrier();
+    assert!(
+        server.test_wait_for_parse_worker_settled(uri, Duration::from_secs(5)),
+        "worker must settle (publish) within the timeout after release"
+    );
+    let metrics = server.test_parse_worker_metrics().ok_or("parse worker metrics missing")?;
+    assert_eq!(metrics.jobs_published, 1, "exactly one generation must have published");
+
+    let completion_fresh = server.test_handle_completion(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 2, "character": 9 }
+    })))?;
+    let fresh_labels = completion_labels(&completion_fresh);
+    assert!(
+        fresh_labels.iter().any(|label| label == "post")
+            && fresh_labels.iter().any(|label| label == "post_form"),
+        "post-publish: instance methods must be offered; got: {completion_fresh:?}"
+    );
+
+    Ok(())
+}
+
+/// #17775: a generation bump without a text change leaves the stale
+/// snapshot's parsed source equal to the current text, so completion may
+/// still answer from it and must not report the list incomplete (the
+/// indexer-bump case behind #11858).
+#[test]
+fn completion_uses_same_text_stale_snapshot_without_incomplete_flag() -> TestResult {
+    let server = fresh_server();
+    let uri = "file:///gap_completion_same_text.pl";
+
+    server.test_apply_did_open(uri, BEFORE_TEXT, 1)?;
+    server.test_apply_text_change_without_reparse(uri, BEFORE_TEXT, 2)?;
+    assert_eq!(server.test_document_generation(uri), Some(2));
+
+    let completion = server.test_handle_completion(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 3 }
+    })))?;
+    assert!(
+        completion_labels(&completion).iter().any(|label| label == "foo"),
+        "same-text stale: completion must still offer the AST-derived `foo`; got: {completion:?}"
+    );
+    assert_eq!(
+        completion.as_ref().and_then(|value| value.get("isIncomplete")).and_then(Value::as_bool),
+        Some(false),
+        "same-text stale: completion must not mark the answer incomplete; got: {completion:?}"
+    );
+
+    Ok(())
+}
+
+fn completion_labels(completion: &Option<Value>) -> Vec<String> {
+    completion
+        .as_ref()
+        .and_then(|value| value.get("items"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("label").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}

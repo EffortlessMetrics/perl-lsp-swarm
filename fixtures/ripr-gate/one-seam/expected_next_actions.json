@@ -1,0 +1,9 @@
+[
+  {
+    "kind": "new_ripr_gap",
+    "blocking": true,
+    "new_unresolved": 1,
+    "gap_list_proven": true,
+    "guidance_status": "present"
+  }
+]

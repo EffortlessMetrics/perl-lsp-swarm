@@ -182,7 +182,7 @@ Any change touching `crates/perl-lsp/`, `crates/perl-lsp-rs/`, or `crates/perl-l
 
 | Field | Value |
 |---|---|
-| **Invariant** | All URI handling round-trips correctly for (a) Unix absolute paths (`file:///home/user/foo.pl`), (b) Windows drive-letter paths (`file:///C:/Users/foo.pl`), (c) Windows paths with forward slashes (`file:///C:/Users/foo.pl` vs `file:///C:\Users\foo.pl`), and (d) UNC paths (`file://server/share/foo.pl`). The canonical form must be stable across round-trips. |
+| **Invariant** | All URI handling round-trips correctly for (a) Unix absolute paths (`file:///home/user/foo.pl`), (b) Windows drive-letter paths (`file:///C:/Users/user/foo.pl`), (c) Windows paths with forward slashes (`file:///C:/Users/user/foo.pl` vs `file:///C:\Users\user\foo.pl`), and (d) UNC paths (`file://server/share/foo.pl`). The canonical form must be stable across round-trips. |
 | **Trigger** | Any change to URI construction, parsing, or comparison (`uri.rs`, `WorkspaceUri`, `Url`, path-to-uri helpers) |
 | **Required adversarial test** | Round-trip each of the four URI forms through the normalizer and assert equality. Also assert that two URIs pointing to the same file but differing only in slash direction compare equal. |
 | **Ref** | ADR 0037 (guaranteed-valid-uri-fallbacks) |
