@@ -172,7 +172,10 @@ fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
     harness.open_file("project/trace.pl", TRACE_SOURCE)?;
     record_event(&mut events, "did_open_sent", start);
 
-    let diags = harness.wait_for_diagnostics("project/trace.pl", ARRIVAL_BUDGET);
+    let diags = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "project/trace.pl"),
+        harness.wait_for_diagnostics("project/trace.pl", ARRIVAL_BUDGET),
+    )?;
     assert!(!diags.is_empty(), "syntax-only lean trace must publish parser diagnostics");
     record_event(&mut events, "first_did_open_processed", start);
     record_event(&mut events, "first_diagnostic_published", start);

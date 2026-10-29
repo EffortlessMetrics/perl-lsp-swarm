@@ -57,6 +57,7 @@ generated sections.
 - [PLSP-SPEC-0035: Executable-profile charter and EIR contract](PLSP-SPEC-0035-executable-profile-and-eir.md)
 - [PLSP-SPEC-0036: Windows LSP4IJ entry-point compatibility](PLSP-SPEC-0036-lsp4ij-windows-entrypoints.md)
 - [PLSP-SPEC-0037: Reload lifecycle and observation-route contract](PLSP-SPEC-0037-reload-lifecycle-v1.md)
+- [PLSP-SPEC-0038: Unsupported-fact catalog contract](PLSP-SPEC-0038-unsupported-fact-catalog.md)
 
 ## Acceptance and Proof
 

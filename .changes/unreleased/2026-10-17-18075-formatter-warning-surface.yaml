@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Added
+body: "Formatting options that have no effect with the native formatter (such as formatting.verticalAlignment) now produce a one-time client-visible warning naming the ignored keys, instead of only a server log line. The warning explains that the keys apply only to the external legacy formatter."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18075"
+  Slug: formatter-warning-surface
+  Breaking: "no"

@@ -715,6 +715,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "core_module_notice_shown",
+        ClientSession,
+        "Arc<AtomicBool>",
+        "server session",
+        "server session",
+        false,
+        "#16551"
+    ),
+    row!(
         "formatter_runtime_override",
         ProductComposition,
         "Mutex<Option<Arc>>",

@@ -55,9 +55,9 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
     // ── 3. Statement is Let { name: "x", sigil: $, storage: my } ──────────
     let (let_name, let_sigil, let_storage, init_id, let_binding_range) = match stmt {
         HirStmt::Let { name, sigil, storage, init, binding_range, binding } => {
-            // The test-only `lower_body` builder has no scope graph, so it must
-            // leave identity unset rather than fabricate one (#14166).
-            assert!(binding.is_none(), "test-only lowering must leave binding unset");
+            // Complete Programs now use canonical scope-derived identity (#5813).
+            // The geometry assertions below remain unchanged.
+            assert!(binding.is_some(), "Program lowering must retain the canonical binding");
             (name.as_str(), sigil, storage, *init, *binding_range)
         }
         other => return Err(format!("expected HirStmt::Let, got {other:?}")),

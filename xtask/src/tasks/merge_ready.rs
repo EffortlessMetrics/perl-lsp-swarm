@@ -335,9 +335,9 @@ pub fn evaluate_snapshot(snapshot: &MergeReadinessSnapshot) -> Result<MergeReadi
                     });
                 }
                 Some([check])
-                    if check_subject_finding(required_name, check, &snapshot).is_some() =>
+                    if check_subject_finding(required_name, check, snapshot).is_some() =>
                 {
-                    if let Some(finding) = check_subject_finding(required_name, check, &snapshot) {
+                    if let Some(finding) = check_subject_finding(required_name, check, snapshot) {
                         findings.push(finding);
                     }
                 }
