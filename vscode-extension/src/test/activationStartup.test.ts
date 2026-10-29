@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientStart = jest.fn(() => new Promise<void>(() => undefined));
 const mockLanguageClientStop = jest.fn(async () => undefined);
@@ -98,7 +99,7 @@ describe('extension activation startup scheduling (#3159)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
 
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue?: unknown) => {

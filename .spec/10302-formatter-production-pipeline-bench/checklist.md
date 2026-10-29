@@ -121,15 +121,14 @@ Planned surface:
       manifest subject from the dedicated serialized receipt pass; Criterion's
       repeated timing samples remain separate and join later by canonical ID
 - [ ] `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`:
-      NPC-001..NPC-006 + NPC-010 pipeline/parse canaries incl. detector sanity
+      NPC-001, NPC-002, NPC-004..NPC-006 + NPC-010 pipeline/parse canaries incl. detector sanity
       control and the early-refusal disposition table
 - [ ] Complete provider vector proof remains `NOT_PROVEN`. The current
       provider-facing subset is in
-      `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`:
+      `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`:
       `document_request_parses_exactly_once` and
-      `range_request_parses_exactly_once`. A dedicated
-      `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`
-      artifact does not exist in this candidate; do not claim the absent
+      `range_request_parses_exactly_once`. This dedicated provider target
+      preserves the existing subset; do not claim the absent
       Off/invalid-range/typed-preserve matrix or the unreachable
       formatted-output-refusal vector
 - [ ] `.github/workflows/ci-nightly.yml`: one `BENCH_TARGETS` entry
@@ -174,6 +173,7 @@ cargo clippy -p perl-lsp-perltidy -p perl-lsp-rs-core --all-targets --locked -- 
 cargo test -p perl-lsp-perltidy --all-targets --locked
 cargo test -p perl-lsp-rs-core --all-targets --locked
 cargo test -p perl-lsp-perltidy --test native_pipeline_counters_tests --locked -- --test-threads=1
+cargo test -p perl-lsp-rs-core --test native_pipeline_invocation_tests --locked -- --test-threads=1
 cargo-allow check --mode no-new
 export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID:-local}-$(git rev-parse HEAD)-$(date +%s)"
 rm -f target/criterion/native-pipeline-measurements.v1.json

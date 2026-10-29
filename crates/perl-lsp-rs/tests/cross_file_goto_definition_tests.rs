@@ -126,6 +126,231 @@ print "Result: $result\n";
 }
 
 // ---------------------------------------------------------------------------
+// Test 1b: a fully-qualified cross-package call must never resolve to the
+// caller's own same-named sub (#17252).
+//
+// The target package has no file on disk, so the workspace index can never
+// answer for `Scale03::Mod00::compute_0` — the exact state (index miss, and
+// after the target buffer opens, a deterministically stale index) where the
+// same-file fallbacks used to shadow the qualified call with the caller's own
+// `sub compute_0`. The honest answer is null (unresolved), never a
+// different package's sub.
+// ---------------------------------------------------------------------------
+
+/// The caller fixture declares only `package Scale00::Mod00` (plus one
+/// explicitly qualified `sub Scale03::Mod00::helper`), so a caller-file answer
+/// is wrong-package by construction for every position this helper guards —
+/// except `helper`, whose requested package genuinely lives in this file and
+/// is asserted separately via `explicitly_qualified_same_file_decl_resolves`.
+fn no_caller_sub_target(
+    result: &Value,
+    caller_uri: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if result.is_null() {
+        return Ok(());
+    }
+    let locations = result
+        .as_array()
+        .ok_or_else(|| std::io::Error::other("expected null or array definition result"))?;
+    if locations.is_empty() {
+        return Ok(());
+    }
+    for location in locations {
+        let uri = location
+            .get("uri")
+            .and_then(Value::as_str)
+            .ok_or("definition location must carry a uri")?;
+        if uri == caller_uri {
+            return Err(format!(
+                "a fully-qualified cross-package call resolved into the caller's own buffer \
+                 ({caller_uri}); it must never answer with a different package's same-named \
+                 sub (#17252)"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn qualified_cross_package_call_never_falls_back_to_callers_same_named_sub() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    // Caller owns a same-named `sub compute_0` and calls a package that has
+    // NO file on disk anywhere in the workspace. It also carries an
+    // explicitly qualified `sub Scale03::Mod00::helper` — a declaration that
+    // names its package without a `package` statement — whose qualified call
+    // must still resolve into this very file (review on PR #17280).
+    let caller_code = r#"package Scale00::Mod00;
+use strict;
+use warnings;
+
+sub compute_0 {
+    my ($n) = @_;
+    return $n + 1;
+}
+
+sub Scale03::Mod00::helper {
+    my ($n) = @_;
+    return $n * 3;
+}
+
+sub probe_def {
+    my $d = Scale03::Mod00::compute_0(3);
+    my $h = Scale03::Mod00::helper(1);
+    return $d + $h;
+}
+
+1;
+"#;
+    workspace.write("lib/Scale00/Mod00.pm", caller_code)?;
+
+    // The target exists only as an open buffer, never on disk: while it is
+    // open the workspace index is deterministically stale for it (it was
+    // never indexed), which is exactly the flip state observed in #17252.
+    let target_text = r#"package Scale03::Mod00;
+sub compute_0 {
+    my ($n) = @_;
+    return $n * 2;
+}
+
+1;
+"#;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let caller_uri = workspace.uri("lib/Scale00/Mod00.pm");
+    harness.open(&caller_uri, caller_code)?;
+    harness.barrier();
+
+    // Cursor on the final component (`compute_0`) of the qualified call.
+    let call_line = caller_code
+        .lines()
+        .position(|line| line.contains("Scale03::Mod00::compute_0"))
+        .ok_or("caller fixture lost its qualified call")? as u32;
+    let (line, col) = find_pos(caller_code, "Mod00::compute_0(3)", call_line as usize)?;
+    let params = json!({
+        "textDocument": {"uri": caller_uri},
+        "position": {"line": line, "character": col + 7}
+    });
+
+    // Fresh index, genuine miss: the caller's own same-named sub must not
+    // answer for Scale03::Mod00::compute_0.
+    let before_open = harness.request("textDocument/definition", params.clone())?;
+    no_caller_sub_target(&before_open, &caller_uri)?;
+
+    // Open the target buffer: the index is now stale for an open document,
+    // and the resolution must still not fall back into the caller's buffer.
+    let target_uri = workspace.uri("lib/Scale03/Mod00.pm");
+    harness.open(&target_uri, target_text)?;
+    let after_open = harness.request("textDocument/definition", params)?;
+    no_caller_sub_target(&after_open, &caller_uri)?;
+
+    Ok(())
+}
+
+/// `sub Scale03::Mod00::helper` names its package explicitly without a
+/// `package` statement, so a `Scale03::Mod00::helper()` call in the same file
+/// (whose ambient package is `Scale00::Mod00`) must resolve to that same-file
+/// declaration — whichever tier answers (the didOpen commit feeds the buffer
+/// into the index, so the qualified index lookup may answer directly; the
+/// same-file fallback decision itself is pinned deterministically by
+/// `same_file_answer_package_matches_reads_final_qualifier` in
+/// navigation.rs). The range assertion proves the answer lands on the
+/// declaration, not just anywhere in the caller file (review on PR #17280).
+#[test]
+fn explicitly_qualified_same_file_decl_resolves() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = TempWorkspace::new()?;
+
+    let caller_code = r#"package Scale00::Mod00;
+use strict;
+use warnings;
+
+sub Scale03::Mod00::helper {
+    my ($n) = @_;
+    return $n * 3;
+}
+
+sub probe_def {
+    my $h = Scale03::Mod00::helper(1);
+    return $h;
+}
+
+1;
+"#;
+    // Disk version without the helper: the startup index cannot answer for
+    // Scale03::Mod00::helper, whatever the staleness window does.
+    workspace.write(
+        "lib/Scale00/Mod00.pm",
+        r#"package Scale00::Mod00;
+use strict;
+use warnings;
+
+sub probe_def_shim { 0 }
+
+1;
+"#,
+    )?;
+
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    let caller_uri = workspace.uri("lib/Scale00/Mod00.pm");
+    harness.open(&caller_uri, caller_code)?;
+    harness.barrier();
+
+    let call_line = caller_code
+        .lines()
+        .position(|line| line.contains("Scale03::Mod00::helper(1)"))
+        .ok_or("fixture lost its helper call")? as u32;
+    let decl_line = caller_code
+        .lines()
+        .position(|line| line.contains("sub Scale03::Mod00::helper"))
+        .ok_or("fixture lost its helper declaration")? as u32;
+    let (line, col) = find_pos(caller_code, "Mod00::helper(1)", call_line as usize)?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": caller_uri},
+            "position": {"line": line, "character": col + 7}
+        }),
+    )?;
+
+    let locations = result.as_array().ok_or_else(|| {
+        std::io::Error::other(format!(
+            "expected an array definition result for the explicitly qualified same-file \
+                 declaration, got: {result}"
+        ))
+    })?;
+    if locations.is_empty() {
+        return Err("the explicitly qualified same-file declaration must resolve when the index \
+                    cannot answer (review on PR #17280)"
+            .into());
+    }
+    let first = locations.first().ok_or("missing location")?;
+    let uri = first.get("uri").and_then(Value::as_str).ok_or("location must carry a uri")?;
+    if uri != caller_uri {
+        return Err(format!(
+            "the explicitly qualified declaration lives in the caller file; got {uri}"
+        )
+        .into());
+    }
+    // Prove the answer lands on the declaration itself, not just anywhere in
+    // the caller file (review on PR #17280).
+    let start_line = first
+        .pointer("/range/start/line")
+        .and_then(Value::as_u64)
+        .ok_or("location must carry a start line")?;
+    if start_line != decl_line as u64 {
+        return Err(format!(
+            "definition must land on 'sub Scale03::Mod00::helper' (line {decl_line}), got line \
+             {start_line}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 2: `use Module` navigates to Module.pm
 // ---------------------------------------------------------------------------
 

@@ -160,9 +160,20 @@ Keep agent identity, topology, liveness, retry order, provisional reasoning, raw
 unchanged polls, and routine skill transitions runtime-local. Do not write claim-frame
 state to a tracked file.
 
+## Ordinary qualification continuity
+
+Apply #3390's current same-owner rule and the shared development method's
+late-qualification boundary. Keep the useful owning lead through ordinary in-window
+CI wait, result inspection, separate final judgment, authorized protected merge and
+landing read-back. The remote-wait release guidance below applies to unnecessary
+child contexts and genuine interruption/capacity/window limits; it does not mandate
+ending a useful lead session. Use supported waits/events or bounded checks, never a
+polling child or scheduled monitor. Missing actual request capability is a producer
+blocker, not an accepted run. No routine queue or auto-merge is introduced.
+
 ## Remote-owned waits
 
-When review, CI, queue state, auto-merge, a platform, or another external transition
+When requested review, a platform, or a genuinely out-of-window CI transition
 owns the next action:
 
 - leave the coherent candidate in GitHub;

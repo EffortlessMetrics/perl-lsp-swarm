@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Fixed
+body: Ignore malformed disabled-feature settings during language-client startup, filter non-string feature entries, and apply feature-disable aliases only for explicit false settings.
+time: 2026-10-22T09:49:00Z
+custom:
+  PR: "18322"
+  Slug: vscode-configuration-types
+  Breaking: "no"
