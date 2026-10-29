@@ -428,6 +428,49 @@ fn qualified_output_call_keeps_clean_diagnostics_through_document_lifecycle() ->
     finish(&mut client)
 }
 
+// #17082: the same parser dispatch is used by native --check and document
+// analysis. Keep a malformed-header edit in the exact-process proof so silence
+// cannot be achieved by suppressing parser diagnostics.
+#[test]
+fn foreach_declaration_list_diagnostics_clear_after_header_repair() -> Result<()> {
+    let clean = "use strict;\nuse warnings;\nfor (my @filename = @_) { print $_; }\n";
+    let symbolic = "use strict;\nuse warnings;\nforeach (my $x ? 1 : 2) { print $_; }\n";
+    let power = "use strict;\nuse warnings;\nfor (my $x ** 2) { print $_; }\n";
+    let broken = "use strict;\nuse warnings;\nfor (my $i = 0 $i < 2; ++$i) { print $i; }\n";
+    let mut client = RealProcessClient::spawn_exact()?;
+    initialize(&mut client)?;
+    did_open(&mut client, 1, clean)?;
+
+    for (version, text, expect_parser_error) in [
+        (1, clean, false),
+        (2, broken, true),
+        (3, symbolic, false),
+        (4, power, false),
+        (5, clean, false),
+    ] {
+        if version > 1 {
+            did_change(&mut client, version, text)?;
+        }
+        wait_for_current_parse_tokens(&mut client, &format!("foreach-v{version}"))?;
+        let items = diagnostic_items(&mut client, &format!("foreach-diag-v{version}"))?;
+        let parser_errors = parser_diagnostic_fingerprints(&items)?;
+        ensure!(
+            parser_errors.is_empty() != expect_parser_error,
+            "foreach declaration/header diagnostics wrong at v{version}: {items:?}"
+        );
+        if expect_parser_error {
+            ensure!(
+                items.iter().any(|item| item
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("Missing ';' after for-loop init"))),
+                "malformed separator must retain its specific diagnostic: {items:?}"
+            );
+        }
+    }
+    finish(&mut client)
+}
+
 #[test]
 fn pull_diagnostics_identity_is_bound_to_exact_process_workspace_facts() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;

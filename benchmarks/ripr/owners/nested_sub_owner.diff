@@ -1,0 +1,8 @@
+diff --git a/lib/Nest.pm b/lib/Nest.pm
+--- a/lib/Nest.pm
++++ b/lib/Nest.pm
+@@ -2,3 +2,4 @@
+     our $FLAG = 1;
+     sub inner {
++        my $worked = 1;
+         return $worked;

@@ -3,7 +3,9 @@
 mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
-use perl_parser_core::hir::{AssignMode, HirExpr, HirKind, HirStmt, lower_ast};
+use perl_parser_core::hir::{
+    AccessMode, AssignMode, HirExpr, HirKind, HirStmt, VariableKind, lower_ast,
+};
 use perl_parser_core::syntax::error::{ParseError, RecoveryKind, RecoverySite};
 use perl_parser_core::{Node, NodeKind, Parser, TokenKind, TokenStream};
 
@@ -248,8 +250,8 @@ fn repetition_assignment_preserves_hir_declaration_reachability() -> Result<(), 
     let stmt = body
         .stmt(*root.stmts.first().ok_or("expected declaration body statement")?)
         .ok_or("expected declaration body statement")?;
-    let init_id = match stmt {
-        HirStmt::Let { init: Some(init_id), .. } => *init_id,
+    let (init_id, binding) = match stmt {
+        HirStmt::Let { init: Some(init_id), binding: Some(binding), .. } => (*init_id, *binding),
         other => return Err(format!("expected lowered declaration initializer, got {other:?}")),
     };
     let HirExpr::Assign { lhs, rhs, mode } =
@@ -257,22 +259,31 @@ fn repetition_assignment_preserves_hir_declaration_reachability() -> Result<(), 
     else {
         return Err("declaration initializer must lower to HirExpr::Assign".to_string());
     };
-    if !matches!(mode, AssignMode::Simple) {
-        return Err(format!("expected simple declaration assignment, got {mode:?}"));
+    // Canonical compound declarations lower once, using their declared place.
+    if !matches!(mode, AssignMode::ReadModifyWrite) {
+        return Err(format!("expected one read-modify-write declaration assignment, got {mode:?}"));
     }
-    if !matches!(body.expr(*lhs), Some(HirExpr::Variable(variable)) if variable.name == "value") {
+    if !matches!(body.expr(*lhs), Some(HirExpr::Variable(variable))
+        if variable.name == "value"
+            && variable.kind == VariableKind::Lexical
+            && variable.binding == Some(binding)
+            && variable.access == AccessMode::ReadModifyWrite)
+    {
         return Err(format!("expected declaration lhs operand, got {:?}", body.expr(*lhs)));
     }
-    let HirExpr::Assign { lhs: repetition_lhs, rhs: repetition_rhs, mode: repetition_mode } =
-        body.expr(*rhs).ok_or("expected lowered x= assignment operand")?
-    else {
-        return Err("x= initializer must lower to HirExpr::Assign".to_string());
-    };
-    if !matches!(repetition_mode, AssignMode::ReadModifyWrite)
-        || !matches!(body.expr(*repetition_lhs), Some(HirExpr::Variable(variable)) if variable.name == "value")
-        || body.expr(*repetition_rhs).is_none()
+    let lhs_range = body.source_map.expr_range(*lhs).ok_or("expected declaration lhs range")?;
+    let rhs_range = body.source_map.expr_range(*rhs).ok_or("expected x= rhs range")?;
+    if body.source_map.expr_range(init_id) != Some(ast_initializer.location)
+        || source.get(lhs_range.start..lhs_range.end) != Some("$value")
+        || source.get(rhs_range.start..rhs_range.end) != Some("3")
+        || body.expr(*rhs).is_none()
     {
-        return Err(format!("lowered x= operands are incomplete: {:?}", body.expr(*rhs)));
+        return Err("lowered x= operands must preserve their source ranges".to_string());
+    }
+    let assignment_count =
+        body.exprs.iter().filter(|expr| matches!(expr, HirExpr::Assign { .. })).count();
+    if assignment_count != 1 {
+        return Err(format!("expected exactly one lowered x= assignment, got {assignment_count}"));
     }
     Ok(())
 }
