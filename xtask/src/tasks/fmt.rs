@@ -1128,7 +1128,7 @@ mod tests {
         is_rewritable_staged_file, parse_unformatted_files, plan_workspace_format,
     };
     use color_eyre::eyre::Result;
-    use perl_tdd_support::must_some_with;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use std::collections::HashSet;
     use std::fs;
     use std::process::{Command, Stdio};
@@ -1305,7 +1305,7 @@ mod tests {
     fn well_formed_index_records_parse_to_their_modes() {
         let mut input = record("100644 abc123 0", "src/lib.rs");
         input.extend(record("120000 def456 0", "src/link.rs"));
-        let modes = super::parse_staged_index_modes(&input).expect("well-formed input parses");
+        let modes = must_with(super::parse_staged_index_modes(&input), "well-formed input parses");
         assert_eq!(modes.get(Path::new("src/lib.rs")).map(String::as_str), Some("100644"));
         assert_eq!(modes.get(Path::new("src/link.rs")).map(String::as_str), Some("120000"));
     }
@@ -1315,14 +1315,14 @@ mod tests {
         // Dropping it would leave the path with no mode, which the predicate
         // reads as permission — the exact bypass this refusal closes.
         let input = b"100644 abc123 0 src/lib.rs\0".to_vec();
-        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        let error = must_err_with(super::parse_staged_index_modes(&input), "must refuse");
         assert!(format!("{error}").contains("no tab separator"), "unexpected: {error}");
     }
 
     #[test]
     fn a_record_with_no_mode_field_refuses_rather_than_dropping_the_path() {
         let input = record("", "src/lib.rs");
-        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        let error = must_err_with(super::parse_staged_index_modes(&input), "must refuse");
         assert!(format!("{error}").contains("no mode field"), "unexpected: {error}");
     }
 
@@ -1338,7 +1338,8 @@ mod tests {
 
     #[test]
     fn empty_index_output_is_an_empty_map_not_an_error() {
-        let modes = super::parse_staged_index_modes(b"").expect("empty input is not an anomaly");
+        let modes =
+            must_with(super::parse_staged_index_modes(b""), "empty input is not an anomaly");
         assert!(modes.is_empty());
     }
 
@@ -1356,8 +1357,10 @@ mod tests {
         // gate-clean files: `rustfmt --check` rewrote 29, `rustfmt --edition
         // 2024 --check` rewrote 0.
         let packages = vec![package("legacy-crate", "crates/legacy", "2021")];
-        let owner = super::owning_package(Path::new("crates/legacy/src/lib.rs"), &packages)
-            .expect("legacy path must resolve to its package");
+        let owner = must_some_with(
+            super::owning_package(Path::new("crates/legacy/src/lib.rs"), &packages),
+            "legacy path must resolve to its package",
+        );
         assert_eq!(owner.edition, "2021", "each file must be formatted at its own package edition");
     }
 
@@ -1482,8 +1485,8 @@ mod tests {
             Err(err) => format!("{err}"),
         };
         // The available list must be sorted — both packages appear in alphabetical order.
-        let perl_pos = message.find("perl-parser").expect("perl-parser in error");
-        let xtask_pos = message.find("xtask").expect("xtask in error");
+        let perl_pos = must_some_with(message.find("perl-parser"), "perl-parser in error");
+        let xtask_pos = must_some_with(message.find("xtask"), "xtask in error");
         assert!(perl_pos < xtask_pos, "available packages must be listed in sorted order");
         Ok(())
     }
@@ -1696,9 +1699,10 @@ mod tests {
         let huge = format!("{}.rs", "x".repeat(FORMATTER_SPAWN_BUDGET));
         let mut metadata = sample_metadata();
         metadata.packages[0].targets = vec![rust_target(&huge, "2024")];
-        let error =
-            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET))
-                .expect_err("command-size uncertainty must not be a successful plan");
+        let error = must_err_with(
+            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET)),
+            "command-size uncertainty must not be a successful plan",
+        );
         let rendered = format!("{error}");
         assert!(rendered.contains("process-spawn limit"), "{rendered}");
         assert!(rendered.contains("not formatting drift"), "{rendered}");
@@ -1734,11 +1738,13 @@ mod tests {
                 batch("2024", &["last.rs"]),
             ],
         };
-        let failure = execute_package_plan_with(&plan, true, |current| {
-            let name = current.files[0].display().to_string();
-            if name == "first.rs" { clean() } else { drift(&name) }
-        })
-        .expect("aggregate must fail");
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, true, |current| {
+                let name = current.files[0].display().to_string();
+                if name == "first.rs" { clean() } else { drift(&name) }
+            }),
+            "aggregate must fail",
+        );
         assert!(failure.spawn_error.is_none());
         assert_eq!(failure.unformatted_files, vec!["middle.rs".to_string(), "last.rs".to_string()]);
     }
@@ -1749,14 +1755,16 @@ mod tests {
             manifest_path: "crates/pkg/Cargo.toml".to_string(),
             batches: vec![batch("2024", &["first.rs"]), batch("2024", &["last.rs"])],
         };
-        let failure = execute_package_plan_with(&plan, true, |current| {
-            if current.files[0].display().to_string() == "last.rs" {
-                BatchRunResult { success: false, stdout: Vec::new(), spawn_error: None }
-            } else {
-                clean()
-            }
-        })
-        .expect("a child non-zero without Diff lines must still fail the crate");
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, true, |current| {
+                if current.files[0].display().to_string() == "last.rs" {
+                    BatchRunResult { success: false, stdout: Vec::new(), spawn_error: None }
+                } else {
+                    clean()
+                }
+            }),
+            "a child non-zero without Diff lines must still fail the crate",
+        );
         assert!(failure.unformatted_files.is_empty());
         assert!(failure.spawn_error.is_none());
         // The crate still fails, but as a formatter instrument failure — the
@@ -1812,21 +1820,23 @@ mod tests {
             manifest_path: "crates/pkg/Cargo.toml".to_string(),
             batches: vec![batch("2024", &["clean.rs"]), batch("2024", &["drift.rs"])],
         };
-        let failure = execute_package_plan_with(&plan, true, |current| {
-            if current.files[0].display().to_string() == "clean.rs" {
-                BatchRunResult {
-                    success: false,
-                    stdout: Vec::new(),
-                    spawn_error: Some(
-                        "The filename or extension is too long. (os error 206)".into(),
-                    ),
+        let failure = must_some_with(
+            execute_package_plan_with(&plan, true, |current| {
+                if current.files[0].display().to_string() == "clean.rs" {
+                    BatchRunResult {
+                        success: false,
+                        stdout: Vec::new(),
+                        spawn_error: Some(
+                            "The filename or extension is too long. (os error 206)".into(),
+                        ),
+                    }
+                } else {
+                    drift("drift.rs")
                 }
-            } else {
-                drift("drift.rs")
-            }
-        })
-        .expect("both spawn and drift must surface");
-        let spawn = failure.spawn_error.expect("spawn error must be retained");
+            }),
+            "both spawn and drift must surface",
+        );
+        let spawn = must_some_with(failure.spawn_error, "spawn error must be retained");
         assert!(spawn.contains("os error 206"), "{spawn}");
         assert_eq!(failure.unformatted_files, vec!["drift.rs".to_string()]);
     }
@@ -1868,8 +1878,7 @@ mod tests {
             fs::write(&path, "fn probe(){ let x=1; }\n")?;
             files.push(path);
         }
-        let original: Vec<Vec<u8>> =
-            files.iter().map(|path| fs::read(path)).collect::<std::io::Result<_>>()?;
+        let original: Vec<Vec<u8>> = files.iter().map(fs::read).collect::<std::io::Result<_>>()?;
 
         let plan = PackageFormatterPlan {
             manifest_path: "Cargo.toml".to_string(),
@@ -1882,8 +1891,10 @@ mod tests {
                 })
                 .collect(),
         };
-        let failure = super::execute_package_plan(&plan, true, Path::new("rustfmt"), None)
-            .expect("unformatted first/middle/last batches must fail check");
+        let failure = must_some_with(
+            super::execute_package_plan(&plan, true, Path::new("rustfmt"), None),
+            "unformatted first/middle/last batches must fail check",
+        );
         assert_eq!(failure.unformatted_files.len(), 3, "{:?}", failure.unformatted_files);
         for (path, bytes) in files.iter().zip(&original) {
             assert_eq!(&fs::read(path)?, bytes, "check mode must not mutate {}", path.display());
@@ -2058,21 +2069,23 @@ mod tests {
         let mut fs = FakeFs::default();
         let mut stage_called = false;
 
-        let error = super::commit_formatted(
-            &files,
-            &mut |path, text| {
-                if path.display().to_string() == "b.rs" && text.starts_with("formatted") {
-                    return Err(color_eyre::eyre::eyre!("disk full"));
-                }
-                fs.writes.push((path.display().to_string(), text.to_string()));
-                Ok(())
-            },
-            &mut |_| {
-                stage_called = true;
-                Ok(())
-            },
-        )
-        .expect_err("a failed write must not report success");
+        let error = must_err_with(
+            super::commit_formatted(
+                &files,
+                &mut |path, text| {
+                    if path.display().to_string() == "b.rs" && text.starts_with("formatted") {
+                        return Err(color_eyre::eyre::eyre!("disk full"));
+                    }
+                    fs.writes.push((path.display().to_string(), text.to_string()));
+                    Ok(())
+                },
+                &mut |_| {
+                    stage_called = true;
+                    Ok(())
+                },
+            ),
+            "a failed write must not report success",
+        );
 
         assert!(!stage_called, "nothing may be staged when a write failed");
         assert_eq!(
@@ -2092,15 +2105,17 @@ mod tests {
         let files = vec![formatted("a.rs"), formatted("b.rs")];
         let mut fs = FakeFs::default();
 
-        let error = super::commit_formatted(
-            &files,
-            &mut |path, text| {
-                fs.writes.push((path.display().to_string(), text.to_string()));
-                Ok(())
-            },
-            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
-        )
-        .expect_err("a failed stage must not report success");
+        let error = must_err_with(
+            super::commit_formatted(
+                &files,
+                &mut |path, text| {
+                    fs.writes.push((path.display().to_string(), text.to_string()));
+                    Ok(())
+                },
+                &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+            ),
+            "a failed stage must not report success",
+        );
 
         let state = fs.state();
         assert_eq!(state.get("a.rs").map(String::as_str), Some("original a.rs"));
@@ -2117,18 +2132,20 @@ mod tests {
         // author needs to know exactly what to `git checkout --`.
         let files = vec![formatted("a.rs")];
 
-        let error = super::commit_formatted(
-            &files,
-            &mut |_, text| {
-                // The formatted write succeeds; the restore write fails.
-                if text.starts_with("original") {
-                    return Err(color_eyre::eyre::eyre!("read-only filesystem"));
-                }
-                Ok(())
-            },
-            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
-        )
-        .expect_err("a failed stage must not report success");
+        let error = must_err_with(
+            super::commit_formatted(
+                &files,
+                &mut |_, text| {
+                    // The formatted write succeeds; the restore write fails.
+                    if text.starts_with("original") {
+                        return Err(color_eyre::eyre::eyre!("read-only filesystem"));
+                    }
+                    Ok(())
+                },
+                &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+            ),
+            "a failed stage must not report success",
+        );
 
         let rendered = format!("{error:?}");
         assert!(rendered.contains("rollback also failed"), "{rendered}");
@@ -2342,7 +2359,7 @@ mod tests {
                         j += 1;
                     }
                     if closed {
-                        if quote + 1 <= j {
+                        if quote < j {
                             literals.push(SourceString {
                                 text: source[quote + 1..j].to_string(),
                                 start: i,

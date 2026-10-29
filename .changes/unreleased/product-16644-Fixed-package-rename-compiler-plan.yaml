@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Package rename previews preserve qualified names on the canonical two-file scenario, refuse unsupported target names before compiler planning, and avoid presenting stale open-document facts as a fresh compiler plan. Previews continue to apply and return no live edits."
+time: 2026-10-15T00:00:00Z
+custom:
+  PR: "17980"
+  Slug: package-rename-compiler-plan
+  Breaking: "no"

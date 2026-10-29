@@ -79,12 +79,28 @@ function Invoke-Git {
         [string[]]$GitArgs
     )
 
-    $output = & git -C $Repository @GitArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # Native stderr is diagnostic data, not porcelain/path output. In Windows
+    # PowerShell, Continue also prevents an exit-zero warning from terminating
+    # the invocation before its actual exit status can be inspected.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& git -C $Repository @GitArgs 2>&1)
+        $gitStatus = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    if ($gitStatus -ne 0) {
         Fail "git $($GitArgs -join ' ') failed in $Repository. Output: $output"
     }
 
-    return @($output)
+    foreach ($record in $output) {
+        if ($record -is [System.Management.Automation.ErrorRecord]) {
+            Write-Warning "$record"
+        } else {
+            Write-Output $record
+        }
+    }
 }
 
 if ($Slug -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $Slug -match '[\\/]') {

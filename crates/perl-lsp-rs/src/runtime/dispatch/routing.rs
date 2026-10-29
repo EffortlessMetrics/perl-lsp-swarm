@@ -178,7 +178,9 @@ impl LspServer {
                     self.handle_workspace_symbols_dispatch(request.params)
                 });
             }
-            "workspace/symbol/resolve" => {
+            // LSP spec name; the legacy `workspace/symbol/resolve` spelling
+            // stays routed for existing internal callers.
+            "workspaceSymbol/resolve" | "workspace/symbol/resolve" => {
                 self.handle_workspace_symbol_resolve_dispatch(request.params)
             }
             "textDocument/rename" => {

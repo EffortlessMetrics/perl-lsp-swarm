@@ -510,6 +510,7 @@ const COMMAND_WRAPPERS: &[&str] = &["sudo", "env", "time", "exec", "nice", "comm
 /// or another script, is not visible here. See #14293 for the residual claim.
 /// (Partially addressed for `just` recipes by [`command_invokes_xtask_cli_with_just`];
 /// scripts other than `just` remain un-tracked.)
+#[cfg(test)]
 fn command_invokes_xtask_cli(script: &str) -> bool {
     // Without a recipe table there is nothing to resolve through. Indirection
     // is silently untracked for that callers — same residual as before #15509.
@@ -661,9 +662,7 @@ fn expand_just_in_command(
 fn just_recipe_invoked(tokens: &[String]) -> Option<String> {
     let mut rest = tokens;
     loop {
-        let Some(first) = rest.first().map(String::as_str) else {
-            return None;
-        };
+        let first = rest.first().map(String::as_str)?;
         if is_env_assignment(first) {
             rest = &rest[1..];
             continue;
@@ -788,7 +787,7 @@ fn recipe_header_name(line: &str) -> Option<&str> {
     }
     // Parameters follow the recipe name (`name param:`); only the first
     // whitespace-separated word is the recipe identifier.
-    let name = line[..colon].trim().split_whitespace().next()?;
+    let name = line[..colon].split_whitespace().next()?;
     // A `[settings]` or `export` line would also contain `:`, but those
     // names start with a non-identifier character; gate on a valid recipe
     // identifier so we never confuse the two.
