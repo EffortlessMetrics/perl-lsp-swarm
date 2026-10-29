@@ -1485,6 +1485,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::QuoteDouble
                         | TokenKind::QuoteCommand
                         | TokenKind::Number
+                        | TokenKind::Backslash
                 )
             }) {
                 return false;
@@ -1548,6 +1549,20 @@ impl<'a> Parser<'a> {
                 true
             }
             TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => true,
+
+            // `func \&name`, `func \@arr`, `func \\$x` — a reference-taking
+            // unary expression is a valid bare-call argument (upstream
+            // t/comp/proto.t: `testing \&no_proto, undef;`). Without this
+            // arm the call loses its argument uptake and the reference is
+            // left as same-line residue. An operand must follow: a bare
+            // `func \;` is not a call with a reference argument.
+            TokenKind::Backslash => self.tokens.peek_second().ok().is_some_and(|second| {
+                Self::is_sigil_argument_start(second.kind(), second.text.as_ref())
+                    || matches!(
+                        second.kind(),
+                        TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::LeftBracket
+                    )
+            }),
 
             // Imported Test::More-style helpers can take typeglob expressions
             // as list arguments. Keep this scoped to known helper names so

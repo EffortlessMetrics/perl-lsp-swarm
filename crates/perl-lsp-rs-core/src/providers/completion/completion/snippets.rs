@@ -417,7 +417,7 @@ pub fn add_snippet_completions(completions: &mut Vec<CompletionItem>, context: &
                 sort_text: Some(Cow::Owned(format!("3_{}", snippet.trigger))),
                 filter_text: Some(Cow::Borrowed(snippet.trigger)),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 label_details: None,
             });
