@@ -1,9 +1,9 @@
-//! Unwired infrastructure scanner (issue #2667)
+//! Unwired infrastructure scanner (issue #2667), narrowed by #9205.
 //!
-//! Scans the workspace for crates that have been built and tested but are not
-//! connected to the perl-lsp-rs production code path. The three patterns caught by
-//! this tool in Era 7 session 2 each required only 10-50 lines to wire; this
-//! scanner makes them findable before they age further.
+//! This command reports **Cargo topology**: workspace crates that have tests
+//! but are not a direct dependency of `perl-lsp-rs`. That is not product
+//! activation. Product, preview, lab, shim, test-api, and gate connection
+//! requirements are `cargo xtask activation check`.
 //!
 //! ## Detection strategy
 //!
@@ -14,6 +14,7 @@
 //!
 //! A crate is **flagged** when it has ≥1 test AND is not a direct dep of perl-lsp-rs.
 //! The tool also surfaces any matching TODO/FIXME comments across all crates.
+//! Flagged does not mean "unwired product"; it means "not a direct Cargo dep".
 //!
 //! ## Limitations
 //!
@@ -25,9 +26,10 @@
 //! ## Usage
 //!
 //! ```bash
-//! cargo xtask unwired-scan              # human-readable report
+//! cargo xtask unwired-scan              # human-readable topology report
 //! cargo xtask unwired-scan --json       # JSON to stdout
-//! cargo xtask unwired-scan --check      # exit 1 if any flagged crate found
+//! cargo xtask unwired-scan --check      # exit 1 if any topology-flagged crate found
+//! cargo xtask activation check          # product/class activation (this is not that)
 //! ```
 
 use std::collections::HashSet;
@@ -47,7 +49,7 @@ pub struct UnwiredScanConfig {
     pub lsp_crate: String,
     /// Emit JSON instead of human-readable output.
     pub json: bool,
-    /// Exit with code 1 if any unwired crates are found.
+    /// Exit with code 1 if any topology-flagged crates are found.
     pub check: bool,
 }
 
@@ -86,21 +88,27 @@ pub struct CrateReport {
 }
 
 impl CrateReport {
-    /// Returns `true` when this crate should be flagged as unwired:
-    /// it has at least one test and is not a direct dep of the LSP crate.
+    /// Topology flag only: the crate has tests and is not a direct Cargo
+    /// dependency of the LSP crate. This is not a product-activation verdict.
     pub fn is_flagged(&self) -> bool {
         self.test_count > 0 && !self.is_direct_dep_of_lsp
     }
 }
 
+/// Claim this report is allowed to make. Product activation is a different
+/// command (`cargo xtask activation check`); this scan is Cargo topology.
+pub const TOPOLOGY_CLAIM: &str = "cargo_topology";
+
 /// Full scan result.
 #[derive(Debug, Serialize)]
 pub struct ScanReport {
+    /// Closed claim this report makes. Always [`TOPOLOGY_CLAIM`].
+    pub claim: String,
     /// Name of the root LSP crate that was used as the reference point.
     pub lsp_crate: String,
     /// All crates examined (excluding the LSP crate itself).
     pub crates: Vec<CrateReport>,
-    /// Crates flagged as potentially unwired (has tests, not a direct dep).
+    /// Crates flagged as topology-unwired (has tests, not a direct dep).
     pub flagged: Vec<String>,
     /// Total crates examined.
     pub total_crates: usize,
@@ -126,8 +134,9 @@ pub fn run(config: UnwiredScanConfig) -> Result<()> {
 
     if config.check && report.total_flagged > 0 {
         color_eyre::eyre::bail!(
-            "{} unwired crate(s) found — run `cargo xtask unwired-scan` to inspect",
-            report.total_flagged
+            "{} crate(s) have tests but are not a direct Cargo dependency of {} — topology evidence only; product activation is `cargo xtask activation check`",
+            report.total_flagged,
+            report.lsp_crate
         );
     }
 
@@ -189,6 +198,7 @@ pub fn scan(workspace_root: &Path, lsp_crate: &str) -> Result<ScanReport> {
     let total_flagged = flagged.len();
 
     Ok(ScanReport {
+        claim: TOPOLOGY_CLAIM.to_string(),
         lsp_crate: lsp_crate.to_string(),
         crates: crate_reports,
         flagged,
@@ -334,7 +344,10 @@ pub fn scan_wiring_comments(src_dir: &Path, workspace_root: &Path) -> Vec<Wiring
 // ---------------------------------------------------------------------------
 
 fn print_report(report: &ScanReport) {
-    println!("[INFO] Unwired Infrastructure Scan");
+    println!("[INFO] Cargo topology scan (claim: {})", report.claim);
+    println!(
+        "[INFO] Not product activation; use `cargo xtask activation check` for class contracts"
+    );
     println!("[INFO] LSP crate: {}", report.lsp_crate);
     println!("[INFO] Crates examined: {}", report.total_crates);
     println!();
@@ -342,10 +355,10 @@ fn print_report(report: &ScanReport) {
     // Flagged crates (have tests, not a direct dep)
     let flagged: Vec<&CrateReport> = report.crates.iter().filter(|r| r.is_flagged()).collect();
     if flagged.is_empty() {
-        println!("[OK] No unwired crates found.");
+        println!("[OK] No topology-flagged crates found.");
     } else {
         println!(
-            "[WARN] {} crate(s) have tests but are not a direct dep of {}:",
+            "[WARN] {} crate(s) have tests but are not a direct Cargo dependency of {}:",
             flagged.len(),
             report.lsp_crate
         );
@@ -376,11 +389,14 @@ fn print_report(report: &ScanReport) {
 
     if report.total_flagged > 0 {
         println!(
-            "[SUMMARY] {} unwired crate(s) detected. Review each and either wire it into {} or document why it is intentionally isolated.",
+            "[SUMMARY] {} crate(s) are topology-flagged (tests present, not a direct Cargo dep of {}). This is not a product-activation verdict.",
             report.total_flagged, report.lsp_crate
         );
     } else {
-        println!("[SUMMARY] All tested crates are directly wired into {}.", report.lsp_crate);
+        println!(
+            "[SUMMARY] Every tested crate is a direct Cargo dependency of {}. Topology only; not product activation.",
+            report.lsp_crate
+        );
     }
 }
 

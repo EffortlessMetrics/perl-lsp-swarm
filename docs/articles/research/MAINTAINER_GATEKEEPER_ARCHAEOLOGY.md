@@ -17,7 +17,7 @@ lessons.
 
 ## 1. The Repository Says The Human Role Changed
 
-[`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md) defines the shift directly:
+[`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md) defines the shift directly:
 
 - AI-assisted means the human writes and the AI suggests
 - AI-native means the human reviews, accepts, or rejects
@@ -27,7 +27,7 @@ lessons.
 
 That is the cleanest statement of the maintainer's new position. The scarce resource is no longer typing. It is judgment.
 
-[`docs/project/AGENTIC_DEVELOPMENT.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEVELOPMENT.md) expands the role further:
+[`docs/project/AGENTIC_DEVELOPMENT.md`](../../project/AGENTIC_DEVELOPMENT.md) expands the role further:
 
 - setting architectural direction
 - writing and refining agent instructions
@@ -41,7 +41,7 @@ That is not a passive reviewer. It is a gatekeeper with architectural authority.
 
 ## 2. The Maintainer Became The Selector
 
-[`docs/project/JULES_BOT_ANALYSIS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md) shows the maintainer acting as a selector rather than a direct implementer.
+[`docs/project/JULES_BOT_ANALYSIS.md`](../../project/JULES_BOT_ANALYSIS.md) shows the maintainer acting as a selector rather than a direct implementer.
 
 The strongest evidence is the January 2026 bridge pattern:
 
@@ -70,7 +70,7 @@ The maintainer is the person who decides which slices deserve to continue.
 
 ## 3. The Maintainer Stayed The Architect
 
-[`docs/articles/research/ERA_TIMELINE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md) shows that the human role changed by era, not by disappearance.
+[`docs/articles/research/ERA_TIMELINE.md`](ERA_TIMELINE.md) shows that the human role changed by era, not by disappearance.
 
 Era 1 is direct coding with human review.
 Era 3 is architectural hardening, with mutation testing, ADRs, and a slower pace that enabled later parallelism.
@@ -95,15 +95,15 @@ just asking them to execute isolated tasks faster.
 
 The PR archive makes the bottleneck role explicit.
 
-[`docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md) shows drafts, merges, and closures becoming lifecycle states. That only works because someone is selecting which state a PR should enter next.
+[`docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md`](PR_LIFECYCLE_ARCHAEOLOGY.md) shows drafts, merges, and closures becoming lifecycle states. That only works because someone is selecting which state a PR should enter next.
 
-[`docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md) shows review and follow-up as normal work:
+[`docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md`](PR_REVIEW_LOOP_ARCHAEOLOGY.md) shows review and follow-up as normal work:
 
 - review happens before readiness
 - cleanup is a legitimate output
 - follow-up PRs are explicit repair, not embarrassment
 
-[`docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md) is the clearest statement of the human bottleneck:
+[`docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md`](QUEUE_BOTTLENECK_ARCHAEOLOGY.md) is the clearest statement of the human bottleneck:
 
 - the merge queue is three wide
 - CI throughput is the hard boundary
@@ -124,7 +124,7 @@ The maintainer's changing job shows up in the control surfaces the repo preserve
 - `green-merge` for batch merge pacing
 - `swarm-state` for queue state, pitfalls, and findings
 
-[`docs/articles/research/SWARM_SURFACE_EVOLUTION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md) and [`docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md) show that these surfaces were not accidental.
+[`docs/articles/research/SWARM_SURFACE_EVOLUTION.md`](SWARM_SURFACE_EVOLUTION.md) and [`docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md`](CONTROL_PLANE_ARCHAEOLOGY.md) show that these surfaces were not accidental.
 They are the repo's answer to the human bottleneck:
 
 - use commands for orchestration
@@ -157,13 +157,13 @@ That is the maintainer role in the AI-native repo. The human is not removed from
 
 ## Evidence Pointers
 
-- [`docs/project/AGENTIC_DEVELOPMENT.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEVELOPMENT.md)
-- [`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md)
-- [`docs/project/JULES_BOT_ANALYSIS.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md)
-- [`docs/articles/research/ERA_TIMELINE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md)
-- [`docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md)
-- [`docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md)
-- [`docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md)
-- [`docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
-- [`docs/articles/research/SWARM_SURFACE_EVOLUTION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
-- [`docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
+- [`docs/project/AGENTIC_DEVELOPMENT.md`](../../project/AGENTIC_DEVELOPMENT.md)
+- [`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md)
+- [`docs/project/JULES_BOT_ANALYSIS.md`](../../project/JULES_BOT_ANALYSIS.md)
+- [`docs/articles/research/ERA_TIMELINE.md`](ERA_TIMELINE.md)
+- [`docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md`](MAINTAINER_VISION_ARCHAEOLOGY.md)
+- [`docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md`](PR_LIFECYCLE_ARCHAEOLOGY.md)
+- [`docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md`](PR_REVIEW_LOOP_ARCHAEOLOGY.md)
+- [`docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md`](QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
+- [`docs/articles/research/SWARM_SURFACE_EVOLUTION.md`](SWARM_SURFACE_EVOLUTION.md)
+- [`docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md`](CONTROL_PLANE_ARCHAEOLOGY.md)

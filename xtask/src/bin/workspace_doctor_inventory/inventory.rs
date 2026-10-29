@@ -1,8 +1,8 @@
 use super::rows::canonical_rows;
 use super::sources::inspect_sources;
 use super::{
-    CheckRow, Disposition, Finding, Inventory, MutationPosture, ResultClass, SCHEMA, SourceDigest,
-    sha256_hex,
+    CheckRow, Disposition, Finding, Inventory, MutationPosture, ResultClass, SCHEMA_VERSION,
+    SourceDigest, sha256_hex,
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -11,7 +11,7 @@ use std::path::Path;
 
 #[derive(Serialize)]
 struct InventoryBody<'a> {
-    schema: u32,
+    schema_version: &'a str,
     status: &'a str,
     doctor_check_headings: &'a [super::DoctorHeading],
     rows: &'a [CheckRow],
@@ -35,7 +35,7 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {
         &source_facts.sources,
     )?;
     Ok(Inventory {
-        schema: SCHEMA,
+        schema_version: SCHEMA_VERSION.to_string(),
         status,
         doctor_check_headings: source_facts.headings,
         rows,
@@ -234,7 +234,7 @@ fn inventory_digest(
     sources: &BTreeMap<String, SourceDigest>,
 ) -> Result<String> {
     let body = InventoryBody {
-        schema: SCHEMA,
+        schema_version: SCHEMA_VERSION,
         status,
         doctor_check_headings: headings,
         rows,

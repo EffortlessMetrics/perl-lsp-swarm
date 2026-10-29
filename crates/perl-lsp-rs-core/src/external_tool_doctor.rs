@@ -23,6 +23,8 @@ pub const STATUS_OPTIONAL_EXTERNAL: &str = "optional_external";
 pub const STATUS_CONFORMANCE_ONLY: &str = "conformance_only";
 /// The tool is an explicitly selected optional peer.
 pub const STATUS_OPTIONAL_PEER: &str = "optional_peer";
+/// The tool is an explicitly selected optional testing instrument.
+pub const STATUS_OPTIONAL_TESTING_INSTRUMENT: &str = "optional_testing_instrument";
 /// The registry row did not match a known role shape.
 pub const STATUS_UNKNOWN: &str = "unknown";
 
@@ -39,6 +41,9 @@ pub const REASON_RUNTIME_ENABLEMENT_FORBIDDEN: &str = "runtime_enablement_forbid
 pub const REASON_EXPLICIT_ADAPTER_ONLY: &str = "explicit_adapter_only";
 /// The tool cooperates only as an explicitly selected peer.
 pub const REASON_EXPLICIT_OPTIONAL_PEER: &str = "explicit_optional_peer";
+/// Coverage/testing runs only after an explicit user action.
+pub const REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT: &str =
+    "explicit_optional_testing_instrument";
 /// The registry row did not match a known role shape.
 pub const REASON_UNCLASSIFIED: &str = "unclassified";
 
@@ -121,18 +126,7 @@ pub fn critic_compatibility_entry(
 
 /// Project one registry row into a typed doctor entry.
 fn external_tool_doctor_entry(policy: &ExternalToolPolicy) -> ExternalToolDoctorEntry {
-    let has_peer = policy.roles.contains(&ExternalToolRole::ExplicitOptionalPeer);
-    let has_adapter = policy.roles.contains(&ExternalToolRole::ExplicitExternalAdapter);
-
-    let (status_code, reason_code) = if policy.runtime_enablement == RuntimeEnablement::Forbidden {
-        (STATUS_CONFORMANCE_ONLY, REASON_RUNTIME_ENABLEMENT_FORBIDDEN)
-    } else if has_peer {
-        (STATUS_OPTIONAL_PEER, REASON_EXPLICIT_OPTIONAL_PEER)
-    } else if has_adapter {
-        (STATUS_OPTIONAL_EXTERNAL, REASON_EXPLICIT_ADAPTER_ONLY)
-    } else {
-        (STATUS_UNKNOWN, REASON_UNCLASSIFIED)
-    };
+    let (status_code, reason_code) = role_verdict(policy);
 
     let native_status_code = match policy.native_replacement.delivery {
         NativeReplacementDelivery::Shipped => NATIVE_STATUS_AVAILABLE,
@@ -175,11 +169,34 @@ fn safe_next_action(policy: &ExternalToolPolicy, status_code: &'static str) -> &
         return "Optionally configure an explicit peer session; the native product keeps \
             protocol ownership.";
     }
+    if status_code == STATUS_OPTIONAL_TESTING_INSTRUMENT {
+        return "Optionally request an explicit coverage run; missing Devel::Cover is an \
+            optional-tool-unavailable state and does not affect native testing.";
+    }
     if policy.install_help_scope == InstallHelpScope::UserRequestedCompatibility {
         return "Optionally request explicit compatibility setup; guidance is copyable, \
             environment-scoped, and never auto-executed.";
     }
     "No install guidance is offered for this tool."
+}
+
+fn role_verdict(policy: &ExternalToolPolicy) -> (&'static str, &'static str) {
+    let has_peer = policy.roles.contains(&ExternalToolRole::ExplicitOptionalPeer);
+    let has_testing_instrument =
+        policy.roles.contains(&ExternalToolRole::ExplicitOptionalTestingInstrument);
+    let has_adapter = policy.roles.contains(&ExternalToolRole::ExplicitExternalAdapter);
+
+    if policy.runtime_enablement == RuntimeEnablement::Forbidden {
+        (STATUS_CONFORMANCE_ONLY, REASON_RUNTIME_ENABLEMENT_FORBIDDEN)
+    } else if has_peer {
+        (STATUS_OPTIONAL_PEER, REASON_EXPLICIT_OPTIONAL_PEER)
+    } else if has_testing_instrument {
+        (STATUS_OPTIONAL_TESTING_INSTRUMENT, REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT)
+    } else if has_adapter {
+        (STATUS_OPTIONAL_EXTERNAL, REASON_EXPLICIT_ADAPTER_ONLY)
+    } else {
+        (STATUS_UNKNOWN, REASON_UNCLASSIFIED)
+    }
 }
 
 fn role_label(role: ExternalToolRole) -> &'static str {
@@ -188,6 +205,10 @@ fn role_label(role: ExternalToolRole) -> &'static str {
         ExternalToolRole::ExplicitExternalAdapter => "explicit_external_adapter",
         ExternalToolRole::ConformanceOracle => "conformance_oracle",
         ExternalToolRole::ExplicitOptionalPeer => "explicit_optional_peer",
+        ExternalToolRole::ExplicitOptionalTestingInstrument => {
+            "explicit_optional_testing_instrument"
+        }
+        ExternalToolRole::ReportProducer => "report_producer",
     }
 }
 
@@ -196,6 +217,9 @@ fn execution_support_label(support: ExternalExecutionSupport) -> &'static str {
         ExternalExecutionSupport::None => "none",
         ExternalExecutionSupport::RepositoryConformanceOnly => "repository_conformance_only",
         ExternalExecutionSupport::ExplicitProductAdapter => "explicit_product_adapter",
+        ExternalExecutionSupport::ExplicitOptionalTestingInstrument => {
+            "explicit_optional_testing_instrument"
+        }
     }
 }
 
@@ -227,11 +251,17 @@ fn config_reader_support_label(policy: &ExternalToolPolicy) -> &'static str {
 /// Render the native-first external-tooling report.
 ///
 /// Every line derives from the projected entries; the renderer holds no tool
-/// policy of its own and hard-codes no role or policy counts.
+/// policy of its own and hard-codes no role or policy counts. `command_name`
+/// is the name the binary was invoked under, so the header self-identifies the
+/// same way `--version` and `--help` do (#17163); only the header carries it —
+/// registry rows, statuses, and claim-boundary lines are unchanged.
 #[must_use]
-pub fn render_external_tool_doctor_text(entries: &[ExternalToolDoctorEntry]) -> String {
+pub fn render_external_tool_doctor_text(
+    entries: &[ExternalToolDoctorEntry],
+    command_name: &str,
+) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor — external tooling\n");
+    out.push_str(&format!("{command_name} doctor — external tooling\n"));
     out.push_str("==================================\n\n");
     let degrading: Vec<_> = entries
         .iter()
@@ -284,10 +314,16 @@ pub fn render_external_tool_doctor_text(entries: &[ExternalToolDoctorEntry]) -> 
 }
 
 /// Render the critic configuration compatibility explanation.
+///
+/// `command_name` is the name the binary was invoked under (#17163); only the
+/// header carries it — the compatibility explanation itself is unchanged.
 #[must_use]
-pub fn render_critic_compatibility_text(entry: &ExternalToolDoctorEntry) -> String {
+pub fn render_critic_compatibility_text(
+    entry: &ExternalToolDoctorEntry,
+    command_name: &str,
+) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor — critic configuration compatibility\n");
+    out.push_str(&format!("{command_name} doctor — critic configuration compatibility\n"));
     out.push_str("===================================================\n\n");
     out.push_str(&format!(
         "{}: configuration compatibility + repository conformance only; not a runtime engine\n\n",
@@ -318,6 +354,9 @@ fn role_summary(entry: &ExternalToolDoctorEntry) -> String {
                 .to_string()
         }
         STATUS_OPTIONAL_PEER => "optional debugger peer".to_string(),
+        STATUS_OPTIONAL_TESTING_INSTRUMENT => {
+            "optional testing instrument; not required for native testing".to_string()
+        }
         _ => "registry row did not match a known role shape".to_string(),
     }
 }
@@ -335,7 +374,7 @@ fn native_summary(entry: &ExternalToolDoctorEntry) -> String {
             entry.native_status_code
         ),
         NativeReplacementDelivery::NotApplicable => {
-            "Native replacement: not applicable — the native product owns the protocol".to_string()
+            "Native replacement: not applicable — the native product keeps this domain".to_string()
         }
     }
 }
@@ -377,10 +416,12 @@ mod tests {
         assert_eq!(entries.len(), fixture.len());
         assert!(entries.iter().any(|entry| entry.canonical_name == "Perl::ExtraFixture"));
 
-        let rendered = render_external_tool_doctor_text(&entries);
+        let rendered = render_external_tool_doctor_text(&entries, "perl-lsp");
         assert!(rendered.contains("Perl::ExtraFixture"));
-        let baseline =
-            render_external_tool_doctor_text(&external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY));
+        let baseline = render_external_tool_doctor_text(
+            &external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY),
+            "perl-lsp",
+        );
         assert_ne!(rendered, baseline);
     }
 
@@ -408,7 +449,7 @@ mod tests {
             );
         }
 
-        let rendered = render_external_tool_doctor_text(&entries);
+        let rendered = render_external_tool_doctor_text(&entries, "perl-lsp");
         assert!(rendered.contains("never degrades native readiness"));
         assert!(!rendered.to_lowercase().contains("unhealthy"));
         assert!(!rendered.to_lowercase().contains("missing tool degrades"));
@@ -422,7 +463,7 @@ mod tests {
         assert_eq!(critic.execution_support, "repository_conformance_only");
         assert_eq!(critic.runtime_enablement, "forbidden");
 
-        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&critic));
+        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&critic), "perl-lsp");
         assert!(!rendered.contains("Configure External Perl::Critic"));
         assert!(rendered.contains("repository conformance only; not a runtime engine"));
         Ok(())
@@ -435,7 +476,7 @@ mod tests {
         assert_eq!(entry.canonical_name, "Perl::Critic");
         assert!(entry.config_files.contains(&".perlcriticrc"));
 
-        let rendered = render_critic_compatibility_text(&entry);
+        let rendered = render_critic_compatibility_text(&entry, "perl-lsp");
         assert!(rendered.contains(".perlcriticrc"));
         assert!(rendered.contains("read process-free"));
         assert!(rendered.contains("No runtime engine switch exists"));
@@ -446,12 +487,37 @@ mod tests {
     }
 
     #[test]
+    fn doctor_headers_follow_the_supplied_command_name() -> TestResult {
+        // #17163: the headers used to hard-code the crate name, so the same
+        // binary said `perllsp` in `--version` but `perl-lsp` in a doctor
+        // header. The header must carry the invocation name; body lines stay
+        // unchanged so downstream parsers see only the identity token move.
+        let entries = external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY);
+        let rendered = render_external_tool_doctor_text(&entries, "perllsp");
+        assert!(
+            rendered.starts_with("perllsp doctor — external tooling\n"),
+            "header must lead with the supplied command name; got:\n{}",
+            rendered.lines().next().unwrap_or("")
+        );
+
+        let critic = critic_compatibility_entry(EXTERNAL_TOOL_REGISTRY)
+            .ok_or("registry should own a .perlcriticrc row")?;
+        let rendered = render_critic_compatibility_text(&critic, "perllsp");
+        assert!(
+            rendered.starts_with("perllsp doctor — critic configuration compatibility\n"),
+            "critic header must lead with the supplied command name; got:\n{}",
+            rendered.lines().next().unwrap_or("")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn pls_is_conformance_only_in_ordinary_projection() -> TestResult {
         let pls = entry_for("Perl::LanguageServer")?;
         assert_eq!(pls.status_code, STATUS_CONFORMANCE_ONLY);
         assert_eq!(pls.allowed_roles, vec!["conformance_oracle"]);
         assert_eq!(pls.execution_support, "repository_conformance_only");
-        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&pls));
+        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&pls), "perl-lsp");
         assert!(rendered.contains("not a runtime engine"));
         Ok(())
     }
@@ -480,6 +546,32 @@ mod tests {
     }
 
     #[test]
+    fn devel_cover_projects_as_optional_testing_instrument_without_health_effect() -> TestResult {
+        let cover = entry_for("Devel::Cover")?;
+        assert_eq!(cover.status_code, STATUS_OPTIONAL_TESTING_INSTRUMENT);
+        assert_eq!(cover.reason_code, REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT);
+        assert_eq!(
+            cover.allowed_roles,
+            vec!["explicit_optional_testing_instrument", "report_producer"]
+        );
+        assert_eq!(cover.execution_support, "explicit_optional_testing_instrument");
+        assert_eq!(cover.runtime_enablement, "explicit_user_action");
+        assert_eq!(cover.native_delivery, NativeReplacementDelivery::NotApplicable);
+        assert!(!cover.required_for_native);
+        assert!(!cover.degrades_native_health);
+        assert!(cover.safe_next_action.contains("optional-tool-unavailable"));
+        assert!(cover.safe_next_action.contains("does not affect native testing"));
+        assert!(!cover.safe_next_action.contains("peer session"));
+
+        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&cover), "perl-lsp");
+        assert!(rendered.contains("optional testing instrument; not required for native testing"));
+        assert!(rendered.contains("never degrades native readiness"));
+        assert!(rendered.contains("optional-tool-unavailable"));
+        assert!(!rendered.to_lowercase().contains("unhealthy"));
+        Ok(())
+    }
+
+    #[test]
     fn critic_compatibility_fails_closed_on_duplicate_config_owner() {
         // Duplicate .perlcriticrc ownership is not rejected by registry
         // validation; the doctor projection must not guess by declaration
@@ -502,7 +594,7 @@ mod tests {
         fixture[0].required_for_native = true;
 
         let entries = external_tool_doctor_entries(&fixture);
-        let rendered = render_external_tool_doctor_text(&entries);
+        let rendered = render_external_tool_doctor_text(&entries, "perl-lsp");
         assert!(rendered.contains("WARNING: registry rows claim native health dependence"));
         assert!(!rendered.contains("never degrades native readiness"));
         assert!(entries[0].degrades_native_health);
@@ -510,8 +602,10 @@ mod tests {
 
     #[test]
     fn output_carries_no_private_paths_or_environment_values() {
-        let rendered =
-            render_external_tool_doctor_text(&external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY));
+        let rendered = render_external_tool_doctor_text(
+            &external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY),
+            "perl-lsp",
+        );
         // Source-only projection: no drive letters, no home-relative paths,
         // no env-var interpolation appear in the report.
         for line in rendered.lines() {
@@ -530,6 +624,8 @@ mod tests {
         };
         assert!(json.contains("\"status_code\":\"conformance_only\""));
         assert!(json.contains("\"reason_code\":\"runtime_enablement_forbidden\""));
+        assert!(json.contains("\"status_code\":\"optional_testing_instrument\""));
+        assert!(json.contains("\"reason_code\":\"explicit_optional_testing_instrument\""));
     }
 
     #[test]
@@ -550,7 +646,7 @@ mod tests {
         );
         assert_eq!(entry.status_code, STATUS_UNKNOWN);
         assert_eq!(entry.reason_code, REASON_UNCLASSIFIED);
-        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&entry));
+        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&entry), "perl-lsp");
         assert!(rendered.contains("did not match a known role shape"));
     }
 }

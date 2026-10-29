@@ -44,4 +44,16 @@ def load_topology_json(raw: bytes | str, *, supported_versions=(1, 2)) -> dict[s
         raise ValueError("release topology schema has an unsupported numeric representation") from error
     if version not in supported_versions:
         raise ValueError(admission_error)
-    return json.loads(raw, parse_constant=_reject_non_json_constant)
+    return load_unique_json(raw) if version == 4 else json.loads(raw, parse_constant=_reject_non_json_constant)
+
+
+def load_unique_json(raw: bytes | str) -> Any:
+    """Decode identity-bearing JSON while rejecting repeated keys at every depth."""
+    def object_unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+    return json.loads(raw, object_pairs_hook=object_unique, parse_constant=_reject_non_json_constant)

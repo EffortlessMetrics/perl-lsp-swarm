@@ -1,0 +1,7 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "Producer-suppressed reachable seams stay suppressed via the severe_gaps cap; passes."
+ground_truth = "no-seam"
+inputs = ["ripr-plus.json", "repo-exposure.json", "comments.json"]
+mutant_verdict = "dropped-cannot-fail"
+drop_reason = "suppression deflation cannot fail: the gate honors the producer post-suppression severe_gaps cap (#2015) by design; pinned by quality_gate_cli_honors_producer_suppression_cap"

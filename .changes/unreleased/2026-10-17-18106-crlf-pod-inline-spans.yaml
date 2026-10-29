@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "POD-coverage warnings and debugger inline values now use exact byte offsets in CRLF files. Previously each CRLF line shifted later positions by one byte, so coverage warnings pointed at the wrong text and inline values after multi-line strings could be misclassified and dropped."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18106"
+  Slug: crlf-pod-inline-spans
+  Breaking: "no"
