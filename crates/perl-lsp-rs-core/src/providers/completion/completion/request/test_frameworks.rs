@@ -114,7 +114,7 @@ pub(super) fn reconcile(
             sort_text: Some(Cow::Owned(format!("2_test2_{name}"))),
             filter_text: Some(Cow::Owned(name.clone())),
             additional_edits: vec![],
-            text_edit_range: Some((context.prefix_start, context.position)),
+            text_edit_range: Some((context.prefix_start, context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,

@@ -14,7 +14,7 @@ pub(crate) const ASSERTION_ORACLES: &[(&str, &str, &str)] = &[
     // (call_name, oracle_kind, oracle_strength)
     // Test::More / Test2 comparisons
     ("is", "exact_return_assertion", "strong_exact"),
-    ("isnt", "exact_return_assertion", "strong_exact"),
+    ("isnt", "smoke_ok", "weak_smoke"),
     ("is_deeply", "exact_return_assertion", "strong_exact"),
     ("cmp_ok", "predicate_boundary_assertion", "strong_exact"),
     ("like", "predicate_boundary_assertion", "weak_broad"),
@@ -59,7 +59,7 @@ mod tests {
         // `is-deeply`) breaks this test instead of silently dropping coverage.
         let expected: &[(&str, &str, &str)] = &[
             ("is", "exact_return_assertion", "strong_exact"),
-            ("isnt", "exact_return_assertion", "strong_exact"),
+            ("isnt", "smoke_ok", "weak_smoke"),
             ("is_deeply", "exact_return_assertion", "strong_exact"),
             ("cmp_ok", "predicate_boundary_assertion", "strong_exact"),
             ("like", "predicate_boundary_assertion", "weak_broad"),

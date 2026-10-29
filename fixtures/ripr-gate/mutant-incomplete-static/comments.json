@@ -1,0 +1,54 @@
+{
+  "schema_version": "0.1",
+  "tool": "ripr",
+  "status": "incomplete",
+  "base": "origin/main",
+  "base_sha": "e1-base-sha-0000000000000000000000000000000000000001",
+  "head": "HEAD",
+  "head_sha": "E1_HEAD_SHA",
+  "summary": {
+    "comments": 2,
+    "summary_only": 0,
+    "suppressed": 0
+  },
+  "comments": [
+    {
+      "seam_id": "E1-STATIC-1",
+      "classification": "static_limitation",
+      "grip_class": "weakly_gripped",
+      "kind": "focused_test",
+      "severity": "severe",
+      "placement": {
+        "path": "crates/perl-workspace/src/semantic/quickorm.rs",
+        "line": 700,
+        "mode": "exact_seam_line"
+      },
+      "seam": "predicate_boundary",
+      "reason": "No concrete activation values observed for the seam; add analyzer support for local/computed boundary operand resolution before emitting an actionable repair packet",
+      "suggested_test": null
+    },
+    {
+      "seam_id": "E1-STATIC-2",
+      "classification": "static_limitation",
+      "grip_class": "weakly_gripped",
+      "kind": "focused_test",
+      "severity": "severe",
+      "placement": {
+        "path": "crates/perl-workspace/src/semantic/quickorm.rs",
+        "line": 710,
+        "mode": "exact_seam_line"
+      },
+      "seam": "predicate_boundary",
+      "reason": "No concrete activation values observed for the seam; add analyzer support for local/computed boundary operand resolution before emitting an actionable repair packet",
+      "suggested_test": null
+    }
+  ],
+  "summary_only": [],
+  "suppressed": [],
+  "warnings": [
+    {
+      "kind": "tool_error",
+      "message": "ripr timed out after 600s"
+    }
+  ]
+}

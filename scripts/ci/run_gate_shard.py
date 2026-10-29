@@ -1740,15 +1740,22 @@ class ShardRunner:
                 self._write_summary()
 
         self._write_summary()
-        # Fail the shard on any hard gate failure, or when nothing executed
-        # successfully (an all-skip shard is not proof). A shard whose executed
-        # gates all passed with some policy-selected skips is a pass: skip is
-        # not_proven for that gate, not for the shard.
-        results = [self.observations[gate].result for gate in self.gates]
-        hard_failures = {"failure", "timeout", "instrument_failure"}
-        if set(results) & hard_failures:
+        # Only successful gates and genuine zero-exit producer skips may
+        # coexist in a passing shard. Other not_proven outcomes, blocked
+        # dependents, cancellations and unfamiliar results must fail closed.
+        observations = [self.observations[gate] for gate in self.gates]
+        for observed in observations:
+            if observed.result == "success":
+                continue
+            if (
+                observed.result == "not_proven"
+                and observed.receipt_status in SKIPPED_STATUSES
+                and observed.exit_code == 0
+            ):
+                continue
             return 1
-        return 0 if "success" in results else 1
+        # An all-skip shard is not proof.
+        return 0 if any(item.result == "success" for item in observations) else 1
 
 
 def validate_args(args: argparse.Namespace) -> None:

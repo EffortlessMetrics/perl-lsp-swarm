@@ -35,12 +35,15 @@ Three entry points:
   paths and resolved by the process current working directory; `diff` is not
   rebased onto `--root`. The diff file is read as unified diff text and
   forwarded to `RiprFactsRequest.diff`.
-- **`run_ripr_facts(schema, root, base, head, fact_classes, out) -> i32`** —
-  the thin CLI wrapper the `perl-lsp` / `perllsp` `ripr-facts` subcommand
-  calls. It forwards its args to `build_ripr_facts_packet`, then validates the
-  output path, writes the packet to `out`, and maps the outcome to a process
-  exit code (`0` success, `1` on any validation or write failure). Use
-  `run_ripr_facts_with_diff` when the caller already has diff text.
+- **`run_ripr_facts_with_diff_path(schema, root, base, head, fact_classes,
+  diff_path, out) -> i32`** — the thin CLI wrapper the `perl-lsp` /
+  `perllsp` `--ripr-facts` flag calls. It reads `--ripr-diff` diff text from
+  `diff_path` (`None` = no-diff packet), forwards its args to
+  `build_ripr_facts_packet`, then validates the output path, writes the packet
+  to `out`, and maps the outcome to a process exit code (`0` success, `1` on
+  any validation or write failure). `run_ripr_facts` is the retained no-diff
+  wrapper; use `run_ripr_facts_with_diff` when the caller already has diff
+  text.
 
 ### Output safety
 
@@ -133,14 +136,17 @@ RIPR's semantic packet-fingerprint recipe) instead of `null`:
 This uses the clean leaf crates `perl-parser-core` (parse + `LineIndex`
 byte→line/column) and `perl-symbol` (`extract_symbol_decls` /
 `extract_symbol_refs`) — not `perl-workspace` (which pulls `lsp-types`).
-Relations (including a heuristic `direct_owner_call`) and dynamic boundaries
-remain from earlier conservative slices. The canonical `perl-ripr-facts
-ripr-facts` CLI accepts `--diff <cwd-relative-file>` and supplies that unified
-diff text to the packet builder. Compatibility wrappers that call
-`run_ripr_facts` without diff text still yield an empty `changes[]` plus a
-`no-diff-supplied` limitation when `changes` is requested. The managed-producer
-diff source and the parser-backed/semantic relations that will replace the
-string-heuristic `direct_owner_call` land in later slices.
+Relations (parser-backed `direct_owner_call` via test-call AST facts since #3293
+PR 6, plus `file_proximity`) and dynamic boundaries are emitted. The
+canonical `perl-ripr-facts ripr-facts` CLI accepts `--diff
+<cwd-relative-file>` and supplies that unified diff text to the packet
+builder. Compatibility wrappers that call `run_ripr_facts` without diff text
+still yield an empty `changes[]` plus a `no-diff-supplied` limitation when
+`changes` is requested. The managed-producer diff source (deriving diff text
+from base/head instead of accepting caller-supplied bytes) lands in a later
+slice.
 
-The `perl-lsp` / `perllsp` binaries retain the `ripr-facts` subcommand as a
-thin wrapper that calls [`run_ripr_facts`].
+The `perl-lsp` / `perllsp` binaries retain the `--ripr-facts` flag as a
+thin wrapper that calls [`run_ripr_facts_with_diff_path`], threading
+`--ripr-diff` into `changes[]` (#17152); without the flag the packet keeps
+the no-diff contract (empty `changes[]` plus `no-diff-supplied`).

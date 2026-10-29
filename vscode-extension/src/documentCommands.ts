@@ -147,7 +147,17 @@ export async function formatDocumentCommand(): Promise<void> {
   await vscode.commands.executeCommand('editor.action.formatDocument');
 }
 
-/** Show the local Perl interpreter's @INC paths in a dedicated output channel. */
+/**
+ * Show the local Perl interpreter's @INC paths in a dedicated output channel.
+ *
+ * What this actually reports: the raw `@INC` of whatever `perl` is first on
+ * `PATH` (see the `run('perl', ...)` call below). It is *not* the set of roots
+ * `perl-lsp` searches, and it may well be a different interpreter than the one
+ * the server resolved. The header says so, because a user who runs this while
+ * asking "why can't the LSP find my module?" is precisely the reader for whom
+ * an unqualified list is actively misleading — it omits the roots in dispute
+ * and reports no caveat (#16581).
+ */
 export async function showIncPathsCommand(execFileOverride?: ExecFileLike): Promise<void> {
   const run = execFileOverride ?? execFile;
   await new Promise<void>((resolve) => {
@@ -173,11 +183,24 @@ export async function showIncPathsCommand(execFileOverride?: ExecFileLike): Prom
         incPathsChannel = vscode.window.createOutputChannel('Perl @INC');
       }
       incPathsChannel.clear();
-      incPathsChannel.appendLine('Perl @INC paths:');
+      // Header first, and it states the scope of the listing before the paths
+      // rather than after them: a reader who scrolls past the list has already
+      // been misled. Command titles are quoted exactly as `package.nls.json`
+      // registers them, so the pointer is clickable-by-name rather than
+      // approximate.
+      incPathsChannel.appendLine('Perl @INC of the `perl` found on PATH:');
       incPathsChannel.appendLine('');
       for (const line of lines) {
         incPathsChannel.appendLine(`  ${line}`);
       }
+      incPathsChannel.appendLine('');
+      incPathsChannel.appendLine(
+        'This is NOT the set of roots perl-lsp uses for a file. Workspace ' +
+          "`includePaths`, PERL5LIB policy, lexical use lib, and the server's " +
+          'Perl probe can change module lookup. For workspace configuration and ' +
+          'policy, run "Perl: Show Workspace Trust Report". For a specific module ' +
+          'lookup, open a Perl file and run "Perl: Explain Missing Module Lookup".',
+      );
       incPathsChannel.show();
       resolve();
     });
@@ -238,12 +261,15 @@ export async function showParserAstCommand(
     return;
   }
 
+  const uri = editor.document.uri.toString();
   try {
     const result = await dependencies.activeClient.sendRequest<string | null>('perl/showAst', {
-      uri: editor.document.uri.toString(),
+      uri,
     });
     if (!result) {
-      vscode.window.showInformationMessage('No AST available for this file');
+      vscode.window.showInformationMessage(
+        'No current AST is available for this file. Try again after parsing completes; check Problems if this persists.',
+      );
       return;
     }
 
@@ -256,9 +282,27 @@ export async function showParserAstCommand(
     parserAstChannel.appendLine('');
     parserAstChannel.appendLine(result);
     parserAstChannel.show();
-  } catch {
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      if (error.code === -32601) {
+        vscode.window.showWarningMessage(
+          'Show Parser AST is not supported by the current perllsp version',
+        );
+        return;
+      }
+      if (
+        error.code === -32602 &&
+        'message' in error &&
+        error.message === `Document not found: ${uri}`
+      ) {
+        vscode.window.showWarningMessage(
+          'The language server has not opened this file yet. Try again shortly, or reload the window if this persists.',
+        );
+        return;
+      }
+    }
     vscode.window.showWarningMessage(
-      'Show Parser AST is not supported by the current perllsp version',
+      'Could not show Parser AST. Try again or check the Perl Language Server output.',
     );
   }
 }
