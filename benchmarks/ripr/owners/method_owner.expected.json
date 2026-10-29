@@ -1,0 +1,4 @@
+{
+  "staged_path": "lib/Widget.pm",
+  "expected_owner": {"kind": "method", "qualified_name": "Widget::render"}
+}
