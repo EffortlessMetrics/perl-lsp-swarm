@@ -45,6 +45,7 @@ impl LspServer {
         }
 
         if self
+            .client_session
             .initialized
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -57,7 +58,7 @@ impl LspServer {
         // Emit any pending startup logMessage (e.g. the JetBrains
         // dynamic-registration override notice) now that the client has
         // signalled readiness via the `initialized` notification (#4630).
-        if let Some(msg) = self.pending_startup_log.lock().take()
+        if let Some(msg) = self.client_session.pending_startup_log.lock().take()
             && let Err(e) = self.log_message(super::super::window::MessageType::Info, &msg)
         {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
@@ -102,7 +103,9 @@ impl LspServer {
     }
 
     pub(super) fn auto_initialize_for_compat(&self, method: &str) {
-        if self.initialization_accepted() && !self.initialized.load(Ordering::Acquire) {
+        if self.initialization_accepted()
+            && !self.client_session.initialized.load(Ordering::Acquire)
+        {
             tracing::warn!(
                 method,
                 "Client skipped initialized notification; auto-initializing for compatibility"
@@ -124,13 +127,15 @@ impl LspServer {
 
     /// Handle shutdown request
     pub(super) fn handle_shutdown_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        // Enforce single-shutdown idempotence via atomic swap.
+        // Enforce single-shutdown idempotence via the session owner.
         // Note: the router's pre-initialize -32002 gate (#17346) rejects
         // `shutdown` before the text-sync session contract is accepted, so
         // this handler only runs on an accepted session. A shutdown latch on
         // a never-initialized session would wedge it permanently: the
         // post-shutdown -32600 reject also stops `initialize`.
-        if self.shutdown_received.swap(true, Ordering::AcqRel) {
+        if self.client_session.begin_shutdown()
+            == crate::runtime::client_session::ShutdownAdmission::AlreadyShutdown
+        {
             return Err(JsonRpcError {
                 code: -32600, // InvalidRequest per LSP spec
                 message: "shutdown request may only be sent once".to_string(),
@@ -138,11 +143,9 @@ impl LspServer {
             });
         }
 
-        // Clear any pending cancelled requests on shutdown
-        self.cancelled.lock().clear();
-        self.clear_position_encoding_session_context();
         // Destroy the session-keyed resolve authenticator so every envelope
-        // from this session becomes unverifiable (#8342).
+        // from this session becomes unverifiable (#8342). Transport-owned,
+        // not ClientSession-owned.
         self.teardown_resolve_session();
         Ok(Some(json!(null)))
     }
@@ -168,7 +171,8 @@ impl LspServer {
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
-        let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
+        let exit_code =
+            protocol_exit_code(self.client_session.shutdown_received.load(Ordering::Acquire));
         if exit_code == 0 {
             tracing::info!(exit_code, "LSP server exiting");
         } else {
@@ -216,7 +220,7 @@ impl LspServer {
         {
             let level = Self::normalize_trace_level(Some(value));
             tracing::debug!(level, "Trace level set");
-            *self.trace_level.lock() = level.to_string();
+            *self.client_session.trace_level.lock() = level.to_string();
         }
         Ok(None) // Notification, no response
     }
@@ -227,7 +231,7 @@ impl LspServer {
     /// The verbose field is only included when trace level is "verbose".
     #[allow(dead_code)]
     pub(crate) fn send_log_trace(&self, message: &str, verbose: Option<&str>) {
-        let current_level = self.trace_level.lock().clone();
+        let current_level = self.client_session.trace_level.lock().clone();
         if current_level == TRACE_LEVEL_OFF {
             return;
         }
@@ -261,7 +265,7 @@ impl LspServer {
             });
         }
 
-        if self.initialized.load(Ordering::Acquire) {
+        if self.client_session.initialized.load(Ordering::Acquire) {
             return Err(JsonRpcError {
                 code: -32600, // InvalidRequest per LSP spec
                 message: "initialized notification may only be sent once".to_string(),
@@ -278,6 +282,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::JsonRpcId;
     use perl_tdd_support::must_err_with;
     use proptest::prelude::*;
 
@@ -370,7 +375,7 @@ mod tests {
         // either completion path. The state is constructed directly because
         // the live initialize path now classifies before the CAS.
         let server = LspServer::new();
-        server.initialize_requested.store(true, Ordering::Release);
+        server.client_session.initialize_requested.store(true, Ordering::Release);
 
         // When — compat auto-initialize (preflight compat path)
         server.auto_initialize_for_compat("textDocument/hover");
@@ -427,13 +432,174 @@ mod tests {
         // Then
         assert_eq!(response, Some(json!(null)), "shutdown returns JSON null per LSP spec");
         assert!(
-            server.shutdown_received.load(Ordering::Acquire),
+            server.client_session.shutdown_received.load(Ordering::Acquire),
             "shutdown_received must be set (exit will use code 0)"
         );
         assert!(
             server.position_encoding_session_context().is_none(),
             "shutdown must invalidate the active coordinate context"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn given_session_owned_handles_when_shutdown_dispatch_runs_then_progress_and_pending_are_drained()
+    -> TestResult {
+        let server = LspServer::new();
+        server
+            .handle_initialize(None)
+            .map_err(|e| format!("initialize request should succeed: {e}"))?;
+        let old_generation = server.client_session.generation();
+        server.client_session.progress_tokens.lock().insert("progress-old".to_string());
+        server
+            .client_session
+            .progress_token_to_request
+            .lock()
+            .insert("progress-old".to_string(), JsonRpcId::Integer(9));
+        server.client_session.cancelled.lock().insert(JsonRpcId::Integer(9));
+        server.client_session.client_capabilities.lock().work_done_progress_support = true;
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
+            crate::runtime::types::ServerRequestId::for_test(4),
+            crate::runtime::types::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec!["file:///old".to_string()],
+                includes_global_item: false,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        let response = server
+            .handle_shutdown_dispatch()
+            .map_err(|e| format!("shutdown should succeed: {e}"))?;
+
+        if response != Some(json!(null)) {
+            return Err(format!("production shutdown must return JSON-RPC null, got {response:?}"));
+        }
+        if !server.client_session.progress_tokens.lock().is_empty() {
+            return Err("production shutdown must drain progress_tokens".to_string());
+        }
+        if !server.client_session.progress_token_to_request.lock().is_empty() {
+            return Err("production shutdown must drain progress_token_to_request".to_string());
+        }
+        if !server.client_session.cancelled.lock().is_empty() {
+            return Err("production shutdown must drain cancelled ids".to_string());
+        }
+        if !server.client_session.pending_workspace_configuration_requests.lock().is_empty() {
+            return Err(
+                "production shutdown must drain pending reverse-request handles".to_string()
+            );
+        }
+        if server.client_session.client_capabilities.lock().work_done_progress_support {
+            return Err("production shutdown must reset work_done_progress_support".to_string());
+        }
+        if server.client_session.authorize_generation(old_generation) {
+            return Err(
+                "old session identity must not authorize after production shutdown".to_string()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn given_create_progress_paused_at_outbound_when_shutdown_then_token_is_not_retained()
+    -> TestResult {
+        use std::sync::Arc;
+        use std::sync::Barrier;
+        use std::thread;
+
+        use parking_lot::Mutex;
+        use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
+        use std::io::Write;
+        use std::time::Duration;
+
+        #[derive(Clone, Default)]
+        struct OutputCapture {
+            buffer: Arc<Mutex<Vec<u8>>>,
+        }
+
+        impl OutputCapture {
+            fn messages(&self) -> Result<Vec<Value>, String> {
+                let bytes = self.buffer.lock().clone();
+                let mut framer = ContentLengthFramer::new();
+                framer.push(&bytes);
+                let mut messages = Vec::new();
+                while let Some(body) = framer.try_next().map_err(|e| e.to_string())? {
+                    messages
+                        .push(serde_json::from_slice::<Value>(&body).map_err(|e| e.to_string())?);
+                }
+                Ok(messages)
+            }
+        }
+
+        impl Write for OutputCapture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.buffer.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn method_count(messages: &[Value], method: &str) -> usize {
+            messages
+                .iter()
+                .filter(|message| message.get("method").and_then(Value::as_str) == Some(method))
+                .count()
+        }
+
+        let output = OutputCapture::default();
+        let server = Arc::new(LspServer::with_output(Arc::new(Mutex::new(
+            Box::new(output.clone()) as Box<dyn Write + Send>,
+        ))));
+        server
+            .handle_initialize(None)
+            .map_err(|e| format!("initialize request should succeed: {e}"))?;
+        server.client_session.initialized.store(true, Ordering::Release);
+        server.client_session.client_capabilities.lock().work_done_progress_support = true;
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let entered_hook = Arc::clone(&entered);
+        let release_hook = Arc::clone(&release);
+        *server.progress_create_outbound_hook.lock() = Some(Box::new(move || {
+            entered_hook.wait();
+            release_hook.wait();
+        }));
+
+        let producer = {
+            let server = Arc::clone(&server);
+            thread::spawn(move || server.try_begin_request_progress("race", "indexing"))
+        };
+
+        entered.wait();
+        server.handle_shutdown_dispatch().map_err(|e| format!("shutdown should succeed: {e}"))?;
+        thread::sleep(Duration::from_millis(50));
+        let after_shutdown = output.messages()?;
+        let create_before = method_count(&after_shutdown, "window/workDoneProgress/create");
+        let progress_before = method_count(&after_shutdown, "$/progress");
+        release.wait();
+        let begun = producer.join().map_err(|_| "progress producer thread panicked")?;
+        thread::sleep(Duration::from_millis(50));
+        let after_producer = output.messages()?;
+        if begun.is_some() {
+            return Err("post-shutdown create must not start a progress frame".to_string());
+        }
+        if !server.client_session.progress_tokens.lock().is_empty() {
+            return Err("late create must not retain a session-owned progress token".to_string());
+        }
+        let create_after = method_count(&after_producer, "window/workDoneProgress/create");
+        if create_after != create_before {
+            return Err(format!(
+                "shutdown must refuse the outbound create request, not only token retention: {after_producer:?}"
+            ));
+        }
+        let progress_after = method_count(&after_producer, "$/progress");
+        if progress_after != progress_before {
+            return Err(format!(
+                "shutdown must not emit $/progress after drain: {after_producer:?}"
+            ));
+        }
         Ok(())
     }
 
@@ -495,7 +661,7 @@ mod tests {
 
         // Then
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_OFF,
             "unknown trace value must default to 'off'"
         );
@@ -515,7 +681,7 @@ mod tests {
 
         // Then
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_VERBOSE,
             "verbose is a valid LSP TraceValue and must be stored exactly"
         );
@@ -535,7 +701,7 @@ mod tests {
 
         // Then
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_MESSAGES,
             "messages is a valid LSP TraceValue and must be stored exactly"
         );
@@ -558,7 +724,7 @@ mod tests {
 
         // Then — level must be preserved; None params must not reset to "off"
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_VERBOSE,
             "missing params must not reset trace level"
         );
@@ -581,7 +747,7 @@ mod tests {
 
         // Then — level must be preserved
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_MESSAGES,
             "missing value key must not reset trace level"
         );
@@ -597,13 +763,17 @@ mod tests {
         server
             .handle_set_trace_dispatch(Some(json!({"value": "off"})))
             .map_err(|e| format!("setTrace off should succeed: {e}"))?;
-        assert_eq!(server.trace_level.lock().as_str(), TRACE_LEVEL_OFF, "'off' roundtrip");
+        assert_eq!(
+            server.client_session.trace_level.lock().as_str(),
+            TRACE_LEVEL_OFF,
+            "'off' roundtrip"
+        );
 
         server
             .handle_set_trace_dispatch(Some(json!({"value": "messages"})))
             .map_err(|e| format!("setTrace messages should succeed: {e}"))?;
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_MESSAGES,
             "'messages' roundtrip"
         );
@@ -611,7 +781,11 @@ mod tests {
         server
             .handle_set_trace_dispatch(Some(json!({"value": "verbose"})))
             .map_err(|e| format!("setTrace verbose should succeed: {e}"))?;
-        assert_eq!(server.trace_level.lock().as_str(), TRACE_LEVEL_VERBOSE, "'verbose' roundtrip");
+        assert_eq!(
+            server.client_session.trace_level.lock().as_str(),
+            TRACE_LEVEL_VERBOSE,
+            "'verbose' roundtrip"
+        );
 
         Ok(())
     }
@@ -760,7 +934,7 @@ mod tests {
 
                 // Assert both observable state fields against the model after every action.
                 prop_assert_eq!(
-                    server.initialize_requested.load(Ordering::Acquire),
+                    server.client_session.initialize_requested.load(Ordering::Acquire),
                     model.initialize_requested,
                     "initialize_requested flag must track model"
                 );

@@ -156,7 +156,7 @@ fn assert_initialize_matches_model(params: Value) -> Result<EffectiveLspSurface,
     // the runtime ID list keeps it. S03 owns removing this twin delta; any
     // other divergence fails here.
     let runtime_ids: BTreeSet<&str> =
-        server.advertised_feature_ids.lock().clone().into_iter().collect();
+        server.client_session.advertised_feature_ids.lock().clone().into_iter().collect();
     let model_ids: BTreeSet<&str> = surface.advertised_feature_ids.iter().copied().collect();
     let disagreements: Vec<&str> = runtime_ids.symmetric_difference(&model_ids).copied().collect();
     assert!(
@@ -429,7 +429,7 @@ fn pull_gating_side_effect_agrees_with_transport_selection() -> Result<(), Strin
     });
     let _ = server.handle_initialize(Some(params.clone()));
     assert!(
-        server.client_supports_pull_diags.load(Ordering::Relaxed),
+        server.client_session.client_supports_pull_diags.load(Ordering::Relaxed),
         "non-opencode declaring clients enable pull gating"
     );
     let mut inputs = inputs_from_params(&params);

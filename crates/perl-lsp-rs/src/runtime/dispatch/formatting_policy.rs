@@ -21,7 +21,7 @@ pub(super) fn route(
     // without acceptance falls through here so the router's -32002 arm owns
     // the refusal; after shutdown the intercept must also stand down.
     if !server.initialization_accepted()
-        || server.shutdown_received.load(std::sync::atomic::Ordering::Acquire)
+        || server.client_session.shutdown_received.load(std::sync::atomic::Ordering::Acquire)
     {
         return None;
     }
@@ -80,7 +80,7 @@ mod tests {
         server
             .handle_initialize(None)
             .map_err(|error| std::io::Error::other(format!("initialize failed: {error:?}")))?;
-        server.shutdown_received.store(true, std::sync::atomic::Ordering::Release);
+        server.client_session.shutdown_received.store(true, std::sync::atomic::Ordering::Release);
         assert!(
             route(&server, &request, Some(id), true).is_none(),
             "formatting must not be intercepted after shutdown"
@@ -95,7 +95,10 @@ mod tests {
     #[test]
     fn consumed_guard_without_accepted_contract_is_not_intercepted() {
         let server = LspServer::new();
-        server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
+        server
+            .client_session
+            .initialize_requested
+            .store(true, std::sync::atomic::Ordering::Release);
         assert!(
             server.accepted_text_sync_session().is_none(),
             "constructed window state must have no accepted contract"

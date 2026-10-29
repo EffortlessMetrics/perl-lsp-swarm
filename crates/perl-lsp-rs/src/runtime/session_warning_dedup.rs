@@ -356,6 +356,16 @@ impl SessionWarningDedupStore {
         self.family(family).clear_for_lifecycle();
     }
 
+    /// Drop every retained identity at the connection/session reset boundary.
+    pub(crate) fn clear_all_families(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.clear_family(SessionWarningFamily::Critic);
+        self.clear_family(SessionWarningFamily::ClientSetting);
+        self.clear_family(SessionWarningFamily::ClientIncludePath);
+        self.clear_family(SessionWarningFamily::AiBackend);
+        self.clear_family(SessionWarningFamily::FormatterOptions);
+    }
+
     /// Decide, emit, and roll back on failed delivery for one
     /// native-formatter ignored-options warning (#18056).
     ///
@@ -550,7 +560,7 @@ impl super::LspServer {
     /// Pressure/bound counters for the session-warning dedup store (#9183).
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn session_warning_dedup_snapshot(&self) -> SessionWarningDedupSnapshot {
-        self.session_warning_dedup.snapshot()
+        self.client_session.session_warning_dedup.snapshot()
     }
 
     /// Forward configuration notices recorded during config application
@@ -561,21 +571,21 @@ impl super::LspServer {
     /// `initialized` handler can flush them once the client is ready;
     /// notifications must not be sent earlier.
     pub(crate) fn flush_client_notices(&self) {
-        if !self.initialized.load(std::sync::atomic::Ordering::Acquire) {
+        if !self.client_session.initialized.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
-        let notices = self.config.lock().take_client_notices();
+        let notices = self.client_session.config.lock().take_client_notices();
         for notice in notices {
-            let _ =
-                self.session_warning_dedup.emit_formatter_options_warning(&notice, || {
-                    match self.show_message(super::window::MessageType::Warning, &notice) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            tracing::warn!(%error, "Failed to send formatter options warning");
-                            false
-                        }
+            let _ = self.client_session.session_warning_dedup.emit_formatter_options_warning(
+                &notice,
+                || match self.show_message(super::window::MessageType::Warning, &notice) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(%error, "Failed to send formatter options warning");
+                        false
                     }
-                });
+                },
+            );
         }
     }
 }

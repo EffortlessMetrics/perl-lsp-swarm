@@ -390,9 +390,12 @@ fn watched_create_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::
         open_consumer_fixture_with_dependency(false)?;
     // Mirror the existing watched-delete pull fixture: a refresh request is
     // only sent to a client that advertised refresh support.
-    server.client_capabilities.lock().diagnostic_refresh_support = true;
-    server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
-    server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.client_capabilities.lock().diagnostic_refresh_support = true;
+    server
+        .client_session
+        .client_supports_pull_diags
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    server.client_session.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
 
     std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
     server.handle_did_change_watched_files(Some(json!({

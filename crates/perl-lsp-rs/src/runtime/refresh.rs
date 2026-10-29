@@ -112,7 +112,7 @@ impl RefreshController {
     /// # Errors
     /// Returns IO error if sending request fails
     pub(crate) fn refresh_code_lens(&self, server: &super::LspServer) -> io::Result<()> {
-        if !server.client_capabilities.lock().code_lens_refresh_support {
+        if !server.client_session.client_capabilities.lock().code_lens_refresh_support {
             return Ok(());
         }
 
@@ -133,7 +133,7 @@ impl RefreshController {
     /// # Errors
     /// Returns IO error if sending request fails
     pub(crate) fn refresh_semantic_tokens(&self, server: &super::LspServer) -> io::Result<()> {
-        if !server.client_capabilities.lock().semantic_tokens_refresh_support {
+        if !server.client_session.client_capabilities.lock().semantic_tokens_refresh_support {
             return Ok(());
         }
 
@@ -154,7 +154,7 @@ impl RefreshController {
     /// # Errors
     /// Returns IO error if sending request fails
     pub(crate) fn refresh_inlay_hints(&self, server: &super::LspServer) -> io::Result<()> {
-        if !server.client_capabilities.lock().inlay_hint_refresh_support {
+        if !server.client_session.client_capabilities.lock().inlay_hint_refresh_support {
             return Ok(());
         }
 
@@ -175,7 +175,7 @@ impl RefreshController {
     /// # Errors
     /// Returns IO error if sending request fails
     pub(crate) fn refresh_inline_values(&self, server: &super::LspServer) -> io::Result<()> {
-        if !server.client_capabilities.lock().inline_value_refresh_support {
+        if !server.client_session.client_capabilities.lock().inline_value_refresh_support {
             return Ok(());
         }
 
@@ -198,7 +198,7 @@ impl RefreshController {
     /// # Errors
     /// Returns IO error if sending request fails
     pub(crate) fn refresh_diagnostics(&self, server: &super::LspServer) -> io::Result<()> {
-        if !server.client_capabilities.lock().diagnostic_refresh_support {
+        if !server.client_session.client_capabilities.lock().diagnostic_refresh_support {
             return Ok(());
         }
 
@@ -221,7 +221,7 @@ impl RefreshController {
     /// # Errors
     /// Returns IO error if sending request fails
     pub(crate) fn refresh_folding_ranges(&self, server: &super::LspServer) -> io::Result<()> {
-        if !server.client_capabilities.lock().folding_range_refresh_support {
+        if !server.client_session.client_capabilities.lock().folding_range_refresh_support {
             return Ok(());
         }
 

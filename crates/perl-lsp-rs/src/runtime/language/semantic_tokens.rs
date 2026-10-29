@@ -27,7 +27,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().semantic_tokens {
+        if !self.client_session.advertised_features.lock().semantic_tokens {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -167,7 +167,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().semantic_tokens {
+        if !self.client_session.advertised_features.lock().semantic_tokens {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -581,7 +581,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().semantic_tokens {
+        if !self.client_session.advertised_features.lock().semantic_tokens {
             return Err(crate::protocol::method_not_advertised());
         }
 

@@ -55,7 +55,7 @@ impl LspServer {
         // `exit` with -32600 InvalidRequest (#6103).
         if method != "exit"
             && method != "shutdown"
-            && self.shutdown_received.load(Ordering::Acquire)
+            && self.client_session.shutdown_received.load(Ordering::Acquire)
         {
             return RoutedResponse::Handler {
                 id,
@@ -103,12 +103,9 @@ impl LspServer {
             }
             "shutdown" => {
                 let outcome = self.handle_shutdown_dispatch();
-                // A client may shut down while the post-initialize configuration
-                // pull is still pending; clear eligibility with the shutdown Ok
-                // path so a late response cannot mutate configuration (#7708).
-                if outcome.is_ok() {
-                    self.pending_workspace_configuration_requests.lock().clear();
-                }
+                // Session-owned pending reverse requests drain inside
+                // `ClientSession::begin_shutdown`; a late configuration
+                // response cannot mutate configuration after admission.
                 outcome
             }
             "exit" => self.handle_exit_dispatch(),
@@ -660,7 +657,7 @@ mod tests {
     fn ripr_seam_proof_route_request_after_shutdown_rejects_non_exit()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        server.shutdown_received.store(true, Ordering::Release);
+        server.client_session.shutdown_received.store(true, Ordering::Release);
 
         let routed = server.route_request(
             JsonRpcRequest {
@@ -702,7 +699,7 @@ mod tests {
             server.initialization_accepted(),
             "setup must reach the accepted-session state a real shutdown requires"
         );
-        server.shutdown_received.store(true, Ordering::Release);
+        server.client_session.shutdown_received.store(true, Ordering::Release);
 
         let routed = server.route_request(
             JsonRpcRequest {
@@ -742,7 +739,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         assert!(
-            !server.initialize_requested.load(Ordering::Acquire),
+            !server.client_session.initialize_requested.load(Ordering::Acquire),
             "fresh server must start with initialize_requested == false"
         );
 
@@ -783,7 +780,7 @@ mod tests {
         )?;
         assert_eq!(error.code, -32002, "pre-initialize shutdown is ServerNotInitialized");
         assert!(
-            !server.shutdown_received.load(Ordering::Acquire),
+            !server.client_session.shutdown_received.load(Ordering::Acquire),
             "a rejected pre-initialize shutdown must not latch the shutdown state"
         );
 
@@ -820,7 +817,7 @@ mod tests {
     fn consumed_guard_without_accepted_contract_serves_nothing()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        server.initialize_requested.store(true, Ordering::Release);
+        server.client_session.initialize_requested.store(true, Ordering::Release);
         assert!(
             server.accepted_text_sync_session().is_none(),
             "constructed window state must have no accepted contract"

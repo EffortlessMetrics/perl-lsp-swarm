@@ -70,6 +70,20 @@ const MODULES: &[ModuleRow] = &[
         "#7392"
     ),
     module_row!(
+        "client_session",
+        PerlApplication,
+        "perl-lsp-rs ClientSession",
+        "retain as the connection/client-session owner over generic lifecycle/request authorities",
+        "#8386"
+    ),
+    module_row!(
+        "client_session_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of connection/session reset beside its subject",
+        "#8386"
+    ),
+    module_row!(
         "constructors",
         ProductComposition,
         "perl-lsp-rs",

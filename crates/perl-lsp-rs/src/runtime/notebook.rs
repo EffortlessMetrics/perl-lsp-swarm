@@ -287,7 +287,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().notebook_document_sync {
+        if !self.client_session.advertised_features.lock().notebook_document_sync {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -383,7 +383,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().notebook_document_sync {
+        if !self.client_session.advertised_features.lock().notebook_document_sync {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -583,7 +583,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().notebook_document_sync {
+        if !self.client_session.advertised_features.lock().notebook_document_sync {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -608,7 +608,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().notebook_document_sync {
+        if !self.client_session.advertised_features.lock().notebook_document_sync {
             return Err(crate::protocol::method_not_advertised());
         }
 

@@ -164,7 +164,7 @@ impl LspServer {
         id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().definition {
+        if !self.client_session.advertised_features.lock().definition {
             return Err(crate::protocol::method_not_advertised());
         }
         // Test-only fast path: skip the real handler when the test-fallbacks
@@ -199,7 +199,7 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().references {
+        if !self.client_session.advertised_features.lock().references {
             return Err(crate::protocol::method_not_advertised());
         }
         // Test-only fast path (#4628): compiled out of production builds.
@@ -463,7 +463,7 @@ impl LspServer {
         // success path around the handler gate.
         #[cfg(any(test, feature = "test-fallbacks"))]
         if std::env::var("LSP_TEST_FALLBACKS").is_ok()
-            && self.advertised_features.lock().folding_range
+            && self.client_session.advertised_features.lock().folding_range
         {
             return match self.on_folding_range(params.clone().unwrap_or(json!({}))) {
                 Ok(res) => Ok(Some(res)),

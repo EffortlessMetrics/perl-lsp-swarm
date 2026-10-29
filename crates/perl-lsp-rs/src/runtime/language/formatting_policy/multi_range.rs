@@ -1135,7 +1135,7 @@ mod tests {
             ),
         ] {
             let server = LspServer::new();
-            server.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
+            server.client_session.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
             let uri = format!("file:///mixed-plan-{label}.pl");
             server.test_apply_did_open(&uri, "a\nb\nc\n", 1)?;
             let params = json!({
