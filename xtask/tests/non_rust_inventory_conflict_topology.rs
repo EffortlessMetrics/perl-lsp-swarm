@@ -7,7 +7,8 @@
 //! pre-commit hook is exercised, rather than inferred from source text, because
 //! the defect lives at the index/branch boundary.
 
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, ensure, eyre};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
