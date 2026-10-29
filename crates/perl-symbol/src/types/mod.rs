@@ -79,7 +79,7 @@ impl VarKind {
 /// |---------|----------|--------|-------------|
 /// | `Package` | Module | 2 | Package declaration |
 /// | `Class` | Class | 5 | OO class (Moose, Moo, class keyword) |
-/// | `Role` | Interface | 8 | Role definition (Moose::Role) |
+/// | `Role` | Interface | 11 | Role definition (Moose::Role) |
 /// | `Subroutine` | Function | 12 | Standalone subroutine |
 /// | `Method` | Method | 6 | OO method |
 /// | `Variable(_)` | Variable | 13 | Variables (scalar, array, hash) |
@@ -139,7 +139,7 @@ impl SymbolKind {
         match self {
             SymbolKind::Package => 2,      // Module
             SymbolKind::Class => 5,        // Class
-            SymbolKind::Role => 8,         // Interface
+            SymbolKind::Role => 11,        // Interface
             SymbolKind::Subroutine => 12,  // Function
             SymbolKind::Method => 6,       // Method
             SymbolKind::Variable(_) => 13, // Variable
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(SymbolKind::Package.to_lsp_kind(), 2);
         assert_eq!(SymbolKind::Class.to_lsp_kind(), 5);
         assert_eq!(SymbolKind::Method.to_lsp_kind(), 6);
-        assert_eq!(SymbolKind::Role.to_lsp_kind(), 8);
+        assert_eq!(SymbolKind::Role.to_lsp_kind(), 11);
         assert_eq!(SymbolKind::Subroutine.to_lsp_kind(), 12);
         assert_eq!(SymbolKind::Variable(VarKind::Scalar).to_lsp_kind(), 13);
         assert_eq!(SymbolKind::Constant.to_lsp_kind(), 14);

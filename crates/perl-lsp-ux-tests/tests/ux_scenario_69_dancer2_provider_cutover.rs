@@ -400,10 +400,13 @@ fn scenario_69_dancer2_provider_cutover_receipt() {
             )?;
 
             // --- Excluded-keyword bounded diagnostic over the real push path. ---
-            let diagnostics = harness.wait_for_latest_diagnostics(
-                "bin/app_excluded.pl",
-                std::time::Duration::from_secs(10),
-            );
+            let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+                &format!("diagnostics for {}", "bin/app_excluded.pl"),
+                harness.wait_for_latest_diagnostics(
+                    "bin/app_excluded.pl",
+                    std::time::Duration::from_secs(10),
+                ),
+            )?;
             recorder.check(
                 "excluded keyword use publishes the bounded diagnostic",
                 diagnostics.iter().any(|diagnostic| {
