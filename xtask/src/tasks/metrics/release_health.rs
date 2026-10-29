@@ -487,8 +487,8 @@ fn write_json_output(root: &Path, metrics: &ReleaseHealthMetrics) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre::ensure;
     use super::*;
+    use color_eyre::eyre::ensure;
     use tempfile::TempDir;
 
     fn write_ledger(root: &Path, contents: &str) -> Result<()> {

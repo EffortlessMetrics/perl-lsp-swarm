@@ -1072,8 +1072,8 @@ fn build_baseline_markdown(report: &BaselineReport) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre::ensure;
     use super::*;
+    use color_eyre::eyre::ensure;
     use color_eyre::eyre::eyre;
     use serde_json::json;
     use tempfile::TempDir;

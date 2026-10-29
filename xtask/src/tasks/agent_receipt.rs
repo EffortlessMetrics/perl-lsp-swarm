@@ -121,9 +121,9 @@ fn validate_against_lease(receipt: &AgentLeaseReceipt, lease: &AgentLease) -> Re
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre::ensure;
     use super::*;
     use chrono::Duration;
+    use color_eyre::eyre::ensure;
     use serde_json::json;
 
     #[test]
