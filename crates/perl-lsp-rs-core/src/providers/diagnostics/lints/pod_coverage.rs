@@ -284,14 +284,19 @@ fn collect_names_from_expr(node: &Node, names: &mut Vec<(String, usize, usize)>)
 /// Fallback: scan source text for `@EXPORT` / `@EXPORT_OK` assignments with `qw()`.
 fn collect_exported_names_from_source(source: &str, names: &mut Vec<(String, usize, usize)>) {
     let mut line_start = 0usize;
-    for line in source.lines() {
+    // Iterate with terminators attached: `lines()` drops `\r\n`, so a
+    // `len() + 1` cursor drifts one byte early per CRLF line (#18096).
+    for chunk in source.split_inclusive('\n') {
+        // Strip `\r` only when a `\n` was present, mirroring `lines()`:
+        // a final unterminated line keeps its trailing `\r`.
+        let line = match chunk.strip_suffix('\n') {
+            Some(without_lf) => without_lf.strip_suffix('\r').unwrap_or(without_lf),
+            None => chunk,
+        };
         let trimmed = line.trim();
-        if !trimmed.contains("@EXPORT") {
-            line_start += line.len() + 1;
-            continue;
-        }
-
-        if let Some(qw_start) = trimmed.find("qw") {
+        if trimmed.contains("@EXPORT")
+            && let Some(qw_start) = trimmed.find("qw")
+        {
             let after_qw = &trimmed[qw_start + 2..];
             if let Some(content) = extract_qw_content(after_qw) {
                 for word in content.split_whitespace() {
@@ -301,7 +306,7 @@ fn collect_exported_names_from_source(source: &str, names: &mut Vec<(String, usi
                 }
             }
         }
-        line_start += line.len() + 1;
+        line_start += chunk.len();
     }
 }
 
@@ -475,6 +480,23 @@ sub bar { 2 }
         assert!(diagnostics.iter().all(|d| d.code.as_deref() == Some("PL304")));
         assert!(diagnostics.iter().any(|d| d.message.contains("foo")));
         assert!(diagnostics.iter().any(|d| d.message.contains("bar")));
+    }
+
+    /// CRLF exports fallback spans must start at the true byte offset:
+    /// one byte later per preceding CRLF line than the old `len() + 1`
+    /// cursor, and on a char boundary after multi-byte text (#18096).
+    #[test]
+    fn exported_names_from_source_crlf_spans_are_exact() {
+        let source = "# caf\u{00e9} \u{1F600}\r\nour @EXPORT = qw(foo);\r\n";
+        let mut names = Vec::new();
+        collect_exported_names_from_source(source, &mut names);
+        assert_eq!(names.len(), 1, "one exported name expected: {names:?}");
+        let (name, start, end) = &names[0];
+        assert_eq!(name, "foo");
+        let expected_start = source.find("our @EXPORT").unwrap_or(usize::MAX);
+        assert_eq!(*start, expected_start, "span must start at the true CRLF byte offset");
+        assert!(source.is_char_boundary(*start) && source.is_char_boundary(*end));
+        assert_eq!(&source[*start..*end], "our @EXPORT = qw(foo);");
     }
 
     #[test]
