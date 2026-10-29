@@ -71,6 +71,18 @@ pub fn extract_pod_from_file(path: &Path) -> io::Result<PodDoc> {
 ///
 /// A `PodDoc` containing the extracted documentation fields. Empty fields indicate
 /// the corresponding POD section was not present in the source.
+///
+/// # Field rendering contract (#17984)
+///
+/// `name`, `synopsis`, `methods`, `arguments`, `return_values`, `examples`, and
+/// `see_also` are plain display text: `L<...>` links contribute only their
+/// display text via [`strip_pod_formatting_display_text`], with no markdown
+/// wrapper or percent-encoded target, so a cleaned field cannot grow past its
+/// source through link expansion (the `pod_extraction` fuzz invariant,
+/// #12824 family). Only `description` renders markdown links via
+/// [`strip_pod_formatting`], because its consumer renders LSP markdown;
+/// markdown expansion is legitimate there and the fuzz length invariant does
+/// not apply to it.
 #[must_use]
 pub fn extract_pod(source: &str) -> PodDoc {
     let mut doc = PodDoc::default();
@@ -127,7 +139,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
                 body.push('\n');
             }
             body.push_str("- ");
-            body.push_str(&strip_pod_formatting(item_text));
+            body.push_str(item_text);
             body.push('\n');
             continue;
         }
@@ -158,7 +170,7 @@ pub fn extract_pod(source: &str) -> PodDoc {
 
         // New head2 section — treated as method documentation
         if matches!(pod_command(line), Some("head2")) {
-            let heading = strip_pod_formatting(pod_command_arg(line, "=head2").trim());
+            let heading = strip_pod_formatting_display_text(pod_command_arg(line, "=head2").trim());
             flush_section(&mut doc, &current_section, &body, leading_list);
             body.clear();
             saw_any_head = true;
@@ -317,24 +329,36 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
             doc.synopsis = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Description => {
+            // Description keeps the markdown renderer (`cleaned`): its
+            // consumer renders LSP markdown — see `extract_pod` (#17984).
             // Take only the first paragraph
             let first_para = first_paragraph(&cleaned);
             doc.description = Some(first_para);
         }
         Section::Arguments => {
-            doc.arguments = Some(cleaned);
+            // Arguments are plain display text like NAME/Synopsis — see
+            // the field rendering contract on `extract_pod` (#17984).
+            doc.arguments = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::ReturnValues => {
-            doc.return_values = Some(cleaned);
+            // Return values are plain display text like NAME/Synopsis —
+            // see the field rendering contract on `extract_pod` (#17984).
+            doc.return_values = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Examples => {
-            doc.examples = Some(cleaned);
+            // Examples are plain display text like NAME/Synopsis — see
+            // the field rendering contract on `extract_pod` (#17984).
+            doc.examples = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::SeeAlso => {
-            doc.see_also = Some(cleaned);
+            // SeeAlso is plain display text like NAME/Synopsis — see the
+            // field rendering contract on `extract_pod` (#17984).
+            doc.see_also = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Method(name) => {
-            doc.methods.insert(name.clone(), cleaned);
+            // Method bodies are plain display text like NAME/Synopsis —
+            // see the field rendering contract on `extract_pod` (#17984).
+            doc.methods.insert(name.clone(), strip_pod_formatting_display_text(trimmed));
         }
     }
 }
@@ -374,10 +398,11 @@ pub fn strip_pod_formatting(text: &str) -> String {
 
 /// Like [`strip_pod_formatting`], but renders `L<...>` links as their plain
 /// display text only — no markdown `[text](url)` wrapper, no percent-encoded
-/// target. Used for the NAME and SYNOPSIS fields (#12824, #14171): their
-/// consumers render them as plain perldoc text, so link markup is noise, and
-/// the percent-encoding expansion made a cleaned field longer than its source,
-/// violating the extraction invariant the `pod_extraction` fuzz target asserts.
+/// target. Used for every `PodDoc` field except `description` (#12824,
+/// #14171, #17984): their consumers render them as plain perldoc text, so
+/// link markup is noise, and the percent-encoding expansion made a cleaned
+/// field longer than its source, violating the extraction invariant the
+/// `pod_extraction` fuzz target asserts.
 pub fn strip_pod_formatting_display_text(text: &str) -> String {
     strip_pod_formatting_depth_links(text, 0, LinkRendering::DisplayText)
 }
@@ -962,6 +987,75 @@ mod tests {
         assert_eq!(encode_pod_link_target("\t"), "%09");
         assert_eq!(encode_pod_link_target("\n"), "%0A");
         assert_eq!(encode_pod_link_target("a\tb"), "a%09b");
+    }
+
+    #[test]
+    fn method_link_renders_display_text_not_exceeding_source_paragraph() {
+        // #17984: Method bodies are plain display text like NAME/Synopsis.
+        // A percent-encodable L<> target must not expand the field past
+        // its source paragraph (the pod_extraction fuzz invariant).
+        let paragraph = "See L<File::Path/The wanted function> for details.";
+        let source = format!("=head2 do_thing\n\n{paragraph}\n\n=cut\n");
+        let doc = extract_pod(&source);
+        let body = doc.methods.get("do_thing").map(String::as_str).unwrap_or("");
+        assert_eq!(body, "See File::Path for details.", "got: {body}");
+        assert!(
+            body.len() <= paragraph.len(),
+            "method body ({} bytes) must not exceed source paragraph ({} bytes): {body:?}",
+            body.len(),
+            paragraph.len()
+        );
+        assert!(!body.contains("perldoc://"), "method body must carry no markdown link: {body:?}");
+    }
+
+    #[test]
+    fn description_link_still_renders_markdown() {
+        // #17984: Description is the sole markdown field — its consumer
+        // renders LSP markdown, so L<> links stay clickable there.
+        let doc = extract_pod("=head1 DESCRIPTION\n\nSee L<File::Path> for details.\n\n=cut\n");
+        let desc = doc.description.as_deref().unwrap_or("");
+        assert_eq!(desc, "See [File::Path](perldoc://File::Path) for details.", "got: {desc}");
+    }
+
+    #[test]
+    fn method_item_link_label_renders_display_text_not_markdown() {
+        // Regression (#17984 review): =item labels were pre-rendered with
+        // the markdown renderer into body, so a plain method field flushed
+        // through the display-text renderer still carried perldoc:// links.
+        let source = "=head2 do_thing\n\n=over 4\n\n=item L<File::Path/The wanted function>\n\nDetails.\n\n=back\n\n=cut\n";
+        let doc = extract_pod(source);
+        let body = doc.methods.get("do_thing").map(String::as_str).unwrap_or("");
+        assert!(body.contains("- File::Path"), "got: {body}");
+        assert!(!body.contains("perldoc://"), "method body must carry no markdown link: {body:?}");
+    }
+
+    #[test]
+    fn head2_link_heading_renders_display_text_key() {
+        // Regression (#17984 review): =head2 headings became method keys
+        // via the markdown renderer, expanding L<> into a markdown link.
+        // Display text for L<Module/section> is the module part only.
+        let doc = extract_pod("=head2 L<File::Path/The wanted function>\n\nBody text.\n\n=cut\n");
+        assert!(doc.methods.contains_key("File::Path"), "got keys: {:?}", doc.methods.keys());
+        assert!(
+            doc.methods.keys().all(|key| !key.contains("perldoc://")),
+            "method key must carry no markdown link: {:?}",
+            doc.methods.keys()
+        );
+    }
+
+    #[test]
+    fn description_item_link_label_still_renders_markdown() {
+        // Preservation control (#17984): description is the sole markdown
+        // field, so an =item L<> label flushed through it still renders a
+        // markdown perldoc link after raw body accumulation.
+        let source =
+            "=head1 DESCRIPTION\n\n=over 4\n\n=item L<File::Path>\n\nDetails.\n\n=back\n\n=cut\n";
+        let doc = extract_pod(source);
+        let desc = doc.description.as_deref().unwrap_or("");
+        assert!(
+            desc.contains("[File::Path](perldoc://File::Path)"),
+            "description must keep markdown link, got: {desc}"
+        );
     }
 
     #[test]

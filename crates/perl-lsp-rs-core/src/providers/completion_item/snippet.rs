@@ -104,7 +104,9 @@ pub fn has_snippet_constructs(body: &str) -> bool {
 /// Implements the grammar this server actually emits, rather than stripping
 /// placeholders with regexes (which cannot see escapes or nesting):
 ///
-/// - `\$`, `\}`, `\\` and friends — the escaped character, literally.
+/// - `\$`, `\}`, `\\` — the escaped character, literally. A backslash before
+///   any other character is not a snippet escape and stays literal (`\n`,
+///   `\d`), because snippet bodies carry Perl source where those are text.
 /// - `$N` / `${N}` — tab stop, contributes nothing.
 /// - `${N:default}` — the default, rendered recursively (so nested tab stops
 ///   inside a default are handled).
@@ -129,7 +131,12 @@ fn render_until_brace(chars: &[char], i: &mut usize, out: &mut String, nested: b
     while let Some(&c) = chars.get(*i) {
         match c {
             '\\' => match chars.get(*i + 1) {
+                Some(&escaped) if matches!(escaped, '$' | '}' | '\\') => {
+                    out.push(escaped);
+                    *i += 2;
+                }
                 Some(&escaped) => {
+                    out.push('\\');
                     out.push(escaped);
                     *i += 2;
                 }
@@ -219,11 +226,21 @@ fn render_braced(chars: &[char], i: &mut usize, out: &mut String) -> bool {
             while let Some(&c) = chars.get(j) {
                 match c {
                     '\\' => {
-                        if let Some(&escaped) = chars.get(j + 1) {
-                            out.push(escaped);
-                            j += 2;
-                        } else {
-                            j += 1;
+                        // In choices only `,`, `|` and `\` are escapes;
+                        // any other backslash is literal text.
+                        match chars.get(j + 1) {
+                            Some(&escaped) if matches!(escaped, ',' | '|' | '\\') => {
+                                out.push(escaped);
+                                j += 2;
+                            }
+                            Some(&escaped) => {
+                                out.push('\\');
+                                out.push(escaped);
+                                j += 2;
+                            }
+                            None => {
+                                j += 1;
+                            }
                         }
                     }
                     ',' | '|' => break,
@@ -371,6 +388,35 @@ mod tests {
     #[test]
     fn choices_take_the_first_option() {
         assert_eq!(render_snippet_plaintext("is  => '${1|ro,rw|}'"), "is  => 'ro'");
+    }
+
+    #[test]
+    fn literal_backslashes_survive_plaintext_rendering() {
+        // #18212: only `$`, `}` and `\` are snippet escapes in ordinary
+        // text; any other backslash is literal Perl and must be kept.
+        assert_eq!(render_snippet_plaintext("m/\\d+\\s+\\w/"), "m/\\d+\\s+\\w/");
+        assert_eq!(render_snippet_plaintext("print \"data\\n\";"), "print \"data\\n\";");
+        assert_eq!(render_snippet_plaintext("s/\\t/ /g"), "s/\\t/ /g");
+        // Multibyte text before a literal backslash is untouched.
+        assert_eq!(render_snippet_plaintext("print 'héllo\\n';"), "print 'héllo\\n';");
+    }
+
+    #[test]
+    fn shipped_printfh_body_keeps_its_perl_escape() {
+        // The shipped printfh snippet as authored, byte for byte.
+        assert_eq!(
+            render_snippet_plaintext("print ${1:\\$fh} ${0:\"data\\n\"};"),
+            "print $fh \"data\\n\";"
+        );
+    }
+
+    #[test]
+    fn literal_backslashes_survive_in_defaults_and_choices() {
+        assert_eq!(render_snippet_plaintext("${1:\\d+}"), "\\d+");
+        // In choices, only `,`, `|` and `\` are escapes.
+        assert_eq!(render_snippet_plaintext("${1|\\d+,plain|}"), "\\d+");
+        assert_eq!(render_snippet_plaintext("${1|a\\,b,c|}"), "a,b");
+        assert_eq!(render_snippet_plaintext("${1|a\\|b,c|}"), "a|b");
     }
 
     #[test]

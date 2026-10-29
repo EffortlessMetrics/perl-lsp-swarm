@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://effortlessmetrics/perl-lsp/schemas/ripr-perl-facts-v1.schema.json",
   "title": "ripr-perl-facts-v1",
-  "description": "Fact packet contract for the Perl repair-routing lane (RIPR-SPEC-0064, Campaign 31 ripr-swarm#1379). perl-lsp emits; ripr consumes. Closed-vocabulary enums enforce the contract both sides pin against.",
+  "description": "Fact packet contract for the Perl repair-routing lane (RIPR-SPEC-0064, Campaign 31 ripr-swarm#1379). perl-lsp emits; ripr consumes. Closed-vocabulary enums cover the fact taxonomies (roles, frameworks, relation/boundary/runner kinds, confidences); limitation kinds, producer capabilities, and digests are open strings.",
   "type": "object",
   "required": [
     "schema_version",

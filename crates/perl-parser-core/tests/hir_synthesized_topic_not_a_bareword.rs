@@ -245,9 +245,9 @@ fn sigil_prefixed_identifiers(source: &str) -> Vec<(String, usize, usize)> {
 /// sigil alone and silently discarded that source-backed fact; the defect was
 /// caught in review by Codex, and this test is the control that was missing.
 ///
-/// The receiver keeps exactly the behavior it had before this PR — recorded, as
-/// an `IndirectObject`. Whether a sigil-prefixed name should be a *bareword* at
-/// all is a separate defect (#15031), deliberately not changed here.
+/// The receiver is still recorded (never discarded); since #15031 it carries
+/// the distinct `DynamicIndirectObject` role rather than the static
+/// `IndirectObject` one, at exactly the range the author typed.
 #[test]
 fn a_written_dynamic_constructor_receiver_is_preserved() -> TestResult {
     for (source, name, start, end) in [
@@ -269,7 +269,7 @@ fn a_written_dynamic_constructor_receiver_is_preserved() -> TestResult {
                 fact.name == name
                     && fact.range.start == start
                     && fact.range.end == end
-                    && fact.role == BarewordRole::IndirectObject
+                    && fact.role == BarewordRole::DynamicIndirectObject
             }),
             || {
                 format!(
