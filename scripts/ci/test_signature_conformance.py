@@ -182,7 +182,15 @@ class SignatureConformanceTests(unittest.TestCase):
 
     def test_real_process_outcomes_and_bounded_evidence(self):
         result = oracle.execute([sys.executable, '-c', 'import sys; print("out"); print("err", file=sys.stderr); sys.exit(7)'])
-        self.assertEqual({'status': 'completed', 'exit': 7, 'stdout': 'out\n', 'stderr': 'err\n'}, result)
+        # execute() returns the child's raw decoded bytes with no newline
+        # translation, and a Windows child's print() emits CRLF.
+        normalized = {
+            'status': result['status'],
+            'exit': result['exit'],
+            'stdout': result['stdout'].replace('\r\n', '\n'),
+            'stderr': result['stderr'].replace('\r\n', '\n'),
+        }
+        self.assertEqual({'status': 'completed', 'exit': 7, 'stdout': 'out\n', 'stderr': 'err\n'}, normalized)
         for stream in ('stdout', 'stderr'):
             with self.subTest(stream=stream):
                 result = oracle.execute([sys.executable, '-c', f'import sys; sys.{stream}.write("x" * {oracle.LIMIT + 1})'])
