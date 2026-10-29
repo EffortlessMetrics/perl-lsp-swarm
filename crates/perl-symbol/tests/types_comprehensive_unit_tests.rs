@@ -190,8 +190,8 @@ fn lsp_kind_class() -> Result<(), String> {
 
 #[test]
 fn lsp_kind_role() -> Result<(), String> {
-    if SymbolKind::Role.to_lsp_kind() != 8 {
-        return Err("Role should map to 8 (Interface)".into());
+    if SymbolKind::Role.to_lsp_kind() != 11 {
+        return Err("Role should map to 11 (Interface)".into());
     }
     Ok(())
 }
