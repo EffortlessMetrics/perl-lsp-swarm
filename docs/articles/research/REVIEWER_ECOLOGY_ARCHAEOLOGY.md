@@ -173,9 +173,9 @@ shifted the trust burden into the machine-enforceable parts.
 
 ## Evidence Pointers
 
-- [PR_REVIEW_RECEIPT_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_RECEIPT_ARCHAEOLOGY.md)
-- [REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
-- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
-- [TRUSTED_CHANGE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/TRUSTED_CHANGE_ARCHAEOLOGY.md)
+- [PR_REVIEW_RECEIPT_ARCHAEOLOGY.md](PR_REVIEW_RECEIPT_ARCHAEOLOGY.md)
+- [REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
+- [GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md](GATE_RECEIPT_FORENSICS_ARCHAEOLOGY.md)
+- [TRUSTED_CHANGE_ARCHAEOLOGY.md](TRUSTED_CHANGE_ARCHAEOLOGY.md)
 - GitHub PR archive snapshot on `2026-03-19`
 - PR `#153`, PR `#160`, PR `#209`, PR `#237`, PR `#248`, PR `#533`

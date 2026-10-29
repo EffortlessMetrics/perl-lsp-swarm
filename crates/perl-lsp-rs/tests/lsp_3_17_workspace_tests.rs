@@ -16,16 +16,28 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 fn test_workspace_symbol_3_17() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
+    let uri = "file:///test_symbol_3_17.pl";
+    harness.open(uri, "sub test { return 1; }\nsub other { return 2; }\n")?;
 
-    let response = harness.request(
-        "workspace/symbol",
-        json!({
-            "query": "test",
-            "workDoneToken": "symbol-1"
-        }),
-    )?;
+    let response = harness
+        .request(
+            "workspace/symbol",
+            json!({
+                "query": "test",
+                "workDoneToken": "symbol-1"
+            }),
+        )
+        .map_err(|e| format!("workspace/symbol request failed: {e}"))?;
 
-    assert!(response.is_null() || response.is_array());
+    // Exact: only the `test` sub matches; null or empty fails (#17685).
+    let symbols = response
+        .as_array()
+        .ok_or_else(|| format!("workspace/symbol must return an array, got: {response:?}"))?;
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert_eq!(names.len(), symbols.len(), "every symbol must carry a name: {response:?}");
+    assert_eq!(names, vec!["test"], "got: {response:?}");
+    assert_eq!(symbols[0]["kind"].as_u64(), Some(12), "got: {symbols:?}");
+    assert_eq!(symbols[0]["location"]["uri"].as_str(), Some(uri), "got: {symbols:?}");
     Ok(())
 }
 
@@ -33,22 +45,31 @@ fn test_workspace_symbol_3_17() -> TestResult {
 fn test_workspace_symbol_resolve_3_17() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
+    let uri = "file:///test_resolve_3_17.pl";
+    harness.open(uri, "sub test { return 1; }\n")?;
 
-    // Mock workspace symbol to resolve
-    let response = harness.request(
-        "workspaceSymbol/resolve",
-        json!({
-            "name": "test",
-            "kind": 12,
-            "location": {
-                "uri": "file:///test.pl"
-            }
-        }),
-    );
+    // The advertised resolveProvider makes this spec method part of the
+    // contract: it must answer (not -32601) and keep the symbol identity.
+    let symbol = harness
+        .request(
+            "workspaceSymbol/resolve",
+            json!({
+                "name": "test",
+                "kind": 12,
+                "location": {
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 8 }
+                    }
+                }
+            }),
+        )
+        .map_err(|e| format!("workspaceSymbol/resolve request failed: {e}"))?;
 
-    if let Ok(symbol) = response {
-        assert!(symbol["name"].is_string());
-    }
+    assert_eq!(symbol["name"].as_str(), Some("test"), "got: {symbol:?}");
+    assert_eq!(symbol["kind"].as_i64(), Some(12), "got: {symbol:?}");
+    assert_eq!(symbol["detail"].as_str(), Some("sub test"), "got: {symbol:?}");
     Ok(())
 }
 

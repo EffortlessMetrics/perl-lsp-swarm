@@ -1,0 +1,7 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "Three static dispositions against one counted gap; surplus is unspent, passes."
+ground_truth = "no-seam"
+inputs = ["ripr-plus.json", "repo-exposure.json", "comments.json"]
+mutant_verdict = "dropped-cannot-fail"
+drop_reason = "over-credit static cannot fail: credit slots are capped at count - named_actionable so surplus spends nothing and the gate passes with unspent evidence auditable (#15630)"
