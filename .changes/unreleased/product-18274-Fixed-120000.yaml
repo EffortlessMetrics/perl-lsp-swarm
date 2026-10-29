@@ -1,0 +1,9 @@
+project: product
+component: LSP
+kind: Fixed
+body: "A workspace/configuration pull that flips useSystemInc, usePerl5lib, or perl5libPrecedence without changing include paths now invalidates workspace identity and refreshes diagnostics, instead of leaving published diagnostics describing the old resolution state."
+time: 2026-10-21T00:00:00Z
+custom:
+  PR: "18274"
+  Slug: config-pull-resolver-toggle-refresh
+  Breaking: "no"

@@ -626,7 +626,7 @@ mod tests {
             &ast_a,
             STRICT_SOURCE,
             native_state(None),
-            identity.clone(),
+            identity,
         ));
         let run_b = NativeCriticService::analyze(subject(
             "file:///digest.pm",
