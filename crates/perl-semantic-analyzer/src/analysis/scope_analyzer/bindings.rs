@@ -27,6 +27,10 @@ pub(super) struct Variable {
     pub(super) is_used: RefCell<bool>,
     pub(super) is_our: bool,
     pub(super) is_initialized: RefCell<bool>,
+    /// True only for the synthetic bindings installed by the statement-modifier
+    /// pre-pass (#15048). A real declaration that finds nothing but its own
+    /// placeholder in the map is seeing *itself*, not a prior declaration.
+    pub(super) is_pre_pass_placeholder: bool,
 }
 
 #[derive(Debug)]
@@ -43,11 +47,45 @@ impl VisibleBindings {
         }
     }
 
-    pub(super) fn latest_offset(&self, idx: usize, name: &str) -> Option<usize> {
-        self.latest.borrow()[idx]
-            .as_ref()
-            .and_then(|map| map.get(name))
-            .map(|var| var.declaration_offset)
+    /// Offset and placeholder status of the active slot for `name`, if any.
+    pub(super) fn latest_info(&self, idx: usize, name: &str) -> (Option<usize>, bool) {
+        match self.latest.borrow()[idx].as_ref().and_then(|map| map.get(name)) {
+            Some(var) => (Some(var.declaration_offset), var.is_pre_pass_placeholder),
+            None => (None, false),
+        }
+    }
+
+    /// Install a *placeholder* `our` alias into the visible table so the
+    /// statement-modifier condition can resolve the alias before the statement
+    /// runs (#15048).
+    ///
+    /// The placeholder emits no diagnostics and records no binding history —
+    /// the normal analysis still owns those. It is deliberately marked
+    /// `is_initialized: false`: the guarded initializer has not executed when
+    /// the condition runs, so a condition-side read of a not-yet-assigned alias
+    /// must still be reported as uninitialized. A real declaration that later
+    /// reaches this scope replaces its own placeholder (see
+    /// `declare_variable_parts`).
+    ///
+    /// An existing binding for the name is preserved: the placeholder must
+    /// never overwrite a genuine declaration's metadata.
+    pub(super) fn pre_pass_register_placeholder(&self, idx: usize, name: &str, offset: usize) {
+        let mut latest = self.latest.borrow_mut();
+        let inner = latest[idx].get_or_insert_with(FxHashMap::default);
+        if inner.contains_key(name) {
+            // Preserve the existing binding — placeholder or real (#15048).
+            return;
+        }
+        inner.insert(
+            name.to_string(),
+            Rc::new(Variable {
+                declaration_offset: offset,
+                is_used: RefCell::new(true), // `our` aliases count as used
+                is_our: true,
+                is_initialized: RefCell::new(false),
+                is_pre_pass_placeholder: true,
+            }),
+        );
     }
 
     pub(super) fn get(&self, idx: usize, name: &str) -> Option<Rc<Variable>> {
