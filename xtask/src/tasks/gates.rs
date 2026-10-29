@@ -18,7 +18,7 @@
 //! ```
 
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Context, Result, bail, eyre};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail, eyre};
 use console::{Style, Term};
 use duct::cmd;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -40,6 +40,7 @@ use crate::utils::project_root;
 pub mod disposition;
 mod first_failure;
 mod planning_types;
+mod publication;
 pub mod route_profile;
 mod routed_result_adapter;
 
@@ -56,6 +57,8 @@ use planning_types::{GatePlan, PackageTargetIndex, PlannedGate, SkippedGate};
 pub enum GateTier {
     /// Sub-30s staged-tree hygiene checks, run before commit (issue #3786)
     Commit,
+    /// Frozen committed-object consistency before publication; no product qualification.
+    Publication,
     /// Fast checks for every PR iteration (~1-2 min)
     PrFast,
     /// Full verification before merge (~3-8 min)
@@ -70,6 +73,7 @@ impl std::fmt::Display for GateTier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GateTier::Commit => write!(f, "commit"),
+            GateTier::Publication => write!(f, "publication"),
             GateTier::PrFast => write!(f, "pr_fast"),
             GateTier::MergeGate => write!(f, "merge_gate"),
             GateTier::Nightly => write!(f, "nightly"),
@@ -298,7 +302,7 @@ pub struct AgentReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<AgentPlanReceipt>,
     /// `git write-tree` OID of the staged tree this run inspected. Only
-    /// populated for `GateTier::Commit` runs (issue #3786) — the action
+    /// populated for commit or publication runs (issue #3786) — the action
     /// packet's proof that every check keyed off the exact staged artifact,
     /// not the working tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -659,6 +663,8 @@ pub struct GateRunnerConfig {
     pub gate_policy: Option<PathBuf>,
     pub gate_filter: Option<String>,
     pub base_ref: Option<String>,
+    /// Expected pushed commit, used only by the publication role.
+    pub head_ref: Option<String>,
     /// Optional immutable CI subject receipt for scope-aware planning.
     pub subject: Option<PathBuf>,
     pub output_format: OutputFormat,
@@ -699,6 +705,7 @@ impl Default for GateRunnerConfig {
             gate_policy: None,
             gate_filter: None,
             base_ref: None,
+            head_ref: None,
             subject: None,
             output_format: OutputFormat::Human,
             emit_receipt: false,
@@ -717,9 +724,15 @@ impl Default for GateRunnerConfig {
 }
 
 /// Main entry point for gate execution
-pub fn run(config: GateRunnerConfig) -> Result<()> {
+pub fn run(mut config: GateRunnerConfig) -> Result<()> {
     let root = project_root()?;
     std::env::set_current_dir(&root).context("Failed to change to project root")?;
+
+    if config.tier == GateTier::Publication {
+        publication::validate_config(&root, &config)?;
+    } else if config.head_ref.is_some() {
+        bail!("--head is only supported by --tier publication");
+    }
 
     // Load gate policy
     let policy_path = config
@@ -772,6 +785,9 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     // ci-scope planning so local `just pr-fast` and CI execute the same lane
     // decisions instead of duplicating shell/YAML logic.
     let plan = plan_gates(&root, &policy, &config)?;
+    if config.tier == GateTier::Publication {
+        config.base_ref = Some(plan.base.clone());
+    }
 
     // Handle diff mode
     if let Some(baseline_path) = &config.diff_baseline {
@@ -783,6 +799,11 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
 
     // Run gates
     let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+    // Refuse a policy/configuration or checkout move during execution too.
+    if config.tier == GateTier::Publication {
+        publication::validate_config(&root, &config)?;
+    }
 
     // Output results
     output_results(&receipt, &config)?;
@@ -852,6 +873,9 @@ fn filter_gates(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<Vec<Ga
 
     // Filter by tier
     match config.tier {
+        GateTier::Publication => {
+            gates.retain(publication::is_mechanical_gate);
+        }
         GateTier::Commit => {
             gates.retain(|g| g.tier == "commit");
         }
@@ -926,6 +950,7 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
     }
 
     Ok(match config.tier {
+        GateTier::Publication => false,
         GateTier::Commit => true,
         // A commit-tier gate's `tier` field is literally `"commit"`, so it
         // can never be selected by `gates_for_tier(policy, "pr_fast")` —
@@ -996,6 +1021,9 @@ fn resolve_staged_tree_oid(root: &Path, config: &GateRunnerConfig) -> Result<Opt
 }
 
 fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Result<GatePlan> {
+    if config.tier == GateTier::Publication {
+        return publication::plan(root, policy, config);
+    }
     let subject_scope = config
         .subject
         .as_deref()
@@ -1018,6 +1046,7 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
     }
 
     match config.tier {
+        GateTier::Publication => publication::plan(root, policy, config),
         GateTier::Commit => Ok(static_gate_plan(
             GateTier::Commit,
             base,
@@ -1857,7 +1886,13 @@ fn run_gate_plan(
         },
         aggregate_metrics: None, // Could aggregate test counts etc.
     };
-    let agent_receipt = Some(build_agent_receipt(&root, &results, plan));
+    // Refuse checkout/policy drift before constructing publication evidence;
+    // run() checks again before any receipt output or write.
+    if config.tier == GateTier::Publication {
+        publication::validate_config(&root, config)?;
+    }
+    let agent_receipt =
+        Some(build_agent_receipt_for_subject(&root, &results, plan, config.head_ref.as_deref())?);
 
     Ok(Receipt {
         schema_version: GATES_RECEIPT_SCHEMA_VERSION.to_string(),
@@ -1888,7 +1923,18 @@ fn emit_gate_end(gate: &GateDefinition, result: &GateResult) {
 
 /// Phase-1 agent-facing receipt shape contract (Issue #5020):
 /// keep this as a stable, minimal JSON slice consumed by CI artifacts.
+#[cfg(test)]
 fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> AgentReceipt {
+    build_agent_receipt_for_subject(root, results, plan, None)
+        .expect("legacy non-publication receipt fixture")
+}
+
+fn build_agent_receipt_for_subject(
+    root: &Path,
+    results: &[GateResult],
+    plan: &GatePlan,
+    expected_publication_head: Option<&str>,
+) -> Result<AgentReceipt> {
     let scope_output = plan.scope.clone();
     let gate_status_by_name: HashMap<String, String> =
         results.iter().map(|result| (result.gate_name.clone(), result.status.clone())).collect();
@@ -1922,10 +1968,32 @@ fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> 
             standard.chain(heavy).collect()
         })
         .unwrap_or_default();
-    let (failures, next_actions) = failure_guidance(results);
-    let advisories = commit_advisories(results);
-    let sha = git_stdout_with_worktree_fallback(root, &["rev-parse", "HEAD"]).unwrap_or_default();
+    let (mut failures, mut next_actions) = failure_guidance(results);
+    let mut advisories = commit_advisories(results);
+    let sha = if plan.tier == GateTier::Publication {
+        expected_publication_head
+            .context("publication receipt requires the captured pushed head")?
+            .to_string()
+    } else {
+        git_stdout_with_worktree_fallback(root, &["rev-parse", "HEAD"]).unwrap_or_default()
+    };
     let is_latest = is_latest_commit(root);
+    if plan.tier == GateTier::Publication {
+        let rerun = publication::rerun_command(&plan.base, &sha);
+        for failure in &mut failures {
+            failure.repro = rerun.clone();
+        }
+        for advisory in &mut advisories {
+            advisory.rerun = rerun.clone();
+        }
+        next_actions = if failures.is_empty() {
+            vec!["Publication consistency completed without blocking findings. Behavioral proof, review and required late qualification remain.".to_string()]
+        } else {
+            vec![format!(
+                "Repair publication consistency and rerun the complete bound role: {rerun}"
+            )]
+        };
+    }
 
     let scope = if let Some(scope) = scope_output {
         AgentScope {
@@ -1943,7 +2011,7 @@ fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> 
         AgentScope::default()
     };
 
-    AgentReceipt {
+    Ok(AgentReceipt {
         sha,
         is_latest,
         tier: plan.tier.to_string(),
@@ -1954,7 +2022,7 @@ fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> 
         plan: Some(agent_plan_receipt(plan)),
         staged_tree_oid: plan.staged_tree_oid.clone(),
         advisories,
-    }
+    })
 }
 
 /// Non-blocking commit-tier findings (`CLASSIFICATION REQUIRED` / `ADVISORY`
@@ -1965,7 +2033,7 @@ fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> 
 fn commit_advisories(results: &[GateResult]) -> Vec<AgentAdvisory> {
     results
         .iter()
-        .filter(|result| result.tier == "commit")
+        .filter(|result| result.tier == "commit" || result.tier == "publication")
         .filter_map(|result| {
             let report =
                 result.output_summary.as_deref().and_then(super::commit_checks::parse_report)?;
@@ -2349,8 +2417,23 @@ fn run_single_gate(
         // so the check inspects the exact snapshot the receipt records —
         // see `commit_checks::run_named_check`'s doc comment.
         let staged_tree_oid = staged_tree_oid.map(str::to_string);
-        return run_internal_commit_check(gate, &log_path, command, start, || {
-            super::commit_checks::run_named_check(&check_name, staged_tree_oid.as_deref())
+        let publication = config.tier == GateTier::Publication;
+        return run_internal_commit_check(gate, &log_path, command, start, publication, || {
+            if publication {
+                publication::validate_config(&project_root()?, config)?;
+                let base =
+                    config.base_ref.as_deref().ok_or_else(|| eyre!("publication base missing"))?;
+                let head =
+                    config.head_ref.as_deref().ok_or_else(|| eyre!("publication head missing"))?;
+                let outcome = super::commit_checks::run_named_check_for_publication(
+                    &check_name,
+                    staged_tree_oid.as_deref().ok_or_else(|| eyre!("publication tree missing"))?,
+                    base,
+                )?;
+                Ok(publication::bind_outcome(outcome, base, head))
+            } else {
+                super::commit_checks::run_named_check(&check_name, staged_tree_oid.as_deref())
+            }
         });
     }
 
@@ -2924,6 +3007,7 @@ fn run_internal_commit_check(
     log_path: &std::path::Path,
     command: &str,
     start: Instant,
+    strict_instrument: bool,
     f: impl FnOnce() -> Result<super::commit_checks::CommitCheckOutcome>,
 ) -> Result<GateResult> {
     use super::commit_checks::CommitCheckOutcome;
@@ -2934,7 +3018,13 @@ fn run_internal_commit_check(
     let (status, output_summary) = match outcome {
         Ok(CommitCheckOutcome::Pass(summary)) => ("pass".to_string(), summary),
         Ok(CommitCheckOutcome::Flagged(report)) => {
-            let status = if report.posture.is_blocking() { "fail" } else { "pass" };
+            let status = if report.posture.is_blocking()
+                || (strict_instrument && report.posture == super::commit_checks::Posture::NotProven)
+            {
+                "fail"
+            } else {
+                "pass"
+            };
             match report.render() {
                 Ok(rendered) => (status.to_string(), rendered),
                 // A genuine render failure is an instrument problem, not a
@@ -6542,6 +6632,7 @@ gates:
             &log_path,
             "cargo xtask commit-check conflict_markers_staged",
             std::time::Instant::now(),
+            false,
             || Ok(CommitCheckOutcome::Flagged(report)),
         )?;
 
@@ -6579,6 +6670,7 @@ gates:
             &log_path,
             "cargo xtask commit-check staged_tree_identity",
             std::time::Instant::now(),
+            false,
             || Ok(CommitCheckOutcome::Flagged(report)),
         )?;
 
@@ -6586,6 +6678,36 @@ gates:
             result.status, "pass",
             "V1 is advisory-first — only Posture::Blocked may fail a commit-tier gate"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_not_proven_is_blocking_but_commit_advisory_semantics_remain()
+    -> color_eyre::eyre::Result<()> {
+        let gate =
+            tier_gate("rustfmt_staged", "publication", "cargo xtask commit-check rustfmt_staged");
+        let tmp = tempdir()?;
+        for (strict, expected) in [(true, "fail"), (false, "pass")] {
+            let report = CheckReport {
+                check: "rustfmt_staged".into(),
+                posture: Posture::NotProven,
+                result: "tool unavailable".into(),
+                why: "instrument unavailable".into(),
+                affected: Vec::new(),
+                fix: None,
+                rerun: "restore tool".into(),
+                what_remains: "formatting is not proven".into(),
+            };
+            let result = run_internal_commit_check(
+                &gate,
+                &tmp.path().join("check.log"),
+                &gate.command,
+                std::time::Instant::now(),
+                strict,
+                || Ok(CommitCheckOutcome::Flagged(report)),
+            )?;
+            assert_eq!(result.status, expected);
+        }
         Ok(())
     }
 
@@ -6604,6 +6726,7 @@ gates:
             &log_path,
             "cargo xtask commit-check staged_tree_identity",
             std::time::Instant::now(),
+            false,
             || Ok(CommitCheckOutcome::Pass("nothing staged".to_string())),
         )?;
 
@@ -6692,6 +6815,84 @@ gates:
         assert_eq!(agent_plan.skipped.len(), 1);
         assert_eq!(agent_plan.skipped[0].name, "clippy_core");
         assert_eq!(agent_plan.skipped[0].reason, "rust scoped plan selected");
+        Ok(())
+    }
+
+    #[test]
+    fn publication_serialized_receipt_has_bound_reruns_without_merge_permission()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let current_head = super::git_stdout_with_worktree_fallback(&root, &["rev-parse", "HEAD"])?;
+        // Captured pushed subject differs from current HEAD: this builder must
+        // retain it, while the execution boundary separately refuses drift.
+        let head = if current_head == "c".repeat(40) { "d".repeat(40) } else { "c".repeat(40) };
+        assert_ne!(head, current_head);
+        let base = "a".repeat(40);
+        let plan =
+            static_gate_plan(GateTier::Publication, base.clone(), Vec::new(), Some("b".repeat(40)));
+        let empty = serde_json::to_value(super::build_agent_receipt_for_subject(
+            &root,
+            &[],
+            &plan,
+            Some(&head),
+        )?)?;
+        assert_eq!(empty["sha"], head);
+        assert!(
+            super::build_agent_receipt_for_subject(&root, &[], &plan, None).is_err(),
+            "missing subject must not fall back to current HEAD"
+        );
+        let guidance = empty["suggested_next_actions"][0].as_str().unwrap();
+        assert!(
+            guidance.contains("Behavioral proof, review and required late qualification remain")
+        );
+        assert!(!guidance.contains("Proceed with review or merge"));
+        for posture in [Posture::Blocked, Posture::ClassificationRequired] {
+            let report = CheckReport {
+                check: "from_raw_staged".into(),
+                posture,
+                result: "finding".into(),
+                why: "test".into(),
+                affected: vec!["file.rs".into()],
+                fix: None,
+                rerun: "cargo xtask gates --tier commit --staged --gate from_raw_staged".into(),
+                what_remains: "candidate proof".into(),
+            };
+            let outcome =
+                super::publication::bind_outcome(CommitCheckOutcome::Flagged(report), &base, &head);
+            let tmp = tempdir()?;
+            let gate = tier_gate(
+                "from_raw_staged",
+                "publication",
+                "cargo xtask commit-check from_raw_staged",
+            );
+            let result = run_internal_commit_check(
+                &gate,
+                &tmp.path().join("check.log"),
+                &gate.command,
+                std::time::Instant::now(),
+                true,
+                || Ok(outcome),
+            )?;
+            let json = serde_json::to_value(super::build_agent_receipt_for_subject(
+                &root,
+                &[result.clone()],
+                &plan,
+                Some(&head),
+            )?)?;
+            let rerun = if posture == Posture::Blocked {
+                json["failures"][0]["repro"].as_str().unwrap()
+            } else {
+                json["advisories"][0]["rerun"].as_str().unwrap()
+            };
+            assert_eq!(rerun, super::publication::rerun_command(&base, &head));
+            assert!(!rerun.contains("--gate"));
+            assert!(!rerun.contains("--staged"));
+            let raw = crate::tasks::commit_checks::parse_report(
+                result.output_summary.as_deref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(raw.rerun, rerun, "raw gate report must carry the same supported rerun");
+        }
         Ok(())
     }
 

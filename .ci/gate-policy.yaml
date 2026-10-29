@@ -58,7 +58,7 @@ tiers:
   # Purpose: catch cheap, deterministic staged-artifact defects at the
   #   earliest reliable boundary — before commit, not first-discovered by
   #   cloud CI. Answers exactly one question: is the staged artifact
-  #   structurally sound? Never compiles the workspace (that's pre-push).
+  #   structurally sound? Never compiles the workspace (candidate/late proof does that).
   # Enforcement: local only — not a CI-required tier. `xtask gates --tier
   #   commit --staged` (alias: `xtask precommit` — no `--staged` flag on the
   #   alias; the subcommand is staged by definition) is invoked by an
@@ -75,6 +75,16 @@ tiers:
   #   changie_fragment_staged, rustfmt_staged, from_raw_staged.
   commit:
     description: "Staged-tree hygiene checks that run before git commit"
+    target_duration_seconds: 30
+    enforcement: local
+
+  # Publication reuses the eight tagged commit checks against an exact pushed
+  # base/head/tree. NOT PROVEN and tool failures block this role. This budget
+  # describes warm checks, not the existing Cargo/xtask bootstrap cost.
+  # Generated status, Changie rendering and all PR-fast/product proof remain
+  # explicitly deferred to affected candidate preparation / late qualification.
+  publication:
+    description: "Committed-object consistency only; behavioral proof remains candidate/late qualification"
     target_duration_seconds: 30
     enforcement: local
 
@@ -184,6 +194,7 @@ gates:
       max_duration_ms: 5000
     quarantine: false
     tags:
+      - publication-consistency
       - hygiene
       - staged
 
@@ -198,6 +209,7 @@ gates:
       max_duration_ms: 5000
     quarantine: false
     tags:
+      - publication-consistency
       - hygiene
       - staged
       - conflict-markers
@@ -213,6 +225,7 @@ gates:
       max_duration_ms: 5000
     quarantine: false
     tags:
+      - publication-consistency
       - hygiene
       - staged
       - file-mode
@@ -228,6 +241,7 @@ gates:
       max_duration_ms: 5000
     quarantine: false
     tags:
+      - publication-consistency
       - hygiene
       - staged
       - config
@@ -243,6 +257,7 @@ gates:
       max_duration_ms: 5000
     quarantine: false
     tags:
+      - publication-consistency
       - hygiene
       - staged
 
@@ -257,6 +272,7 @@ gates:
       max_duration_ms: 5000
     quarantine: false
     tags:
+      - publication-consistency
       - hygiene
       - staged
 
@@ -286,6 +302,7 @@ gates:
       max_duration_ms: 15000
     quarantine: false
     tags:
+      - publication-consistency
       - formatting
       - staged
 
@@ -300,6 +317,7 @@ gates:
       max_duration_ms: 5000
     quarantine: false
     tags:
+      - publication-consistency
       - hygiene
       - staged
       - process-policy
