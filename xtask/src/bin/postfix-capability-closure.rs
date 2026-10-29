@@ -1093,7 +1093,7 @@ mod tests {
         Ok((toml::from_str(LEDGER)?, toml::from_str(MATRIX)?))
     }
 
-    fn postfix<'a>(ledger: &'a mut ConceptLedger) -> Result<&'a mut ConceptRow> {
+    fn postfix(ledger: &mut ConceptLedger) -> Result<&mut ConceptRow> {
         ledger
             .concepts
             .iter_mut()
@@ -1101,7 +1101,7 @@ mod tests {
             .ok_or_else(|| anyhow!("committed ledger missing {CONCEPT_ID}"))
     }
 
-    fn postfix_req<'a>(matrix: &'a mut ProofMatrix) -> Result<&'a mut Requirement> {
+    fn postfix_req(matrix: &mut ProofMatrix) -> Result<&mut Requirement> {
         matrix
             .requirements
             .iter_mut()

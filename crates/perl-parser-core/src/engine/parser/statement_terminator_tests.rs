@@ -312,6 +312,28 @@ mod tests {
     /// delimiter statement is more than the tag alone. The tag must still
     /// clear — and a genuine missing terminator later in the file must still
     /// report, not be swallowed by a stale armed tag.
+    /// Regression for #17028: the fuzz-found input below drove heredoc
+    /// recovery into slicing an inverted statement span (start > end),
+    /// panicking with "slice index starts at 40 but ends at 36". Parsing
+    /// it must complete (Ok or Err) without panicking. The bytes are the
+    /// libFuzzer unit decoded from the destroyed crash artifact, also
+    /// committed at fuzz/artifacts/substitution_parsing/crash-17028-heredoc-slice-panic.
+    #[test]
+    fn heredoc_recovery_inverted_span_does_not_panic() {
+        const CRASH_INPUT: &[u8] = &[
+            59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 120, 76, 120, 36, 60, 60, 67, 48,
+            33, 123, 59, 59, 59, 206, 196, 59, 59, 97, 115, 60, 60, 67, 48, 33, 123, 59, 59, 59,
+            206, 196, 59, 59, 97, 115, 59, 59, 47, 59, 59, 127, 0, 0, 115, 59, 32, 32, 32, 32, 32,
+            32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+            32, 32, 32, 59, 59, 47, 59, 59, 127, 0, 0, 115, 59, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+            32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+            32, 32, 32, 32, 59, 59, 59, 50, 50, 64, 123,
+        ];
+        let input = String::from_utf8_lossy(CRASH_INPUT);
+        let mut parser = Parser::new(&input);
+        let _ = parser.parse();
+    }
+
     #[test]
     fn keyword_like_delimiter_clears_and_later_missing_semicolon_reports() {
         // `print` on line 3 is the heredoc delimiter and merges with

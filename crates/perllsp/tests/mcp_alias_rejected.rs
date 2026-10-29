@@ -6,6 +6,24 @@ fn run_perllsp(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error
     Ok(output)
 }
 
+#[track_caller]
+fn assert_mcp_recovery_guidance(text: &str) {
+    assert!(text.contains("not available in this version"), "missing version status: {text}");
+    assert!(text.contains("Claude Code LSP plugin"), "missing alternative protocol: {text}");
+    assert!(
+        text.contains(concat!(
+            "For the Claude Code LSP plugin, run `perllsp setup claude` ",
+            "only after public promotion and current verification of its public package."
+        )),
+        "missing qualified LSP-plugin setup route: {text}"
+    );
+    assert!(
+        text.contains("For read-only diagnosis, run `perllsp doctor --client claude`."),
+        "missing read-only diagnosis route: {text}"
+    );
+    assert!(!text.contains("in this candidate"), "internal build terminology leaked: {text}");
+}
+
 #[test]
 fn retired_mcp_alias_exits_without_starting_lsp() -> Result<(), Box<dyn std::error::Error>> {
     let output = run_perllsp(&["--mcp"])?;
@@ -32,9 +50,7 @@ fn retired_mcp_alias_exits_without_starting_lsp() -> Result<(), Box<dyn std::err
 fn canonical_mcp_subcommand_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let output = run_perllsp(&["mcp", "--stdio"])?;
 
-    if output.status.success() {
-        return Err("reserved MCP command unexpectedly succeeded".into());
-    }
+    assert_eq!(output.status.code(), Some(1), "reserved MCP exit: {:?}", output.status);
     if !output.stdout.is_empty() {
         return Err(format!("protocol stdout was not empty: {:?}", output.stdout).into());
     }
@@ -45,6 +61,7 @@ fn canonical_mcp_subcommand_fails_closed() -> Result<(), Box<dyn std::error::Err
         "missing native-adapter boundary: {stderr}"
     );
     assert!(stderr.contains("No MCP server was started."), "missing fail-closed result: {stderr}");
+    assert_mcp_recovery_guidance(&stderr);
     assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
     Ok(())
 }
@@ -64,6 +81,7 @@ fn reserved_mcp_help_is_protocol_clean() -> Result<(), Box<dyn std::error::Error
     assert!(stdout.contains("Usage: perllsp mcp --stdio [--workspace <ROOT>]"), "{stdout}");
     assert!(stdout.contains("native MCP adapter is not available"), "{stdout}");
     assert!(stdout.contains("never starts the LSP runtime"), "{stdout}");
+    assert_mcp_recovery_guidance(&stdout);
     assert!(!stdout.contains("Content-Length"), "protocol framing leaked into help: {stdout}");
     Ok(())
 }

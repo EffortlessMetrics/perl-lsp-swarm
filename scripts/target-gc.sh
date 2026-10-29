@@ -1,40 +1,43 @@
 #!/usr/bin/env bash
-# scripts/target-gc.sh — safe manual garbage collection of stale repo-local
+# scripts/target-gc.sh — advisory inspection of stale repo-local
 # cargo target/ directories (#12791).
 #
-# DRY-RUN BY DEFAULT: nothing is deleted unless --apply is passed.
+# DELETION RETIRED: --apply refuses; age/flock are not resource ownership.
 #
 # Safety contract:
 #   * candidates are only `target/` directories at the repo root and directly
-#     under .worktrees/*/ — never the cargo registry, never lockfiles, never
-#     anything else;
+#     under .worktrees/*/ or .claude/worktrees/*/ — never the cargo registry,
+#     never lockfiles, never anything else;
 #   * a target/ is stale only when NOTHING inside it has been modified within
 #     the threshold (default 30 days); a single fresh file keeps the tree;
-#   * refuses to run while the devplane build flock is held (a lane may be
-#     mid-build against a candidate);
+#   * legacy flock observations do not establish bounded-slot consumer safety;
 #   * deletion authority for executor-managed reclamation stays with #11671 —
 #     this is a manual maintenance tool and replaces nothing there.
 #
 # Usage:
 #   scripts/target-gc.sh [--days N]            # dry-run report
-#   scripts/target-gc.sh [--days N] --apply    # delete the stale candidates
+#   scripts/target-gc.sh [--days N] --apply    # refused; exact root approval needed
 #   scripts/target-gc.sh --self-test           # discrimination test (creates
 #                                              # and removes its own fixtures)
 
 set -euo pipefail
+# This legacy collector does not share the bounded-slot ownership contract.
+# Keep inspection available, but never infer deletion authority from age/flock.
+for arg in "$@"; do
+  case "$arg" in
+    --apply|--self-test-apply) echo "REFUSING: legacy target GC deletion is retired; request an exact root-owned cleanup proposal" >&2; exit 78 ;;
+  esac
+done
 
 days=30
-apply=0
 self_test=0
 plumbing=""
 for arg in "$@"; do
   case "$arg" in
     --days=*) days="${arg#--days=}" ;;
     --days) echo "error: use --days=N" >&2; exit 64 ;;
-    --apply) apply=1 ;;
     --self-test) self_test=1 ;;
     --self-test-dry-run) plumbing="dry" ;;
-    --self-test-apply) plumbing="apply" ;;
     -h|--help)
       sed -n '2,22p' "${BASH_SOURCE[0]}"
       exit 0
@@ -47,21 +50,6 @@ case "$days" in
 esac
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-repo_name="$(basename "$repo_root")"
-devplane="${DEVPLANE:-${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$repo_name}"
-build_lock="$devplane/locks/cargo-build.lock"
-
-refuse_if_build_lock_held() {
-  # flock(1) is Linux-only; where it is absent there is no flock contract to
-  # violate (cargo-safe degrades the same way), so the check is skipped.
-  command -v flock >/dev/null 2>&1 || return 0
-  mkdir -p "$(dirname "$build_lock")"
-  exec {build_lock_fd}>"$build_lock"
-  if ! flock -n "$build_lock_fd"; then
-    echo "REFUSING: devplane build flock is held ($build_lock) — a build may be in progress; rerun when it finishes." >&2
-    exit 75
-  fi
-}
 
 # is_stale_target DIR — succeeds when no entry inside DIR is newer than $days.
 is_stale_target() {
@@ -82,14 +70,13 @@ collect_candidates() {
   local root="$1"
   [ -d "$root/target" ] && printf '%s\n' "$root/target"
   local wt
-  for wt in "$root"/.worktrees/*/target; do
+  for wt in "$root"/.worktrees/*/target "$root"/.claude/worktrees/*/target; do
     [ -d "$wt" ] && printf '%s\n' "$wt"
   done
 }
 
 run_gc() {
   local root="$1"
-  refuse_if_build_lock_held
 
   local stale=()
   local candidate
@@ -119,28 +106,7 @@ run_gc() {
       "$candidate" "$(( ${size_kb:-0} / 1024 ))" "$days"
   done
 
-  if [ "$apply" -ne 1 ]; then
-    echo "target-gc: dry-run — $(( total_kb / 1024 )) MB would be reclaimed; re-run with --apply to delete."
-    return 0
-  fi
-
-  for candidate in "${stale[@]}"; do
-    # Defense in depth: only ever delete paths that end in /target below the
-    # repo root, never the registry, never lockfiles.
-    case "$candidate" in
-      "$root"/target|"$root"/.worktrees/*/target) ;;
-      *) echo "REFUSING: candidate outside the allowed shape: $candidate" >&2; exit 65 ;;
-    esac
-    # Revalidate immediately before removal: freshness evidence must be
-    # current at the deletion point, not only at classification time.
-    if ! is_stale_target "$candidate"; then
-      echo "skipped (no longer provably stale at deletion point): $candidate"
-      continue
-    fi
-    rm -rf -- "$candidate"
-    echo "deleted: $candidate"
-  done
-  echo "target-gc: reclaimed $(( total_kb / 1024 )) MB across ${#stale[@]} stale target/ directorie(s)."
+  echo "target-gc: advisory report - $(( total_kb / 1024 )) MB in age-selected candidates; no ownership clearance. Request an exact root-owned cleanup proposal."
 }
 
 self_test() {
@@ -150,21 +116,29 @@ self_test() {
 
   # Fixture: one fresh worktree target, one stale worktree target, plus
   # registry-looking and lockfile-looking decoys that must never be touched.
+  # The stale/fresh pair is mirrored under .claude/worktrees/, the real
+  # agent-worktree home, which the collector must also cover.
   mkdir -p "$tmp/.worktrees/fresh/target/sub" "$tmp/.worktrees/stale/target/sub"
   mkdir -p "$tmp/.worktrees/stale/registry-cache"
+  mkdir -p "$tmp/.claude/worktrees/fresh/target/sub" "$tmp/.claude/worktrees/stale/target/sub"
   echo fresh > "$tmp/.worktrees/fresh/target/sub/new.o"
   echo stale > "$tmp/.worktrees/stale/target/sub/old.o"
   echo decoy > "$tmp/.worktrees/stale/registry-cache/keep.me"
   echo lock > "$tmp/.worktrees/stale/target/Cargo.lock"
+  echo fresh > "$tmp/.claude/worktrees/fresh/target/sub/new.o"
+  echo stale > "$tmp/.claude/worktrees/stale/target/sub/old.o"
   touch -d "60 days ago" \
     "$tmp/.worktrees/stale/target" \
     "$tmp/.worktrees/stale/target/sub" \
     "$tmp/.worktrees/stale/target/sub/old.o" \
     "$tmp/.worktrees/stale/target/Cargo.lock" \
     "$tmp/.worktrees/stale/registry-cache" \
-    "$tmp/.worktrees/stale/registry-cache/keep.me"
+    "$tmp/.worktrees/stale/registry-cache/keep.me" \
+    "$tmp/.claude/worktrees/stale/target" \
+    "$tmp/.claude/worktrees/stale/target/sub" \
+    "$tmp/.claude/worktrees/stale/target/sub/old.o"
 
-  # Discrimination 1: dry-run selects exactly the stale tree.
+  # Discrimination 1: dry-run selects exactly the stale trees.
   local report
   report=$(TARGET_GC_SELFTEST_DRY_RUN="$tmp" DEVPLANE="$tmp/devplane" bash "${BASH_SOURCE[0]}" --days=30 --self-test-dry-run)
   if ! grep -q "stale: $tmp/.worktrees/stale/target" <<<"$report"; then
@@ -172,8 +146,18 @@ self_test() {
     echo "$report" >&2
     exit 1
   fi
+  if ! grep -q "stale: $tmp/.claude/worktrees/stale/target" <<<"$report"; then
+    echo "SELF-TEST FAILED: stale agent-worktree tree not selected:" >&2
+    echo "$report" >&2
+    exit 1
+  fi
   if grep -q "stale: $tmp/.worktrees/fresh/target" <<<"$report"; then
     echo "SELF-TEST FAILED: fresh tree wrongly selected:" >&2
+    echo "$report" >&2
+    exit 1
+  fi
+  if grep -q "stale: $tmp/.claude/worktrees/fresh/target" <<<"$report"; then
+    echo "SELF-TEST FAILED: fresh agent-worktree tree wrongly selected:" >&2
     echo "$report" >&2
     exit 1
   fi
@@ -183,24 +167,18 @@ self_test() {
     exit 1
   fi
 
-  # Discrimination 2: --apply removes only the stale tree; the fresh tree,
-  # its contents, and the decoys survive.
-  TARGET_GC_SELFTEST_ROOT="$tmp" DEVPLANE="$tmp/devplane" bash "${BASH_SOURCE[0]}" --days=30 --self-test-apply >/dev/null
+  # Discrimination 2: destructive entrypoints refuse and every fixture survives.
+  for flag in --apply --self-test-apply; do
+    rc=0
+    TARGET_GC_SELFTEST_ROOT="$tmp" DEVPLANE="$tmp/devplane" bash "${BASH_SOURCE[0]}" --days=30 "$flag" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 78 ] || { echo "SELF-TEST FAILED: $flag did not refuse" >&2; exit 1; }
+  done
   [ -f "$tmp/.worktrees/fresh/target/sub/new.o" ] || { echo "SELF-TEST FAILED: fresh tree content removed" >&2; exit 1; }
   [ -f "$tmp/.worktrees/stale/registry-cache/keep.me" ] || { echo "SELF-TEST FAILED: registry decoy removed" >&2; exit 1; }
-  [ ! -e "$tmp/.worktrees/stale/target" ] || { echo "SELF-TEST FAILED: stale tree not deleted" >&2; exit 1; }
-
-  # Discrimination 3: flock held -> refusal (where flock exists).
-  if command -v flock >/dev/null 2>&1; then
-    mkdir -p "$tmp/devplane/locks"
-    rc=0
-    flock "$tmp/devplane/locks/cargo-build.lock" -c \
-      "TARGET_GC_SELFTEST_ROOT='$tmp' DEVPLANE='$tmp/devplane' bash '${BASH_SOURCE[0]}' --self-test-dry-run >/dev/null 2>&1" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      echo "SELF-TEST FAILED: ran while the devplane flock was held" >&2
-      exit 1
-    fi
-  fi
+  [ -f "$tmp/.worktrees/stale/target/sub/old.o" ] || { echo "SELF-TEST FAILED: stale tree content removed" >&2; exit 1; }
+  [ -f "$tmp/.worktrees/stale/target/Cargo.lock" ] || { echo "SELF-TEST FAILED: lockfile evidence removed" >&2; exit 1; }
+  [ -f "$tmp/.claude/worktrees/fresh/target/sub/new.o" ] || { echo "SELF-TEST FAILED: fresh agent-worktree content removed" >&2; exit 1; }
+  [ -f "$tmp/.claude/worktrees/stale/target/sub/old.o" ] || { echo "SELF-TEST FAILED: stale agent-worktree content removed" >&2; exit 1; }
 
   # Discrimination 4: a failed freshness scan fails CLOSED — the run refuses
   # and nothing is classified stale. Shadow `find` with a stub that always
@@ -221,21 +199,16 @@ self_test() {
     exit 1
   fi
 
-  echo "target-gc self-test: OK (stale-only selection, apply preserves fresh+decoys, flock refusal, scan failure refuses)"
+  echo "target-gc self-test: OK (advisory stale selection, apply refuses, all evidence retained, scan failure refuses)"
 }
 
 # Self-test plumbing: run the GC against an injected root instead of the repo.
 if [ -n "$plumbing" ]; then
-  if [ "$plumbing" = "dry" ]; then
-    repo_root="${TARGET_GC_SELFTEST_DRY_RUN:-}"
-  else
-    repo_root="${TARGET_GC_SELFTEST_ROOT:-}"
-  fi
+  repo_root="${TARGET_GC_SELFTEST_DRY_RUN:-}"
   if [ -z "$repo_root" ]; then
     echo "error: $plumbing self-test plumbing requires its injected fixture root" >&2
     exit 64
   fi
-  [ "$plumbing" = "apply" ] && apply=1
   run_gc "$repo_root"
   exit 0
 fi

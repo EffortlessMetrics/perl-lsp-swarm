@@ -29,6 +29,9 @@ struct SubInfo {
 fn describe(body: &HirBody, id: perl_parser_core::hir::HirExprId) -> String {
     match body.expr(id) {
         Some(HirExpr::Variable(v)) => format!("var:{}", v.name),
+        // First-cohort scalar leaves (#17538) describe by kind and exact
+        // payload; anything else keeps its Opaque spelling.
+        Some(HirExpr::Literal(lit)) => format!("lit:{:?}:{}", lit.kind, lit.payload),
         Some(HirExpr::Opaque { ast_kind }) => format!("opaque:{ast_kind}"),
         Some(HirExpr::Call { .. }) => "call".to_string(),
         Some(HirExpr::Subscript(sub)) => format!("subscript:{:?}", sub.kind),
@@ -66,7 +69,8 @@ fn array_literal_index_reads_element() {
     assert_eq!(subs[0].kind, SubscriptKind::Array);
     assert_eq!(subs[0].access, AccessMode::Read);
     assert_eq!(subs[0].container, "var:arr");
-    assert_eq!(subs[0].subscript, "opaque:Number");
+    // The constant index is an exact leaf now, not an Opaque fallback (#17538).
+    assert_eq!(subs[0].subscript, "lit:Number:0");
 }
 
 #[test]
@@ -155,7 +159,8 @@ fn arrow_array_deref_reads_element() {
     assert_eq!(subs[0].kind, SubscriptKind::Array);
     assert_eq!(subs[0].access, AccessMode::Read);
     assert_eq!(subs[0].container, "var:ref");
-    assert_eq!(subs[0].subscript, "opaque:Number");
+    // The constant index is an exact leaf now, not an Opaque fallback (#17538).
+    assert_eq!(subs[0].subscript, "lit:Number:0");
 }
 
 #[test]

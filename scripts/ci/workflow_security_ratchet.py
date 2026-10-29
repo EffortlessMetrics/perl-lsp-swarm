@@ -285,7 +285,53 @@ def _security_sensitive_indirection(line: str) -> bool:
     }:
         return False
     value = parsed.value.strip()
+    if parsed.key == "permissions" and value == "{}":
+        return False
     return value.startswith(("*", "&", "{"))
+
+
+GH_AW_METADATA_PREFIX = "# gh-aw-metadata:"
+
+
+def _is_gh_aw_lock_file(relative: str, lines: Sequence[str]) -> bool:
+    # gh-aw lock files are compiler output verified by the compile-check
+    # workflow, which diffs the committed lock against regenerated output.
+    # Identity requires both the generator-owned `.lock.yml` suffix and the
+    # machine-readable metadata header; a candidate-controlled comment in an
+    # ordinary workflow is not sufficient.
+    return (
+        relative.startswith(".github/workflows/")
+        and relative.endswith(".lock.yml")
+        and any(line.startswith(GH_AW_METADATA_PREFIX) for line in lines[:5])
+    )
+
+
+def _gh_aw_safe_outputs_checkout(
+    lines: Sequence[str], use_index: int, use_indent: int
+) -> bool:
+    """Recognize the generator-controlled safe_outputs push checkout.
+
+    gh-aw emits exactly one checkout with persisted credentials, in the
+    create_pull_request step, always carrying the GH_AW_GITHUB_TOKEN-based
+    token expression. Any other checkout in a lock file (including one with
+    persisted credentials but a different token shape) stays flagged.
+    """
+    cursor = use_index + 1
+    while cursor < len(lines):
+        candidate = lines[cursor]
+        parsed = _parse_key_line(candidate)
+        if parsed and parsed.indent <= use_indent and (
+            parsed.list_item or parsed.indent < use_indent
+        ):
+            break
+        if (
+            parsed
+            and parsed.key == "token"
+            and "GH_AW_GITHUB_TOKEN" in parsed.value
+        ):
+            return True
+        cursor += 1
+    return False
 
 
 def scan(
@@ -417,6 +463,7 @@ def scan(
                 for parsed in parsed_lines
             )
         )
+        gh_aw_lock = is_workflow and _is_gh_aw_lock_file(relative, lines)
 
         for index, line in enumerate(lines):
             line_number = index + 1
@@ -439,6 +486,10 @@ def scan(
                     and external
                     and external.group(1) == "actions/checkout"
                     and _checkout_persists(lines, index, parsed.indent)
+                    and not (
+                        gh_aw_lock
+                        and _gh_aw_safe_outputs_checkout(lines, index, parsed.indent)
+                    )
                 ):
                     raw.append(
                         RawFinding(

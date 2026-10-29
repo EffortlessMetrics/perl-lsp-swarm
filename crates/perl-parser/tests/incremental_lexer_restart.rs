@@ -1,6 +1,9 @@
 #![cfg(feature = "incremental")]
 //! Public-contract tests for generation-bound stored lexer restart.
 
+#[path = "support/incremental_interior_edits.rs"]
+mod interior_edits;
+
 use perl_lexer::{PerlLexer, Token, TokenType};
 use perl_parser::incremental::{LexRestartStrategy, MAX_STORED_LEX_CHECKPOINTS};
 use perl_parser::{Edit, IncrementalState, apply_edits};

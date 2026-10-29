@@ -3,7 +3,9 @@
 mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
-use perl_parser_core::hir::{AssignMode, HirExpr, HirKind, HirStmt, lower_ast};
+use perl_parser_core::hir::{
+    AccessMode, AssignMode, HirExpr, HirKind, HirStmt, VariableKind, lower_ast,
+};
 use perl_parser_core::syntax::error::{ParseError, RecoveryKind, RecoverySite};
 use perl_parser_core::{Node, NodeKind, Parser, TokenKind, TokenStream};
 
@@ -141,12 +143,8 @@ fn whitespace_does_not_form_repetition_assignment() -> Result<(), String> {
     if find_assignment(&output.ast, "x=").is_some() {
         return Err(format!("spaced x = must not be normalized to x=:\n{}", output.ast.to_sexp()));
     }
-    // The claim is only that spaced `x =` stays outside the operator, not
-    // that the parser diagnoses the same-line leftover: statement-terminator
-    // enforcement deliberately ignores same-line trailing tokens, so the
-    // source parses as the variable expression followed by an ordinary `x =
-    // 3` assignment with no repetition diagnostic. Pin that exact shape so
-    // the test cannot pass vacuously on some future unrelated acceptance.
+    // The operator contract rejects normalization, while statement recovery
+    // exposes the invalid leftover. Preserve the useful partial statements.
     let NodeKind::Program { statements, .. } = &output.ast.kind else {
         return Err(format!("expected program root, got {:?}", output.ast.kind));
     };
@@ -156,10 +154,16 @@ fn whitespace_does_not_form_repetition_assignment() -> Result<(), String> {
             output.ast.to_sexp()
         ));
     }
-    if !output.diagnostics.is_empty() {
+    if !matches!(
+        output.diagnostics.as_slice(),
+        [ParseError::Recovered {
+            site: RecoverySite::Statement,
+            kind: RecoveryKind::UnexpectedSameLineResidue,
+            location: 7,
+        }]
+    ) {
         return Err(format!(
-            "same-line leftover enforcement is owned by statement termination, not the \
-             repetition operator; expected no repetition diagnostic, got {:?}",
+            "expected one residual recovery at contextual x, got {:?}",
             output.diagnostics
         ));
     }
@@ -246,8 +250,8 @@ fn repetition_assignment_preserves_hir_declaration_reachability() -> Result<(), 
     let stmt = body
         .stmt(*root.stmts.first().ok_or("expected declaration body statement")?)
         .ok_or("expected declaration body statement")?;
-    let init_id = match stmt {
-        HirStmt::Let { init: Some(init_id), .. } => *init_id,
+    let (init_id, binding) = match stmt {
+        HirStmt::Let { init: Some(init_id), binding: Some(binding), .. } => (*init_id, *binding),
         other => return Err(format!("expected lowered declaration initializer, got {other:?}")),
     };
     let HirExpr::Assign { lhs, rhs, mode } =
@@ -255,22 +259,31 @@ fn repetition_assignment_preserves_hir_declaration_reachability() -> Result<(), 
     else {
         return Err("declaration initializer must lower to HirExpr::Assign".to_string());
     };
-    if !matches!(mode, AssignMode::Simple) {
-        return Err(format!("expected simple declaration assignment, got {mode:?}"));
+    // Canonical compound declarations lower once, using their declared place.
+    if !matches!(mode, AssignMode::ReadModifyWrite) {
+        return Err(format!("expected one read-modify-write declaration assignment, got {mode:?}"));
     }
-    if !matches!(body.expr(*lhs), Some(HirExpr::Variable(variable)) if variable.name == "value") {
+    if !matches!(body.expr(*lhs), Some(HirExpr::Variable(variable))
+        if variable.name == "value"
+            && variable.kind == VariableKind::Lexical
+            && variable.binding == Some(binding)
+            && variable.access == AccessMode::ReadModifyWrite)
+    {
         return Err(format!("expected declaration lhs operand, got {:?}", body.expr(*lhs)));
     }
-    let HirExpr::Assign { lhs: repetition_lhs, rhs: repetition_rhs, mode: repetition_mode } =
-        body.expr(*rhs).ok_or("expected lowered x= assignment operand")?
-    else {
-        return Err("x= initializer must lower to HirExpr::Assign".to_string());
-    };
-    if !matches!(repetition_mode, AssignMode::ReadModifyWrite)
-        || !matches!(body.expr(*repetition_lhs), Some(HirExpr::Variable(variable)) if variable.name == "value")
-        || body.expr(*repetition_rhs).is_none()
+    let lhs_range = body.source_map.expr_range(*lhs).ok_or("expected declaration lhs range")?;
+    let rhs_range = body.source_map.expr_range(*rhs).ok_or("expected x= rhs range")?;
+    if body.source_map.expr_range(init_id) != Some(ast_initializer.location)
+        || source.get(lhs_range.start..lhs_range.end) != Some("$value")
+        || source.get(rhs_range.start..rhs_range.end) != Some("3")
+        || body.expr(*rhs).is_none()
     {
-        return Err(format!("lowered x= operands are incomplete: {:?}", body.expr(*rhs)));
+        return Err("lowered x= operands must preserve their source ranges".to_string());
+    }
+    let assignment_count =
+        body.exprs.iter().filter(|expr| matches!(expr, HirExpr::Assign { .. })).count();
+    if assignment_count != 1 {
+        return Err(format!("expected exactly one lowered x= assignment, got {assignment_count}"));
     }
     Ok(())
 }
@@ -293,10 +306,8 @@ fn repetition_assignment_preserves_x_call_boundary() -> Result<(), String> {
 fn repetition_assignment_documents_malformed_operator_boundaries() -> Result<(), String> {
     // `x==` and `x=>` lex as the ordinary `==` binary operator and `=>` fat
     // comma; the repetition-assignment operator must not absorb either
-    // boundary into `x=`. The parser does not reject these sources: it
-    // accepts them with the ordinary-operator shapes pinned below. Renaming
-    // or changing the assertions to rejection requires a separate parser
-    // decision, not a test-only change.
+    // boundary into `x=`. A fat comma leaves repetition without an operand;
+    // preserve that typed recovery rather than splitting off an autoquoted x.
     for source in ["$value x== 3;", "$value x=> 3;"] {
         let mut parser = Parser::new(source);
         let result = parser.parse();
@@ -306,10 +317,25 @@ fn repetition_assignment_documents_malformed_operator_boundaries() -> Result<(),
         if find_assignment(&ast, "x=").is_some() {
             return Err(format!("malformed boundary must not normalize to x=:\n{}", ast.to_sexp()));
         }
-        let expected =
-            if source.contains("x==") { "(binary_==" } else { "(hash (key (string (value x)))" };
+        let expected = if source.contains("x==") { "(binary_==" } else { "(binary_x" };
         if !sexp.contains(expected) {
             return Err(format!("malformed boundary lost expected AST {expected:?}:\n{sexp}"));
+        }
+        if source.contains("x=>") {
+            let output = Parser::new(source).parse_with_recovery();
+            if !matches!(
+                output.diagnostics.as_slice(),
+                [ParseError::Recovered {
+                    site: RecoverySite::InfixRhs,
+                    kind: RecoveryKind::MissingOperand,
+                    location: 7,
+                }]
+            ) {
+                return Err(format!(
+                    "expected repetition recovery before fat comma: {:?}",
+                    output.diagnostics
+                ));
+            }
         }
     }
     Ok(())
@@ -410,10 +436,8 @@ fn repetition_assignment_rejects_trivia_between_x_and_equals() -> Result<(), Str
     // Real Perl trivia between `x` and `=` is whitespace or a `#` line
     // comment. Perl 5.38.2 syntax-errors these sources (`near "x ="`,
     // `near "x\n="`, `near "x # separated\n="`) and never forms `x=`.
-    // The native parser currently splits them into two statements with no
-    // diagnostics: statement termination owns the leftover `= 3`. Pin that
-    // exact shape so the test cannot pass vacuously on a future hard parse
-    // error or by normalizing trivia into `x=`.
+    // Statement termination diagnoses the invalid continuation while keeping
+    // the useful partial statements and never normalizing trivia into `x=`.
     //
     // `/* ... */` is not trivia. Perl has no C comments; after infix `x` a
     // `/` opens a bare regex. That boundary is
@@ -436,9 +460,16 @@ fn repetition_assignment_rejects_trivia_between_x_and_equals() -> Result<(), Str
                 ast.to_sexp()
             ));
         }
-        if !parser.get_errors().is_empty() {
+        if !matches!(
+            parser.get_errors(),
+            [ParseError::Recovered {
+                site: RecoverySite::Statement,
+                kind: RecoveryKind::UnexpectedSameLineResidue,
+                location: 7,
+            }]
+        ) {
             return Err(format!(
-                "expected no diagnostics for real Perl trivia {source:?}, got {:?}",
+                "expected residual diagnostic for invalid trivia-separated operator {source:?}, got {:?}",
                 parser.get_errors()
             ));
         }

@@ -11,10 +11,9 @@ This casebook follows the **quality-first** forensics approach:
 - **Every metric** carries: value, kind, basis, coverage, confidence
 
 See the methodology docs:
-- [`DEVLT_ESTIMATION.md`](DEVLT_ESTIMATION.md) - Decision-weighted DevLT method
-- [`METRICS_PROVENANCE.md`](METRICS_PROVENANCE.md) - Provenance schema
-- [`QUALITY_SURFACES.md`](QUALITY_SURFACES.md) - The four quality surfaces
-- [`ANALYZER_FRAMEWORK.md`](ANALYZER_FRAMEWORK.md) - Specialist analyzers
+- [`METRICS_PROVENANCE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/METRICS_PROVENANCE.md) - Provenance schema
+- [`QUALITY_SURFACES.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/QUALITY_SURFACES.md) - The four quality surfaces
+- [`ANALYZER_FRAMEWORK.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ANALYZER_FRAMEWORK.md) - Specialist analyzers
 
 ## How to Read This
 
@@ -25,44 +24,6 @@ Each exhibit shows:
 - **What went wrong → fix → prevention** (if applicable)
 - **Quality deltas** (+2/+1/0/-1/-2 per surface)
 - **Budget** (DevLT range + provenance, compute with basis)
-
----
-
-
-## Storybooking Playbook
-
-To improve storybooking quality, treat each exhibit as a reusable end-to-end story that can be re-run by reviewers and CI.
-
-### Story template
-
-Each story should include:
-
-1. **Goal** - the user or maintainer outcome.
-2. **Trigger** - exact action taken (command, editor action, or request type).
-3. **Expected behavior** - parser/LSP/DAP outcome in observable terms.
-4. **Failure signals** - diagnostics, logs, or protocol symptoms that indicate regressions.
-5. **Validation** - tests and commands that prove the story still works.
-
-### Example story skeleton
-
-```text
-Story: Safe symbol rename across workspace
-Goal: Rename a symbol without missing qualified/bare references
-Trigger: textDocument/rename on a cross-file symbol
-Expected behavior: all intended references updated; no unrelated edits
-Failure signals: unresolved references, parse diagnostics spike, incorrect workspace edits
-Validation: targeted rename tests + workspace smoke checks
-```
-
-### Story quality checklist
-
-- **Task-oriented:** describes what a user is trying to achieve.
-- **Observable:** names concrete success/failure signals.
-- **Repeatable:** can be executed by another engineer without hidden context.
-- **Scoped:** narrow enough that failures are actionable.
-- **Traceable:** linked to a PR, issue, and proof bundle in this casebook.
-
-Use this playbook when adding new exhibits so the casebook doubles as a high-signal regression narrative, not just a historical record.
 
 ---
 
@@ -109,7 +70,7 @@ Use this playbook when adding new exhibits so the casebook doubles as a high-sig
 
 **Exhibit score:** 4.8/5 (Clarity: 5, Scope: 5, Evidence: 5, Tests: 4, Efficiency: 5)
 
-**Dossier:** [`forensics/pr-231-232-234.md`](forensics/pr-231-232-234.md)
+**Dossier:** [`forensics/pr-231-232-234.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/forensics/pr-231-232-234.md)
 
 ---
 
@@ -157,7 +118,7 @@ Use this playbook when adding new exhibits so the casebook doubles as a high-sig
 
 **Exhibit score:** 5/5 (Clarity: 5, Scope: 5, Evidence: 5, Tests: 5, Efficiency: 5)
 
-**Dossier:** [`forensics/pr-260-264.md`](forensics/pr-260-264.md)
+**Dossier:** [`forensics/pr-260-264.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/forensics/pr-260-264.md)
 
 ---
 
@@ -166,9 +127,9 @@ Use this playbook when adding new exhibits so the casebook doubles as a high-sig
 **What it proves:** Systematic infrastructure fixes eliminate entire classes of flakiness rather than patching individual tests.
 
 **Review map:**
-- `crates/perl-lsp/tests/*.rs` (test harness)
-- `crates/perl-lsp/src/errors.rs` (new error codes)
-- `crates/perl-lsp/src/lsp/server_impl/dispatch.rs` (shutdown handling)
+- `crates/perl-lsp-rs/tests/*.rs` (test harness)
+- `crates/perl-lsp-rs/src/errors.rs` (new error codes)
+- `crates/perl-lsp-rs/src/lsp/server_impl/dispatch.rs` (shutdown handling)
 
 **Proof bundle:**
 - Ignored test baseline: `brokenpipe=386` → `brokenpipe=0` (100% elimination)
@@ -205,7 +166,7 @@ Use this playbook when adding new exhibits so the casebook doubles as a high-sig
 
 **Exhibit score:** 5/5 (Clarity: 5, Scope: 5, Evidence: 5, Tests: 5, Efficiency: 5)
 
-**Dossier:** [`forensics/pr-251-252-253.md`](forensics/pr-251-252-253.md)
+**Dossier:** [`forensics/pr-251-252-253.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/forensics/pr-251-252-253.md)
 
 ---
 
@@ -250,7 +211,7 @@ Use this playbook when adding new exhibits so the casebook doubles as a high-sig
 
 **Exhibit score:** 4.8/5 (Clarity: 5, Scope: 4, Evidence: 5, Tests: 5, Efficiency: 5)
 
-**Dossier:** [`forensics/pr-259.md`](forensics/pr-259.md)
+**Dossier:** [`forensics/pr-259.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/forensics/pr-259.md)
 
 ---
 
@@ -294,7 +255,7 @@ Use this playbook when adding new exhibits so the casebook doubles as a high-sig
 
 **Exhibit score:** 5/5 (Clarity: 5, Scope: 5, Evidence: 5, Tests: 5, Efficiency: 5)
 
-**Dossier:** [`forensics/pr-225-226-229.md`](forensics/pr-225-226-229.md)
+**Dossier:** [`forensics/pr-225-226-229.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/forensics/pr-225-226-229.md)
 
 ---
 
@@ -389,28 +350,27 @@ Use this playbook when adding new exhibits so the casebook doubles as a high-sig
 
 **Coverage**: All estimates are `github_only` (no agent logs available for retrospective analysis).
 
-**Basis**: Decision events + friction events per exhibit, weighted per [`DEVLT_ESTIMATION.md`](DEVLT_ESTIMATION.md).
+**Basis**: Decision events + friction events per exhibit, weighted using the project's decision-weighted DevLT method.
 
 ---
 
 ## Adding Exhibits
 
 To add an exhibit:
-1. Use Level 2 archaeology from [`FORENSICS_SCHEMA.md`](../reference/FORENSICS_SCHEMA.md)
+1. Use Level 2 archaeology from [`FORENSICS_SCHEMA.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FORENSICS_SCHEMA.md)
 2. Identify the "what it proves" in one line
 3. Document the review map (key files)
 4. Link to receipts (test output, gate output, benchmarks)
 5. Record any wrongness discovered → fix → prevention
-6. **Add quality deltas** using the four surfaces from [`QUALITY_SURFACES.md`](QUALITY_SURFACES.md)
-7. **Estimate budget with provenance** using [`DEVLT_ESTIMATION.md`](DEVLT_ESTIMATION.md)
-8. Create a dossier in [`forensics/`](forensics/) if one doesn't exist
+6. **Add quality deltas** using the four surfaces from [`QUALITY_SURFACES.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/QUALITY_SURFACES.md)
+7. **Estimate budget with provenance** using the decision-weighted DevLT method
+8. Create a dossier in [`forensics/`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/forensics/) if one doesn't exist
 
-See [`forensics/INDEX.md`](forensics/INDEX.md) for the PR inventory.
+See [`forensics/INDEX.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/forensics/INDEX.md) for the PR inventory.
 
 ## Methodology Documentation
 
-- [`DEVLT_ESTIMATION.md`](DEVLT_ESTIMATION.md) - Decision-weighted DevLT method
-- [`METRICS_PROVENANCE.md`](METRICS_PROVENANCE.md) - Provenance schema for all metrics
-- [`QUALITY_SURFACES.md`](QUALITY_SURFACES.md) - The four quality surfaces
-- [`ANALYZER_FRAMEWORK.md`](ANALYZER_FRAMEWORK.md) - Specialist analyzer specs
-- [`FORENSICS_SCHEMA.md`](../reference/FORENSICS_SCHEMA.md) - Full dossier template
+- [`METRICS_PROVENANCE.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/METRICS_PROVENANCE.md) - Provenance schema for all metrics
+- [`QUALITY_SURFACES.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/QUALITY_SURFACES.md) - The four quality surfaces
+- [`ANALYZER_FRAMEWORK.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ANALYZER_FRAMEWORK.md) - Specialist analyzer specs
+- [`FORENSICS_SCHEMA.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FORENSICS_SCHEMA.md) - Full dossier template

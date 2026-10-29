@@ -2446,13 +2446,11 @@
       "kind": "mutation",
       "protocol_field": "workspace",
       "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
-      "client_capability_inputs": [
-        "workspace.workspaceFolders"
-      ],
+      "client_capability_inputs": [],
       "build_profile_config_tool_inputs": [],
       "disposition": "static",
       "runtime_route_owner": "n/a (initialize response assembly)",
-      "evidence_owner": "workspace_capabilities(); lifecycle test initialize_disables_workspace_folder_server_capability_when_client_lacks_support; matrix workspace/textDocumentContent row",
+      "evidence_owner": "workspace_capabilities(SERVER_WORKSPACE_FOLDER_SUPPORT); lifecycle tests initialize_keeps_server_workspace_folder_support_when_client_lacks_support, initialize_server_workspace_folder_support_is_independent_of_active_folder_count, initialize_explicit_empty_workspace_folders_never_adopts_root_uri, initialize_explicit_null_workspace_folders_never_adopts_root_uri; matrix workspace/textDocumentContent row",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,

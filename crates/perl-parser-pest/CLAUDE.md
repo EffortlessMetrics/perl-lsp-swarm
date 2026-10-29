@@ -29,7 +29,7 @@ cargo doc -p perl-parser-pest --open
 ```
 
 The legacy `ci-v2-bundle-sync` recipe and its archived comparison remain active
-repository machinery while the retirement work in #8814 remains open, but they are not
+repository machinery while the retirement work remains open, but they are not
 a package-local proof requirement. If that active check is investigated or run, treat it
 as bounded evidence of byte equality only; it does not establish current correctness, a
 second design authority, or a requirement to keep the live crate synchronized with the
@@ -48,7 +48,7 @@ The live crate API documentation describes this output as a Tree-sitter-compatib
 S-expression. That is a bounded serialized-format claim, not a promise that this crate
 produces a Tree-sitter syntax tree, ABI, node schema, source ranges, or semantic parity.
 Do not promote matching text shapes into any broader compatibility claim. The larger
-compatibility decision and its evidence belong to #9214; benchmark and corpus evidence
+compatibility decision and its evidence are owned outside this document; benchmark and corpus evidence
 must identify this provider/package and the grammar/projection revision needed to
 reproduce the observation.
 
@@ -66,7 +66,7 @@ success side of `parse()` is unaffected: it still returns `AstNode`, and `ParseO
 still no `parse_strict`. Do not turn this error-path integration into a claim about
 success-side source accounting, Tree-sitter compatibility, or production-parser status.
 
-The heredoc contract (#8220) is the one integrated consumer of that vocabulary. A
+The heredoc contract is the one integrated consumer of that vocabulary. A
 deterministic pre-pass in `heredoc.rs` runs before stage 1: an opener owns the physical
 lines below its logical line up to its terminator, those bytes become the node's
 content, and they leave the text handed to Pest so following code resumes at the line
@@ -77,7 +77,7 @@ a Perl-illegal `<< MARKER` — carries a typed diagnostic instead of an empty co
 reads as a clean parse.
 
 That completeness is heredoc-scoped. `Complete` means no opener lost or truncated a
-body; it is not a whole-source accounting claim, which remains #8093's row. The budgets
+body; it is not a whole-source accounting claim, which remains a separate accounting row. The budgets
 mirror `perl-lexer`'s `MAX_HEREDOC_BYTES`/`MAX_HEREDOC_DEPTH`, and production heredoc
 lexing remains `perl-lexer`'s.
 
@@ -112,10 +112,10 @@ fail closed as instrument errors rather than being counted as parser results.
 
 ## Compatibility boundary
 
-Issue #8814 records the accepted direction for this boundary: the live crate is the
+The repository tracker records the accepted direction for this boundary: the live crate is the
 canonical source for this experimental parser, while the archived `tree-sitter-perl-rs`
 v2 bundle is historical evidence and compatibility debt. The `ci-v2-bundle-sync` route
-and its archive comparison remain active transitional machinery until #8814 lands, but
+and its archive comparison remain active transitional machinery until that retirement lands, but
 their presence does not make the archive current authority. Do not expand the old
 synchronized set, copy new architecture into the archive, or treat archive equality as
 product correctness.
@@ -128,14 +128,14 @@ production parser or infer production reachability from package-local green test
 
 This package describes itself. Its manifest carries literal identity, MSRV, and
 dependency versions instead of `*.workspace = true`, and no dependency or
-dev-dependency is path-only (#8771). Two edits would silently undo that:
+dev-dependency is path-only. Two edits would silently undo that:
 
 - reintroducing `workspace = true` for any key other than `[lints]`, and
 - adding a path dependency, including a shared test helper.
 
 `[lints] workspace = true` is the one deliberate exception and must stay. The required
 `cargo xtask check-lint-policy` gate enforces it on every workspace member with no
-exemption mechanism, so the lint half of #8771's standalone contract cannot land while
+exemption mechanism, so the lint half of that standalone path-independence contract cannot land while
 this crate is a member; removing the marker to "finish" the decoupling turns that gate
 red. Whether the invariant grows an extraction exemption or the lint decoupling moves to
 the extraction PR is a separate decision.

@@ -15,6 +15,9 @@
 # workflow_run event for the retried completion arrives with run_attempt >= 2.
 # Deliveries are serialized per source run (concurrency group + live re-read
 # before arming) so duplicate events cannot double-arm the single retry.
+# Pull-request recovery additionally requires the event's source SHA to remain
+# the tip of its source repository/branch. Push/manual/history recovery keeps
+# the existing policy; evaluated merge freshness and PR admission are separate.
 #
 # Security posture: this workflow runs in the default-branch context with an
 # actions:write token, so it must never check out or execute candidate code.
@@ -60,6 +63,9 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
 
@@ -116,10 +122,20 @@ jobs:
           fi
           gate_head=$(grep -oE '^head_sha=[0-9a-f]{40}$' "${classification_file}" | cut -d= -f2 || true)
           gate_run_id=$(grep -oE '^run_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
+          gate_attempt=$(grep -oE '^run_attempt=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
           lane_name=$(grep -oE '^lane_name=.+$' "${classification_file}" | cut -d= -f2- || true)
           lane_job_id=$(grep -oE '^lane_job_id=[0-9]+$' "${classification_file}" | cut -d= -f2 || true)
 
-          # Sanity: the artifact must describe THIS run. Compare the recorded
+          # Sanity: the artifact must describe THIS run. The evaluated SHA
+          # must be present as an exact 40-hex value, but the API's run/job
+          # head_sha is the PR branch tip, not the evaluated PR merge ref.
+          # Never treat those distinct SHA domains as interchangeable.
+          if [ -z "${gate_head}" ]; then
+            echo "::notice::classification lacks a valid evaluated SHA — no automatic retry."
+            summary "decision: \`skip (missing evaluated SHA)\`"
+            exit 0
+          fi
+          # Compare the recorded
           # run id — not the head SHA: for pull_request runs the gate's
           # GITHUB_SHA is the evaluated refs/pull/<n>/merge commit while
           # workflow_run.head_sha is the PR branch tip, so a head comparison
@@ -132,8 +148,39 @@ jobs:
             summary "decision: \`skip (run-id mismatch between classification and event)\`"
             exit 0
           fi
+          # Artifacts are listed for the whole run, across all attempts. A
+          # prior attempt's otherwise valid infra verdict cannot authorize a
+          # retry of the current attempt (#16980).
+          if [ -z "${gate_attempt}" ] || [ "${gate_attempt}" != "${RUN_ATTEMPT}" ]; then
+            echo "::notice::classification attempt (${gate_attempt:-invalid}) does not match event attempt ${RUN_ATTEMPT} — no automatic retry."
+            summary "decision: \`skip (classification attempt mismatch)\`"
+            exit 0
+          fi
+          if [ -z "${lane_job_id}" ]; then
+            echo "::notice::classification lacks a numeric lane job id — no automatic retry."
+            summary "decision: \`skip (missing lane job identity)\`"
+            exit 0
+          fi
+          # One listing call projects both identity fields: jq emits the id and
+          # name on a single tab-separated line, and the id is digits-only so
+          # the first tab is always the separator. A second identical request
+          # for the same payload would double the API surface for no evidence
+          # gain.
+          current_lane_job=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
+            --jq ".jobs[] | select(.id == ${lane_job_id}) | \"\(.id)\t\(.name)\"" | head -1)
+          current_lane_job_id="${current_lane_job%%$'\t'*}"
+          current_lane_job_name="${current_lane_job#*$'\t'}"
+          if [ "${current_lane_job_id}" != "${lane_job_id}" ]; then
+            echo "::notice::classification lane job ${lane_job_id} is not in current run attempt ${RUN_ATTEMPT} — no automatic retry."
+            summary "decision: \`skip (lane job attempt mismatch)\`"
+            exit 0
+          fi
+          if [ "${current_lane_job_name}" != "${lane_name}" ]; then
+            echo "::notice::classification lane name does not match current run attempt ${RUN_ATTEMPT} — no automatic retry."
+            summary "decision: \`skip (lane job name mismatch)\`"
+            exit 0
+          fi
 
-          echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for the same evaluated tree."
           # Re-read the live run immediately before arming (review round 2):
           # a duplicate delivery that queued behind the concurrency group must
           # observe the bumped attempt / in-flight status and skip, so the
@@ -148,6 +195,42 @@ jobs:
             summary "decision: \`skip (bound already armed or consumed — race with another delivery)\`"
             exit 0
           fi
+
+          # Only PR-origin automatic recovery needs source-branch freshness.
+          # Read the exact ref in the event's SOURCE repository, including a
+          # fork; do not guess a PR association or substitute the base repo.
+          # HEAD_SHA is the event's branch SHA, never gate_head's merge SHA.
+          if [ -z "${SOURCE_EVENT:-}" ]; then
+            echo "::notice::source event identity missing — freshness NOT_PROVEN; no automatic retry."
+            summary "decision: \`skip (source event identity missing)\`"
+            exit 0
+          fi
+          if [ "${SOURCE_EVENT}" = "pull_request" ]; then
+            if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ||
+                  ! "${SOURCE_REPOSITORY:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ||
+                  -z "${SOURCE_BRANCH:-}" ]]; then
+              echo "::notice::PR source identity missing or malformed — freshness NOT_PROVEN; no automatic retry."
+              summary "decision: \`skip (PR source identity missing or malformed)\`"
+              exit 0
+            fi
+            source_ref=$(jq -jn --arg branch "${SOURCE_BRANCH}" '"heads/" + $branch | @uri')
+            if ! live_source_head=$(gh api "repos/${SOURCE_REPOSITORY}/git/ref/${source_ref}" \
+              --jq '.object.sha' 2>/dev/null) ||
+              [[ ! "${live_source_head}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::notice::PR source ref unavailable — freshness NOT_PROVEN; no automatic retry."
+              summary "decision: \`skip (PR source ref unavailable)\`"
+              exit 0
+            fi
+            if [ "${live_source_head}" != "${HEAD_SHA}" ]; then
+              echo "::notice::PR source head ${HEAD_SHA} is superseded by ${live_source_head}; no automatic retry."
+              summary "decision: \`skip (superseded PR source head)\`" \
+                      "current source head: \`${live_source_head}\`"
+              exit 0
+            fi
+          fi
+          # Freshness is observed immediately before POST, not an atomic lease:
+          # the rerun API has no expected-source-head precondition.
+          echo "::notice::gate classified run ${RUN_ID} as infra-no-proof (lane: ${lane_name:-unknown}, job: ${lane_job_id:-unknown}); re-running failed jobs for the same evaluated tree."
           gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/rerun-failed-jobs"
 
           summary \

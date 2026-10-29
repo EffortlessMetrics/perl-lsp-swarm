@@ -51,7 +51,7 @@ pub perl_module::api::ModuleFilePathError::UnquotedToken
 pub const fn perl_module::ModuleFilePathError::boundary_id(&self) -> &'static str
 pub fn perl_module::ModuleFilePathError::clone(&self) -> perl_module::ModuleFilePathError
 pub fn perl_module::ModuleFilePathError::eq(&self, other: &perl_module::ModuleFilePathError) -> bool
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> Self
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleFilePathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleFilePathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_module::api::ModuleImportKind
@@ -86,7 +86,7 @@ pub fn perl_module::ModuleMoveBlocker::eq(&self, other: &perl_module::ModuleMove
 pub fn perl_module::ModuleMoveBlocker::partial_cmp(&self, other: &perl_module::ModuleMoveBlocker) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_module::ModuleMoveBlocker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveBlocker::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveBlocker::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveBlocker::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveBlocker, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_module::api::ModuleMoveDisposition
 pub perl_module::api::ModuleMoveDisposition::Blocked
 pub perl_module::api::ModuleMoveDisposition::Complete
@@ -95,7 +95,7 @@ pub fn perl_module::ModuleMoveDisposition::clone(&self) -> perl_module::ModuleMo
 pub fn perl_module::ModuleMoveDisposition::eq(&self, other: &perl_module::ModuleMoveDisposition) -> bool
 pub fn perl_module::ModuleMoveDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub enum perl_module::api::ModuleMoveInvalidPlan
 pub perl_module::api::ModuleMoveInvalidPlan::BlockersNotCanonical
 pub perl_module::api::ModuleMoveInvalidPlan::CompletePlanWithoutEdits
@@ -123,7 +123,7 @@ pub fn perl_module::ModuleMoveTarget::clone(&self) -> perl_module::ModuleMoveTar
 pub fn perl_module::ModuleMoveTarget::eq(&self, other: &perl_module::ModuleMoveTarget) -> bool
 pub fn perl_module::ModuleMoveTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveTarget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveTarget, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub enum perl_module::api::ModuleNameError
 pub perl_module::api::ModuleNameError::AbsoluteOrDriveSyntax
 pub perl_module::api::ModuleNameError::ControlCharacter
@@ -140,7 +140,7 @@ pub perl_module::api::ModuleNameError::TraversalSegment
 pub const fn perl_module::ModuleNameError::boundary_id(&self) -> &'static str
 pub fn perl_module::ModuleNameError::clone(&self) -> perl_module::ModuleNameError
 pub fn perl_module::ModuleNameError::eq(&self, other: &perl_module::ModuleNameError) -> bool
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> Self
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleNameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleNameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_module::api::ModuleProvenanceClass
@@ -161,17 +161,17 @@ pub perl_module::api::ModuleRequest::BarewordModule(perl_module::ModuleName)
 pub perl_module::api::ModuleRequest::Dynamic(perl_module::DynamicModuleRequest)
 pub perl_module::api::ModuleRequest::LiteralRelativeFile(perl_module::ModuleFilePath)
 pub perl_module::api::ModuleRequest::PartiallyStatic(perl_module::PartialModuleRequest)
-pub fn perl_module::ModuleRequest::bareword(text: &str) -> core::result::Result<Self, perl_module::ModuleRequestError>
-pub fn perl_module::ModuleRequest::bareword_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<Self, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::bareword(text: &str) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::bareword_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
 pub const fn perl_module::ModuleRequest::boundary(&self) -> core::option::Option<perl_module::RequestBoundary>
-pub fn perl_module::ModuleRequest::dynamic(source_form: impl core::convert::Into<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> Self
+pub fn perl_module::ModuleRequest::dynamic(source_form: impl core::convert::Into<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> perl_module::ModuleRequest
 pub const fn perl_module::ModuleRequest::is_exact(&self) -> bool
 pub const fn perl_module::ModuleRequest::kind(&self) -> perl_module::ModuleRequestKind
 pub const fn perl_module::ModuleRequest::literal_file(&self) -> core::option::Option<&perl_module::ModuleFilePath>
 pub const fn perl_module::ModuleRequest::module_name(&self) -> core::option::Option<&perl_module::ModuleName>
-pub fn perl_module::ModuleRequest::partially_static(source_form: impl core::convert::Into<alloc::string::String>, static_fragments: alloc::vec::Vec<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> Self
-pub fn perl_module::ModuleRequest::quoted_require(text: &str) -> core::result::Result<Self, perl_module::ModuleRequestError>
-pub fn perl_module::ModuleRequest::quoted_require_token(token: &str) -> core::result::Result<Self, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::partially_static(source_form: impl core::convert::Into<alloc::string::String>, static_fragments: alloc::vec::Vec<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> perl_module::ModuleRequest
+pub fn perl_module::ModuleRequest::quoted_require(text: &str) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::quoted_require_token(token: &str) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
 pub fn perl_module::ModuleRequest::clone(&self) -> perl_module::ModuleRequest
 pub fn perl_module::ModuleRequest::eq(&self, other: &perl_module::ModuleRequest) -> bool
 pub fn perl_module::ModuleRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -183,8 +183,8 @@ pub perl_module::api::ModuleRequestError::InvalidModuleName(perl_module::ModuleN
 pub const fn perl_module::ModuleRequestError::boundary_id(&self) -> &'static str
 pub fn perl_module::ModuleRequestError::clone(&self) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleRequestError::eq(&self, other: &perl_module::ModuleRequestError) -> bool
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> Self
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> Self
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> perl_module::ModuleRequestError
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleRequestError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -288,16 +288,16 @@ pub fn perl_module::IncRoot::clone(&self) -> perl_module::IncRoot
 pub fn perl_module::IncRoot::eq(&self, other: &perl_module::IncRoot) -> bool
 pub fn perl_module::IncRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_module::api::ModuleFilePath
-pub fn perl_module::ModuleFilePath::from_quoted_token(token: &str) -> core::result::Result<Self, perl_module::ModuleFilePathError>
+pub fn perl_module::ModuleFilePath::from_quoted_token(token: &str) -> core::result::Result<perl_module::ModuleFilePath, perl_module::ModuleFilePathError>
 pub fn perl_module::ModuleFilePath::literal(&self) -> &str
-pub fn perl_module::ModuleFilePath::parse(text: &str) -> core::result::Result<Self, perl_module::ModuleFilePathError>
+pub fn perl_module::ModuleFilePath::parse(text: &str) -> core::result::Result<perl_module::ModuleFilePath, perl_module::ModuleFilePathError>
 pub fn perl_module::ModuleFilePath::with_forward_separators(&self) -> alloc::string::String
 pub fn perl_module::ModuleFilePath::clone(&self) -> perl_module::ModuleFilePath
 pub fn perl_module::ModuleFilePath::cmp(&self, other: &perl_module::ModuleFilePath) -> core::cmp::Ordering
 pub fn perl_module::ModuleFilePath::eq(&self, other: &perl_module::ModuleFilePath) -> bool
 pub fn perl_module::ModuleFilePath::partial_cmp(&self, other: &perl_module::ModuleFilePath) -> core::option::Option<core::cmp::Ordering>
 pub type perl_module::ModuleFilePath::Error = perl_module::ModuleFilePathError
-pub fn perl_module::ModuleFilePath::try_from(value: &str) -> core::result::Result<Self, Self::Error>
+pub fn perl_module::ModuleFilePath::try_from(value: &str) -> core::result::Result<perl_module::ModuleFilePath, perl_module::ModuleFilePath::Error>
 pub fn perl_module::ModuleFilePath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleFilePath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleFilePath::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
@@ -336,7 +336,7 @@ pub fn perl_module::ModuleMoveEdit::clone(&self) -> perl_module::ModuleMoveEdit
 pub fn perl_module::ModuleMoveEdit::eq(&self, other: &perl_module::ModuleMoveEdit) -> bool
 pub fn perl_module::ModuleMoveEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveEdit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveEdit, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::api::ModuleMoveFileGeneration
 pub perl_module::api::ModuleMoveFileGeneration::file_id: perl_semantic_facts::FileId
 pub perl_module::api::ModuleMoveFileGeneration::generation: perl_semantic_facts::envelope::SourceGeneration
@@ -344,7 +344,7 @@ pub fn perl_module::ModuleMoveFileGeneration::clone(&self) -> perl_module::Modul
 pub fn perl_module::ModuleMoveFileGeneration::eq(&self, other: &perl_module::ModuleMoveFileGeneration) -> bool
 pub fn perl_module::ModuleMoveFileGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveFileGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveFileGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveFileGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveFileGeneration, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::api::ModuleMoveOccurrence
 pub perl_module::api::ModuleMoveOccurrence::anchor_id: perl_semantic_facts::AnchorId
 pub perl_module::api::ModuleMoveOccurrence::dynamic: bool
@@ -362,7 +362,7 @@ pub fn perl_module::ModuleMoveOccurrence::clone(&self) -> perl_module::ModuleMov
 pub fn perl_module::ModuleMoveOccurrence::eq(&self, other: &perl_module::ModuleMoveOccurrence) -> bool
 pub fn perl_module::ModuleMoveOccurrence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveOccurrence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveOccurrence::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveOccurrence::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveOccurrence, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::api::ModuleMovePlan
 pub perl_module::api::ModuleMovePlan::blockers: alloc::vec::Vec<perl_module::ModuleMoveBlocker>
 pub perl_module::api::ModuleMovePlan::current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>
@@ -373,14 +373,14 @@ pub perl_module::api::ModuleMovePlan::resource: perl_module::ModuleMoveResourceT
 pub perl_module::api::ModuleMovePlan::schema_version: u16
 pub perl_module::api::ModuleMovePlan::source: perl_module::ModuleMoveSource
 pub perl_module::api::ModuleMovePlan::target_was_absent: bool
-pub fn perl_module::ModuleMovePlan::build(source: perl_module::ModuleMoveSource, target: perl_module::ModuleMoveTarget, occurrences: alloc::vec::Vec<perl_module::ModuleMoveOccurrence>, current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>, target_exists: bool) -> Self
+pub fn perl_module::ModuleMovePlan::build(source: perl_module::ModuleMoveSource, target: perl_module::ModuleMoveTarget, occurrences: alloc::vec::Vec<perl_module::ModuleMoveOccurrence>, current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>, target_exists: bool) -> perl_module::ModuleMovePlan
 pub fn perl_module::ModuleMovePlan::is_complete(&self) -> bool
 pub fn perl_module::ModuleMovePlan::validate(&self) -> core::result::Result<(), perl_module::ModuleMoveInvalidPlan>
 pub fn perl_module::ModuleMovePlan::clone(&self) -> perl_module::ModuleMovePlan
 pub fn perl_module::ModuleMovePlan::eq(&self, other: &perl_module::ModuleMovePlan) -> bool
 pub fn perl_module::ModuleMovePlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMovePlan::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMovePlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMovePlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMovePlan, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::api::ModuleMoveResourceTransition
 pub perl_module::api::ModuleMoveResourceTransition::source_module: alloc::string::String
 pub perl_module::api::ModuleMoveResourceTransition::source_path: alloc::string::String
@@ -390,7 +390,7 @@ pub fn perl_module::ModuleMoveResourceTransition::clone(&self) -> perl_module::M
 pub fn perl_module::ModuleMoveResourceTransition::eq(&self, other: &perl_module::ModuleMoveResourceTransition) -> bool
 pub fn perl_module::ModuleMoveResourceTransition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveResourceTransition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveResourceTransition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveResourceTransition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveResourceTransition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::api::ModuleMoveSource
 pub perl_module::api::ModuleMoveSource::editable: bool
 pub perl_module::api::ModuleMoveSource::file_id: perl_semantic_facts::FileId
@@ -408,22 +408,22 @@ pub fn perl_module::ModuleMoveSource::clone(&self) -> perl_module::ModuleMoveSou
 pub fn perl_module::ModuleMoveSource::eq(&self, other: &perl_module::ModuleMoveSource) -> bool
 pub fn perl_module::ModuleMoveSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveSource::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveSource, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::api::ModuleName
 pub fn perl_module::ModuleName::canonical(&self) -> &str
 pub fn perl_module::ModuleName::is_valid(text: &str) -> bool
 pub fn perl_module::ModuleName::is_valid_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> bool
 pub fn perl_module::ModuleName::legacy_spelling(&self) -> alloc::string::String
-pub fn perl_module::ModuleName::parse(text: &str) -> core::result::Result<Self, perl_module::ModuleNameError>
-pub fn perl_module::ModuleName::parse_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<Self, perl_module::ModuleNameError>
+pub fn perl_module::ModuleName::parse(text: &str) -> core::result::Result<perl_module::ModuleName, perl_module::ModuleNameError>
+pub fn perl_module::ModuleName::parse_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<perl_module::ModuleName, perl_module::ModuleNameError>
 pub fn perl_module::ModuleName::segments(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str> + '_
 pub const fn perl_module::ModuleName::separator_form(&self) -> perl_module::PackageSeparatorForm
 pub fn perl_module::ModuleName::clone(&self) -> perl_module::ModuleName
-pub fn perl_module::ModuleName::cmp(&self, other: &Self) -> core::cmp::Ordering
-pub fn perl_module::ModuleName::eq(&self, other: &Self) -> bool
-pub fn perl_module::ModuleName::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_module::ModuleName::cmp(&self, other: &perl_module::ModuleName) -> core::cmp::Ordering
+pub fn perl_module::ModuleName::eq(&self, other: &perl_module::ModuleName) -> bool
+pub fn perl_module::ModuleName::partial_cmp(&self, other: &perl_module::ModuleName) -> core::option::Option<core::cmp::Ordering>
 pub type perl_module::ModuleName::Error = perl_module::ModuleNameError
-pub fn perl_module::ModuleName::try_from(value: &str) -> core::result::Result<Self, Self::Error>
+pub fn perl_module::ModuleName::try_from(value: &str) -> core::result::Result<perl_module::ModuleName, perl_module::ModuleName::Error>
 pub fn perl_module::ModuleName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleName::hash<H: core::hash::Hasher>(&self, state: &mut H)
@@ -456,7 +456,7 @@ pub struct perl_module::api::ModuleTokenRangeIter<'a>
 pub fn perl_module::ModuleTokenRangeIter<'a>::clone(&self) -> perl_module::ModuleTokenRangeIter<'a>
 pub fn perl_module::ModuleTokenRangeIter<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub type perl_module::ModuleTokenRangeIter<'a>::Item = perl_module::ModuleTokenRange
-pub fn perl_module::ModuleTokenRangeIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn perl_module::ModuleTokenRangeIter<'a>::next(&mut self) -> core::option::Option<perl_module::ModuleTokenRangeIter<'a>::Item>
 pub struct perl_module::api::ModuleTokenSpan
 pub perl_module::api::ModuleTokenSpan::end: usize
 pub perl_module::api::ModuleTokenSpan::start: usize
@@ -614,7 +614,7 @@ pub perl_module::ModuleFilePathError::UnquotedToken
 pub const fn perl_module::ModuleFilePathError::boundary_id(&self) -> &'static str
 pub fn perl_module::ModuleFilePathError::clone(&self) -> perl_module::ModuleFilePathError
 pub fn perl_module::ModuleFilePathError::eq(&self, other: &perl_module::ModuleFilePathError) -> bool
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> Self
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleFilePathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleFilePathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_module::ModuleImportKind
@@ -649,7 +649,7 @@ pub fn perl_module::ModuleMoveBlocker::eq(&self, other: &perl_module::ModuleMove
 pub fn perl_module::ModuleMoveBlocker::partial_cmp(&self, other: &perl_module::ModuleMoveBlocker) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_module::ModuleMoveBlocker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveBlocker::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveBlocker::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveBlocker::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveBlocker, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_module::ModuleMoveDisposition
 pub perl_module::ModuleMoveDisposition::Blocked
 pub perl_module::ModuleMoveDisposition::Complete
@@ -658,7 +658,7 @@ pub fn perl_module::ModuleMoveDisposition::clone(&self) -> perl_module::ModuleMo
 pub fn perl_module::ModuleMoveDisposition::eq(&self, other: &perl_module::ModuleMoveDisposition) -> bool
 pub fn perl_module::ModuleMoveDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveDisposition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub enum perl_module::ModuleMoveInvalidPlan
 pub perl_module::ModuleMoveInvalidPlan::BlockersNotCanonical
 pub perl_module::ModuleMoveInvalidPlan::CompletePlanWithoutEdits
@@ -686,7 +686,7 @@ pub fn perl_module::ModuleMoveTarget::clone(&self) -> perl_module::ModuleMoveTar
 pub fn perl_module::ModuleMoveTarget::eq(&self, other: &perl_module::ModuleMoveTarget) -> bool
 pub fn perl_module::ModuleMoveTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveTarget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveTarget, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 #[non_exhaustive] pub enum perl_module::ModuleNameError
 pub perl_module::ModuleNameError::AbsoluteOrDriveSyntax
 pub perl_module::ModuleNameError::ControlCharacter
@@ -703,7 +703,7 @@ pub perl_module::ModuleNameError::TraversalSegment
 pub const fn perl_module::ModuleNameError::boundary_id(&self) -> &'static str
 pub fn perl_module::ModuleNameError::clone(&self) -> perl_module::ModuleNameError
 pub fn perl_module::ModuleNameError::eq(&self, other: &perl_module::ModuleNameError) -> bool
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> Self
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleNameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleNameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_module::ModuleProvenanceClass
@@ -724,17 +724,17 @@ pub perl_module::ModuleRequest::BarewordModule(perl_module::ModuleName)
 pub perl_module::ModuleRequest::Dynamic(perl_module::DynamicModuleRequest)
 pub perl_module::ModuleRequest::LiteralRelativeFile(perl_module::ModuleFilePath)
 pub perl_module::ModuleRequest::PartiallyStatic(perl_module::PartialModuleRequest)
-pub fn perl_module::ModuleRequest::bareword(text: &str) -> core::result::Result<Self, perl_module::ModuleRequestError>
-pub fn perl_module::ModuleRequest::bareword_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<Self, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::bareword(text: &str) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::bareword_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
 pub const fn perl_module::ModuleRequest::boundary(&self) -> core::option::Option<perl_module::RequestBoundary>
-pub fn perl_module::ModuleRequest::dynamic(source_form: impl core::convert::Into<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> Self
+pub fn perl_module::ModuleRequest::dynamic(source_form: impl core::convert::Into<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> perl_module::ModuleRequest
 pub const fn perl_module::ModuleRequest::is_exact(&self) -> bool
 pub const fn perl_module::ModuleRequest::kind(&self) -> perl_module::ModuleRequestKind
 pub const fn perl_module::ModuleRequest::literal_file(&self) -> core::option::Option<&perl_module::ModuleFilePath>
 pub const fn perl_module::ModuleRequest::module_name(&self) -> core::option::Option<&perl_module::ModuleName>
-pub fn perl_module::ModuleRequest::partially_static(source_form: impl core::convert::Into<alloc::string::String>, static_fragments: alloc::vec::Vec<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> Self
-pub fn perl_module::ModuleRequest::quoted_require(text: &str) -> core::result::Result<Self, perl_module::ModuleRequestError>
-pub fn perl_module::ModuleRequest::quoted_require_token(token: &str) -> core::result::Result<Self, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::partially_static(source_form: impl core::convert::Into<alloc::string::String>, static_fragments: alloc::vec::Vec<alloc::string::String>, span: core::option::Option<perl_module::ModuleTokenSpan>, boundary: perl_module::RequestBoundary) -> perl_module::ModuleRequest
+pub fn perl_module::ModuleRequest::quoted_require(text: &str) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
+pub fn perl_module::ModuleRequest::quoted_require_token(token: &str) -> core::result::Result<perl_module::ModuleRequest, perl_module::ModuleRequestError>
 pub fn perl_module::ModuleRequest::clone(&self) -> perl_module::ModuleRequest
 pub fn perl_module::ModuleRequest::eq(&self, other: &perl_module::ModuleRequest) -> bool
 pub fn perl_module::ModuleRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -746,8 +746,8 @@ pub perl_module::ModuleRequestError::InvalidModuleName(perl_module::ModuleNameEr
 pub const fn perl_module::ModuleRequestError::boundary_id(&self) -> &'static str
 pub fn perl_module::ModuleRequestError::clone(&self) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleRequestError::eq(&self, other: &perl_module::ModuleRequestError) -> bool
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> Self
-pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> Self
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleFilePathError) -> perl_module::ModuleRequestError
+pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError) -> perl_module::ModuleRequestError
 pub fn perl_module::ModuleRequestError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -851,16 +851,16 @@ pub fn perl_module::IncRoot::clone(&self) -> perl_module::IncRoot
 pub fn perl_module::IncRoot::eq(&self, other: &perl_module::IncRoot) -> bool
 pub fn perl_module::IncRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_module::ModuleFilePath
-pub fn perl_module::ModuleFilePath::from_quoted_token(token: &str) -> core::result::Result<Self, perl_module::ModuleFilePathError>
+pub fn perl_module::ModuleFilePath::from_quoted_token(token: &str) -> core::result::Result<perl_module::ModuleFilePath, perl_module::ModuleFilePathError>
 pub fn perl_module::ModuleFilePath::literal(&self) -> &str
-pub fn perl_module::ModuleFilePath::parse(text: &str) -> core::result::Result<Self, perl_module::ModuleFilePathError>
+pub fn perl_module::ModuleFilePath::parse(text: &str) -> core::result::Result<perl_module::ModuleFilePath, perl_module::ModuleFilePathError>
 pub fn perl_module::ModuleFilePath::with_forward_separators(&self) -> alloc::string::String
 pub fn perl_module::ModuleFilePath::clone(&self) -> perl_module::ModuleFilePath
 pub fn perl_module::ModuleFilePath::cmp(&self, other: &perl_module::ModuleFilePath) -> core::cmp::Ordering
 pub fn perl_module::ModuleFilePath::eq(&self, other: &perl_module::ModuleFilePath) -> bool
 pub fn perl_module::ModuleFilePath::partial_cmp(&self, other: &perl_module::ModuleFilePath) -> core::option::Option<core::cmp::Ordering>
 pub type perl_module::ModuleFilePath::Error = perl_module::ModuleFilePathError
-pub fn perl_module::ModuleFilePath::try_from(value: &str) -> core::result::Result<Self, Self::Error>
+pub fn perl_module::ModuleFilePath::try_from(value: &str) -> core::result::Result<perl_module::ModuleFilePath, perl_module::ModuleFilePath::Error>
 pub fn perl_module::ModuleFilePath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleFilePath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleFilePath::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
@@ -899,7 +899,7 @@ pub fn perl_module::ModuleMoveEdit::clone(&self) -> perl_module::ModuleMoveEdit
 pub fn perl_module::ModuleMoveEdit::eq(&self, other: &perl_module::ModuleMoveEdit) -> bool
 pub fn perl_module::ModuleMoveEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveEdit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveEdit, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::ModuleMoveFileGeneration
 pub perl_module::ModuleMoveFileGeneration::file_id: perl_semantic_facts::FileId
 pub perl_module::ModuleMoveFileGeneration::generation: perl_semantic_facts::envelope::SourceGeneration
@@ -907,7 +907,7 @@ pub fn perl_module::ModuleMoveFileGeneration::clone(&self) -> perl_module::Modul
 pub fn perl_module::ModuleMoveFileGeneration::eq(&self, other: &perl_module::ModuleMoveFileGeneration) -> bool
 pub fn perl_module::ModuleMoveFileGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveFileGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveFileGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveFileGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveFileGeneration, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::ModuleMoveOccurrence
 pub perl_module::ModuleMoveOccurrence::anchor_id: perl_semantic_facts::AnchorId
 pub perl_module::ModuleMoveOccurrence::dynamic: bool
@@ -925,7 +925,7 @@ pub fn perl_module::ModuleMoveOccurrence::clone(&self) -> perl_module::ModuleMov
 pub fn perl_module::ModuleMoveOccurrence::eq(&self, other: &perl_module::ModuleMoveOccurrence) -> bool
 pub fn perl_module::ModuleMoveOccurrence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveOccurrence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveOccurrence::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveOccurrence::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveOccurrence, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::ModuleMovePlan
 pub perl_module::ModuleMovePlan::blockers: alloc::vec::Vec<perl_module::ModuleMoveBlocker>
 pub perl_module::ModuleMovePlan::current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>
@@ -936,14 +936,14 @@ pub perl_module::ModuleMovePlan::resource: perl_module::ModuleMoveResourceTransi
 pub perl_module::ModuleMovePlan::schema_version: u16
 pub perl_module::ModuleMovePlan::source: perl_module::ModuleMoveSource
 pub perl_module::ModuleMovePlan::target_was_absent: bool
-pub fn perl_module::ModuleMovePlan::build(source: perl_module::ModuleMoveSource, target: perl_module::ModuleMoveTarget, occurrences: alloc::vec::Vec<perl_module::ModuleMoveOccurrence>, current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>, target_exists: bool) -> Self
+pub fn perl_module::ModuleMovePlan::build(source: perl_module::ModuleMoveSource, target: perl_module::ModuleMoveTarget, occurrences: alloc::vec::Vec<perl_module::ModuleMoveOccurrence>, current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>, target_exists: bool) -> perl_module::ModuleMovePlan
 pub fn perl_module::ModuleMovePlan::is_complete(&self) -> bool
 pub fn perl_module::ModuleMovePlan::validate(&self) -> core::result::Result<(), perl_module::ModuleMoveInvalidPlan>
 pub fn perl_module::ModuleMovePlan::clone(&self) -> perl_module::ModuleMovePlan
 pub fn perl_module::ModuleMovePlan::eq(&self, other: &perl_module::ModuleMovePlan) -> bool
 pub fn perl_module::ModuleMovePlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMovePlan::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMovePlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMovePlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMovePlan, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::ModuleMoveResourceTransition
 pub perl_module::ModuleMoveResourceTransition::source_module: alloc::string::String
 pub perl_module::ModuleMoveResourceTransition::source_path: alloc::string::String
@@ -953,7 +953,7 @@ pub fn perl_module::ModuleMoveResourceTransition::clone(&self) -> perl_module::M
 pub fn perl_module::ModuleMoveResourceTransition::eq(&self, other: &perl_module::ModuleMoveResourceTransition) -> bool
 pub fn perl_module::ModuleMoveResourceTransition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveResourceTransition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveResourceTransition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveResourceTransition::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveResourceTransition, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::ModuleMoveSource
 pub perl_module::ModuleMoveSource::editable: bool
 pub perl_module::ModuleMoveSource::file_id: perl_semantic_facts::FileId
@@ -971,22 +971,22 @@ pub fn perl_module::ModuleMoveSource::clone(&self) -> perl_module::ModuleMoveSou
 pub fn perl_module::ModuleMoveSource::eq(&self, other: &perl_module::ModuleMoveSource) -> bool
 pub fn perl_module::ModuleMoveSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleMoveSource::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_module::ModuleMoveSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_module::ModuleMoveSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_module::ModuleMoveSource, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::ModuleName
 pub fn perl_module::ModuleName::canonical(&self) -> &str
 pub fn perl_module::ModuleName::is_valid(text: &str) -> bool
 pub fn perl_module::ModuleName::is_valid_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> bool
 pub fn perl_module::ModuleName::legacy_spelling(&self) -> alloc::string::String
-pub fn perl_module::ModuleName::parse(text: &str) -> core::result::Result<Self, perl_module::ModuleNameError>
-pub fn perl_module::ModuleName::parse_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<Self, perl_module::ModuleNameError>
+pub fn perl_module::ModuleName::parse(text: &str) -> core::result::Result<perl_module::ModuleName, perl_module::ModuleNameError>
+pub fn perl_module::ModuleName::parse_with_profile(text: &str, profile: perl_module::LegacySeparatorProfile) -> core::result::Result<perl_module::ModuleName, perl_module::ModuleNameError>
 pub fn perl_module::ModuleName::segments(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str> + '_
 pub const fn perl_module::ModuleName::separator_form(&self) -> perl_module::PackageSeparatorForm
 pub fn perl_module::ModuleName::clone(&self) -> perl_module::ModuleName
-pub fn perl_module::ModuleName::cmp(&self, other: &Self) -> core::cmp::Ordering
-pub fn perl_module::ModuleName::eq(&self, other: &Self) -> bool
-pub fn perl_module::ModuleName::partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_module::ModuleName::cmp(&self, other: &perl_module::ModuleName) -> core::cmp::Ordering
+pub fn perl_module::ModuleName::eq(&self, other: &perl_module::ModuleName) -> bool
+pub fn perl_module::ModuleName::partial_cmp(&self, other: &perl_module::ModuleName) -> core::option::Option<core::cmp::Ordering>
 pub type perl_module::ModuleName::Error = perl_module::ModuleNameError
-pub fn perl_module::ModuleName::try_from(value: &str) -> core::result::Result<Self, Self::Error>
+pub fn perl_module::ModuleName::try_from(value: &str) -> core::result::Result<perl_module::ModuleName, perl_module::ModuleName::Error>
 pub fn perl_module::ModuleName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleName::hash<H: core::hash::Hasher>(&self, state: &mut H)
@@ -1019,7 +1019,7 @@ pub struct perl_module::ModuleTokenRangeIter<'a>
 pub fn perl_module::ModuleTokenRangeIter<'a>::clone(&self) -> perl_module::ModuleTokenRangeIter<'a>
 pub fn perl_module::ModuleTokenRangeIter<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub type perl_module::ModuleTokenRangeIter<'a>::Item = perl_module::ModuleTokenRange
-pub fn perl_module::ModuleTokenRangeIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn perl_module::ModuleTokenRangeIter<'a>::next(&mut self) -> core::option::Option<perl_module::ModuleTokenRangeIter<'a>::Item>
 pub struct perl_module::ModuleTokenSpan
 pub perl_module::ModuleTokenSpan::end: usize
 pub perl_module::ModuleTokenSpan::start: usize

@@ -35,7 +35,7 @@ pub fn perl_symbol::types::SymbolKind::eq(&self, other: &perl_symbol::types::Sym
 pub fn perl_symbol::types::SymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_symbol::types::SymbolKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_symbol::types::SymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_symbol::types::SymbolKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_symbol::api::SymbolRefKind
 pub perl_symbol::api::SymbolRefKind::CoderefReference
 pub perl_symbol::api::SymbolRefKind::MethodCall
@@ -56,7 +56,7 @@ pub fn perl_symbol::types::VarKind::eq(&self, other: &perl_symbol::types::VarKin
 pub fn perl_symbol::types::VarKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_symbol::types::VarKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_symbol::types::VarKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_symbol::types::VarKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_symbol::api::SymbolDecl
 pub perl_symbol::api::SymbolDecl::anchor_span: core::option::Option<(usize, usize)>
 pub perl_symbol::api::SymbolDecl::container: core::option::Option<alloc::string::String>
@@ -79,12 +79,12 @@ pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::fmt(&self, f: &mut 
 pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct perl_symbol::api::SymbolIndex
 pub fn perl_symbol::index::SymbolIndex::add_symbol(&mut self, symbol: alloc::string::String)
-pub fn perl_symbol::index::SymbolIndex::new() -> Self
+pub fn perl_symbol::index::SymbolIndex::new() -> perl_symbol::index::SymbolIndex
 pub fn perl_symbol::index::SymbolIndex::remove_document(&mut self, uri: &str)
 pub fn perl_symbol::index::SymbolIndex::replace_document_symbols(&mut self, uri: &str, symbols: alloc::vec::Vec<alloc::string::String>)
 pub fn perl_symbol::index::SymbolIndex::search_fuzzy(&self, query: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_symbol::index::SymbolIndex::search_prefix(&self, prefix: &str) -> alloc::vec::Vec<alloc::string::String>
-pub fn perl_symbol::index::SymbolIndex::default() -> Self
+pub fn perl_symbol::index::SymbolIndex::default() -> perl_symbol::index::SymbolIndex
 pub struct perl_symbol::api::SymbolRef
 pub perl_symbol::api::SymbolRef::anchor_span: core::option::Option<(usize, usize)>
 pub perl_symbol::api::SymbolRef::full_span: (usize, usize)
@@ -141,12 +141,12 @@ pub fn perl_symbol::cursor::token_under_cursor(text: &str, line: usize, col_utf1
 pub mod perl_symbol::index
 pub struct perl_symbol::index::SymbolIndex
 pub fn perl_symbol::index::SymbolIndex::add_symbol(&mut self, symbol: alloc::string::String)
-pub fn perl_symbol::index::SymbolIndex::new() -> Self
+pub fn perl_symbol::index::SymbolIndex::new() -> perl_symbol::index::SymbolIndex
 pub fn perl_symbol::index::SymbolIndex::remove_document(&mut self, uri: &str)
 pub fn perl_symbol::index::SymbolIndex::replace_document_symbols(&mut self, uri: &str, symbols: alloc::vec::Vec<alloc::string::String>)
 pub fn perl_symbol::index::SymbolIndex::search_fuzzy(&self, query: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_symbol::index::SymbolIndex::search_prefix(&self, prefix: &str) -> alloc::vec::Vec<alloc::string::String>
-pub fn perl_symbol::index::SymbolIndex::default() -> Self
+pub fn perl_symbol::index::SymbolIndex::default() -> perl_symbol::index::SymbolIndex
 pub mod perl_symbol::surface
 pub mod perl_symbol::surface::decl
 pub struct perl_symbol::surface::decl::SymbolDecl
@@ -301,7 +301,7 @@ pub fn perl_symbol::types::SymbolKind::eq(&self, other: &perl_symbol::types::Sym
 pub fn perl_symbol::types::SymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_symbol::types::SymbolKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_symbol::types::SymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_symbol::types::SymbolKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_symbol::types::VarKind
 pub perl_symbol::types::VarKind::Array
 pub perl_symbol::types::VarKind::Hash
@@ -312,7 +312,7 @@ pub fn perl_symbol::types::VarKind::eq(&self, other: &perl_symbol::types::VarKin
 pub fn perl_symbol::types::VarKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_symbol::types::VarKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_symbol::types::VarKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_symbol::types::VarKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub const perl_symbol::types::MIN_LOOSE_MATCH_QUERY_CHARS: usize
 pub enum perl_symbol::CursorSymbolKind
 pub perl_symbol::CursorSymbolKind::Array
@@ -349,7 +349,7 @@ pub fn perl_symbol::types::SymbolKind::eq(&self, other: &perl_symbol::types::Sym
 pub fn perl_symbol::types::SymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_symbol::types::SymbolKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_symbol::types::SymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_symbol::types::SymbolKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_symbol::SymbolRefKind
 pub perl_symbol::SymbolRefKind::CoderefReference
 pub perl_symbol::SymbolRefKind::MethodCall
@@ -370,7 +370,7 @@ pub fn perl_symbol::types::VarKind::eq(&self, other: &perl_symbol::types::VarKin
 pub fn perl_symbol::types::VarKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_symbol::types::VarKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_symbol::types::VarKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_symbol::types::VarKind, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_symbol::SymbolDecl
 pub perl_symbol::SymbolDecl::anchor_span: core::option::Option<(usize, usize)>
 pub perl_symbol::SymbolDecl::container: core::option::Option<alloc::string::String>
@@ -393,12 +393,12 @@ pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::fmt(&self, f: &mut 
 pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct perl_symbol::SymbolIndex
 pub fn perl_symbol::index::SymbolIndex::add_symbol(&mut self, symbol: alloc::string::String)
-pub fn perl_symbol::index::SymbolIndex::new() -> Self
+pub fn perl_symbol::index::SymbolIndex::new() -> perl_symbol::index::SymbolIndex
 pub fn perl_symbol::index::SymbolIndex::remove_document(&mut self, uri: &str)
 pub fn perl_symbol::index::SymbolIndex::replace_document_symbols(&mut self, uri: &str, symbols: alloc::vec::Vec<alloc::string::String>)
 pub fn perl_symbol::index::SymbolIndex::search_fuzzy(&self, query: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_symbol::index::SymbolIndex::search_prefix(&self, prefix: &str) -> alloc::vec::Vec<alloc::string::String>
-pub fn perl_symbol::index::SymbolIndex::default() -> Self
+pub fn perl_symbol::index::SymbolIndex::default() -> perl_symbol::index::SymbolIndex
 pub struct perl_symbol::SymbolRef
 pub perl_symbol::SymbolRef::anchor_span: core::option::Option<(usize, usize)>
 pub perl_symbol::SymbolRef::full_span: (usize, usize)

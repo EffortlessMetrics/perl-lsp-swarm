@@ -1,5 +1,9 @@
 # Editor Trust Wave (Issue #7952)
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md); current product status: [Current product status](CURRENT_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 This plan defines the next improvement frame for `perllsp`: prioritize editor trust over broad capability expansion.
 
 ## North star

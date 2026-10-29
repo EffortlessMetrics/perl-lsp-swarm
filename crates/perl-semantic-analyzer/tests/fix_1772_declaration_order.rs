@@ -10,12 +10,12 @@
 //! Visibility is deferred, but the two children are still visited in *runtime*
 //! order (condition, then statement), because capture state and initialization
 //! genuinely depend on evaluation order — see
-//! `modifier_children_are_analyzed_in_runtime_order`. `our` is not deferred and
-//! is therefore reported by its own condition; that pre-existing source-order
-//! alias gap is #15048 and is pinned by
-//! `our_in_a_modifier_statement_is_a_known_source_order_gap` rather than being
-//! papered over by inverting the four runtime facts.
-//!
+//! `modifier_children_are_analyzed_in_runtime_order`. `our` is not deferred:
+//! the pre-pass installs each *statement-side* `our` alias as an uninitialized
+//! placeholder at the modifier scope level before the condition is analyzed, so
+//! `our $x = 1 if $x;` resolves the condition's `$x` against the alias instead
+//! of reporting it undeclared, while an `our` inside the condition still takes
+//! effect only at its own source position (#15048).
 //! The current mirror and boundary controls were checked with Perl 5.42.0;
 //! the older forward-use controls below retain their recorded 5.38.2 oracle.
 
@@ -214,23 +214,186 @@ fn completed_modifier_installs_lexicals() -> TestResult {
     Ok(())
 }
 
-/// Known gap, pinned so it is visible rather than silent: `our` is not deferred (it aliases a
-/// package variable), but the condition is analyzed before the statement, so the alias is not
-/// yet in hand when the condition is checked.
+/// `our` aliases a package variable that already exists at parse time, so the
+/// alias is visible to both modifier children regardless of runtime order
+/// (#15048). The pre-pass installs the alias before the condition runs, so the
+/// condition's `$x` resolves to the same alias the statement declares.
 ///
-/// Oracle, perl 5.38.2: `use strict; our $x = 1 if $x;` → `-e syntax OK`, so this diagnostic
-/// is a false positive.
-///
-/// This is a pre-existing source-order alias gap that `origin/main` shares — it is not
-/// introduced here, and it is tracked as #15048. It is deliberately NOT fixed by visiting the
-/// statement first: doing that inverts four runtime-order facts (both capture-state
-/// directions and both initialization directions), which the rows below pin. Trading four
-/// regressions for one false positive is the wrong direction.
-///
-/// When #15048 lands, this row flips to `false` and moves back into the test above.
+/// Oracle, perl 5.38.2: `use strict; our $x = 1 if $x;` → `-e syntax OK`.
 #[test]
-fn our_in_a_modifier_statement_is_a_known_source_order_gap() -> TestResult {
-    check_visibility("use strict; our $x = 1 if $x;", "$x", true)?;
+fn our_alias_is_visible_across_modifier_children() -> TestResult {
+    check_visibility("use strict; our $x = 1 if $x;", "$x", false)?;
+    Ok(())
+}
+
+/// The other modifier keywords and a list-form declaration preserve the same
+/// fix. The pre-pass walks the statement side; nothing in this set should
+/// regress the runtime-order guarantees pinned by
+/// `modifier_children_are_analyzed_in_runtime_order`.
+#[test]
+fn our_alias_pre_pass_covers_every_modifier_and_list_form() -> TestResult {
+    for modifier in ["if", "unless", "while", "until"] {
+        check_visibility(&format!("use strict; our $x = 1 {modifier} $x;"), "$x", false)?;
+    }
+    check_visibility("use strict; our($x, $y) = (1, 2) if $x + $y;", "$x", false)?;
+    check_visibility("use strict; our($x, $y) = (1, 2) if $x + $y;", "$y", false)?;
+    Ok(())
+}
+
+/// An `our` declared inside an inner block belongs to that block's scope and
+/// shadows the outer `our` alias. The shadowing diagnostic is preserved; the
+/// pre-pass does not flatten the inner block's bindings into the modifier
+/// scope.
+#[test]
+fn our_alias_in_nested_block_shadows_outer_alias() -> TestResult {
+    let issues = scope_issues("use strict;\nour $x = 1 if do { our $x; 1 };\n")?;
+    if !issues.iter().any(|i| i.kind == IssueKind::VariableShadowing) {
+        return Err(format!(
+            "expected VariableShadowing for the inner our $x inside the do block; got {issues:?}"
+        )
+        .into());
+    }
+    // The condition's `$x` resolves against the outer alias — no UndeclaredVariable.
+    if issues.iter().any(|i| i.kind == IssueKind::UndeclaredVariable) {
+        return Err(format!(
+            "the condition's $x must resolve to the outer our alias; got {issues:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// An `our` declared inside the condition takes effect at its own source
+/// position, so an earlier use in the same condition must stay undeclared.
+/// Pre-registering condition-side declarations would silence this diagnostic.
+///
+/// Oracle, perl 5.38.2 and 5.42.0: `use strict; 1 if $x && (our $x = 1);` →
+/// `Global symbol "$x" requires explicit package name`.
+#[test]
+fn our_in_condition_is_not_visible_to_earlier_condition_uses() -> TestResult {
+    check_visibility("use strict; 1 if $x && (our $x = 1);", "$x", true)?;
+    Ok(())
+}
+
+/// The pre-pass placeholder is deliberately uninitialized: the guarded
+/// initializer has not executed when the condition runs, so a condition-side
+/// read of the alias is reported the same way Perl warns at runtime. Marking
+/// the placeholder initialized because an initializer is syntactically present
+/// silenced this diagnostic.
+///
+/// Oracle, perl 5.38.2 (`perl -we`):
+/// `use strict; use warnings; our $x = 1 if $x + 1;` →
+/// `Use of uninitialized value in addition (+)`.
+#[test]
+fn condition_read_of_placeholder_alias_is_uninitialized() -> TestResult {
+    let issues = scope_issues("use strict; use warnings; our $x = 1 if $x + 1;")?;
+    if !issues.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "expected UninitializedVariable for the condition's read of our $x; got {issues:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A pre-pass placeholder must not overwrite a genuine existing binding:
+/// with `our $x = 1; our $x if $x;`, the condition reads the real, already
+/// initialized binding (no UninitializedVariable), and the second declaration
+/// still receives the same-scope VariableRedeclaration the non-modifier form
+/// reports. Overwriting the real binding with an uninitialized placeholder
+/// produced the false uninitialized read *and* silenced the redeclaration.
+#[test]
+fn pre_pass_preserves_existing_binding_metadata() -> TestResult {
+    let issues = scope_issues("use strict; our $x = 1; our $x if $x;")?;
+    if issues.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "the condition's read of our $x must resolve to the initialized first binding; got {issues:?}"
+        )
+        .into());
+    }
+    let non_modifier = scope_issues("use strict; our $x = 1; our $x;")?;
+    let expected =
+        non_modifier.iter().filter(|i| i.kind == IssueKind::VariableRedeclaration).count();
+    let actual = issues.iter().filter(|i| i.kind == IssueKind::VariableRedeclaration).count();
+    if actual != expected || actual == 0 {
+        return Err(format!(
+            "expected {expected} VariableRedeclaration (the non-modifier form's count), got {actual}: {issues:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A duplicate `our` inside one modifier statement behaves like the same form
+/// outside one: exactly one VariableRedeclaration. The previous single-offset
+/// marker map collapsed both pre-passed identities, so the first declaration
+/// was mistaken for the generation's initial declaration and the second
+/// matched the surviving marker — zero diagnostics.
+#[test]
+fn duplicate_our_inside_modifier_list_matches_non_modifier_form() -> TestResult {
+    let with_modifier = scope_issues("use strict; our ($x, $x) = (1, 2) if 1;")?;
+    let without = scope_issues("use strict; our ($x, $x) = (1, 2);")?;
+    let expected = without.iter().filter(|i| i.kind == IssueKind::VariableRedeclaration).count();
+    let actual =
+        with_modifier.iter().filter(|i| i.kind == IssueKind::VariableRedeclaration).count();
+    if actual != expected || actual == 0 {
+        return Err(format!(
+            "expected {expected} VariableRedeclaration (the non-modifier form's count), got {actual}: {with_modifier:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Duplicate `our` across the two children of one modifier statement follows
+/// the same-scope policy: exactly one VariableRedeclaration. The pre-pass
+/// placeholder suppresses only a declaration meeting *itself*; a sibling
+/// declaration of the same name is a genuine duplicate.
+#[test]
+fn duplicate_our_across_modifier_children_follows_same_scope_policy() -> TestResult {
+    let issues = scope_issues("use strict; our $x = 1 if our $x = 1;")?;
+    let actual = issues.iter().filter(|i| i.kind == IssueKind::VariableRedeclaration).count();
+    if actual != 1 {
+        return Err(format!(
+            "expected exactly 1 VariableRedeclaration for duplicate our across modifier children, got {actual}: {issues:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The real declaration replaces its own placeholder, so the binding after the
+/// modifier statement carries the real initialization state. The guard here
+/// never reads `$x`, so any uninitialized report would have to come from the
+/// placeholder surviving the statement's declaration.
+///
+/// Oracle, perl 5.38.2: `use strict; use warnings; our $x = 1 if 1; print $x;` →
+/// `-e syntax OK`, and at runtime the read is defined (no warning).
+#[test]
+fn real_declaration_replaces_placeholder_and_keeps_initialization() -> TestResult {
+    let issues = scope_issues("use strict; use warnings; our $x = 1 if 1; print $x;")?;
+    if issues.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "the statement's real declaration must replace its placeholder, keeping $x initialized after the modifier; got {issues:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Known gap, pinned so it is visible rather than silent — the mirror image of
+/// the gap this PR fixed. An `our` declared inside the condition registers
+/// during condition analysis, so a statement use at an *earlier source
+/// position* still resolves against it. Perl rejects this program.
+///
+/// Oracle, perl 5.38.2 and 5.42.0: `use strict; print $x if our $x = 1;` →
+/// `Global symbol "$x" requires explicit package name`.
+///
+/// Closing this requires source-position-aware lookup for aliases registered
+/// while the condition is analyzed; it remains open work under #15048.
+#[test]
+fn condition_our_alias_still_reaches_earlier_statement_uses_known_gap() -> TestResult {
+    check_visibility("use strict; print $x if our $x = 1;", "$x", false)?;
     Ok(())
 }
 
