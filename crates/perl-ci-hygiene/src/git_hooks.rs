@@ -945,6 +945,10 @@ mod tests {
         );
     }
 
+    // The generated hook guards its validation children with `command -v
+    // python3`, a POSIX-only name (Windows ships `python.exe`), so the
+    // end-to-end fixture below can only hold on unix.
+    #[cfg(unix)]
     #[test]
     fn generated_pre_push_validation_children_preserve_outer_repository() -> Result<()> {
         let area = std::env::temp_dir().join(format!(
