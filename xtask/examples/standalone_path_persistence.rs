@@ -270,6 +270,23 @@ fn validate_sha256(value: &str, field: &str) -> ContractResult<()> {
     Ok(())
 }
 
+/// A digest prefix for an error message.
+///
+/// Error formatting must never be the thing that crashes. A raw sixteen-byte
+/// slice panics two ways: out of bounds on a string shorter than 16 bytes, and on a
+/// non-character boundary for non-ASCII input. Some operands here are
+/// pre-validated 64-hex strings, but `plan_digest` on the two
+/// `*_against_plan` functions is a caller-supplied `&str` that nothing
+/// validates, and these slices sit on the path whose whole job is to *report*
+/// a mismatch. Taking characters is total for every input, so no reader has to
+/// re-derive which operand happens to be validated today.
+///
+/// For a valid 64-character hex digest this is byte-for-byte what the slice
+/// produced, so no existing message changes.
+fn digest_prefix(digest: &str) -> String {
+    digest.chars().take(16).collect()
+}
+
 const DOS_DEVICE_BASENAMES: [&str; 22] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -1067,8 +1084,8 @@ pub fn validate_persistence_against_plan(
     if receipt.bound_plan_sha256 != plan_digest {
         return err(format!(
             "bound_plan_sha256: receipt binds plan {} but the current plan is {}; the policy it was produced under moved",
-            &receipt.bound_plan_sha256[..16],
-            &plan_digest[..16]
+            digest_prefix(&receipt.bound_plan_sha256),
+            digest_prefix(plan_digest)
         ));
     }
 
@@ -1211,8 +1228,8 @@ pub fn validate_fresh_process(observation: &FreshProcessObservation) -> Contract
             return err(format!(
                 "lookup.resolved.sha256: the winner at `{}` is recorded as {} but the observed candidate set records {} for the same path; one observation carries one identity",
                 resolved.path,
-                &resolved.sha256[..16],
-                &row_digest[..16]
+                digest_prefix(&resolved.sha256),
+                digest_prefix(row_digest)
             ));
         }
     }
@@ -1376,8 +1393,8 @@ pub fn validate_fresh_process_against_plan(
     if observation.bound_plan_sha256 != plan_digest {
         return err(format!(
             "bound_plan_sha256: observation binds plan {} but the current plan is {}; the selection moved before the observation, so it proves nothing about the current candidate",
-            &observation.bound_plan_sha256[..16],
-            &plan_digest[..16]
+            digest_prefix(&observation.bound_plan_sha256),
+            digest_prefix(plan_digest)
         ));
     }
 
@@ -1587,7 +1604,7 @@ fn main() -> Result<()> {
     let validated_plan = match &args.plan {
         Some(plan_path) => {
             let (plan, digest) = load_and_validate_plan(plan_path)?;
-            println!("standalone-path-persistence: plan valid ({})", &digest[..16]);
+            println!("standalone-path-persistence: plan valid ({})", digest_prefix(&digest));
             if args.print_canonical {
                 let value = load_json(plan_path)?;
                 println!("{}", canonical_json(&value));
@@ -1677,7 +1694,7 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         ContractError, ContractResult, FreshProcessObservation, PathPlan, PersistenceReceipt,
-        canonical_json, sha256_hex, validate_fresh_process,
+        canonical_json, digest_prefix, sha256_hex, validate_fresh_process,
         validate_fresh_process_against_persistence, validate_fresh_process_against_plan,
         validate_persistence, validate_persistence_against_plan, validate_plan,
     };
@@ -1975,6 +1992,53 @@ mod tests {
             validate_persistence_against_plan(&receipt, &plan, &digest),
             "never silently widened",
         )
+    }
+
+    /// The two `*_against_plan` functions take `plan_digest` as a caller-supplied
+    /// `&str` that nothing in this file validates. Both format a mismatch error
+    /// with a raw sixteen-byte slice of it, so a caller holding a short digest
+    /// crashes the validator on the very path meant to *report* the mismatch.
+    /// A contract whose job is typed refusal must not panic while refusing.
+    #[test]
+    fn a_short_plan_digest_is_refused_rather_than_panicking() -> Result<()> {
+        let plan: PathPlan = parse("plan_posix_installer_user_scope.json")?;
+        let receipt: PersistenceReceipt = parse("persistence_installer_persisted.json")?;
+        // Binds the right plan id, so the id check passes and the digest
+        // comparison below is actually reached.
+        expect_rejected(
+            validate_persistence_against_plan(&receipt, &plan, "abc"),
+            "the policy it was produced under moved",
+        )
+    }
+
+    /// Same class on the fresh-process side.
+    #[test]
+    fn a_short_plan_digest_on_an_observation_refuses_rather_than_panicking() -> Result<()> {
+        let plan: PathPlan = parse("plan_wsl_already_visible.json")?;
+        let observation: FreshProcessObservation = parse("fresh_visible_immediately.json")?;
+        expect_rejected(
+            validate_fresh_process_against_plan(&observation, &plan, "abc"),
+            "the selection moved before the observation",
+        )
+    }
+
+    /// The paired positive direction, so the repair above cannot be satisfied by
+    /// degrading every message: for a valid 64-character hex digest the helper
+    /// returns byte-for-byte what the old slice returned, and a non-ASCII input
+    /// is truncated by character rather than panicking mid-codepoint.
+    #[test]
+    fn a_digest_prefix_is_unchanged_for_valid_input_and_total_for_the_rest() {
+        let valid = "a".repeat(32) + &"b".repeat(32);
+        assert_eq!(valid.len(), 64);
+        assert_eq!(digest_prefix(&valid), valid[..16], "a valid digest must be sliced identically");
+
+        assert_eq!(digest_prefix(""), "", "an empty digest is empty, not a crash");
+        assert_eq!(digest_prefix("abc"), "abc", "a short digest is returned whole");
+        // 16 emoji are 64 bytes but 16 characters: a byte slice would land
+        // inside the first codepoint, and `[..16]` would cut four characters in.
+        let wide = "\u{1F600}".repeat(16);
+        assert_eq!(wide.len(), 64);
+        assert_eq!(digest_prefix(&wide).chars().count(), 16);
     }
 
     /// Issue negative control 8: a non-installer owner owns no entry, so it cannot
