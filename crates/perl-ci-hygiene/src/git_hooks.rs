@@ -61,6 +61,7 @@ SECRET_SCAN_RULE_GENERIC="([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][O
 # GENERIC_REFERENCE_EXCLUSION in crates/perl-ci-hygiene/src/secret_scan.rs.
 SECRET_SCAN_EXCLUDE_GENERIC='([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_]{16,}[[:space:]]*([;,)]|\[)'
 SECRET_SCAN_HITS=""
+SECRET_SCAN_UNEVALUATED=""
 secret_scan_allowed() {
     [ -n "${SECRET_SCAN_ALLOWLIST:-}" ] && [ -f "$SECRET_SCAN_ALLOWLIST" ] || return 1
     # Same whitespace and comment rules as Allowlist::parse in the gate: trim
@@ -122,7 +123,15 @@ secret_scan_stream() {
     rm -f "$added_tmp"
 }
 secret_scan_refuse_if_hits() {
-    [ -z "$SECRET_SCAN_HITS" ] && return 0
+    if [ -z "$SECRET_SCAN_HITS" ] && [ -z "$SECRET_SCAN_UNEVALUATED" ]; then
+        return 0
+    fi
+    if [ -z "$SECRET_SCAN_HITS" ]; then
+        # The scan recorded no hits, but part of it could not evaluate, so
+        # the empty result is not evidence of clean (#18375); the specific
+        # reason was already printed by secret_scan_cannot_evaluate.
+        return 1
+    fi
     echo ""
     echo "Secret scan refused this $1: token-shaped line(s) detected"
     printf '%s' "$SECRET_SCAN_HITS"
@@ -134,7 +143,9 @@ secret_scan_refuse_if_hits() {
 }
 secret_scan_cannot_evaluate() {
     # Fail-closed refusal when git cannot produce the scan subject: a scan
-    # that ran on nothing must never read as clean.
+    # that ran on nothing must never read as clean. The status is recorded so
+    # secret_scan_refuse_if_hits refuses even though no hits were recorded.
+    SECRET_SCAN_UNEVALUATED=1
     echo ""
     echo "Secret scan could not evaluate this $1: $2"
     echo "   Refusing unevaluated — fix the git failure, or bypass with"
@@ -144,6 +155,7 @@ secret_scan_cannot_evaluate() {
 secret_scan_staged() {
     SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
     SECRET_SCAN_HITS=""
+    SECRET_SCAN_UNEVALUATED=""
     local file diff_tmp list_tmp
     list_tmp="$(mktemp 2>/dev/null)" || {
         secret_scan_cannot_evaluate commit "cannot allocate a temp file for the staged list"
@@ -182,6 +194,7 @@ secret_scan_staged() {
 secret_scan_range() {
     SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
     SECRET_SCAN_HITS=""
+    SECRET_SCAN_UNEVALUATED=""
     local base file patch_tmp list_tmp range
     git cat-file -e "$1" 2>/dev/null || {
         secret_scan_cannot_evaluate push "local sha $1 does not resolve"
@@ -1312,6 +1325,29 @@ mod tests {
             assert!(
                 hook.contains(perl_ci_hygiene::secret_scan::ALLOWLIST_PATH),
                 "refusal must name the allowlist escape path"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_scan_fails_closed_when_evaluation_fails() {
+        // #18375: secret_scan_stream can fail after printing the refusal
+        // (mktemp allocation, awk added-line filter); the refusal status must
+        // reach secret_scan_refuse_if_hits, or the hook reports clean on
+        // added lines that were never scanned and the commit proceeds.
+        for hook in [pre_commit_hook_script(), pre_push_hook_script()] {
+            assert!(
+                hook.contains("SECRET_SCAN_UNEVALUATED=1"),
+                "cannot_evaluate must record the unevaluated status"
+            );
+            assert!(
+                hook.contains("[ -z \"$SECRET_SCAN_HITS\" ] && [ -z \"$SECRET_SCAN_UNEVALUATED\" ]"),
+                "refuse_if_hits must fail closed when the scan could not evaluate"
+            );
+            assert_eq!(
+                hook.matches("SECRET_SCAN_UNEVALUATED=\"\"").count(),
+                3,
+                "the unevaluated status must be initialized and reset per scan like the hits"
             );
         }
     }
