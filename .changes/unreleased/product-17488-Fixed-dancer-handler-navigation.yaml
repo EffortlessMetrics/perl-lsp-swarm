@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Honor existing Dancer1 static quoted-target references in definition navigation and reject containing-route answers for missing named CodeRefs.
+time: 2026-10-11T02:55:00Z
+custom:
+  PR: 17488
+  Slug: dancer-handler-navigation
+  Breaking: "no"
