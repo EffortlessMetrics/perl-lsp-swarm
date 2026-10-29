@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16803,
-  "reason": "Re-propose the admission-owner package transition after merging main: the combined tree adds main's demo-project README (30 members), and the size gate re-flags this PR's own growth rows (readme.md admission-table reformat, managedUpdateCheckAdmission module in out/extension.js) against main's re-transitioned baseline.",
-  "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "candidate_baseline_file_sha256": "9d06f805364aba2b7fbd3f16956c725234dffa98a33396725197586e88577ece",
-  "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
-  "candidate_inventory_sha256": "e444ed40cd5710464b00a15f6cbbe4bde429c0f51df73b4b1ed08cc901c8a40a"
+  "owner_issue": 18098,
+  "reason": "Re-measured from the produced package: main grew package.json (+232) and out/extension.js (+326) through #18277 and follow-up merges without a transition landing; receipt projected_actual (31 files, 1935713 bytes) taken verbatim as the new baseline.",
+  "base_baseline_file_sha256": "3bcfabd00546bfaf90ab7b8e3747bda209a1ce3ae7d3727efccaa44d18c0cd2d",
+  "base_inventory_sha256": "c4572b1b9cb93803976ba3612ef45ed46be12b156bf5b5905b0305e6e7b27ec4",
+  "candidate_baseline_file_sha256": "daa7d4775e6e0aa1aa026b08bf6e2b6f1483004be2da8d8272d211e247ea8d42",
+  "candidate_inventory_sha256": "4ed08e537a58d83824d48ac7cff1c4aa058516f02d9858333018995ed39c3735"
 }

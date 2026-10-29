@@ -1,0 +1,9 @@
+project: product
+component: Debugging
+kind: Fixed
+body: "In DAP external-peer mode, a positive debuggeeTimeoutSeconds is now refused with a clear error instead of being accepted but never enforced, since the peer owns the debuggee process and no watchdog can be armed there."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18070"
+  Slug: dap-peer-timeout-disposition
+  Breaking: "no"
