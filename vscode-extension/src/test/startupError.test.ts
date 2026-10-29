@@ -222,8 +222,7 @@ describe('classifyStartupError', () => {
 //
 // When probeStartupFailure returns Unknown (binary probe was inconclusive),
 // selectBestDiagnosis must prefer the health-check string from
-// runStartupDiagnostics so the user gets the specific "Perl interpreter not
-// found" message instead of a generic hint.
+// runStartupDiagnostics when it establishes a missing server binary.
 // ---------------------------------------------------------------------------
 
 describe('selectBestDiagnosis', () => {
@@ -232,17 +231,17 @@ describe('selectBestDiagnosis', () => {
       '/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.35` not found',
     );
     // probe.kind === GlibcMismatch — health msg should be ignored
-    const result = selectBestDiagnosis(probe, 'Perl interpreter not found. Install Perl 5.10+');
+    const result = selectBestDiagnosis(probe, 'Perl Language Server binary (perllsp) not found.');
     expect(result.kind).toBe(StartupErrorKind.GlibcMismatch);
     expect(result.hint).toContain('glibc');
   });
 
   test('falls back to health-check message when probe kind is Unknown', () => {
     const probe = classifyStartupError(''); // Unknown
-    const healthMsg = 'Perl interpreter not found. Install Perl 5.10+ and reload the window.';
+    const healthMsg = 'Perl Language Server binary (perllsp) not found. Reinstall the extension.';
     const result = selectBestDiagnosis(probe, healthMsg);
-    expect(result.hint).toContain('Perl');
-    expect(result.hint).toContain('Install');
+    expect(result.hint).toContain('perllsp');
+    expect(result.hint).toContain('Reinstall');
     // The fallback should not be the generic Unknown hint
     expect(result.hint).not.toContain('LSP binary failed to start');
   });
@@ -268,9 +267,7 @@ describe('selectBestDiagnosis', () => {
 describe('formatStartupFailureDialog', () => {
   test('surfaces onboarding guidance verbatim when probe is Unknown and health message exists', () => {
     const probe = classifyStartupError('');
-    const healthMsg =
-      'Perl interpreter not found on PATH. Install Perl 5.10+ and reload the window. ' +
-      'Configure include paths in `.perl-lsp.toml` when module resolution needs additional roots.';
+    const healthMsg = 'Perl Language Server binary (perllsp) not found. Reinstall the extension.';
 
     expect(formatStartupFailureDialog(probe, healthMsg)).toBe(healthMsg);
   });
@@ -280,11 +277,11 @@ describe('formatStartupFailureDialog', () => {
       '/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.35` not found',
     );
 
-    const message = formatStartupFailureDialog(probe, 'Perl interpreter not found...');
+    const message = formatStartupFailureDialog(probe, 'Perl Language Server binary not found...');
 
     expect(message).toContain('Perl Language Server failed to start.');
     expect(message).toContain('glibc');
-    expect(message).not.toContain('Perl interpreter not found...');
+    expect(message).not.toContain('Perl Language Server binary not found...');
   });
 });
 

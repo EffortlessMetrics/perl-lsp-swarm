@@ -1642,10 +1642,11 @@ impl LspServer {
     /// Republish diagnostics for every open document.
     ///
     /// External-mutation seams — workspace-folder identity changes, watched
-    /// `didChangeWatchedFiles` DELETED events, client `workspace/didDeleteFiles`
-    /// events (#17332) — invalidate facts an open buffer's diagnostics were
-    /// computed from (for example a dependency module the index can no longer
-    /// resolve). The buffer text itself did not change, so no `didChange`
+    /// `didChangeWatchedFiles` events, client create/rename/delete file operations,
+    /// and reconciled dependency saves (#17332, #18116) — invalidate facts an
+    /// open buffer's diagnostics were computed from (for example a dependency
+    /// module the index can no longer resolve). The buffer text itself did not
+    /// change, so no `didChange`
     /// publish will repair the client's stale display; the seam must push fresh
     /// publications itself.
     ///

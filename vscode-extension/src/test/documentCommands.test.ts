@@ -96,11 +96,7 @@ describe('document command implementations', () => {
     setActiveEditor(editor);
     const outputChannel = makeOutputChannel();
     const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
-      callback(
-        Object.assign(new Error('perl failed'), { code: 255 }),
-        '',
-        'syntax error at Example.pm line 1',
-      );
+      callback(new Error('perl failed'), '', 'syntax error at Example.pm line 1');
     });
     (vscode.window.showErrorMessage as jest.Mock).mockResolvedValueOnce('Show Output');
 
@@ -111,55 +107,22 @@ describe('document command implementations', () => {
     });
 
     expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
-      'Syntax check failed: syntax error at Example.pm line 1',
+      'Syntax error: syntax error at Example.pm line 1',
       'Show Output',
     );
     expect(outputChannel.appendLine).toHaveBeenCalledWith(
-      '[check-syntax] Syntax check failed: syntax error at Example.pm line 1',
+      '[check-syntax] syntax error at Example.pm line 1',
     );
     expect(outputChannel.show).toHaveBeenCalledTimes(1);
   });
 
-  test.each([
-    {
-      name: 'missing Perl',
-      error: Object.assign(new Error('spawn perl ENOENT'), { code: 'ENOENT' }),
-      message:
-        'Could not check syntax: Perl was not found on PATH. Install Perl and add it to PATH.',
-    },
-    {
-      name: 'timed-out Perl',
-      error: Object.assign(new Error('Command failed'), { code: null, killed: true }),
-      message: 'Could not check syntax: perl -c timed out after 10 seconds.',
-    },
-    {
-      name: 'another spawn failure',
-      error: Object.assign(new Error('spawn perl EACCES'), { code: 'EACCES' }),
-      message: 'Could not check syntax: spawn perl EACCES',
-    },
-    {
-      name: 'a killed maxBuffer failure',
-      error: Object.assign(new Error('stdout maxBuffer length exceeded'), {
-        code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
-        killed: true,
-      }),
-      message: 'Could not check syntax: stdout maxBuffer length exceeded',
-    },
-    {
-      name: 'a timeout the Perl process survived with a nonzero exit',
-      error: Object.assign(new Error('Command failed'), { code: 5, killed: true }),
-      message: 'Could not check syntax: perl -c timed out after 10 seconds.',
-    },
-    {
-      name: 'an empty nonzero Perl exit',
-      error: Object.assign(new Error('Command failed'), { code: 255 }),
-      message: 'Syntax check failed: perl -c exited with code 255 without output.',
-    },
-  ])('reports $name without an empty syntax verdict', async ({ error, message }) => {
-    setActiveEditor(makeEditor());
+  test('reports a missing perl as a setup problem, not a syntax verdict (#16574)', async () => {
+    const editor = makeEditor();
+    setActiveEditor(editor);
     const outputChannel = makeOutputChannel();
+    // Node's ENOENT: the child never spawns, so stdout and stderr are both empty.
     const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
-      callback(error, '', '');
+      callback(Object.assign(new Error('spawn perl ENOENT'), { code: 'ENOENT' }), '', '');
     });
     (vscode.window.showErrorMessage as jest.Mock).mockResolvedValueOnce('Show Output');
 
@@ -169,20 +132,65 @@ describe('document command implementations', () => {
       execFile,
     });
 
-    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(message, 'Show Output');
-    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    const [message] = (vscode.window.showErrorMessage as jest.Mock).mock.calls[0];
+    // The pre-fix defect: an empty child output rendered as a bare 'Syntax error: '.
+    expect(message).not.toBe('Syntax error: ');
+    expect(message).toContain('Perl was not found on PATH');
+    expect(message).toContain('language server works without it');
+    // The channel must carry the diagnosis too, not an empty '[check-syntax] ' line.
     expect(outputChannel.appendLine).toHaveBeenCalledWith(`[check-syntax] ${message}`);
-    expect(outputChannel.show).toHaveBeenCalledTimes(1);
+    expect(outputChannel.appendLine).not.toHaveBeenCalledWith('[check-syntax] ');
   });
 
-  test('keeps partial Perl output available after a timeout', async () => {
+  test('reports a timeout kill as a timeout, not a syntax verdict (#16574)', async () => {
     setActiveEditor(makeEditor());
-    const outputChannel = makeOutputChannel();
+    // Node reports the execFile timeout as a kill rather than an error code.
     const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
       callback(
-        Object.assign(new Error('Command failed'), { code: null, killed: true }),
+        Object.assign(new Error('Command failed: perl -c Example.pm'), {
+          killed: true,
+          signal: 'SIGTERM',
+        }),
         '',
-        'BEGIN warning before timeout',
+        '',
+      );
+    });
+
+    await runCheckSyntaxCommand({
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+      execFile,
+    });
+
+    const [message] = (vscode.window.showErrorMessage as jest.Mock).mock.calls[0];
+    expect(message).toBe('Perl syntax check exceeded the 10s timeout.');
+  });
+
+  test('reports a platform ETIMEDOUT code as a timeout (#16574)', async () => {
+    setActiveEditor(makeEditor());
+    const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
+      callback(Object.assign(new Error('perl -c timed out'), { code: 'ETIMEDOUT' }), '', '');
+    });
+
+    await runCheckSyntaxCommand({
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+      execFile,
+    });
+
+    const [message] = (vscode.window.showErrorMessage as jest.Mock).mock.calls[0];
+    expect(message).toBe('Perl syntax check exceeded the 10s timeout.');
+  });
+
+  test('keeps the timeout diagnosis in the channel when perl produced partial output (#16574)', async () => {
+    setActiveEditor(makeEditor());
+    const outputChannel = makeOutputChannel();
+    // A timeout can kill perl after it already emitted partial diagnostics.
+    const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
+      callback(
+        Object.assign(new Error('Command failed: perl -c Example.pm'), { killed: true }),
+        '',
+        'Bareword found where operator expected at Example.pm line 42',
       );
     });
     (vscode.window.showErrorMessage as jest.Mock).mockResolvedValueOnce('Show Output');
@@ -193,46 +201,31 @@ describe('document command implementations', () => {
       execFile,
     });
 
-    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
-      'Could not check syntax: perl -c timed out after 10 seconds.',
-      'Show Output',
+    const [message] = (vscode.window.showErrorMessage as jest.Mock).mock.calls[0];
+    // The dialog verdict stays the pure timeout diagnosis.
+    expect(message).toBe('Perl syntax check exceeded the 10s timeout.');
+    // The channel carries the diagnosis first, then the partial perl text —
+    // not the fragment alone, which would hide the real cause.
+    expect(outputChannel.appendLine).toHaveBeenCalledWith(
+      '[check-syntax] Perl syntax check exceeded the 10s timeout.\n' +
+        'Bareword found where operator expected at Example.pm line 42',
     );
-    expect(outputChannel.appendLine).toHaveBeenNthCalledWith(
-      1,
-      '[check-syntax] Could not check syntax: perl -c timed out after 10 seconds.',
-    );
-    expect(outputChannel.appendLine).toHaveBeenNthCalledWith(2, 'BEGIN warning before timeout');
-    expect(outputChannel.show).toHaveBeenCalledTimes(1);
   });
 
-  test('keeps child output that happens to appear inside the canned failure message', async () => {
+  test('falls back to the spawn message when a real failure carries no output (#16574)', async () => {
     setActiveEditor(makeEditor());
-    const outputChannel = makeOutputChannel();
     const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
-      callback(
-        Object.assign(new Error('Command failed'), { code: null, killed: true }),
-        '',
-        'perl -c',
-      );
+      callback(new Error('Command failed: perl -c Example.pm'), '', '');
     });
-    (vscode.window.showErrorMessage as jest.Mock).mockResolvedValueOnce('Show Output');
 
     await runCheckSyntaxCommand({
-      outputChannel,
+      outputChannel: makeOutputChannel(),
       serverNotRunningMessage: () => 'server unavailable',
       execFile,
     });
 
-    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
-      'Could not check syntax: perl -c timed out after 10 seconds.',
-      'Show Output',
-    );
-    expect(outputChannel.appendLine).toHaveBeenNthCalledWith(
-      1,
-      '[check-syntax] Could not check syntax: perl -c timed out after 10 seconds.',
-    );
-    expect(outputChannel.appendLine).toHaveBeenNthCalledWith(2, 'perl -c');
-    expect(outputChannel.show).toHaveBeenCalledTimes(1);
+    const [message] = (vscode.window.showErrorMessage as jest.Mock).mock.calls[0];
+    expect(message).toBe('Syntax error: Command failed: perl -c Example.pm');
   });
 
   test('shows @INC paths in a dedicated output channel', async () => {
