@@ -1,0 +1,9 @@
+project: product
+component: Code actions
+kind: Fixed
+body: "textDocument/codeAction no longer offers command-bearing actions no component can execute: \"Generate test for '<sub>'\" (perl.generateTest), \"Add debug print\" (perl.addDebugPrint), and \"Convert globals to 'my' declarations\" (perl.convertToMyDeclarations) were advertised in the lightbulb menu but registered in no executeCommand dispatch, no executeCommandProvider capability, and no editor extension, so executing them always failed with -32601 Unknown command. A contract test now pins every offered code-action command to a registered executor."
+time: 2026-10-04T00:00:00Z
+custom:
+  PR: "17304"
+  Slug: command-code-actions-17304
+  Breaking: "no"

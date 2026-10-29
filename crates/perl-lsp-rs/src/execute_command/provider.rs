@@ -928,8 +928,7 @@ impl ExecuteCommandProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(code_text, &ast, &critic_config);
-        let profile =
-            NativeCriticProfile::parse_legacy(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
+        let profile = NativeCriticProfile::parse(&cfg.profile).unwrap_or_default();
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
         let file = file_path.to_string_lossy();
 

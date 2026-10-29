@@ -239,7 +239,7 @@ fn lsp_kind_workspace_profile_stability() -> Result<(), String> {
     let expected: Vec<(SymbolKind, u32)> = vec![
         (SymbolKind::Package, 2),
         (SymbolKind::Class, 5),
-        (SymbolKind::Role, 8),
+        (SymbolKind::Role, 11),
         (SymbolKind::Subroutine, 12),
         (SymbolKind::Method, 6),
         (SymbolKind::Variable(VarKind::Scalar), 13),
@@ -265,7 +265,7 @@ fn lsp_kind_document_symbol_stability() -> Result<(), String> {
     let expected: Vec<(SymbolKind, u32)> = vec![
         (SymbolKind::Package, 2),
         (SymbolKind::Class, 5),
-        (SymbolKind::Role, 8),
+        (SymbolKind::Role, 11),
         (SymbolKind::Subroutine, 12),
         (SymbolKind::Method, 6),
         (SymbolKind::Variable(VarKind::Scalar), 13),
