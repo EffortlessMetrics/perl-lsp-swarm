@@ -65,6 +65,11 @@ struct UxFlakeEntry {
     issue: Option<u64>,
     #[serde(default)]
     owner: Option<String>,
+    /// Bounded review window for active rows; surfaced in the blocker
+    /// projection so a rendered blocker always carries its bound instead of
+    /// silently dropping it on parse (issue #9879 review).
+    #[serde(default)]
+    expires_after_days: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +222,7 @@ fn load_active_known_blockers(root: &Path) -> Result<Vec<serde_json::Value>> {
                 "route": route,
                 "issue": entry.issue,
                 "owner": entry.owner,
+                "expires_after_days": entry.expires_after_days,
             })
         })
         .collect();

@@ -90,6 +90,22 @@ alternatives, or contradictions will remain useful. Update the issue body when a
 current synthesis or plan helps builders and later contexts. Post one route change only
 when the material next judgment changes.
 
+### Canonical mutation readback
+
+For every issue title/body, issue comment, or PR title/body mutation performed by this flow:
+
+1. Bind the intended repository, issue or PR number, optional comment ID, field, and complete outgoing text before writing.
+2. Reject outgoing text containing a control character other than ordinary tab or newline.
+3. Before creating an issue comment, read the target issue's existing comments and search for the intended content identity. Treat an existing match as `APPLIED_AND_VERIFIED` and do not write a duplicate.
+4. Submit the mutation once. A successful mutation response alone is not proof that the intended canonical state exists.
+5. Re-read the exact GitHub target after the mutation and compare the observed identity and field against the intended bytes or a deterministic normalized digest.
+6. Classify the result as exactly one of `APPLIED_AND_VERIFIED`, `WRITE_REJECTED`, `UNKNOWN_OUTCOME`, or `READBACK_MISMATCH`.
+7. On timeout, transport failure, or any other unknown write outcome, do not retry until the exact target has been read back and searched for the intended content identity.
+8. Treat an observed matching comment as the completed write; never post a duplicate comment to obtain a cleaner response.
+9. Never report an issue, comment, or PR field as canonical from the local request alone. Repair a mismatch through a bounded new mutation and fresh readback, or return `NOT_PROVEN` with the observed mismatch.
+
+### Runtime-local state
+
 Keep worker identity, topology, task state, raw logs, provisional reasoning, and routine
 skill transitions runtime-local. Use only stable classification/risk labels; do not use
 labels or comments as lifecycle completion or lane ownership.

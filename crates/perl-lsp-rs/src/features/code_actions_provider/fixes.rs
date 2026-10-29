@@ -322,12 +322,24 @@ pub(super) fn fix_parse_error(
             CodeActionKind::QuickFix,
             TextEdit { range: (diagnostic.range.1, diagnostic.range.1), new_text: ")".to_string() },
         ),
-        "parse-error-unclosedbrace" => diagnostic_action(
-            diagnostic,
-            "Add closing brace",
-            CodeActionKind::QuickFix,
-            TextEdit { range: (diagnostic.range.1, diagnostic.range.1), new_text: "}".to_string() },
-        ),
+        "parse-error-unclosedbrace" => {
+            // The diagnostic marks the opening brace, not the repair position.
+            // A newline also keeps a trailing comment from swallowing the edit.
+            let source = provider.source();
+            let repaired = format!("{source}\n}}");
+            let mut parser = crate::Parser::new(&repaired);
+            if parser.parse().is_err() || !parser.errors().is_empty() {
+                // One brace is not a complete repair for nested unclosed blocks
+                // or another outstanding syntax error.
+                return Vec::new();
+            }
+            diagnostic_action(
+                diagnostic,
+                "Add closing brace",
+                CodeActionKind::QuickFix,
+                TextEdit { range: (source.len(), source.len()), new_text: "\n}".to_string() },
+            )
+        }
         _ => return Vec::new(),
     };
 

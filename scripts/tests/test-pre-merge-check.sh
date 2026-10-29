@@ -49,6 +49,7 @@ make_mock_gh() {
     printf '%s' '[{"name":"Required A","state":"SUCCESS","link":"https://example.test/required"}]' >"$tmpdir/required.json"
     cat > "$tmpdir/gh" <<EOF_MOCK
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$tmpdir/api-calls'
 case "\$*" in
     'repo view'*) printf '%s' 'test-owner/test-repo' ;;
     *'rules/branches/'*) cat '$tmpdir/rules.json' ;;
@@ -80,10 +81,12 @@ case "\$*" in
     *) cat '$tmpdir/pr.json' ;;
 esac
 EOF_MOCK
+    printf '%s' "{\"schema_version\":\"semantic_review_currentness.v1\",\"classification\":\"$semantic_class\",\"reason\":\"$semantic_reason\",\"acquisition_mode\":\"gh_live\",\"repo\":\"test-owner/test-repo\",\"pr\":42,\"current_head\":\"fixture-head\"}" >"$tmpdir/semantic.json"
     cat > "$tmpdir/semantic-currentness.py" <<EOF_SEMANTIC
 #!/usr/bin/env python3
-import json
-print(json.dumps({"classification": "$semantic_class", "reason": "$semantic_reason"}))
+import pathlib, sys
+pathlib.Path('$tmpdir/semantic-argv').write_text('\n'.join(sys.argv[1:]))
+print(pathlib.Path('$tmpdir/semantic.json').read_text().strip())
 raise SystemExit($semantic_rc)
 EOF_SEMANTIC
     chmod +x "$tmpdir/gh" "$tmpdir/semantic-currentness.py"
@@ -336,6 +339,45 @@ test_error_messages_are_native() {
     fi
 }
 
+test_fixture_environment_refused_before_acquisition() {
+    local mock json value output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: boundary (#17573)"}'
+    for value in '' /caller-supplied.json; do
+        mock="$(make_mock_gh "$json")"
+        output="$(SEMANTIC_REVIEW_TEST_FIXTURE="$value" run_check_with_output "$mock")"
+        if [[ "$output" == *'EXIT:1'* && ! -e "$mock/api-calls" && ! -e "$mock/semantic-argv" ]]; then
+            pass "fixture environment refused before any acquisition (value=$value)"
+        else
+            fail "fixture environment entered production path (value=$value)"
+        fi
+        cleanup "$mock"
+    done
+}
+
+test_semantic_envelope_and_subject_required() {
+    local mock json mutation code
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: boundary (#17573)"}'
+    for mutation in 'del(.acquisition_mode)' '.acquisition_mode="fixture"' \
+        'del(.schema_version)' '.schema_version="foreign.v0"' \
+        '.current_head="old-head"' 'del(.current_head)' '.pr=99' '.pr="42"' \
+        '.repo="wrong/repository"' 'del(.repo)'; do
+        mock="$(make_mock_gh "$json")"
+        jq -c "$mutation" "$mock/semantic.json" >"$mock/changed.json"
+        mv "$mock/changed.json" "$mock/semantic.json"
+        code="$(run_check "$mock")"
+        [[ "$code" -ne 0 ]] && pass "semantic envelope refuses $mutation" || fail "semantic envelope accepted $mutation"
+        cleanup "$mock"
+    done
+    mock="$(make_mock_gh "$json")"
+    code="$(run_check "$mock")"
+    if [[ "$code" -eq 0 ]] && [[ "$(cat "$mock/semantic-argv")" == $'42\ntest-owner/test-repo\n--expected-head\nfixture-head' ]]; then
+        pass "live-shaped positive control binds checker to observed head"
+    else
+        fail "checker was not bound to observed head"
+    fi
+    cleanup "$mock"
+}
+
 test_no_pr_number_fails() {
     local code=0
     bash "$IMPL" >/dev/null 2>&1 || code=$?
@@ -359,6 +401,8 @@ test_zero_or_generic_review_cannot_become_review_current
 test_public_wrappers_keep_authority_split
 test_currentness_policy_surfaces
 test_error_messages_are_native
+test_fixture_environment_refused_before_acquisition
+test_semantic_envelope_and_subject_required
 test_no_pr_number_fails
 if python3 "$STATUS_FIXTURES"; then
     pass "required and advisory status fixtures"
