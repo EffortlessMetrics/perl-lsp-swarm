@@ -2970,6 +2970,8 @@ pub enum perl_lsp_rs_core::providers::code_actions::CodeActionKind
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::QuickFix
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::Refactor
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorExtract
+pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorExtractSubroutine
+pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorExtractVariable
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorInline
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorRewrite
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::Source
@@ -7479,6 +7481,8 @@ pub enum perl_lsp_rs_core::providers::CodeActionKind
 pub perl_lsp_rs_core::providers::CodeActionKind::QuickFix
 pub perl_lsp_rs_core::providers::CodeActionKind::Refactor
 pub perl_lsp_rs_core::providers::CodeActionKind::RefactorExtract
+pub perl_lsp_rs_core::providers::CodeActionKind::RefactorExtractSubroutine
+pub perl_lsp_rs_core::providers::CodeActionKind::RefactorExtractVariable
 pub perl_lsp_rs_core::providers::CodeActionKind::RefactorInline
 pub perl_lsp_rs_core::providers::CodeActionKind::RefactorRewrite
 pub perl_lsp_rs_core::providers::CodeActionKind::Source

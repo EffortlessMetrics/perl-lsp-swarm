@@ -113,6 +113,8 @@ retirement_blocker_registry = [
 # arms together.
 unreachable_kinds = [
   "refactor",
+  "refactor.extract.subroutine",
+  "refactor.extract.variable",
   "refactor.inline",
   "source",
 ]
