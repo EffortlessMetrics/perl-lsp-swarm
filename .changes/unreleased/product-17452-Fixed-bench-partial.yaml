@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Report truncated benchmark comparison inputs by path without a backtrace, while preserving complete-result verdicts and comparison exit statuses.
+time: 2026-10-22T00:00:00Z
+custom:
+  PR: "18326"
+  Slug: bench-partial-input
+  Breaking: "no"

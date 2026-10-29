@@ -72,10 +72,11 @@ impl<'a> Parser<'a> {
         // Identifier that starts with a sigil char (e.g. `$name`, `@items`)
         if next == TokenKind::Identifier
             && let Ok(t) = self.tokens.peek_second()
-                && let Some(ch) = t.text.chars().next()
-                    && matches!(ch, '$' | '@' | '%' | '*' | '&') {
-                        return true;
-                    }
+            && let Some(ch) = t.text.chars().next()
+            && matches!(ch, '$' | '@' | '%' | '*' | '&')
+        {
+            return true;
+        }
 
         false
     }
@@ -215,10 +216,7 @@ impl<'a> Parser<'a> {
     /// that aliases `&mut Parser`. Depth is unwound on success, parse error,
     /// recovery, cancellation, exhaustion (never entered), and early return.
     #[inline]
-    fn with_depth<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> ParseResult<T>,
-    ) -> ParseResult<T> {
+    fn with_depth<T>(&mut self, f: impl FnOnce(&mut Self) -> ParseResult<T>) -> ParseResult<T> {
         self.enter_production_depth()?;
         let result = f(self);
         self.exit_production_depth();
@@ -457,6 +455,7 @@ impl<'a> Parser<'a> {
                 kind,
                 TokenKind::Dot
                     | TokenKind::Range
+                    | TokenKind::Ellipsis
                     | TokenKind::LeftShift
                     | TokenKind::RightShift
                     | TokenKind::BitwiseAnd
@@ -648,11 +647,12 @@ impl<'a> Parser<'a> {
         }
         // The lexer sometimes emits variables as Identifier("$x") tokens
         if self.peek_kind() == Some(TokenKind::Identifier)
-            && let Ok(tok) = self.peek_token() {
-                return tok.text.starts_with('$')
-                    || tok.text.starts_with('@')
-                    || tok.text.starts_with('%');
-            }
+            && let Ok(tok) = self.peek_token()
+        {
+            return tok.text.starts_with('$')
+                || tok.text.starts_with('@')
+                || tok.text.starts_with('%');
+        }
         false
     }
 
@@ -724,8 +724,14 @@ impl<'a> Parser<'a> {
         if saw_fat_arrow && elements.len().is_multiple_of(2) {
             // Convert to HashLiteral
             let mut pairs = Vec::with_capacity(elements.len() / 2);
-            for chunk in elements.chunks(2) {
-                pairs.push((chunk[0].clone(), chunk[1].clone()));
+            let mut elements = elements.into_iter();
+            while let Some(key) = elements.next() {
+                // The even-length branch guarantees a value for every key.
+                // Move the owned nodes: cloning here recopies nested ASTs at
+                // every enclosing fat-arrow list.
+                if let Some(value) = elements.next() {
+                    pairs.push((key, value));
+                }
             }
             self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
@@ -802,10 +808,9 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                if !was_comma
-                    && let Some(last) = expressions.last_mut() {
-                        self.auto_quote_bareword_before_fat_comma(last)?;
-                    }
+                if !was_comma && let Some(last) = expressions.last_mut() {
+                    self.auto_quote_bareword_before_fat_comma(last)?;
+                }
                 self.consume_token()?; // consume =>
             }
 
@@ -1434,10 +1439,7 @@ impl<'a> Parser<'a> {
         self.flatten_qw_list_argument(node)
     }
 
-    fn flatten_qw_list_argument(
-        &mut self,
-        node: Node,
-    ) -> ParseResult<(Vec<Node>, SourceLocation)> {
+    fn flatten_qw_list_argument(&mut self, node: Node) -> ParseResult<(Vec<Node>, SourceLocation)> {
         match node.into_parts() {
             (NodeKind::ArrayLiteral { elements }, location) => Ok((elements, location)),
             (kind, location) => Ok((vec![self.charge_node(kind, location)?], location)),
@@ -1483,6 +1485,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::QuoteDouble
                         | TokenKind::QuoteCommand
                         | TokenKind::Number
+                        | TokenKind::Backslash
                 )
             }) {
                 return false;
@@ -1546,6 +1549,20 @@ impl<'a> Parser<'a> {
                 true
             }
             TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => true,
+
+            // `func \&name`, `func \@arr`, `func \\$x` — a reference-taking
+            // unary expression is a valid bare-call argument (upstream
+            // t/comp/proto.t: `testing \&no_proto, undef;`). Without this
+            // arm the call loses its argument uptake and the reference is
+            // left as same-line residue. An operand must follow: a bare
+            // `func \;` is not a call with a reference argument.
+            TokenKind::Backslash => self.tokens.peek_second().ok().is_some_and(|second| {
+                Self::is_sigil_argument_start(second.kind(), second.text.as_ref())
+                    || matches!(
+                        second.kind(),
+                        TokenKind::LeftBrace | TokenKind::LeftParen | TokenKind::LeftBracket
+                    )
+            }),
 
             // Imported Test::More-style helpers can take typeglob expressions
             // as list arguments. Keep this scoped to known helper names so

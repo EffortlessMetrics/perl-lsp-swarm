@@ -197,6 +197,82 @@ describe('document command implementations', () => {
     expect(outputChannel.show).toHaveBeenCalledTimes(1);
   });
 
+  test('explains when the language server has not opened the AST document', async () => {
+    setActiveEditor(makeEditor());
+    const sendRequest = jest.fn().mockRejectedValue({
+      code: -32602,
+      message: 'Document not found: file:///workspace/lib/Example.pm',
+    });
+
+    await showParserAstCommand({
+      activeClient: { sendRequest },
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+    });
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      'The language server has not opened this file yet. Try again shortly, or reload the window if this persists.',
+    );
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('reserves the unsupported-version warning for method-not-found', async () => {
+    setActiveEditor(makeEditor());
+    const sendRequest = jest.fn().mockRejectedValue({
+      code: -32601,
+      message: 'Method not found: perl/showAst',
+    });
+
+    await showParserAstCommand({
+      activeClient: { sendRequest },
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+    });
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      'Show Parser AST is not supported by the current perllsp version',
+    );
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    { code: -32602, message: "perl/showAst: missing required parameter 'uri'" },
+    { code: -32602, message: 'Document not found: file:///workspace/lib/Other.pm' },
+    { code: -32603, message: 'Internal error' },
+    { code: '-32601', message: 'Method not found: perl/showAst' },
+  ])('does not misattribute another server error: $message', async (error) => {
+    setActiveEditor(makeEditor());
+    const sendRequest = jest.fn().mockRejectedValue(error);
+
+    await showParserAstCommand({
+      activeClient: { sendRequest },
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+    });
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      'Could not show Parser AST. Try again or check the Perl Language Server output.',
+    );
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('describes a null AST without asserting a parse failure', async () => {
+    setActiveEditor(makeEditor());
+    const sendRequest = jest.fn().mockResolvedValue(null);
+
+    await showParserAstCommand({
+      activeClient: { sendRequest },
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+    });
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'No current AST is available for this file. Try again after parsing completes; check Problems if this persists.',
+    );
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    expect(vscode.window.createOutputChannel).not.toHaveBeenCalled();
+  });
+
   test('delegates formatting only for an active Perl editor', async () => {
     setActiveEditor(makeEditor());
 

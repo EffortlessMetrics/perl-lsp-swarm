@@ -31,6 +31,85 @@ artifact. When an earlier judgment was missed, perform the cheapest version that
 still improve the current artifact and continue. Do not replay history to manufacture
 process evidence.
 
+## Late qualification and publication
+
+The current accepted target is [#3390](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3390),
+including its October 17, 2026 selection and same-owner clarification. It supersedes
+routine queue/auto-merge and forced session handoff instructions in older guidance.
+
+```text
+cheap commit / push / Draft-or-Ready publication
+→ focused/affected authoring proof and independent substantive review
+→ select the candidate intended to land for this objective
+→ one explicit late qualification request for that candidate
+→ mandatory and risk-directed proof
+→ separate final vision/current-repository and protected-merge judgment
+→ explicit authorized protected merge, landing read-back and reconciliation
+```
+
+Publish focused drafts frequently after applicable local checks, keeping proof limits
+visible. Complete useful planning/specification review, discriminating red-green proof,
+test-efficiency/hardening, simplification, documentation and independent substantive
+review before requesting expensive qualification. Keep useful stages in warm sessions;
+a stage does not require a new identity. Alternative drafts may be reviewed cheaply;
+only the selected candidate gets expensive qualification. Independent objectives may
+qualify concurrently within admitted capacity; there is no global one-PR queue.
+
+**Desired, staged and live are different states.** At source `baa056ca7c`, `ci.yml`,
+`ripr.yml` and `em-ci-routed-rust.yml` still admit automatic non-draft PR work, including
+readiness changes; main/merge-group paths also exist. Draft publication avoids their
+broad PR lanes, but does not disable every policy/self-test workflow or installed
+local hook. Existing exact-subject manual inputs do not establish an approved request
+adapter or that results attach to the required PR/app identity. No qualified normal
+request command was established by this source inspection. Do not invent its name,
+use PR-body markers/labels/readiness as requests, or alter live triggers before the
+replacement required producers and matching settings are qualified.
+
+[#17900](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17900) owns the thin
+request/explain operation and trusted exact-subject result publication;
+[#17903](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/17903) owns the full
+workflow/reusable/indirect event perimeter. Consume their actual implemented operation,
+with expected repository/PR/head, observed base and selected portfolio. An API/CLI
+acknowledgment without a matching accepted run/attempt is `NOT_PROVEN`, not
+`PR_IN_FLIGHT`. Missing request capability is a concrete producer blocker; continue
+independent authoring work and report it instead of pushing to manufacture CI.
+Keep the existing required producers satisfiable during staging. #17080/#10065 own the
+coordinated source/settings cutover and native read-back. Existing #16134 retains
+Rust Small consumer ownership. No protection, credential or security-permission change
+is authorized by this documentation.
+
+A changed candidate cannot inherit its predecessor's qualification request or exact
+run result. Later material adverse review blocks final judgment even at the same head.
+Preserve unaffected semantic review and exact test evidence with their original
+identities. Unrelated base movement does not require rebase or full replay; actual
+combined-change interaction needs affected proof. Head compare-and-swap does not freeze
+the base. Admission-only success, absent/empty execution and a green manual run on the
+wrong reporting identity cannot stand in for completed required proof.
+
+Retain the same useful owning lead through an ordinary qualification wait, result
+inspection, separate final judgment, protected merge and read-back when the delegated
+authority and execution window permit. Use supported waits/events or bounded checks;
+do not create a polling child, scheduled monitor or automatic merge. A real
+interruption, unusual capacity delay or exhausted window gets an exact resumable
+handoff with run/attempt, subject, limits and next action. Do not abandon ordinary
+in-window work to satisfy a blanket no-waiting-worker rule.
+
+Target normally ≤20 minutes for complete active qualification, including required setup,
+compilation, selected tests, transfer, verification and cleanup; also report
+request-to-result wait separately. Preserve mandatory selection and unique proof.
+A timing conflict needs an evidence-backed disposition/optimization, not omitted tests,
+truncated accounting or a claimed successful cutover. Qualification itself never
+merges, enqueues or enables auto-merge; live protection and the owner's separate final
+judgment govern integration. Ordinary main health follows #3390's both-one-hour-and-ten-
+merges cadence target, not every-main-push full replay; existing source remains live
+until coordinated cutover.
+
+**Review tooling boundary:** `ub-review.yml` is paused with all review jobs disabled.
+Retained job IDs and historical calibration data do not prove active review. Current
+skills provide provider-native review. No deployed Tower stage controller or Tower-to-CI
+integration was established by this inspection. Future tooling must consume the actual
+request/run/subject/result boundary rather than claim authority from stage names.
+
 ## Operational authority
 
 ```text
@@ -176,20 +255,13 @@ candidate/writer, current judgment, next material action, external wait, and wak
 This table is not committed or posted. Reconstruct it from current issues, PRs,
 submitted reviews, checks, merges, and repository facts after compaction/replacement.
 
-When GitHub owns the next transition, mark the frame `IN_FLIGHT`, advance another
-independent claim, and revisit only when its named wake event occurs. Do not poll
-unchanged state or keep an idle agent alive to symbolize the wait.
-
-A remote wait releases root attention. An exact wake event is a resumability condition,
-not a request to schedule the current engineering context to wake itself. Do not create
-a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit
-the same remote condition. While any disjoint claim remains useful, release unnecessary
-claim-local contexts and continue that work immediately. If no remaining required claim is
-actionable because each waits on a real external blocker or accountable owner decision,
-return the goal-level external blocker with each claim's condition and wake event
-named, and let the bounded engineering session end. Scheduled monitoring is a distinct user goal;
-it must not be introduced merely to keep ordinary engineering work attached to a
-remote wait.
+For an ordinary accepted qualification run, preserve the same-owner continuity
+described above. When a real interruption or out-of-window dependency owns the next
+transition, retain the frame as `IN_FLIGHT`, release unnecessary contexts and advance
+another actionable claim. A wake event is a resumability condition, not a scheduled
+monitor. Do not create a timer, cron, polling child or idle watcher for ordinary work.
+When no claim is actionable because of real external blockers, report their precise
+conditions and continuation instead of keeping a root session alive indefinitely.
 
 ## Orchestration economics
 
