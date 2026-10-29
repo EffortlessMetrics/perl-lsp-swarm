@@ -407,9 +407,18 @@ fn scenario_50_receiver_self_this_quality_receipt() {
             // of a fixed sleep: on a cold CI runner the sleep let completion
             // queries outrun the first analysis of the just-opened documents
             // (#15870 family).
-            let _ = harness.wait_for_diagnostics(PARENT_PATH, Duration::from_secs(30));
-            let _ = harness.wait_for_diagnostics(SELF_CHILD_PATH, Duration::from_secs(30));
-            let _ = harness.wait_for_diagnostics(THIS_CHILD_PATH, Duration::from_secs(30));
+            perl_lsp_ux_tests::optional_wait_with_subject(
+                PARENT_PATH,
+                harness.wait_for_diagnostics(PARENT_PATH, Duration::from_secs(30)),
+            )?;
+            perl_lsp_ux_tests::optional_wait_with_subject(
+                SELF_CHILD_PATH,
+                harness.wait_for_diagnostics(SELF_CHILD_PATH, Duration::from_secs(30)),
+            )?;
+            perl_lsp_ux_tests::optional_wait_with_subject(
+                THIS_CHILD_PATH,
+                harness.wait_for_diagnostics(THIS_CHILD_PATH, Duration::from_secs(30)),
+            )?;
 
             let probes = self_this_receiver_probes();
             let mut reports = Vec::new();
