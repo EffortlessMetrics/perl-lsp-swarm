@@ -26,9 +26,6 @@ tree-sitter-perl-c = { workspace = true, optional = true }
 tree-sitter = { workspace = true }
 walkdir = { workspace = true }
 
-[dev-dependencies]
-perl-tdd-support = { workspace = true }
-
 [[bin]]
 name = "corpus_differential"
 path = "src/bin/corpus_differential.rs"

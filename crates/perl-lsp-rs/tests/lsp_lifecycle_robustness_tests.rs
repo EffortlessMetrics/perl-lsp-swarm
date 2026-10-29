@@ -43,7 +43,7 @@ fn oversized_textless_save_preserves_real_process_formatting()
         )
     };
     let initial = format(2);
-    if !initial.get("result").and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()) {
+    if initial.get("result").and_then(Value::as_array).is_none_or(|edits| edits.is_empty()) {
         return Err(format!("initial formatting should return edits: {initial}").into());
     }
 
@@ -62,11 +62,7 @@ fn oversized_textless_save_preserves_real_process_formatting()
         }),
     );
     let after_textless = format(3);
-    if !after_textless
-        .get("result")
-        .and_then(Value::as_array)
-        .is_some_and(|edits| !edits.is_empty())
-    {
+    if after_textless.get("result").and_then(Value::as_array).is_none_or(|edits| edits.is_empty()) {
         return Err(format!("textless save must preserve formatting: {after_textless}").into());
     }
 

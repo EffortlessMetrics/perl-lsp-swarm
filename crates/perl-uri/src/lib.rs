@@ -94,7 +94,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     mod filesystem_tests {
         use super::*;
-        use perl_tdd_support::{must, must_some};
+        use perl_test_must::{must, must_some};
 
         #[test]
         fn test_uri_to_fs_path_basic() {
