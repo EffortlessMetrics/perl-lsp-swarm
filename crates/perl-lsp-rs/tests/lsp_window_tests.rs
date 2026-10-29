@@ -5,6 +5,7 @@ use perl_lsp::{
     LspServer,
     server::{MessageType, ShowDocumentOptions},
 };
+use perl_tdd_support::must_with;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::sync::Arc;
@@ -62,63 +63,72 @@ fn lsp_frame(body: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn output_capture_parses_two_coalesced_frames() {
+fn output_capture_parses_two_coalesced_frames() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let mut writer = output.clone();
-    writer
-        .write_all(
+    must_with(
+        writer.write_all(
             &[
                 lsp_frame(br#"{"id":1,"result":"first"}"#),
                 lsp_frame(br#"{"id":2,"result":"second"}"#),
             ]
             .concat(),
-        )
-        .expect("capture accepts coalesced frames");
+        ),
+        "capture accepts coalesced frames",
+    );
 
     assert_eq!(
         output.get_messages(),
         vec![json!({"id": 1, "result": "first"}), json!({"id": 2, "result": "second"}),]
     );
+    Ok(())
 }
 
 #[test]
-fn output_capture_waits_for_split_frame() {
+fn output_capture_waits_for_split_frame() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let frame = lsp_frame(br#"{"id":3,"result":"split"}"#);
     let split = frame.len() / 2;
     let mut writer = output.clone();
-    writer.write_all(&frame[..split]).expect("capture accepts frame prefix");
+    must_with(writer.write_all(&frame[..split]), "capture accepts frame prefix");
     assert!(output.get_messages().is_empty(), "truncated frame must not parse");
 
-    writer.write_all(&frame[split..]).expect("capture accepts frame suffix");
+    must_with(writer.write_all(&frame[split..]), "capture accepts frame suffix");
     assert_eq!(output.get_messages(), vec![json!({"id": 3, "result": "split"})]);
+    Ok(())
 }
 
 #[test]
-fn output_capture_preserves_crlf_in_frame_body() {
+fn output_capture_preserves_crlf_in_frame_body() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let mut writer = output.clone();
     let body = b"{\r\n\"id\":4,\r\n\"result\":\"body\"\r\n}\r\n\r\n";
-    writer.write_all(&lsp_frame(body)).expect("capture accepts CRLF body");
+    must_with(writer.write_all(&lsp_frame(body)), "capture accepts CRLF body");
 
     assert_eq!(output.get_messages(), vec![json!({"id": 4, "result": "body"})]);
+    Ok(())
 }
 
 #[test]
-fn output_capture_rejects_malformed_and_truncated_lengths() {
+fn output_capture_rejects_malformed_and_truncated_lengths() -> Result<(), Box<dyn std::error::Error>>
+{
     let output = OutputCapture::new();
     let mut writer = output.clone();
-    writer.write_all(b"Content-Length: nope\r\n\r\n{}").expect("capture accepts malformed frame");
+    must_with(
+        writer.write_all(b"Content-Length: nope\r\n\r\n{}"),
+        "capture accepts malformed frame",
+    );
     assert!(output.get_messages().is_empty(), "malformed length must not parse");
 
     output.clear();
     let body = br#"{"id":5,"result":"truncated"}"#;
     let frame = lsp_frame(body);
-    writer.write_all(&frame[..frame.len() - 1]).expect("capture accepts truncated frame");
+    must_with(writer.write_all(&frame[..frame.len() - 1]), "capture accepts truncated frame");
     assert!(output.get_messages().is_empty(), "truncated body must not parse");
 
-    writer.write_all(&frame[frame.len() - 1..]).expect("capture accepts final byte");
+    must_with(writer.write_all(&frame[frame.len() - 1..]), "capture accepts final byte");
     assert_eq!(output.get_messages(), vec![json!({"id": 5, "result": "truncated"})]);
+    Ok(())
 }
 
 fn wait_for_messages(output: &OutputCapture, minimum_count: usize) -> Vec<Value> {
@@ -665,6 +675,104 @@ fn lsp_window_progress_without_capability() -> Result<(), Box<dyn std::error::Er
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     assert!(err.to_string().contains("doesn't support"));
 
+    Ok(())
+}
+
+/// Exercise the dispatcher and code-lens provider, then join the outbound writer
+/// before inspecting its complete stream. No sleep decides whether progress ended.
+fn code_lens_progress_after_error_and_recovery(
+    supports_progress: bool,
+) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    let output = OutputCapture::new();
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(output.clone()));
+    initialize_for_window_test(
+        &server,
+        json!({"capabilities": {"window": {"workDoneProgress": supports_progress}}}),
+    );
+
+    let failed = server
+        .handle_request(perl_lsp::JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(701)),
+            method: "textDocument/codeLens".to_string(),
+            params: Some(json!({"textDocument": {}})),
+        })
+        .ok_or("malformed code-lens request must respond")?;
+    assert_eq!(failed.id, Some(perl_lsp::protocol::JsonRpcId::Integer(701)));
+    assert_eq!(failed.error.as_ref().map(|error| error.code), Some(-32602));
+
+    let uri = "file:///code_lens_progress_recovery.pl";
+    server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didOpen".to_string(),
+        params: Some(json!({"textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub progress_target { return 1; }\nprogress_target();\n"
+        }})),
+    });
+    let recovered = server
+        .handle_request(perl_lsp::JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(702)),
+            method: "textDocument/codeLens".to_string(),
+            params: Some(json!({"textDocument": {"uri": uri}})),
+        })
+        .ok_or("code-lens recovery request must respond")?;
+    assert_eq!(recovered.id, Some(perl_lsp::protocol::JsonRpcId::Integer(702)));
+    assert!(recovered.error.is_none(), "recovery failed: {recovered:?}");
+    let lenses = recovered.result.as_ref().and_then(Value::as_array).ok_or("expected lenses")?;
+    assert!(!lenses.is_empty(), "recovery must run the provider and produce a real lens");
+
+    // Drop joins the writer; every admitted frame is now observable, including
+    // any duplicate or missing end. Startup indexing can emit independent progress.
+    drop(server);
+    Ok(output.get_messages())
+}
+
+#[test]
+fn code_lens_progress_ends_once_after_error_and_recovery() -> Result<(), Box<dyn std::error::Error>>
+{
+    let messages = code_lens_progress_after_error_and_recovery(true)?;
+    let progress: Vec<_> = messages
+        .iter()
+        .filter(|message| {
+            message["params"]["token"].as_str().is_some_and(|token| token.starts_with("code-lens-"))
+        })
+        .collect();
+    assert_eq!(
+        progress.len(),
+        6,
+        "each code-lens request must create, begin and end: {progress:?}"
+    );
+    let mut tokens = Vec::new();
+    for lifecycle in progress.chunks_exact(3) {
+        assert_eq!(lifecycle[0]["method"], "window/workDoneProgress/create");
+        let token = lifecycle[0]["params"]["token"].as_str().ok_or("expected string token")?;
+        assert!(token.starts_with("code-lens-"), "unexpected progress owner: {token}");
+        tokens.push(token);
+        for (message, kind) in lifecycle[1..].iter().zip(["begin", "end"]) {
+            assert_eq!(message["method"], "$/progress");
+            assert_eq!(message["params"]["token"], token);
+            assert_eq!(message["params"]["value"]["kind"], kind);
+        }
+    }
+    assert_ne!(tokens[0], tokens[1], "recovery must use a fresh progress token");
+    Ok(())
+}
+
+#[test]
+fn code_lens_progress_is_silent_without_capability() -> Result<(), Box<dyn std::error::Error>> {
+    let messages = code_lens_progress_after_error_and_recovery(false)?;
+    assert!(
+        messages.iter().all(|message| !matches!(
+            message["method"].as_str(),
+            Some("window/workDoneProgress/create" | "$/progress")
+        )),
+        "unsupported progress must stay silent through error and recovery: {messages:?}"
+    );
     Ok(())
 }
 

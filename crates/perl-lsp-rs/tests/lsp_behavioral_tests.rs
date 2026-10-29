@@ -495,9 +495,228 @@ sub calculate {
     Ok(())
 }
 
+// #6969: `perl.runCritic` on an OPEN document must analyze the in-memory
+// (dirty) text through NativeCriticService, matching pull diagnostics for
+// the same text and differing from the on-disk content.
+#[test]
+fn run_critic_open_dirty_document_matches_pull_and_differs_from_disk() -> TestResult {
+    use std::collections::BTreeSet;
+
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    let dirty_text = "my $c = '1';\neval $c;\nprint $c;\n";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("dirty.pl", disk_text)])?;
+    let uri = workspace.uri("dirty.pl");
+
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+
+    // Pull diagnostics for the same dirty text: the native critic codes.
+    let report = harness.request(
+        "textDocument/diagnostic",
+        json!({
+            "textDocument": { "uri": uri },
+            "identifier": "perl-lsp",
+            "previousResultId": null
+        }),
+    )?;
+    let pull_codes: BTreeSet<String> = report
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or("pull diagnostics must include items")?
+        .iter()
+        .filter_map(|item| item.get("code").and_then(Value::as_str))
+        .filter(|code| code.starts_with("native."))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert!(
+        pull_codes.contains("native.security.string_eval"),
+        "pull diagnostics for dirty text must include string_eval: {pull_codes:?}"
+    );
+
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.runCritic",
+            "arguments": [uri]
+        }),
+        Duration::from_secs(5),
+    )?;
+    assert_eq!(result["status"].as_str(), Some("success"), "open runCritic: {result}");
+    assert_eq!(result["analyzerUsed"].as_str(), Some("native"));
+    let command_codes: BTreeSet<String> = result
+        .get("violations")
+        .and_then(Value::as_array)
+        .ok_or("runCritic must include violations")?
+        .iter()
+        .filter_map(|violation| violation.get("policy").and_then(Value::as_str))
+        .filter(|code| code.starts_with("native."))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert_eq!(
+        command_codes, pull_codes,
+        "open-document runCritic must match pull critic codes for the same text"
+    );
+    assert!(
+        command_codes.contains("native.security.string_eval"),
+        "dirty-only finding must come from in-memory text, not disk: {command_codes:?}"
+    );
+
+    // After close, the same command falls back to the disk path and the
+    // dirty-only finding disappears, proving the open result was not disk.
+    harness.close(&uri)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let disk_result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.runCritic",
+            "arguments": [uri]
+        }),
+        Duration::from_secs(5),
+    )?;
+    let disk_codes: BTreeSet<String> = disk_result
+        .get("violations")
+        .and_then(Value::as_array)
+        .ok_or("disk runCritic must include violations")?
+        .iter()
+        .filter_map(|violation| violation.get("policy").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert!(
+        !disk_codes.contains("native.security.string_eval"),
+        "unopened runCritic must reflect on-disk text: {disk_codes:?}"
+    );
+    assert_ne!(command_codes, disk_codes);
+    Ok(())
+}
+
+fn run_critic_policies(result: &Value) -> Vec<String> {
+    result
+        .get("violations")
+        .and_then(Value::as_array)
+        .map(|vs| {
+            vs.iter()
+                .filter_map(|v| v.get("policy").and_then(Value::as_str).map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn run_critic_open_document_includes_merged_pl603_and_fs_file_path() -> TestResult {
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    let dirty_text = "use strict;\nuse warnings;\nsystem('ls');\n";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("merged.pl", disk_text)])?;
+    let uri = workspace.uri("merged.pl");
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [uri]}),
+        Duration::from_secs(5),
+    )?;
+    assert_eq!(result["status"].as_str(), Some("success"), "open runCritic: {result}");
+    let policies = run_critic_policies(&result);
+    assert!(
+        policies.iter().any(|p| p == "PL603"),
+        "merged PL603 expected: {policies:?} result={result}"
+    );
+    let violations = result["violations"].as_array().ok_or("violations array")?;
+    for v in violations {
+        let file = v["file"].as_str().ok_or("file str")?;
+        assert!(!file.starts_with("file://"), "file must be fs path, got {file}");
+        assert!(file.ends_with("merged.pl"), "file must name document, got {file}");
+    }
+    Ok(())
+}
+
+#[test]
+fn run_critic_open_document_parse_failure_reports_syntax_violation() -> TestResult {
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    // Input whose parse fails completely (no AST) on the disk provider path:
+    // nesting beyond the parser recursion limit makes `Parser::parse` Err.
+    let dirty_text = format!("my $x = {}1{};\n", "(".repeat(200), ")".repeat(200));
+    let dirty_text = dirty_text.as_str();
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("broken.pl", disk_text)])?;
+    let uri = workspace.uri("broken.pl");
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [uri]}),
+        Duration::from_secs(5),
+    )?;
+    // Disk path for the same text would report Syntax::ParseError; open path must too.
+    let policies = run_critic_policies(&result);
+    assert!(
+        policies.iter().any(|p| p == "Syntax::ParseError"),
+        "expected Syntax::ParseError, got status={:?} policies={policies:?} result={result}",
+        result["status"].as_str()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_critic_open_document_relative_path_target_uses_dirty_buffer() -> TestResult {
+    let disk_text = "use strict;\nuse warnings;\nmy $x = 1;\nprint $x;\n";
+    let dirty_text = "my $c = '1';\neval $c;\nprint $c;\n";
+    let (mut harness, workspace) = LspHarness::with_workspace(&[("rel.pl", disk_text)])?;
+    let uri = workspace.uri("rel.pl");
+    harness.open_document(&uri, dirty_text)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    // Bare relative filename target, as editors may pass it.
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": ["rel.pl"]}),
+        Duration::from_secs(5),
+    )?;
+    assert_eq!(result["status"].as_str(), Some("success"), "relative runCritic: {result}");
+    let policies = run_critic_policies(&result);
+    assert!(
+        policies.iter().any(|p| p == "native.security.string_eval"),
+        "dirty buffer must be analyzed via relative target: {policies:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_critic_open_document_outside_workspace_is_rejected() -> TestResult {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[(
+        "inside.pl",
+        "use strict;\nuse warnings;\nmy $x=1;\nprint $x;\n",
+    )])?;
+    let outside_path =
+        workspace.dir.path().parent().ok_or("temp parent")?.join("perl_lsp_outside_6969.pl");
+    std::fs::write(&outside_path, "use strict;\nuse warnings;\nmy $x=1;\nprint $x;\n")?;
+    let outside_uri = path_to_uri(&outside_path)?;
+    let dirty = "my $c='1';\neval $c;\nprint $c;\n";
+    harness.open_document(&outside_uri, dirty)?;
+    harness.wait_for_idle(Duration::from_millis(200));
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [outside_uri]}),
+        Duration::from_secs(5),
+    );
+    let _ = std::fs::remove_file(&outside_path);
+    assert!(result.is_err(), "outside-workspace open doc must be rejected, got: {result:?}");
+    Ok(())
+}
+
+#[test]
+fn run_critic_overlong_argument_is_rejected() -> TestResult {
+    let (mut harness, _workspace) = LspHarness::with_workspace(&[("a.pl", "use strict;\n")])?;
+    let long_arg = "a".repeat(4097);
+    let result = harness.request_with_timeout(
+        "workspace/executeCommand",
+        json!({"command": "perl.runCritic", "arguments": [long_arg]}),
+        Duration::from_secs(5),
+    );
+    assert!(result.is_err(), "overlong argument must be rejected, got: {result:?}");
+    Ok(())
+}
+
 #[cfg(feature = "lsp-extras")]
 #[test]
-fn test_test_generation_actions_present() -> TestResult {
+fn test_no_unexecutable_command_actions_are_offered() -> TestResult {
     let (mut harness, workspace) = create_test_server()?;
 
     // Request code actions for the calculate subroutine
@@ -516,29 +735,24 @@ fn test_test_generation_actions_present() -> TestResult {
     {
         let actions = result.as_array().ok_or("Should return action array")?;
 
-        // Find test generation action
-        let test_action = actions
-            .iter()
-            .find(|a| a["title"].as_str().is_some_and(|t| t.contains("Generate test")));
+        // #17304: every offered command must be executable. `perl.generateTest`
+        // had no dispatch arm, no executeCommandProvider advertisement, and no
+        // extension registration, so clicking the offered action always failed
+        // with -32601 Unknown command. The offer was removed; the other code
+        // actions are unaffected.
+        let offered_commands: Vec<&str> =
+            actions.iter().filter_map(|a| a["command"]["command"].as_str()).collect();
 
-        assert!(test_action.is_some(), "Should have test generation action");
-
-        // Verify it has the right command
-        let action = test_action.ok_or("Should have test generation action")?;
-        assert_eq!(
-            action["command"]["command"].as_str(),
-            Some("perl.generateTest"),
-            "Should use perl.generateTest command"
+        assert!(
+            !offered_commands.contains(&"perl.generateTest"),
+            "perl.generateTest is registered nowhere and must not be offered: {actions:?}"
         );
-
-        // Verify arguments include test code
-        let args = &action["command"]["arguments"];
-        let args_array = args.as_array().ok_or("Should have arguments")?;
-        assert!(!args_array.is_empty(), "Should have test generation arguments");
-
-        let first_arg = &args_array[0];
-        assert!(first_arg["name"].is_string(), "Should include subroutine name");
-        assert!(first_arg["test"].is_string(), "Should include generated test code");
+        assert!(
+            !actions
+                .iter()
+                .any(|a| a["title"].as_str().is_some_and(|t| t.contains("Generate test"))),
+            "Generate-test actions must not be offered: {actions:?}"
+        );
     }
     Ok(())
 }

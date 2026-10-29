@@ -255,6 +255,116 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
+void test('verified packaged child receipt hashes and parses one source snapshot', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-snapshot-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const receiptFile = path.join(directory, 'verified_child_receipt.json');
+  const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
+  const env = {
+    PERL_LSP_CANDIDATE_ID: 'candidate-1',
+    PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+    PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+  };
+  const artifactHashes = {
+    vsix_sha256: 'b'.repeat(64),
+    bundled_server_sha256: 'c'.repeat(64),
+  };
+  const healthySource = {
+    repository_sha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+    artifact_hashes: artifactHashes,
+    vscode_version: '1.125.0',
+    outcome: 'not_proven',
+    product_blockers: [],
+    server_identity: {
+      path: 'C:/extension/bin/win32-x64/perllsp.exe',
+      source: 'packaged_vsix_bundle',
+      startup_source: 'bundled',
+    },
+    startup: {
+      lifecycle_state: 'running',
+      binary_resolution_status: 'ok',
+      server_start_status: 'ok',
+      initialize_status: 'ok',
+    },
+    requests: {
+      immediate: Object.fromEntries(
+        ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+          key,
+          { status: 'ok' },
+        ]),
+      ),
+      after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+    },
+    shutdown: 'stopped',
+  };
+  // Preserve non-canonical whitespace: the envelope binds raw bytes, not reserialized JSON.
+  const healthyBytes = Buffer.from(`${JSON.stringify(healthySource, null, 2)}\n`);
+  const failedBytes = Buffer.from(
+    JSON.stringify({
+      ...healthySource,
+      outcome: 'failed',
+      product_blockers: [{ label: 'provider', result: { status: 'error' } }],
+    }),
+  );
+  const bindSource = (bytes) => {
+    fs.writeFileSync(sourceReceiptFile, bytes);
+    fs.writeFileSync(
+      receiptFile,
+      JSON.stringify({
+        schema_version: 'verified_child_receipt.v1',
+        receipt_schema_version: 'installed_acceptance.v1',
+        candidate_id: env.PERL_LSP_CANDIDATE_ID,
+        frozen_product_sha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+        artifact_set_id: env.PERL_LSP_ARTIFACT_SET_ID,
+        status: 'not_proven',
+        source_receipt_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        artifact_hashes: artifactHashes,
+      }),
+    );
+  };
+  const validate = () =>
+    validateVerifiedCandidateReceipt({
+      receiptFile,
+      sourceReceiptFile,
+      env,
+      expectedVsixSha256: artifactHashes.vsix_sha256,
+      expectedBundledServerSha256: artifactHashes.bundled_server_sha256,
+      expectedPlatform: 'windows',
+    });
+
+  bindSource(healthyBytes);
+  const stable = validate();
+  assert.equal(stable.ok, true, JSON.stringify(stable));
+  assert.deepEqual(stable.source_receipt, healthySource);
+
+  fs.writeFileSync(sourceReceiptFile, Buffer.concat([healthyBytes, Buffer.from('\n')]));
+  const mismatched = validate();
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.violations?.join(' ') ?? '', /digest does not match/);
+
+  bindSource(failedBytes);
+  const failed = validate();
+  assert.equal(failed.ok, false);
+  assert.match(failed.violations?.join(' ') ?? '', /does not prove the bounded/);
+
+  const readFile = fs.readFileSync;
+  let sourceReads = 0;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    const bytes = readFile(file, ...args);
+    if (file === sourceReceiptFile && ++sourceReads === 1) {
+      // Model a producer replacing a failed receipt after its first snapshot was read.
+      fs.writeFileSync(sourceReceiptFile, healthyBytes);
+    }
+    return bytes;
+  });
+  const rewritten = validate();
+  t.mock.restoreAll();
+  assert.ok(sourceReads > 0, 'the source rewrite control must execute');
+  assert.equal(rewritten.ok, false, 'behavior from replacement bytes must not be accepted');
+  assert.match(rewritten.violations?.join(' ') ?? '', /does not prove the bounded/);
+  assert.equal(sourceReads, 1, 'hashing and parsing must share a single source read');
+});
+
 void test('candidate construction binds hashes and rejects partial or supplied identity', () => {
   const env = {
     PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
@@ -1332,6 +1442,77 @@ void test('a child receipt bound to this run admits behavioral proof', () => {
   const result = validateChild(childReceipt());
   assert.equal(result.ok, true);
 });
+
+const snapshotVsixFile = path.join(identityFixtureRoot, 'snapshot', 'candidate.vsix');
+fs.mkdirSync(path.dirname(snapshotVsixFile));
+fs.copyFileSync(inputVsixFile, snapshotVsixFile);
+const observedSnapshotVsix = observeSmokeArtifact(snapshotVsixFile);
+// The published runner removes its owned snapshot before the parent reads the receipt.
+fs.rmSync(snapshotVsixFile);
+function snapshotChildReceipt() {
+  const receipt = childReceipt();
+  receipt.installed_byte_identity.vsix_before = observedSnapshotVsix;
+  receipt.installed_byte_identity.vsix_after = observedSnapshotVsix;
+  return receipt;
+}
+
+void test('a cleaned-up private VSIX snapshot binds the parent-owned package bytes', () => {
+  assert.notEqual(observedSnapshotVsix.path, observedInputVsix.path);
+  assert.equal(fs.existsSync(snapshotVsixFile), false);
+  const result = validateChild(snapshotChildReceipt());
+  assert.equal(result.ok, true, result.ok ? '' : result.violations.join('; '));
+});
+
+for (const name of ['different digest', 'different size', 'relative path', 'missing path']) {
+  void test(`a private VSIX snapshot receipt rejects ${name}`, () => {
+    const receipt = snapshotChildReceipt();
+    const observation = { ...observedSnapshotVsix };
+    if (name === 'different digest') observation.sha256 = 'd'.repeat(64);
+    else if (name === 'different size') observation.size += 1;
+    else if (name === 'relative path') observation.path = 'candidate.vsix';
+    else Reflect.deleteProperty(observation, 'path');
+    receipt.installed_byte_identity.vsix_before = observation;
+    receipt.installed_byte_identity.vsix_after = observation;
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /installed byte identity/);
+  });
+}
+
+void test('a private VSIX snapshot cannot change paths between receipt phases', () => {
+  const receipt = snapshotChildReceipt();
+  receipt.installed_byte_identity.vsix_after = observedInputVsix;
+  const result = validateChild(receipt);
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /installed byte identity/);
+});
+
+for (const field of ['sha256', 'size']) {
+  void test(`a private VSIX snapshot cannot change ${field} after the initial observation`, () => {
+    const receipt = snapshotChildReceipt();
+    receipt.installed_byte_identity.vsix_after =
+      field === 'sha256'
+        ? { ...observedSnapshotVsix, sha256: 'd'.repeat(64) }
+        : { ...observedSnapshotVsix, size: observedSnapshotVsix.size + 1 };
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /installed byte identity/);
+  });
+}
+
+for (const mutation of ['replacement', 'deletion']) {
+  void test(`a private VSIX snapshot cannot hide parent package ${mutation}`, () => {
+    try {
+      if (mutation === 'replacement') fs.writeFileSync(inputVsixFile, 'different-vsix');
+      else fs.rmSync(inputVsixFile);
+      const result = validateChild(snapshotChildReceipt());
+      assert.equal(result.ok, false);
+      assert.match(result.violations.join('; '), /installed byte identity/);
+    } finally {
+      fs.writeFileSync(inputVsixFile, 'known-vsix');
+    }
+  });
+}
 
 void test('a missing child receipt is never behavioral proof', () => {
   const result = validateChild(childReceipt(), { present: false });

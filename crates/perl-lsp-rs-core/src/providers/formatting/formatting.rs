@@ -721,12 +721,28 @@ fn finalized_decision(
     if formatted == source {
         edits.clear();
     }
+    // Preserve the typed preserving variants (#17708): the projected edit
+    // list only decides applied vs no-change, not whether literal
+    // preservation was in play.
+    let preserving = matches!(
+        outcome.reason,
+        FormatReasonCode::AppliedPreservingLiterals
+            | FormatReasonCode::AlreadyFormattedPreservingLiterals
+    );
     if edits.is_empty() {
         outcome.disposition = FormatDisposition::NoChange;
-        outcome.reason = FormatReasonCode::AlreadyFormatted;
+        outcome.reason = if preserving {
+            FormatReasonCode::AlreadyFormattedPreservingLiterals
+        } else {
+            FormatReasonCode::AlreadyFormatted
+        };
     } else {
         outcome.disposition = FormatDisposition::Applied;
-        outcome.reason = FormatReasonCode::Applied;
+        outcome.reason = if preserving {
+            FormatReasonCode::AppliedPreservingLiterals
+        } else {
+            FormatReasonCode::Applied
+        };
     }
     outcome.change = change_summary(source, &formatted, &edits);
     outcome.safety.line_endings = line_ending_disposition(source, &formatted);
@@ -1218,6 +1234,31 @@ mod decision_projection_tests {
                 "next action must survive the evidence reset"
             );
         }
+    }
+
+    #[test]
+    fn finalized_decision_keeps_preserving_reason_variants() {
+        let mut outcome = stale_outcome();
+        outcome.reason = FormatReasonCode::AppliedPreservingLiterals;
+        let applied = finalized_decision(
+            outcome.clone(),
+            "my$x=1;\nmy $r = qr/a/;\n",
+            "my $x = 1;\nmy $r = qr/a/;\n".to_string(),
+            vec![FormatTextEdit {
+                range: FormatRange::whole_document("my$x=1;\nmy $r = qr/a/;\n"),
+                new_text: "my $x = 1;\nmy $r = qr/a/;\n".to_string(),
+            }],
+        );
+        assert_eq!(applied.outcome.reason, FormatReasonCode::AppliedPreservingLiterals);
+
+        outcome.reason = FormatReasonCode::AlreadyFormattedPreservingLiterals;
+        let unchanged = finalized_decision(
+            outcome,
+            "my $r = qr/a/;\n",
+            "my $r = qr/a/;\n".to_string(),
+            Vec::new(),
+        );
+        assert_eq!(unchanged.outcome.reason, FormatReasonCode::AlreadyFormattedPreservingLiterals);
     }
 
     /// The external adapter's envelope is validated, not trusted.

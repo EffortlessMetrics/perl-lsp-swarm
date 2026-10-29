@@ -394,14 +394,25 @@ fn unavailable_harness_has_no_executed_test_receipt() -> Result<()> {
 
 #[test]
 fn critical_path_receipt_uses_existing_ux_crate_build() -> Result<()> {
-    let wf = workflow("ux-regression-gate.yml")?;
-    let run = run_step(steps(&wf, "ux-regression-gate")?, "Emit structured UX regression receipt")?;
-    assert!(
-        run.contains("cargo run -p perl-lsp-ux-tests --bin ux-regression-receipt --locked --"),
-        "gate receipt must use the already-built UX crate"
-    );
-    assert!(run.contains("--exit-status-file target/receipts/ux-regression.exit"));
-    assert!(run.contains("--sha \"$TESTED_SHA\""));
+    for (file, job, emitter) in [
+        ("ux-regression-gate.yml", "ux-regression-gate", "Emit structured UX regression receipt"),
+        ("ci.yml", "ux-tests", "Emit UX regression receipt"),
+    ] {
+        let wf = workflow(file)?;
+        let run = run_step(steps(&wf, job)?, emitter)?;
+        assert!(
+            run.contains("cargo run -p perl-lsp-ux-tests --bin ux-regression-receipt --locked --"),
+            "{file}: gate receipt must use the already-built UX crate"
+        );
+        assert!(
+            run.contains("--exit-status-file target/receipts/ux-regression.exit"),
+            "{file}: gate receipt must specify the exit status file"
+        );
+        assert!(
+            run.contains("--sha \"$TESTED_SHA\""),
+            "{file}: gate receipt must specify the tested SHA"
+        );
+    }
     Ok(())
 }
 
