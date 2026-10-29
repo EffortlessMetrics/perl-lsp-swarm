@@ -25,7 +25,7 @@ Demonstrates programmatic interaction with the Perl Language Server over stdio
 # Build the LSP server binary first
 cargo build -p perllsp --release
 
-# Then run the example (requires perl-lsp in PATH)
+# Then run the example (requires perllsp in PATH)
 cargo run --example lsp_client
 ```
 
@@ -34,7 +34,7 @@ cargo run --example lsp_client
 ## Perl Showcase Files (`perl/`)
 
 Each file is a self-contained, runnable Perl program annotated with which LSP
-features it exercises.  Open any file in an editor with `perl-lsp` configured
+features it exercises.  Open any file in an editor with `perllsp` configured
 and interact with it to see the features in action.
 
 ### `perl/simple.pl` -- Core syntax

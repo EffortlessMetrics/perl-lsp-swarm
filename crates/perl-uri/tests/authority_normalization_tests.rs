@@ -4,7 +4,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 mod filesystem_authorities {
-    use perl_tdd_support::{must, must_some};
+    use perl_test_must::{must, must_some};
     use perl_uri::{fs_path_to_uri, normalize_uri, source_path_from_uri_or_path, uri_to_fs_path};
 
     #[test]
@@ -140,7 +140,7 @@ mod filesystem_authorities {
 }
 
 mod classification_authorities {
-    use perl_tdd_support::must_some;
+    use perl_test_must::must_some;
     use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 
     #[test]

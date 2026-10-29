@@ -37,14 +37,35 @@
       "resolved_in": 6918,
       "resolved_at": "2026-03-16",
       "notes": "Fixed by widening the debounce assertion window from 10ms to 50ms and adding a jitter-tolerant retry loop in the test harness."
+    },
+    {
+      "test": "debug_adapter::breakpoints::line::source_boundary_tests::source_breakpoint_installation_uses_one_aggregate_timeout",
+      "crate": "perl-dap",
+      "subsystem": "dap",
+      "state": "active",
+      "failure_mode": "Environment-dependent timing: the aggregate-timeout budget expires under `cargo llvm-cov` instrumentation overhead on the nightly Linux runner (deterministic there: identical 1200/2/34.10s outcome on 2026-09-30 and 2026-10-01); passes un-instrumented (unit_dap_support_full gate) and locally.",
+      "issue": 17043,
+      "first_seen": "2026-09-30",
+      "notes": "Nightly Codecov / Patch 95 job (`just coverage-proof`), runs 36663248059 and 36809591018. Not merge-blocking; a deterministic repair needs a virtual-clock or load-scaled budget redesign, not a budget relaxation."
+    },
+    {
+      "test": "debug_adapter::process::tests::framed_reader_preserves_stack_and_recovers_after_partial_output",
+      "crate": "perl-dap",
+      "subsystem": "dap",
+      "state": "active",
+      "failure_mode": "Environment-dependent timing: partial-output recovery windows miss under `cargo llvm-cov` instrumentation overhead on the nightly Linux runner (deterministic there, see the sibling aggregate-timeout entry); passes un-instrumented and locally.",
+      "issue": 17043,
+      "first_seen": "2026-09-30",
+      "notes": "Nightly Codecov / Patch 95 job (`just coverage-proof`), runs 36663248059 and 36809591018. Not merge-blocking."
     }
   ],
   "summary": {
-    "total": 2,
-    "active": 0,
+    "total": 4,
+    "active": 2,
     "resolved": 2,
     "by_subsystem": {
-      "lsp": 2
+      "lsp": 2,
+      "dap": 2
     }
   }
 }

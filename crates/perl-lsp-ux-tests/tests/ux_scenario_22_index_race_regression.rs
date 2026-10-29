@@ -298,10 +298,9 @@ fn scenario_22_hover_inherited_method_no_settle_delay_hard_assert() -> anyhow::R
 ///
 /// **What this tests:**
 /// `helper($self->name)` is a BARE function call, not a `$obj->method(` call.
-/// `handle_signature_help` checks `is_method_call_context` before entering the
-/// workspace-index method-resolution path — bare calls return false, so that path
-/// is NOT exercised here.  Instead, when no local AST or builtin signature matches,
-/// the handler falls back to a generic label `"sub helper"`.
+/// `handle_signature_help` resolves bare calls through the workspace index
+/// (#17582), so `helper` defined in Util.pm returns its real signature here.
+/// Unknown calls with no static fact return null instead of a fabricated label.
 ///
 /// This test locks that bare-function signatureHelp is always usable (non-null,
 /// non-empty, correct label) even when the workspace index is Building.  The
@@ -343,14 +342,13 @@ fn scenario_22_signature_help_imported_fn_no_settle_delay_hard_assert() -> anyho
         resp.get("error")
     );
 
-    // For a bare function call, the workspace-index method resolution is skipped
-    // (`is_method_call_context` returns false).  The generic fallback at the end of
-    // `handle_signature_help` returns `"helper(...)"`.  This test locks that path:
-    // signatureHelp must return a usable result with the correct function name.
+    // The workspace index defines `helper` in Util.pm, so signatureHelp must
+    // return its real signature. Unknown calls return null (#17582); this
+    // known cross-file call must not.
     assert!(
         !resp["result"].is_null(),
         "signatureHelp for bare `helper(` call in App.pm must return a non-null result. \
-         Got null — generic-fallback path broken. (#3095 regression guard)"
+         Got null — workspace resolution path broken. (#3095 regression guard)"
     );
 
     let sigs = resp["result"].get("signatures").and_then(|s| s.as_array()).ok_or_else(|| {
@@ -364,12 +362,12 @@ fn scenario_22_signature_help_imported_fn_no_settle_delay_hard_assert() -> anyho
     );
 
     // Provenance check: the first signature label must name the function.
-    // The generic fallback produces `"helper(...)"`.
+    // The workspace-resolved signature produces `"sub helper(...)"`.
     let first_label =
         sigs.first().and_then(|s| s.get("label")).and_then(|l| l.as_str()).unwrap_or("");
     assert!(
-        first_label.contains("helper"),
-        "signatureHelp first signature label must name `helper`. \
+        first_label.starts_with("sub helper"),
+        "signatureHelp first signature label must be the real Util.pm signature. \
          Got label: {first_label:?}"
     );
 

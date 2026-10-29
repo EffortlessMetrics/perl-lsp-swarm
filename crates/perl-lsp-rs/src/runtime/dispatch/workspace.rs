@@ -47,6 +47,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         self.handle_did_change_configuration(params);
+        self.flush_client_notices();
         Ok(None) // Notification, no response
     }
 
