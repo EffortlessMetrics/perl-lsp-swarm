@@ -25,6 +25,7 @@ use super::file_policy::{self, AllowEntry};
 use super::sync_divergence::{Verdict, is_product_or_test_path};
 
 const MANIFEST_SCHEMA_VERSION: &str = "publication_sync_manifest.v1";
+const SOURCE_MANIFEST_SCHEMA_VERSION: &str = "source_sync_manifest.v1";
 const RECEIPT_SCHEMA_VERSION: u32 = 1;
 
 /// The `sync-divergence` receipt version this planner consumes. Pinned so a
@@ -96,6 +97,87 @@ pub struct Manifest {
     live_controls: LiveControls,
     expected_projected_tree: String,
     blockers: Vec<Blocker>,
+}
+
+/// Closed profile selection. The historical release model is retained intact.
+/// Source shape recognition never grants product, source-control or release proof.
+pub enum ProjectionManifest {
+    Release(Manifest),
+    Source(SourceManifest),
+}
+
+/// Engineering source identity and opaque producer bindings. Projection mechanics
+/// continue to use `PathRow`, `DefaultAction`, and `Blocker` from this one model.
+/// Authentication and producer semantics must be implemented before admission.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceManifest {
+    schema_version: String,
+    profile: SourceProfile,
+    direction: SourceDirection,
+    source_repository: String,
+    source_ref: String,
+    destination_repository: String,
+    destination_ref: String,
+    reconciliation_base_sha: String,
+    destination_base_sha: String,
+    swarm_source_sha: String,
+    planned_at: String,
+    default_action: DefaultAction,
+    inputs: Vec<SourceInput>,
+    paths: Vec<PathRow>,
+    expected_projected_tree: String,
+    blockers: Vec<Blocker>,
+    published_channels: Vec<String>,
+    release_cut: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SourceProfile {
+    Source,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SourceDirection {
+    SwarmToPublic,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SourceInputId {
+    Reconciliation,
+    ProductProof,
+    ProjectionPolicy,
+    ProtectedSourceControls,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SourceInput {
+    id: SourceInputId,
+    path: String,
+    digest: String,
+}
+
+/// Alias guards must read only path-bearing fields before strict validation.
+/// Extra invalid claims cannot make declared input paths disappear from the guard.
+#[derive(Deserialize)]
+struct ProjectionAliasPaths {
+    inputs: Vec<ProjectionAliasInput>,
+    paths: Vec<ProjectionAliasRow>,
+}
+
+#[derive(Deserialize)]
+struct ProjectionAliasInput {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ProjectionAliasRow {
+    path: String,
+    authority_ref: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -964,6 +1046,8 @@ fn is_cargo_configuration(path: &str) -> bool {
 /// schema this repository ships rather than a Rust approximation of it.
 const MANIFEST_SCHEMA: &str =
     include_str!("../../../schemas/publication_sync_manifest.v1.schema.json");
+const SOURCE_MANIFEST_SCHEMA: &str =
+    include_str!("../../../schemas/source_sync_manifest.v1.schema.json");
 
 /// Validate a candidate manifest and write the plan receipt. Read-only: the
 /// only file written is the receipt.
@@ -1119,6 +1203,34 @@ fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Resu
         );
     }
 
+    let document: Value = serde_json::from_slice(raw)
+        .context("publication-sync: refusing receipt write; raw manifest cannot be parsed for alias protection")?;
+    if document.get("inputs").is_some()
+        || document.get("paths").is_some()
+        || document.get("schema_version").and_then(Value::as_str)
+            == Some(SOURCE_MANIFEST_SCHEMA_VERSION)
+        || document.get("profile").is_some()
+    {
+        let aliases: ProjectionAliasPaths = serde_json::from_value(document).context(
+            "publication-sync: refusing receipt write; declared alias paths cannot be established",
+        )?;
+        let mut alias_paths: BTreeSet<String> =
+            aliases.inputs.into_iter().map(|input| input.path).collect();
+        for row in aliases.paths {
+            insert_row_path(&mut alias_paths, &row.path, &row.authority_ref);
+        }
+        for path in alias_paths {
+            let input = config.repo_root.join(path);
+            if canonical_target(&input).is_none() {
+                bail!(
+                    "publication-sync: refusing receipt write; declared input identity cannot be established: {}",
+                    input.display()
+                );
+            }
+            consumed.push(input);
+        }
+    }
+
     for input in consumed {
         if canonical_target(&input).is_some_and(|resolved| resolved == destination) {
             bail!(
@@ -1154,18 +1266,26 @@ fn consumed_repository_paths(manifest: &Manifest) -> BTreeSet<String> {
         consumed.insert(input.path.clone());
     }
 
-    for row in &manifest.paths {
-        consumed.insert(row.path.clone());
-        // The crate-root probe `validate_rows` performs on a displacing row.
-        consumed.insert(format!("{}/Cargo.toml", row.path));
-        insert_reference_spellings(&mut consumed, &row.authority_ref, looks_like_document);
-    }
+    insert_row_paths(&mut consumed, &manifest.paths);
 
     for entry in evidence_entries(manifest) {
         insert_reference_spellings(&mut consumed, &entry.reference, |_| true);
     }
 
     consumed
+}
+
+/// One projection-row path superset for both closed profiles.
+fn insert_row_paths(consumed: &mut BTreeSet<String>, rows: &[PathRow]) {
+    for row in rows {
+        insert_row_path(consumed, &row.path, &row.authority_ref);
+    }
+}
+
+fn insert_row_path(consumed: &mut BTreeSet<String>, path: &str, authority_ref: &str) {
+    consumed.insert(path.to_string());
+    consumed.insert(format!("{path}/Cargo.toml"));
+    insert_reference_spellings(consumed, authority_ref, looks_like_document);
 }
 
 /// Record every spelling of `reference` a reader might resolve.
@@ -1280,14 +1400,34 @@ fn build_receipt(
 
     let manifest_digest = canonical_digest(&document).ok();
 
-    let schema: Value =
-        serde_json::from_str(MANIFEST_SCHEMA).map_err(|error| UnevaluatedManifest {
+    let source_profile = document.get("schema_version").and_then(Value::as_str)
+        == Some(SOURCE_MANIFEST_SCHEMA_VERSION);
+    let schema_version =
+        if source_profile { SOURCE_MANIFEST_SCHEMA_VERSION } else { MANIFEST_SCHEMA_VERSION };
+    let published_schema = if source_profile { SOURCE_MANIFEST_SCHEMA } else { MANIFEST_SCHEMA };
+    let mut schema: Value =
+        serde_json::from_str(published_schema).map_err(|error| UnevaluatedManifest {
             manifest_digest: manifest_digest.clone(),
             finding: finding(
                 "manifest_schema_unreadable",
                 format!("the published manifest schema is not JSON: {error}"),
             ),
         })?;
+    if source_profile {
+        // Resolve only the four fixed compiled-in release definitions. No network
+        // or candidate-selected schema is authority, and PathRow has one definition.
+        let shared: Value =
+            serde_json::from_str(MANIFEST_SCHEMA).map_err(|error| UnevaluatedManifest {
+                manifest_digest: manifest_digest.clone(),
+                finding: finding(
+                    "manifest_schema_unreadable",
+                    format!("the shared schema is not JSON: {error}"),
+                ),
+            })?;
+        for name in ["digest", "repository_path", "path_row", "blocker"] {
+            schema["$defs"][name] = shared["$defs"][name].clone();
+        }
+    }
     let validator = jsonschema::validator_for(&schema).map_err(|error| UnevaluatedManifest {
         manifest_digest: manifest_digest.clone(),
         finding: finding(
@@ -1307,23 +1447,42 @@ fn build_receipt(
             manifest_digest,
             finding: finding(
                 "manifest_schema_violation",
-                format!(
-                    "the manifest violates {MANIFEST_SCHEMA_VERSION}: {}",
-                    violations.join("; ")
-                ),
+                format!("the manifest violates {schema_version}: {}", violations.join("; ")),
             ),
         });
     }
 
-    let manifest: Manifest =
-        serde_json::from_value(document).map_err(|error| UnevaluatedManifest {
-            manifest_digest: manifest_digest.clone(),
-            finding: finding(
-                "manifest_model_violation",
-                format!("the manifest does not load as {MANIFEST_SCHEMA_VERSION}: {error}"),
-            ),
-        })?;
+    let profile = if source_profile {
+        serde_json::from_value(document).map(ProjectionManifest::Source)
+    } else {
+        serde_json::from_value(document).map(ProjectionManifest::Release)
+    }
+    .map_err(|error| UnevaluatedManifest {
+        manifest_digest: manifest_digest.clone(),
+        finding: finding(
+            "manifest_model_violation",
+            format!("the manifest does not load as {schema_version}: {error}"),
+        ),
+    })?;
 
+    let manifest = match profile {
+        ProjectionManifest::Release(manifest) => manifest,
+        ProjectionManifest::Source(source) => {
+            return Err(UnevaluatedManifest {
+                manifest_digest,
+                finding: finding(
+                    "source_profile_not_proven",
+                    format!(
+                        "{} NOT_PROVEN: exact source producer validation and trusted-base authorization are not enabled; source S={}, destination R={}, boundary B={}; no release authority",
+                        source.schema_version,
+                        source.swarm_source_sha,
+                        source.destination_base_sha,
+                        source.reconciliation_base_sha
+                    ),
+                ),
+            });
+        }
+    };
     let digest = manifest_digest.clone().unwrap_or_default();
     evaluate(&manifest, &digest, repo_root, load_input, checkout, tree).map_err(|error| {
         UnevaluatedManifest {
@@ -3109,3 +3268,6 @@ fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod source_tests;
