@@ -25,7 +25,9 @@ diagnostic codes to stable action IDs and safety metadata" — but no such
 registry exists in the tree today. Searching the workspace for an action-ID or
 fixability registry finds only `tooling/perl_critic/remediation.rs`, which
 classifies *critic remediation eligibility*, not action identity. So a family
-here is `<emitted CodeActionKind>:<capability name>` — a label chosen to name
+here is the `<emitted CodeActionKind>:<capability name>` form for custom families,
+the complete emitted CodeActionKind for typed extraction families
+(refactor.extract.variable, refactor.extract.subroutine) — a label chosen to name
 the user-visible capability a generation answers, deliberately shaped so it can
 be mapped onto real action IDs later rather than competing with them.
 

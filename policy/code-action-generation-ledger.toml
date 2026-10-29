@@ -74,7 +74,10 @@ disposition_states = [
 
 # Action families are user-visible capabilities, not module names, so that two
 # generations answering one family is visible as duplicate authority rather than
-# hidden behind two different keys. `none:unreachable_stub` exists so a
+# hidden behind two different keys. Custom families use the
+# `<emitted CodeActionKind>:<capability name>` label; typed extraction families
+# (refactor.extract.variable, refactor.extract.subroutine) use the complete
+# emitted CodeActionKind as their label. `none:unreachable_stub` exists so a
 # generation that answers nothing still carries an exact disposition.
 family_registry = [
   "none:unreachable_stub",
