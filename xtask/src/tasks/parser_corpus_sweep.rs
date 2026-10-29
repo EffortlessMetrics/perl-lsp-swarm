@@ -567,17 +567,7 @@ pub fn resolve_manifest_modules(
         }
 
         let stdout = String::from_utf8(output.stdout).context("Invalid UTF-8 in perl output")?;
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some((_module_file, path)) = line.split_once('=')
-                && let Some(p) = resolve_manifest_module_path(path)
-            {
-                resolved.push(p);
-            }
-        }
+        resolved.extend(resolve_manifest_output(&stdout, &unresolved));
     }
 
     resolved.sort();
@@ -595,6 +585,30 @@ pub fn resolve_manifest_modules(
 
     resolved.dedup();
     Ok(resolved)
+}
+
+/// Accept at most one existing path for each requested fallback module. Unrelated
+/// or repeated output rows must not fill another module's missing row.
+fn resolve_manifest_output(stdout: &str, modules: &[&str]) -> Vec<PathBuf> {
+    let mut pending = modules
+        .iter()
+        .map(|module| format!("{}.pm", module.replace("::", "/")))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut resolved = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some((module_file, path)) = line.split_once('=') else {
+            continue;
+        };
+        if !pending.contains(module_file) {
+            continue;
+        }
+        if let Some(path) = resolve_manifest_module_path(path) {
+            pending.remove(module_file);
+            resolved.push(path);
+        }
+    }
+    resolved
 }
 
 fn resolve_module_in_roots(module: &str, roots: &[PathBuf]) -> Option<PathBuf> {
@@ -2414,6 +2428,49 @@ mod tests {
         let manifest = discover_manifest(manifest_path.clone(), vec![])?;
         assert_eq!(manifest.min_resolved, 2);
         assert_eq!(manifest.path, manifest_path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_resolution_output_rejects_unknown_rows() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let found = dir.path().join("Found.pm");
+        fs::write(&found, "1;\n")?;
+        let stdout = format!("Unrequested.pm={}\nFound.pm={}\n", found.display(), found.display());
+        let resolved = resolve_manifest_output(&stdout, &["Found", "Missing"]);
+        assert_eq!(resolved, vec![found]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_resolution_output_rejects_duplicate_rows() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let found = dir.path().join("Found.pm");
+        fs::write(&found, "1;\n")?;
+        let stdout = format!("Found.pm={}\nFound.pm={}\n", found.display(), found.display());
+        let resolved = resolve_manifest_output(&stdout, &["Found", "Missing"]);
+        assert_eq!(resolved, vec![found]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_resolution_output_accepts_exact_rows_after_noise() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let first = dir.path().join("First.pm");
+        let second = dir.path().join("Second.pm");
+        fs::write(&first, "1;\n")?;
+        fs::write(&second, "1;\n")?;
+        let absent = dir.path().join("Absent.pm");
+        let stdout = format!(
+            "load-time output\n\nUnrequested.pm={}\nFirst.pm={}\nFirst.pm={}\nNested/Second.pm={}\nFirst.pm={}\n",
+            first.display(),
+            absent.display(),
+            first.display(),
+            second.display(),
+            first.display(),
+        );
+        let resolved = resolve_manifest_output(&stdout, &["First", "Nested::Second"]);
+        assert_eq!(resolved, vec![first, second]);
         Ok(())
     }
 

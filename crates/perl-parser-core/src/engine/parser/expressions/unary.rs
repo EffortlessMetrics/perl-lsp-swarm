@@ -555,6 +555,21 @@ impl<'a> Parser<'a> {
 
                     // Check if we're at EOF or a terminator (for standalone operators)
                     if self.tokens.is_eof() || self.is_at_statement_end() {
+                        // A reference needs an operand, including inside a chain of
+                        // backslashes. A clean undef placeholder would hide invalid
+                        // arguments such as `foo \\;` from diagnostics.
+                        if op_token.kind() == TokenKind::Backslash {
+                            let found = self.tokens.peek().map_or_else(
+                                |_| "end of input".to_string(),
+                                |token| token.text.to_string(),
+                            );
+                            return Ok(self.recover_from_error(
+                                "Reference operator requires an operand".to_string(),
+                                "reference operand".to_string(),
+                                found,
+                                start,
+                            ));
+                        }
                         // Create a placeholder for standalone operator
                         let end = op_token.end();
                         // Charged before the enclosing node so the charge order matches

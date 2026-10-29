@@ -2166,6 +2166,15 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
         ParseError::QualifiedLoopControlLabel { location } => {
             ParseError::QualifiedLoopControlLabel { location: location.saturating_add(offset) }
         }
+        ParseError::CatchVariableRedeclaration { keyword, range } => {
+            ParseError::CatchVariableRedeclaration {
+                keyword,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
+        }
         ParseError::HeredocBudgetExhausted { limit, usage, location } => {
             // `limit`/`usage` are charged byte counts, not source offsets.
             ParseError::HeredocBudgetExhausted {
