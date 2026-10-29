@@ -619,7 +619,10 @@ impl DiagnosticsProvider {
             };
 
             let range_start = location.min(source_len);
-            let range_end = range_start.saturating_add(1).min(source_len.saturating_add(1));
+            let range_end = source
+                .get(range_start..)
+                .and_then(|suffix| suffix.chars().next())
+                .map_or(range_start, |next| range_start + next.len_utf8());
 
             let suggestion = build_parse_error_suggestion(error);
 

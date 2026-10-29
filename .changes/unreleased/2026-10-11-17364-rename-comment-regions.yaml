@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Rename preparation and direct rename now refuse tokens classified as line comments, POD, or data sections, including cursor positions just after a comment word, instead of offering a rename box for non-code text (#17364)."
+time: 2026-10-11T00:00:00Z
+custom:
+  PR: "17554"
+  Slug: rename-comment-regions-17364
+  Breaking: "no"

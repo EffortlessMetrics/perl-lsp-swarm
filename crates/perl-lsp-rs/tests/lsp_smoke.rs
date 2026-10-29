@@ -29,10 +29,7 @@
 //! # Run the smoke tests (recommended: single-threaded for clean output)
 //! cargo test -p perl-lsp-rs --test lsp_smoke -- --test-threads=1
 //!
-//! # Check if tests pass (exit code 0 = success)
-//! cargo test -p perl-lsp-rs --test lsp_smoke -- --test-threads=1; echo "Exit: $?"
-//!
-//! # Run with verbose output (note: server notifications may mix with test output)
+//! # Run with verbose output
 //! cargo test -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
 //! ```
 //!
@@ -41,19 +38,17 @@
 //! These tests are designed to complete in under 30 seconds total and produce
 //! deterministic results suitable for merge-gate automation.
 //!
-//! **Note**: Test output may include LSP server notifications (JSON-RPC messages)
-//! that appear interleaved with test results. This is expected behavior since
-//! the server writes to stdout by default. The important metric is the exit code:
-//! - Exit code 0 = all tests passed
-//! - Exit code 1 = one or more tests failed
-//!
-//! Example CI check:
-//! ```bash
-//! cargo test -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 || exit 1
-//! ```
+//! Require all selected cases and the successful libtest completion summary; exit
+//! status alone cannot detect a process exiting before the harness finishes.
+//! In-process teardown validates shutdown and drops the server, never sends `exit`.
+//! Actual protocol exit statuses and transport cleanup are covered by the
+//! `perllsp` target `lsp_stdio_process_contract` in a separate server process.
 
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::{Value, json};
+use std::io::{self, Cursor, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // =============================================================================
 // TEST FIXTURES
@@ -105,9 +100,34 @@ sub greet {
 // HELPER FUNCTIONS
 // =============================================================================
 
-/// Create a fresh LSP server instance
-fn create_server() -> LspServer {
-    LspServer::new()
+/// Discard notifications without interleaving them with libtest output, and
+/// witness release of the server's owned output sink on teardown.
+struct SmokeOutput(Arc<AtomicBool>);
+
+impl Write for SmokeOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for SmokeOutput {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Create a fresh server with private I/O and an observable output-sink lifetime.
+fn create_server() -> (LspServer, Arc<AtomicBool>) {
+    let output_dropped = Arc::new(AtomicBool::new(false));
+    let server = LspServer::with_io(
+        Box::new(Cursor::new(Vec::<u8>::new())),
+        Box::new(SmokeOutput(Arc::clone(&output_dropped))),
+    );
+    (server, output_dropped)
 }
 
 /// Send an initialize request and return the result
@@ -195,23 +215,46 @@ fn send_request(server: &LspServer, id: i32, method: &str, params: Value) -> Opt
     response.result
 }
 
-/// Shutdown the server gracefully
-fn shutdown_server(server: &LspServer) {
+/// Complete shutdown without terminating libtest, then verify owned-sink cleanup.
+fn shutdown_server(
+    server: LspServer,
+    output_dropped: Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let shutdown_id = perl_lsp::protocol::JsonRpcId::Integer(999_i64);
     let request = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(999_i64)),
+        id: Some(shutdown_id.clone()),
         method: "shutdown".to_string(),
         params: None,
     };
-    server.handle_request(request);
+    let response = server.handle_request(request).ok_or("Shutdown should return response")?;
+    assert_eq!(response.id, Some(shutdown_id), "Shutdown must preserve request identity");
+    assert!(response.error.is_none(), "Shutdown must not return an error");
+    assert_eq!(response.result, Some(Value::Null), "Shutdown must return null");
 
-    let exit = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "exit".to_string(),
-        params: None,
-    };
-    server.handle_request(exit);
+    let after_id = perl_lsp::protocol::JsonRpcId::Integer(1000_i64);
+    let after = server
+        .handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(after_id.clone()),
+            method: "$/perl-lsp/watchdog".to_string(),
+            params: Some(json!({})),
+        })
+        .ok_or("Post-shutdown request should return an error response")?;
+    assert_eq!(after.id, Some(after_id), "Post-shutdown rejection must preserve request identity");
+    assert!(after.result.is_none(), "Post-shutdown request must not succeed");
+    assert_eq!(
+        after.error.as_ref().map(|error| error.code),
+        Some(-32600),
+        "Post-shutdown request must return InvalidRequest"
+    );
+
+    // `exit` calls std::process::exit and would skip these assertions and the
+    // remaining tests. Real-process coverage owns that protocol operation.
+    assert!(!output_dropped.load(Ordering::Acquire), "Output sink must remain owned until drop");
+    drop(server);
+    assert!(output_dropped.load(Ordering::Acquire), "Server drop must release its output sink");
+    Ok(())
 }
 
 // =============================================================================
@@ -226,7 +269,7 @@ fn shutdown_server(server: &LspServer) {
 /// - Core providers are advertised (hover, completion, definition)
 #[test]
 fn smoke_server_initialization_and_capabilities() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let init_result = initialize_server(&server)?;
 
     // Verify response structure
@@ -254,14 +297,14 @@ fn smoke_server_initialization_and_capabilities() -> Result<(), Box<dyn std::err
         "documentSymbolProvider must be advertised"
     );
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
 /// Smoke test: Server rejects double initialization
 #[test]
 fn smoke_double_initialization_rejected() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
 
     // Try to initialize again
@@ -279,7 +322,7 @@ fn smoke_double_initialization_rejected() -> Result<(), Box<dyn std::error::Erro
     let response = server.handle_request(request).ok_or("Should return response")?;
     assert!(response.error.is_some(), "Second initialize should return error");
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -290,7 +333,7 @@ fn smoke_double_initialization_rejected() -> Result<(), Box<dyn std::error::Erro
 /// Smoke test: Document open is accepted
 #[test]
 fn smoke_document_open() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
 
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
@@ -309,14 +352,14 @@ fn smoke_document_open() -> Result<(), Box<dyn std::error::Error>> {
     // Result can be null but should not error
     assert!(result.is_some(), "Hover should return a response (even if null)");
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
 /// Smoke test: Document change is accepted
 #[test]
 fn smoke_document_change() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
 
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
@@ -351,7 +394,7 @@ fn smoke_document_change() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(result.is_some(), "Server should still respond after document change");
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -362,7 +405,7 @@ fn smoke_document_change() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: Hover returns valid response
 #[test]
 fn smoke_hover_response_structure() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -388,14 +431,14 @@ fn smoke_hover_response_structure() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
 /// Smoke test: Hover on subroutine name
 #[test]
 fn smoke_hover_on_subroutine() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -411,7 +454,7 @@ fn smoke_hover_on_subroutine() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(result.is_some(), "Hover on subroutine should return response");
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -422,7 +465,7 @@ fn smoke_hover_on_subroutine() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: Completion returns items
 #[test]
 fn smoke_completion_returns_items() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -454,14 +497,14 @@ fn smoke_completion_returns_items() -> Result<(), Box<dyn std::error::Error>> {
         assert!(items[0].get("label").is_some(), "Completion items must have label");
     }
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
 /// Smoke test: Completion for builtins
 #[test]
 fn smoke_completion_builtins() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
 
     // Open a file with partial builtin
@@ -494,7 +537,7 @@ fn smoke_completion_builtins() -> Result<(), Box<dyn std::error::Error>> {
         assert!(has_print, "Completion should include 'print' for 'pri' prefix");
     }
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -505,7 +548,7 @@ fn smoke_completion_builtins() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: Definition returns locations
 #[test]
 fn smoke_definition_returns_locations() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -536,7 +579,7 @@ fn smoke_definition_returns_locations() -> Result<(), Box<dyn std::error::Error>
         }
     }
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -547,7 +590,7 @@ fn smoke_definition_returns_locations() -> Result<(), Box<dyn std::error::Error>
 /// Smoke test: Document symbols returns symbols
 #[test]
 fn smoke_document_symbols() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -587,7 +630,7 @@ fn smoke_document_symbols() -> Result<(), Box<dyn std::error::Error>> {
         names
     );
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -598,7 +641,7 @@ fn smoke_document_symbols() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: References returns locations
 #[test]
 fn smoke_find_references() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -624,7 +667,7 @@ fn smoke_find_references() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -635,7 +678,7 @@ fn smoke_find_references() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: Folding ranges returns ranges
 #[test]
 fn smoke_folding_ranges() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -658,7 +701,7 @@ fn smoke_folding_ranges() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -669,7 +712,7 @@ fn smoke_folding_ranges() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: Workspace symbol search
 #[test]
 fn smoke_workspace_symbols() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
     open_document(&server, "file:///module.pm", FIXTURE_MODULE);
@@ -694,7 +737,7 @@ fn smoke_workspace_symbols() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -705,7 +748,7 @@ fn smoke_workspace_symbols() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: Server handles unknown method gracefully
 #[test]
 fn smoke_unknown_method_error() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
 
     let result = send_request(
@@ -732,14 +775,14 @@ fn smoke_unknown_method_error() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert!(hover_result.is_some(), "Server should still respond after error");
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
 /// Smoke test: Server handles request for non-existent document
 #[test]
 fn smoke_nonexistent_document() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
 
     // Don't open any document, just request hover
@@ -756,7 +799,7 @@ fn smoke_nonexistent_document() -> Result<(), Box<dyn std::error::Error>> {
     // Should return something (null is acceptable)
     assert!(result.is_some(), "Should return response for non-existent document");
 
-    shutdown_server(&server);
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 
@@ -767,7 +810,7 @@ fn smoke_nonexistent_document() -> Result<(), Box<dyn std::error::Error>> {
 /// Smoke test: Graceful shutdown
 #[test]
 fn smoke_graceful_shutdown() -> Result<(), Box<dyn std::error::Error>> {
-    let server = create_server();
+    let (server, output_dropped) = create_server();
     let _ = initialize_server_full(&server)?;
     open_document(&server, "file:///test.pl", FIXTURE_SIMPLE_SUB);
 
@@ -782,28 +825,7 @@ fn smoke_graceful_shutdown() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    // Shutdown
-    let shutdown_request = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(101_i64)),
-        method: "shutdown".to_string(),
-        params: None,
-    };
-
-    let response =
-        server.handle_request(shutdown_request).ok_or("Shutdown should return response")?;
-    assert!(response.error.is_none(), "Shutdown should not return error");
-
-    // Exit
-    let exit_request = JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "exit".to_string(),
-        params: None,
-    };
-    server.handle_request(exit_request);
-
-    // Test passes if we get here without hanging or crashing
+    shutdown_server(server, output_dropped)?;
     Ok(())
 }
 

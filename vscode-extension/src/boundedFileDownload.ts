@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { AsyncResource, createHook } from 'async_hooks';
 import type * as http from 'http';
 import type { CancellationTokenLike, DisposableLike } from './boundedHttpJson';
 
@@ -62,6 +63,57 @@ function ensurePartialDownloadDestGone(dest: string): void {
   }
 }
 
+/** Join filesystem requests started before this remover settles, including callback APIs
+ * whose caller returns before the callback. This owns their completion rather
+ * than racing a second unlink against a Windows delete-pending handle.
+ * Future timer-scheduled work is outside the remover's completion contract.
+ */
+async function removeAndJoinFilesystemRequests(
+  dest: string,
+  removePartialFile: (dest: string) => Promise<void>,
+): Promise<void> {
+  const scope = new AsyncResource('PartialDownloadCleanup', { requireManualDestroy: true });
+  const descendants = new Set([scope.asyncId()]);
+  const pending = new Set<number>();
+  let removerSettled = false;
+  let resolveDrained: () => void = () => {};
+  const drained = new Promise<void>((resolve) => {
+    resolveDrained = resolve;
+  });
+  const hook = createHook({
+    init(id, type, trigger) {
+      if (!descendants.has(trigger)) return;
+      // Once the remover settles, only a native request's synchronous
+      // callback can extend its completion chain. Later Promise/timer work
+      // does not own this cleanup operation.
+      if (removerSettled && !pending.has(trigger)) return;
+      // A returned promise does not own future fire-and-forget scheduled
+      // work. Awaited timers remain covered by the remover promise itself.
+      if (type === 'Timeout' || type === 'Immediate') return;
+      descendants.add(id);
+      if (type === 'FSREQCALLBACK' || type === 'FSREQPROMISE') pending.add(id);
+    },
+    destroy(id) {
+      descendants.delete(id);
+      pending.delete(id);
+      if (removerSettled && pending.size === 0) resolveDrained();
+    },
+  });
+  hook.enable();
+  try {
+    try {
+      await scope.runInAsyncScope(removePartialFile, undefined, dest);
+    } finally {
+      removerSettled = true;
+      if (pending.size === 0) resolveDrained();
+      await drained;
+    }
+  } finally {
+    hook.disable();
+    scope.emitDestroy();
+  }
+}
+
 /**
  * Run the injected remover, then native unlink only if dest still exists.
  * Succeeds only when the directory entry is gone. Injected failures are
@@ -72,7 +124,7 @@ export async function cleanupPartialDownloadDest(
   removePartialFile: (dest: string) => Promise<void> = noopRemovePartialFile,
 ): Promise<void> {
   try {
-    await removePartialFile(dest);
+    await removeAndJoinFilesystemRequests(dest, removePartialFile);
   } catch {
     // The native fallback below is authoritative for the cleanup result.
   }

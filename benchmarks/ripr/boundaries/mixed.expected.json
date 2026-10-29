@@ -1,0 +1,1 @@
+{"expected_boundary_kinds": ["eval_or_string_code", "dynamic_dispatch", "framework_indirection", "role_composition"]}

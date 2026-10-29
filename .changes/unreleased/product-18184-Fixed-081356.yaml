@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Document symbols now parent symbols by package extent: statement-form packages collect the symbols that follow them until the next package at the same level or the enclosing block ends, block-form packages and classes use their block extent, and Moose/Moo roles act as containers, so multi-package files outline each package with only its own children and no symbol is dropped or duplicated."
+time: 2026-10-20T08:13:56Z
+custom:
+  PR: "18184"
+  Slug: document-symbol-package-parenting
+  Breaking: "no"

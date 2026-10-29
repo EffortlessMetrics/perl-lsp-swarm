@@ -46,6 +46,9 @@ pub fn find_occurrences_in_text(
     } else {
         old_name.to_string()
     };
+    let Some(first_char) = pattern.chars().next() else {
+        return edits;
+    };
 
     // Search through the source
     let mut search_pos = 0;
@@ -106,7 +109,9 @@ pub fn find_occurrences_in_text(
             }
         }
 
-        search_pos = absolute_pos + 1;
+        // Keep overlapping candidates eligible, but advance by a complete
+        // scalar: a one-byte step enters unsigiled Unicode identifiers.
+        search_pos = absolute_pos + first_char.len_utf8();
     }
 
     edits
@@ -193,6 +198,42 @@ mod tests {
         );
         assert_eq!(edits.len(), 2, "only standalone $x should match");
         Ok(())
+    }
+
+    #[test]
+    fn find_occurrences_unicode_unsigiled_scan_preserves_exact_ranges() {
+        let source = "# 😀 語 語語 語x x語 語\nmy $s = '語 語';\n";
+        for (comments, strings, expected) in [
+            (true, false, vec!["語", "語"]),
+            (false, true, vec!["語", "語"]),
+            (true, true, vec!["語", "語", "語", "語"]),
+            (false, false, vec![]),
+        ] {
+            let options = RenameOptions {
+                rename_in_comments: comments,
+                rename_in_strings: strings,
+                validate_new_name: true,
+            };
+            let edits =
+                find_occurrences_in_text("語", "renamed", SymbolKind::Subroutine, &options, source);
+            assert_eq!(edits.len(), expected.len(), "options: {comments}/{strings}");
+            let selected: Vec<_> = edits
+                .iter()
+                .map(|edit| {
+                    assert_eq!(edit.new_text, "renamed");
+                    &source[edit.location.start..edit.location.end]
+                })
+                .collect();
+            assert_eq!(selected, expected);
+            let renamed = apply_rename_edits(source, &edits);
+            let comment = if comments {
+                "# 😀 renamed 語語 語x x語 renamed"
+            } else {
+                "# 😀 語 語語 語x x語 語"
+            };
+            let string = if strings { "my $s = 'renamed renamed';" } else { "my $s = '語 語';" };
+            assert_eq!(renamed, format!("{comment}\n{string}\n"));
+        }
     }
 
     #[test]
