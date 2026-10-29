@@ -244,7 +244,7 @@ fn badge_consumer_accepts_exactly_the_reviewed_producer_release()
         "scripts/generate-badges.py",
     )?;
 
-    if !((expected_by_consumer) == (reviewed_version)) {
+    if ((expected_by_consumer) != (reviewed_version)) {
         return Err(format!(
             "scripts/generate-badges.py accepts producer receipts stamped \
          {expected_by_consumer:?} while the routed RIPR lanes stamp {reviewed_version:?}; \
@@ -278,7 +278,7 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
         " --locked",
         "docs/ci/ripr.md",
     )?;
-    if !((documented_install) == (reviewed_version)) {
+    if ((documented_install) != (reviewed_version)) {
         return Err(format!(
             "docs/ci/ripr.md documents installing RIPR {documented_install:?} while the routed \
          lanes run {reviewed_version:?}"
@@ -297,7 +297,7 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
         "`",
         "docs/ci/ripr.md (Toolchain prose)",
     )?;
-    if !((documented_toolchain) == (reviewed_version)) {
+    if ((documented_toolchain) != (reviewed_version)) {
         return Err(format!(
             "docs/ci/ripr.md's Toolchain section names RIPR {documented_toolchain:?} while the \
          routed lanes run {reviewed_version:?}"
@@ -312,7 +312,7 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
         "`",
         "docs/agents/SPEC_UPDATE_CHECKLIST.md",
     )?;
-    if !((documented_pin) == (reviewed_version)) {
+    if ((documented_pin) != (reviewed_version)) {
         return Err(format!(
             "docs/agents/SPEC_UPDATE_CHECKLIST.md records the RIPR pin as {documented_pin:?} \
          while the routed lanes run {reviewed_version:?}"

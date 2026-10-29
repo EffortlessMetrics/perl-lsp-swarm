@@ -24,31 +24,51 @@ pub(super) fn fixture_spans(path: &str, source: &str) -> Vec<Range<usize>> {
     visitor.visit_file(&file);
     // Audited comment examples have abstract ellipsis components, never concrete tails.
     // Token spans exclude string contents (including raw strings containing //).
-    if path == HYGIENE || path == CHECKS {
-        if let Ok(tokens) = source.parse::<proc_macro2::TokenStream>() {
-            let mut literals = Vec::new();
-            literal_spans(tokens, &mut literals);
-            let mut offset = 0;
-            for line in source.split_inclusive('\n') {
-                if let Some(start) = line.find("//") {
-                    let comment = offset + start;
-                    if !literals.iter().any(|r| r.contains(&comment)) {
-                        let comment_text = &line[start..];
-                        if path == CHECKS {
-                            // Backticks delimit the exact abstract examples in the
-                            // regex documentation. Concrete suffixes are not examples.
-                            let ticks: Vec<_> =
-                                comment_text.match_indices('`').map(|(i, _)| i).collect();
-                            for pair in ticks.chunks_exact(2) {
-                                let token = &comment_text[pair[0] + 1..pair[1]];
-                                let parts: Vec<_> = token.split('\\').collect();
-                                if matches!(
-                                    parts.as_slice(),
-                                    ["c:", "users", "..."]
-                                        | ["C:", "Users", "..."]
-                                        | ["C:", "Users", "John Doe", "..."]
-                                ) {
-                                    let candidate = comment + pair[0]..comment + pair[1] + 1;
+    if (path == HYGIENE || path == CHECKS)
+        && let Ok(tokens) = source.parse::<proc_macro2::TokenStream>()
+    {
+        let mut literals = Vec::new();
+        literal_spans(tokens, &mut literals);
+        let mut offset = 0;
+        for line in source.split_inclusive('\n') {
+            if let Some(start) = line.find("//") {
+                let comment = offset + start;
+                if !literals.iter().any(|r| r.contains(&comment)) {
+                    let comment_text = &line[start..];
+                    if path == CHECKS {
+                        // Backticks delimit the exact abstract examples in the
+                        // regex documentation. Concrete suffixes are not examples.
+                        let ticks: Vec<_> =
+                            comment_text.match_indices('`').map(|(i, _)| i).collect();
+                        for pair in ticks.chunks_exact(2) {
+                            let token = &comment_text[pair[0] + 1..pair[1]];
+                            let parts: Vec<_> = token.split('\\').collect();
+                            if matches!(
+                                parts.as_slice(),
+                                ["c:", "users", "..."]
+                                    | ["C:", "Users", "..."]
+                                    | ["C:", "Users", "John Doe", "..."]
+                            ) {
+                                let candidate = comment + pair[0]..comment + pair[1] + 1;
+                                if !literals.iter().any(|literal| {
+                                    literal.start < candidate.end && candidate.start < literal.end
+                                }) {
+                                    visitor.spans.push(candidate);
+                                }
+                            }
+                        }
+                    } else {
+                        // The hygiene comment uses an ellipsis username followed
+                        // by a concrete platform tail. Mask only that prefix.
+                        for word in comment_text.split_whitespace() {
+                            let mut parts = word.split('\\');
+                            if matches!(
+                                (parts.next(), parts.next(), parts.next(), parts.next()),
+                                (Some("C:"), Some("Users"), Some("..."), Some(_))
+                            ) {
+                                let prefix_len = 2 + 1 + 5 + 1 + 3 + 1;
+                                for (index, _) in comment_text.match_indices(word) {
+                                    let candidate = comment + index..comment + index + prefix_len;
                                     if !literals.iter().any(|literal| {
                                         literal.start < candidate.end
                                             && candidate.start < literal.end
@@ -57,33 +77,11 @@ pub(super) fn fixture_spans(path: &str, source: &str) -> Vec<Range<usize>> {
                                     }
                                 }
                             }
-                        } else {
-                            // The hygiene comment uses an ellipsis username followed
-                            // by a concrete platform tail. Mask only that prefix.
-                            for word in comment_text.split_whitespace() {
-                                let mut parts = word.split('\\');
-                                if matches!(
-                                    (parts.next(), parts.next(), parts.next(), parts.next()),
-                                    (Some("C:"), Some("Users"), Some("..."), Some(_))
-                                ) {
-                                    let prefix_len = 2 + 1 + 5 + 1 + 3 + 1;
-                                    for (index, _) in comment_text.match_indices(word) {
-                                        let candidate =
-                                            comment + index..comment + index + prefix_len;
-                                        if !literals.iter().any(|literal| {
-                                            literal.start < candidate.end
-                                                && candidate.start < literal.end
-                                        }) {
-                                            visitor.spans.push(candidate);
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
                 }
-                offset += line.len();
             }
+            offset += line.len();
         }
     }
     visitor.spans
@@ -107,10 +105,10 @@ struct Fixtures<'a> {
 }
 impl Fixtures<'_> {
     fn literal(&mut self, expr: &Expr) {
-        if let Expr::Lit(lit) = expr {
-            if matches!(lit.lit, Lit::Str(_)) {
-                self.spans.push(lit.span().byte_range());
-            }
+        if let Expr::Lit(lit) = expr
+            && matches!(lit.lit, Lit::Str(_))
+        {
+            self.spans.push(lit.span().byte_range());
         }
     }
 }
@@ -231,36 +229,42 @@ impl<'ast> Visit<'ast> for Fixtures<'_> {
         // Deferred executable bodies are not direct assertion operands.
     }
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if self.test {
-            if let Expr::Path(callee) = &*node.func {
-                if self.asserted
-                    && self.path == HYGIENE
-                    && ["has_machine_specific_home_path", "has_machine_specific_users_path"]
-                        .iter()
-                        .any(|name| callee.path.is_ident(name))
-                {
-                    if let Some(arg) = node.args.first() {
-                        self.literal(arg);
-                    }
-                }
-                if self.asserted && self.path == SELF && callee.path.is_ident("fixture_spans") {
-                    if let Some(arg) = node.args.iter().nth(1) {
-                        self.literal(arg);
-                    }
-                }
-                if self.path == CHECKS && callee.path.is_ident("evaluate_forbidden_paths") {
-                    if let Some(Expr::MethodCall(iter)) = node.args.iter().nth(1) {
-                        if iter.method == "into_iter" && iter.args.is_empty() {
-                            if let Expr::Array(array) = &*iter.receiver {
-                                for element in &array.elems {
-                                    if let Expr::Tuple(tuple) = element {
-                                        if tuple.elems.len() == 2 && tuple.elems.iter().all(|e| matches!(e, Expr::Lit(l) if matches!(l.lit, Lit::Str(_)))) {
-                                            if let Some(input) = tuple.elems.iter().nth(1) { self.literal(input); }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+        if self.test
+            && let Expr::Path(callee) = &*node.func
+        {
+            if self.asserted
+                && self.path == HYGIENE
+                && ["has_machine_specific_home_path", "has_machine_specific_users_path"]
+                    .iter()
+                    .any(|name| callee.path.is_ident(name))
+                && let Some(arg) = node.args.first()
+            {
+                self.literal(arg);
+            }
+            if self.asserted
+                && self.path == SELF
+                && callee.path.is_ident("fixture_spans")
+                && let Some(arg) = node.args.iter().nth(1)
+            {
+                self.literal(arg);
+            }
+            if self.path == CHECKS
+                && callee.path.is_ident("evaluate_forbidden_paths")
+                && let Some(Expr::MethodCall(iter)) = node.args.iter().nth(1)
+                && iter.method == "into_iter"
+                && iter.args.is_empty()
+                && let Expr::Array(array) = &*iter.receiver
+            {
+                for element in &array.elems {
+                    if let Expr::Tuple(tuple) = element
+                        && tuple.elems.len() == 2
+                        && tuple
+                            .elems
+                            .iter()
+                            .all(|e| matches!(e, Expr::Lit(l) if matches!(l.lit, Lit::Str(_))))
+                        && let Some(input) = tuple.elems.iter().nth(1)
+                    {
+                        self.literal(input);
                     }
                 }
             }

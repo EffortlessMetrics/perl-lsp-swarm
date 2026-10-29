@@ -157,7 +157,7 @@ fn assert_draft_guard_defers_full_ci(workflow: &Value) -> Result<(), Box<dyn std
     let guard_step = steps_of(guard_job, "draft-pr-check")?
         .iter()
         .find(|step| step.get("id").and_then(Value::as_str) == Some("guard"))
-        .ok_or_else(|| "`jobs.draft-pr-check` has no step with id `guard`")?;
+        .ok_or("`jobs.draft-pr-check` has no step with id `guard`")?;
     let guard_run = scalar_str(
         mapping_value(guard_step, "run", "`jobs.draft-pr-check` guard step")?,
         "`jobs.draft-pr-check` guard step `run`",

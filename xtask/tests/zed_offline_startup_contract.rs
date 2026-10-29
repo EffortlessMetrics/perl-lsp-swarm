@@ -11,8 +11,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
-
 const EXTENSION_SOURCE_RELATIVE_PATH: &str = ".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs";
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {

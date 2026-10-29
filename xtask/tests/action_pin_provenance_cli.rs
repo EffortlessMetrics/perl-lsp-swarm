@@ -28,7 +28,7 @@ fn stale_recorded_base_charges_base_only_movement_to_candidate() -> Result<()> {
         None,
         Some(fixture.recorded_base.as_str()),
         &[],
-        &fixture.receipt_path(),
+        fixture.receipt_path(),
     )?;
 
     // This documents the defect mechanism itself: an event-time base that predates
@@ -46,7 +46,7 @@ fn stale_recorded_base_charges_base_only_movement_to_candidate() -> Result<()> {
 fn merge_base_comparator_reports_zero_changes_for_innocent_candidate() -> Result<()> {
     let (fixture, _outer) = scenario(PinMovement::None)?;
 
-    let output = run_cli(fixture.root(), Some("main"), None, &[], &fixture.receipt_path())?;
+    let output = run_cli(fixture.root(), Some("main"), None, &[], fixture.receipt_path())?;
 
     assert_eq!(
         output.status.code(),
@@ -67,7 +67,7 @@ fn merge_base_comparator_reports_zero_changes_for_innocent_candidate() -> Result
 fn merge_base_comparator_still_counts_candidate_owned_pin_change() -> Result<()> {
     let (fixture, _outer) = scenario(PinMovement::PromotedByCandidate)?;
 
-    let output = run_cli(fixture.root(), Some("main"), None, &[], &fixture.receipt_path())?;
+    let output = run_cli(fixture.root(), Some("main"), None, &[], fixture.receipt_path())?;
 
     // The promoted projection is allowed content-wise, so the scan passes, but the
     // count must move off zero: the repair may not hide real candidate-owned pin
@@ -88,7 +88,7 @@ fn merge_base_comparator_still_counts_candidate_owned_pin_change() -> Result<()>
 fn merge_base_comparator_hard_errors_on_new_unpinned_ref() -> Result<()> {
     let (fixture, _outer) = scenario(PinMovement::UnpinnedByCandidate)?;
 
-    let output = run_cli(fixture.root(), Some("main"), None, &[], &fixture.receipt_path())?;
+    let output = run_cli(fixture.root(), Some("main"), None, &[], fixture.receipt_path())?;
 
     assert_ne!(output.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -111,7 +111,7 @@ fn subject_binding_flags_pass_on_verified_merge_ref() -> Result<()> {
             "--expect-origin",
             "EffortlessMetrics/perl-lsp-swarm",
         ],
-        &fixture.receipt_path(),
+        fixture.receipt_path(),
     )?;
 
     assert_eq!(
@@ -136,7 +136,7 @@ fn tampered_expected_head_fails_closed() -> Result<()> {
         Some(fixture.main_tip.as_str()),
         None,
         &["--expect-merge-of", forged],
-        &fixture.receipt_path(),
+        fixture.receipt_path(),
     )?;
 
     assert_ne!(output.status.code(), Some(0));
@@ -154,7 +154,7 @@ fn tampered_expected_origin_fails_closed() -> Result<()> {
         Some("main"),
         None,
         &["--expect-origin", "EffortlessMetrics/perl-lsp-swarm-fork"],
-        &fixture.receipt_path(),
+        fixture.receipt_path(),
     )?;
 
     assert_ne!(output.status.code(), Some(0));

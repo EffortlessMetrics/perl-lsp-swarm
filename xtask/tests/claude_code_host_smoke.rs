@@ -1,13 +1,8 @@
 #[path = "support/agent_client_compat.rs"]
 mod agent_client_compat;
 
-use agent_client_compat::{
-    AgentClientCompatReceipt, EvidenceStage, HostIdentity, HostProduct, IntegrationIdentity,
-    IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity, Protocol, SCHEMA_VERSION,
-    ServerIdentity, WorkspaceFixtureIdentity, fixture_digest,
-};
+use agent_client_compat::{JourneyCell, ObservationResult};
 use anyhow::{Context, Result, bail, ensure};
-use chrono::Utc;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,8 +10,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::thread;
-use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 

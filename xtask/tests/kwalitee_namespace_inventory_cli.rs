@@ -327,10 +327,10 @@ fn closed_vocabularies_reject_unknown_values_and_pairings() {
 fn broad_exclusions_are_rejected_before_scanning() {
     let dir = tempfile::tempdir().expect("tempdir");
     write(&dir, "src/caller.rs", &format!("{CALLER_LINE}\n")).expect("write caller");
-    let ledger = format!(
+    let ledger =
         "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n\
          [[excluded_surface]]\npattern = \"*\"\nowner_issue = 8752\nreason = \"bad\"\n"
-    );
+            .to_string();
     write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("ledger");
     let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
     assert!(!output.status.success(), "catch-all exclusions must fail closed");
