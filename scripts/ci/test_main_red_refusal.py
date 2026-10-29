@@ -379,91 +379,35 @@ class EffectiveWorkflowTreeTests(unittest.TestCase):
 class MainRedRefusalWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.probe = (ROOT / ".ci/rust-main-red-probe.sh").read_text()
 
-    def test_probe_has_read_permission_and_push_is_not_a_refusal_subject(self) -> None:
+    def test_probe_keeps_read_scopes_and_landed_baseline(self):
         self.assertIn("  checks: read", self.workflow)
-        self.assertNotIn("pr-smoke", self.workflow)
-        probe_start = self.workflow.index("      - name: Probe main-red refusal")
-        evaluate_start = self.workflow.index("      - name: Evaluate routed result")
-        probe = self.workflow[probe_start:evaluate_start]
-        self.assertIn(
-            "(github.event_name != 'pull_request' || github.event.pull_request.draft != true)",
-            probe,
-        )
-        # #16168: landed main commits now carry their own `Perl LSP Rust Small
-        # Result` baseline run, so this workflow declares a push trigger. The
-        # refusal probe stays candidate-vs-main; on push the candidate IS main,
-        # so there is no distinct subject to compare and the probe must stay
-        # non-applicable instead of comparing main against itself. Pin the
-        # trigger and the subject binding that keep those two facts together.
-        on_start = self.workflow.index("\non:\n")
-        permissions_start = self.workflow.index("\npermissions:\n")
-        triggers = self.workflow[on_start:permissions_start]
-        self.assertIn("  push:\n    branches: [main, master]", triggers)
-        binding = next(
-            line for line in probe.splitlines() if line.strip().startswith("CANDIDATE_SHA:")
-        )
-        self.assertIn("github.event_name == 'pull_request'", binding)
-        self.assertIn("github.event_name == 'merge_group'", binding)
-        self.assertIn("|| '' }}", binding)
-        self.assertNotIn("push", binding)
-        # An event with no bound subject (push, workflow_dispatch) must take
-        # the neutral path, never the refusal evaluation.
-        self.assertIn('if [ -n "${CANDIDATE_SHA:-}" ]; then', probe)
-        self.assertIn("main-red refusal probe is non-applicable", probe)
+        self.assertIn("  push:\n    branches: [main, master]", self.workflow)
+        self.assertIn("result_script: .ci/rust-standard-result.sh", self.workflow)
+        self.assertNotIn("runs-on:", self.workflow)
 
-    def test_probe_reads_main_before_and_after_exact_check_lookup(self) -> None:
-        probe_start = self.workflow.index("      - name: Probe main-red refusal")
-        evaluate_start = self.workflow.index("      - name: Evaluate routed result")
-        probe = self.workflow[probe_start:evaluate_start]
-        self.assertIn("git/ref/heads/main", probe)
+    def test_probe_reads_exact_main_candidate_and_effective_tree(self):
+        probe = self.probe
         self.assertEqual(probe.count("$(read_main_sha)"), 3)
-        self.assertIn("commits/${MAIN_SHA_BEFORE}/check-runs", probe)
-        self.assertIn("commits/${CANDIDATE_SHA}/check-runs", probe)
-        self.assertIn("actions/workflows/ci.yml/runs?head_sha=${MAIN_SHA_BEFORE}", probe)
-        self.assertIn("actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}", probe)
-        self.assertIn("contents/.github/workflows/ci.yml?ref=$1", probe)
-        self.assertIn("--main-workflow-sha", probe)
-        self.assertIn("--candidate-workflow-sha", probe)
-        self.assertIn("EFFECTIVE_WORKFLOW_TREE:", probe)
-        self.assertNotIn('read_workflow_sha "$CANDIDATE_SHA"', probe)
-        self.assertIn("contents/scripts/ci/main_red_refusal.py?ref=${MAIN_SHA_BEFORE}", probe)
-        self.assertIn('python3 "$TRUSTED_SCRIPT"', probe)
-        self.assertIn("TRUSTED_SCRIPT_AVAILABLE", probe)
-        self.assertIn("MAIN_SHA_AFTER", probe)
-
-    def test_probe_binds_effective_workflow_tree_separately_from_exact_subject(self) -> None:
-        probe_start = self.workflow.index("      - name: Probe main-red refusal")
-        evaluate_start = self.workflow.index("      - name: Evaluate routed result")
-        probe = self.workflow[probe_start:evaluate_start]
-        candidate_binding = next(
-            line for line in probe.splitlines() if line.strip().startswith("CANDIDATE_SHA:")
-        )
-        effective_binding = next(
-            line
-            for line in probe.splitlines()
-            if line.strip().startswith("EFFECTIVE_WORKFLOW_TREE:")
-        )
-        self.assertIn("github.event.pull_request.head.sha", candidate_binding)
-        self.assertIn("github.event.merge_group.head_sha", candidate_binding)
-        self.assertNotIn("github.sha", candidate_binding)
-        self.assertIn("github.sha", effective_binding)
-        self.assertIn("github.event.merge_group.head_sha", effective_binding)
-        self.assertNotIn("github.event.pull_request.head.sha", effective_binding)
-        self.assertIn('read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE"', probe)
-        self.assertNotIn('read_workflow_sha "$CANDIDATE_SHA"', probe)
+        for fragment in ("git/ref/heads/main", "commits/${MAIN_SHA_BEFORE}/check-runs",
+                         "commits/${CANDIDATE_SHA}/check-runs",
+                         "actions/workflows/ci.yml/runs?head_sha=${MAIN_SHA_BEFORE}",
+                         "actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}",
+                         "contents/.github/workflows/ci.yml?ref=$1",
+                         "contents/scripts/ci/main_red_refusal.py?ref=${MAIN_SHA_BEFORE}",
+                         'python3 "$TRUSTED_SCRIPT"', "TRUSTED_SCRIPT_AVAILABLE",
+                         "--main-workflow-sha", "--candidate-workflow-sha"):
+            self.assertIn(fragment, probe)
         self.assertEqual(probe.count('read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE"'), 2)
-        self.assertEqual(probe.count('if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then'), 2)
-        self.assertIn("commits/${CANDIDATE_SHA}/check-runs", probe)
-        self.assertIn("actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}", probe)
+        self.assertNotIn('read_workflow_sha "$CANDIDATE_SHA"', probe)
 
-    def test_final_refusal_is_propagated_to_required_lane(self) -> None:
-        probe_start = self.workflow.index("      - name: Probe main-red refusal")
-        evaluate_start = self.workflow.index("      - name: Evaluate routed result")
-        probe = self.workflow[probe_start:evaluate_start]
-        self.assertIn('if [ "$refusal_status" -eq 1 ]; then', probe)
-        self.assertIn("exit 1", probe)
-        self.assertNotIn("continue-on-error: false", probe)
+    def test_refusal_and_bounded_wait_are_preserved(self):
+        self.assertIn('if [ "$refusal_status" -eq 1 ]; then\n  exit 1', self.probe)
+        self.assertIn('"$poll_attempt" -lt 50', self.probe)
+        self.assertIn('sleep 30', self.probe)
+        self.assertIn('run_refusal --final', self.probe)
+        self.assertIn('main-red refusal probe is non-applicable', self.probe)
 
 
 if __name__ == "__main__":

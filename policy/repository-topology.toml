@@ -543,6 +543,17 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "perl-rust-small-verifier"
+path = "crates/perl-rust-small-verifier"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7369"
+placement_question = "The canonical receipt entrypoint shares task-runner source; its future repository placement remains undecided."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "perl-semantic-analyzer"
 path = "crates/perl-semantic-analyzer"
 current_owner = "swarm-product"

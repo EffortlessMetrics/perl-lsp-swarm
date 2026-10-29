@@ -383,15 +383,11 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
     assert!(
         routed_rust.contains(
-            "if: github.event.pull_request.draft != true || github.event_name != 'pull_request'"
+            "if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.pre_merge_admission && inputs.reviewed_sha == github.sha) || (false && github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled')"
         ),
-        "Rust Small routing must skip draft pull requests while allowing ready_for_review"
+        "Rust Small routing must skip draft pull requests and Ready/synchronize, admitting only reviewed pre-merge work"
     );
-    assert!(
-        routed_rust.contains("if [ \"$ROUTE_RESULT\" = \"skipped\" ]; then")
-            && routed_rust.contains("RUST_SMALL_GATE_VERDICT=draft-no-proof"),
-        "Rust Small result aggregation must refuse proof for an intentionally skipped draft route"
-    );
+    owned_rust_policy::check_contract(&root.join(".github/workflows/em-ci-routed-rust.yml"))?;
     assert!(
         title_check
             .contains("uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9")
@@ -659,8 +655,8 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
     Ok(())
 }
 
-#[path = "support/draft_routed_result.rs"]
-mod draft_routed_result;
+#[path = "support/owned_rust_policy.rs"]
+mod owned_rust_policy;
 
 #[test]
 fn windows_platform_smoke_executes_public_powershell_completion_before_library_smoke()
@@ -703,9 +699,7 @@ fn windows_platform_smoke_executes_public_powershell_completion_before_library_s
 
 #[test]
 fn rust_small_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
-    draft_routed_result::check_contract(
+    owned_rust_policy::check_contract(
         &project_root()?.join(".github/workflows/em-ci-routed-rust.yml"),
-        "rust-small-result",
-        "RUST_SMALL_GATE_VERDICT=draft-no-proof",
     )
 }

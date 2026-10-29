@@ -2161,6 +2161,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-rust-small-verifier"
+version = "0.17.0"
+dependencies = [
+ "color-eyre",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "perl-semantic-analyzer"
 version = "0.17.0"
 dependencies = [

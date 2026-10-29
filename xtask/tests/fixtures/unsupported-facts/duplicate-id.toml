@@ -358,4 +358,3 @@ nearest_neighbor = "xs_native_dependency"
 [entries.history]
 introduced_in = "unsupported_fact_catalog.v1"
 migrations = []
-

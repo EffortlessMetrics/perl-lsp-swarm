@@ -37,9 +37,13 @@ def git(root, *args):
 def staged_tree():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        policy = tomllib.loads((ROOT / POLICY).read_text())
+        callee_sources = sorted({entry['callee_source'] for entry in policy['checks']
+                                 if entry.get('producer') == 'reusable-workflow-job'})
         for name in (*[path.relative_to(ROOT).as_posix() for path in
                        sorted((ROOT / '.github/workflows').glob('*.y*ml'))], POLICY,
-                     *[path for path in DISPATCH_PATHS if path.startswith('xtask/')]):
+                     *[path for path in DISPATCH_PATHS if path.startswith('xtask/')],
+                     *callee_sources):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -82,6 +86,17 @@ class StagedTriggerCutoverTests(unittest.TestCase):
             for path in (*ROOTS, POLICY, *DISPATCH_PATHS):
                 self.assertEqual((root / path).read_bytes(), (ROOT / path).read_bytes(), path)
             self.assertEqual(git(root, 'diff', '--exit-code'), '')
+
+    def test_changed_reusable_generation_refuses_stale_rollback(self):
+        with staged_tree() as root:
+            target = root / POLICY
+            original = target.read_text()
+            policy = tomllib.loads(original)
+            digest = next(entry['callee_sha256'] for entry in policy['checks']
+                          if entry.get('producer') == 'reusable-workflow-job')
+            target.write_text(original.replace(digest, '0' * 64, 1))
+            with self.assertRaises(subprocess.CalledProcessError):
+                git(root, 'apply', '--unidiff-zero', '--reverse', '--check', str(PATCH))
 
     def test_reintroduced_ready_or_synchronize_outside_ci_is_detected(self):
         for path in ROOTS[1:]:

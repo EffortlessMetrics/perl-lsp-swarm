@@ -1,11 +1,12 @@
-//! Contract tests for the draft-snapshot decision in both routed result gates.
+//! Contract tests for the remaining RIPR draft-snapshot result gate.
+//! Rust Small now suppresses the complete call before allocation; its owned
+//! policy admission and refusal are executed by the Python contract suite.
 //!
 //! `IS_DRAFT_PR` is a webhook snapshot. A run created while a pull request was a
 //! draft can finish after it is ready and publish a verdict about a state that
 //! no longer exists, overwriting the verdict of the run that actually produced
-//! proof. Both `Perl LSP Rust Small Result` and `ripr+ New Gap Gate` are
-//! branch-protection required checks, and in both the decision is shell inside a
-//! workflow. Asserting on the YAML text still passes when a comparison is
+//! proof. `ripr+ New Gap Gate` retains this required-check shell decision.
+//! Rust Small has no allocated draft-result job after its owned-policy migration. Asserting on the YAML text still passes when a comparison is
 //! inverted, so these tests extract the real `run:` block and execute it under
 //! Actions bash semantics with `gh` shimmed.
 //!
@@ -17,7 +18,7 @@
 //! compiles and cannot work, so the whole target is gated, as
 //! `release_artifact_size_smoke_script.rs` gates itself for the same reason.
 //! `cargo test -p xtask --all-targets` stays usable on other hosts, and the
-//! shell under proof loses no coverage: every lane of both gates is linux,
+//! shell under proof loses no coverage: every lane of the RIPR gate is linux,
 //! hosted or self-hosted (#16105 review).
 #![cfg(unix)]
 
@@ -47,13 +48,6 @@ struct Gate {
     check_name: &'static str,
     verdict_var: &'static str,
 }
-
-const RUST_SMALL: Gate = Gate {
-    workflow: ".github/workflows/em-ci-routed-rust.yml",
-    job: "rust-small-result",
-    check_name: "Perl LSP Rust Small Result",
-    verdict_var: "RUST_SMALL_GATE_VERDICT",
-};
 
 const RIPR: Gate = Gate {
     workflow: ".github/workflows/ripr.yml",
@@ -772,16 +766,6 @@ fn assert_mirror_selection(gate: Gate) -> Result<()> {
 }
 
 #[test]
-fn rust_small_result_honours_the_draft_snapshot_contract() -> Result<()> {
-    assert_draft_snapshot_contract(RUST_SMALL)
-}
-
-#[test]
-fn rust_small_result_declares_what_the_live_reads_need() -> Result<()> {
-    assert_live_read_bindings(RUST_SMALL)
-}
-
-#[test]
 fn ripr_new_gap_gate_honours_the_draft_snapshot_contract() -> Result<()> {
     assert_draft_snapshot_contract(RIPR)
 }
@@ -853,21 +837,22 @@ fn assert_mirror_wait_fits_the_job(gate: Gate) -> Result<()> {
 }
 
 #[test]
-fn rust_small_result_keeps_its_mirror_wait_inside_the_job() -> Result<()> {
-    assert_mirror_wait_fits_the_job(RUST_SMALL)
-}
-
-#[test]
 fn ripr_new_gap_gate_keeps_its_mirror_wait_inside_the_job() -> Result<()> {
     assert_mirror_wait_fits_the_job(RIPR)
 }
 
 #[test]
-fn rust_small_result_mirrors_only_its_own_bound_authority() -> Result<()> {
-    assert_mirror_selection(RUST_SMALL)
-}
-
-#[test]
 fn ripr_new_gap_gate_mirrors_only_its_own_bound_authority() -> Result<()> {
     assert_mirror_selection(RIPR)
+}
+
+#[path = "support/owned_rust_policy.rs"]
+mod owned_rust_policy;
+
+#[test]
+fn rust_small_has_no_draft_snapshot_mirror() -> Result<()> {
+    owned_rust_policy::check_contract(
+        &project_root()?.join(".github/workflows/em-ci-routed-rust.yml"),
+    )
+    .map_err(|error| anyhow!("{error}"))
 }
