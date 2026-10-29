@@ -30,11 +30,11 @@ before using this context as exact-head evidence.
   `format_document_typed` call at :257) and `native_range_decision`
   definition (:262; one `format_range_typed` call at :273) per native LSP
   request. The provider-facing counted subset is proven in
-  `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs` by
+  `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs` by
   `document_request_parses_exactly_once` and
   `range_request_parses_exactly_once`, which drive the public decision methods.
-  The complete provider vector matrix is `NOT_PROVEN`; no dedicated
-  `perl-lsp-rs-core` invocation-test artifact exists in this candidate. Vector order is always
+  The complete provider vector matrix is `NOT_PROVEN`; the dedicated core
+  invocation-test artifact preserves only this subset. Vector order is always
   `(pipeline_invocations, source_parse_gate_invocations,
   formatted_output_parse_gate_invocations)`: Off and public invalid range
   `0/0/0`; typed literal-preserve refusal `1/0/0`; source-parse refusal
@@ -108,10 +108,9 @@ evidence:
    or a collapsed refusal table. Formatted-output refusal remains
    `NOT_PROVEN` because its defensive branch is currently unreachable.
    Provider-facing counted tests live in
-   `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs` as
+   `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs` as
    `document_request_parses_exactly_once` and
-   `range_request_parses_exactly_once`; a dedicated `perl-lsp-rs-core`
-   invocation-test artifact and the complete vector matrix remain
+   `range_request_parses_exactly_once`; the complete vector matrix remains
    `NOT_PROVEN`. Benches live in
    `crates/perl-lsp-perltidy/benches/native_pipeline_benchmark.rs`
    over the current procedural `bench_rows()` subjects. A versioned subject
@@ -249,8 +248,8 @@ count/bytes/peak.
 
 Sibling spec `.spec/10301-formatter-property-fuzz-harness/` shares only
 subject vocabulary; file sets are disjoint (this claim: `benches/`,
-additive `src/native/` counter plumbing, crate `Cargo.toml` dev-dep,
-provider-facing counted proof in `crates/perl-lsp-perltidy/tests/native_pipeline_counters_tests.rs`,
+additive `src/native/` counter plumbing,
+provider-facing counted proof in `crates/perl-lsp-rs-core/tests/native_pipeline_invocation_tests.rs`,
 provider collector forwarding, future subject-manifest/sidecar schema,
 benchmark-only allocation tracker,
 extractor/formatter receipt-schema fixtures and three-way join,

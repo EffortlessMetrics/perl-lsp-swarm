@@ -168,7 +168,7 @@ outcome_owner = "#10230"
 # now require both current and latest snapshots absent. All 42 scan files,
 # 59 producers, routes, finalizer seams, classifications and migration owners
 # retain their prior ceilings. Digest recomputed over the merged tree.
-source_digest = "sha256:a857071432ffb7780de5535602a0063c1b4faa456fd004c29df7c0bb4899dc4d"
+source_digest = "sha256:ad97f1b1a8aa4d66f3635c42e899c39c8fddbbb080a775b89d5aeccaeb401fcc"
 
 [[delegations]]
 module = "dancer2"

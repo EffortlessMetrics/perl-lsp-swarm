@@ -27,6 +27,8 @@
 #   E2. manager retries a provisioning-failed slot: same allocate resumes
 #      (provision + record) without resetting the branch (recovery commit
 #      survives).
+#   E3. the recovery-HEAD assertion rejects a real reset of that fixture
+#      worktree, then accepts its restored recovery commit.
 #   H. wrapper with partial shared state (mixed mode: current common
 #      pre-push, missing pre-commit) runs the installer instead of the fast
 #      path, and lands per-tree hooks.
@@ -83,6 +85,21 @@ fi
 # Same normalization the provisioning paths use: trailing newlines ignored.
 installed_matches_authority() {
   [[ "$(tr -d '\r' < "$1")" == "$(tr -d '\r' < "$2")" ]]
+}
+
+# Compare the exact tip without an early-closing grep pipeline under pipefail.
+# A failed Git read is an instrument failure, not evidence of a branch reset.
+worktree_head_matches() {
+  local actual status=0
+  actual="$(git -C "$1" rev-parse --verify HEAD)" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    printf 'cannot read worktree HEAD (git exit %s): %s\n' "$status" "$1" >&2
+    return "$status"
+  fi
+  if [[ "$actual" != "$2" ]]; then
+    printf 'worktree HEAD changed: expected %s, observed %s\n' "$2" "$actual" >&2
+    return 1
+  fi
 }
 
 # Write the fixture-owned installer. Both provisioning paths invoke it via an
@@ -374,6 +391,7 @@ git -C "$SLOT_E_WT" -c user.email="fixture@example.com" -c user.name="Fixture" a
 # Redirected: the commit runs the installed pre-commit hook, whose echo is
 # noise here (a commit failure still kills the suite via set -e).
 git -C "$SLOT_E_WT" -c user.email="fixture@example.com" -c user.name="Fixture" commit -qm "recovery work" >/dev/null 2>&1
+RECOVERY_E2_HEAD="$(git -C "$SLOT_E_WT" rev-parse --verify HEAD)"
 BEFORE_E2="$(stub_install_count)"
 CASE_E2_EXIT=0
 CASE_E2_OUT="$(run_manager "$STATE_E" "$MANAGED_E" allocate --slot slot-e --branch feature/slot-e 2>&1)" || CASE_E2_EXIT=$?
@@ -384,12 +402,26 @@ elif [[ "$CASE_E2_OUT" != *"resumed-tip"* ]]; then
   fail "manager retry resumes the failed slot: output does not report the resume: $CASE_E2_OUT"
 elif ! grep -q '"slot-e"' "$STATE_E"; then
   fail "manager retry resumes the failed slot: slot-e not recorded in state"
-elif ! git -C "$SLOT_E_WT" log --oneline | grep -q "recovery work"; then
-  fail "manager retry resumes the failed slot: recovery commit was reset away"
+elif ! worktree_head_matches "$SLOT_E_WT" "$RECOVERY_E2_HEAD"; then
+  fail "manager retry resumes the failed slot: recovery HEAD changed or could not be read"
 elif [[ "$(stub_install_count)" -ne $((BEFORE_E2 + 1)) ]]; then
   fail "manager retry resumes the failed slot: installer did not run exactly once on resume"
 else
   pass "manager retry resumes the failed slot: provisioned, recorded, branch untouched"
+fi
+
+# The same oracle must reject a real reset, not just accept the manager's
+# success message. This is the disposable slot created above, not user work.
+git -C "$SLOT_E_WT" reset --hard "${RECOVERY_E2_HEAD}^" >/dev/null
+CASE_E3_EXIT=0
+CASE_E3_OUT="$(worktree_head_matches "$SLOT_E_WT" "$RECOVERY_E2_HEAD" 2>&1)" || CASE_E3_EXIT=$?
+git -C "$SLOT_E_WT" reset --hard "$RECOVERY_E2_HEAD" >/dev/null
+if [[ "$CASE_E3_EXIT" -ne 1 || "$CASE_E3_OUT" != *"worktree HEAD changed:"* ]]; then
+  fail "recovery HEAD oracle: reset was not rejected (exit $CASE_E3_EXIT): $CASE_E3_OUT"
+elif ! worktree_head_matches "$SLOT_E_WT" "$RECOVERY_E2_HEAD"; then
+  fail "recovery HEAD oracle: restored commit was not accepted"
+else
+  pass "recovery HEAD oracle: reset rejected and exact recovery tip restored"
 fi
 
 # ── Case F: no authority → both paths skip ────────────────────────────────
