@@ -1,0 +1,8 @@
+{
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "head": "540201d5dad7b7622628c61e463e4a366154b0b4",
+  "path": "scripts/ci/report_routed_storage_qualification.py",
+  "git_blob": "c91dec382450e74bc431b952007a32e85ebde9e1",
+  "qualification_status": "NOT_PROVEN",
+  "missing_authority": "candidate_source_attempt_attestation"
+}
