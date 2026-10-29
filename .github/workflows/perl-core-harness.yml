@@ -190,6 +190,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: perl-core-harness-${{ github.sha }}
-          path: target/perl-core/
+          # The source checkout is duplicated by the prepared tree; keep that
+          # tree, run copies, logs, receipts and admitted reports as evidence.
+          path: |
+            target/perl-core/
+            !target/perl-core/upstream/*/source/**
           if-no-files-found: warn
           retention-days: 14

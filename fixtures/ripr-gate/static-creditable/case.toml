@@ -1,0 +1,5 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "Control: fully-credited same-base static_limitation dispositions; passes advisory."
+ground_truth = "no-seam"
+inputs = ["ripr-plus.json", "repo-exposure.json", "comments.json"]

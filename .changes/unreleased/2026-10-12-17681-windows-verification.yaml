@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: "Fail Windows installation verification on native nonzero exit or execution failure, with diagnostics before PATH guidance or completion."
+time: 2026-10-12T00:00:00Z
+custom:
+  PR: "17681"
+  Slug: windows-installed-verification
+  Breaking: "no"
