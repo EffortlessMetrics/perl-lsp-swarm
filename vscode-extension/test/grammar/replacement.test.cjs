@@ -198,3 +198,37 @@ for (const expression of ['s{foo}{bar}r', 's{foo}/bar/ee']) {
         }
     });
 }
+
+for (const [line, subStart, subEnd, closeAt, marker] of [
+    ['if ($x =~ s{a}{b}) { my $after = 1; }', 10, 17, 17, '$after'],
+    ['if ($x =~ s{a}{b}){ my $after = 1; }', 10, 17, 17, '$after'],
+    ['if ($x =~ s{^\\s+}{}) { my $after = 1; }', 10, 19, 19, '$after'],
+    ['if ($x =~ tr[a-z][A-Z]) { my $after = 1; }', 10, 22, 22, '$after'],
+    ['if ($x =~ s<a>{b}) { my $after = 1; }', 10, 17, 17, '$after'],
+    ['my @out = map { s{a}{b} } @in;', 16, 23, 24, '@out'],
+    ['$x =~ s{a}{b}; my $after = 1;', 6, 13, 13, '$after'],
+]) {
+    test(`an unflagged paired substitution does not swallow a following closer or block: ${line}`, () => {
+        const result = grammar.tokenizeLine(line);
+        for (let offset = subStart; offset < subEnd; offset++) {
+            assert.ok(scopesAt(result.tokens, offset).includes(scope), `substitution at ${offset}: ${line[offset]}`);
+        }
+        assert.ok(
+            !scopesAt(result.tokens, closeAt).includes(scope),
+            `closer ${JSON.stringify(line[closeAt])} at ${closeAt} is code`,
+        );
+        const markerAt = line.indexOf(marker);
+        const markerScopes = scopesAt(result.tokens, markerAt);
+        if (marker.startsWith('$')) {
+            assert.ok(markerScopes.includes('variable.other.scalar.perl'), `${marker} stays a variable`);
+        } else {
+            assert.ok(!markerScopes.includes(scope), `${marker} stays code`);
+        }
+    });
+}
+test('a flagged paired substitution still binds whitespace-separated brace replacement', () => {
+    const line = '$x =~ s{foo} {bar}r; my $after = 1;';
+    const result = grammar.tokenizeLine(line);
+    assert.ok(scopesAt(result.tokens, line.indexOf('{bar}')).includes(scope));
+    assert.ok(!scopesAt(result.tokens, line.indexOf('; my')).includes(scope));
+});

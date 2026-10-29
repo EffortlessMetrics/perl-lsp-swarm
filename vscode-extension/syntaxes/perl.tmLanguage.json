@@ -368,7 +368,7 @@
                             ]
                         },
                         {
-                            "begin": "[}\\])>]\\s*",
+                            "begin": "[}\\])>](?:(?=#)|\\s*(?=\\{(?!\\s))|\\s*(?=[\\[(<]|[^\\s\\w\\[\\]{}()<>#])|\\s*(?=[\\w]|$))",
                             "end": "(?<=[^\\w\\s])|(?=\\S)",
                             "applyEndPatternLast": true,
                             "patterns": [
@@ -378,7 +378,7 @@
                             ]
                         }
                     ],
-                    "comment": "Paired pattern closes enter an anchored replacement half. Containers pop at the next non-space only after their child finishes; this permits whitespace/newlines and different replacement delimiters without swallowing following code."
+                    "comment": "Paired pattern closes enter an anchored replacement half. Containers pop at the next non-space only after their child finishes; this permits whitespace/newlines and different replacement delimiters without swallowing following code. The bridge may open the replacement half only where one can actually follow - a hash delimiter, a brace group not beginning with whitespace, another opener character, or closer-adjacent whitespace/word/EOL leftovers - so after an unflagged substitution completes, a following code closer such as s{a}{b}) { ... } cannot re-enter the bridge and is left as plain code."
                 },
                 {
                     "name": "string.regexp.replace.perl",
