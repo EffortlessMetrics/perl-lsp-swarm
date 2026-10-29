@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import copy
 import socket
@@ -143,8 +144,18 @@ class QualificationInventory(unittest.TestCase):
                         'filesystems': {}, 'allocated_bytes': 0}, {'kind': 'summary', 'command_status': 0}]
             (evidence / 'storage.jsonl').write_text('\n'.join(json.dumps(row) for row in storage))
             rows = []
-            for package in subject.PACKAGES:
+            expected_projection = {}
+            for index, package in enumerate(subject.PACKAGES):
                 row = self.row()
+                row['features'] = ['workspace', 'feature-' + str(index)]
+                row['profile'] = {'test': True, 'opt_level': str(index % 2),
+                                  'debug_assertions': index % 2 == 0}
+                source = ('xtask' if package == 'xtask' else 'crates/' + package) + '/tests/shared.rs'
+                key = json.dumps([package, 'shared', ['test'], source], separators=(',', ':'))
+                expected_projection[key] = {
+                    'features': ['feature-' + str(index), 'workspace'],
+                    'profile': {'test': True, 'opt_level': str(index % 2),
+                                'debug_assertions': index % 2 == 0}}
                 row['package_id'] = self.package_id(package)
                 row['target']['src_path'] = '/work/' + ('xtask' if package == 'xtask' else 'crates/' + package) + '/tests/shared.rs'
                 row['executable'] = '/private/' + package
@@ -168,6 +179,13 @@ class QualificationInventory(unittest.TestCase):
             native = subject.report(evidence, 'cohort', Path('/work'))
             self.assertTrue(native['case_inventory_complete'])
             self.assertEqual((native['case_count'], native['ignored_count']), (24, 12))
+            for observed in (ordinary, native):
+                self.assertIn('unit_projection', observed)
+                self.assertEqual(observed['unit_projection'], expected_projection)
+                encoded = json.dumps(expected_projection, sort_keys=True, separators=(',', ':')).encode()
+                self.assertEqual(observed['units_sha256'], hashlib.sha256(encoded).hexdigest())
+                self.assertEqual(observed['qualification_status'], 'NOT_PROVEN')
+                self.assertIn('candidate_source_attempt_attestation', observed['qualification_missing_authority'])
             self.assertEqual(native['units_sha256'], ordinary['units_sha256'])
             self.assertEqual(native['cases_sha256'], ordinary['cases_sha256'])
             result_path = cohort / '0001-result.json'
@@ -198,7 +216,12 @@ class QualificationInventory(unittest.TestCase):
                 self.assertFalse(failed['case_receipts_successful_and_settled'])
                 self.assertEqual(failed['case_count'], 24)
             (cohort / '0000-compiler.jsonl').write_text('\n'.join(json.dumps(row) for row in [*rows[:-1], {'reason': 'build-finished', 'success': True}]))
-            self.assertFalse(subject.report(evidence, 'cohort', Path('/work'))['unit_inventory_complete'])
+            partial = subject.report(evidence, 'cohort', Path('/work'))
+            self.assertFalse(partial['unit_inventory_complete'])
+            self.assertIn('unit_projection', partial)
+            self.assertEqual(partial['unit_projection'], {
+                key: value for key, value in expected_projection.items() if json.loads(key)[0] != 'xtask'})
+            self.assertEqual(partial['qualification_status'], 'NOT_PROVEN')
 
     def test_interrupted_result_preserves_partial_metrics_without_verified_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -335,6 +358,12 @@ class QualificationInventory(unittest.TestCase):
             self.assertFalse(report['package_inventory_verified'])
             self.assertFalse(report['case_inventory_complete'])
             self.assertEqual(report['qualification_status'], 'NOT_PROVEN')
+            self.assertIn('unit_projection', report)
+            self.assertEqual({json.loads(key)[0] for key in report['unit_projection']},
+                             {self.package_id(package) for package in subject.PACKAGES})
+            self.assertEqual(report['units_sha256'], hashlib.sha256(json.dumps(
+                report['unit_projection'], sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+            self.assertIn('captured_Cargo_package_inventory', report['qualification_missing_authority'])
 
     def test_terminal_owner_binding_refuses_prior_build_foreign_or_unsettled_episode(self):
         with tempfile.TemporaryDirectory() as directory:
