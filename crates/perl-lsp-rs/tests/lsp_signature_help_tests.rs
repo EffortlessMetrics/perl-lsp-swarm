@@ -399,6 +399,62 @@ print "Hello, $name\n";
     Ok(())
 }
 
+/// Regression (#17582): an unknown ordinary call has no static callable
+/// fact, so the real request must complete with JSON null instead of a
+/// fabricated `name(...)` signature. Known-sub and builtin controls must
+/// still return real signatures (an always-null mutant fails them).
+#[test]
+fn test_signature_help_unknown_call_returns_null() -> TestResult {
+    let doc = "sub known_sub { my ($a, $b) = @_; return $a + $b; }\nmy $x = totally_unknown_call(1, 2);\nmy $y = known_sub(1, 2);\nmy $z = substr(\"hello\", 1);\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///unknown_sig.pl", doc)?;
+
+    let unknown = harness
+        .request(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": {"uri": "file:///unknown_sig.pl"},
+                "position": {"line": 1, "character": 31}
+            }),
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    assert!(unknown.is_null(), "unknown call must return null, got: {unknown:?}");
+
+    let known = harness
+        .request(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": {"uri": "file:///unknown_sig.pl"},
+                "position": {"line": 2, "character": 20}
+            }),
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    assert!(!known.is_null(), "known sub must return a signature, got null");
+    let label = known
+        .get("signatures")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first())
+        .and_then(|s| s.get("label"))
+        .and_then(|l| l.as_str())
+        .unwrap_or("");
+    assert!(label.contains("known_sub"), "known signature must name the sub, got: {known:?}");
+
+    let builtin = harness
+        .request(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": {"uri": "file:///unknown_sig.pl"},
+                "position": {"line": 3, "character": 22}
+            }),
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    assert!(!builtin.is_null(), "builtin must return a signature, got null");
+
+    harness.shutdown_gracefully();
+    Ok(())
+}
+
 /// Tests feature spec: signature_help.rs#empty-file
 ///
 /// Validates graceful handling of signature help on an empty file.

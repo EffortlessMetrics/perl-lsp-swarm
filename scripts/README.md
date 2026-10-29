@@ -16,6 +16,13 @@ Run these locally during normal contribution work.
 | `pre-merge-check.sh` | Verify the working tree is ready to merge |
 | `forbid-fatal-constructs.sh` | Grep for banned patterns (`unwrap`, `panic!`, etc.) |
 | `dead-code-check.sh` | Report dead code across the workspace |
+| `xtask-quiet.sh` | Quiet xtask dispatch (#17240): builds `xtask` with stderr captured, then execs the binary directly, skipping cargo's ~200KB cached-warning replay. Build failures surface verbatim; on success the command's own stdout/stderr pass through untouched |
+
+`bash scripts/check-rust-toolchain.sh [check|doctor]` accepts at most one
+mode argument and defaults to `check`. Unknown modes and extra arguments print
+usage to stderr and exit 2 before any Rust toolchain probe or delegation. For valid
+commands, the rustup-less Cargo guard retains exit 78 for a missing or unsupported
+Cargo; delegated rustup/Cargo commands retain their original exit status.
 
 ## Worktree & Workspace Management
 
@@ -23,7 +30,8 @@ Run these locally during normal contribution work.
 |--------|---------|
 | `cleanup-worktrees.sh` | Remove stale git worktrees |
 | `cleanup-completed-worktrees.sh` | Remove worktrees whose branches are merged (`--dry-run` is strictly read-only) |
-| `worktree-manager.py` | Python interface to create and track named worktrees |
+| `worktree-manager.py` | Python interface to create and track named worktrees (provisions git hooks on allocate, #17406) |
+| `worktree-add.sh` | Provisioned `git worktree add` wrapper (installs + verifies git hooks, #17406) |
 | `validate-workspace-exclusions.sh` | Ensure excluded paths aren't accidentally included |
 | `gen-xlarge-workspace.sh` | Generate a large synthetic workspace for scale testing |
 
