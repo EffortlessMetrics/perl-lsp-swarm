@@ -148,6 +148,9 @@ struct FormatterStatus {
     corpus_files_changed: Option<usize>,
     corpus_idempotence_passed_count: Option<usize>,
     corpus_parse_preserved_count: Option<usize>,
+    /// Schema-v1 corpus receipt field `literal_bailout_count`: literal-
+    /// preservation events (refusals on unchanged output plus changed-
+    /// preserving formats), not only refusals (#17907).
     corpus_literal_bailout_count: Option<usize>,
     corpus_unsupported_patterns_count: Option<usize>,
     corpus_unsupported_parse_clean_count: Option<usize>,
@@ -506,7 +509,7 @@ fn build_readiness_receipt(
         formatter.format_corpus_receipt_present,
         false,
         format!(
-            "unsupported_diagnostics={} parse_clean_unsupported={} parse_error_diagnostics={} literal_bailouts={} diagnostics={}",
+            "unsupported_diagnostics={} parse_clean_unsupported={} parse_error_diagnostics={} literal_preservation_events={} diagnostics={}",
             optional_metric(
                 formatter.corpus_unsupported_patterns_count,
                 formatter.format_corpus_receipt_present,
@@ -1438,7 +1441,7 @@ fn render_markdown(receipt: &NativeToolingStatusReceipt) -> String {
 | Corpus files changed | {} |
 | Corpus idempotence | {} |
 | Corpus parse preservation | {} |
-| Corpus literal bailouts | {} |
+| Corpus literal-preservation events | {} |
 | Corpus unsupported diagnostics | {} |
 | Corpus unsupported parse-clean diagnostics | {} |
 | Corpus parse-error diagnostics | {} |
@@ -1837,7 +1840,7 @@ mod tests {
         assert_eq!(value["formatter"]["format_else_placement"], "separate-line");
         assert_eq!(value["formatter"]["format_keyword_spacing"], "compact");
         assert_eq!(value["formatter"]["format_trailing_comma"], "add-when-wrapped");
-        assert_eq!(value["critic"]["native_rule_count"], 28);
+        assert_eq!(value["critic"]["native_rule_count"], 31);
         assert_eq!(value["critic"]["critic_check_receipt_present"], true);
         assert_eq!(value["critic"]["critic_check_profile"], "strict");
         assert_eq!(value["critic"]["critic_check_files_checked"], 3);
@@ -1888,7 +1891,7 @@ mod tests {
         assert!(markdown.contains("| Corpus files changed | 1 |"));
         assert!(markdown.contains("| Corpus idempotence | 2/2 |"));
         assert!(markdown.contains("| Corpus parse preservation | 2/2 |"));
-        assert!(markdown.contains("| Corpus literal bailouts | 1 |"));
+        assert!(markdown.contains("| Corpus literal-preservation events | 1 |"));
         assert!(markdown.contains("| Corpus unsupported diagnostics | 0 |"));
         assert!(markdown.contains("| Corpus unsupported parse-clean diagnostics | 0 |"));
         assert!(markdown.contains("| Corpus parse-error diagnostics | 0 |"));

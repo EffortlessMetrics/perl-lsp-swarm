@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Body-HIR binding resolution now treats a foreach lexical iterator as loop-private: uses inside the loop bind to the iterator, and uses after the loop bind to an outer variable of the same name again. Previously every use collapsed onto the loop iterator's binding."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18189"
+  Slug: foreach-iterator-scope
+  Breaking: "no"

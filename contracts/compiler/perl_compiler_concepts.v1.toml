@@ -564,3 +564,63 @@ ownership = "active"
 owner_issue = "#6658"
 claim_boundary = "Parser classification exists; typed value representation and version-sensitive semantics do not."
 evidence = ["docs/project/status/hir_lowering.md", "#6658"]
+
+[[concepts]]
+concept_id = "values.plain_decimal"
+family = "values"
+title = "Plain decimal numeric literals"
+ast_kinds = ["Number"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "modeled"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6658"
+claim_boundary = "Exact-lexeme typed leaves with fabrication marker; no numeric parsing, rounding, or runtime coercion. Bases, floats, exponents, separators, and version forms stay Opaque."
+evidence = ["#17538", "#6658"]
+
+[[concepts]]
+concept_id = "values.noninterpolating_string"
+family = "values"
+title = "Noninterpolating string literals"
+ast_kinds = ["String"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "modeled"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6658"
+claim_boundary = "Quote-stripped content plus load-bearing quote kind; escape sequences pass through verbatim (decoding is a later family). Interpolated, quote-like, and unquoted spellings stay Opaque, as do all double-quoted spellings (the parser marks every double-quoted form interpolated and this slice does not second-guess that authority)."
+evidence = ["#17538", "#6658"]
+
+[[concepts]]
+concept_id = "values.undef"
+family = "values"
+title = "Undef literal"
+ast_kinds = ["Undef"]
+parser_ast = "parsed"
+flat_hir = "modeled"
+body_hir = "modeled"
+pir_a = "boundary"
+compile_effects_world = "not_applicable"
+eir_profile = "absent"
+gold = "missing"
+oracle = "missing"
+composition = "missing"
+provider_eligibility = "fallback_only"
+ownership = "active"
+owner_issue = "#6658"
+claim_boundary = "Absence-of-value leaf, distinct from unresolved barewords and from `undef` parsed as a call. No definedness/truth evaluation semantics."
+evidence = ["#17538", "#6658"]

@@ -3,8 +3,8 @@
 //! lint is opted out of here rather than worked around.
 #![allow(clippy::print_stdout)]
 
-use criterion::Criterion;
-use perl_lexer::{PerlLexer, Token};
+use criterion::{BenchmarkId, Criterion, Throughput};
+use perl_lexer::{LexerConfig, LocalSymbolTable, PerlLexer, Token};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -206,6 +206,89 @@ fn bench_keyword_heavy(c: &mut Criterion) {
     bench_family(c, "keyword_heavy", leaked_input);
 }
 
+/// Build the heredoc-prepass fixture family (#18031).
+///
+/// `heredoc_heavy` interleaves `<<~` heredoc blocks with `sub` declarations and
+/// ordinary code. Both opener shapes that make the prepass consult the table
+/// appear: a term-position initializer (`my $template = <<~TPL_n;`) and a
+/// callable bareword (`finish_block_n(<<~CFG_n, $count_n);`) whose declaration
+/// only lands *after* the call — the forward reference that exists only because
+/// the prepass runs two passes. Each body carries `sub`-shaped prose the scan
+/// must keep out of the table, and a declared nullary call (`counter_n << 4`)
+/// pins the left-shift control so the nullary lookup path is paid in both
+/// variants. The fixture is strict-clean Perl: each block hoists a top-level
+/// `my $count_n` covering the top-level, heredoc-interpolation, and
+/// `finish_block_n`-body references, and the bareword `strict` argument is
+/// quoted (#18062 review). The control keeps the same declarations and code
+/// shape with the heredoc blocks replaced by ordinary lines, so the
+/// disambiguation cost is visible as the delta between the two cases.
+fn heredoc_fixture_source(heredoc_heavy: bool) -> String {
+    const BLOCKS: usize = 64;
+    let mut source = String::from("use strict;\nuse warnings;\n\n");
+    for i in 0..BLOCKS {
+        source.push_str(&format!("my $count{i} = {i};\n"));
+        source.push_str(&format!(
+            "sub render_block_{i} {{\n    my ($self, $count{i}) = @_;\n    return $count{i} * {i};\n}}\n"
+        ));
+        source.push_str(&format!("sub counter_{i} () {{ {i} }}\n"));
+        source.push_str(&format!("my $shifted_{i} = counter_{i} << 4;\n"));
+        if heredoc_heavy {
+            source.push_str(&format!("my $template_{i} = <<~TPL_{i};\n"));
+            source.push_str(&format!("    block {i} header\n"));
+            source.push_str(&format!("    sub fake_body_{i} {{ }}\n"));
+            source.push_str(&format!("    value => $count{i}\n"));
+            source.push_str(&format!("    TPL_{i}\n"));
+            source.push_str(&format!("finish_block_{i}(<<~CFG_{i}, $count{i});\n"));
+            source.push_str(&format!("    mode => 'strict',\n    sub fake_cfg_{i} {{ }}\n"));
+            source.push_str(&format!("    CFG_{i}\n"));
+        } else {
+            source.push_str(&format!("my $template_{i} = \"block {i}: value => $count{i}\";\n"));
+            source.push_str(&format!("finish_block_{i}('strict', $count{i});\n"));
+        }
+        source.push_str(&format!("sub finish_block_{i} {{ $count{i} + {i} }}\n"));
+        source.push_str(&format!("print \"block {i} done\\n\";\n"));
+        source.push_str(&format!("if ($count{i} > {i}) {{\n    $count{i} /= 2;\n}}\n\n"));
+    }
+    source
+}
+
+/// Benchmark the `LocalSymbolTable` heredoc-disambiguation prepass (#18031).
+///
+/// `PerlLexer::new` leaves `symbol_table` unset and never runs the prepass;
+/// `scan_subs` is invoked by perl-parser-core's `ParserContext::new`. Each case
+/// therefore drives the production path that constructs the table —
+/// `LocalSymbolTable::scan_subs` followed by `PerlLexer::with_config` with the
+/// table installed — and collects the full token stream, so the measured unit
+/// covers the two-pass scan, the pending-heredoc bookkeeping, and the lexer's
+/// per-word callable/nullary lookups. The `heredoc_heavy` versus
+/// `no_heredoc_control` delta is the heredoc-disambiguation cost.
+fn bench_heredoc_prepass(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heredoc_prepass");
+
+    for (case, source) in [
+        ("heredoc_heavy", heredoc_fixture_source(true)),
+        ("no_heredoc_control", heredoc_fixture_source(false)),
+    ] {
+        let leaked_source: &'static str = Box::leak(source.into_boxed_str());
+        group.throughput(Throughput::Bytes(leaked_source.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new(case, leaked_source.len() as u64),
+            &leaked_source,
+            |b, input| {
+                let input = *input;
+                b.iter(|| {
+                    let table = LocalSymbolTable::scan_subs(black_box(input));
+                    let config =
+                        LexerConfig { symbol_table: Some(table), ..LexerConfig::default() };
+                    black_box(collect_all_tokens(PerlLexer::with_config(black_box(input), config)));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn run_all_benchmarks(c: &mut Criterion) {
     bench_simple_tokens(c);
     bench_slash_disambiguation(c);
@@ -215,6 +298,7 @@ fn run_all_benchmarks(c: &mut Criterion) {
     bench_operator_heavy(c);
     bench_number_parsing(c);
     bench_keyword_heavy(c);
+    bench_heredoc_prepass(c);
 }
 
 fn benchmark_scorecard_output_path() -> PathBuf {

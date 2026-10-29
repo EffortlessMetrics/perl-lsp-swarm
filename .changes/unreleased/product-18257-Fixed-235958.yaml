@@ -1,0 +1,9 @@
+project: product
+component: Parser
+kind: Fixed
+body: "A statement-form package inside a nested block no longer leaks its scope frame past the block end: the HIR lowerer restores the enclosing scope stack and package context on block exit, so lexicals declared after such a block are recorded in their true enclosing scope and their reads resolve to them instead of being lost under the leaked package."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18257"
+  Slug: hir-statement-package-scope-restore
+  Breaking: "no"

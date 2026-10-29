@@ -103,6 +103,11 @@ impl LspServer {
                 }
             }
 
+            // Closing hands project metadata authority back to disk (or to
+            // definite absence for an unsaved metadata file). The open buffer
+            // has been evicted and no document/folder lock is held here.
+            self.refresh_metadata_for_document_uri(uri);
+
             // Notify coordinator that cleanup is complete
             #[cfg(feature = "workspace")]
             if let Some(coordinator) = self.coordinator() {
@@ -166,7 +171,22 @@ impl LspServer {
                 };
                 if let Some((saved_text, version)) = replacement {
                     tracing::debug!(uri, "didSave text differs from in-memory buffer; reconciling");
-                    return self.handle_did_save_text_replacement(uri, &saved_text, version);
+                    let result = self.handle_did_save_text_replacement(uri, &saved_text, version);
+                    // didSave is a notification: an unstorable replacement can
+                    // return Ok while marking Full-sync required. Refresh only
+                    // when the saved text became the current admitted buffer.
+                    if result.is_ok() {
+                        let accepted = {
+                            let documents = self.documents_guard();
+                            self.get_document(&documents, &normalized_uri).is_some_and(|doc| {
+                                !doc.full_sync_required() && doc.text_str() == saved_text.as_str()
+                            })
+                        };
+                        if accepted {
+                            self.refresh_metadata_for_document_uri(uri);
+                        }
+                    }
+                    return result;
                 }
             }
 
