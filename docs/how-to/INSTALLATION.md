@@ -170,6 +170,11 @@ debugger, use a release archive instead — the archives ship both binaries — 
 build `perl-dap` yourself from a clone with
 `cargo build -p perl-dap --release`.
 
+In source mode, `VERSION=latest` (the default) selects crates.io's latest
+`perllsp` without querying GitHub Releases. The installer verifies the staged
+binary's version before promotion and reports that registry version on completion.
+An explicit `VERSION=vX.Y.Z` still requires that exact registry version.
+
 ## macOS and Linux manual archive
 
 This is the working POSIX recovery path while the identity-bound piped
