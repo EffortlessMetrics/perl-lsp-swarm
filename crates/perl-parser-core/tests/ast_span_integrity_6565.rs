@@ -117,7 +117,7 @@ fn qw_span_search_starts_inside_literal_content() -> Result<(), String> {
 }
 
 #[test]
-fn qw_span_search_ignores_comment_text_before_words() -> Result<(), String> {
+fn qw_span_search_preserves_hash_words() -> Result<(), String> {
     let source = "my @names = qw(# qw fake\nbar);";
     let ast = parse_program(source)?;
     let statement =
@@ -126,12 +126,15 @@ fn qw_span_search_ignores_comment_text_before_words() -> Result<(), String> {
     let NodeKind::ArrayLiteral { elements } = &initializer.kind else {
         return Err(format!("expected qw array, got {}", initializer.kind.kind_name()));
     };
-    let [element] = elements.as_slice() else {
-        return Err(format!("expected one surviving qw element, got {}", elements.len()));
-    };
-    let text = source_text(source, element.location.start, element.location.end)?;
-    if text != "bar" {
-        return Err(format!("comment text stole qw span: {text:?}"));
+    let actual = elements
+        .iter()
+        .map(|element| {
+            source_text(source, element.location.start, element.location.end)
+                .map(|text| (text, element.location.start, element.location.end))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if actual != [("#", 15, 16), ("qw", 17, 19), ("fake", 20, 24), ("bar", 25, 28)] {
+        return Err(format!("incorrect hash word spans: {actual:?}"));
     }
     Ok(())
 }

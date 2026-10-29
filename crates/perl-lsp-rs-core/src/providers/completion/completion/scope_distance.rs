@@ -9,6 +9,44 @@
 //! - **Workspace**: symbol from another file via the workspace index
 
 use perl_semantic_analyzer::symbol::{ScopeId, ScopeKind, SymbolTable};
+use std::ops::ControlFlow;
+
+/// Shared parent-walk bound for admission, identity selection, and ranking.
+/// Malformed cyclic trees stop here instead of looping.
+pub(crate) const MAX_SCOPE_PARENT_HOPS: u32 = 100;
+
+/// Inclusive walk from `start` toward the root: `start` at hop 0, then each parent.
+///
+/// Stops at the root, a missing scope record, [`MAX_SCOPE_PARENT_HOPS`] parent
+/// steps, or when `visit` returns [`ControlFlow::Break`]. Returns `Break` only
+/// when `visit` did. A missing `start` is still visited once so callers can
+/// distinguish equal missing ids from a proven ancestor chain. The walk itself
+/// allocates nothing.
+pub(crate) fn walk_ancestors(
+    symbol_table: &SymbolTable,
+    start: ScopeId,
+    mut visit: impl FnMut(ScopeId, u32) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    let mut current = start;
+    let mut hops = 0u32;
+
+    loop {
+        if visit(current, hops).is_break() {
+            return ControlFlow::Break(());
+        }
+        let Some(scope) = symbol_table.scopes.get(&current) else {
+            return ControlFlow::Continue(());
+        };
+        let Some(parent) = scope.parent else {
+            return ControlFlow::Continue(());
+        };
+        hops = hops.saturating_add(1);
+        if hops > MAX_SCOPE_PARENT_HOPS {
+            return ControlFlow::Continue(());
+        }
+        current = parent;
+    }
+}
 
 /// Scope-distance tier for sorting completions.
 ///
@@ -45,30 +83,23 @@ fn parent_hops_to_scope(
     cursor_scope: ScopeId,
     symbol_scope: ScopeId,
 ) -> Option<u32> {
-    if cursor_scope == symbol_scope {
-        return Some(0);
-    }
-
-    let mut current = cursor_scope;
-    let mut hops = 0u32;
-
-    while let Some(scope) = symbol_table.scopes.get(&current) {
-        let Some(parent_id) = scope.parent else {
-            break;
-        };
-
-        hops = hops.saturating_add(1);
-        if parent_id == symbol_scope {
-            return Some(hops);
+    let mut found = None;
+    let _ = walk_ancestors(symbol_table, cursor_scope, |id, hops| {
+        if id == symbol_scope {
+            found = Some(hops);
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
         }
+    });
+    found
+}
 
-        current = parent_id;
-        if hops > 100 {
-            break;
-        }
-    }
-
-    None
+fn is_package_or_global(symbol_table: &SymbolTable, scope_id: ScopeId) -> bool {
+    symbol_table
+        .scopes
+        .get(&scope_id)
+        .is_some_and(|scope| matches!(scope.kind, ScopeKind::Global | ScopeKind::Package))
 }
 
 fn last_unmatched_open_brace(source: &str) -> Option<usize> {
@@ -129,18 +160,12 @@ fn last_unmatched_open_brace(source: &str) -> Option<usize> {
 /// ranking and by lexical-visibility identity selection (#8941) to order
 /// same-name bindings by declaring-scope nesting.
 pub(crate) fn scope_depth(symbol_table: &SymbolTable, scope_id: ScopeId) -> usize {
-    let mut depth = 0usize;
-    let mut current = scope_id;
-
-    while let Some(scope) = symbol_table.scopes.get(&current) {
-        let Some(parent) = scope.parent else {
-            break;
-        };
-        depth += 1;
-        current = parent;
-    }
-
-    depth
+    let mut visits = 0usize;
+    let _ = walk_ancestors(symbol_table, scope_id, |_, _| {
+        visits = visits.saturating_add(1);
+        ControlFlow::Continue(())
+    });
+    visits.saturating_sub(1)
 }
 
 /// Find the innermost scope relevant to `position`.
@@ -203,49 +228,13 @@ pub fn compute_scope_distance(
     cursor_scope: ScopeId,
     symbol_scope: ScopeId,
 ) -> ScopeDistance {
-    if cursor_scope == symbol_scope {
-        return ScopeDistance::Immediate;
+    match parent_hops_to_scope(symbol_table, cursor_scope, symbol_scope) {
+        Some(0) => ScopeDistance::Immediate,
+        Some(_) if is_package_or_global(symbol_table, symbol_scope) => ScopeDistance::PackageLevel,
+        Some(_) => ScopeDistance::Parent,
+        None if is_package_or_global(symbol_table, symbol_scope) => ScopeDistance::PackageLevel,
+        None => ScopeDistance::Workspace,
     }
-
-    // Walk up from cursor scope looking for the symbol's scope
-    let mut current = cursor_scope;
-    let mut hops = 0u32;
-
-    while let Some(scope) = symbol_table.scopes.get(&current) {
-        if let Some(parent_id) = scope.parent {
-            hops += 1;
-
-            if parent_id == symbol_scope {
-                // Check if the symbol scope is a package/global scope
-                if let Some(parent_scope) = symbol_table.scopes.get(&parent_id)
-                    && matches!(parent_scope.kind, ScopeKind::Global | ScopeKind::Package)
-                {
-                    return ScopeDistance::PackageLevel;
-                }
-                return ScopeDistance::Parent;
-            }
-
-            current = parent_id;
-        } else {
-            // Reached the root without finding the symbol scope
-            break;
-        }
-
-        // Safety limit to prevent infinite loops on malformed scope trees
-        if hops > 100 {
-            break;
-        }
-    }
-
-    // The symbol scope was not found in our parent chain.
-    // Check if the symbol is at package/global level.
-    if let Some(sym_scope) = symbol_table.scopes.get(&symbol_scope)
-        && matches!(sym_scope.kind, ScopeKind::Global | ScopeKind::Package)
-    {
-        return ScopeDistance::PackageLevel;
-    }
-
-    ScopeDistance::Workspace
 }
 
 /// Return a stable sort fragment for completion ordering by lexical distance.
@@ -277,6 +266,7 @@ mod tests {
     use perl_parser_core::SourceLocation;
     use perl_semantic_analyzer::symbol::{Scope, ScopeKind, SymbolTable};
     use std::collections::HashSet;
+    use std::ops::ControlFlow;
 
     /// Build a minimal symbol table with a known scope hierarchy for testing.
     fn build_test_table() -> SymbolTable {
@@ -548,5 +538,94 @@ mod tests {
         assert!(nine_hops < ten_hops, "9-hop key must sort before 10-hop key");
         assert_eq!(nine_hops, "b09");
         assert_eq!(ten_hops, "b10");
+    }
+
+    fn linear_parent_chain(max_id: usize) -> SymbolTable {
+        let mut table = SymbolTable::new();
+        for i in 0usize..=max_id {
+            table.scopes.insert(
+                i,
+                Scope {
+                    id: i,
+                    parent: i.checked_sub(1),
+                    kind: if i == 0 { ScopeKind::Global } else { ScopeKind::Block },
+                    location: SourceLocation { start: i, end: 200 },
+                    symbols: HashSet::new(),
+                },
+            );
+        }
+        table
+    }
+
+    #[test]
+    fn parent_hops_zero_when_cursor_is_symbol_scope() {
+        let table = build_test_table();
+        assert_eq!(parent_hops_to_scope(&table, 3, 3), Some(0));
+        assert_eq!(compute_scope_sort_key(&table, 3, 3), "a00");
+        assert_eq!(compute_scope_distance(&table, 3, 3), ScopeDistance::Immediate);
+    }
+
+    #[test]
+    fn parent_hops_counts_enclosing_parent_and_none_for_sibling() {
+        let mut table = build_test_table();
+        table.scopes.insert(
+            4,
+            Scope {
+                id: 4,
+                parent: Some(1),
+                kind: ScopeKind::Subroutine,
+                location: SourceLocation { start: 82, end: 94 },
+                symbols: HashSet::new(),
+            },
+        );
+        assert_eq!(parent_hops_to_scope(&table, 3, 2), Some(1));
+        assert_eq!(parent_hops_to_scope(&table, 3, 0), Some(3));
+        assert_eq!(parent_hops_to_scope(&table, 3, 4), None);
+    }
+
+    #[test]
+    fn walk_stops_after_max_parent_hops_not_at_equality() {
+        // Discriminator for `hops > MAX`: hop MAX is still visited; hop MAX+1 is not.
+        let over = linear_parent_chain(MAX_SCOPE_PARENT_HOPS as usize + 20);
+        let mut last_hop = None;
+        let mut last_id = None;
+        let mut visits = 0u32;
+        let flow = walk_ancestors(&over, MAX_SCOPE_PARENT_HOPS as usize + 20, |id, hops| {
+            visits = visits.saturating_add(1);
+            last_hop = Some(hops);
+            last_id = Some(id);
+            ControlFlow::Continue(())
+        });
+        assert!(flow.is_continue(), "exhausting the hop guard is not a visitor Break");
+        assert_eq!(last_hop, Some(MAX_SCOPE_PARENT_HOPS));
+        assert_eq!(last_id, Some(20));
+        assert_eq!(visits, MAX_SCOPE_PARENT_HOPS + 1);
+
+        let at_bound = linear_parent_chain(MAX_SCOPE_PARENT_HOPS as usize);
+        let mut reached_root = false;
+        let _ = walk_ancestors(&at_bound, MAX_SCOPE_PARENT_HOPS as usize, |id, hops| {
+            if hops == MAX_SCOPE_PARENT_HOPS {
+                reached_root = id == 0;
+            }
+            ControlFlow::Continue(())
+        });
+        assert!(
+            reached_root,
+            "hop == MAX must still visit the root from scope {MAX_SCOPE_PARENT_HOPS}"
+        );
+
+        let past_bound = linear_parent_chain(MAX_SCOPE_PARENT_HOPS as usize + 1);
+        let mut saw_root = false;
+        let _ = walk_ancestors(&past_bound, MAX_SCOPE_PARENT_HOPS as usize + 1, |id, _| {
+            if id == 0 {
+                saw_root = true;
+            }
+            ControlFlow::Continue(())
+        });
+        assert!(
+            !saw_root,
+            "hop > MAX must not visit the root from scope {}",
+            MAX_SCOPE_PARENT_HOPS + 1
+        );
     }
 }

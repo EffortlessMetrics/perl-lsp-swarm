@@ -387,7 +387,9 @@ impl<'a> DeclarationProvider<'a> {
             }
             // Handle string literals that are method names inside modifier calls:
             // `before 'save' => sub { }` — cursor on 'save' navigates to sub save { }
-            NodeKind::String { value, .. } => self.find_modifier_target_declaration(node, value),
+            NodeKind::String { value, .. } => self
+                .find_modifier_target_declaration(node, value)
+                .or_else(|| self.find_recorded_subroutine_reference_declaration(node)),
             // Cursor on a `sub foo { }` name at its declaration site — self-location.
             // Without this arm, goto-definition on the sub name returns null (#5052 item 3).
             NodeKind::Subroutine { name: Some(name), .. } => {
@@ -403,6 +405,43 @@ impl<'a> DeclarationProvider<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Consume an existing semantic reference without promoting arbitrary strings.
+    fn find_recorded_subroutine_reference_declaration(
+        &self,
+        node: &Node,
+    ) -> Option<Vec<LocationLink>> {
+        let analyzer =
+            super::semantic::SemanticAnalyzer::analyze_with_source(&self.ast, &self.content);
+        let reference =
+            analyzer.symbol_table().references.values().flatten().find(|reference| {
+                reference.kind == crate::symbol::SymbolKind::Subroutine
+                    && reference.location.start == node.location.start
+                    && reference.location.end == node.location.end
+            })?;
+        let definitions = analyzer.resolve_reference_to_symbols(reference);
+        let definition = definitions.first()?;
+        // The legacy resolver can fall back to the caller's bare name when a
+        // qualified package is absent. That is not this reference's definition.
+        if reference.name.contains("::") && definition.qualified_name != reference.name {
+            return None;
+        }
+        let declaration = self.find_node_at_offset(&self.ast, definition.location.start)?;
+        if declaration.location.start != definition.location.start
+            || declaration.location.end != definition.location.end
+            || !matches!(
+                declaration.kind,
+                NodeKind::Subroutine { .. } | NodeKind::Method { .. } | NodeKind::Assignment { .. }
+            )
+        {
+            return None;
+        }
+        Some(vec![self.create_location_link(
+            node,
+            declaration,
+            self.get_subroutine_name_range(declaration),
+        )])
     }
 
     /// Find variable declaration using scope-aware lookup
@@ -747,7 +786,7 @@ impl<'a> DeclarationProvider<'a> {
     ///
     /// When the cursor is on the string `'save'` in `before 'save' => sub { }`,
     /// this walks up the parent map to confirm the string is the first argument
-    /// of a `before`/`after`/`around` function call, then returns the location of
+    /// of a method modifier call, then returns the location of
     /// `sub save { }`.
     fn find_modifier_target_declaration(
         &self,
@@ -774,7 +813,7 @@ impl<'a> DeclarationProvider<'a> {
         };
         let node_lookup = self.build_node_lookup_map();
 
-        // Walk up: String → FunctionCall { name: "before"/"after"/"around" }
+        // Walk up: String → method modifier FunctionCall.
         // The String node may be a direct child of the FunctionCall's args list,
         // so its immediate parent should be the FunctionCall node.
         let string_ptr: *const Node = string_node as *const _;
@@ -783,7 +822,7 @@ impl<'a> DeclarationProvider<'a> {
 
         // Check direct parent is a modifier FunctionCall where the string is first arg.
         if let NodeKind::FunctionCall { name, args } = &parent.kind
-            && matches!(name.as_str(), "before" | "after" | "around" | "override")
+            && matches!(name.as_str(), "before" | "after" | "around" | "override" | "augment")
             && args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false)
         {
             return self.find_subroutine_declaration(string_node, bare_name);
@@ -795,7 +834,7 @@ impl<'a> DeclarationProvider<'a> {
         let grandparent = node_lookup.get(&grandparent_ptr).copied()?;
 
         if let NodeKind::FunctionCall { name, args } = &grandparent.kind
-            && matches!(name.as_str(), "before" | "after" | "around" | "override")
+            && matches!(name.as_str(), "before" | "after" | "around" | "override" | "augment")
             && args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false)
         {
             return self.find_subroutine_declaration(string_node, bare_name);
@@ -1442,6 +1481,214 @@ impl<'a> DeclarationProvider<'a> {
 ///     println!("Found symbol: {:?}", sym);
 /// }
 /// ```
+fn node_variable_name(node: &Node) -> Option<&str> {
+    if let NodeKind::Variable { name, .. } = &node.kind { Some(name.as_str()) } else { None }
+}
+
+/// The bare identifier the cursor sits on (or just past), if any.
+///
+/// `:` is not an identifier byte here: a cursor on `::` between qualified-name
+/// components is not on a bareword.
+fn bareword_at_offset(text: &str, offset: usize) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let probe = if offset < bytes.len() && is_ident(bytes[offset]) {
+        offset
+    } else if offset > 0 && is_ident(bytes[offset - 1]) {
+        offset - 1
+    } else {
+        return None;
+    };
+    let mut start = probe;
+    while start > 0 && is_ident(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = probe + 1;
+    while end < bytes.len() && is_ident(bytes[end]) {
+        end += 1;
+    }
+    text.get(start..end)
+}
+
+/// Whether a cursor inside a `MethodCall` node names that call.
+///
+/// True for the method token itself (`new` in `Animal->new`) and for a
+/// bareword receiver (`Animal` in `Animal->new`). False for everything else
+/// inside the node — argument words, hash keys, quoted strings — which must
+/// not inherit the call's method identity (#17158). The token span is located
+/// textually after the receiver's `->`, so a quoted argument that spells the
+/// method name (`'new' => ...`) does not match. The receiver branch is
+/// positional: the cursor must sit within the receiver's span, so an
+/// argument word that merely spells the receiver's name (`Animal => 1`)
+/// does not match either.
+fn method_call_cursor_names_call(
+    source_text: &str,
+    node: &Node,
+    object: &Node,
+    method: &str,
+    offset: usize,
+) -> bool {
+    let on_bareword_receiver = offset >= object.location.start
+        && offset <= object.location.end
+        && bareword_at_offset(source_text, offset).is_some_and(
+            |word| matches!(&object.kind, NodeKind::Identifier { name } if word == name.as_str()),
+        );
+    if on_bareword_receiver {
+        return true;
+    }
+    let token_start = object.location.end.min(node.location.end);
+    let Some(window) = source_text.get(token_start..node.location.end) else {
+        return false;
+    };
+    let Some(arrow_at) = window.find("->") else {
+        return false;
+    };
+    let mut method_start = token_start + arrow_at + 2;
+    let bytes = source_text.as_bytes();
+    while method_start < bytes.len() && bytes[method_start].is_ascii_whitespace() {
+        method_start += 1;
+    }
+    let method_end = method_start.saturating_add(method.len());
+    offset >= method_start && offset <= method_end
+}
+
+fn looks_like_package_name(name: &str) -> bool {
+    name.contains("::") || name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
+fn infer_receiver_package(
+    object: &Node,
+    current_pkg: &str,
+    receiver_packages: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if let NodeKind::Identifier { name } = &object.kind {
+        return Some(name.clone());
+    }
+
+    if let Some(name) = node_variable_name(object) {
+        if let Some(package_name) = receiver_packages.get(name) {
+            return Some(package_name.clone());
+        }
+
+        if matches!(name, "self" | "this" | "class") {
+            return Some(current_pkg.to_string());
+        }
+
+        if looks_like_package_name(name) {
+            return Some(name.to_string());
+        }
+    }
+
+    None
+}
+
+fn infer_constructor_package(
+    rhs: &Node,
+    current_pkg: &str,
+    receiver_packages: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    match &rhs.kind {
+        NodeKind::MethodCall { method, object, .. } if method == "new" => {
+            infer_receiver_package(object, current_pkg, receiver_packages)
+        }
+        NodeKind::FunctionCall { name, .. } => {
+            name.rsplit_once("::").map(|(package_name, _)| package_name.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn record_receiver_assignment(
+    node: &Node,
+    offset: usize,
+    current_pkg: &str,
+    receiver_packages: &mut std::collections::HashMap<String, String>,
+) {
+    if node.location.start > offset {
+        return;
+    }
+
+    if node.location.end <= offset {
+        match &node.kind {
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                if let (Some(variable_name), Some(initializer)) =
+                    (node_variable_name(variable), initializer.as_ref())
+                    && let Some(package_name) =
+                        infer_constructor_package(initializer, current_pkg, receiver_packages)
+                {
+                    receiver_packages.insert(variable_name.to_string(), package_name);
+                }
+            }
+            NodeKind::Assignment { lhs, rhs, .. } => {
+                if let Some(variable_name) = node_variable_name(lhs)
+                    && let Some(package_name) =
+                        infer_constructor_package(rhs, current_pkg, receiver_packages)
+                {
+                    receiver_packages.insert(variable_name.to_string(), package_name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for child in get_node_children(node) {
+        if child.location.start <= offset {
+            record_receiver_assignment(child, offset, current_pkg, receiver_packages);
+        }
+    }
+}
+
+/// The sub a bareword argument inside a method call may name.
+///
+/// `Animal->new(name => 'Generic')` spans its argument list with one
+/// `MethodCall` node. A cursor on the argument word `name` is not on the
+/// method — `symbol_at_cursor_with_source` declines it (#17158) — but the
+/// word may still name a sub of the receiver's package (`Animal::name`).
+/// This returns that exact-name key so a definition provider can try it and
+/// fall through to an honest empty result when no such sub exists. `None`
+/// when the cursor is not on a bareword argument of a method call (method
+/// token, receiver, punctuation, quoted literals).
+pub fn method_argument_bareword_key(
+    ast: &Node,
+    offset: usize,
+    current_pkg: &str,
+    source_text: &str,
+) -> Option<SymbolKey> {
+    /// The innermost `MethodCall` node containing `offset`.
+    fn method_call_at(node: &Node, offset: usize) -> Option<&Node> {
+        if offset < node.location.start || offset > node.location.end {
+            return None;
+        }
+        for child in get_node_children(node) {
+            if let Some(found) = method_call_at(child, offset) {
+                return Some(found);
+            }
+        }
+        matches!(&node.kind, NodeKind::MethodCall { .. }).then_some(node)
+    }
+
+    let call = method_call_at(ast, offset)?;
+    let NodeKind::MethodCall { object, method, .. } = &call.kind else {
+        return None;
+    };
+
+    // Same acceptance the MethodCall arm applies: only words that are neither
+    // the method token nor a bareword receiver are argument barewords.
+    if source_text.is_empty()
+        || method_call_cursor_names_call(source_text, call, object, method, offset)
+    {
+        return None;
+    }
+    let word = bareword_at_offset(source_text, offset)?;
+
+    let mut receiver_packages = std::collections::HashMap::new();
+    record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
+    let pkg = infer_receiver_package(object, current_pkg, &receiver_packages)
+        .unwrap_or_else(|| current_pkg.to_string());
+
+    Some(SymbolKey { pkg: pkg.into(), name: word.into(), sigil: None, kind: SymKind::Sub })
+}
+
 fn symbol_at_cursor_internal(
     ast: &Node,
     offset: usize,
@@ -1492,10 +1739,6 @@ fn symbol_at_cursor_internal(
             .or_else(|| path.last().copied())?;
 
         Some((path, node))
-    }
-
-    fn node_variable_name(node: &Node) -> Option<&str> {
-        if let NodeKind::Variable { name, .. } = &node.kind { Some(name.as_str()) } else { None }
     }
 
     fn normalize_symbol_name(raw: &str) -> Option<String> {
@@ -1920,92 +2163,6 @@ fn symbol_at_cursor_internal(
         None
     }
 
-    fn looks_like_package_name(name: &str) -> bool {
-        name.contains("::") || name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
-    }
-
-    fn infer_receiver_package(
-        object: &Node,
-        current_pkg: &str,
-        receiver_packages: &std::collections::HashMap<String, String>,
-    ) -> Option<String> {
-        if let NodeKind::Identifier { name } = &object.kind {
-            return Some(name.clone());
-        }
-
-        if let Some(name) = node_variable_name(object) {
-            if let Some(package_name) = receiver_packages.get(name) {
-                return Some(package_name.clone());
-            }
-
-            if matches!(name, "self" | "this" | "class") {
-                return Some(current_pkg.to_string());
-            }
-
-            if looks_like_package_name(name) {
-                return Some(name.to_string());
-            }
-        }
-
-        None
-    }
-
-    fn infer_constructor_package(
-        rhs: &Node,
-        current_pkg: &str,
-        receiver_packages: &std::collections::HashMap<String, String>,
-    ) -> Option<String> {
-        match &rhs.kind {
-            NodeKind::MethodCall { method, object, .. } if method == "new" => {
-                infer_receiver_package(object, current_pkg, receiver_packages)
-            }
-            NodeKind::FunctionCall { name, .. } => {
-                name.rsplit_once("::").map(|(package_name, _)| package_name.to_string())
-            }
-            _ => None,
-        }
-    }
-
-    fn record_receiver_assignment(
-        node: &Node,
-        offset: usize,
-        current_pkg: &str,
-        receiver_packages: &mut std::collections::HashMap<String, String>,
-    ) {
-        if node.location.start > offset {
-            return;
-        }
-
-        if node.location.end <= offset {
-            match &node.kind {
-                NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                    if let (Some(variable_name), Some(initializer)) =
-                        (node_variable_name(variable), initializer.as_ref())
-                        && let Some(package_name) =
-                            infer_constructor_package(initializer, current_pkg, receiver_packages)
-                    {
-                        receiver_packages.insert(variable_name.to_string(), package_name);
-                    }
-                }
-                NodeKind::Assignment { lhs, rhs, .. } => {
-                    if let Some(variable_name) = node_variable_name(lhs)
-                        && let Some(package_name) =
-                            infer_constructor_package(rhs, current_pkg, receiver_packages)
-                    {
-                        receiver_packages.insert(variable_name.to_string(), package_name);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        for child in get_node_children(node) {
-            if child.location.start <= offset {
-                record_receiver_assignment(child, offset, current_pkg, receiver_packages);
-            }
-        }
-    }
-
     let (path, node) = find_symbol_node_at_offset(ast, offset)?;
 
     if let Some(symbol_key) = plack_builder_middleware_symbol(&path, offset) {
@@ -2053,6 +2210,37 @@ fn symbol_at_cursor_internal(
             Some(SymbolKey { pkg: pkg.into(), name: bare.into(), sigil: None, kind: SymKind::Sub })
         }
         NodeKind::MethodCall { object, method, .. } => {
+            // #17158: the MethodCall node spans its whole argument list. A
+            // cursor on an argument word — the hash key in
+            // `Animal->new(name => ...)` — does not name the method, and
+            // attributing the call's method to it navigates to the wrong
+            // sub. With source text available, resolve through this node
+            // only when the cursor sits on the method token itself or on a
+            // bareword receiver, each of which names this call.
+            if !source_text.is_empty()
+                && !method_call_cursor_names_call(source_text, node, object, method, offset)
+            {
+                // A cursor on a qualified receiver (`Foo::Bar` in
+                // `Foo::Bar->baz()`) sits on one qualified name whose
+                // components the workspace tiers classify themselves:
+                // references suppresses a prefix cursor (#1849) and definition
+                // resolves the final component to the package. Returning
+                // `None` here would leave that cursor unclassified, skip those
+                // guards, and collapse the request to the same-file analyzer,
+                // which still attributes the whole call node to the method and
+                // reports it for a receiver cursor. Falling through keeps the
+                // key the downstream guards expect; argument words still
+                // return `None`.
+                let cursor_on_qualified_receiver = offset >= object.location.start
+                    && offset <= object.location.end
+                    && match &object.kind {
+                        NodeKind::Identifier { name } => name.contains("::"),
+                        _ => false,
+                    };
+                if !cursor_on_qualified_receiver {
+                    return None;
+                }
+            }
             let mut receiver_packages = std::collections::HashMap::new();
             record_receiver_assignment(ast, offset, current_pkg, &mut receiver_packages);
             let pkg = infer_receiver_package(object, current_pkg, &receiver_packages)
@@ -2090,6 +2278,22 @@ fn symbol_at_cursor_internal(
             Some(SymbolKey {
                 pkg: module.clone().into(),
                 name: module.clone().into(),
+                sigil: None,
+                kind: SymKind::Pack,
+            })
+        }
+        NodeKind::Package { name, .. } => {
+            // A cursor on the declaration names the package itself (#17157).
+            // The `use Module` arm below produces exactly this Pack identity
+            // for a usage cursor; the declaration cursor must resolve to the
+            // same symbol so declaration-anchored references and definitions
+            // run the same resolution as usage-anchored ones. Without this
+            // arm the cursor falls to `None`, the workspace tiers never run,
+            // and the answer collapses to the same-file analyzer's single
+            // declaration location.
+            Some(SymbolKey {
+                pkg: name.clone().into(),
+                name: name.clone().into(),
                 sigil: None,
                 kind: SymKind::Pack,
             })
@@ -2730,6 +2934,72 @@ mod tests {
         let key = result.unwrap();
         assert_eq!(key.name.as_ref(), "greet", "symbol name must be the bare method name");
         assert_eq!(key.pkg.as_ref(), "Foo", "pkg must be the current_pkg for bare method names");
+    }
+
+    // =========================================================================
+    // MethodCall guard — argument word spelling the receiver (#17158)
+    //
+    // method_call_cursor_names_call classifies a cursor as the bareword
+    // receiver by comparing the word under the cursor with the receiver's
+    // name. That comparison is only meaningful when the cursor sits inside
+    // the receiver's span: an argument bareword that spells the receiver's
+    // name (`Animal` in `Animal->new(Animal => 1)`) must stay an argument.
+    // =========================================================================
+
+    /// An argument word spelling the receiver's name is not the receiver.
+    ///
+    /// Cursor on the hash key `Animal` in `Animal->new(Animal => 1)`: the
+    /// with-source guard must decline it (no `new` key), and the
+    /// argument-bareword resolver must yield the exact-name key
+    /// `Animal::Animal` instead. The receiver and method-token cursors keep
+    /// classifying the call.
+    #[test]
+    fn method_call_argument_word_spelling_the_receiver_declines_the_call() {
+        let source = "package Animal;\nsub new { return 1; }\nAnimal->new(Animal => 1);\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("parse must succeed");
+
+        let receiver = source.find("Animal->new").expect("receiver must be in source");
+        let argument = source.rfind("Animal =>").expect("argument key must be in source");
+        let method_token = source.find("->new(").expect("method call must be in source") + 3;
+
+        let receiver_key = symbol_at_cursor_with_source(&ast, receiver, "Animal", source)
+            .expect("cursor on the bareword receiver must classify the call");
+        assert_eq!(
+            receiver_key.name.as_ref(),
+            "new",
+            "the receiver cursor must resolve the method"
+        );
+        assert_eq!(
+            receiver_key.pkg.as_ref(),
+            "Animal",
+            "the receiver package comes from the receiver identifier"
+        );
+
+        let method_key = symbol_at_cursor_with_source(&ast, method_token, "Animal", source)
+            .expect("cursor on the method token must classify the call");
+        assert_eq!(
+            method_key.name.as_ref(),
+            "new",
+            "the method-token cursor must resolve the method"
+        );
+
+        assert!(
+            symbol_at_cursor_with_source(&ast, argument, "Animal", source).is_none(),
+            "an argument word spelling the receiver name must not classify as the call"
+        );
+        let argument_key = method_argument_bareword_key(&ast, argument, "Animal", source)
+            .expect("the argument bareword yields its exact-name key");
+        assert_eq!(
+            argument_key.name.as_ref(),
+            "Animal",
+            "the argument key must be the bareword itself, not the method"
+        );
+        assert_eq!(
+            argument_key.pkg.as_ref(),
+            "Animal",
+            "the bareword's package is the receiver's package"
+        );
     }
 
     // =========================================================================

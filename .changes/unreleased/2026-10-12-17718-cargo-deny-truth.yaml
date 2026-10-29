@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Cargo Deny policy gate is green again: RUSTSEC-2024-0449 is dispositioned with a bounded-exposure reason for the unpublished xtask tool, stale bans skip entries assert versions actually in the dependency graph, and deny.toml changes now run the security lane before merge."
+time: 2026-10-12T00:00:00Z
+custom:
+  PR: "17718"
+  Slug: cargo-deny-truth
+  Breaking: "no"

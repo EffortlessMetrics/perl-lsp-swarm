@@ -273,47 +273,74 @@ fn our_and_my_of_the_same_spelling_remain_distinct_bindings() {
     );
 }
 
-/// Known boundary, not a claim of correctness: `package NAME;` opens a child
-/// scope, but the program-root body still starts at the file scope and the
-/// resolution walk only ascends. Declarations made at package top level are
-/// therefore invisible to program-root occurrences.
-///
-/// This behaviour is pre-existing — the previous `VariableKind` walk was
-/// identical, and already mis-reported the `my` read below as `Package`.
-/// Threading identity only makes the gap visible as `None`. Pinned here so the
-/// boundary is explicit and a future fix trips this test instead of silently
-/// changing consumer-visible classification. Tracked by #14173.
+/// A `my` declared at package top level resolves from program-root
+/// occurrences (#14173): a statement-form `package NAME;` re-points the
+/// body resolution scope at the package scope for the rest of the
+/// enclosing block, where the first pass recorded the declaration.
 #[test]
-fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() {
+fn package_top_level_declarations_are_visible_to_program_root_occurrences() {
     let lexical = lower("package P;\nmy $lex = 1;\nprint $lex;\n");
     let read = must_some(
         occurrences(&lexical).into_iter().find(|o| o.name == "lex" && o.access == AccessMode::Read),
     );
-    assert_eq!(read.binding, None, "package-top-level `my` is not resolvable from program root");
+    assert!(read.binding.is_some(), "package-top-level `my` resolves from program root");
     assert_eq!(
         read.kind,
-        VariableKind::Package,
-        "pre-existing misclassification preserved: a package-top-level `my` read reports Package"
+        VariableKind::Lexical,
+        "a package-top-level `my` read reports Lexical, not Package"
     );
 
-    // Without the `package` statement the very same code resolves correctly,
-    // which isolates the cause to package-scope descent rather than to `my`.
+    // Without the `package` statement the very same code resolves the same
+    // way, which isolates the earlier gap to package-scope descent.
     let plain = lower("my $lex = 1;\nprint $lex;\n");
     let read = must_some(
         occurrences(&plain).into_iter().find(|o| o.name == "lex" && o.access == AccessMode::Read),
     );
     assert!(read.binding.is_some(), "file-scope `my` resolves to its binding");
     assert_eq!(read.kind, VariableKind::Lexical);
+
+    // A second package switches the resolution scope again: each read
+    // binds to the declaration in its own package region.
+    let two = lower("package A;\nmy $x = 1;\nprint $x;\npackage B;\nmy $x = 2;\nprint $x;\n");
+    let reads: Vec<_> = occurrences(&two)
+        .into_iter()
+        .filter(|o| o.name == "x" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected one read per package region");
+    assert!(reads.iter().all(|o| o.binding.is_some() && o.kind == VariableKind::Lexical));
+    assert_ne!(reads[0].binding, reads[1].binding, "each package region owns its declaration");
+
+    // A label on the package statement is transparent to the switch.
+    let labelled = lower("LBL: package P;\nmy $z = 1;\nprint $z;\n");
+    let read = must_some(
+        occurrences(&labelled).into_iter().find(|o| o.name == "z" && o.access == AccessMode::Read),
+    );
+    assert!(read.binding.is_some(), "labelled package-top-level `my` resolves from program root");
+    assert_eq!(read.kind, VariableKind::Lexical);
+
+    // The switch is block-scoped: after the block ends, the outer
+    // resolution scope applies again.
+    let blocked = lower("my $y = 1;\n{ package P; my $y = 2; print $y; }\nprint $y;\n");
+    let reads: Vec<_> = occurrences(&blocked)
+        .into_iter()
+        .filter(|o| o.name == "y" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected in-block and post-block reads");
+    assert!(reads.iter().all(|o| o.binding.is_some()));
+    assert_ne!(
+        reads[0].binding, reads[1].binding,
+        "the in-block read binds the block package's declaration, the post-block read the outer one"
+    );
 }
 
 /// A declaration must name the binding it *introduces*, which plain visibility
-/// resolution cannot do: both declarations below are visible from the same
-/// scope, and the scope walk takes the last one.
+/// resolution cannot do: at the beginning of the second declaration's own
+/// token, only the first declaration is visible.
 ///
 /// Declarations are therefore matched on the declaration token's own span. Reads
 /// remain visibility-resolved, so the read *between* the two declarations still
-/// resolves to the later binding — that residual position-insensitivity is the
-/// documented boundary tracked by #14173.
+/// resolves to the nearest prior binding; identity of the declarations is
+/// independently anchored to their own spans.
 #[test]
 fn same_scope_redeclarations_get_distinct_declaration_identities() {
     let source = "sub f { my $x = 1; print $x; my $x = 2; print $x; }\n";
@@ -340,18 +367,11 @@ fn same_scope_redeclarations_get_distinct_declaration_identities() {
     }
 }
 
-/// Known boundary, not a claim of correctness: in `my $x = $x;` the initializer
-/// must read the *outer* `$x`, because a new lexical's scope begins only after
-/// its own declaration statement. Occurrence resolution is position-insensitive
-/// within a scope, so the initializer instead reads the binding being declared.
-///
-/// The fix is position-sensitive occurrence resolution, which is deliberately
-/// out of scope here: it would also change `use-before-declare` (`print $x;
-/// my $x = 1;`) from `Lexical` with a binding to `Package` with none — a
-/// consumer-visible `VariableKind` change this slice explicitly does not make.
-/// Tracked by #14173.
+/// A lexical becomes visible after its declaration statement; its initializer
+/// reads the visible outer binding. This pins the declaration-order repair in
+/// #13868 while keeping declaration identity distinct from occurrence lookup.
 #[test]
-fn self_referential_initializer_reads_the_shadowing_binding() {
+fn self_referential_initializer_reads_the_outer_binding() {
     let source = "my $x = 1; if (1) { my $x = $x; }\n";
     let file = lower(source);
 
@@ -361,44 +381,32 @@ fn self_referential_initializer_reads_the_shadowing_binding() {
     let (outer, inner) = (decl_ids[0], decl_ids[1]);
     assert_ne!(outer, inner, "the two declarations are distinct bindings");
 
-    // The initializer read sits after the inner declaration token.
+    // The initializer sits after the inner token but before the declaration
+    // statement completes, so it still sees the outer binding.
     let rhs = must_some(
         occurrences(&file).into_iter().rfind(|o| o.name == "x" && o.access == AccessMode::Read),
     );
-    assert_eq!(
-        rhs.binding,
-        Some(inner),
-        "known boundary: `my $x = $x` reads the binding it declares; Perl would read the outer one"
-    );
+    assert_eq!(rhs.binding, Some(outer), "the initializer must read the outer binding");
 }
 
-/// Known boundary, not a claim of correctness: a `foreach my $i` iterator is
-/// recorded in the *enclosing* scope rather than a loop-private one, so it does
-/// not shadow an outer `my $i` the way Perl does.
-///
-/// Declarations still separate correctly (each names the binding at its own
-/// span), but reads are visibility-resolved and so collapse onto the loop's
-/// binding — including the read *after* the loop, which Perl would bind to the
-/// outer `my $i`.
-///
-/// This is a scope-graph modelling gap in pass 1, which this slice does not
-/// touch — threading identity only makes it observable. Pinned so the boundary
-/// is explicit and a future scope fix trips this test. Tracked by #14173.
+/// A `foreach my $i` iterator occupies a loop-private scope (#14173): it
+/// shadows an outer same-spelling lexical inside the loop only, and the read
+/// after the loop binds to the outer declaration again.
 #[test]
-fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
+fn foreach_iterator_opens_a_loop_private_scope_and_shadows() {
     let source = "sub f { my $i = 9; foreach my $i (1,2) { print $i; } print $i; }\n";
     let file = lower(source);
 
     let bindings: Vec<_> =
         file.scope_graph.bindings.iter().filter(|b| b.name == "i").map(|b| b.scope_id).collect();
     assert_eq!(bindings.len(), 2, "expected an outer `my $i` and a foreach `my $i`");
-    assert_eq!(
+    assert_ne!(
         bindings[0], bindings[1],
-        "the foreach iterator currently shares the enclosing scope rather than opening its own"
+        "the foreach iterator must open its own loop-private scope"
     );
 
-    // Reads collapse onto the loop binding, because they are visibility-resolved
-    // and the iterator never left the enclosing scope.
+    // The in-loop read binds to the iterator; the post-loop read binds to the
+    // outer `my $i`, so the two reads carry distinct identities.
     let read_ids: std::collections::BTreeSet<HirBindingId> = occurrences(&file)
         .into_iter()
         .filter(|o| o.name == "i" && o.access == AccessMode::Read)
@@ -406,9 +414,52 @@ fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
         .collect();
     assert_eq!(
         read_ids.len(),
-        1,
-        "known boundary: the post-loop read should bind to the outer `my $i` but does not; \
-         found {read_ids:?}"
+        2,
+        "in-loop and post-loop reads must bind to distinct declarations; found {read_ids:?}"
+    );
+    let reads: Vec<_> = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "i" && o.access == AccessMode::Read)
+        .collect();
+    let binding_ids: Vec<HirBindingId> =
+        file.scope_graph.bindings.iter().filter(|b| b.name == "i").map(|b| b.id).collect();
+    assert_eq!(reads[0].binding, Some(binding_ids[1]), "in-loop read binds to the iterator");
+    assert_eq!(reads[1].binding, Some(binding_ids[0]), "post-loop read binds to the outer `my $i`");
+
+    // A `state` iterator is loop-private the same way.
+    let file = lower(
+        "use feature 'state';\nsub f { my $i = 9; foreach state $i (1,2) { print $i; } print $i; }\n",
+    );
+    let reads: Vec<_> = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "i" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected in-loop and post-loop reads for the state iterator");
+    let binding_ids: Vec<HirBindingId> =
+        file.scope_graph.bindings.iter().filter(|b| b.name == "i").map(|b| b.id).collect();
+    assert_eq!(binding_ids.len(), 2, "expected outer and iterator bindings");
+    assert_eq!(reads[0].binding, Some(binding_ids[1]), "in-loop read binds to the iterator");
+    assert_eq!(
+        reads[1].binding,
+        Some(binding_ids[0]),
+        "post-loop read binds to the outer declaration"
+    );
+
+    // A list iterator `my ($k, $v)` is loop-private the same way.
+    let file = lower("sub f { my $k = 9; foreach my ($k, $v) (a => 1) { print $k; } print $k; }\n");
+    let reads: Vec<_> = occurrences(&file)
+        .into_iter()
+        .filter(|o| o.name == "k" && o.access == AccessMode::Read)
+        .collect();
+    assert_eq!(reads.len(), 2, "expected in-loop and post-loop reads for the list iterator");
+    let binding_ids: Vec<HirBindingId> =
+        file.scope_graph.bindings.iter().filter(|b| b.name == "k").map(|b| b.id).collect();
+    assert_eq!(binding_ids.len(), 2, "expected outer and iterator bindings for $k");
+    assert_eq!(reads[0].binding, Some(binding_ids[1]), "in-loop read binds to the list iterator");
+    assert_eq!(
+        reads[1].binding,
+        Some(binding_ids[0]),
+        "post-loop read binds to the outer declaration"
     );
 }
 

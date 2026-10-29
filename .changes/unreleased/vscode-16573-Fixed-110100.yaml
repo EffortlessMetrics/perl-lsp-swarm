@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "Cancelling a binary download now shows a short confirmation instead of a failure dialog; checksum failures offer a working Retry Download button; and a missing SHA256SUMS manifest is reported as missing release metadata rather than a corrupted download."
+time: 2026-09-27T11:01:00Z
+custom:
+  PR: 16573
+  Slug: download-cancellation-and-checksum-messaging
+  Breaking: "no"

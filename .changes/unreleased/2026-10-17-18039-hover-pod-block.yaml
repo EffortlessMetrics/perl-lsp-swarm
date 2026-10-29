@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Hover documentation for a subroutine now shows only its immediately preceding POD block. Previously every POD block from the first =head1 onward, including intermediate subroutine source, was presented as the hovered sub's documentation."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18039"
+  Slug: hover-pod-block-bleed
+  Breaking: "no"

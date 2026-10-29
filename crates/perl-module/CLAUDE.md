@@ -16,7 +16,7 @@ reference extraction, and safe renaming.
   `RequireForm`, `ModuleImportKind`).
 - `import_match` -- candidate filtering for import-line matching.
 - `module_move` -- pure, generation-bound conventional source-module move
-  planning (`ModuleMovePlan`, #7448); consumes fact identities from
+  planning (`ModuleMovePlan`); consumes fact identities from
   `perl-semantic-facts`, never materializes edits.
 - `reference` -- `ModuleReference` extraction (feeds go-to-definition /
   find-references).

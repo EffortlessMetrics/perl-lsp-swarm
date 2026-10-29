@@ -4,21 +4,83 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { bundledBinaryPath, pathsEquivalent, sha256 } from './journeySupport';
 
+/**
+ * Structural view of the extension's startup metrics snapshot. Declared here
+ * (instead of importing the production type) to match the published-journey
+ * convention of typing the activation API inline.
+ */
+interface StartupMetrics {
+  lifecycle_state?: unknown;
+  binary_resolution_source?: unknown;
+  binary_resolution_status?: unknown;
+  binary_resolution_path?: unknown;
+  binary_resolution_ms?: unknown;
+  server_start_status?: unknown;
+  initialize_status?: unknown;
+  server_version?: unknown;
+  startup_error?: unknown;
+  milestones?: unknown;
+}
+
+/**
+ * Render the extension's startup metrics into a bounded, single-line diagnosis
+ * appended to startup failures. A terminal failed state alone ("state failed")
+ * cannot distinguish binary resolution, server spawn, handshake, or teardown
+ * races (#15592); the phase statuses and recorded startup error can.
+ */
+function describeStartupDiagnostics(metrics: StartupMetrics | undefined): string {
+  if (!metrics) {
+    return 'startup diagnostics unavailable: getLanguageClientStartupMetrics returned no snapshot';
+  }
+  const phases = [
+    `binary_resolution=${String(metrics.binary_resolution_status)}/${String(metrics.binary_resolution_source)}`,
+    `server_start=${String(metrics.server_start_status)}`,
+    `initialize=${String(metrics.initialize_status)}`,
+  ];
+  const extras = [
+    metrics.binary_resolution_ms === undefined || metrics.binary_resolution_ms === null
+      ? undefined
+      : `resolution_ms=${String(metrics.binary_resolution_ms)}`,
+    metrics.binary_resolution_path === undefined || metrics.binary_resolution_path === null
+      ? undefined
+      : `resolved_path=${String(metrics.binary_resolution_path)}`,
+    metrics.server_version === undefined || metrics.server_version === null
+      ? undefined
+      : `server_version=${String(metrics.server_version)}`,
+    metrics.startup_error === undefined || metrics.startup_error === null
+      ? undefined
+      : `startup_error=${JSON.stringify(String(metrics.startup_error))}`,
+  ].filter((entry): entry is string => entry !== undefined);
+  const milestones = Object.entries((metrics.milestones ?? {}) as Record<string, number>)
+    .map(([name, at]) => `${name}@${at}ms`)
+    .join(',');
+  return [
+    `state=${String(metrics.lifecycle_state)}`,
+    ...phases,
+    ...extras,
+    `milestones=[${milestones}]`,
+  ].join(' ');
+}
+
 async function waitForRunningStartup(
-  getMetrics: () => { lifecycle_state?: unknown },
+  getMetrics: () => StartupMetrics,
   deadline: number,
 ): Promise<void> {
   let state: unknown = undefined;
+  let lastMetrics: StartupMetrics | undefined;
   while (Date.now() < deadline) {
-    state = getMetrics().lifecycle_state;
+    lastMetrics = getMetrics();
+    state = lastMetrics.lifecycle_state;
     if (state === 'running') return;
     if (state === 'failed' || state === 'stopped') {
-      throw new Error(`Language client startup entered terminal state ${String(state)}`);
+      throw new Error(
+        `Language client startup entered terminal state ${String(state)}; ${describeStartupDiagnostics(lastMetrics)}`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(
-    `Timed out waiting for language client startup to reach running (state ${String(state)})`,
+    `Timed out waiting for language client startup to reach running (state ${String(state)}); ${describeStartupDiagnostics(lastMetrics)}`,
   );
 }
 

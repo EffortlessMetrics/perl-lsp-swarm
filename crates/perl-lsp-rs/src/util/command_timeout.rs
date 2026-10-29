@@ -13,9 +13,17 @@ use std::time::{Duration, Instant};
 /// Returns `Ok(Output)` if the command finishes within the timeout, or
 /// `Err(String)` with a human-readable message if it times out or fails
 /// to spawn. A `timeout_secs` value of `0` disables timeout enforcement.
+///
+/// The child's stdin is the null device. Server-spawned children must never
+/// inherit this process's stdin: it is the LSP JSON-RPC transport, so an
+/// inheriting child would read protocol bytes, and on Windows a console child
+/// holding that inherited pipe handle blocks inside process initialization and
+/// never executes — every `perl.runFile`-family command then burned its full
+/// 30-second timeout and returned no output (#17305).
 pub fn run_command_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<Output, String> {
     let timeout = (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs));
     let start = Instant::now();
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|error| format!("command failed to start: {error}"))?;
@@ -177,5 +185,48 @@ mod tests {
         if let Err(message) = result {
             assert!(message.contains("command failed to start"));
         }
+    }
+
+    /// #17305 regression guard: a spawned child's stdin reaches EOF.
+    ///
+    /// The child reads its whole stdin before printing. Under the fixed helper
+    /// the stdin is the null device, so the read ends immediately. If the
+    /// helper ever stops pinning `Stdio::null()`, the child inherits this
+    /// process's stdin (a live pipe or console under `cargo test`), the read
+    /// blocks, and the short deadline turns the regression into a timeout
+    /// failure instead of a hang.
+    #[test]
+    fn unit_child_stdin_reaches_eof_instead_of_inheriting_the_transport() {
+        #[cfg(windows)]
+        let cmd = {
+            let mut cmd = Command::new("powershell");
+            cmd.args([
+                "-NoProfile",
+                "-Command",
+                "$null = [Console]::In.ReadToEnd(); [Console]::Out.Write('stdin-eof')",
+            ]);
+            cmd
+        };
+
+        #[cfg(not(windows))]
+        let cmd = {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "cat > /dev/null; printf stdin-eof"]);
+            cmd
+        };
+
+        let start = Instant::now();
+        let result = run_command_with_timeout(cmd, 10);
+
+        assert!(
+            result.as_ref().is_ok_and(|output| output.stdout == b"stdin-eof"),
+            "child must observe EOF on stdin and complete: {result:?}"
+        );
+        // Well under the deadline; a blocked stdin read burns the full budget.
+        assert!(
+            start.elapsed() < Duration::from_secs(9),
+            "stdin reader must not approach the timeout: {:?}",
+            start.elapsed()
+        );
     }
 }
