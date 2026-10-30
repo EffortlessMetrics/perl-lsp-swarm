@@ -1564,6 +1564,14 @@ impl ParseError {
         }
     }
 
+    /// Create the blocking error Perl reports for a quantifier with no
+    /// preceding atom (`Quantifier follows nothing in regex`). Unlike the
+    /// nested-quantifier advisory this is invalid syntax in Perl, so it
+    /// blocks a clean parse rather than advising.
+    pub fn quantifier_follows_nothing_error(location: usize) -> Self {
+        Self::SyntaxError { message: "Quantifier follows nothing in regex".to_string(), location }
+    }
+
     /// Classify whether this diagnostic blocks a clean parser/compiler receipt.
     #[must_use]
     pub fn severity(&self) -> ParseDiagnosticSeverity {

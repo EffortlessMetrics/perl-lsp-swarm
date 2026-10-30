@@ -534,7 +534,7 @@ impl RegexAnalysisTable {
     }
 }
 
-fn map_operator(operator: RegexFamilyOperator) -> RegexOperator {
+pub(crate) fn map_operator(operator: RegexFamilyOperator) -> RegexOperator {
     match operator {
         RegexFamilyOperator::BareMatch => RegexOperator::BareMatch,
         RegexFamilyOperator::Match => RegexOperator::Match,

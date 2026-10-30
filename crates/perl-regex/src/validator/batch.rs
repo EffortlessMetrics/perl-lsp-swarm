@@ -13,7 +13,7 @@ use super::{
     },
     code_execution, complexity,
     config::RegexValidationConfig,
-    nested_quantifier,
+    nested_quantifier, quantifier_follows_nothing,
 };
 
 pub(crate) fn analyze(
@@ -58,6 +58,17 @@ pub(crate) fn analyze(
     }
 
     facts.dynamic_regions.sort_by_key(|region| (region.range.start, region.range.end));
+
+    for offset in quantifier_follows_nothing::find_quantifiers_following_nothing(&stream, pattern) {
+        if let Some(range) = RegexRange::anchored(offset, 1, pattern.len()) {
+            facts.quantifier_follows_nothing.push(range);
+            diagnostics.push(RegexDiagnostic::new(
+                RegexDiagnosticCode::QuantifierFollowsNothing,
+                range,
+                None,
+            ));
+        }
+    }
 
     for offset in nested_quantifier::find_nested_quantifiers(&stream) {
         if let Some(range) = RegexRange::anchored(offset, 1, pattern.len()) {

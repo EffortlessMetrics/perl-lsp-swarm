@@ -59,7 +59,10 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 // subjects, so without this bump a client holding a pre-change ID could be told
 // `unchanged` and keep diagnostics that predate every one of those. The cost is one
 // `full` report per document after upgrade, which is what the pin is for.
-const RULE_CATALOG_SCHEMA_VERSION: u32 = 2;
+// Bumped to 3 by #16608: `PL1008` (quantifier follows nothing) is a new catalog
+// identity, so a pre-change client could otherwise be told `unchanged` and never
+// receive it. Same cost as the #7024 bump: one `full` report per document.
+const RULE_CATALOG_SCHEMA_VERSION: u32 = 3;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
@@ -304,6 +307,18 @@ pub(crate) fn compose_report_identity(
     }
 }
 
+/// The schema versions composed into every pull-report result ID, in one
+/// place so tests vary the same construction `compose` consumes.
+fn current_schema_versions() -> DiagnosticResultSchemaVersions {
+    DiagnosticResultSchemaVersions::new(
+        RULE_CATALOG_SCHEMA_VERSION,
+        CRITIC_IDENTITY_SCHEMA_VERSION,
+        SUPPRESSION_CONTRACT_SCHEMA_VERSION,
+        PROJECTION_WIRE_SCHEMA_VERSION,
+        REMEDIATION_WIRE_SCHEMA_VERSION,
+    )
+}
+
 impl PullReportSubject {
     /// Compose the opaque public result ID for this subject.
     ///
@@ -311,6 +326,15 @@ impl PullReportSubject {
     /// through SHA-256 over a length-prefixed canonical encoding that embeds
     /// the core substrate identity (#7201) plus this layer's fragments.
     pub fn compose(&self) -> Result<PullReportResultId, NotReusable> {
+        self.compose_with_versions(current_schema_versions())
+    }
+
+    /// [`Self::compose`] with explicit schema versions, so tests can vary
+    /// one version slot through the complete production composition.
+    fn compose_with_versions(
+        &self,
+        versions: DiagnosticResultSchemaVersions,
+    ) -> Result<PullReportResultId, NotReusable> {
         let policy = AcceptedCriticPolicyIdentity::new(
             self.critic_root_id.clone(),
             self.accepted_critic_fingerprint.clone(),
@@ -330,13 +354,7 @@ impl PullReportSubject {
             ),
             policy,
             facts,
-            DiagnosticResultSchemaVersions::new(
-                RULE_CATALOG_SCHEMA_VERSION,
-                CRITIC_IDENTITY_SCHEMA_VERSION,
-                SUPPRESSION_CONTRACT_SCHEMA_VERSION,
-                PROJECTION_WIRE_SCHEMA_VERSION,
-                REMEDIATION_WIRE_SCHEMA_VERSION,
-            ),
+            versions,
         )
         .compose();
 
@@ -595,6 +613,59 @@ mod tests {
             return format!("C:{path_or_uri}");
         }
         path_or_uri.to_string()
+    }
+
+    #[test]
+    fn rule_catalog_schema_version_pins_the_pl1008_bump() {
+        // #16608 added PL1008 to the built-in catalog; the pin must stay at 3
+        // (see the bump comment on the constant) or pre-change clients could
+        // be told `unchanged` and never receive the new diagnostic.
+        assert_eq!(RULE_CATALOG_SCHEMA_VERSION, 3);
+        // The bump exists for one catalog entry: if PL1008 leaves the
+        // catalog, or stops round-tripping through `parse_code`, the pin
+        // above must not stay green on its own.
+        assert!(
+            perl_diagnostics::DiagnosticCode::ALL
+                .contains(&perl_diagnostics::DiagnosticCode::RegexQuantifierFollowsNothing),
+            "PL1008 must stay registered in the diagnostic catalog"
+        );
+        assert_eq!(
+            perl_diagnostics::DiagnosticCode::RegexQuantifierFollowsNothing.as_str(),
+            "PL1008"
+        );
+        assert_eq!(
+            perl_diagnostics::DiagnosticCode::parse_code("PL1008"),
+            Some(perl_diagnostics::DiagnosticCode::RegexQuantifierFollowsNothing)
+        );
+    }
+
+    #[test]
+    fn rule_catalog_version_reaches_the_result_id() -> Result<(), NotReusable> {
+        // The version only invalidates a cached report if it reaches the
+        // composed result ID. Compare final IDs from the production
+        // composition: the current versions must reproduce the `compose`
+        // ID, and moving the rule-catalog slot must move the ID, so a
+        // pre-bump client is never told `unchanged`.
+        let context = context_with(Some(ROOT_A));
+        let subject = subject_for(&context, URI_A, CONTENT);
+        let baseline = subject.compose()?;
+        assert_eq!(
+            baseline,
+            subject.compose_with_versions(current_schema_versions())?,
+            "the current versions must reproduce the composed ID"
+        );
+        assert_ne!(
+            baseline,
+            subject.compose_with_versions(DiagnosticResultSchemaVersions::new(
+                RULE_CATALOG_SCHEMA_VERSION + 1,
+                CRITIC_IDENTITY_SCHEMA_VERSION,
+                SUPPRESSION_CONTRACT_SCHEMA_VERSION,
+                PROJECTION_WIRE_SCHEMA_VERSION,
+                REMEDIATION_WIRE_SCHEMA_VERSION,
+            ))?,
+            "moving the rule-catalog version must move the result ID"
+        );
+        Ok(())
     }
 
     #[test]
