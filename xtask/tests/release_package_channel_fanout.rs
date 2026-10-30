@@ -17,7 +17,8 @@
 //! 4. Prerelease gating is unchanged (the dispatch steps stay skipped for
 //!    prereleases).
 //! 5. `release.yml` remains the only orchestrated entry point — no new
-//!    dispatch workflow, and the upstream bump workflows are untouched.
+//!    dispatch workflow; the bump workflows gain only a display-only
+//!    run-name carrying the tag, which is the durable dispatch identity.
 
 use anyhow::{Context, Result, ensure};
 use serde_yaml_ng::Value;
@@ -133,21 +134,31 @@ fn each_per_channel_step_checks_idempotency_against_existing_dispatch() -> Resul
 
         let text = step_run_text(step);
 
-        // The idempotency check queries recent workflow_dispatch runs on the
-        // default branch and filters by head_sha == release SHA. The check
-        // must (a) actually issue the API call, (b) filter by the bump
-        // workflow's path, and (c) gate the dispatch on its result.
+        // The idempotency check queries the bump workflow's own
+        // workflow_dispatch runs and matches the prior dispatch by its
+        // durable release identity (the tag in the run's display title), not
+        // by head_sha: the child records the default-branch tip at dispatch
+        // time, which moves during a long release. The check must (a) issue
+        // the API call, (b) scope it to the bump workflow, (c) match the tag,
+        // and (d) gate the dispatch on its result.
         for required in [
             "gh api",
-            "actions/runs?event=workflow_dispatch",
-            channel,
-            "head_sha",
-            "RELEASE_SHA",
+            &format!("actions/workflows/{channel}/runs?event=workflow_dispatch"),
+            "display_title",
+            "RELEASE_TAG",
             "skipping duplicate dispatch",
+            "disposition=duplicate-skipped",
+            "disposition=dispatched",
         ] {
             ensure!(
                 text.contains(required),
                 "{channel} dispatch step is missing idempotency seam `{required}`"
+            );
+        }
+        for forbidden in [".head_sha", "RELEASE_SHA"] {
+            ensure!(
+                !text.contains(forbidden),
+                "{channel} dispatch step must not key idempotency on `{forbidden}`"
             );
         }
     }
@@ -155,27 +166,48 @@ fn each_per_channel_step_checks_idempotency_against_existing_dispatch() -> Resul
 }
 
 #[test]
-fn fan_out_step_dispatches_against_same_release_sha_for_each_channel() -> Result<()> {
-    // RELEASE_SHA is the only stable per-release identifier we have in the
-    // dispatch-publishers job. It must be sourced from ${{ github.sha }} (the
-    // validated release commit, see the `validate_subject_sha` step) and
-    // shared across all four per-channel steps — otherwise the idempotency
-    // check would not find sibling dispatches.
+fn fan_out_step_dispatches_against_same_release_tag_for_each_channel() -> Result<()> {
+    // The release tag is the durable per-release identity. Every bump
+    // workflow must declare a run-name carrying the tag so the idempotency
+    // lookup can find a prior dispatch by display title; matching on
+    // head_sha cannot work because the child records the default-branch tip
+    // at dispatch time.
+    for bump in PACKAGE_CHANNELS.iter() {
+        let path = root()?.join(".github/workflows").join(bump);
+        let source = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        ensure!(
+            source.contains("run-name:") && source.contains("inputs.tag"),
+            "{bump} must declare a run-name carrying the tag input"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn each_per_channel_step_fails_closed_when_duplicate_lookup_fails() -> Result<()> {
+    // A failed duplicate lookup must fail that channel (its continue-on-error
+    // still lets the other channels run). Treating unavailable idempotency
+    // evidence as proof that no run exists recreates the duplicate.
     let document = release_workflow()?;
     let job = dispatch_publishers(&document)?;
     let steps = steps(job)?;
 
-    let release_sha_seen = steps
-        .iter()
-        .filter(|step| step_id(step).map(|id| id.starts_with("dispatch-")) == Some(true))
-        .filter_map(|step| step.get("env").and_then(Value::as_mapping))
-        .filter_map(|env| env.get(Value::String("RELEASE_SHA".into())).and_then(Value::as_str))
-        .all(|value| value.contains("github.sha"));
-
-    ensure!(
-        release_sha_seen,
-        "every per-channel dispatch step must bind RELEASE_SHA to ${{{{ github.sha }}}}"
-    );
+    for (channel, expected_id) in PACKAGE_CHANNELS.iter().zip(DISPATCH_STEP_IDS.iter()) {
+        let step = steps
+            .iter()
+            .find(|step| step_id(step).map(|id| id == *expected_id) == Some(true))
+            .with_context(|| format!("missing dispatch step `{expected_id}`"))?;
+        let text = step_run_text(step);
+        ensure!(
+            !text.contains("if response=$(gh api"),
+            "{channel} dispatch must not guard the duplicate lookup behind an if"
+        );
+        ensure!(
+            text.contains("duplicate lookup failed") && text.contains("exit 1"),
+            "{channel} dispatch must fail closed when the duplicate lookup fails"
+        );
+    }
     Ok(())
 }
 
@@ -258,8 +290,9 @@ fn fan_out_step_emits_explicit_disposition_summary() -> Result<()> {
             .and_then(Value::as_str)
             .with_context(|| format!("fan-out summary env must bind `{key}`"))?;
         ensure!(
-            value.contains("steps["),
-            "fan-out summary env `{key}` must source from steps[*].conclusion (got {value:?})"
+            value.contains("steps[") && value.contains(".outcome"),
+            "fan-out summary env `{key}` must source from steps[*].outcome, the \
+             pre-continue-on-error result (got {value:?})"
         );
     }
 
