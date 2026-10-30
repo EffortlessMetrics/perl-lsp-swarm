@@ -633,12 +633,14 @@ fn gated_module_end_line(code: &[String], head_line: usize) -> usize {
 /// backslash are carried in the returned state. Everything else closes within
 /// its own line and is blanked there.
 fn code_only(lines: &[String]) -> Vec<String> {
-    let mut block_comment = false;
+    let mut block_comment_depth = 0usize;
     let mut raw_hashes: Option<usize> = None;
     let mut continued_string = false;
     lines
         .iter()
-        .map(|line| blanked_code(line, &mut block_comment, &mut raw_hashes, &mut continued_string))
+        .map(|line| {
+            blanked_code(line, &mut block_comment_depth, &mut raw_hashes, &mut continued_string)
+        })
         .collect()
 }
 
@@ -677,13 +679,35 @@ fn find_sequence(chars: &[char], start: usize, needle: &str) -> Option<usize> {
         .find(|index| chars[*index..*index + needle.len()] == needle[..])
 }
 
+/// Blank a block comment starting at `index`, tracking nesting depth so an
+/// inner `/* … */` cannot close the outer comment. Returns the index just
+/// past the comment, or end of line with the depth still open.
+fn blank_block_comment(chars: &[char], out: &mut [char], start: usize, depth: &mut usize) -> usize {
+    let mut index = start;
+    while *depth > 0 && index < chars.len() {
+        if chars[index..].starts_with(&['/', '*']) {
+            blank(out, index, index + 2);
+            index += 2;
+            *depth += 1;
+        } else if chars[index..].starts_with(&['*', '/']) {
+            blank(out, index, index + 2);
+            index += 2;
+            *depth -= 1;
+        } else {
+            blank(out, index, index + 1);
+            index += 1;
+        }
+    }
+    index
+}
+
 /// The line's code, with comments and string bodies blanked to spaces.
 ///
 /// The three `&mut` parameters are the multi-line construct state, threaded
 /// across lines by [`code_only`].
 fn blanked_code(
     line: &str,
-    block_comment: &mut bool,
+    block_comment_depth: &mut usize,
     raw_hashes: &mut Option<usize>,
     continued_string: &mut bool,
 ) -> String {
@@ -693,18 +717,13 @@ fn blanked_code(
 
     // Resume whatever opened on an earlier line. Each case either closes here
     // and falls through to the ordinary scan, or runs to end of line and leaves
-    // the construct open for the next one.
-    if *block_comment {
-        match find_sequence(&chars, index, "*/") {
-            Some(end) => {
-                blank(&mut out, index, end + 2);
-                index = end + 2;
-                *block_comment = false;
-            }
-            None => {
-                blank(&mut out, index, chars.len());
-                return out.into_iter().collect();
-            }
+    // the construct open for the next one. Rust block comments nest, so the
+    // comment state is a depth, not a flag: /* outer /* inner */ still leaves
+    // the outer comment open.
+    if *block_comment_depth > 0 {
+        index = blank_block_comment(&chars, &mut out, index, block_comment_depth);
+        if *block_comment_depth > 0 {
+            return out.into_iter().collect();
         }
     } else if let Some(hashes) = *raw_hashes {
         let terminator = raw_terminator(hashes);
@@ -737,16 +756,10 @@ fn blanked_code(
         if rest.starts_with("/*") {
             blank(&mut out, index, index + 2);
             index += 2;
-            match find_sequence(&chars, index, "*/") {
-                Some(end) => {
-                    blank(&mut out, index, end + 2);
-                    index = end + 2;
-                }
-                None => {
-                    blank(&mut out, index, chars.len());
-                    *block_comment = true;
-                    break;
-                }
+            *block_comment_depth = 1;
+            index = blank_block_comment(&chars, &mut out, index, block_comment_depth);
+            if *block_comment_depth > 0 {
+                break;
             }
             continue;
         }
@@ -1562,6 +1575,26 @@ mod tests {
         ensure!(
             !predicate_is_test_only("all(feature = \"a,test\")"),
             "a comma inside a literal must not manufacture a bare test conjunct"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_nested_block_comment_does_not_close_the_outer_comment() -> Result<()> {
+        // Rust block comments nest: the } after the inner */ is still inside
+        // the outer comment and must be blanked, not read as structure.
+        let lines: Vec<String> =
+            ["/* outer /* inner */ }", "still comment */", "fn production() {}"]
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+        let code = code_only(&lines);
+        ensure!(!code[0].contains('}'), "inner close leaked a brace: {:?}", code[0]);
+        ensure!(!code[1].contains("still"), "outer comment leaked text: {:?}", code[1]);
+        ensure!(
+            code[2].contains("fn production()"),
+            "code after the comment was blanked: {:?}",
+            code[2]
         );
         Ok(())
     }

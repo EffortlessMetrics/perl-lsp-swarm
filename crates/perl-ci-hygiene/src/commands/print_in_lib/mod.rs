@@ -58,6 +58,7 @@ fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
         let mut print_allow_scope = PrintAllowScope::default();
         let mut attrs = AttrJoiner::default();
 
+        let mut was_in_test_scope = false;
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
             // Skip the test module rather than stopping at it. This loop used to
@@ -67,8 +68,19 @@ fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
             // bookkeeping below in balance: the opening `{` on the module head and
             // its closing `}` are inside the same skipped run.
             if line_is_test_scope(&test_spans, line_no) {
+                // An attribute written on the test module itself is observed
+                // before its span starts, so reset the allowance bookkeeping
+                // on entry: that attribute must not exempt the first
+                // production item after the span.
+                if !was_in_test_scope {
+                    debug_assertions_scope = PrintAllowScope::default();
+                    print_allow_scope = PrintAllowScope::default();
+                    attrs = AttrJoiner::default();
+                }
+                was_in_test_scope = true;
                 continue;
             }
+            was_in_test_scope = false;
 
             if debug_attr_re.is_match(line) {
                 debug_assertions_scope.note_attribute();
@@ -492,6 +504,29 @@ mod tests {
                 "    println!(\"allowed\");\n",
                 "}\n",
                 "#[cfg(test)]\n",
+                "mod tests {\n",
+                "    fn it() { println!(\"test-only\"); }\n",
+                "}\n",
+                "pub fn leaked() {\n",
+                "    println!(\"reported\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_allow_on_the_test_module_does_not_exempt_what_follows_it() -> Result<()> {
+        // An #[allow] written on `mod tests` belongs to the test module, not
+        // to the first production item after it: the allowance state observed
+        // before the span starts is reset when the span is entered.
+        let tree = RepoTree::new("allow-on-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[cfg(test)]\n",
+                "#[allow(clippy::print_stdout)]\n",
                 "mod tests {\n",
                 "    fn it() { println!(\"test-only\"); }\n",
                 "}\n",
