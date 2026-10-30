@@ -133,10 +133,11 @@ impl DebugAdapter {
             if indent > 0 || ordinal != Some(top_level.len() as u64) {
                 return None;
             }
-            // An odd number of quotes means the payload's string continues on
-            // the next output line; the following lines would be continuations
-            // masquerading as further elements.
-            if payload.matches('\'').count() % 2 == 1 {
+            // An odd number of unescaped quotes means the payload's string
+            // continues on the next output line; the following lines would
+            // be continuations masquerading as further elements. An escaped
+            // apostrophe (it\'s) does not open a continuation.
+            if Self::unescaped_single_quote_count(&payload) % 2 == 1 {
                 return None;
             }
             top_level.push(payload);
@@ -150,6 +151,26 @@ impl DebugAdapter {
             }
             _ => Some((format!("({})", top_level.join(", ")), "array".to_string())),
         }
+    }
+
+    /// Count single quotes that are not escaped: a quote preceded by an
+    /// even number of backslashes (including zero) is unescaped.
+    fn unescaped_single_quote_count(payload: &str) -> usize {
+        let mut count = 0_usize;
+        let mut backslashes = 0_usize;
+        for ch in payload.chars() {
+            match ch {
+                '\\' => backslashes += 1,
+                '\'' => {
+                    if backslashes % 2 == 0 {
+                        count += 1;
+                    }
+                    backslashes = 0;
+                }
+                _ => backslashes = 0,
+            }
+        }
+        count
     }
 
     /// Infer a coarse DAP value type from literal-like debugger output.
@@ -796,6 +817,18 @@ mod tests {
         assert_eq!(
             DebugAdapter::parse_evaluate_result_from_x_dump(&prompted),
             Some(("1024".to_string(), "integer".to_string()))
+        );
+    }
+
+    /// A complete payload whose apostrophe is escaped (it\'s) does not open
+    /// a continuation, so the reshape accepts it instead of declining to
+    /// the generic fallback (#17244).
+    #[test]
+    pub(super) fn x_dump_accepts_escaped_apostrophe_payload() {
+        let lines = vec!["0  'it\\'s'".to_string()];
+        assert_eq!(
+            DebugAdapter::parse_evaluate_result_from_x_dump(&lines),
+            Some(("'it\\'s'".to_string(), "string".to_string()))
         );
     }
 
