@@ -183,6 +183,123 @@ else:
         with self.assertRaises(verifier.VerificationError):
             verifier.verify(self._args())
 
+    def _shared_source_fixture(self) -> None:
+        # Two real package manifests bind the same canonical Rust file. Cargo's
+        # independently queried inventory is supplied by the existing fake tool;
+        # these tests execute no real Cargo or rustfmt process.
+        for relative, content in {
+            "Cargo.toml": '[workspace]\nmembers=["pkg","bootstrap"]\nresolver="2"\n',
+            "pkg/Cargo.toml": '[package]\nname="pkg"\nversion="0.1.0"\n[[bin]]\nname="producer"\npath="../shared/producer.rs"\n',
+            "bootstrap/Cargo.toml": '[package]\nname="bootstrap"\nversion="0.1.0"\n[[bin]]\nname="bootstrap"\npath="../shared/producer.rs"\n',
+            "shared/producer.rs": "fn main() {}\n",
+        }.items():
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        self._git("add", ".")
+        self._git("commit", "-m", "two package targets share producer source")
+        self.sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self.tree = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        metadata = self._metadata_payload()
+        metadata["packages"][0]["targets"].append(
+            {"name": "producer", "kind": ["bin"], "src_path": str(self.root / "shared/producer.rs")}
+        )
+        package_id = "path+file:///fixture/bootstrap#0.1.0"
+        metadata["workspace_members"].append(package_id)
+        metadata["packages"].append(
+            {"id": package_id, "name": "bootstrap", "manifest_path": str(self.root / "bootstrap/Cargo.toml"),
+             "targets": [{"name": "bootstrap", "kind": ["bin"], "src_path": str(self.root / "shared/producer.rs")}]}
+        )
+        self._write_metadata(metadata)
+        self.payload = self._valid_payload()
+        self.payload["workspace"]["manifests"].insert(0, {"manifest": "bootstrap/Cargo.toml", "package": "bootstrap"})
+        self.payload["workspace"]["manifest_count"] = 2
+        self.payload["workspace"]["targets"].insert(0,
+            {"package": "bootstrap", "name": "bootstrap", "kind": ["bin"], "source": "shared/producer.rs", "manifest": "bootstrap/Cargo.toml"})
+        self.payload["workspace"]["targets"].append(
+            {"package": "pkg", "name": "producer", "kind": ["bin"], "source": "shared/producer.rs", "manifest": "pkg/Cargo.toml"})
+        self.payload["workspace"]["target_count"] = 3
+        self.payload["runs"].insert(0, {"manifest": "bootstrap/Cargo.toml", "package": "bootstrap", "status": "pass"})
+        self._resign(self.payload)
+        self._write(self.payload)
+
+    def test_distinct_package_targets_sharing_canonical_source_pass(self) -> None:
+        self._shared_source_fixture()
+        verifier.verify(self._args())
+
+    def test_same_package_shared_source_distinguishes_target_names_and_kinds(self) -> None:
+        self._shared_source_fixture()
+        manifest = self.root / "pkg/Cargo.toml"
+        with manifest.open("a", encoding="utf-8") as stream:
+            stream.write('[[bin]]\nname="producer-alt"\npath="../shared/producer.rs"\n')
+            stream.write('[[example]]\nname="producer"\npath="../shared/producer.rs"\n')
+        self._git("add", "pkg/Cargo.toml")
+        self._git("commit", "-m", "same source with distinct names and kinds")
+        self.sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self.tree = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        metadata = json.loads(self.metadata.read_text())
+        for name, kind in (("producer-alt", "bin"), ("producer", "example")):
+            metadata["packages"][0]["targets"].append(
+                {"name": name, "kind": [kind], "src_path": str(self.root / "shared/producer.rs")}
+            )
+            self.payload["workspace"]["targets"].append(
+                {"package": "pkg", "manifest": "pkg/Cargo.toml", "name": name,
+                 "kind": [kind], "source": "shared/producer.rs"}
+            )
+        self._write_metadata(metadata)
+        self.payload["subject"] = {"repository_sha": self.sha, "repository_tree_sha": self.tree}
+        self.payload["workspace"]["targets"].sort(key=lambda row: (row["manifest"], row["source"], row["name"]))
+        self.payload["workspace"]["target_count"] = 5
+        self._resign(self.payload)
+        self._write(self.payload)
+        verifier.verify(self._args())
+
+    def test_shared_source_target_identity_forgeries_are_rejected(self) -> None:
+        self._shared_source_fixture()
+        for field, forged in (("name", "forged"), ("kind", ["example"]),
+                              ("source", "pkg/src/lib.rs"), ("manifest", "pkg/Cargo.toml"), ("package", "pkg")):
+            with self.subTest(field=field):
+                self.assert_rejected(lambda value: value["workspace"]["targets"][0].update({field: forged}))
+        # A coherent but wrong package/manifest pair must still fail the exact
+        # independent inventory equality, after structural validation succeeds.
+        self.assert_rejected(lambda value: value["workspace"]["targets"][0].update(
+            package="pkg", manifest="pkg/Cargo.toml"
+        ))
+
+    def test_exact_shared_target_duplicate_is_rejected_even_if_metadata_duplicates_it(self) -> None:
+        self._shared_source_fixture()
+        metadata = json.loads(self.metadata.read_text())
+        metadata["packages"][1]["targets"].append(copy.deepcopy(metadata["packages"][1]["targets"][0]))
+        self._write_metadata(metadata)
+        self.payload["workspace"]["targets"].insert(0, copy.deepcopy(self.payload["workspace"]["targets"][0]))
+        self.payload["workspace"]["target_count"] = 4
+        self._resign(self.payload)
+        self._write(self.payload)
+        with self.assertRaisesRegex(verifier.VerificationError, "targets must be unique"):
+            verifier.verify(self._args())
+
+    def test_shared_source_target_omission_is_rejected(self) -> None:
+        self._shared_source_fixture()
+        broken = copy.deepcopy(self.payload)
+        broken["workspace"]["targets"].pop(0)
+        broken["workspace"]["target_count"] = 2
+        self._resign(broken)
+        self._write(broken)
+        with self.assertRaisesRegex(verifier.VerificationError, "targets do not match"):
+            verifier.verify(self._args())
+
+    def test_shared_source_manifest_runs_remain_exact_and_successful(self) -> None:
+        self._shared_source_fixture()
+        mutations = (
+            lambda value: value["runs"].pop(0),
+            lambda value: value["runs"].insert(0, copy.deepcopy(value["runs"][0])),
+            lambda value: value["runs"][0].update(status="instrument_failure"),
+            lambda value: value["runs"][0].update(package="pkg"),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.assert_rejected(mutation)
+
     def test_valid_receipt_passes(self) -> None:
         verifier.verify(self._args())
 

@@ -27,9 +27,18 @@ on:
       - 'crates/**/Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/tests/test_cargo_cohort.py'
+      - 'scripts/tests/test_cargo_cohort_source_plan.py'
+      - 'scripts/tests/test_storage_self_test_workflow.py'
+      - 'scripts/tests/test_routed_test_cohorts.py'
+      - 'scripts/tests/fixtures/routed-resolver-2/**'
+      - 'xtask/src/bin/routed-test-cohorts.rs'
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/storage-doctor'
+      - 'scripts/measure_cargo_storage.py'
+      - 'scripts/tests/test_measure_cargo_storage.py'
+      - 'scripts/ci/report_routed_storage_qualification.py'
+      - 'scripts/tests/test_routed_storage_qualification_report.py'
       - 'scripts/tests/test_storage_doctor.py'
       - 'justfile'
       # Ordinary doctor entrypoint regressions (#8639, landed in #17556).
@@ -757,16 +766,57 @@ jobs:
   cargo-admitted-storage-self-test:
     name: Cargo admitted storage self-test
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
       - name: Checkout
+        id: storage_checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Independent portable controls must not wait for a Rust install or
+      # disappear after another suite fails. Cancellation still stops work.
+      - name: Check storage self-test ordering and failure propagation
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_storage_self_test_workflow.py' -v
       - name: Run both admitted storage suites without Rust builds
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py' -v
+      - name: Check fresh source traversal plans
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort_source_plan.py' -v
       - name: Check cohort ownership and exact reclamation controls
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+      - name: Check staged routed producer source and runtime controls
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_test_cohorts.py' -v
       - name: Check retained target measurement failure and threshold controls
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
+      - name: Check sampled allocation, hardlinks and interrupted measurement
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_measure_cargo_storage.py' -v
+      - name: Check ordinary and cohort inventory report discriminators
+        if: ${{ !cancelled() && steps.storage_checkout.outcome == 'success' }}
+        run: python3 -m unittest discover -s scripts/tests -p 'test_routed_storage_qualification_report.py' -v
+      # Rust work retains the default success() prerequisite. Any failed
+      # portable control keeps the job red and avoids unnecessary builds.
+      - name: Install pinned Rust toolchain for Cargo runtime fixture
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: clippy
+      - name: Exercise Cargo binary runtime environments through admitted owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd scripts/tests/fixtures/routed-resolver-2/b
+          ../../../../cargo-admitted test --locked --offline -p cohort-b --test shared
+          ../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --test runtime_env -- --nocapture
+          ../../../../cargo-admitted test --locked --offline -p cohort-b --features enabled-bin --tests
+          ../../../../cargo-admitted bench --locked --offline -p cohort-b --features enabled-bin --bench runtime_env
+      - name: Run the native producer unit tests through admitted Cargo
+        run: scripts/cargo-admitted test --locked -p xtask --bin routed-test-cohorts
+      - name: Check native producer lints through admitted Cargo
+        run: scripts/cargo-admitted clippy -p xtask --all-targets --profile agent --locked -- -D warnings
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test
@@ -802,7 +852,7 @@ jobs:
           else
             echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+            echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   release-turnkey-handoff-self-test:
@@ -930,3 +980,124 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The head-name sentinel contract regressed — it could again trigger via a suppressible event, execute or check out any ref, silently pass a SHA-like branch, or drift from its documented surface. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  routed-storage-qualification:
+    name: Routed storage qualification (${{ matrix.mode }})
+    # Campaign-only proof: production gate activation and required status are unchanged.
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 17623
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_AUTO_INSTALL: '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [ordinary, cohort]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: clippy,rustfmt
+      - name: Native lifecycle controls
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+      - name: Measure exact six-package route with its original watchdog and reserve
+        shell: bash
+        env:
+          QUALIFICATION_MODE: ${{ matrix.mode }}
+          QUALIFICATION_CANDIDATE: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Runtime evidence is not source; prevent source-manifest capture of growing logs.
+          printf '/qualification-evidence/\n' >> .git/info/exclude
+          mkdir -p qualification-evidence/logs
+          git rev-parse HEAD > qualification-evidence/head.txt
+          rustc -vV > qualification-evidence/rustc.txt
+          cargo -vV > qualification-evidence/cargo.txt
+          # Same canonical resource planner as admission; this read allocates no build roots.
+          python3 - <<'PY' > qualification-evidence/resources.json
+          import json, os, sys
+          sys.path.insert(0, 'scripts')
+          from cargo_admitted import resource_plan
+          _, _, resources = resource_plan(os.environ.copy())
+          print(json.dumps({key: str(value) for key, value in resources.items()}))
+          PY
+          target="$(jq -r .target qualification-evidence/resources.json)"
+          build="$(jq -r .build qualification-evidence/resources.json)"
+          cargo_home="$(jq -r .cargo_home qualification-evidence/resources.json)"
+          temp="$(jq -r .temp qualification-evidence/resources.json)"
+          export QUALIFICATION_TARGET="$target"
+          export QUALIFICATION_COHORT_EVIDENCE="$PWD/qualification-evidence/cohort"
+          cat > "$RUNNER_TEMP/production-route.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          packages=(-p perl-dap -p perl-lsp-rs -p perl-parser-core -p perl-semantic-analyzer -p perl-workspace -p xtask)
+          if [ "$QUALIFICATION_MODE" = cohort ]; then
+            scripts/cargo-admitted --routed-test-cohorts run --locked -p xtask --bin routed-test-cohorts -- "${packages[@]}" --evidence-dir "$QUALIFICATION_COHORT_EVIDENCE"
+          else
+            scripts/cargo-admitted build -p perllsp --locked
+            env PERL_LSP_BIN="$QUALIFICATION_TARGET/debug/perllsp" scripts/cargo-admitted test --locked --tests "${packages[@]}" --message-format=json-render-diagnostics
+          fi
+          SH
+          set +e
+          python3 scripts/measure_cargo_storage.py --root "$target" --root "$build" --root "$cargo_home" --root "$temp" \
+            --root "$PWD/qualification-evidence/cohort" --root "$PWD/qualification-evidence/logs" \
+            --interval 1 --min-free-bytes 42949672960 --evidence "$PWD/qualification-evidence/storage.jsonl" \
+            -- timeout --signal=INT 1500 bash "$RUNNER_TEMP/production-route.sh" \
+            > qualification-evidence/logs/route.stdout 2> qualification-evidence/logs/route.stderr
+          status=$?
+          set -e
+          printf '%s\n' "$status" > qualification-evidence/status.txt
+          tail -n 1 qualification-evidence/storage.jsonl
+          tail -n 120 qualification-evidence/logs/route.stderr
+          # unit_routed_full already allows one retry. Only retry a timed-out
+          # attempt with proven closure/release, never an ownership refusal.
+          if [ "$status" = 124 ] && python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from scripts.ci.report_routed_storage_qualification import retry_eligible
+          allowed = retry_eligible(Path('qualification-evidence').resolve(), os.environ['QUALIFICATION_MODE'],
+                                   Path.cwd(), os.environ['QUALIFICATION_CANDIDATE'])
+          raise SystemExit(0 if allowed else 75)
+          PY
+          then
+            python3 scripts/ci/report_routed_storage_qualification.py --mode "$QUALIFICATION_MODE" \
+              --root "$PWD" --candidate-sha "$QUALIFICATION_CANDIDATE" --evidence "$PWD/qualification-evidence" | tee qualification-evidence/summary.json
+            mkdir -p qualification-evidence/retry/logs
+            cp qualification-evidence/{head.txt,rustc.txt,cargo.txt,resources.json} qualification-evidence/retry/
+            export QUALIFICATION_COHORT_EVIDENCE="$PWD/qualification-evidence/retry/cohort"
+            set +e
+            python3 scripts/measure_cargo_storage.py --root "$target" --root "$build" --root "$cargo_home" --root "$temp" \
+              --root "$PWD/qualification-evidence/cohort" --root "$PWD/qualification-evidence/logs" \
+              --root "$PWD/qualification-evidence/retry/cohort" --root "$PWD/qualification-evidence/retry/logs" \
+              --interval 1 --min-free-bytes 42949672960 --evidence "$PWD/qualification-evidence/retry/storage.jsonl" \
+              -- timeout --signal=INT 1500 bash "$RUNNER_TEMP/production-route.sh" \
+              > qualification-evidence/retry/logs/route.stdout 2> qualification-evidence/retry/logs/route.stderr
+            status=$?
+            set -e
+            printf '%s\n' "$status" > qualification-evidence/retry/status.txt
+            tail -n 1 qualification-evidence/retry/storage.jsonl
+            tail -n 120 qualification-evidence/retry/logs/route.stderr
+          fi
+          exit "$status"
+      - name: Publish inspectable disk and inventory comparison summary
+        if: always()
+        env:
+          QUALIFICATION_MODE: ${{ matrix.mode }}
+          QUALIFICATION_CANDIDATE: ${{ github.event.pull_request.head.sha }}
+        run: |
+          evidence="$PWD/qualification-evidence"
+          if [ -f "$evidence/retry/status.txt" ]; then evidence="$evidence/retry"; fi
+          python3 scripts/ci/report_routed_storage_qualification.py --mode "$QUALIFICATION_MODE" \
+            --root "$PWD" --candidate-sha "$QUALIFICATION_CANDIDATE" --evidence "$evidence" | tee "$evidence/summary.json"
+      - name: Preserve exact candidate measurements and diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: routed-storage-${{ matrix.mode }}-${{ github.event.pull_request.head.sha }}
+          path: qualification-evidence/
+          if-no-files-found: error
+          retention-days: 14

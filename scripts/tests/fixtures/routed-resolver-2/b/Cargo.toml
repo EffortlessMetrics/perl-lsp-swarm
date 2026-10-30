@@ -1,0 +1,32 @@
+[package]
+name = "cohort-b"
+version = "0.1.0"
+edition = "2024"
+[dev-dependencies]
+cohort-a = { path = "../a", features = ["activated"] }
+[[test]]
+name = "shared"
+path = "tests/shared.rs"
+
+[features]
+enabled-bin = []
+unbuilt = []
+[[bin]]
+name = "enabled_probe"
+path = "src/enabled_probe.rs"
+test = false
+required-features = ["enabled-bin"]
+[[bin]]
+name = "unbuilt_probe"
+path = "src/unbuilt_probe.rs"
+test = false
+required-features = ["unbuilt"]
+[[test]]
+name = "runtime_env"
+path = "tests/runtime_env.rs"
+required-features = ["enabled-bin"]
+[[bench]]
+name = "runtime_env"
+path = "benches/runtime_env.rs"
+harness = false
+required-features = ["enabled-bin"]

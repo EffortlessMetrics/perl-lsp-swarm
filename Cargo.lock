@@ -2800,6 +2800,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "routed-test-cohorts-bootstrap"
+version = "0.17.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "rstest"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

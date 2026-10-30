@@ -224,3 +224,25 @@ is not Rust build or footprint evidence. The existing offline real-Cargo A/B/A
 regression remains opt-in with `CARGO_ADMITTED_REAL_BUILD_TEST=1` and requires an
 already installed toolchain; its capacity observation is a fixture, not host
 qualification.
+
+## Explicit cohort discovery profiles
+
+Routed cohorts inherit the original admitted owner's
+`CARGO_ADMITTED_CHILD_DISCOVERY` selection. The absent-variable default remains
+`proc-children`; hosts lacking its kernel interface refuse launch. Selecting
+`proc-parent-pidfd` explicitly uses the separately qualified parent-table/pidfd
+backend. The descriptor, capability probe, wait owner and each launch must agree;
+there is no automatic fallback. Changing the selection changes the budget scope.
+
+Combined target batches can produce both a binary's test harness and its public
+runtime binary. Only a compiler artifact with the strict Boolean
+`profile.test=false` supplies `CARGO_BIN_EXE_*` authority. Test-profile binary
+artifacts remain subject to the complete harness target binding and consumption
+controls. Missing, malformed, wrong-package or conflicting ordinary binary
+artifacts still refuse consumption; companion public binaries are retained.
+
+The native cloud qualification uses an explicit experimental request budget of
+12 GiB additional growth and 6 GiB reserve. Its declared sizing basis is not a
+measured full-route upper bound. Passing preflight establishes current capacity
+only. Full coverage and cold/warm/edit measurements remain necessary before
+claiming that the complete routed gate fits this host.

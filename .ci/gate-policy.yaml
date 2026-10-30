@@ -841,7 +841,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (37/49 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -855,8 +855,10 @@ gates:
     # docs/CLIPPY_POLICY.md ("Target-kind lint contract"): print_stdout and
     # print_stderr are intentional in tests//examples/ (encoded as file-scoped
     # reasoned #[expect]s, never config or gate flags); the panic family stays
-    # denied everywhere. The remaining 12 crates carry measured repair tranches
-    # tracked on #11736 (2026-08-23 census on 470277161, warn-neutralized
+    # denied everywhere. The current partition has 12 residual packages,
+    # including the bootstrap sharing xtask's producer source; its strict
+    # admission remains unqualified. The historical measured repair tranches
+    # were tracked on #11736 (2026-08-23 census on 470277161, warn-neutralized
     # disjoint-unit method: 3195 test-context findings across those 14 crates;
     # production --lib/--bins pass clean except one xtask
     # lines_filter_map_ok). A crate joins when its measured residual under the
