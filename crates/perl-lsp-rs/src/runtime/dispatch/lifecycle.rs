@@ -181,7 +181,6 @@ impl LspServer {
             self.notify_connection_exit();
             return Ok(None);
         }
-        tracing::info!(exit_code, "LSP server exiting");
         if exit_code == 0 {
             tracing::info!(exit_code, "LSP server exiting");
         } else {
