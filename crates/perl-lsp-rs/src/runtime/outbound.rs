@@ -314,6 +314,11 @@ impl OutboundSender {
             // cannot snapshot a stale zero between this observation and the
             // counter update (#16655).
             self.completion.record_rejected_required();
+            drop(gate);
+            // A required response refused by closed admission is a delivery
+            // failure: serving must learn of it through the same signal as a
+            // failed send, or it keeps serving against a dead sink (#18449).
+            self.completion.signal_failure();
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"));
         };
         let result = tx.try_send(OutboundMessage::Response(response)).map_err(map_try_send_error);
