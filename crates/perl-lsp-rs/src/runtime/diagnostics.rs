@@ -173,6 +173,20 @@ fn resolved_parse_diagnostic_offset(error: &crate::error::ParseError, text: &str
     }
 }
 
+/// A parser anchor is a byte offset; diagnostic ranges must end on the next
+/// scalar boundary before conversion to the client's UTF-16 coordinates.
+fn parse_error_position_range(
+    text: &str,
+    line_starts: &perl_parser::position::LineStartsCache,
+    offset: usize,
+) -> ((u32, u32), (u32, u32)) {
+    let end = text
+        .get(offset..)
+        .and_then(|suffix| suffix.chars().next())
+        .map_or(offset, |next| offset + next.len_utf8());
+    (line_starts.offset_to_position(text, offset), line_starts.offset_to_position(text, end))
+}
+
 /// Orchestrator for pull diagnostics operations.
 ///
 /// Coordinates between LspServer state and the pure-logic PullDiagnosticsProvider.
@@ -862,14 +876,14 @@ impl LspServer {
                             None => base_message,
                         };
 
-                    // Convert byte offset to line/column
-                    let (line, character) = pos16(location);
+                    let ((line, character), (end_line, end_character)) =
+                        parse_error_position_range(&text, &line_starts, location);
 
                     diagnostic_json(
                         line,
                         character,
-                        line,
-                        character + 1,
+                        end_line,
+                        end_character,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1037,7 +1051,6 @@ impl LspServer {
         line_starts: &perl_parser::position::LineStartsCache,
         markup_message_support: bool,
     ) -> Vec<Value> {
-        let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
         let mut items: Vec<Value> =
             parse_errors
                 .iter()
@@ -1052,14 +1065,15 @@ impl LspServer {
                             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
                             None => base_message,
                         };
-                    let (line, character) = pos16(location);
+                    let ((line, character), (end_line, end_character)) =
+                        parse_error_position_range(text, line_starts, location);
                     let msg_val =
                         Self::diagnostic_message_value(&message, None, markup_message_support);
                     diagnostic_json(
                         line,
                         character,
-                        line,
-                        character + 1,
+                        end_line,
+                        end_character,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1279,8 +1293,6 @@ impl LspServer {
             hook();
         }
 
-        let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
-
         let lsp_diagnostics: Vec<Value> =
             parse_errors
                 .iter()
@@ -1295,12 +1307,13 @@ impl LspServer {
                             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
                             None => base_message,
                         };
-                    let (line, character) = pos16(location);
+                    let ((line, character), (end_line, end_character)) =
+                        parse_error_position_range(&text, &line_starts, location);
                     diagnostic_json(
                         line,
                         character,
-                        line,
-                        character + 1,
+                        end_line,
+                        end_character,
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
@@ -1424,7 +1437,15 @@ impl LspServer {
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
-        let previous_result_id = params["previousResultId"].as_str().map(|s| s.to_string());
+        let previous_result_id = match params.get("previousResultId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) => Some(id.clone()),
+            Some(_) => {
+                return Err(invalid_params(
+                    "textDocument/diagnostic params.previousResultId must be a string resultId from an earlier diagnostic report; omit it or use null to request a full report.",
+                ));
+            }
+        };
 
         // Parse URI — an unparseable URI is a client-side protocol error (LSP 3.17)
         let uri: Uri =
@@ -3699,7 +3720,18 @@ mod tests {
             .as_array()
             .and_then(|items| items.first())
             .ok_or("absent lifecycle item missing")?;
-        assert!(!absent_item.to_string().contains("PL900"));
+        // #16611: with the project version absent, a signed sub carries no
+        // declared-version fallback, so the versionless PL900 warning is
+        // the intended report (not the pre-#18270 silence).
+        let absent_text = absent_item.to_string();
+        assert!(
+            absent_text.contains("PL900"),
+            "absent project version must keep the versionless PL900 warning: {absent_text}"
+        );
+        assert!(
+            absent_text.contains("no Perl version declared"),
+            "absent project version must use the versionless PL900 message: {absent_text}"
+        );
         Ok(())
     }
 

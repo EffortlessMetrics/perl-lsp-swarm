@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Choosing a local subroutine or constant completion now replaces a qualified suffix after the cursor without leaving `::Tail` behind, including ampersand calls. A single ternary colon remains untouched. Ordinary mid-token and Unicode suffix support landed in #18265."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18114"
+  Slug: sub-completion-midtoken-suffix
+  Breaking: "no"
