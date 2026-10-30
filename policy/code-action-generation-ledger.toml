@@ -111,9 +111,10 @@ retirement_blocker_registry = [
 # than ignored: the drift check requires every kind literal in the handler to be
 # either a registered family's kind or listed here, so a NEW kind cannot appear
 # without being classified. The entries map InternalCodeActionKind variants
-# (Refactor, RefactorInline, and — since #17304 removed the test generator —
-# Source) that no producer builds; #9190 can drop the variants and their match
-# arms together.
+# (Refactor, RefactorInline, and Source — since #17304 removed the test
+# generator — and RefactorExtract — since #16577 moved the extract generations
+# onto the typed variants) that no producer builds; #9190 can drop the
+# variants and their match arms together.
 unreachable_kinds = [
   "refactor",
   "refactor.extract",
