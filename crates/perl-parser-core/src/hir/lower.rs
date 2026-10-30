@@ -1284,7 +1284,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::While { continue_block, keyword, .. } => {
+            NodeKind::While { condition, continue_block, keyword, .. } => {
                 let kind = match keyword.as_deref() {
                     Some("until") => LoopKind::Until,
                     _ => LoopKind::While,
@@ -1304,7 +1304,22 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // The parser supplies a zero-width `Number("1")` for the valid
+                // `while ()` infinite-loop idiom (#17000). That number was not
+                // written by the author: only its literal fact is Recovered.
+                // The loop shell and real body/continue children remain Parsed.
+                // Reuse the same child-order-preserving visitor as orphaned
+                // `else` (#15032), never a second manual AST traversal.
+                if is_synthesized_true_condition(condition) {
+                    self.visit_children_distinguishing(
+                        node,
+                        confidence,
+                        condition,
+                        RecoveryConfidence::Recovered,
+                    );
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::For { init, condition, continue_block, .. } => {
                 let label = self.pending_label.take();
@@ -3635,11 +3650,11 @@ fn is_synthesized_default_topic(expr: &Node) -> bool {
 /// always spans at least one source character, so a zero-width `Number` reached
 /// through a branch arm can only be the fabrication.
 ///
-/// The predicate is deliberately scoped to branch conditions. `while () { }`
-/// fabricates the same shape for the empty-condition infinite-loop idiom, but
-/// that is a `While` node and never reaches the `If` arm, so this cannot silently
-/// claim a sibling arm it has not been proven against. Broadening that is a
-/// separate change under #6666's honesty sweep, not a widening of this one.
+/// The predicate serves the branch conditions that fabricate this shape:
+/// the orphaned-`else` `If` shell above and, since #17000, the `While` arm,
+/// whose `while () { }` empty-condition idiom fabricates the same zero-width
+/// `Number("1")`. Both call sites are proven against the same two conditions;
+/// no other arm claims the predicate without that proof.
 fn is_synthesized_true_condition(condition: &Node) -> bool {
     matches!(&condition.kind, NodeKind::Number { value } if value == "1")
         && condition.location.start == condition.location.end
