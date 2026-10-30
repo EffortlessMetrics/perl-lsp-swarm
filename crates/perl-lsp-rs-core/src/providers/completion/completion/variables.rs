@@ -81,7 +81,7 @@ pub fn add_variable_completions(
                 .get(context.position..)
                 .unwrap_or_default()
                 .chars()
-                .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                .take_while(|ch| perl_lexer::is_perl_identifier_continue(*ch))
                 .map(char::len_utf8)
                 .sum::<usize>()
     } else {

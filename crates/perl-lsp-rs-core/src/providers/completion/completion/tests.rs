@@ -22,6 +22,7 @@ fn test_variable_completion_mid_token_client_edits() -> Result<(), Box<dyn std::
         ("my @items = (); print ", "@it", "ems", ";", "@items"),
         ("my @items = (); print ", "@it", "ems", "[0];", "@items"),
         ("my $count = 42; print ", "$co", "unté_123", " + $count;", "$count"),
+        ("use utf8; my $count = 42; print ", "$co", "unt\u{301}_123", ";", "$count"),
         ("my $count = 42; print ", "$co", "unt𐐀_123", ";", "$count"),
         ("my $count = 42; print \"🦀 ", "$co", "unt", "\";", "$count"),
         ("my $count = 42; print ", "$co", "", ";", "$count"),
