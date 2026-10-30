@@ -200,6 +200,80 @@ class ExtractFailedTestsTest(unittest.TestCase):
             [("pkg_a", "common::case"), ("pkg_b", "common::case")],
         )
 
+    def test_failed_suite_with_abnormal_exit_is_not_proven(self):
+        # Only exit 101 is libtest's ordinary test-failure exit. Kills and
+        # crashes (2, 137 SIGKILL, 143 SIGTERM) must not be classified as
+        # observed test failures (#15992).
+        for status in (2, 137, 143):
+            lines = [
+                envelope("pkg_a"),
+                suite_start(2),
+                test_event("started", "a::flaky_case"),
+                test_event("failed", "a::flaky_case"),
+                test_event("ok", "a::other"),
+                suite_end("failed", 1, 1),
+                run_end("pkg_a", status),
+            ]
+            receipt = self.parse(lines)
+            self.assertEqual(receipt["verdict"], "NOT_PROVEN", f"exit {status}")
+            self.assertEqual(receipt["exit_code"], 6, f"exit {status}")
+
+    def test_expect_binds_replay_to_exact_passing_identity(self):
+        def stream(event, name):
+            counts = {"ok": (1, 0, 0), "ignored": (0, 0, 1)}[event]
+            return [
+                envelope("pkg_a"),
+                suite_start(1),
+                test_event("started", name),
+                test_event(event, name),
+                suite_end("ok", *counts),
+                run_end("pkg_a", 0),
+            ]
+
+        receipt = _MODULE.build_receipt(
+            stream("ok", "a::flaky_case"), "head", "tc", expect="pkg_a:a::flaky_case"
+        )
+        self.assertEqual(receipt["verdict"], "COMPLETE_PASS")
+        self.assertEqual(receipt["exit_code"], 0)
+
+        # An ignored-only replay proves nothing about the expected test.
+        receipt = _MODULE.build_receipt(
+            stream("ignored", "a::flaky_case"), "head", "tc", expect="pkg_a:a::flaky_case"
+        )
+        self.assertEqual(receipt["verdict"], "NOT_PROVEN")
+        self.assertEqual(receipt["exit_code"], 6)
+
+        # A different test passing is not a replay of the expected test.
+        receipt = _MODULE.build_receipt(
+            stream("ok", "a::other"), "head", "tc", expect="pkg_a:a::flaky_case"
+        )
+        self.assertEqual(receipt["verdict"], "NOT_PROVEN")
+
+        # A different package with the same test name is not the subject.
+        lines = stream("ok", "a::flaky_case")
+        lines[0] = envelope("pkg_b")
+        lines[-1] = run_end("pkg_b", 0)
+        receipt = _MODULE.build_receipt(lines, "head", "tc", expect="pkg_a:a::flaky_case")
+        self.assertEqual(receipt["verdict"], "NOT_PROVEN")
+
+    def test_flake_workflow_pins_nightly_and_checked_toolchain(self):
+        workflow = (
+            Path(__file__).parents[2] / ".github" / "workflows" / "flake-detection.yml"
+        ).read_text(encoding="utf-8")
+        # rust-toolchain.toml pins stable in the checkout; the nightly
+        # selection must be forced for every cargo invocation (#15992).
+        self.assertIn("RUSTUP_TOOLCHAIN: nightly", workflow)
+        # The toolchain identity is captured in a checked assignment and
+        # passed explicitly; a failed probe cannot yield an empty identity.
+        self.assertEqual(workflow.count('TOOLCHAIN=$(cargo --version)'), 2)
+        self.assertEqual(workflow.count('--toolchain "$TOOLCHAIN"'), 2)
+        self.assertNotIn('--toolchain "$(cargo --version)"', workflow)
+        # The replay extractor exit is captured, never masked, and the
+        # replay is bound to the exact expected test identity.
+        replay_call = workflow.split("run_exact_replay \"$pkg\" \"$test_name\" retry-obs.jsonl", 1)[1]
+        self.assertNotIn("|| true", replay_call.split("verdict=$(verdict_of", 1)[0])
+        self.assertIn("--expect \"$pkg:$test_name\"", workflow)
+
     def test_suite_ok_with_failed_events_is_not_proven(self):
         lines = [
             envelope("pkg_a"),

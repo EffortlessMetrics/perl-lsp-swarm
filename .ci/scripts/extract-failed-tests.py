@@ -99,6 +99,7 @@ def _new_block(envelope, line_no):
         "suite_reported": {},
         "counts": _blank_block_counts(),
         "failures": [],
+        "passes": [],
         "verdict": None,
         "reasons": [],
     }
@@ -153,6 +154,16 @@ def _close_block(block, truncated_no_trailer):
         block["verdict"] = "NOT_PROVEN"
         block["reasons"].append("suite reported failures but cargo exited 0")
         return
+    if block["suite_event"] == "failed" and exit_status not in (None, 101):
+        # libtest exits 101 for ordinary test failures. Any other exit
+        # (2, 137 SIGKILL, 143 SIGTERM, ...) means the run was killed or
+        # crashed, so the observed failures are not proven test results.
+        block["verdict"] = "NOT_PROVEN"
+        block["reasons"].append(
+            f"suite reported failures but cargo exited {exit_status}; "
+            "only exit 101 is an ordinary test-failure exit"
+        )
+        return
     if block["suite_event"] == "ok" and exit_status not in (None, 0):
         block["verdict"] = "NOT_PROVEN"
         block["reasons"].append(
@@ -173,6 +184,7 @@ def parse_observation_stream(lines):
     blocks = []
     current = None
     failures = []
+    passes = []
     total_counts = _blank_block_counts()
     malformed_json_lines = 0
     events_before_envelope = 0
@@ -264,6 +276,14 @@ def parse_observation_stream(lines):
             elif tevent in ("ok", "failed", "ignored"):
                 if tevent == "ok":
                     current["counts"]["passed"] += 1
+                    if name:
+                        current.setdefault("passes", []).append(
+                            {
+                                "package": current["package"],
+                                "target": current["target"],
+                                "name": name,
+                            }
+                        )
                 elif tevent == "failed":
                     current["counts"]["failed"] += 1
                 else:
@@ -321,6 +341,8 @@ def parse_observation_stream(lines):
     total_counts["ignored"] = sum(b["counts"]["ignored"] for b in blocks)
     total_counts["noise_lines"] = sum(b["counts"]["noise_lines"] for b in blocks)
     total_counts["blocks"] = len(blocks)
+    for b in blocks:
+        passes.extend(b.get("passes", []))
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -329,6 +351,7 @@ def parse_observation_stream(lines):
         "success_verdict": verdict in SUCCESS_VERDICTS,
         "counts": total_counts,
         "failures": failures,
+        "passes": passes,
         "blocks": [
             {
                 "package": b["package"],
@@ -348,8 +371,30 @@ def parse_observation_stream(lines):
     }
 
 
-def build_receipt(lines, head, toolchain):
+def build_receipt(lines, head, toolchain, expect=None):
     receipt = parse_observation_stream(lines)
+    if expect is not None:
+        expected_package, sep, expected_name = expect.partition(":")
+        observed = receipt["passes"]
+        matched = (
+            sep == ":"
+            and receipt["verdict"] == "COMPLETE_PASS"
+            and receipt["counts"]["discovered"] == 1
+            and receipt["counts"]["passed"] == 1
+            and receipt["counts"]["ignored"] == 0
+            and receipt["counts"]["failed"] == 0
+            and len(observed) == 1
+            and observed[0]["package"] == expected_package
+            and observed[0]["name"] == expected_name
+        )
+        if not matched:
+            receipt["verdict"] = "NOT_PROVEN"
+            receipt["exit_code"] = EXIT_CODES["NOT_PROVEN"]
+            receipt["success_verdict"] = False
+            receipt["stream"]["reasons"].append(
+                f"expected exactly one passing replay of {expect!r}; observed "
+                f"passes={observed!r} counts={receipt['counts']!r}"
+            )
     receipt["metadata"] = {
         "head": head,
         "toolchain": toolchain,
@@ -380,6 +425,11 @@ def main(argv=None):
     parser.add_argument("observation_file", nargs="?")
     parser.add_argument("--head", default=None, help="repository head SHA")
     parser.add_argument("--toolchain", default=None, help="toolchain identity string")
+    parser.add_argument(
+        "--expect",
+        default=None,
+        help="PACKAGE:NAME exact single passing test identity a replay must prove",
+    )
     args = parser.parse_args(argv)
 
     if args.observation_file:
@@ -395,7 +445,7 @@ def main(argv=None):
     else:
         lines = sys.stdin.readlines()
 
-    receipt = build_receipt(lines, args.head, args.toolchain)
+    receipt = build_receipt(lines, args.head, args.toolchain, expect=args.expect)
     print(json.dumps(receipt, indent=2))
     return receipt["exit_code"]
 

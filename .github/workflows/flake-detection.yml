@@ -28,6 +28,12 @@ jobs:
   detect-flakes:
     name: Detect Flaky Tests (workspace library tests)
     runs-on: ubuntu-24.04
+    env:
+      # The checkout pins stable via rust-toolchain.toml, which rustup
+      # prefers over the installed nightly default; without this override
+      # every cargo invocation below would run the pinned stable toolchain
+      # and reject the libtest -Z flags.
+      RUSTUP_TOOLCHAIN: nightly
     timeout-minutes: 60
 
     steps:
@@ -111,9 +117,14 @@ jobs:
 
           # Fail closed: the extractor exit code is authoritative and its
           # typed verdict gates every downstream step. Never `|| true` here.
+          TOOLCHAIN=$(cargo --version)
+          if [ -z "$TOOLCHAIN" ]; then
+            echo "::error::cargo --version produced no toolchain identity"
+            exit 1
+          fi
           python3 .ci/scripts/extract-failed-tests.py "$OBS" \
             --head "${GITHUB_SHA:-unknown}" \
-            --toolchain "$(cargo --version)" \
+            --toolchain "$TOOLCHAIN" \
             > flake-receipt.json
 
           verdict=$(python3 -c 'import json; print(json.load(open("flake-receipt.json"))["verdict"])')
@@ -200,9 +211,26 @@ jobs:
             had_instrument_failure=false
             for i in 1 2 3; do
               run_exact_replay "$pkg" "$test_name" retry-obs.jsonl
+              TOOLCHAIN=$(cargo --version)
+              if [ -z "$TOOLCHAIN" ]; then
+                echo "::error::cargo --version produced no toolchain identity"
+                exit 1
+              fi
               # The extractor writes a typed receipt even on non-zero exit.
+              # Its exit is captured, never masked: a non-zero exit or a
+              # receipt that does not prove exactly this test passed is an
+              # instrument failure below, not flake evidence.
+              extractor_rc=0
               python3 .ci/scripts/extract-failed-tests.py retry-obs.jsonl \
-                --head "${GITHUB_SHA:-unknown}" > retry-receipt.json || true
+                --head "${GITHUB_SHA:-unknown}" \
+                --toolchain "$TOOLCHAIN" \
+                --expect "$pkg:$test_name" > retry-receipt.json || extractor_rc=$?
+              if [ ! -s retry-receipt.json ]; then
+                echo "Instrument failure on retry $i for $pkg :: $test_name: extractor exit $extractor_rc with no receipt"
+                INSTRUMENT_FAILURES+=("$pkg :: $test_name retry $i extractor exit=$extractor_rc")
+                had_instrument_failure=true
+                break
+              fi
               verdict=$(verdict_of retry-receipt.json)
               if [ "$verdict" = "COMPLETE_PASS" ]; then
                 passed=true
