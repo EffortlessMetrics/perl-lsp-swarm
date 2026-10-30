@@ -38,6 +38,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 url.workspace = true
 tempfile.workspace = true
+perl-test-must.workspace = true
 
 [features]
 # Gate slow/heavy integration tests behind this feature flag.

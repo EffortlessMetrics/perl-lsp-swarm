@@ -296,7 +296,10 @@ fn ux_latency_edit_publishes_parse_error_diagnostic() -> Result<()> {
     harness.open_file("broken.pl", PARSE_ERROR_SOURCE)?;
 
     // Under syntax-only + zero debounce, a parse error must arrive promptly.
-    let diags = harness.wait_for_diagnostics("broken.pl", ARRIVAL_BUDGET);
+    let diags = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "broken.pl"),
+        harness.wait_for_diagnostics("broken.pl", ARRIVAL_BUDGET),
+    )?;
     assert!(
         !diags.is_empty(),
         "syntax-only e2e mode must surface parse errors; got empty diagnostics list"
@@ -327,15 +330,18 @@ fn ux_latency_edit_clears_diagnostics_when_parse_recovers() -> Result<()> {
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("recovers.pl", PARSE_ERROR_SOURCE)?;
 
-    let bad = harness.wait_for_diagnostics("recovers.pl", ARRIVAL_BUDGET);
+    let bad = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "recovers.pl"),
+        harness.wait_for_diagnostics("recovers.pl", ARRIVAL_BUDGET),
+    )?;
     assert!(!bad.is_empty(), "broken parse must report at least one diagnostic; got {bad:?}");
 
     // Apply the fix and expect the latest publish for this URI to be empty.
     harness.change_file_full("recovers.pl", CLEAN_SOURCE)?;
     let cleared = harness.wait_for_no_diagnostics("recovers.pl", ARRIVAL_BUDGET);
     assert!(
-        cleared,
-        "syntax-only mode must publish an empty diagnostic list after the parse recovers"
+        cleared.is_ok(),
+        "syntax-only mode must publish an empty diagnostic list after the parse recovers: {cleared:?}"
     );
 
     harness.assert_no_crash();
@@ -443,8 +449,13 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
     let first = observe_immediate_workspace_symbols(
         || workspace_symbols_with_budget(&harness, deadline, "immediate after didOpen"),
         || harness.wait_for_active_document_ready_result(&uri, Duration::ZERO),
-        ready_before_query,
-    )?;
+        ready_before_query.is_ok(),
+    )
+    .with_context(|| {
+        format!(
+            "immediate workspace symbols for {uri}; readiness before query: {ready_before_query:?}"
+        )
+    })?;
     let first_has_alpha = first.symbols.iter().any(|symbol| symbol["name"] == "alpha");
     let ready_by_response = harness.wait_for_active_document_ready(&uri, Duration::ZERO);
 
@@ -453,13 +464,13 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
         Ok(()) => {}
         Err(WaitEnd::Deadline { .. }) => {
             bail!(
-                "active-document readiness timeout after {}ms with stream live; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                "active-document readiness timeout after {}ms with stream live for {uri}; ready_before_query={ready_before_query:?}, ready_by_response={ready_by_response:?}, immediate={first:?}",
                 opened_at.elapsed().as_millis()
             );
         }
         Err(end) => {
             bail!(
-                "active-document readiness stream ended after {}ms: {end:?}; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                "active-document readiness stream ended after {}ms for {uri}: {end:?}; ready_before_query={ready_before_query:?}, ready_by_response={ready_by_response:?}, immediate={first:?}",
                 opened_at.elapsed().as_millis()
             );
         }
@@ -471,14 +482,14 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
     let after_ready = workspace_symbols_with_budget(&harness, deadline, "after active-document-ready")
         .with_context(|| {
             format!(
-                "active-document-ready confirmed by {}ms; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                "active-document-ready confirmed by {}ms for {uri}; ready_before_query={ready_before_query:?}, ready_by_response={ready_by_response:?}, immediate={first:?}",
                 readiness_confirmed_by.as_millis()
             )
         })?;
     let after_ready_has_alpha = after_ready.symbols.iter().any(|symbol| symbol["name"] == "alpha");
     if !after_ready_has_alpha {
         bail!(
-            "workspace/symbol empty or missing alpha after active-document-ready (confirmed by {}ms); ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}, after_ready={after_ready:?}",
+            "workspace/symbol empty or missing alpha after active-document-ready (confirmed by {}ms) for {uri}; ready_before_query={ready_before_query:?}, ready_by_response={ready_by_response:?}, immediate={first:?}, after_ready={after_ready:?}",
             readiness_confirmed_by.as_millis()
         );
     }
@@ -492,8 +503,8 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
         "immediate_rpc_ms": first.elapsed.as_millis(),
         "immediate_budget_ms": first.budget.as_millis(),
         "immediate_alpha": first_has_alpha,
-        "ready_before_query": ready_before_query,
-        "ready_by_response": ready_by_response,
+        "ready_before_query": ready_before_query.is_ok(),
+        "ready_by_response": ready_by_response.is_ok(),
         "readiness_confirmed_by_ms": readiness_confirmed_by.as_millis(),
         "after_ready_rpc_ms": after_ready.elapsed.as_millis(),
         "after_ready_budget_ms": after_ready.budget.as_millis(),
@@ -566,7 +577,10 @@ fn ux_latency_code_action_returns_without_error_for_parse_diagnostic() -> Result
 
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("action.pl", PARSE_ERROR_SOURCE)?;
-    let diagnostics = harness.wait_for_diagnostics("action.pl", ARRIVAL_BUDGET);
+    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "action.pl"),
+        harness.wait_for_diagnostics("action.pl", ARRIVAL_BUDGET),
+    )?;
     assert!(
         !diagnostics.is_empty(),
         "code action e2e receipt needs a real diagnostic to act on; got {diagnostics:?}"

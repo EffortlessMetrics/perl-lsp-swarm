@@ -68,6 +68,98 @@ fn open_trace_fixture(client: &mut RealProcessClient) -> Result<&'static str> {
     Ok(uri)
 }
 
+/// Aggregate declarations and scalar element accesses share a binding, but
+/// retain different sigils. Complete literal edits also exclude unrelated
+/// scalars and aggregates shadowed in an inner block (#17777).
+#[test]
+fn rename_lexical_aggregate_occurrence_sigils() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-aggregate-rename"))?;
+    let edit = |line, start, end, replacement| {
+        json!({
+            "range": {
+                "start": {"line": line, "character": start},
+                "end": {"line": line, "character": end}
+            },
+            "newText": replacement
+        })
+    };
+    let cases = [
+        (
+            "array",
+            "@items",
+            "@total",
+            "my @items = (10, 20);\nmy $items = 99;\nprint $items[0], \"\\n\";\nprint $items, \"\\n\";\n{\n    my @items = (30, 40);\n    print $items[0], \"\\n\";\n}\nprint $items[1], \"\\n\";\n",
+            vec![edit(0, 3, 9, "@total"), edit(2, 6, 12, "$total"), edit(8, 6, 12, "$total")],
+        ),
+        (
+            "hash",
+            "%items",
+            "%total",
+            "my %items = (key => 10);\nmy $items = 99;\nprint $items{key}, \"\\n\";\nprint $items, \"\\n\";\n{\n    my %items = (key => 30);\n    print $items{key}, \"\\n\";\n}\nprint $items{key}, \"\\n\";\n",
+            vec![edit(0, 3, 9, "%total"), edit(2, 6, 12, "$total"), edit(8, 6, 12, "$total")],
+        ),
+        (
+            "scalar",
+            "$items",
+            "$total",
+            "my $items = 10;\nprint $items, \"\\n\";\n{\n    my $items = 30;\n    print $items, \"\\n\";\n}\nprint $items, \"\\n\";\n",
+            vec![edit(0, 3, 9, "$total"), edit(1, 6, 12, "$total"), edit(6, 6, 12, "$total")],
+        ),
+        (
+            "array-exists",
+            "@items",
+            "@total",
+            "my @items = (10, 20);\nprint exists($items[0]), \"\\n\";\n",
+            vec![edit(0, 3, 9, "@total"), edit(1, 13, 19, "$total")],
+        ),
+    ];
+    for (name, placeholder, sigiled_name, source, expected_edits) in cases {
+        let uri = format!("file:///workspace/rename-{name}.pl");
+        client.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {
+                "uri": uri, "languageId": "perl", "version": 1, "text": source
+            }}),
+        )?;
+        let params = json!({"textDocument": {"uri": uri},
+                           "position": {"line": 0, "character": 4}});
+        let prepared = client.request(
+            json!(format!("prepare-{name}")),
+            "textDocument/prepareRename",
+            params.clone(),
+            timeout(),
+        )?;
+        ensure!(prepared.get("error").is_none(), "{name} prepare failed: {prepared}");
+        ensure!(
+            prepared["result"]
+                == json!({
+                    "range": {"start": {"line": 0, "character": 3},
+                              "end": {"line": 0, "character": 9}},
+                    "placeholder": placeholder
+                }),
+            "{name} prepare must select the literal declaration range: {prepared}"
+        );
+        for new_name in ["total", sigiled_name] {
+            let mut rename_params = params.clone();
+            rename_params["newName"] = json!(new_name);
+            let response = client.request(
+                json!(format!("rename-{name}-{new_name}")),
+                "textDocument/rename",
+                rename_params,
+                timeout(),
+            )?;
+            ensure!(response.get("error").is_none(), "{name} rename failed: {response}");
+            ensure!(
+                response["result"] == json!({"changes": {&uri: expected_edits}}),
+                "{name} rename to {new_name} must preserve occurrence sigils and exact edit membership: {response}"
+            );
+        }
+    }
+    shutdown_and_exit(&mut client, json!("shutdown-aggregate-rename"))
+}
+
 #[test]
 fn generic_trace_success_does_not_invent_freshness() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
@@ -737,6 +829,169 @@ fn preinitialize_duplicate_initialize_and_post_shutdown_are_deterministic() -> R
     client.assert_transport_clean()
 }
 
+/// #16655: a post-shutdown request that is still in flight when `exit`
+/// arrives must still deliver its `-32600`. Waiting for that response
+/// *before* sending `exit` cannot discriminate the race.
+#[test]
+fn post_shutdown_request_racing_exit_is_delivered() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!(1))?;
+
+    let shutdown = client.request(json!(2), "shutdown", Value::Null, timeout())?;
+    ensure!(shutdown.get("result").is_some_and(Value::is_null), "shutdown failed: {shutdown}");
+
+    let hover = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///after-shutdown.pl" },
+            "position": { "line": 0, "character": 0 }
+        }
+    });
+    let second_shutdown = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "shutdown",
+        "params": null
+    });
+    let exit = json!({ "jsonrpc": "2.0", "method": "exit", "params": null });
+    let mut burst = RealProcessClient::encode_message(&hover);
+    burst.extend_from_slice(&RealProcessClient::encode_message(&second_shutdown));
+    burst.extend_from_slice(&RealProcessClient::encode_message(&exit));
+    client.send_raw_bytes(&burst)?;
+
+    let hover_response = client.receive_response(&json!(3), timeout())?;
+    assert_response_id(&hover_response, &json!(3))?;
+    ensure!(
+        hover_response.pointer("/error/code") == Some(&json!(-32600)),
+        "post-shutdown hover must return InvalidRequest: {hover_response}"
+    );
+    ensure!(
+        hover_response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("Server has been shutdown")),
+        "post-shutdown hover must name the shutdown gate: {hover_response}"
+    );
+
+    let second = client.receive_response(&json!(4), timeout())?;
+    assert_response_id(&second, &json!(4))?;
+    ensure!(
+        second.pointer("/error/code") == Some(&json!(-32600)),
+        "second shutdown must remain InvalidRequest: {second}"
+    );
+
+    let status = client.wait_for_exit(timeout())?;
+    ensure!(status.success(), "shutdown then exit failed: {status}");
+    client.assert_transport_clean()?;
+    Ok(())
+}
+
+#[test]
+fn synchronous_serving_reports_malformed_json_and_continues() -> Result<()> {
+    use std::io::{Cursor, Write};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|error| std::io::Error::other(format!("capture lock poisoned: {error}")))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let server = perllsp::LspServer::with_io(
+        Box::new(Cursor::new(Vec::<u8>::new())),
+        Box::new(Capture(Arc::clone(&output))),
+    );
+    let mut input = b"Content-Length: 1\r\n\r\n{".to_vec();
+    input.extend_from_slice(&RealProcessClient::encode_message(&json!({
+        "jsonrpc": "2.0", "id": 75, "method": "$/perl-lsp/watchdog", "params": {}
+    })));
+    server.serve(&mut Cursor::new(input))?;
+    drop(server); // Close and drain the existing outbound writer before inspection.
+    let bytes =
+        output.lock().map_err(|error| anyhow::anyhow!("capture lock poisoned: {error}"))?.clone();
+    let mut reader = Cursor::new(bytes);
+    let mut codec = perllsp::transport::ContentLengthMessageReader::new();
+    let first = codec
+        .read_next_outcome(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("missing parse error"))??;
+    let second = codec
+        .read_next_outcome(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("missing following response"))??;
+    // The shared codec projects responses onto the internal clientResponse envelope.
+    let first = first.params.ok_or_else(|| anyhow::anyhow!("missing response envelope"))?;
+    let second = second.params.ok_or_else(|| anyhow::anyhow!("missing response envelope"))?;
+    ensure!(first.get("id") == Some(&Value::Null), "{first}");
+    ensure!(first.pointer("/error/code") == Some(&json!(-32700)), "{first}");
+    ensure!(second.get("id") == Some(&json!(75)), "{second}");
+    ensure!(second.pointer("/error/code") == Some(&json!(-32002)), "{second}");
+    ensure!(codec.read_next_outcome(&mut reader)?.is_none(), "unexpected extra response");
+    Ok(())
+}
+
+#[test]
+fn malformed_json_returns_parse_error_and_preserves_following_frames() -> Result<()> {
+    for initialized in [false, true] {
+        let mut client = RealProcessClient::spawn_exact()?;
+        assert_public_candidate(&client)?;
+        if initialized {
+            initialize_and_notify(&mut client, json!("initialize-before-malformed"))?;
+        }
+
+        // A syntactically visible id is not recoverable from invalid JSON.
+        // Both bad bodies have complete, correct byte-length framing.
+        let mut bytes = Vec::new();
+        for body in [r#"{"jsonrpc":"2.0","id":71,"method":"initialize",}"#, "{"] {
+            bytes.extend_from_slice(
+                format!("Content-Length: {}\r\n\r\n{}", body.len(), body).as_bytes(),
+            );
+        }
+        bytes.extend_from_slice(&RealProcessClient::encode_message(&json!({
+            "jsonrpc": "2.0", "id": 72, "method": "$/perl-lsp/watchdog", "params": {}
+        })));
+        client.send_raw_bytes(&bytes)?;
+        for _ in 0..2 {
+            let response = client.receive_response(&Value::Null, timeout())?;
+            ensure!(response.get("jsonrpc") == Some(&json!("2.0")), "{response}");
+            ensure!(response.get("id") == Some(&Value::Null), "{response}");
+            ensure!(response.pointer("/error/code") == Some(&json!(-32700)), "{response}");
+            ensure!(
+                response.pointer("/error/message") == Some(&json!("Parse error")),
+                "{response}"
+            );
+            ensure!(response.get("result").is_none(), "{response}");
+        }
+
+        let following = client.receive_response(&json!(72), timeout())?;
+        if initialized {
+            ensure!(following.get("result") == Some(&Value::Null), "{following}");
+        } else {
+            ensure!(following.pointer("/error/code") == Some(&json!(-32002)), "{following}");
+        }
+
+        // Recovery must retain the session, not merely return an error then close.
+        if !initialized {
+            initialize_and_notify(&mut client, json!("initialize-after-malformed"))?;
+        }
+        let response = client.request(json!(74), "$/perl-lsp/watchdog", json!({}), timeout())?;
+        ensure!(response.get("result") == Some(&Value::Null), "{response}");
+        client.assert_no_response_pending()?;
+        shutdown_and_exit(&mut client, json!(73))?;
+    }
+    Ok(())
+}
+
 #[test]
 fn public_candidate_preserves_fragmented_coalesced_and_utf8_frames() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
@@ -1107,4 +1362,75 @@ fn definition_on_callable_retains_exact_location() -> Result<()> {
         "definition must point to the bar declaration on line 1: {response}"
     );
     shutdown_and_exit(&mut client, json!("shutdown-definition-location"))
+}
+
+/// Role document symbols retain Interface while Class and Module keep their kinds.
+#[test]
+fn role_document_symbol_protocol_mapping_over_stdio() -> Result<()> {
+    fn find_namespace(symbols: &[Value]) -> Option<&Value> {
+        for symbol in symbols {
+            if symbol.get("name").and_then(Value::as_str) == Some("age") {
+                return Some(symbol);
+            }
+            if let Some(found) = symbol
+                .get("children")
+                .and_then(Value::as_array)
+                .and_then(|children| find_namespace(children))
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-role-symbols"))?;
+    for (case, (module, kind)) in [
+        ("Moo::Role", 11),
+        ("Moose::Role", 11),
+        ("Role::Tiny", 11),
+        ("Moo", 5),
+        ("Moose", 5),
+        ("Class::Tiny", 5),
+        ("strict", 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let uri = format!("file:///workspace/role-symbol-{case}.pm");
+        let source = format!("package age {{ use {module}; sub helper {{ 1 }} }}");
+        client.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}}),
+        )?;
+        let id = json!(format!("role-document-{case}"));
+        let response = client.request(
+            id.clone(),
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+            timeout(),
+        )?;
+        assert_response_id(&response, &id)?;
+        ensure!(response.get("error").is_none(), "document error for {module}: {response}");
+        let symbols = response
+            .get("result")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("document result for {module}: {response}"))?;
+        let namespace = find_namespace(symbols)
+            .ok_or_else(|| anyhow::anyhow!("missing namespace for {module}: {response}"))?;
+        ensure!(
+            namespace.get("kind") == Some(&json!(kind)),
+            "document kind for {module}: {response}"
+        );
+        ensure!(
+            namespace.pointer("/selectionRange/start") == Some(&json!({"line": 0, "character": 8})),
+            "name start for {module}: {response}"
+        );
+        ensure!(
+            namespace.pointer("/selectionRange/end") == Some(&json!({"line": 0, "character": 11})),
+            "name end for {module}: {response}"
+        );
+    }
+    shutdown_and_exit(&mut client, json!("shutdown-role-symbols"))
 }

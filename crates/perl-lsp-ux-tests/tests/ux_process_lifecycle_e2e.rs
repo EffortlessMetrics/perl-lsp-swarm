@@ -568,24 +568,18 @@ fn definition_after_readiness(
 
 #[test]
 fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
+    // This test owns the exact-process navigation proof, so a missing binary
+    // must fail loudly instead of silently skipping: a green result here is
+    // only meaningful if the product binary actually ran.
     ensure!(
         binary_available(),
         "perllsp binary is not available; build it before running exact-process proof"
     );
-    let configured_binary = std::env::var("PERL_LSP_BIN").context(
-        "exact-process navigation proof requires PERL_LSP_BIN to name the candidate binary",
-    )?;
-    ensure!(
-        !configured_binary.trim().is_empty(),
-        "PERL_LSP_BIN must not be empty for exact-process navigation proof"
-    );
-    let binary = canonical_executable(&configured_binary)?;
-    ensure!(
-        binary.is_file(),
-        "PERL_LSP_BIN does not identify a regular executable: {}",
-        binary.display()
-    );
-    let binary_path = binary.to_str().context("candidate binary path was not valid UTF-8")?;
+    // resolve_binary() honors an explicit `PERL_LSP_BIN` override and otherwise
+    // auto-discovers the candidate (target walk, CARGO_TARGET_DIR, manifest
+    // walk, PATH), so the documented raw `cargo test` flow works with a
+    // prebuilt binary alone instead of demanding the env var (#17175).
+    let binary = resolve_binary().context("UX binary became unavailable after preflight")?;
     let workspace = TempDir::new().context("failed to create navigation workspace")?;
     let lib = workspace.path().join("lib");
     std::fs::create_dir_all(&lib).context("failed to create navigation lib directory")?;
@@ -596,7 +590,7 @@ fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
     let root_uri = file_uri(workspace.path())?;
     let module_uri = file_uri(&module)?;
     let client_uri = file_uri(&client)?;
-    let mut server = LifecycleProcess::spawn(binary_path, workspace.path())?;
+    let mut server = LifecycleProcess::spawn(&binary, workspace.path())?;
 
     let initialize_id = json!(1);
     server.send(&json!({

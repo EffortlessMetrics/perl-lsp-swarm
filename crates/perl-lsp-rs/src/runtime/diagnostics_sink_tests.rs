@@ -54,6 +54,54 @@ mod tests {
     }
 
     #[test]
+    fn late_fast_diagnostics_do_not_replace_full_report_for_same_ticket() {
+        let (server, _buf) = make_server_with_capture();
+        let uri = "file:///late-fast-diagnostics.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $value = ;\n"
+                }
+            })))
+            .expect("didOpen should succeed");
+        let key = server.normalize_uri_key(uri);
+        let before = server.push_diagnostics_sink.last_committed(&key);
+        {
+            let documents = server.documents.lock();
+            let document = documents.get(&key).expect("document must be open");
+            assert!(
+                !document
+                    .current_parsed()
+                    .expect("accepted parse must exist")
+                    .parse_errors_arc()
+                    .is_empty(),
+                "fixture must exercise the fast parser-error path"
+            );
+            document.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        server.test_publish_parse_for_current_generation(uri).expect("new ticket must parse");
+        server.publish_parse_errors_fast(uri);
+        let early = server.push_diagnostics_sink.last_committed(&key);
+        assert!(early.is_some(), "early diagnostics must reach the sink");
+        assert_ne!(early, before, "real fast publisher must remain operational for a newer ticket");
+        // Both production paths snapshot the same accepted document. Force the
+        // full computation to finish first, as a concurrent debouncer or save
+        // refresh can while the fast publication is delayed before enqueue.
+        server.publish_diagnostics(uri);
+        let full_commit = server.push_diagnostics_sink.last_committed(&key);
+        assert!(full_commit.is_some(), "full diagnostics must reach the sink");
+        server.publish_parse_errors_fast(uri);
+        assert_eq!(
+            server.push_diagnostics_sink.last_committed(&key),
+            full_commit,
+            "late parse-error-only output must not replace the full report"
+        );
+    }
+
+    #[test]
     fn unavailable_diagnostic_debouncer_falls_back_to_immediate_publish() {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///diagnostic-debounce-fallback.pl";

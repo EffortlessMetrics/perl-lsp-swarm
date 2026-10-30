@@ -38,12 +38,12 @@ def bound_subject(payload: dict[str, Any]) -> str | None:
     Shard summaries bind via the top-level ``subject_sha`` of
     ``ci_gate_shard.v1``; per-gate gate receipts bind via
     ``metadata.git_sha``. Any other shape cannot prove which run produced it.
+    A declared shard summary with an invalid binding cannot fall back to
+    gate-receipt metadata.
     """
-    if (
-        payload.get("schema_version") == SHARD_SUMMARY_SCHEMA_VERSION
-        and isinstance(payload.get("subject_sha"), str)
-    ):
-        return payload["subject_sha"]
+    if payload.get("schema_version") == SHARD_SUMMARY_SCHEMA_VERSION:
+        subject = payload.get("subject_sha")
+        return subject if isinstance(subject, str) else None
     metadata = payload.get("metadata")
     if isinstance(metadata, dict) and isinstance(metadata.get("git_sha"), str):
         return metadata["git_sha"]

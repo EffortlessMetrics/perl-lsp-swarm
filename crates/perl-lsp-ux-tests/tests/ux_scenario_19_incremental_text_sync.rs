@@ -71,7 +71,10 @@ fn scenario_19_didchange_recovers_after_parse_error_fix() -> Result<()> {
 
     // Given: user opens a file that initially has parse issues.
     harness.open_file("sync.pl", BROKEN_SOURCE).context("didOpen should succeed")?;
-    let initial_diagnostics = harness.wait_for_diagnostics("sync.pl", Duration::from_secs(5));
+    let initial_diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "sync.pl"),
+        harness.wait_for_diagnostics("sync.pl", Duration::from_secs(5)),
+    )?;
 
     // The GIVEN clause is load-bearing: if the server never reports a
     // parse-like problem for `my $value = ;` the rest of the test is
@@ -93,7 +96,10 @@ fn scenario_19_didchange_recovers_after_parse_error_fix() -> Result<()> {
     harness.change_file_full("sync.pl", FIXED_SOURCE).context("didChange should succeed")?;
 
     // Then: diagnostics should settle without parse-like errors and server remains responsive.
-    let post_change_diagnostics = harness.wait_for_diagnostics("sync.pl", Duration::from_secs(5));
+    let post_change_diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "sync.pl"),
+        harness.wait_for_diagnostics("sync.pl", Duration::from_secs(5)),
+    )?;
     ensure!(
         !has_parse_like_diagnostic(&post_change_diagnostics),
         "expected parse-like diagnostics to clear after fixing file; got: {:?}",

@@ -1,0 +1,10 @@
+[
+  {
+    "kind": "new_ripr_gap",
+    "blocking": true,
+    "new_unresolved": 2,
+    "gap_list_proven": false,
+    "guidance_status": "incomplete",
+    "guidance_unavailable_reason": "ripr timed out after 600s"
+  }
+]
