@@ -348,7 +348,6 @@ fn stage_temp_sibling_with_candidates(
     bytes: &[u8],
     mut next_candidate: impl FnMut() -> std::path::PathBuf,
 ) -> std::io::Result<std::path::PathBuf> {
-    let mut last_collision: Option<std::io::Error> = None;
     for _ in 0..MAX_TEMP_SIBLING_ATTEMPTS {
         let temp = next_candidate();
         let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
@@ -360,7 +359,6 @@ fn stage_temp_sibling_with_candidates(
                 // a sequence number we would otherwise have used. We must
                 // not truncate it, and we must not delete it: it might not
                 // be ours. Try the next sequence number.
-                last_collision = Some(error);
                 continue;
             }
             Err(error) => return Err(error),
@@ -368,16 +366,14 @@ fn stage_temp_sibling_with_candidates(
         finish_staged_file(file, &temp, bytes)?;
         return Ok(temp);
     }
-    Err(last_collision.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!(
-                "exhausted {MAX_TEMP_SIBLING_ATTEMPTS} attempts to allocate an exclusive \
-                 staging sibling for `{}`",
-                dest.display()
-            ),
-        )
-    }))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "exhausted {MAX_TEMP_SIBLING_ATTEMPTS} attempts to allocate an exclusive \
+             staging sibling for `{}`",
+            dest.display()
+        ),
+    ))
 }
 
 /// Finish the staged write for a sibling this invocation exclusively created.
@@ -1337,6 +1333,10 @@ mod tests {
 
         let error = result.expect_err("fully occupied candidates must exhaust");
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error.to_string().contains("exhausted 16 attempts"),
+            "exhaustion error must name the exhausted attempts: {error}"
+        );
         assert_eq!(
             supplied, MAX_TEMP_SIBLING_ATTEMPTS,
             "staging must try exactly the bounded number of candidates"
