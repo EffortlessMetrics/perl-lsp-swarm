@@ -47,6 +47,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod cargo_failure;
 pub mod client;
 pub mod diagnostics;
 pub mod env;
