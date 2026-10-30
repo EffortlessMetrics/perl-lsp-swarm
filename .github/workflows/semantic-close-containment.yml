@@ -130,9 +130,9 @@ jobs:
 
       - name: Replay immutable CP00 fixtures (instrument self-test)
         # Expected-contradiction fixtures legitimately exit 2; anything else
-        # non-zero (3 = NOT_PROVEN verdict, 4 = instrument failure, crashes,
-        # expectation mismatches) fails this step, so broken evidence can never
-        # masquerade as a pass. 3 and 4 were the same code until #16214.
+        # non-zero (3 = a real NOT_PROVEN verdict, 4 = an instrument
+        # crash, expectation mismatches surfaced as 3) fails this step, so broken evidence can
+        # never masquerade as a pass. 3 and 4 were the same code until #16214.
         run: |
           set -u
           bin="target/debug/semantic-close-containment"
@@ -179,9 +179,10 @@ jobs:
         if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
-        # The report — including the #15640 snapshot receipt (updated_at, live
-        # head SHA, title/body digest) — still lands in the job summary as
-        # evidence of what this run actually evaluated. What is new (#16214) is
+        # pipefail keeps the validator's typed exit contract (0 pass / 2 contradiction / 3 NOT_PROVEN verdict / 4 instrument crash) authoritative
+        # while the same report — including the #15640 snapshot receipt
+        # (updated_at, live head SHA, title/body digest) — lands in the job
+        # summary as evidence of what this run actually evaluated. What is new (#16214) is
         # that the exit code is classified into an annotation: the job summary
         # is not served by the REST API, so a reader outside the web UI used to
         # see only "Process completed with exit code 3" and could not tell a
