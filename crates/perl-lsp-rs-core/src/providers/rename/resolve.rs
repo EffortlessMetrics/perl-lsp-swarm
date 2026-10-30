@@ -12,10 +12,12 @@ pub fn find_symbol_at_position(
     symbol_table: &SymbolTable,
     source: &str,
 ) -> Option<(String, SymbolKind)> {
-    // First check if we're on a definition. Prefer the smallest containing
-    // span: an enclosing declaration (a sub, a package) also contains the
-    // position, and HashMap iteration order must not let it win over the
-    // specific symbol under the cursor.
+    // Prefer the smallest containing span across definitions and
+    // references alike: an enclosing declaration (a sub, a package) also
+    // contains every position in its body, and HashMap iteration order must
+    // not let it win over the specific symbol under the cursor. Checking
+    // definitions first would credit the enclosing sub for every use of a
+    // nested lexical in its body.
     let mut best: Option<(&String, SymbolKind, usize)> = None;
     for (name, symbols) in &symbol_table.symbols {
         for symbol in symbols {
@@ -27,12 +29,6 @@ pub fn find_symbol_at_position(
             }
         }
     }
-    if let Some((name, kind, _)) = best {
-        return Some((name.clone(), kind));
-    }
-
-    // Then check references, with the same smallest-span preference.
-    let mut best: Option<(&String, SymbolKind, usize)> = None;
     for (name, references) in &symbol_table.references {
         for reference in references {
             if reference.location.start <= position && position <= reference.location.end {
@@ -69,5 +65,38 @@ fn map_cursor_kind(kind: cursor::CursorSymbolKind) -> SymbolKind {
         cursor::CursorSymbolKind::Array => SymbolKind::array(),
         cursor::CursorSymbolKind::Hash => SymbolKind::hash(),
         cursor::CursorSymbolKind::Subroutine => SymbolKind::Subroutine,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_symbol_at_position;
+    use perl_parser::Parser;
+    use perl_semantic_analyzer::symbol::{SymbolExtractor, SymbolKind};
+
+    #[test]
+    fn find_symbol_at_position_prefers_the_nested_lexical_over_the_enclosing_sub() {
+        // The sub symbol spans the whole node; a position on the inner
+        // lexical must resolve to the lexical at every offset of its token,
+        // regardless of symbol-table iteration order (#18117).
+        let code = "sub run { my $value = 1; print $value; }";
+        let ast = Parser::new(code).parse().expect("parse");
+        let table = SymbolExtractor::new_with_source(code).extract(&ast);
+        let decl = code.find("$value").expect("declaration") + 1;
+        for position in decl..decl + "value".len() {
+            let found = find_symbol_at_position(position, &table, code);
+            assert_eq!(
+                found.map(|(name, kind)| (name, kind)),
+                Some(("value".to_string(), SymbolKind::scalar())),
+                "position {position}"
+            );
+        }
+        // The later use resolves to the same lexical, not the enclosing sub.
+        let use_pos = code.rfind("$value").expect("use") + 1;
+        let found = find_symbol_at_position(use_pos, &table, code);
+        assert_eq!(
+            found.map(|(name, kind)| (name, kind)),
+            Some(("value".to_string(), SymbolKind::scalar()))
+        );
     }
 }

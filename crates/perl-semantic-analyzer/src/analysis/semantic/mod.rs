@@ -275,15 +275,24 @@ impl SemanticAnalyzer {
     /// Find the definition of a symbol at a given position for Navigate workflows.
     pub fn find_definition(&self, position: usize) -> Option<&Symbol> {
         // First, find if there's a reference at this position
+        let mut saw_reference = false;
         for refs in self.symbol_table.references.values() {
             for reference in refs {
                 if reference.location.start <= position && reference.location.end >= position {
+                    saw_reference = true;
                     let symbols = self.resolve_reference_to_symbols(reference);
                     if let Some(symbol) = self.bound_symbol(&symbols, reference) {
                         return Some(self.resolve_definition_target(symbol));
                     }
                 }
             }
+        }
+        if saw_reference {
+            // A reference at this position that binds to no declaration
+            // (it binds outward to the package global) has no definition
+            // here. Falling through to the symbol_at fallback would credit
+            // the enclosing sub, whose symbol spans the whole node (#18117).
+            return None;
         }
 
         // If no reference found, check if we're on a definition itself

@@ -2703,7 +2703,8 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
         let request_uri = "file:///workspace/lib/PartialLexical/Pkg.pm";
-        let request_source = "package PartialLexical::Pkg;\nsub run { my $value = $value; }\n1;\n";
+        let request_source =
+            "package PartialLexical::Pkg;\nsub run { my $value = $value; print $value; }\n1;\n";
         server.test_apply_did_open(request_uri, request_source, 1)?;
         server
             .test_index_file_in_building_state(request_uri, request_source)
@@ -2725,13 +2726,46 @@ mod tests {
         assert_eq!(changes.len(), 1, "lexical rename must stay same-file: {rename_result}");
         // The initializer RHS in `my $value = $value` binds to the package
         // global, not to the lexical being declared (#18115), so renaming
-        // the lexical edits only its declaration.
+        // the lexical edits its declaration and the later use, never the
+        // initializer RHS.
+        assert_eq!(
+            edits.len(),
+            2,
+            "lexical rename should edit declaration and later use only: {rename_result}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_rename_partial_index_lexical_without_later_use_edits_declaration_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/PartialLexicalOnly/Pkg.pm";
+        let request_source = "package PartialLexicalOnly::Pkg;\nsub run { my $value = $value; }\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+        server
+            .test_index_file_in_building_state(request_uri, request_source)
+            .map_err(std::io::Error::other)?;
+
+        let (line, character) = position_of(request_source, "$value =")?;
+        let rename_result = server
+            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))?
+            .ok_or("missing lexical rename result")?;
+        let changes = rename_result
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing lexical rename changes")?;
+        let edits = changes
+            .get(request_uri)
+            .and_then(Value::as_array)
+            .ok_or("missing same-file lexical edits")?;
         assert_eq!(
             edits.len(),
             1,
-            "lexical rename should edit the declaration only; the initializer RHS binds outward: {rename_result}"
+            "with no later use, only the declaration is edited: {rename_result}"
         );
-
         Ok(())
     }
 

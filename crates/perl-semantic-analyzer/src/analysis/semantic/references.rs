@@ -242,6 +242,11 @@ impl SemanticAnalyzer {
                             Some("our") => {
                                 symbol_is_lexical
                                     || candidate.location.start == symbol.location.start
+                                    // An `our` of the same package variable
+                                    // aliases the queried `our` itself: it
+                                    // is the same owner, not a shadow.
+                                    || (symbol.declaration.as_deref() == Some("our")
+                                        && candidate.qualified_name == symbol.qualified_name)
                             }
                             _ => false,
                         }
@@ -257,7 +262,13 @@ impl SemanticAnalyzer {
                 })
                 .max_by_key(|candidate| candidate.location.start);
             if let Some(binding) = binding {
-                return binding.location.start != symbol.location.start;
+                // An inner `our` aliasing the same package variable is the
+                // queried symbol's own binding, never its shadow.
+                let same_our_alias = symbol.declaration.as_deref() == Some("our")
+                    && binding.declaration.as_deref() == Some("our")
+                    && binding.qualified_name == symbol.qualified_name;
+                return !same_our_alias
+                    && binding.location.start != symbol.location.start;
             }
             // No capturing declaration has taken effect in this scope yet
             // (the reference precedes the end of its declaring statement,
@@ -412,6 +423,81 @@ mod tests {
         let outer_decl = code.find("$x").unwrap_or_else(|| panic!("outer"));
         let outer_refs = analyzer.find_all_references(outer_decl, false);
         assert_eq!(outer_refs.len(), 1, "only final use; got {outer_refs:?}");
+    }
+
+    #[test]
+    fn find_definition_from_initializer_rhs_binds_outer_or_none() {
+        // T2: find_definition itself (not only find_all_references) must
+        // answer the outward binding for an initializer RHS.
+        let code = "my $x = 1;\n{ my $x = $x; print $x; }\n";
+        let analyzer = analyze(code);
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        let outer_decl = code.find("$x").unwrap_or_else(|| panic!("outer"));
+        let definition = analyzer.find_definition(rhs);
+        assert_eq!(
+            definition.map(|symbol| symbol.location.start),
+            Some(outer_decl),
+            "RHS must define to the outer declaration"
+        );
+
+        let code = "{ my $x = $x; print $x; }";
+        let analyzer = analyze(code);
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        assert!(
+            analyzer.find_definition(rhs).is_none(),
+            "RHS with no outer lexical binds the package global, not a symbol"
+        );
+    }
+
+    #[test]
+    fn find_all_references_from_rhs_with_declaration_flag() {
+        // T1: include_declaration=true queried from the RHS position.
+        let code = "my $x = 1;\n{ my $x = $x; print $x; }\n";
+        let analyzer = analyze(code);
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        let refs = analyzer.find_all_references(rhs, true);
+        assert_eq!(refs.len(), 2, "outer declaration plus RHS; got {refs:?}");
+        let outer_decl = code.find("$x").unwrap_or_else(|| panic!("outer"));
+        assert!(refs.iter().any(|loc| loc.start == outer_decl));
+        assert!(refs.iter().any(|loc| loc.start == rhs));
+
+        let code = "{ my $x = $x; print $x; }";
+        let analyzer = analyze(code);
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        assert!(analyzer.find_all_references(rhs, true).is_empty());
+    }
+
+    #[test]
+    fn find_definition_rhs_inside_named_sub_does_not_fall_back_to_the_sub() {
+        // T6: the RHS binds the package global; the enclosing sub (whose
+        // symbol spans the whole node) is not its definition.
+        let code = "sub run { my $x = $x; print $x; }\nrun();\n";
+        let analyzer = analyze(code);
+        let rhs = code.find("= $x").unwrap_or_else(|| panic!("rhs")) + 2;
+        assert!(analyzer.find_definition(rhs).is_none());
+        assert!(analyzer.find_all_references(rhs, false).is_empty());
+        assert!(analyzer.find_all_references(rhs, true).is_empty());
+        // Control: querying the call still selects the subroutine.
+        let call = code.find("run();").unwrap_or_else(|| panic!("call"));
+        let definition = analyzer.find_definition(call);
+        assert_eq!(
+            definition.map(|symbol| symbol.name.as_str()),
+            Some("run"),
+            "call must still define to the sub"
+        );
+    }
+
+    #[test]
+    fn find_all_references_outer_our_reaches_inner_our_alias_use() {
+        // T7: an inner `our` aliases the same package variable as an outer
+        // `our`, even across an intervening `my` of the same name.
+        let code = "our $x = 10;\n{ my $x = 20; { our $x; print $x; } }\n";
+        let analyzer = analyze(code);
+        let outer_our = code.find("our $x").unwrap_or_else(|| panic!("outer our")) + 4;
+        let refs = analyzer.find_all_references(outer_our, false);
+        let inner_use = code.rfind("print $x").unwrap_or_else(|| panic!("use")) + 6;
+        assert_eq!(refs.len(), 1, "inner alias use only; got {refs:?}");
+        assert!(refs.iter().any(|loc| loc.start == inner_use));
     }
 
     #[test]
