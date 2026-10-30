@@ -65,6 +65,10 @@ pub enum CodeActionKind {
     Refactor,
     /// Extract code into a new construct
     RefactorExtract,
+    /// Extract an expression into a variable.
+    RefactorExtractVariable,
+    /// Extract a block into a subroutine.
+    RefactorExtractSubroutine,
     /// Inline a construct into its usage sites
     RefactorInline,
     /// Rewrite code using a different pattern

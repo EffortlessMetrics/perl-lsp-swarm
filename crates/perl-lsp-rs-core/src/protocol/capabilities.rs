@@ -579,6 +579,8 @@ mod tests {
             "quickfix",
             "refactor",
             "refactor.extract",
+            "refactor.extract.variable",
+            "refactor.extract.subroutine",
             "refactor.rewrite",
             "source.fixAll",
             "source.modernize",
