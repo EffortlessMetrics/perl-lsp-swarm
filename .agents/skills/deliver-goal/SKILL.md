@@ -110,11 +110,22 @@ cross-PR contracts, shared blockers/wake events, merged effects, residual claims
 completion judgment. Keep runtime topology, task lists, liveness, retries, raw logs,
 and unchanged status local to the root.
 
+## Ordinary qualification continuity
+
+Apply #3390's current same-owner rule and the shared development method's
+late-qualification boundary. Keep the useful owning lead through ordinary in-window
+CI wait, result inspection, separate final judgment, authorized protected merge and
+landing read-back. The remote-wait release guidance below applies to unnecessary
+child contexts and genuine interruption/capacity/window limits; it does not mandate
+ending a useful lead session. Use supported waits/events or bounded checks, never a
+polling child or scheduled monitor. Missing actual request capability is a producer
+blocker, not an accepted run. No routine queue or auto-merge is introduced.
+
 ## Remote-wait attention release
 
 A remote wait releases root attention. An exact wake event records the material
-condition that would justify reconstructing the claim later; it is not an instruction
-to keep the current root session alive until that condition changes.
+condition that would justify reconstructing the claim later. Preserve ordinary
+qualification continuity as above; release attention for genuine remote blockers.
 
 Do not create a timer, cron, scheduled reminder, recurring wake, or polling loop merely
 to revisit the same remote condition. In a multi-claim goal, retain the waiting frame as

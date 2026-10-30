@@ -1,0 +1,14 @@
+[
+  {
+    "kind": "new_ripr_gap",
+    "blocking": true,
+    "new_unresolved": 2,
+    "gap_list_proven": false,
+    "guidance_status": "present"
+  },
+  {
+    "kind": "ripr_review_guidance_not_actionable",
+    "blocking": true,
+    "reason": "no_actionable_top_gaps"
+  }
+]

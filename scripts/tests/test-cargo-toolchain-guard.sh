@@ -114,13 +114,13 @@ expect_false "named channel is not a numeric version" \
 # ── rustup shim-path detection ────────────────────────────────────────────────
 
 expect_true  "shim: ~/.cargo/bin/cargo" \
-  cargo_guard_is_rustup_shim "/home/steven/.cargo/bin/cargo"
+  cargo_guard_is_rustup_shim "/fixture/profile/.cargo/bin/cargo"
 expect_true  "shim: windows-mounted home" \
-  cargo_guard_is_rustup_shim "/mnt/c/Users/steven/.cargo/bin/cargo.exe"
+  cargo_guard_is_rustup_shim "/mnt/c/fixture/profile/.cargo/bin/cargo.exe"
 expect_true  "shim: windows separators normalize" \
-  cargo_guard_is_rustup_shim 'C:\Users\steven\.cargo\bin\cargo.exe'
+  cargo_guard_is_rustup_shim 'C:\fixture\profile\.cargo\bin\cargo.exe'
 expect_true  "shim: rustup toolchain binary" \
-  cargo_guard_is_rustup_shim "/home/steven/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
+  cargo_guard_is_rustup_shim "/fixture/profile/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
 expect_false "not shim: /usr/bin/cargo (WSL apt cargo)" \
   cargo_guard_is_rustup_shim "/usr/bin/cargo"
 expect_false "not shim: /usr/local/bin/cargo" \
@@ -296,6 +296,118 @@ fi
 assert_contains "guard: non-shim note reports the ignored pin" \
   "is not a rustup shim, so the rust-toolchain.toml pin (1.95.0) is not in effect" \
   "${TMPDIR_BASE}/new.err"
+
+# ── old rustup proxies must refuse before any install-capable probe ────────
+PROXY_BIN="${TMPDIR_BASE}/proxy bin"
+mkdir -p "$PROXY_BIN"
+cat > "${PROXY_BIN}/rustup" <<'STUB'
+#!/usr/bin/env bash
+printf '%s %s\n' "${0##*/}" "$*" >> "$PROXY_TRACE"
+if [[ "${0##*/}" == rustup && "$*" == --help ]]; then
+  printf '%s\n' "$PROXY_HEADER"
+  exit "${PROXY_HELP_EXIT:-0}"
+fi
+# Both cargo --version and rustup --version are unsafe on old rustup.
+printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" >> "$PROXY_CARGO_ENV"
+printf 'cargo 1.95.0 (proxy fixture)\n'
+STUB
+chmod +x "${PROXY_BIN}/rustup"
+ln "${PROXY_BIN}/rustup" "${PROXY_BIN}/cargo"
+
+for header in 'rustup 1.27.1 (fixture)' 'rustup 1.28.0 (fixture)' \
+  'rustup 1.29.2 (fixture)' 'rustup 1.28.0-beta.1' 'unrelated 9.99.0'; do
+  expected=78
+  case "$header" in 'rustup 1.28.0 (fixture)'|'rustup 1.29.2 (fixture)') expected=0 ;; esac
+  : > "${TMPDIR_BASE}/proxy.trace"
+  : > "${TMPDIR_BASE}/proxy.env"
+  code=0
+  PATH="${PROXY_BIN}:$PATH" PROXY_HEADER="$header" \
+    PROXY_TRACE="${TMPDIR_BASE}/proxy.trace" PROXY_CARGO_ENV="${TMPDIR_BASE}/proxy.env" \
+    bash -c '. "$1"; cargo_toolchain_guard' guard-test "$LIB" \
+    2> "${TMPDIR_BASE}/proxy.err" || code=$?
+  expect_eq "proxy: capability boundary for '$header'" "$expected" "$code"
+  if [[ "$expected" == 78 ]]; then
+    expect_eq "proxy: unsafe/unverified manager uses help only ('$header')" \
+      'rustup --help' "$(cat "${TMPDIR_BASE}/proxy.trace")"
+    expect_eq "proxy: rejected manager never invokes Cargo ('$header')" \
+      '' "$(cat "${TMPDIR_BASE}/proxy.env")"
+  else
+    expect_eq "proxy: released safe manager reaches suppressed Cargo ('$header')" \
+      0 "$(cat "${TMPDIR_BASE}/proxy.env")"
+  fi
+done
+
+code=0
+PATH="${PROXY_BIN}:$PATH" PROXY_HEADER='rustup 1.29.2 (fixture)' PROXY_HELP_EXIT=7 \
+  PROXY_TRACE="${TMPDIR_BASE}/help-failed.trace" PROXY_CARGO_ENV="${TMPDIR_BASE}/help-failed.env" \
+  bash -c '. "$1"; cargo_toolchain_guard' guard-test "$LIB" \
+  2> "${TMPDIR_BASE}/help-failed.err" || code=$?
+expect_eq 'proxy: failed help is not a verified manager' 78 "$code"
+expect_eq 'proxy: failed help never invokes Cargo' 'rustup --help' \
+  "$(cat "${TMPDIR_BASE}/help-failed.trace")"
+
+# Identity follows standard symlinks and a relocated proxy whose manager is
+# found on PATH; neither filename heuristics nor an unrelated manager suffice.
+RELOCATED_BIN="${TMPDIR_BASE}/relocated"
+mkdir -p "$RELOCATED_BIN"
+ln -s "${PROXY_BIN}/rustup" "${RELOCATED_BIN}/cargo"
+expect_eq 'proxy: symlink outside manager directory resolves through PATH' \
+  "${PROXY_BIN}/rustup" \
+  "$(PATH="${PROXY_BIN}:$PATH" cargo_guard_proxy_manager "${RELOCATED_BIN}/cargo")"
+expect_false 'proxy: standalone Cargo is not the unrelated old PATH manager' \
+  cargo_guard_proxy_manager "${NEW_BIN}/cargo"
+expect_false 'proxy: a function name is not a same-named file in cwd' \
+  cargo_guard_proxy_manager cargo
+code=0
+PATH="${NEW_BIN}:${PROXY_BIN}:$PATH" PROXY_HEADER='rustup 1.27.1 (fixture)' \
+  PROXY_TRACE="${TMPDIR_BASE}/unrelated-manager.trace" \
+  bash -c '. "$1"; cargo_toolchain_guard' guard-test "$LIB" \
+  2> "${TMPDIR_BASE}/unrelated-manager.err" || code=$?
+expect_eq 'proxy: standalone Cargo passes with an unrelated old PATH manager' 0 "$code"
+expect_false 'proxy: unrelated manager was never executed' \
+  test -e "${TMPDIR_BASE}/unrelated-manager.trace"
+
+# Exercise the function case with an actual same-named proxy file in cwd.
+code=0
+PATH="${PROXY_BIN}:$PATH" bash -c '
+  cd "$2"
+  cargo() { printf "cargo 1.95.0 (function fixture)\n"; }
+  . "$1"
+  cargo_toolchain_guard
+' guard-test "$LIB" "$PROXY_BIN" 2> "${TMPDIR_BASE}/function.err" || code=$?
+expect_eq 'proxy: Cargo function is not replaced by cwd file identity' 0 "$code"
+
+# ── version probes never opt into implicit toolchain installation ──────────
+# The shared library is also used by legacy callers that do not export the
+# admitted wrapper's no-install setting. Observe the subprocess environment,
+# and separately verify that the guard does not change its caller's policy.
+PROBE_BIN="${TMPDIR_BASE}/probe-bin"
+mkdir -p "$PROBE_BIN"
+cat > "${PROBE_BIN}/cargo" <<'STUB'
+#!/usr/bin/env bash
+[[ "$*" == "--version" ]] || exit 91
+printf '%s\n' "${RUSTUP_AUTO_INSTALL-unset}" > "$PROBE_ENV_LOG"
+printf 'cargo 1.95.0 (installed fixture)\n'
+STUB
+chmod +x "${PROBE_BIN}/cargo"
+
+for setting in unset '' 0 1; do
+  code=0
+  PATH="${PROBE_BIN}:$PATH" PROBE_ENV_LOG="${TMPDIR_BASE}/probe.env" \
+    bash -c '
+      if [[ "$2" == unset ]]; then unset RUSTUP_AUTO_INSTALL;
+      else export RUSTUP_AUTO_INSTALL="$2"; fi
+      . "$1"
+      cargo_toolchain_guard
+      printf "%s\n" "${RUSTUP_AUTO_INSTALL-unset}"
+    ' guard-test "$LIB" "$setting" \
+    > "${TMPDIR_BASE}/caller.env" 2> "${TMPDIR_BASE}/probe.err" || code=$?
+  expect_eq "guard: installed probe passes with caller setting '$setting'" 0 "$code"
+  expect_eq "guard: probe disables auto-install with caller setting '$setting'" \
+    0 "$(cat "${TMPDIR_BASE}/probe.env")"
+  expect_eq "guard: preserves caller setting '$setting'" \
+    "$setting" "$(cat "${TMPDIR_BASE}/caller.env")"
+done
 
 # ── probe runs from the repository root, not the caller's directory ──────────
 # A rustup shim picks its toolchain from the nearest rust-toolchain.toml

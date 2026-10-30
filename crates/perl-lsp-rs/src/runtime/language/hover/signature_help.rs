@@ -128,7 +128,7 @@ impl LspServer {
                     // Try to get signature from user-defined functions first (if AST exists)
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(signature) =
-                            self.get_user_function_signature(ast, &function_name)
+                            self.get_user_function_signature(ast, &function_name, &doc.text)
                     {
                         return Ok(Some(json!({
                             "signatures": [signature],
@@ -160,8 +160,13 @@ impl LspServer {
                     // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
                     #[cfg(feature = "workspace")]
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                    // Bare calls resolve through the workspace only with
+                    // import evidence in the calling document; an unimported
+                    // bare name must not borrow an unrelated package's
+                    // same-named callable (#17582).
                     #[cfg(feature = "workspace")]
-                    if Self::is_method_call_context(&doc.text, offset)
+                    if (Self::is_method_call_context(&doc.text, offset)
+                        || document_imports_name(&doc.text, &function_name))
                         && let Some(signature) = self.resolve_method_in_workspace(&function_name)
                     {
                         return Ok(Some(json!({
@@ -178,33 +183,25 @@ impl LspServer {
                     let is_dbi_source =
                         doc.text.contains("use DBI") || doc.text.contains("use DBIx");
                     if is_dbi_source {
-                        let paren_offset = {
-                            let chars: Vec<char> = doc.text.chars().collect();
+                        let paren_offset = doc.text.get(..offset).and_then(|prefix| {
                             let mut depth = 0usize;
-                            let mut found = None;
-                            let mut k = if offset > 0 { offset - 1 } else { 0 };
-                            loop {
-                                match chars.get(k) {
-                                    Some(')') | Some(']') | Some('}') => depth += 1,
-                                    Some('(') => {
+                            // Receiver extraction consumes byte offsets, so retain
+                            // char_indices coordinates while walking backward.
+                            for (byte_offset, ch) in prefix.char_indices().rev() {
+                                match ch {
+                                    ')' | ']' | '}' => depth += 1,
+                                    '(' => {
                                         if depth == 0 {
-                                            found = Some(k);
-                                            break;
+                                            return Some(byte_offset);
                                         }
                                         depth = depth.saturating_sub(1);
                                     }
-                                    Some('[') | Some('{') => {
-                                        depth = depth.saturating_sub(1);
-                                    }
+                                    '[' | '{' => depth = depth.saturating_sub(1),
                                     _ => {}
                                 }
-                                if k == 0 {
-                                    break;
-                                }
-                                k -= 1;
                             }
-                            found
-                        };
+                            None
+                        });
                         if let Some(paren_pos) = paren_offset
                             && let Some(receiver) =
                                 Self::extract_arrow_receiver(&doc.text, paren_pos)
@@ -226,16 +223,10 @@ impl LspServer {
                         }
                     }
 
-                    // If no signature found, return a generic one
-                    return Ok(Some(json!({
-                        "signatures": [json!({
-                            "label": format!("{}(...)", function_name),
-                            "documentation": null,
-                            "parameters": []
-                        })],
-                        "activeSignature": active_signature,
-                        "activeParameter": active_param
-                    })));
+                    // No static callable fact: LSP 3.17 defines a null
+                    // result when no signatures are available (#17582).
+                    // Never fabricate a `name(...)` signature.
+                    return Ok(Some(Value::Null));
                 }
             }
         } else {
@@ -266,10 +257,10 @@ impl LspServer {
         content: &str,
         offset: usize,
     ) -> Option<(String, usize)> {
-        let chars: Vec<char> = content.chars().collect();
-        if offset > chars.len() {
-            return None;
-        }
+        // The position converter supplies bytes. Scan only the valid prefix
+        // before that boundary so scalar indexing cannot pass the cursor.
+        let chars: Vec<char> = content.get(..offset)?.chars().collect();
+        let offset = chars.len();
 
         // Find the opening parenthesis, tracking all bracket types
         let mut paren_pos = None;
@@ -405,14 +396,14 @@ impl LspServer {
 
     /// Get signature for user-defined functions from AST
     ///
-    /// Extracts function signature information by analyzing the AST for
-    /// subroutine definitions. Supports both explicit signatures and
-    /// parameter extraction from `my (...) = @_` patterns.
+    /// Extracts explicit subroutine and native method signatures from the AST,
+    /// plus legacy subroutine parameter names from `my (...) = @_` patterns.
     ///
     /// # Arguments
     ///
     /// * `ast` - Parsed AST to search for subroutine definitions
     /// * `function_name` - Name of the function to find signature for
+    /// * `source` - Source belonging to this AST, for retained signature separators
     ///
     /// # Returns
     ///
@@ -421,30 +412,60 @@ impl LspServer {
         &self,
         ast: &Node,
         function_name: &str,
+        source: &str,
     ) -> Option<Value> {
         // Walk the AST to find the subroutine definition
         let sub_node = self.find_subroutine_definition(ast, function_name)?;
 
-        // Extract parameters from the subroutine
-        let mut params = Vec::new();
-        if let NodeKind::Subroutine { signature: sub_signature, body, .. } = &sub_node.kind {
-            if let Some(sig) = sub_signature {
-                if let NodeKind::Signature { parameters } = &sig.kind {
-                    for param in parameters {
-                        self.extract_signature_params(param, &mut params);
-                    }
-                }
-            } else {
-                // Look for my (...) = @_; pattern in the body
-                self.extract_params_from_body(body, &mut params);
+        // Both declaration variants carry the parser's explicit signature.
+        // Native methods do not include their implicit $self in that signature.
+        let signature = match &sub_node.kind {
+            NodeKind::Subroutine { signature, .. } | NodeKind::Method { signature, .. } => {
+                signature.as_deref()
             }
+            _ => None,
+        };
+        let mut params = Vec::new();
+        if let Some(sig) = signature {
+            if let NodeKind::Signature { parameters } = &sig.kind {
+                // Core methods bind $self implicitly. The parser also accepts
+                // a dialect's explicit receiver separator without retaining its
+                // role in the AST. Inspect only the token after the first parsed
+                // parameter: names, defaults, traits and comment colons cannot
+                // establish an invocant boundary.
+                let explicit_invocant = matches!(&sub_node.kind, NodeKind::Method { .. })
+                    && parameters.first().is_some_and(|first| {
+                        let Some(suffix) = source.get(first.location.end..sig.location.end) else {
+                            return false;
+                        };
+                        let mut lexer = perl_lexer::PerlLexer::new(suffix);
+                        std::iter::from_fn(|| lexer.next_token())
+                            .find(|token| !token.token_type.is_trivia())
+                            .is_some_and(|token| {
+                                matches!(token.token_type, perl_lexer::TokenType::Colon)
+                                    || matches!(&token.token_type, perl_lexer::TokenType::Operator(op) if op.as_ref() == ":")
+                            })
+                    });
+                for param in parameters.iter().skip(usize::from(explicit_invocant)) {
+                    self.extract_signature_params(param, &mut params);
+                }
+            }
+        } else if let NodeKind::Subroutine { body, .. } = &sub_node.kind {
+            // Retain legacy subroutine @_ inference. Method body inference is
+            // outside this explicit-signature projection.
+            self.extract_params_from_body(body, &mut params);
         }
 
-        // Build signature
+        let (declaration_kind, documentation_kind) =
+            if matches!(&sub_node.kind, NodeKind::Method { .. }) {
+                ("method", "method")
+            } else {
+                ("sub", "function")
+            };
         let label = if params.is_empty() {
-            format!("sub {}", function_name)
+            format!("{} {}", declaration_kind, function_name)
         } else {
-            format!("sub {}({})", function_name, params.join(", "))
+            format!("{} {}({})", declaration_kind, function_name, params.join(", "))
         };
 
         let parameters: Vec<Value> = params
@@ -459,7 +480,7 @@ impl LspServer {
 
         Some(json!({
             "label": label,
-            "documentation": format!("User-defined function '{}'", function_name),
+            "documentation": format!("User-defined {} '{}'", documentation_kind, function_name),
             "parameters": parameters
         }))
     }
@@ -504,7 +525,9 @@ impl LspServer {
     }
 
     /// Walk the AST to find a `tie` statement whose variable matches `sigil` and `var_name`.
-    /// Returns the class string if the package argument is a string literal, `None` otherwise.
+    /// Returns the class string only for a non-interpolating string literal.
+    /// Interpolating and command strings do not prove a class name from source;
+    /// this conservatively includes constant double-quoted strings (#18304).
     /// Handles the first tie encountered for the given name; retie sequences are a known limitation.
     pub(super) fn find_tied_class(node: &Node, sigil: &str, var_name: &str) -> Option<String> {
         match &node.kind {
@@ -516,7 +539,7 @@ impl LspServer {
                     }
                     _ => false,
                 };
-                if matched && let NodeKind::String { value, .. } = &package.kind {
+                if matched && let NodeKind::String { value, interpolated: false } = &package.kind {
                     return Some(value.trim_matches(|c| c == '\'' || c == '"').to_string());
                 }
                 None
@@ -921,16 +944,19 @@ impl LspServer {
     /// This is a pure-text heuristic with no AST dependency, making it safe to call
     /// inside the document-lock section without re-parsing.
     pub(crate) fn is_method_call_context(text: &str, offset: usize) -> bool {
-        let chars: Vec<char> = text.chars().collect();
+        let Some(prefix) = text.get(..offset) else {
+            return false;
+        };
+        let chars: Vec<char> = prefix.chars().collect();
         let len = chars.len();
-        if len == 0 || offset == 0 {
+        if len == 0 {
             return false;
         }
 
         // Scan backward to find the opening `(`
         let mut depth = 0usize;
         let mut paren_pos = None;
-        let mut i = offset.saturating_sub(1).min(len - 1);
+        let mut i = len - 1;
         loop {
             match chars[i] {
                 ')' | ']' | '}' => depth += 1,
@@ -1035,8 +1061,36 @@ impl LspServer {
         let mut parser = crate::Parser::new(&text);
         let ast = parser.parse().ok()?; // LCOV_EXCL_LINE
 
-        self.get_user_function_signature(&ast, method_name)
+        self.get_user_function_signature(&ast, method_name, &text)
     }
+}
+
+/// True when `text` imports `name` through a `use Module qw(...)` list or a
+/// parenthesized quoted import list. This is import evidence only; it does
+/// not prove the imported symbol resolves, so callers still need a real
+/// workspace definition before showing a signature (#17582).
+fn document_imports_name(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with("use ") {
+            continue;
+        }
+        if let Some(start) = line.find("qw(").or_else(|| line.find("qw[")) {
+            let close = if line[start + 2..].starts_with('(') { ')' } else { ']' };
+            if let Some(end) = line[start..].find(close)
+                && line[start + 3..start + end].split_whitespace().any(|word| word == name)
+            {
+                return true;
+            }
+        }
+        if line.contains(&format!("'{name}'")) || line.contains(&format!("\"{name}\"")) {
+            return true;
+        }
+    }
+    false
 }
 
 fn active_signature_from_context(params: &Value) -> u64 {
@@ -1056,6 +1110,92 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unicode_byte_cursor_finds_incomplete_signature_context() {
+        let server = LspServer::new();
+        for prefix in ["", "# café\n", "# 😀\r\n", "# e\u{301}\n"] {
+            for (call, expected) in
+                [("push(", 0), ("push(@items, ", 1), ("push([1, 2], ", 1), ("push([1, 2]", 0)]
+            {
+                let source = format!("{prefix}{call}");
+                assert_eq!(
+                    server.find_function_context(&source, source.len()),
+                    Some(("push".to_owned(), expected)),
+                    "{source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_byte_cursor_does_not_scan_after_cursor() {
+        let server = LspServer::new();
+        for prefix in ["", "# café\n", "# 😀\n", "# e\u{301}\n"] {
+            let before = format!("{prefix}push(@items, ");
+            let source = format!("{before}2, 3);          ");
+            assert_eq!(
+                server.find_function_context(&source, before.len()),
+                Some(("push".to_owned(), 1)),
+                "{source:?}"
+            );
+            assert_eq!(server.find_function_context(&source, source.len()), None);
+            let before = format!("{prefix}$obj->run(");
+            let source = format!("{before});          ");
+            assert!(LspServer::is_method_call_context(&source, before.len()), "{source:?}");
+            assert!(!LspServer::is_method_call_context(&source, source.len()));
+        }
+    }
+
+    #[test]
+    fn signature_context_refuses_invalid_byte_boundaries() {
+        let server = LspServer::new();
+        let source = "push(é";
+        for offset in [source.len() - 1, source.len() + 1] {
+            assert_eq!(server.find_function_context(source, offset), None);
+            assert!(!LspServer::is_method_call_context(source, offset));
+        }
+    }
+
+    #[test]
+    fn unicode_byte_cursor_signature_handler_preserves_known_content()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for prefix in
+            ["", "my $label = 'café'; ", "my $label = '😀😀😀😀'; ", "my $label = 'e\u{301}'; "]
+        {
+            for (call, expected, active) in [
+                ("push(@items, ", "push ARRAY, LIST", 1),
+                ("$dbh->prepare(", "prepare($statement, \\@attr?)", 0),
+            ] {
+                let server =
+                    LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+                server.handle_initialize(Some(json!({"capabilities": {}})))?;
+                let line = format!("{prefix}{call}");
+                let source = format!("use DBI;\n{line}");
+                let uri = "file:///signature-unicode-17770.pl";
+                server.handle_did_open(Some(json!({"textDocument": {
+                    "uri": uri, "languageId": "perl", "version": 1, "text": source
+                }})))?;
+                let result = server
+                    .handle_signature_help(Some(json!({
+                        "textDocument": {"uri": uri},
+                        "position": {"line": 1, "character": line.encode_utf16().count()}
+                    })))?
+                    .ok_or("missing terminal signature response")?;
+                assert_eq!(
+                    result.pointer("/signatures/0/label").and_then(Value::as_str),
+                    Some(expected),
+                    "prefix {prefix:?}, call {call:?}: {result}"
+                );
+                assert_eq!(
+                    result.get("activeParameter").and_then(Value::as_u64),
+                    Some(active),
+                    "{result}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn positional_default_labels_preserve_operator_8915() -> Result<(), Box<dyn std::error::Error>>
     {
         let server = LspServer::new();
@@ -1065,8 +1205,9 @@ mod tests {
                     "use feature 'signatures'; sub f ($value {operator} {expression}) {{ $value }}"
                 );
                 let ast = perl_parser::Parser::new(&source).parse()?;
-                let signature =
-                    server.get_user_function_signature(&ast, "f").ok_or("missing signature")?;
+                let signature = server
+                    .get_user_function_signature(&ast, "f", &source)
+                    .ok_or("missing signature")?;
                 let parameter = format!("$value {operator} {displayed}");
                 let label = format!("sub f({parameter})");
                 if signature.get("label").and_then(Value::as_str) != Some(label.as_str())

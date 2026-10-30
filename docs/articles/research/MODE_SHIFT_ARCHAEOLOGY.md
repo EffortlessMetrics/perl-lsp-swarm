@@ -14,7 +14,7 @@ from human attention to machine throughput to full swarm-scale persistence.
 
 The assisted phase is visible in the earliest era docs.
 
-[`ERA_TIMELINE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md)
+[`ERA_TIMELINE.md`](ERA_TIMELINE.md)
 describes Era 1 as direct coding with Opus and human review. That looks like
 classic assisted development:
 
@@ -23,7 +23,7 @@ classic assisted development:
 - merges and conflict resolution still depend on direct human labor
 
 The repo's own project docs define the same baseline. In
-[`docs/project/AGENTIC_DEV.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md),
+[`docs/project/AGENTIC_DEV.md`](../../project/AGENTIC_DEV.md),
 AI-assisted means the human writes and the AI suggests. That is the starting
 point the later modes move away from.
 
@@ -34,7 +34,7 @@ point the later modes move away from.
 The important correction is that the late-2025 to early-2026 bridge was not
 simply "assisted with better tooling."
 
-[`Q4_Q1_HANDS_ON_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
+[`Q4_Q1_HANDS_ON_ARCHAEOLOGY.md`](Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
 shows a PR-heavy, stable phase where the maintainer still carried the
 integration burden, but the work itself was already machine-shaped:
 
@@ -61,7 +61,7 @@ Operating Model
 The transition to native mode shows up when the repo starts versioning its own
 control plane.
 
-[`AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md)
+[`AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md`](AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md)
 ties that shift to:
 
 - receipt-based claims instead of prose confidence
@@ -75,11 +75,11 @@ state, receipts, and explicit lifecycle transitions.
 
 The Q3 swarm is the bridge into that world:
 
-- [`Q3_SWARM_PR_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [`Q3_SWARM_PR_ARCHAEOLOGY.md`](Q3_SWARM_PR_ARCHAEOLOGY.md)
   shows the `issue-to-draft` / `draft-to-pr` / `pr-to-merge` pipeline
-- [`CONTROL_PLANE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
+- [`CONTROL_PLANE_ARCHAEOLOGY.md`](CONTROL_PLANE_ARCHAEOLOGY.md)
   shows the move from prompt packs to commands, skills, hooks, and swarm-state
-- [`SWARM_STATE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_STATE_ARCHAEOLOGY.md)
+- [`SWARM_STATE_ARCHAEOLOGY.md`](SWARM_STATE_ARCHAEOLOGY.md)
   shows the repo learning to remember itself across sessions
 
 That is native mode in practice: AI writes, AI reviews, humans supervise the
@@ -92,8 +92,8 @@ system, and the repo records the result as machine-readable state.
 Industrialized mode is what happens when the swarm stops being a burst and
 starts behaving like maintenance infrastructure.
 
-[`PR_WAVE_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_WAVE_ARCHAEOLOGY.md)
-and [`QUEUE_BOTTLENECK_ARCHAEOLOGY.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
+[`PR_WAVE_ARCHAEOLOGY.md`](PR_WAVE_ARCHAEOLOGY.md)
+and [`QUEUE_BOTTLENECK_ARCHAEOLOGY.md`](QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
 show the structural signs:
 
 - PRs arrive in waves rather than a smooth stream
@@ -151,11 +151,11 @@ can feel both extremely hands-on and clearly AI-native at the same time.
 
 ## Evidence Pointers
 
-- [ERA_TIMELINE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA_TIMELINE.md)
-- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
-- [AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md)
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-- [SWARM_STATE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_STATE_ARCHAEOLOGY.md)
-- [PR_WAVE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_WAVE_ARCHAEOLOGY.md)
-- [QUEUE_BOTTLENECK_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
+- [ERA_TIMELINE.md](ERA_TIMELINE.md)
+- [Q4_Q1_HANDS_ON_ARCHAEOLOGY.md](Q4_Q1_HANDS_ON_ARCHAEOLOGY.md)
+- [AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md](AI_NATIVE_OPERATING_MODEL_ARCHAEOLOGY.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
+- [SWARM_STATE_ARCHAEOLOGY.md](SWARM_STATE_ARCHAEOLOGY.md)
+- [PR_WAVE_ARCHAEOLOGY.md](PR_WAVE_ARCHAEOLOGY.md)
+- [QUEUE_BOTTLENECK_ARCHAEOLOGY.md](QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
