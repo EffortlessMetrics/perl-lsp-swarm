@@ -163,7 +163,10 @@ function mockConfig(serverPath: string): void {
  * the demand path awaits several calls, and adding one more await would turn a
  * correct implementation into an intermittent CI failure.
  */
-async function waitUntil(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+// Budget must stay below jest.config's 15s testTimeout: hosted runners add
+// multi-second activation latency, and the poll condition is binary so extra
+// patience never weakens the assertion.
+async function waitUntil(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const startedAt = Date.now();
   while (!condition()) {
     if (Date.now() - startedAt > timeoutMs) {
@@ -174,7 +177,7 @@ async function waitUntil(condition: () => boolean, timeoutMs = 1_000): Promise<v
 }
 
 /** Wait until the language client has been started `count` times. */
-function waitForStarts(count: number, timeoutMs = 1_000): Promise<void> {
+function waitForStarts(count: number, timeoutMs = 5_000): Promise<void> {
   return waitUntil(() => mockLanguageClientStart.mock.calls.length >= count, timeoutMs);
 }
 
