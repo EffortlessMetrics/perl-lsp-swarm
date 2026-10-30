@@ -69,7 +69,9 @@ pub(crate) fn windows_quote_for_cmd(arg: &str) -> String {
 /// The scan mirrors cmd.exe's command-line pairing: from each `%` it looks for
 /// the next `%`, treats the text between as the variable name (case handled by
 /// the caller's lookup, which sees Windows' case-insensitive environment), and
-/// resumes after the closing `%` when the name is not defined. The `is_defined`
+/// resumes just after the opening `%` when the name is not defined: cmd.exe
+/// restarts pairing at that closing `%`, so in `%undefined%TEMP%` the second
+/// span is `TEMP` and does expand (verified against real cmd.exe). The `is_defined`
 /// parameter is injected so the scan stays a pure, cross-platform-testable
 /// function; production passes `|name| std::env::var_os(name).is_some()`.
 pub(crate) fn windows_has_expandable_percent_ref(
@@ -88,7 +90,7 @@ pub(crate) fn windows_has_expandable_percent_ref(
         if !name.is_empty() && is_defined(name) {
             return true;
         }
-        i = close + 1;
+        i = open + 1;
     }
     false
 }
@@ -189,6 +191,9 @@ mod tests {
         assert!(!windows_has_expandable_percent_ref("no percent at all", is_defined));
         // Resume after each undefined pair so a later defined pair is still found.
         assert!(windows_has_expandable_percent_ref("%NOPE% then %TEMP%", is_defined));
+        // cmd.exe restarts pairing at an undefined pair's closing `%`: the
+        // closing `%` of `%undefined%` opens the `TEMP` span, which expands.
+        assert!(windows_has_expandable_percent_ref("%undefined%TEMP%", is_defined));
         // An empty %% pair has no name and is not expandable.
         assert!(!windows_has_expandable_percent_ref("100%%", is_defined));
     }
