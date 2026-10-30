@@ -11,8 +11,8 @@ use super::{
     io, log_response, scheduler,
 };
 use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse, PARSE_ERROR};
-use std::time::Duration;
 use crate::transport::IncomingMessageError;
+use std::time::Duration;
 
 const CANCELLED_SET_CAP: usize = 256;
 
