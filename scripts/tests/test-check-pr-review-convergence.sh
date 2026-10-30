@@ -18,6 +18,18 @@ for required in "$SCRIPT" "$STATE_SCRIPT" "$WRITER_SCRIPT"; do
 done
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 
+# Own every fixture from the first allocation, including setup failures under -e.
+TEST_TMP="$(mktemp -d)"
+cleanup() {
+    local status=$? cleanup_status=0
+    rm -rf "$TEST_TMP" || cleanup_status=$?
+    if [[ "$status" -eq 0 ]]; then
+        status=$cleanup_status
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+
 RUN_EXIT=0
 RUN_STDOUT=""
 STATE_EXIT=0
@@ -150,7 +162,8 @@ fi
 # Malformed numeric collector facts must also reach callers as structured
 # NOT_PROVEN output. Copy the wrapper beside a fake core so this exercises the
 # production command-substitution boundary rather than source-text assertions.
-TMP_NUMERIC="$(mktemp -d)"
+TMP_NUMERIC="$TEST_TMP/numeric"
+mkdir "$TMP_NUMERIC"
 cp "$SCRIPT" "$TMP_NUMERIC/check-pr-review-convergence"
 cat >"$TMP_NUMERIC/check-pr-review-convergence-core" <<'EOF'
 #!/usr/bin/env bash
@@ -177,7 +190,6 @@ if [[ "$numeric_exit" -eq 2 ]] && jq -e '.formal_review.classification == "NOT_P
 else
     fail "malformed numeric fact should preserve structured verdict — exit=$numeric_exit output=$numeric_output"
 fi
-rm -rf "$TMP_NUMERIC"
 
 # The state helper projects native facts, not FIXED_HEAD/VERIFIED_HEAD stages.
 run_state_case "current-change-request-blocks"
@@ -269,8 +281,8 @@ fi
 
 # The retired writer must fail before discovering or invoking gh. This catches
 # warm sessions and stale callers, not only current skill text.
-TMP_WRITER="$(mktemp -d)"
-trap 'rm -rf "$TMP_WRITER"' EXIT
+TMP_WRITER="$TEST_TMP/writer"
+mkdir "$TMP_WRITER"
 cat >"$TMP_WRITER/gh" <<'EOF'
 #!/usr/bin/env bash
 echo invoked >>"${GH_SENTINEL:?}"
@@ -318,7 +330,7 @@ fi
 #    tree under a temp root so a copy of the state script resolves its CLOSEOUT
 #    to the fake wrapper, and the fake wrapper resolves its CORE to a fake core
 #    that pretends to be a future version.
-TMP_FUTURE="$(mktemp -d)"
+TMP_FUTURE="$TEST_TMP/future"
 mkdir -p "$TMP_FUTURE/scripts/reviews" "$TMP_FUTURE/scripts/ci"
 cp "$STATE_SCRIPT" "$TMP_FUTURE/scripts/reviews/state"
 cp "$SCRIPT" "$TMP_FUTURE/scripts/ci/check-pr-review-convergence"
@@ -368,7 +380,7 @@ fi
 # 4. A core that omits schema_version entirely should still be accepted but
 #    surface a deprecation warning to stderr. The state helper's projection
 #    stays structured; consumers learn the gap from the warning.
-TMP_LEGACY="$(mktemp -d)"
+TMP_LEGACY="$TEST_TMP/legacy"
 mkdir -p "$TMP_LEGACY/scripts/reviews" "$TMP_LEGACY/scripts/ci"
 cp "$STATE_SCRIPT" "$TMP_LEGACY/scripts/reviews/state"
 cp "$SCRIPT" "$TMP_LEGACY/scripts/ci/check-pr-review-convergence"
@@ -416,7 +428,6 @@ if [[ "$legacy_state_exit" -eq 0 ]] \
 else
     fail "missing schema_version should warn and continue — exit=$legacy_state_exit stderr=$legacy_state_err"
 fi
-rm -rf "$TMP_FUTURE" "$TMP_LEGACY"
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

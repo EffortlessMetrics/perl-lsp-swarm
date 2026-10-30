@@ -61,6 +61,29 @@ EXPECTED = {
         "superseded",
         "DEVELOPMENT_METHOD.md",
     ),
+    "TECHNICAL_VISION.md": ("historical", "CURRENT_STATUS.md"),
+    "docs/project/PERL_LSP_VISION.md": ("historical", "CURRENT_STATUS.md"),
+    "docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md": (
+        "historical",
+        "AUTHORITY_STATUS.md",
+    ),
+    ".hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md": (
+        "historical",
+        "AUTHORITY_STATUS.md",
+    ),
+    ".hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md": (
+        "historical",
+        "AUTHORITY_STATUS.md",
+    ),
+    "docs/project/EDITOR_TRUST_WAVE.md": ("historical", "CURRENT_STATUS.md"),
+    "docs/project/plans/2026-06-convergence-to-release.md": (
+        "historical",
+        "CURRENT_STATUS.md",
+    ),
+    ".kiro/specs/ux-readiness-system/requirements.md": (
+        "historical",
+        "CURRENT_STATUS.md",
+    ),
 }
 ROLLOUT_REDIRECTS: dict[str, dict[str, str]] = {
     "docs/development/RUST_1_95_ROLLOUT.md": {
@@ -466,7 +489,7 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         }
 
         self.assertEqual(set(EXPECTED), legacy_markdown)
-        self.assertEqual(len(EXPECTED), 14)
+        self.assertEqual(len(EXPECTED), 22)
 
     def test_retired_legacy_scripts_say_so(self) -> None:
         legacy_scripts = {

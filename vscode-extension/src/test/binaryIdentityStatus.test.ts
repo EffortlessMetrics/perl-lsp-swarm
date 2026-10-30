@@ -53,7 +53,7 @@ function response(
       candidate_identity: 'rc1',
       target: 'x86_64-unknown-linux-gnu',
       binary_artifact_role: 'managed',
-      authority_identity: 'vsix:0.18.0',
+      authority_identity: 'vsix:EffortlessMetrics.perl-lsp-rs',
     },
     server_instance_id: 'server-1',
     environment_snapshot_id: 'env-1',

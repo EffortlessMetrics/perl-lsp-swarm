@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Two byte-offset helpers used by folding ranges and native critic findings now floor offsets to UTF-8 character boundaries instead of panicking when an offset lands inside a multi-byte character. Externally derived or drifted spans can no longer crash the server through these paths."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18103"
+  Slug: char-boundary-offset-floor
+  Breaking: "no"

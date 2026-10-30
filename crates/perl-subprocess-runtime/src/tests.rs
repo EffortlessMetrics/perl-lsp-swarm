@@ -37,7 +37,7 @@ fn test_mock_runtime() {
     let result = runtime.run_command("perltidy", &["-st"], Some(b"my $x = 1;"));
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert_eq!(output.stdout_lossy(), "formatted code");
 
@@ -58,7 +58,7 @@ fn test_os_runtime_echo() {
     let result = runtime.run_command("echo", &["hello"], None);
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert!(output.stdout_lossy().trim() == "hello");
 }
@@ -102,7 +102,7 @@ fn test_os_runtime_rejects_nul_bytes_in_program_or_args() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
-    let cmd = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_test_must::must(resolve_command_invocation(
         r"C:\Strawberry\perl\bin\perltidy.bat",
         &["-st", "-se"],
     ));
@@ -110,6 +110,7 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
     // The cmd.exe used for batch wrappers is resolved to an ABSOLUTE path —
     // never the bare "cmd.exe", which CreateProcess would search CWD-first.
     let program = cmd.get_program().to_string_lossy().to_string();
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
@@ -120,7 +121,6 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
     // a raw (un-MSVC-escaped) argument so its quotes reach cmd.exe verbatim
     // (#17371).  std's default escaping would turn the inner `"` into `\"`,
     // which cmd.exe cannot parse.
-    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert_eq!(
         args,
         vec![
@@ -141,18 +141,18 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_includes_v_off_flag() {
-    let cmd = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.bat",
         &["--profile=!TEMP!"],
     ));
 
     let program = cmd.get_program().to_string_lossy().to_string();
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
         "batch wrapper must run via an absolute cmd.exe path; got: {program}"
     );
-    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         args.contains(&"/V:OFF".to_string()),
         "/V:OFF must be present to disable delayed expansion; got: {:?}",
@@ -180,7 +180,7 @@ fn test_resolve_command_invocation_fails_closed_on_expandable_percent_ref() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_preserves_executable_paths() {
-    let cmd = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.exe",
         &["--version"],
     ));
@@ -708,7 +708,7 @@ fn bat_wrapper_arguments_round_trip_through_real_cmd_spawn() {
     );
     let _ = std::fs::remove_dir_all(&workspace);
 
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(
         output.success(),
         "batch wrapper spawn must succeed; status={:?} stderr={:?}",
@@ -761,7 +761,7 @@ fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
-    let cmd = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perltidy.exe",
         &["--version"],
     ));

@@ -343,6 +343,113 @@ class RunningFakeProcess:
 
 
 class GateShardTests(unittest.TestCase):
+    def test_required_producer_non_success_is_not_masked_by_later_success(self) -> None:
+        for receipt_status, exit_code, result in (
+            ("error", 1, "not_proven"),
+            ("error", -signal.SIGTERM, "not_proven"),
+            ("fail", 1, "failure"),
+            ("timeout", 1, "timeout"),
+            ("skip", 1, "not_proven"),
+            ("pass", 1, "instrument_failure"),
+            ("cancelled", 1, "instrument_failure"),
+            ("unknown", 1, "instrument_failure"),
+        ):
+            with self.subTest(status=receipt_status, exit=exit_code):
+                with tempfile.TemporaryDirectory() as tmp:
+                    status, summary, invoked, _ = run_direct(
+                        Path(tmp),
+                        {
+                            "producer": {"status": receipt_status, "exit": exit_code},
+                            "later": {"status": "pass", "exit": 0},
+                        },
+                        ["producer", "later"],
+                    )
+                self.assertEqual(1, status, summary)
+                self.assertEqual(["producer", "later"], invoked)
+                self.assertEqual(
+                    [result, "success"], [row["result"] for row in summary["gates"]]
+                )
+                self.assertEqual(exit_code, summary["gates"][0]["exit_code"])
+                self.assertEqual("failed", summary["summary"]["overall_status"])
+                self.assertEqual(["producer"], summary["summary"]["non_success_gates"])
+
+    def test_zero_exit_skip_and_success_preserve_successful_shard(self) -> None:
+        for gates in (["skipped", "passed"], ["passed", "skipped"]):
+            with self.subTest(gates=gates):
+                with tempfile.TemporaryDirectory() as tmp:
+                    status, summary, invoked, _ = run_direct(
+                        Path(tmp),
+                        {
+                            "skipped": {"status": "skip", "exit": 0},
+                            "passed": {"status": "pass", "exit": 0},
+                        },
+                        gates,
+                    )
+                self.assertEqual(0, status, summary)
+                self.assertEqual(gates, invoked)
+                rows = {row["gate_name"]: row for row in summary["gates"]}
+                self.assertEqual("not_proven", rows["skipped"]["result"])
+                self.assertEqual("skip", rows["skipped"]["receipt_status"])
+                self.assertEqual(0, rows["skipped"]["exit_code"])
+                self.assertEqual("success", rows["passed"]["result"])
+                self.assertEqual(["skipped"], summary["summary"]["non_success_gates"])
+
+    def test_non_success_producer_blocks_dependent_and_fails_shard(self) -> None:
+        for receipt_status, exit_code in (("error", 1), ("skip", 0)):
+            with self.subTest(status=receipt_status):
+                with tempfile.TemporaryDirectory() as tmp:
+                    status, summary, invoked, _ = run_direct(
+                        Path(tmp),
+                        {
+                            "producer": {"status": receipt_status, "exit": exit_code},
+                            "later": {"status": "pass", "exit": 0},
+                            # A blocked dependent must never be invoked.
+                        },
+                        ["dependent", "later", "producer"],
+                        dependencies={"producer": [], "dependent": ["producer"], "later": []},
+                    )
+                self.assertEqual(1, status, summary)
+                self.assertEqual(["later", "producer"], invoked)
+                rows = {row["gate_name"]: row for row in summary["gates"]}
+                self.assertEqual("not_proven", rows["producer"]["result"])
+                self.assertEqual(receipt_status, rows["producer"]["receipt_status"])
+                self.assertEqual("blocked_not_proven", rows["dependent"]["result"])
+                self.assertEqual(["producer"], rows["dependent"]["blocked_by"])
+                self.assertEqual("success", rows["later"]["result"])
+
+    def test_unknown_cancelled_or_unstarted_observation_fails_closed(self) -> None:
+        run_gate = shard.ShardRunner._run_gate
+        for result, receipt_status, exit_code in (
+            ("cancelled", None, None),
+            ("unknown_result", "skip", 0),
+            ("not_proven", None, None),
+            ("blocked_not_proven", None, None),
+        ):
+            with self.subTest(result=result):
+                def terminal_observation(
+                    runner: shard.ShardRunner, gate: str
+                ) -> shard.GateObservation:
+                    if gate != "unproven":
+                        return run_gate(runner, gate)
+                    observed = runner._unstarted_observation(gate, message="terminal control")
+                    observed.result = result
+                    observed.receipt_status = receipt_status
+                    observed.exit_code = exit_code
+                    return observed
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    with mock.patch.object(shard.ShardRunner, "_run_gate", terminal_observation):
+                        status, summary, invoked, _ = run_direct(
+                            Path(tmp),
+                            {"later": {"status": "pass", "exit": 0}},
+                            ["unproven", "later"],
+                        )
+                self.assertEqual(1, status, summary)
+                self.assertEqual(["later"], invoked)
+                self.assertEqual(
+                    [result, "success"], [row["result"] for row in summary["gates"]]
+                )
+
     def test_first_failure_does_not_mask_later_gates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             status, summary, invoked, _ = run_direct(
@@ -1945,6 +2052,7 @@ class IntegrationSubjectTests(unittest.TestCase):
                 "test_run_gate_shard.py",
                 "test_scope_cache_key.py",
                 "test_candidate_meta_self_tests.py",
+                "test_local_publication_containment.py",
             ):
                 (tests / filename).write_text(
                     "import unittest\nfrom pathlib import Path\nPath('gate-script-executed').touch()\n"
@@ -2015,6 +2123,7 @@ class IntegrationSubjectTests(unittest.TestCase):
                 "scripts/ci/test_run_gate_shard.py",
                 "scripts/ci/test_scope_cache_key.py",
                 "scripts/ci/test_candidate_meta_self_tests.py",
+                "scripts/ci/test_local_publication_containment.py",
             ):
                 if expected not in listed:
                     raise RuntimeError(f"consolidated meta step no longer runs {expected}")
