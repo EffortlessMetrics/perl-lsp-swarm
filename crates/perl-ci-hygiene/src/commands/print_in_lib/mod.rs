@@ -73,8 +73,10 @@ fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
                 // on entry: that attribute must not exempt the first
                 // production item after the span.
                 if !was_in_test_scope {
-                    debug_assertions_scope = PrintAllowScope::default();
-                    print_allow_scope = PrintAllowScope::default();
+                    // Clear only the pending attribute: an enclosing item's
+                    // active brace depth must survive the test span it contains.
+                    debug_assertions_scope.clear_pending_attribute();
+                    print_allow_scope.clear_pending_attribute();
                     attrs = AttrJoiner::default();
                 }
                 was_in_test_scope = true;
@@ -536,6 +538,28 @@ mod tests {
             ),
         )?;
         check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_enclosing_allow_survives_the_test_module_it_contains() -> Result<()> {
+        // Entering a test span clears only a pending attribute. An enclosing
+        // item's active allowance must still cover prints after the span.
+        let tree = RepoTree::new("enclosing-allow-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[allow(clippy::print_stdout)]\n",
+                "pub fn outer() {\n",
+                "    #[cfg(test)]\n",
+                "    mod tests {\n",
+                "        fn it() { println!(\"test-only\"); }\n",
+                "    }\n",
+                "    println!(\"allowed\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &[])?;
         Ok(())
     }
 
