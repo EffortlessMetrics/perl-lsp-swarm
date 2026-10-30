@@ -199,6 +199,10 @@
     "code_action_generation_ledger": {
       "requires": [],
       "on_dependency_failure": "blocked_not_proven"
+    },
+    "unsafe_prod_check": {
+      "requires": [],
+      "on_dependency_failure": "blocked_not_proven"
     }
   }
 }

@@ -609,3 +609,144 @@ fn closed_malformed_aggregate_default_is_not_silently_accepted() -> R {
     // boundary; this test does not promise a surviving callable or suffix.
     Ok(())
 }
+
+// ------------------------------------------------------------------
+// #16242: a grouped default consumes its closing grouping delimiters,
+// but the parenthesized primary returns the inner expression node, so
+// the consumed closers must not fall outside the parameter (or
+// InvalidSignatureParameter) extent.
+// ------------------------------------------------------------------
+
+#[test]
+fn grouped_default_extent_includes_consumed_closer_16242() -> R {
+    let source = "# λ\nuse feature 'signatures';\nsub f ($alpha = (1+2)) { 'body' }";
+    let output = Parser::new(&source).parse_with_recovery();
+    if RecoverySalvageProfile::from_parse(
+        &output.ast,
+        &output.diagnostics,
+        output.terminated_early(),
+    )
+    .class
+        != RecoverySalvageClass::Clean
+    {
+        return Err("grouped scalar default rejected".into());
+    }
+    let param = parameters(&output.ast)?.first().ok_or("lost grouped default param")?;
+    let NodeKind::OptionalParameter { default_value, .. } = &param.kind else {
+        return Err("wrong grouped-default kind".into());
+    };
+    if text(&source, param)? != "$alpha = (1+2)" {
+        return Err(format!("wrong grouped-default extent: {:?}", text(&source, param)?).into());
+    }
+    // The child expression's own canonical span contract is unchanged.
+    if text(&source, default_value)? != "1+2" {
+        return Err(
+            format!("child span contract changed: {:?}", text(&source, default_value)?).into()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn nested_grouped_default_extent_includes_both_closers_16242() -> R {
+    let source = "# λ\nuse feature 'signatures';\nsub f ($c = (($y))) { $c }";
+    let output = Parser::new(&source).parse_with_recovery();
+    if RecoverySalvageProfile::from_parse(
+        &output.ast,
+        &output.diagnostics,
+        output.terminated_early(),
+    )
+    .class
+        != RecoverySalvageClass::Clean
+    {
+        return Err("nested grouped default rejected".into());
+    }
+    let param = parameters(&output.ast)?.first().ok_or("lost nested grouped param")?;
+    if text(&source, param)? != "$c = (($y))" {
+        return Err(format!("wrong nested extent: {:?}", text(&source, param)?).into());
+    }
+    Ok(())
+}
+
+#[test]
+fn named_grouped_default_extent_includes_consumed_closer_16242() -> R {
+    let source = "# λ\nuse feature 'signatures';\nsub f (:$x = (5)) { $x }";
+    let output = Parser::new(&source).parse_with_recovery();
+    if RecoverySalvageProfile::from_parse(
+        &output.ast,
+        &output.diagnostics,
+        output.terminated_early(),
+    )
+    .class
+        != RecoverySalvageClass::Clean
+    {
+        return Err("named grouped default rejected".into());
+    }
+    let param = parameters(&output.ast)?.first().ok_or("lost named grouped param")?;
+    let NodeKind::NamedParameter { variable, .. } = &param.kind else {
+        return Err("wrong named kind".into());
+    };
+    variable_identity(variable, "$", "x")?;
+    if text(&source, param)? != ":$x = (5)" {
+        return Err(format!("wrong named extent: {:?}", text(&source, param)?).into());
+    }
+    Ok(())
+}
+
+#[test]
+fn grouped_default_with_following_parameter_and_body_16242() -> R {
+    let source = "# λ\nuse feature 'signatures';\nsub f ($a = (2*3), $b = 4) { $a + $b }";
+    let output = Parser::new(&source).parse_with_recovery();
+    if RecoverySalvageProfile::from_parse(
+        &output.ast,
+        &output.diagnostics,
+        output.terminated_early(),
+    )
+    .class
+        != RecoverySalvageClass::Clean
+    {
+        return Err("grouped default with following parameter rejected".into());
+    }
+    let params = parameters(&output.ast)?;
+    if params.len() != 2 {
+        return Err("lost following parameter".into());
+    }
+    if text(&source, params.first().ok_or("lost first")?)? != "$a = (2*3)" {
+        return Err("first parameter extent dropped the consumed closer".into());
+    }
+    if text(&source, params.get(1).ok_or("lost second")?)? != "$b = 4" {
+        return Err("following parameter extent changed".into());
+    }
+    let NodeKind::Subroutine { body, .. } = &callable(&output.ast).ok_or("lost f")?.kind else {
+        return Err("lost subroutine".into());
+    };
+    if text(&source, body)? != "{ $a + $b }" {
+        return Err("body sentinel extent changed".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn rejected_slurpy_default_invalid_range_includes_consumed_closer_16242() -> R {
+    let source = "# λ\nuse feature 'signatures';\nsub f (@a = (1,2), $next) { $next }";
+    let output = Parser::new(&source).parse_with_recovery();
+    let param = parameters(&output.ast)?.first().ok_or("lost slurpy param")?;
+    // The invalid-parameter range stays honest to the consumed aggregate default.
+    if text(&source, param)? != "@a = (1,2)" {
+        return Err(format!("wrong slurpy extent: {:?}", text(&source, param)?).into());
+    }
+    if !output.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic,
+            perl_parser_core::ParseError::InvalidSignatureParameter {
+                kind: perl_parser_core::InvalidSignatureParameterKind::SlurpyDefault,
+                range,
+            } if *range == param.location
+        )
+    }) {
+        return Err(format!("missing SlurpyDefault range: {:?}", output.diagnostics).into());
+    }
+    // Recovery preserves the suffix and body.
+    suffix(&source, &output.ast)?;
+    Ok(())
+}

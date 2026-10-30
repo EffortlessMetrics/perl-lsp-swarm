@@ -151,8 +151,13 @@ struct ModuleEdge {
 /// Every module declaration in `path`, with the attribute state that guards it.
 ///
 /// An attribute guards the next item and nothing else, so each declaration is
-/// paired with the attributes immediately above it — or on the same line, which
-/// is legal Rust and which an attribute-only line test never sees.
+/// paired with the attributes immediately above it — on the same line, which is
+/// legal Rust, or on the lines above it, however far each attribute's brackets
+/// reach. The attributes are read through [`guarded_item`], the one attribute
+/// reader for production scope, and `crate::first_cfg_test_line_number` reads
+/// the within-file boundary through it too, so the whole-file verdict and the
+/// within-file boundary are two questions answered by one parse and cannot
+/// disagree about a construct either one can read.
 ///
 /// `crates/perl-lsp-rs/src/runtime/mod.rs:46` is why this matters: it carries
 /// `#[cfg(all(test, feature = "workspace"))]` over line 47, and `mod workspace;`
@@ -176,46 +181,49 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
     // gate has to survive entering the block rather than being reset by it.
     let mut inline: Vec<(usize, String, bool)> = Vec::new();
 
-    for line in lines {
-        let trimmed = line.trim();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
         if trimmed.is_empty() || trimmed.starts_with("//") {
+            index += 1;
             continue;
         }
-        let indent = line.len() - line.trim_start().len();
 
         if trimmed.starts_with('}') {
+            let indent = lines[index].len() - lines[index].trim_start().len();
             while inline.last().is_some_and(|(open, _, _)| *open >= indent) {
                 inline.pop();
             }
             gated = false;
             redirect = None;
+            index += 1;
             continue;
         }
 
-        // Consume every attribute at the head of the line, then carry on with
-        // whatever follows it: `#[cfg(test)] mod tests;` is one line, not two.
-        let mut rest = trimmed;
-        while let Some(end) = attribute_end(rest) {
-            let Some(attr) = rest.get(..=end) else {
-                break;
-            };
+        // Consume every attribute guarding the item through the one reader
+        // production scope is decided by — the same reader
+        // `crate::first_cfg_test_line_number` drives — so an attribute whose
+        // brackets span several physical lines gates the declaration here
+        // exactly as it opens test scope for the within-file checks.
+        let item = guarded_item(lines, index);
+        for (_, attr) in &item.attributes {
             gated |= attribute_is_a_test_gate(attr);
             if let Some(value) = path_attribute_target(attr) {
                 redirect = Some(value.to_string());
             }
-            let Some(tail) = rest.get(end + 1..) else {
-                break;
-            };
-            rest = tail.trim_start();
         }
+        let rest = item.text;
+        index = item.line;
         if rest.is_empty() {
             continue;
         }
+        let indent = lines[item.line].len() - lines[item.line].trim_start().len();
 
         if let Some(name) = inline_module_name(rest) {
             inline.push((indent, name, gated));
             gated = false;
             redirect = None;
+            index += 1;
             continue;
         }
 
@@ -254,6 +262,7 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
             }
             gated = false;
             redirect = None;
+            index += 1;
             continue;
         }
 
@@ -284,8 +293,562 @@ fn module_edges(path: &Path, lines: &[String]) -> Vec<ModuleEdge> {
         // Any item ends the attribute block, whether or not it was a `mod`.
         gated = false;
         redirect = None;
+        index += 1;
     }
     edges
+}
+
+/// The attributes directly guarding an item, and the item they guard.
+#[derive(Debug)]
+struct GuardedItem<'a> {
+    /// One `(line, text)` per attribute: `line` is the 0-based line the
+    /// attribute starts on, `text` the attribute with each physical line it
+    /// spans trimmed and joined by one space.
+    attributes: Vec<(usize, String)>,
+    /// 0-based line carrying the guarded item's own head.
+    line: usize,
+    /// The guarded item's head text, trimmed.
+    text: &'a str,
+}
+
+/// Read the item at or after `start` together with every attribute guarding it.
+///
+/// This is the one attribute reader for production scope: [`module_edges`]
+/// answers whole-file scope through it and
+/// `crate::first_cfg_test_line_number` answers within-file scope through it,
+/// so both verdicts come from one parse. Before it existed the two readers
+/// parsed independently — one bracket scan bounded to a single physical line,
+/// two regexes that needed `test` on the `#[cfg(all(` line — and a
+/// `#[cfg(all(…))]` spelled across several lines, the live shape in
+/// `crates/perl-corpus/src/loading/`, was production to both for different
+/// reasons while any third spelling would have divided them again.
+///
+/// Blank and comment lines are skipped, each `#[…]` at the item's head is
+/// consumed across as many physical lines as its brackets span, and the scan
+/// stops at the first text that is neither. An attribute whose brackets never
+/// close reads as no attribute at all, so malformed input ends the scan
+/// instead of consuming the rest of the file.
+fn guarded_item<'a>(lines: &'a [String], start: usize) -> GuardedItem<'a> {
+    let mut attributes = Vec::new();
+    let mut line = start;
+    let mut col = lines[start].len() - lines[start].trim_start().len();
+    while let Some(current) = lines.get(line) {
+        let Some(rest) = current.get(col..) else {
+            break;
+        };
+        let trimmed = rest.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            line += 1;
+            col = 0;
+            continue;
+        }
+        if !trimmed.starts_with("#[") {
+            break;
+        }
+        let Some((end_line, end_col, text)) =
+            attribute_extent(lines, line, col + (rest.len() - trimmed.len()))
+        else {
+            break;
+        };
+        attributes.push((line, text));
+        line = end_line;
+        col = end_col;
+    }
+    // The scan stopped at the first text that is neither attribute, blank, nor
+    // comment: the item's own head — the remainder of the line the last
+    // attribute ended on, or a line of its own — or the end of the file.
+    let text =
+        lines.get(line).and_then(|current| current.get(col..)).map(str::trim_start).unwrap_or("");
+    GuardedItem { attributes, line, text }
+}
+
+/// The extent of the attribute whose `#[` sits at `lines[line][col..]`:
+/// `(end_line, end_col, text)`, with `end_col` just past the closing bracket
+/// and `text` each physical line trimmed and joined by one space. `None` when
+/// the brackets never close — the same verdict `attribute_end` reaches within
+/// one line, extended across lines for the multiline spellings rustfmt leaves
+/// untouched, `#[cfg(all(\n test,\n))]` among them.
+fn attribute_extent(
+    lines: &[String],
+    mut line: usize,
+    mut col: usize,
+) -> Option<(usize, usize, String)> {
+    if !lines.get(line)?.get(col..)?.starts_with("#[") {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut text = String::new();
+    loop {
+        let rest = lines.get(line)?.get(col..)?;
+        let mut closing = None;
+        for (offset, character) in rest.char_indices() {
+            match character {
+                '[' => depth += 1,
+                ']' => {
+                    // As in `attribute_end`, a closing bracket with nothing
+                    // open is malformed input: no attribute, not a panic.
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        closing = Some(offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match closing {
+            Some(offset) => {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(rest.get(..=offset)?.trim());
+                return Some((line, col + offset + 1, text));
+            }
+            None => {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(rest.trim());
+                line += 1;
+                col = 0;
+            }
+        }
+    }
+}
+
+/// The 1-based line of the file's first `cfg(test)` boundary, or
+/// [`usize::MAX`] when the file carries none.
+///
+/// The within-file half of production scope: every production check stops
+/// reporting at this line. It is read through [`guarded_item`], the same
+/// reader [`module_edges`] resolves whole-file scope through, so the boundary
+/// a multiline `#[cfg(all(…))]` opens here is the same gate that declares the
+/// module it guards test-only.
+///
+/// Both `#[cfg(test)]` and `#[cfg(all(test, …))]` count only when the item
+/// they guard is a `mod` — block or declared, visibility-qualified spellings
+/// (`pub(crate) mod`, `pub(super) mod`, `pub(in path) mod`) included — so a
+/// test-gated attribute on any other item (a single-line `use` import, a
+/// `const`, a `thread_local!`) does not cut the file in half.
+/// `crates/perl-lsp-rs/src/runtime/language/symbols.rs` carried exactly that
+/// shape: a `#[cfg(test)] use` near the top truncated every production check
+/// that stops here, hiding the per-call `Regex::new(...)` calls it was meant
+/// to gate (#16389). `cfg(any(test, …))` never bounds anything — it holds in
+/// production builds whenever its other arm does.
+pub(crate) fn first_cfg_test_boundary(lines: &[String]) -> usize {
+    let mut index = 0usize;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('}') {
+            index += 1;
+            continue;
+        }
+        let item = guarded_item(lines, index);
+        // A test gate bounds the file only when it guards a module: the
+        // mod-lookahead the line-based reader used to spell as "skip blanks,
+        // attributes, and comments, then require `mod`" is what
+        // `module_head_name` answers about the guarded item's head. Comment and
+        // attribute lines between the gate and the `mod` change nothing —
+        // `guarded_item` skips them — and a commented-out `mod` line is a
+        // comment, so it can never satisfy the check (#16389).
+        //
+        // The boundary asks whether the line *declares* a module; the nesting
+        // predicates ask whether the line *opens* one whose scope runs on to
+        // the next line, and they deliberately reject a head that ends in `}`.
+        // Sharing them made a compact `#[cfg(test)] mod tests { fn it() {} }`
+        // indistinguishable from no boundary at all, so every production check
+        // downstream scanned through the test module (#16520).
+        let guards_a_module = module_head_name(item.text).is_some();
+        if guards_a_module {
+            if let Some((line, _)) =
+                item.attributes.iter().find(|(_, attr)| attribute_is_plain_cfg_test(attr))
+            {
+                return line + 1;
+            }
+            if let Some((line, _)) =
+                item.attributes.iter().find(|(_, attr)| attribute_is_a_test_gate(attr))
+            {
+                return line + 1;
+            }
+        }
+        index = item.line + 1;
+    }
+    usize::MAX
+}
+
+/// One inline test-gated module's extent, as the 1-based lines it covers.
+///
+/// `start_line` is where the gate opens test scope — the same answer
+/// [`first_cfg_test_boundary`] gives — and `end_line` is the line carrying the
+/// module's closing brace. Production resumes on the line after it.
+///
+/// The pair is what a start line alone cannot say. Every production check read
+/// the start and treated the rest of the file as test scope, so a production
+/// item written *after* `mod tests { … }` was never scanned at all:
+///
+/// ```text
+/// pub fn leaked() { … }            // scanned
+/// #[cfg(test)]
+/// mod tests { … }                   // test scope
+/// pub fn also_leaked() { … }        // never scanned
+/// ```
+///
+/// Rust convention puts `mod tests` last, which is why the gap is usually
+/// invisible — and why it is a *false negative*, the direction that surfaces
+/// nothing when it is wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CfgTestSpan {
+    start_line: usize,
+    end_line: usize,
+}
+
+impl CfgTestSpan {
+    /// Whether the 1-based `line` falls inside this test-gated module.
+    pub(crate) fn covers(&self, line: usize) -> bool {
+        line >= self.start_line && line <= self.end_line
+    }
+}
+
+/// Whether the 1-based `line` is inside any inline test-gated module.
+///
+/// This is the within-file production-scope question. It takes the file's spans
+/// rather than re-reading the file, because every production check asks it once
+/// per line and re-parsing per line would make each scan quadratic in the
+/// file's length.
+pub(crate) fn line_is_test_scope(spans: &[CfgTestSpan], line: usize) -> bool {
+    spans.iter().any(|span| span.covers(line))
+}
+
+/// Every inline test-gated module in `lines`, in source order.
+///
+/// A file can hold more than one — a second `#[cfg(test)] mod` after production
+/// code between the two — so the answer is a list, not a single extent. Answering
+/// with only the first would fix the false negative and open a false positive in
+/// its place: everything after the first module, including the second module,
+/// would be read as production.
+///
+/// The walk is the same one [`first_cfg_test_boundary`] makes through
+/// [`guarded_item`], so the two agree about which item a gate opens. It resumes
+/// after each module's closing line rather than after the module head, which is
+/// what lets it find a later gate at all.
+pub(crate) fn cfg_test_spans(lines: &[String]) -> Vec<CfgTestSpan> {
+    // The walk reads the projection, not the text. A test module in this
+    // repository routinely carries a fixture whose *content* is Rust source, and
+    // `code_only` is what keeps a `#[cfg(test)]` or a `}` inside a string from
+    // answering a structural question about the file.
+    let code = code_only(lines);
+    let mut spans = Vec::new();
+    let mut index = 0usize;
+    while index < code.len() {
+        let trimmed = code[index].trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('}') {
+            index += 1;
+            continue;
+        }
+        let item = guarded_item(&code, index);
+        let start_line = item
+            .attributes
+            .iter()
+            .find(|(_, attr)| attribute_is_plain_cfg_test(attr))
+            .or_else(|| item.attributes.iter().find(|(_, attr)| attribute_is_a_test_gate(attr)))
+            .map(|(line, _)| line + 1);
+        if let Some(start_line) = start_line
+            && module_head_name(item.text).is_some()
+        {
+            let end_line = gated_module_end_line(&code, item.line);
+            spans.push(CfgTestSpan { start_line, end_line });
+            // `end_line` is 1-based and the next line to examine is the one
+            // after it, which is this 0-based cursor.
+            index = end_line;
+            continue;
+        }
+        index = item.line + 1;
+    }
+    spans
+}
+
+/// The 1-based line on which the test-gated module headed at `head_line` ends.
+///
+/// Braces are counted on the projection [`code_only`] produces, so a brace that
+/// is only *text* — inside a string, inside a comment — does not open or close
+/// anything. The count starts at the head's own line, which answers the three
+/// shapes the module can take without a special case each:
+///
+/// - a compact `#[cfg(test)] mod tests { fn it() {} }` nets to zero on its head
+///   line, so it ends there;
+/// - a `mod foo;` declaration has no braces at all, so it ends there too — its
+///   test scope is the child file, which [`test_only_source_files`] resolves;
+/// - a block that runs on ends on the line that closes it.
+///
+/// A block that never closes — a truncated or hand-written fixture — ends at the
+/// last line, so unresolved input keeps the answer the start line alone used to
+/// give rather than a guess.
+fn gated_module_end_line(code: &[String], head_line: usize) -> usize {
+    let mut depth = 0i64;
+    for (offset, line) in code.iter().enumerate().skip(head_line) {
+        for character in line.chars() {
+            match character {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth <= 0 {
+            return offset + 1;
+        }
+    }
+    code.len()
+}
+
+/// `lines` with every comment body and string-literal body replaced by spaces.
+///
+/// Character positions and indentation survive, so the result still answers
+/// structural questions — which line opens a block, which line closes one —
+/// while text that only *looks* like structure cannot answer them.
+///
+/// This is not defensive. `crates/perl-lsp-rs/src/runtime/dispatch/text_document.rs`
+/// holds tests for its own cfg-stripping helper, and their fixtures embed Rust
+/// source in raw strings:
+///
+/// ```text
+/// let adversarial = r#"
+/// #[cfg(any(test, feature = "test-fallbacks"))]
+/// fn gated() {
+///     let fake = "unmatched { in a string";
+///     /* outer { /* nested } */ still gated */
+/// }
+/// fn production() {
+///     on_references(params, request_id);
+/// }
+/// "#;
+/// ```
+///
+/// That `}` sits alone at column 0 and closes nothing. An extent reader that
+/// believed the enclosing `mod tests { … }` ended there would hand the rest of
+/// the module back to the production checks — measured on that one file, 19
+/// `println!` sites, all of them test code.
+///
+/// Constructs that open on one line and close on another are the whole problem
+/// here: raw strings, block comments, and strings continued with a trailing
+/// backslash are carried in the returned state. Everything else closes within
+/// its own line and is blanked there.
+fn code_only(lines: &[String]) -> Vec<String> {
+    let mut block_comment_depth = 0usize;
+    let mut raw_hashes: Option<usize> = None;
+    let mut continued_string = false;
+    lines
+        .iter()
+        .map(|line| {
+            blanked_code(line, &mut block_comment_depth, &mut raw_hashes, &mut continued_string)
+        })
+        .collect()
+}
+
+/// Replace `[start, end)` of `chars` in `out` with spaces.
+fn blank(out: &mut [char], start: usize, end: usize) {
+    for slot in out.iter_mut().take(end).skip(start) {
+        *slot = ' ';
+    }
+}
+
+/// The first unescaped `"` at or after `start`, or `None` when the line ends
+/// without one — the caller then carries the string to the next line.
+fn unescaped_quote(chars: &[char], start: usize) -> Option<usize> {
+    let mut escaped = false;
+    for (index, character) in chars.iter().enumerate().skip(start) {
+        if escaped {
+            escaped = false;
+        } else if *character == '\\' {
+            escaped = true;
+        } else if *character == '"' {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// The first occurrence of `needle` at or after `start`.
+fn find_sequence(chars: &[char], start: usize, needle: &str) -> Option<usize> {
+    let needle: Vec<char> = needle.chars().collect();
+    // A needle longer than the remaining line cannot match, and asking the
+    // range for an out-of-bounds window is a panic rather than a `None`.
+    if needle.is_empty() || start > chars.len() || chars.len() - start < needle.len() {
+        return None;
+    }
+    (start..=chars.len() - needle.len())
+        .find(|index| chars[*index..*index + needle.len()] == needle[..])
+}
+
+/// Blank a block comment starting at `index`, tracking nesting depth so an
+/// inner `/* … */` cannot close the outer comment. Returns the index just
+/// past the comment, or end of line with the depth still open.
+fn blank_block_comment(chars: &[char], out: &mut [char], start: usize, depth: &mut usize) -> usize {
+    let mut index = start;
+    while *depth > 0 && index < chars.len() {
+        if chars[index..].starts_with(&['/', '*']) {
+            blank(out, index, index + 2);
+            index += 2;
+            *depth += 1;
+        } else if chars[index..].starts_with(&['*', '/']) {
+            blank(out, index, index + 2);
+            index += 2;
+            *depth -= 1;
+        } else {
+            blank(out, index, index + 1);
+            index += 1;
+        }
+    }
+    index
+}
+
+/// The line's code, with comments and string bodies blanked to spaces.
+///
+/// The three `&mut` parameters are the multi-line construct state, threaded
+/// across lines by [`code_only`].
+fn blanked_code(
+    line: &str,
+    block_comment_depth: &mut usize,
+    raw_hashes: &mut Option<usize>,
+    continued_string: &mut bool,
+) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = chars.clone();
+    let mut index = 0usize;
+
+    // Resume whatever opened on an earlier line. Each case either closes here
+    // and falls through to the ordinary scan, or runs to end of line and leaves
+    // the construct open for the next one. Rust block comments nest, so the
+    // comment state is a depth, not a flag: /* outer /* inner */ still leaves
+    // the outer comment open.
+    if *block_comment_depth > 0 {
+        index = blank_block_comment(&chars, &mut out, index, block_comment_depth);
+        if *block_comment_depth > 0 {
+            return out.into_iter().collect();
+        }
+    } else if let Some(hashes) = *raw_hashes {
+        let terminator = raw_terminator(hashes);
+        match find_sequence(&chars, index, &terminator) {
+            Some(end) => {
+                blank(&mut out, index, end + terminator.chars().count());
+                index = end + terminator.chars().count();
+                *raw_hashes = None;
+            }
+            None => {
+                blank(&mut out, index, chars.len());
+                return out.into_iter().collect();
+            }
+        }
+    } else if *continued_string && let Some(end) = unescaped_quote(&chars, index) {
+        blank(&mut out, index, end + 1);
+        index = end + 1;
+        *continued_string = false;
+    } else if *continued_string {
+        blank(&mut out, index, chars.len());
+        return out.into_iter().collect();
+    }
+
+    while index < chars.len() {
+        let rest: String = chars[index..].iter().collect();
+        if rest.starts_with("//") {
+            blank(&mut out, index, chars.len());
+            break;
+        }
+        if rest.starts_with("/*") {
+            blank(&mut out, index, index + 2);
+            index += 2;
+            *block_comment_depth = 1;
+            index = blank_block_comment(&chars, &mut out, index, block_comment_depth);
+            if *block_comment_depth > 0 {
+                break;
+            }
+            continue;
+        }
+        // `r"…"` and `r#"…"#`. The hash count is what makes the terminator
+        // unambiguous, so it is counted rather than assumed.
+        if rest.starts_with('r') {
+            let hashes = rest
+                .strip_prefix('r')
+                .unwrap_or(rest.as_str())
+                .chars()
+                .take_while(|character| *character == '#')
+                .count();
+            if rest[1 + hashes..].starts_with('"') {
+                let terminator = raw_terminator(hashes);
+                blank(&mut out, index, index + 2 + hashes);
+                index += 2 + hashes;
+                match find_sequence(&chars, index, &terminator) {
+                    Some(end) => {
+                        let stop = end + terminator.chars().count();
+                        blank(&mut out, index, stop);
+                        index = stop;
+                    }
+                    None => {
+                        blank(&mut out, index, chars.len());
+                        *raw_hashes = Some(hashes);
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        if rest.starts_with('"') {
+            blank(&mut out, index, index + 1);
+            index += 1;
+            match unescaped_quote(&chars, index) {
+                Some(end) => {
+                    blank(&mut out, index, end + 1);
+                    index = end + 1;
+                }
+                None => {
+                    blank(&mut out, index, chars.len());
+                    *continued_string = true;
+                    break;
+                }
+            }
+            continue;
+        }
+        // A char literal may hold a brace (`'}'`) or a quote (`'"'`), and both
+        // have to be consumed whole: a `'"'` left half-read turns its `"` into
+        // the start of a string that never closes, which swallows the rest of
+        // the file. `class_model.rs:816` and `:1978` both spell
+        // `trim_matches('"')`, and both were found by the real tree rather than
+        // by a fixture. A lifetime such as `'a` has no closing quote here and
+        // stays code.
+        if rest.starts_with('\'')
+            && let Some(end) = char_literal_end(&chars, index)
+        {
+            blank(&mut out, index, end);
+            index = end;
+            continue;
+        }
+        index += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// The terminator for a raw string carrying `hashes` `#` characters.
+fn raw_terminator(hashes: usize) -> String {
+    format!("\"{}", "#".repeat(hashes))
+}
+
+/// The index just past the char literal opened at `start`, or `None` when what
+/// sits there is a lifetime rather than a one-character literal.
+///
+/// The two differ only in where the closing quote can be, and that is the whole
+/// test: `'}'` and `'"'` close three characters in, `'a` has no closing quote on
+/// the line at all.
+fn char_literal_end(chars: &[char], start: usize) -> Option<usize> {
+    let body = *chars.get(start + 1)?;
+    let closing = if body == '\\' { start + 3 } else { start + 2 };
+    (chars.get(closing) == Some(&'\'')).then_some(closing + 1)
+}
+
+/// Whether `attr` is `#[cfg(test)]` itself — the plain spelling of the test
+/// gate — as opposed to a conjunction that merely requires `test`.
+fn attribute_is_plain_cfg_test(attr: &str) -> bool {
+    attr.strip_prefix("#[cfg(")
+        .and_then(|rest| rest.strip_suffix(")]"))
+        .is_some_and(|predicate| predicate.trim() == "test")
 }
 
 /// The file `#[path = "…"]` redirects a declaration to, or `None` when `attr`
@@ -461,13 +1024,31 @@ fn module_directory(path: &Path) -> Option<PathBuf> {
 }
 
 fn inline_module_name(trimmed: &str) -> Option<String> {
-    let rest = trimmed.strip_suffix('{')?.trim_end();
+    // Trailing whitespace after the brace is rustfmt-incidental but legal in
+    // hand-written fixtures; the mod check must not break on it (#16389).
+    let rest = trimmed.trim_end().strip_suffix('{')?.trim_end();
     module_name_after_visibility(rest)
 }
 
 fn declared_module_name(trimmed: &str) -> Option<String> {
-    let rest = trimmed.strip_suffix(';')?;
+    let rest = trimmed.trim_end().strip_suffix(';')?;
     module_name_after_visibility(rest)
+}
+
+/// The module name in a head that declares a module anywhere on the line —
+/// `mod foo { … }`, `pub(crate) mod foo;` — whatever follows the brace.
+///
+/// The within-file boundary reader's half of `mod` recognition, and
+/// deliberately not [`inline_module_name`]: that predicate is also the
+/// `inline` nesting stack's push test, so it must keep requiring the brace to
+/// be the line's last token — a compact module pushed onto that stack opens
+/// and closes on one line and would never be popped, misplacing every
+/// declaration resolved after it. The name grammar itself is still read once,
+/// by [`module_name_after_visibility`]; this only differs in where the head is
+/// allowed to end.
+fn module_head_name(trimmed: &str) -> Option<String> {
+    let end = trimmed.find(['{', ';'])?;
+    module_name_after_visibility(trimmed.get(..end)?)
 }
 
 /// The module name in `pub(crate) mod foo` and its spellings, or `None` when
@@ -998,6 +1579,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_nested_block_comment_does_not_close_the_outer_comment() -> Result<()> {
+        // Rust block comments nest: the } after the inner */ is still inside
+        // the outer comment and must be blanked, not read as structure.
+        let lines: Vec<String> =
+            ["/* outer /* inner */ }", "still comment */", "fn production() {}"]
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+        let code = code_only(&lines);
+        ensure!(!code[0].contains('}'), "inner close leaked a brace: {:?}", code[0]);
+        ensure!(!code[1].contains("still"), "outer comment leaked text: {:?}", code[1]);
+        ensure!(
+            code[2].contains("fn production()"),
+            "code after the comment was blanked: {:?}",
+            code[2]
+        );
+        Ok(())
+    }
+
     /// The near-miss control. The first version of this change reused the
     /// panic-test sweep, which takes every `mod` after a file's first
     /// `#[cfg(test)]`, and hid two real `unsafe impl` blocks in
@@ -1253,6 +1854,336 @@ mod tests {
         );
         let none = attribute_end("mod m;");
         ensure!(none.is_none(), "a line carrying no attribute ends nowhere, got {none:?}");
+        Ok(())
+    }
+
+    /// A conjunction spelled across several physical lines — the live shape in
+    /// `crates/perl-corpus/src/loading/` — is one attribute, not an unread
+    /// fragment. This is the construct the two former readers disagreed about:
+    /// the bracket scan stopped at the line break and the regexes needed
+    /// `test` on the `#[cfg(all(` line, so both read the guarded module as
+    /// production for different reasons.
+    #[test]
+    fn a_multiline_gated_declaration_is_test_only() -> Result<()> {
+        let tree = Tree::new("multiline-gate")?;
+        let root = tree.write(
+            "lib.rs",
+            "mod real;\n#[cfg(all(\n    test,\n    not(miri),\n))]\nmod census;\n",
+        )?;
+        let census = tree.write("census.rs", "fn f() { y.unwrap(); }\n")?;
+        let real = tree.write("real.rs", "fn g() {}\n")?;
+
+        let found = test_only_source_files(&[root, census.clone(), real.clone()])?;
+        ensure!(found.contains(&census), "the multiline gate guards census.rs; found {found:?}");
+        ensure!(!found.contains(&real), "the unguarded sibling stays in production scope");
+        Ok(())
+    }
+
+    /// Within-file scope through the same reader: test scope opens at the
+    /// attribute's own first line, not at `usize::MAX`, so a banned construct
+    /// inside the guarded inline module is test code rather than a production
+    /// finding waiting to happen.
+    #[test]
+    fn a_multiline_test_gate_opens_scope_at_its_own_line() -> Result<()> {
+        let lines: Vec<String> = "fn prod() {}\n\n#[cfg(all(\n    test,\n    not(miri),\n))]\nmod tests {\n    fn it() { x.unwrap(); }\n}\n"
+            .lines()
+            .map(str::to_string)
+            .collect();
+        ensure!(
+            first_cfg_test_boundary(&lines) == 3,
+            "the attribute starts on line 3 and scope opens there, got {:?}",
+            first_cfg_test_boundary(&lines),
+        );
+        Ok(())
+    }
+
+    /// The compact form: attribute, module, and body on one physical line.
+    #[test]
+    fn a_compact_test_module_opens_scope_on_its_own_line() -> Result<()> {
+        let lines: Vec<String> =
+            "#[cfg(test)] mod tests { fn it() {} }\n".lines().map(str::to_string).collect();
+        ensure!(
+            first_cfg_test_boundary(&lines) == 1,
+            "the one-line module is test scope from line 1, got {:?}",
+            first_cfg_test_boundary(&lines),
+        );
+        Ok(())
+    }
+
+    /// The compact body must not be enough to make any gated head a module.
+    ///
+    /// The boundary reader now accepts a head that ends in `}` rather than one
+    /// that ends in `{`. Without this control, a reader that simply asked "is
+    /// there a brace somewhere on this line" would bound the file at a
+    /// test-gated `use`/`const` and truncate every production check above the
+    /// real test scope — the same blind spot as the `#[cfg(test)] use` in
+    /// `symbols.rs` this function's own docs cite (#16389).
+    #[test]
+    fn a_compact_non_module_gate_still_does_not_bound_the_file() -> Result<()> {
+        for gated in ["#[cfg(test)] use std::fmt;", "#[cfg(test)] const N: usize = 1;"] {
+            // The gated non-module sits above a *separately* gated module: the
+            // boundary must be the module's gate on line 2, never the
+            // non-module's on line 1.
+            let lines: Vec<String> = [
+                gated.to_string(),
+                "#[cfg(test)]".to_string(),
+                "mod tests {".to_string(),
+                "    fn it() {}".to_string(),
+                "}".to_string(),
+            ]
+            .into_iter()
+            .collect();
+            ensure!(
+                first_cfg_test_boundary(&lines) == 2,
+                "{gated:?} does not guard a module, so scope opens at the gate on line 2, got {:?}",
+                first_cfg_test_boundary(&lines),
+            );
+        }
+        Ok(())
+    }
+
+    /// A `mod` mentioned inside another item's block is not a module head.
+    ///
+    /// `module_head_name` reads the text *before* the first brace, so a `mod`
+    /// that only appears once a function body has already opened cannot be
+    /// mistaken for the file's own module declaration.
+    #[test]
+    fn a_mod_inside_another_item_is_not_a_module_head() -> Result<()> {
+        let lines: Vec<String> = "#[cfg(test)] fn helper() { mod tests { fn it() {} } }\n"
+            .lines()
+            .map(str::to_string)
+            .collect();
+        ensure!(
+            first_cfg_test_boundary(&lines) == usize::MAX,
+            "a gated fn is not a module, got {:?}",
+            first_cfg_test_boundary(&lines),
+        );
+        Ok(())
+    }
+
+    /// A compact module and its multi-line spelling must bound identically.
+    ///
+    /// The boundary is a line number and every caller treats it as "the rest of
+    /// this file is test scope", so production written *after* the module is
+    /// not scanned — for the multi-line spelling that has always been true, and
+    /// recognising the compact form makes it true there too. That is the point
+    /// of this test: the two spellings are one case, not two, so a future fix
+    /// to the boundary semantics (#16523) cannot land for one and silently miss
+    /// the other.
+    #[test]
+    fn a_compact_test_module_and_its_multiline_spelling_bound_alike() -> Result<()> {
+        let compact = || {
+            vec![
+                "pub fn live() {}".to_string(),
+                "#[cfg(test)] mod tests { fn it() {} }".to_string(),
+            ]
+        };
+        let multiline = || {
+            vec![
+                "pub fn live() {}".to_string(),
+                "#[cfg(test)]".to_string(),
+                "mod tests {".to_string(),
+                "    fn it() {}".to_string(),
+                "}".to_string(),
+            ]
+        };
+        ensure!(
+            first_cfg_test_boundary(&compact()) == first_cfg_test_boundary(&multiline()),
+            "the compact spelling bounded at {:?} but the multi-line spelling at {:?}",
+            first_cfg_test_boundary(&compact()),
+            first_cfg_test_boundary(&multiline()),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_quote_inside_a_char_literal_does_not_open_a_string() -> Result<()> {
+        // `class_model.rs:816` and `:1978` both spell `trim_matches('"')`. Read
+        // one character at a time, the literal's `"` becomes a string opener
+        // that never closes, and the projection blanks the whole rest of the
+        // file — including the real `#[cfg(test)] mod tests` further down, which
+        // is how a file with a test module at line 2182 reported zero spans.
+        let source = concat!(
+            "fn trim(value: &str) -> &str {\n",
+            "    value.trim().trim_matches('\\'').trim_matches('\"')\n",
+            "}\n",
+            "pub fn prod() {\n",
+            "    let _ = trim(\"x\");\n",
+            "}\n",
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    fn it() { assert!(true); }\n",
+            "}\n",
+        );
+        ensure!(
+            test_scope_lines(source) == vec![7, 8, 9, 10],
+            "only the test module is test scope, got {:?}",
+            test_scope_lines(source),
+        );
+        Ok(())
+    }
+
+    // ── inline test spans (#16523) ──────────────────────────────────────────
+
+    /// The 1-based lines `lines` reads as inside an inline test-gated module.
+    fn test_scope_lines(source: &str) -> Vec<usize> {
+        let lines: Vec<String> = source.lines().map(str::to_string).collect();
+        let spans = cfg_test_spans(&lines);
+        (1..=lines.len()).filter(|line| line_is_test_scope(&spans, *line)).collect()
+    }
+
+    #[test]
+    fn a_brace_inside_a_string_does_not_close_the_span() -> Result<()> {
+        // The shape that made the first attempt at this wrong, copied from the
+        // real tree: `text_document.rs` tests its own cfg-stripping helper, so
+        // its test module embeds Rust source in a raw string. The `}` on its own
+        // line at column 0 closes nothing, and an extent reader that believed it
+        // did would hand 19 test-only `println!` sites back to the production
+        // checks. Counted on the projection, the module's depth is still 1 there.
+        let source = concat!(
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    fn strips_gated_blocks() {\n",
+            "        let adversarial = r#\"\n",
+            "#[cfg(any(test, feature = \"test-fallbacks\"))]\n",
+            "fn gated() {\n",
+            "    let fake = \"unmatched { in a string\";\n",
+            "    /* outer { /* nested } */ still gated */\n",
+            "}\n",
+            "fn production() {\n",
+            "    on_references(params, request_id);\n",
+            "}\n",
+            "\"#;\n",
+            "    }\n",
+            "    fn after() { println!(\"test-only\"); }\n",
+            "}\n",
+            "pub fn prod() { println!(\"production\"); }\n",
+        );
+        ensure!(
+            test_scope_lines(source) == vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            "the raw string's braces must not end the module early; `prod` on line 17 is production, got {:?}",
+            test_scope_lines(source),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_multiline_test_module_ends_at_its_closing_brace() -> Result<()> {
+        ensure!(
+            test_scope_lines(
+                "pub fn before() {}\n#[cfg(test)]\nmod tests {\n    fn it() {}\n}\npub fn after() {}\n"
+            ) == vec![2, 3, 4, 5],
+            "test scope should be lines 2-5, so `after` on line 6 is production",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_compact_test_module_ends_on_its_own_line() -> Result<()> {
+        ensure!(
+            test_scope_lines(
+                "pub fn before() {}\n#[cfg(test)] mod tests { fn it() {} }\npub fn after() {}\n"
+            ) == vec![2],
+            "test scope should be line 2 only, so `after` on line 3 is production",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn both_spellings_hand_production_back_after_the_module() -> Result<()> {
+        // The equivalence #16521 established for the boundary, carried through to
+        // the extent. The end lines differ — 2 and 5 — because the two files spell
+        // the same module over different numbers of lines. What must not differ is
+        // the answer to the production question each caller actually asks, and
+        // that is what this pins: line-for-line, the line after each module is
+        // production. A reader that resolved only the start would fail here, and
+        // so would one that resolved the end from the head's own line for the
+        // multi-line spelling.
+        let compact = "#[cfg(test)] mod tests { fn it() {} }\npub fn prod() {}\n";
+        let multiline = "#[cfg(test)]\nmod tests {\n    fn it() {}\n}\npub fn prod() {}\n";
+        let compact_lines: Vec<String> = compact.lines().map(str::to_string).collect();
+        let multiline_lines: Vec<String> = multiline.lines().map(str::to_string).collect();
+        ensure!(
+            !line_is_test_scope(&cfg_test_spans(&compact_lines), 2),
+            "the compact module should hand line 2 back as production",
+        );
+        ensure!(
+            !line_is_test_scope(&cfg_test_spans(&multiline_lines), 5),
+            "the multi-line module should hand line 5 back as production",
+        );
+        // And the module's own lines stay test scope in both.
+        ensure!(
+            line_is_test_scope(&cfg_test_spans(&compact_lines), 1),
+            "the compact module's own line is test scope",
+        );
+        ensure!(
+            (1..=4).all(|line| line_is_test_scope(&cfg_test_spans(&multiline_lines), line)),
+            "every line of the multi-line module is test scope",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_test_module_is_a_second_span() -> Result<()> {
+        ensure!(
+            test_scope_lines(
+                "#[cfg(test)]\nmod a {\n}\npub fn between() {}\n#[cfg(test)]\nmod b {\n}\n"
+            ) == vec![1, 2, 3, 5, 6, 7],
+            "both modules are test scope and the production between them is not",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_gated_declaration_ends_at_its_own_line() -> Result<()> {
+        // `mod foo;` has no body here, so its span is the declaration line. The
+        // child file's scope is `test_only_source_files`' question, not this one —
+        // and production after the declaration is production.
+        ensure!(
+            test_scope_lines("#[cfg(test)]\nmod helper;\npub fn after() {}\n") == vec![1, 2],
+            "only the gate and the declaration are test scope here",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_gated_block_that_never_closes_ends_at_the_last_line() -> Result<()> {
+        // Truncated or hand-written input resolves to the old whole-the-rest
+        // answer rather than to a guess about where the block should have ended.
+        let source = "#[cfg(test)]\nmod tests {\n    fn it() {}\n";
+        ensure!(
+            test_scope_lines(source) == vec![1, 2, 3],
+            "an unterminated block should cover every line it does have",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_test_gate_on_a_non_module_item_covers_nothing() -> Result<()> {
+        // The #16389 rule carries over: a `#[cfg(test)] use` near the top is not
+        // a module, so it neither opens a boundary nor a span. Widening the span
+        // reader to ignore the item kind would re-open that blind spot in the
+        // extent reader while the boundary reader still had it covered.
+        ensure!(
+            test_scope_lines(
+                "#[cfg(test)]\nuse std::cell::Cell;\npub fn prod() { println!(\"x\"); }\n"
+            )
+            .is_empty(),
+            "a gated `use` is not a test-scope span",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_nested_close_does_not_end_the_span_early() -> Result<()> {
+        // Indent is what decides, not the first `}`. A nested block inside the
+        // module closes at a deeper indent and the module keeps its scope.
+        ensure!(
+            test_scope_lines(
+                "#[cfg(test)]\nmod tests {\n    mod inner {\n    }\n}\npub fn after() {}\n"
+            ) == vec![1, 2, 3, 4, 5],
+            "the inner block's close must not end the outer module's span",
+        );
         Ok(())
     }
 }

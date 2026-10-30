@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result, ensure};
+
 use super::{
     CommandExistsCacheEntry, CommandExistsCacheKey, MAX_COMMAND_EXISTS_CACHE_ENTRIES,
     command_exists_cache_key, command_exists_candidate_paths, command_exists_via,
@@ -124,8 +126,8 @@ fn real_command_exists_returns_false_for_fabricated_command() {
 }
 
 #[test]
-fn filesystem_creation_reprobes_a_cached_negative_answer() {
-    let directory = tempfile::tempdir().expect("temporary directory must be created");
+fn filesystem_creation_reprobes_a_cached_negative_answer() -> Result<()> {
+    let directory = tempfile::tempdir().context("temporary directory must be created")?;
     let command = "perl_lsp_test_filesystem_create_unique_xyz";
     let key = command_exists_cache_key(
         command,
@@ -140,25 +142,30 @@ fn filesystem_creation_reprobes_a_cached_negative_answer() {
         false
     };
 
-    assert!(!command_exists_via_key(probe, key.clone()));
-    assert_eq!(probe_runs.get(), 1, "cold negative lookup must probe once");
+    ensure!(!command_exists_via_key(probe, key.clone()), "cold negative lookup must answer false");
+    ensure!(
+        probe_runs.get() == 1,
+        "cold negative lookup must probe once; observed {} probes",
+        probe_runs.get()
+    );
 
     std::fs::write(directory.path().join(command), b"tool")
-        .expect("candidate file must be created");
-    assert!(!command_exists_via_key(probe, key));
-    assert_eq!(
-        probe_runs.get(),
-        2,
-        "creating a candidate in an unchanged PATH directory must invalidate a negative answer"
+        .context("candidate file must be created")?;
+    ensure!(!command_exists_via_key(probe, key), "re-probed negative lookup must answer false");
+    ensure!(
+        probe_runs.get() == 2,
+        "creating a candidate in an unchanged PATH directory must invalidate a negative answer; observed {} probes",
+        probe_runs.get()
     );
+    Ok(())
 }
 
 #[test]
-fn filesystem_removal_reprobes_a_cached_positive_answer() {
-    let directory = tempfile::tempdir().expect("temporary directory must be created");
+fn filesystem_removal_reprobes_a_cached_positive_answer() -> Result<()> {
+    let directory = tempfile::tempdir().context("temporary directory must be created")?;
     let command = "perl_lsp_test_filesystem_remove_unique_xyz";
     let candidate = directory.path().join(command);
-    std::fs::write(&candidate, b"tool").expect("candidate file must be created");
+    std::fs::write(&candidate, b"tool").context("candidate file must be created")?;
     let key = command_exists_cache_key(
         command,
         true,
@@ -172,16 +179,21 @@ fn filesystem_removal_reprobes_a_cached_positive_answer() {
         true
     };
 
-    assert!(command_exists_via_key(probe, key.clone()));
-    assert_eq!(probe_runs.get(), 1, "cold positive lookup must probe once");
-
-    std::fs::remove_file(candidate).expect("candidate file must be removed");
-    assert!(command_exists_via_key(probe, key));
-    assert_eq!(
-        probe_runs.get(),
-        2,
-        "removing a candidate from an unchanged PATH directory must invalidate a positive answer"
+    ensure!(command_exists_via_key(probe, key.clone()), "cold positive lookup must answer true");
+    ensure!(
+        probe_runs.get() == 1,
+        "cold positive lookup must probe once; observed {} probes",
+        probe_runs.get()
     );
+
+    std::fs::remove_file(candidate).context("candidate file must be removed")?;
+    ensure!(command_exists_via_key(probe, key), "re-probed positive lookup must answer true");
+    ensure!(
+        probe_runs.get() == 2,
+        "removing a candidate from an unchanged PATH directory must invalidate a positive answer; observed {} probes",
+        probe_runs.get()
+    );
+    Ok(())
 }
 
 #[cfg(unix)]

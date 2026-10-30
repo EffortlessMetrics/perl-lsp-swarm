@@ -6,14 +6,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 AQUA_CONFIG_PATH="${AQUA_CONFIG:-${REPO_ROOT}/aqua.yaml}"
-AQUA_BOOTSTRAP_VERSION="v2.57.0"
 
 if ! command -v aqua >/dev/null 2>&1; then
     cat >&2 <<EOF
 portable toolchain: NOT PROVEN — aqua is not installed
 
 Pinned bootstrap:
-  go install github.com/aquaproj/aqua/v2/cmd/aqua@${AQUA_BOOTSTRAP_VERSION}
+  bash scripts/tools/install-aqua.sh --dest "\$HOME/.local/bin"
 
 Nix users may instead enter the repository dev shell; Nix remains the complete
 development environment. Aqua is the portable non-Nix CLI installer only.

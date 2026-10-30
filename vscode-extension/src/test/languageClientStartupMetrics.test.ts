@@ -73,6 +73,26 @@ describe('LanguageClientStartupMetrics', function () {
     assert.equal(snapshot.server_start_ms, null);
   });
 
+  test('carries a failed startup error until a new resolution supersedes it', function () {
+    const metrics = new LanguageClientStartupMetrics();
+    assert.equal(metrics.snapshot().startup_error, null);
+
+    metrics.recordStartupError(new Error('spawn EBUSY'));
+    assert.equal(metrics.snapshot().startup_error, 'spawn EBUSY');
+
+    metrics.recordStartupError('transport closed');
+    assert.equal(metrics.snapshot().startup_error, 'transport closed');
+
+    metrics.recordStartupError(null);
+    assert.equal(metrics.snapshot().startup_error, null);
+
+    // A recorded failure must not leak into a superseding startup attempt's
+    // snapshots (#15592): starting a new resolution clears the stale error.
+    metrics.recordStartupError(new Error('stale failure'));
+    metrics.beginBinaryResolution();
+    assert.equal(metrics.snapshot().startup_error, null);
+  });
+
   test('retains a same-version configured path for packaged identity rejection', function () {
     const metrics = new LanguageClientStartupMetrics();
     metrics.beginBinaryResolution();

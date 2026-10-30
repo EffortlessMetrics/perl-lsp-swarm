@@ -107,12 +107,16 @@ pub(crate) fn terminate_tree_and_reap(child: &mut Child) -> std::io::Result<Exit
     child.wait()
 }
 
-/// Live descendant PIDs of `root`, innermost-first irrelevant; empty when
-/// the snapshot cannot be taken (table-walk failure is logged, and the
-/// caller's direct-child kill remains the fallback).
+/// One live parent→children edge map read from a single toolhelp snapshot;
+/// empty when the snapshot cannot be taken (table-walk failure is logged).
+///
+/// Every snapshot entry records its own PID as a child of its recorded
+/// parent, so the map's values enumerate exactly the PIDs in the table.
+/// The single owner of this unsafe walk; also the process-liveness oracle
+/// the owned-tree tests use.
 #[cfg(windows)]
-fn descendant_pids(root: u32) -> Vec<u32> {
-    use std::collections::{HashMap, HashSet, VecDeque};
+fn windows_parent_to_children() -> std::collections::HashMap<u32, Vec<u32>> {
+    use std::collections::HashMap;
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
     use winapi::um::tlhelp32::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -129,11 +133,10 @@ fn descendant_pids(root: u32) -> Vec<u32> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         tracing::warn!(
-            pid = root,
             error = %std::io::Error::last_os_error(),
             "Failed to snapshot the process table for owned-tree termination"
         );
-        return Vec::new();
+        return HashMap::new();
     }
     let mut parent_to_children: HashMap<u32, Vec<u32>> = HashMap::new();
     // SAFETY: PROCESSENTRY32W is a C struct of integers and a fixed-size
@@ -161,6 +164,17 @@ fn descendant_pids(root: u32) -> Vec<u32> {
         }
         CloseHandle(snapshot);
     }
+    parent_to_children
+}
+
+/// Live descendant PIDs of `root`, innermost-first irrelevant; empty when
+/// the snapshot cannot be taken (table-walk failure is logged, and the
+/// caller's direct-child kill remains the fallback).
+#[cfg(windows)]
+fn descendant_pids(root: u32) -> Vec<u32> {
+    use std::collections::{HashSet, VecDeque};
+
+    let parent_to_children = windows_parent_to_children();
     // Walk the parent→child edges from the direct child. A visited set
     // bounds the walk even if the table carries a parent-PID cycle.
     let mut descendants = Vec::new();
@@ -363,42 +377,123 @@ mod tests {
         }
         #[cfg(unix)]
         {
-            // Signal 0 probes existence without delivering anything; a
-            // reaped PID reports ESRCH. Uses the nix safe wrapper rather
-            // than raw libc so no unsafe block is needed.
+            #[cfg(target_os = "linux")]
+            return linux_process_alive(pid, std::fs::read_to_string(format!("/proc/{pid}/stat")));
+            #[cfg(not(target_os = "linux"))]
             nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
         }
     }
 
-    #[cfg(windows)]
-    fn pid_in_windows_snapshot(pid: u32) -> bool {
-        use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-        use winapi::um::tlhelp32::{
-            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-            TH32CS_SNAPPROCESS,
-        };
-        unsafe {
-            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snapshot == INVALID_HANDLE_VALUE {
+    #[cfg(target_os = "linux")]
+    fn linux_process_alive(pid: u32, stat: std::io::Result<String>) -> bool {
+        // A killed grandchild may await its init/subreaper's reap. Signal 0
+        // still succeeds for that zombie, although it cannot run.
+        if let Ok(stat) = stat {
+            if matches!(linux_process_state(pid, &stat), Some("Z" | "X")) {
                 return false;
             }
-            let mut found = false;
-            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-            if Process32FirstW(snapshot, &mut entry) != 0 {
-                loop {
-                    if entry.th32ProcessID == pid {
-                        found = true;
-                        break;
-                    }
-                    if Process32NextW(snapshot, &mut entry) == 0 {
-                        break;
-                    }
-                }
-            }
-            CloseHandle(snapshot);
-            found
         }
+        // Missing, unreadable or malformed procfs is not evidence of death.
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_liveness_preserves_signal_probe_without_usable_procfs() {
+        let live_pid = std::process::id();
+        for kind in [std::io::ErrorKind::NotFound, std::io::ErrorKind::PermissionDenied] {
+            assert!(linux_process_alive(live_pid, Err(std::io::Error::new(kind, "control"))));
+        }
+        assert!(linux_process_alive(live_pid, Ok("malformed control".into())));
+        assert!(linux_process_alive(live_pid, Ok("garbage) Z".into())));
+        assert!(linux_process_alive(live_pid, Ok(format!("{live_pid} (control) Z"))));
+        assert!(linux_process_alive(
+            live_pid,
+            Ok(format!("{} (control) Z 1", live_pid.saturating_add(1)))
+        ));
+        assert!(linux_process_alive(live_pid, Ok(format!("{live_pid} (control) Q 1"))));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_process_state(expected_pid: u32, stat: &str) -> Option<&str> {
+        // comm may itself contain spaces or ')'; state follows the final ')'.
+        let (record_pid, rest) = stat.split_once(' ')?;
+        if record_pid.parse::<u32>().ok()? != expected_pid || !rest.starts_with('(') {
+            return None;
+        }
+        let (_, fields) = rest.rsplit_once(')')?;
+        let mut fields = fields.split_whitespace();
+        let state = fields.next()?;
+        fields.next()?.parse::<u32>().ok()?;
+        Some(state)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_process_state_preserves_live_and_unknown_controls() {
+        assert_eq!(linux_process_state(42, "42 (control with ) brackets) R 1"), Some("R"));
+        assert_eq!(linux_process_state(42, "42 (control) S 1"), Some("S"));
+        assert_eq!(linux_process_state(42, "42 (control) T 1"), Some("T"));
+        assert_eq!(linux_process_state(42, "42 (control) Z 1"), Some("Z"));
+        assert_eq!(linux_process_state(42, "42 (control) X 1"), Some("X"));
+        assert_eq!(linux_process_state(42, "42 (control) Q 1"), Some("Q"));
+        assert_eq!(linux_process_state(42, "42 (control)"), None);
+        assert_eq!(linux_process_state(42, "42 (unterminated"), None);
+        assert_eq!(linux_process_state(42, "garbage) Z"), None);
+        assert_eq!(linux_process_state(42, "42 (control) Z"), None);
+        assert_eq!(linux_process_state(42, "99 (control) Z 1"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn liveness_probe_distinguishes_a_live_child_from_its_unreaped_zombie() -> TestResult {
+        let scratch = scratch_dir("zombie-liveness");
+        std::fs::create_dir_all(&scratch)?;
+        let mut child = spawn_current_test_binary("descendant", &scratch, true)?;
+        let result = (|| -> TestResult {
+            wait_for_file(&scratch.join("descendant.pid"), Duration::from_secs(10))?;
+            if !process_alive(child.id()) {
+                return Err("live liveness control was reported dead".into());
+            }
+            child.kill()?;
+            // Do not try_wait here: the control deliberately remains unreaped.
+            let expiry = Instant::now() + Duration::from_secs(5);
+            loop {
+                let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.id()))?;
+                if matches!(linux_process_state(child.id(), &stat), Some("Z" | "X")) {
+                    break;
+                }
+                if Instant::now() >= expiry {
+                    return Err("killed liveness control never became an observable zombie".into());
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if process_alive(child.id()) {
+                return Err("unreaped zombie was reported alive".into());
+            }
+            Ok(())
+        })();
+        // Even the baseline/mutation failure path kills and reaps its control.
+        let reaped_pid = child.id();
+        let reap = terminate_tree_and_reap(&mut child);
+        let cleanup = std::fs::remove_dir_all(&scratch);
+        result?;
+        reap?;
+        cleanup?;
+        // A fallback that always returns true must reject this reaped control.
+        assert!(!linux_process_alive(
+            reaped_pid,
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "reaped control")),
+        ));
+        assert!(!linux_process_alive(reaped_pid, Ok("malformed control".into())));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn pid_in_windows_snapshot(pid: u32) -> bool {
+        // Every table entry lists itself under its parent, so membership in
+        // the shared walk's values is exactly presence in the snapshot.
+        super::windows_parent_to_children().values().any(|children| children.contains(&pid))
     }
 
     /// The discriminating control from #15538: a bounded kill of an owned

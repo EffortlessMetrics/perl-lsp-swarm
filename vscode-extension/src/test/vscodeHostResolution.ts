@@ -51,6 +51,7 @@ export function classifyHostResolutionError(error: unknown): HostResolutionDispo
     message.includes('network') ||
     message.includes('econn') ||
     message.includes('enotfound') ||
+    message.includes('eai_again') ||
     message.includes('http') ||
     message.includes('timeout') ||
     message.includes('timed out') ||

@@ -117,7 +117,7 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
             diagnostics_seen_before_open,
             Duration::from_secs(5),
         )
-        .expect("didOpen should publish diagnostics");
+        .map_err(|end| format!("didOpen diagnostics for fixture.pl: {end}"))?;
     assert!(
         !has_pl701(&diags),
         "Expected no PL701 when a block-leading BEGIN use lib exposes the module.\n\
@@ -151,7 +151,7 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
             diagnostics_seen_before_edit,
             Duration::from_secs(5),
         )
-        .expect("didChange should publish diagnostics after the edit");
+        .map_err(|end| format!("didChange diagnostics for fixture.pl: {end}"))?;
 
     // `use Beg` is at zero-based line 5, cursor column 7.
     let completions = harness.completion("fixture.pl", 5, 7).expect("completion must not error");
@@ -169,7 +169,7 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
             control_diagnostics_seen_before_open,
             Duration::from_secs(5),
         )
-        .expect("control didOpen should publish diagnostics");
+        .map_err(|end| format!("didOpen diagnostics for control.pl: {end}"))?;
     assert!(
         has_pl701(&control_diags),
         "Expected PL701 without BEGIN use lib in the control fixture.\n\

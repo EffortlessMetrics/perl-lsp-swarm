@@ -398,6 +398,25 @@ impl UxClient {
         self.initialize_result.clone()
     }
 
+    /// Return the OS process id of the spawned server, if a live process is
+    /// still attributable to this client.
+    ///
+    /// `child` is private, so this is the only sanctioned pid read for callers
+    /// that must target the server process from outside the client — the
+    /// memory lane of the #17159 benchmark samples the child's RSS through it.
+    /// `std::process::Child::id` reports the pid of an exited-but-unreaped
+    /// child as well, so the `None` arm is decided by `try_wait`: once the
+    /// exit status has been collected there is no live process left to target.
+    pub fn process_id(&self) -> Option<u32> {
+        let mut child = self.child.lock().unwrap_or_else(|error| error.into_inner());
+        match child.try_wait() {
+            Ok(Some(_)) => None,
+            // An unreadable status still leaves the handle's pid as the best
+            // available answer; RSS sampling treats it as best-effort anyway.
+            Ok(None) | Err(_) => Some(child.id()),
+        }
+    }
+
     /// Send a JSON-RPC request and wait for the matching response.
     pub fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let id = next_id();
@@ -2413,16 +2432,19 @@ mod server_request_tests {
                             decision.response
                         ));
                     }
-                } else if !decision
-                    .capability_violation
-                    .as_ref()
-                    .is_some_and(|v| v.capability == path)
-                    || decision.response.pointer("/error/code") != Some(&json!(-32601))
-                {
-                    return Err(anyhow!(
-                        "non-true advertisement must reject {path}: {}",
-                        decision.response
-                    ));
+                } else {
+                    let violation_on_path = decision
+                        .capability_violation
+                        .as_ref()
+                        .is_some_and(|v| v.capability == path);
+                    if !violation_on_path
+                        || decision.response.pointer("/error/code") != Some(&json!(-32601))
+                    {
+                        return Err(anyhow!(
+                            "non-true advertisement must reject {path}: {}",
+                            decision.response
+                        ));
+                    }
                 }
             }
         }

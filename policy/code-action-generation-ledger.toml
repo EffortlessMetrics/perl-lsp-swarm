@@ -23,7 +23,7 @@ schema_version = 1
 policy = "code-action-generation-ledger"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-09-07"
+updated = "2026-10-04"
 
 convergence_controller = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8393"
 provider_contract = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8068"
@@ -74,7 +74,10 @@ disposition_states = [
 
 # Action families are user-visible capabilities, not module names, so that two
 # generations answering one family is visible as duplicate authority rather than
-# hidden behind two different keys. `none:unreachable_stub` exists so a
+# hidden behind two different keys. Custom families use the
+# `<emitted CodeActionKind>:<capability name>` label; typed extraction families
+# (refactor.extract.variable, refactor.extract.subroutine) use the complete
+# emitted CodeActionKind as their label. `none:unreachable_stub` exists so a
 # generation that answers nothing still carries an exact disposition.
 family_registry = [
   "none:unreachable_stub",
@@ -84,15 +87,13 @@ family_registry = [
   "quickfix:hardcoded_shebang",
   "quickfix:pragma",
   "quickfix:utf8_pragma",
-  "refactor.extract:basic_fallback",
-  "refactor.extract:disabled_placeholder",
-  "refactor.extract:subroutine",
-  "refactor.extract:variable",
+  "refactor.extract.variable:basic_fallback",
+  "refactor.extract.variable:disabled_placeholder",
+  "refactor.extract.subroutine",
+  "refactor.extract.variable",
   "refactor.rewrite:enhanced_transforms",
-  "refactor.rewrite:text_fallback",
   "source.fixAll:aggregate",
   "source.modernize:modernize",
-  "source:test_generation",
 ]
 
 # Named reasons a non-canonical generation cannot be retired yet. Every
@@ -109,12 +110,16 @@ retirement_blocker_registry = [
 # generation ever constructs, so no family can exist for them. Recorded rather
 # than ignored: the drift check requires every kind literal in the handler to be
 # either a registered family's kind or listed here, so a NEW kind cannot appear
-# without being classified. Both entries map InternalCodeActionKind variants
-# (Refactor, RefactorInline) that no producer builds — #9190 can drop the
+# without being classified. The entries map InternalCodeActionKind variants
+# (Refactor, RefactorInline, and Source — since #17304 removed the test
+# generator — and RefactorExtract — since #16577 moved the extract generations
+# onto the typed variants) that no producer builds; #9190 can drop the
 # variants and their match arms together.
 unreachable_kinds = [
   "refactor",
+  "refactor.extract",
   "refactor.inline",
+  "source",
 ]
 
 # Every `.rs` file under these roots must be claimed by some generation row's
@@ -230,15 +235,6 @@ modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
 summary = "Capability-gated disabled refactor.extract placeholder for zero-width selections. Called from BOTH orchestrator branches — once on the AST path and once on the degraded no-AST path — so it is the only generation that survives a missing parse snapshot alongside text_fallback."
 
 [[generation]]
-id = "test_generator"
-stage = 9
-path = "ast"
-reachability = "production"
-production_anchor = "Generate test for '{}'"
-modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
-summary = "Command-only Test::More skeleton action per discovered subroutine."
-
-[[generation]]
 id = "source_fix_all_aggregate"
 stage = 10
 path = "ast"
@@ -252,9 +248,9 @@ id = "text_fallback"
 stage = 11
 path = "no_ast"
 reachability = "production"
-production_anchor = "perl.addDebugPrint"
+production_anchor = "Add 'use strict' and 'use warnings'"
 modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
-summary = "Degraded text-oriented generation used when the request finds no AST for the current document generation. Malformed source does not reach it: the v3 parser recovers instead of yielding ast: None (#3760), so in practice it is reached only when the current generation has no published parse snapshot yet."
+summary = "Degraded text-oriented generation used when the request finds no AST for the current document generation. Its command-only debug-print and convert-globals producers were removed in #17304 (offered actions no component could execute); what remains is the inline strict/warnings pragma quick fix the branch emits directly. Malformed source does not reach it: the v3 parser recovers instead of yielding ast: None (#3760), so in practice it is reached only when the current generation has no published parse snapshot yet."
 
 [[generation]]
 id = "lsp_compat_stub"
@@ -379,7 +375,7 @@ parity_fixtures = ["cac-parity-legitimate-empty-out-of-range-source-action"]
 
 [[route]]
 generation = "provider_enhanced"
-family = "refactor.extract:variable"
+family = "refactor.extract.variable"
 disposition = "canonical_candidate"
 notes = "The implementation users actually receive."
 retirement_blockers = []
@@ -387,7 +383,7 @@ parity_fixtures = ["cac-parity-extract-variable-requires-selection"]
 
 [[route]]
 generation = "provider_original"
-family = "refactor.extract:variable"
+family = "refactor.extract.variable"
 disposition = "redundant_behavior"
 notes = "provider_original does not implement extraction itself; refactors::get_refactoring_actions constructs EnhancedCodeActionsProvider and makes the identical call the orchestrator makes at stage 7, so the enhanced generation executes twice per request and dedupe_code_actions hides the duplicate."
 retirement_blockers = []
@@ -395,7 +391,7 @@ parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
 
 [[route]]
 generation = "provider_enhanced"
-family = "refactor.extract:subroutine"
+family = "refactor.extract.subroutine"
 disposition = "canonical_candidate"
 notes = "Sole real implementation; reached twice for the same reason as extract:variable."
 retirement_blockers = []
@@ -404,7 +400,7 @@ proof_gap = "No corpus fixture reaches it. Six range shapes were tried against t
 
 [[route]]
 generation = "provider_original"
-family = "refactor.extract:subroutine"
+family = "refactor.extract.subroutine"
 disposition = "redundant_behavior"
 notes = "refactors::get_refactoring_actions extends with the WHOLE enhanced result, not just extraction of variables, so this generation transitively republishes subroutine extraction exactly as it does extract:variable and the rewrite transforms. Recorded so #9189 does not treat the nested publisher as nonexistent."
 retirement_blockers = []
@@ -413,16 +409,16 @@ proof_gap = "Inherits the canonical row's gap: no corpus fixture reaches subrout
 
 [[route]]
 generation = "provider_original"
-family = "refactor.extract:basic_fallback"
+family = "refactor.extract.variable:basic_fallback"
 disposition = "shadow_only_candidate"
-notes = "The literal 'Extract to variable' / 'Extract to function' arms in refactors.rs are guarded by `actions.is_empty()`, so they can only run when the nested enhanced generation returned nothing. They are not an independent production authority."
+notes = "The literal 'Extract to variable' arm in refactors.rs is guarded by `actions.is_empty()`, so it can only run when the nested enhanced generation returned nothing. Basic extract-function is withheld (#16779): it cannot carry surrounding lexical captures or prove brace-preserving replacement, so the proven enhanced extract-subroutine path or no-edit is used instead."
 retirement_blockers = []
 parity_fixtures = []
-proof_gap = "Unreachable by construction from any fixture that also reaches the enhanced generation: the guard runs only when the nested enhanced call returned nothing, and on every selection that produces an extract action the enhanced generation answers first. Proving this arm needs a node shape the enhanced provider declines but refactors.rs accepts, which no corpus fixture has found. Being shadow_only_candidate, #9190 can delete it without parity evidence."
+proof_gap = "The generation-parity corpus still has no cac-parity fixture for this family. #16779 proves the extract-function withhold on the core producer and a textDocument/codeAction wire test; the remaining extract-variable arm is still only reachable when enhanced generation returns nothing."
 
 [[route]]
 generation = "disabled_extract_placeholder"
-family = "refactor.extract:disabled_placeholder"
+family = "refactor.extract.variable:disabled_placeholder"
 disposition = "unique_behavior"
 notes = "Only producer of a disabled action. Emitted for a zero-width selection and only when the client declared codeAction.disabledSupport; both refactor.extract generations are skipped in exactly that case."
 retirement_blockers = ["capability_gated_disabled_state_has_no_other_producer"]
@@ -451,29 +447,12 @@ parity_fixtures = [
 ]
 
 [[route]]
-generation = "text_fallback"
-family = "refactor.rewrite:text_fallback"
-disposition = "compatibility_only"
-notes = "Command-only debug-print and convert-globals actions offered only on the no-AST path."
-retirement_blockers = ["canonical_route_has_no_degraded_path_equivalent"]
-parity_fixtures = []
-proof_gap = "Same no-AST reachability gap as this generation's pragma row: no deterministic corpus fixture reaches it."
-
-[[route]]
 generation = "provider_original"
 family = "source.modernize:modernize"
 disposition = "canonical_candidate"
 notes = "Sole producer of source.modernize actions."
 retirement_blockers = []
 parity_fixtures = ["cac-parity-kind-filter-excludes-other-families"]
-
-[[route]]
-generation = "test_generator"
-family = "source:test_generation"
-disposition = "canonical_candidate"
-notes = "Sole producer. Command-only action carrying no workspace edit."
-retirement_blockers = []
-parity_fixtures = ["cac-parity-test-generation-command-only"]
 
 [[route]]
 generation = "source_fix_all_aggregate"

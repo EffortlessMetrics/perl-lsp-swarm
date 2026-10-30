@@ -278,7 +278,9 @@ fn ordinary_declaration_and_repetition_controls_remain_distinct() -> Result<(), 
 #[test]
 fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), String> {
     // Statement level: the leftover `x = 3` parses as an ordinary second
-    // statement assignment with no diagnostics (same-line leftover
+    // statement assignment, but the split stays loud — real Perl rejects
+    // `my ($x, $y) x = 3;` outright, so exactly one blocking residue
+    // diagnostic anchored at the `x` is required (same-line leftover
     // enforcement belongs to statement termination, not the operator). Pin
     // that exact shape so the test cannot pass vacuously on some future
     // unrelated acceptance.
@@ -305,9 +307,28 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
             output.ast.to_sexp()
         ));
     }
-    if !output.diagnostics.is_empty() {
+    // Real Perl rejects this shape (`syntax error near "x ="` under 5.42.2),
+    // so the split must stay loud: exactly one blocking residue diagnostic
+    // anchored at the leftover `x`, never a silent acceptance (#16378).
+    if output.diagnostics.len() != 1 {
         return Err(format!(
-            "expected no diagnostics for the clean split, got {:?}",
+            "expected exactly one residue diagnostic for the split, got {:?}",
+            output.diagnostics
+        ));
+    }
+    match &output.diagnostics[0] {
+        ParseError::Recovered {
+            site: RecoverySite::Statement,
+            kind: RecoveryKind::UnexpectedSameLineResidue,
+            location: 12,
+        } => {}
+        other => {
+            return Err(format!("expected blocking residue at the leftover `x`, got {other:?}"));
+        }
+    }
+    if !output.diagnostics[0].blocks_clean_parse() {
+        return Err(format!(
+            "residue diagnostic must block clean parse, got {:?}",
             output.diagnostics
         ));
     }

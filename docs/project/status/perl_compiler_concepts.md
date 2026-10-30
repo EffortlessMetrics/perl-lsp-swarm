@@ -10,7 +10,7 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 - Controller: #6657
 - Inventory complete: `false`
 - Inventory authority: —
-- Concepts in this seed: `28`
+- Concepts in this seed: `31`
 
 **Claim boundary:** Rows separate representation, analysis, effects, execution, proof, and provider eligibility. This seed is intentionally incomplete.
 
@@ -32,40 +32,40 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 | `places` | 3 |
 | `regex` | 4 |
 | `source` | 2 |
-| `values` | 1 |
+| `values` | 4 |
 
 ## Stage counts
 
 | Stage | State | Count |
 | --- | --- | ---: |
 | Parser / AST | `not_applicable` | 1 |
-| Parser / AST | `parsed` | 27 |
+| Parser / AST | `parsed` | 30 |
 | Flat HIR | `absent` | 14 |
 | Flat HIR | `boundary` | 2 |
 | Flat HIR | `bridge` | 1 |
-| Flat HIR | `modeled` | 8 |
+| Flat HIR | `modeled` | 11 |
 | Flat HIR | `not_applicable` | 1 |
 | Flat HIR | `skipped` | 2 |
 | Body HIR | `boundary` | 1 |
 | Body HIR | `bridge` | 5 |
-| Body HIR | `modeled` | 3 |
+| Body HIR | `modeled` | 6 |
 | Body HIR | `not_applicable` | 2 |
 | Body HIR | `opaque` | 17 |
 | PIR-A | `absent` | 9 |
-| PIR-A | `boundary` | 13 |
+| PIR-A | `boundary` | 16 |
 | PIR-A | `bridge` | 3 |
 | PIR-A | `not_applicable` | 3 |
 | Effects / world | `absent` | 1 |
 | Effects / world | `boundary` | 7 |
-| Effects / world | `not_applicable` | 20 |
-| EIR profile | `absent` | 24 |
+| Effects / world | `not_applicable` | 23 |
+| EIR profile | `absent` | 27 |
 | EIR profile | `boundary` | 4 |
-| Gold | `missing` | 28 |
-| Oracle | `missing` | 28 |
-| Composition | `missing` | 28 |
-| Provider eligibility | `fallback_only` | 16 |
+| Gold | `missing` | 31 |
+| Oracle | `missing` | 31 |
+| Composition | `missing` | 31 |
+| Provider eligibility | `fallback_only` | 19 |
 | Provider eligibility | `ineligible` | 12 |
-| Ownership | `active` | 28 |
+| Ownership | `active` | 31 |
 
 ## Concept rows
 
@@ -98,6 +98,9 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 | `regex.transliteration` | `Transliteration` | `parsed` | `modeled` | `opaque` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #4848 |
 | `source.data_section` | `DataSection` | `parsed` | `absent` | `opaque` | `not_applicable` | `absent` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6675 |
 | `source.ellipsis` | `Ellipsis` | `parsed` | `absent` | `opaque` | `absent` | `not_applicable` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6675 |
+| `values.noninterpolating_string` | `String` | `parsed` | `modeled` | `modeled` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #6658 |
+| `values.plain_decimal` | `Number` | `parsed` | `modeled` | `modeled` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #6658 |
+| `values.undef` | `Undef` | `parsed` | `modeled` | `modeled` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #6658 |
 | `values.v_string` | `VString` | `parsed` | `absent` | `opaque` | `absent` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `ineligible` | #6658 |
 
 ## Claim boundaries
@@ -129,4 +132,7 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 - **`regex.transliteration` (#4848):** A flat shell exists; target-place mutation, modifiers, and executable semantics remain incomplete.
 - **`source.data_section` (#6675):** The parser recognizes the marker, but compiler stop/payload identity and runtime DATA capability are not modeled.
 - **`source.ellipsis` (#6675):** Parsed syntax is not yet represented as a deliberate control/runtime boundary.
+- **`values.noninterpolating_string` (#6658):** Quote-stripped content plus load-bearing quote kind; escape sequences pass through verbatim (decoding is a later family). Interpolated, quote-like, and unquoted spellings stay Opaque, as do all double-quoted spellings (the parser marks every double-quoted form interpolated and this slice does not second-guess that authority).
+- **`values.plain_decimal` (#6658):** Exact-lexeme typed leaves with fabrication marker; no numeric parsing, rounding, or runtime coercion. Bases, floats, exponents, separators, and version forms stay Opaque.
+- **`values.undef` (#6658):** Absence-of-value leaf, distinct from unresolved barewords and from `undef` parsed as a call. No definedness/truth evaluation semantics.
 - **`values.v_string` (#6658):** Parser classification exists; typed value representation and version-sensitive semantics do not.
