@@ -183,7 +183,11 @@ outcome_owner = "#10230"
 # Digest re-anchored 2026-10-29 over the tree merged with main: main's #16853
 # reopened-class-model edits in `completion/workspace.rs` and the #18338 policy
 # convergence share the scanned surface; producer rows are unchanged.
-source_digest = "sha256:304dc23f61fe767d03f48a9a9cd24f9db828f86f741263e2c9d2ca64a2c36e13"
+# Re-anchored 2026-10-30 (#18445): #17936's parsed-variable completion-suffix
+# change touched the scanned `completion/variables.rs` and
+# `completion/request/dispatch.rs`; the existing producer rows, their
+# identity/evidence/completeness ceilings and migration owners are unchanged.
+source_digest = "sha256:600b298efa06bde8852a6b1c1302c471c81ea0e5311183cc009a7e1891019630"
 
 [[delegations]]
 module = "dancer2"

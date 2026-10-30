@@ -162,7 +162,7 @@ impl DebugAdapter {
             match ch {
                 '\\' => backslashes += 1,
                 '\'' => {
-                    if backslashes % 2 == 0 {
+                    if backslashes.is_multiple_of(2) {
                         count += 1;
                     }
                     backslashes = 0;
