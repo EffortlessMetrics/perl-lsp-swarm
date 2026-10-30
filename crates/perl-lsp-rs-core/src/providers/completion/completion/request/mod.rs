@@ -1,8 +1,13 @@
 mod context;
 mod dispatch;
+mod interpolation;
 mod test_frameworks;
 
-use super::{CompletionItem, CompletionProvider, sort};
+use super::{
+    CompletionItem, CompletionProvider,
+    lexical_context::{InterpolationAdmission, interpolation_admission},
+    sort,
+};
 
 pub(super) fn complete(
     provider: &CompletionProvider,
@@ -19,7 +24,28 @@ pub(super) fn complete(
         return vec![];
     }
 
-    // Whole-block suppressions must run before regex-specific completions.
+    match interpolation_admission(source, position) {
+        InterpolationAdmission::VariableSlot { .. } => {
+            return interpolation::complete_slot(
+                provider,
+                &context,
+                source,
+                position,
+                is_cancelled,
+            );
+        }
+        InterpolationAdmission::Quiet
+            if !context.in_string || prefix_starts_with_sigil(&context.prefix) =>
+        {
+            // Quiet interpolating/non-interpolating sigil slots and heredoc
+            // bodies must not fall through to workspace package fallback.
+            return vec![];
+        }
+        InterpolationAdmission::Quiet | InterpolationAdmission::NotOwned => {}
+    }
+
+    // POD still suppresses all completion. Interpolating heredocs are admitted
+    // above; literal heredocs are Quiet.
     if context::rejects_lexical_block(source, position) {
         return vec![];
     }
@@ -47,6 +73,10 @@ pub(super) fn complete(
         CompletionFlow::Return(items) => items,
         CompletionFlow::Cancelled => vec![],
     }
+}
+
+fn prefix_starts_with_sigil(prefix: &str) -> bool {
+    prefix.chars().next().is_some_and(|ch| matches!(ch, '$' | '@' | '%'))
 }
 
 pub(super) enum CompletionFlow {

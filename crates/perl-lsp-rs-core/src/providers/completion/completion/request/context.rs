@@ -28,8 +28,7 @@ pub(super) fn rejects_dash_trigger(context: &CompletionContext) -> bool {
 }
 
 pub(super) fn rejects_lexical_block(source: &str, position: usize) -> bool {
-    CompletionProvider::is_in_heredoc(source, position)
-        || CompletionProvider::is_in_pod(source, position)
+    CompletionProvider::is_in_pod(source, position)
 }
 
 pub(super) fn complete_regex_context(
