@@ -11,8 +11,8 @@
 //!
 //! Every fixture in this file is one of:
 //!   - a positive test pinning both views to the aggregate's `HirBindingId`,
-//!   - a falsifier pinning the negative case (a `$`-sigil in scope still wins
-//!     over the aggregate, an array slice stays a slice, etc.),
+//!   - a falsifier pinning the negative case (an arrow dereference never
+//!     takes the aggregate, an array slice stays a slice, etc.),
 //!   - a regression guard against the two HIR views disagreeing for the same
 //!     source position.
 
@@ -148,13 +148,12 @@ fn hash_element_resolves_to_hash_decl_binding() {
     assert_eq!(dollar_ref.resolved_binding, Some(h_binding.id));
 }
 
-/// If a `$name` scalar IS in scope, the scalar's binding wins — the aggregate
-/// fallback only activates when the scalar lookup misses. This is the
-/// negative-control guard for the bug-flip: we don't want a `@arr` declaration
-/// to shadow a `$arr` declaration just because `$arr` is the container of an
-/// element access (#14682).
+/// A direct element access reads the aggregate even when a same-named
+/// scalar is in scope: Perl's `$arr[0]` is `@arr`'s element, never the
+/// scalar `$arr` (oracle: `my @arr = (11); my $arr = [22]; $arr[0]` is 11).
+/// Both HIR views must carry the `@arr` binding (#16206).
 #[test]
-fn scalar_in_scope_wins_over_aggregate() {
+fn aggregate_wins_over_scalar_for_direct_element() {
     let file = lower("my @arr; my $arr; my $x = $arr[0];");
     let (container, _kind, _access) = subscript_for_container(&file, "arr");
     assert_eq!(
@@ -163,17 +162,58 @@ fn scalar_in_scope_wins_over_aggregate() {
         "container sigil stays `$` because the source spelling is `$arr`"
     );
     assert_eq!(container.kind, VariableKind::Lexical);
+    let agg_binding = file
+        .scope_graph
+        .bindings
+        .iter()
+        .find(|b| b.name == "arr" && b.sigil == "@")
+        .expect("`@arr` aggregate binding must exist");
+    assert_eq!(
+        container.binding,
+        Some(agg_binding.id),
+        "direct element container must resolve to the `@arr` aggregate"
+    );
+    let dollar_ref = dollar_reference_for_name(&file, "arr");
+    assert_eq!(dollar_ref.resolved_binding, Some(agg_binding.id));
+}
+
+/// Control: an ordinary `$arr` read (no subscript) still binds the scalar.
+#[test]
+fn bare_scalar_read_still_binds_the_scalar() {
+    let file = lower("my @arr; my $arr; my $y = $arr;");
     let scalar_binding = file
         .scope_graph
         .bindings
         .iter()
         .find(|b| b.name == "arr" && b.sigil == "$")
         .expect("`$arr` scalar binding must exist");
-    assert_eq!(
-        container.binding,
-        Some(scalar_binding.id),
-        "container must resolve to the `$arr` scalar, not the `@arr` aggregate"
-    );
+    let dollar_ref = dollar_reference_for_name(&file, "arr");
+    assert_eq!(dollar_ref.resolved_binding, Some(scalar_binding.id));
+}
+
+/// Arrow dereference with no scalar in scope must not bind the aggregate:
+/// `$ref->[0]` with only `@ref` declared reads through an undef scalar.
+#[test]
+fn arrow_deref_without_scalar_does_not_bind_aggregate() {
+    for (source, agg_sigil) in
+        [("my @ref; my $x = $ref->[0];", "@"), ("my %ref; my $x = $ref->{k};", "%")]
+    {
+        let file = lower(source);
+        let (container, _kind, _access) = subscript_for_container(&file, "ref");
+        let agg_binding = file
+            .scope_graph
+            .bindings
+            .iter()
+            .find(|b| b.name == "ref" && b.sigil == agg_sigil)
+            .expect("aggregate binding must exist");
+        assert_ne!(
+            container.binding,
+            Some(agg_binding.id),
+            "arrow container must not bind the aggregate: {source}"
+        );
+        let dollar_ref = dollar_reference_for_name(&file, "ref");
+        assert_ne!(dollar_ref.resolved_binding, Some(agg_binding.id), "first-pass: {source}");
+    }
 }
 
 /// Array slices (`@arr[0, 1]`) keep their existing shape — the aggregate
