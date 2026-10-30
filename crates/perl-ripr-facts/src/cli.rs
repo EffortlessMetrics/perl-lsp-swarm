@@ -337,9 +337,20 @@ const MAX_TEMP_SIBLING_ATTEMPTS: usize = 16;
 /// itself is never touched, and a pre-existing scratch file that this
 /// invocation did not create is never removed.
 fn stage_temp_sibling(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    stage_temp_sibling_with_candidates(dest, bytes, || temp_sibling_path(dest))
+}
+
+/// [`stage_temp_sibling`] with a test-controlled candidate supplier, so the
+/// collision and exhaustion paths are deterministic instead of depending on
+/// predicting the process-global sequence.
+fn stage_temp_sibling_with_candidates(
+    dest: &std::path::Path,
+    bytes: &[u8],
+    mut next_candidate: impl FnMut() -> std::path::PathBuf,
+) -> std::io::Result<std::path::PathBuf> {
     let mut last_collision: Option<std::io::Error> = None;
     for _ in 0..MAX_TEMP_SIBLING_ATTEMPTS {
-        let temp = temp_sibling_path(dest);
+        let temp = next_candidate();
         let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1292,6 +1303,76 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_temp_sibling_exhausts_deterministically_and_preserves_strangers() -> std::io::Result<()>
+    {
+        let dir = "target/ripr-exhaustion";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest = format!("{dir}/packet.json");
+        std::fs::write(&dest, b"existing destination")?;
+
+        let occupied: Vec<std::path::PathBuf> = (0..MAX_TEMP_SIBLING_ATTEMPTS)
+            .map(|index| std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-{index}")))
+            .collect();
+        for (index, path) in occupied.iter().enumerate() {
+            std::fs::write(path, format!("sentinel-{index}"))?;
+        }
+
+        let mut supplied = 0_usize;
+        let mut candidates = occupied.iter();
+        let result = stage_temp_sibling_with_candidates(
+            std::path::Path::new(&dest),
+            b"new packet bytes",
+            || {
+                supplied += 1;
+                candidates.next().map_or_else(
+                    || std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-extra")),
+                    Clone::clone,
+                )
+            },
+        );
+
+        let error = result.expect_err("fully occupied candidates must exhaust");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            supplied, MAX_TEMP_SIBLING_ATTEMPTS,
+            "staging must try exactly the bounded number of candidates"
+        );
+        assert_eq!(std::fs::read(&dest)?, b"existing destination");
+        for (index, path) in occupied.iter().enumerate() {
+            assert_eq!(std::fs::read(path)?, format!("sentinel-{index}").into_bytes());
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stage_temp_sibling_skips_an_occupied_first_candidate() -> std::io::Result<()> {
+        let dir = "target/ripr-occupied-first";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest = format!("{dir}/packet.json");
+        let occupied = std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-occupied"));
+        let free = std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-free"));
+        std::fs::write(&occupied, b"occupied")?;
+
+        let mut candidates = vec![occupied.clone(), free.clone()].into_iter();
+        let written = stage_temp_sibling_with_candidates(
+            std::path::Path::new(&dest),
+            b"new packet bytes",
+            || candidates.next().unwrap_or_else(|| free.clone()),
+        )?;
+
+        assert_eq!(written, free, "staging must skip the occupied candidate it tried first");
+        assert_eq!(std::fs::read(&occupied)?, b"occupied");
+        assert_eq!(std::fs::read(&written)?, b"new packet bytes");
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
     }
 
     #[test]
