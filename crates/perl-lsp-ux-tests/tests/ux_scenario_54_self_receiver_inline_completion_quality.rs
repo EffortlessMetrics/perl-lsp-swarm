@@ -50,7 +50,6 @@ struct SelfReceiverProbeReport {
     missing_expected_insert_texts: Vec<&'static str>,
     forbidden_insert_texts: Vec<&'static str>,
     probes_attempted: usize,
-    first_useful_candidate_seen: bool,
 }
 
 fn create_harness() -> Result<UxHarness> {
@@ -124,7 +123,6 @@ fn probe_self_receiver_inline_completion(harness: &UxHarness) -> Result<SelfRece
     // window closed (observed as a one-probe zero on a refreshed-base run).
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut probes_attempted: usize = 0;
-    let mut first_useful_candidate_seen = false;
     let items = loop {
         let items =
             harness.inline_completion_with_trigger_kind(SELF_RECEIVER_PATH, line, character, 1)?;
@@ -139,9 +137,6 @@ fn probe_self_receiver_inline_completion(harness: &UxHarness) -> Result<SelfRece
         let useful_now = EXPECTED_METHOD_INSERTS
             .iter()
             .all(|expected| insert_texts.iter().any(|actual| actual == expected));
-        if useful_now {
-            first_useful_candidate_seen = true;
-        }
         if useful_now || Instant::now() >= deadline {
             break items;
         }
@@ -169,7 +164,6 @@ fn probe_self_receiver_inline_completion(harness: &UxHarness) -> Result<SelfRece
         missing_expected_insert_texts,
         forbidden_insert_texts,
         probes_attempted,
-        first_useful_candidate_seen,
     })
 }
 
@@ -197,8 +191,13 @@ fn scenario_54_self_receiver_inline_completion_quality_receipt() {
             // the active-document indexing completion notification so the inline
             // provider has the package-method facts available before we probe;
             // without it, candidate_count is structurally zero on cold CI.
-            let diagnostics_received =
-                harness.wait_for_diagnostics(SELF_RECEIVER_PATH, Duration::from_secs(30));
+            // `Option` keeps a timeout (`null`) distinct from a clean empty
+            // publication (`[]`); the Vec form serializes both as `[]`.
+            let diagnostics_received = harness.wait_for_diagnostics_after_count(
+                SELF_RECEIVER_PATH,
+                0,
+                Duration::from_secs(30),
+            );
             let self_receiver_uri = harness.workspace.uri(SELF_RECEIVER_PATH);
             let active_document_ready =
                 harness.wait_for_active_document_ready(&self_receiver_uri, Duration::from_secs(30));
