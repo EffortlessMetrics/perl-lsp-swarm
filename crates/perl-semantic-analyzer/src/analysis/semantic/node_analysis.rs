@@ -1124,7 +1124,12 @@ impl SemanticAnalyzer {
         if let Some(pod_text) = trailing_pod_block(before) {
             // Render the block (directive lines dropped, inline formatting
             // codes stripped) so hover displays clean text, not raw POD.
-            return Some(render_pod_block_documentation(pod_text.trim()));
+            // A block with no renderable text (only `=pod`/`=cut`) must not
+            // shadow the comment fallback below with an empty document.
+            let rendered = render_pod_block_documentation(pod_text.trim());
+            if !rendered.is_empty() {
+                return Some(rendered);
+            }
         }
 
         // Check for consecutive comment lines, anchored at end of string.
@@ -1453,25 +1458,39 @@ fn format_signature_params(sig_node: &Node) -> String {
 fn render_pod_block_documentation(block: &str) -> String {
     let stripped = perl_pod::strip_pod_formatting(block);
     let mut lines: Vec<String> = Vec::new();
+    // Content inside a non-POD format region (`=begin html` .. `=end html`)
+    // belongs to that format's renderer, not to plain hover text.
+    let mut in_format_region = false;
     for line in stripped.lines() {
         match pod_directive_word(line) {
-            Some((word, arg)) => match word {
-                // Heading text survives as plain text; a bare `=headN` with no
-                // argument carries nothing.
-                "head1" | "head2" | "head3" | "head4" | "head5" | "head6" if !arg.is_empty() => {
-                    lines.push(arg.to_string());
+            Some(("begin", arg)) => {
+                if arg.split_whitespace().next() != Some("pod") {
+                    in_format_region = true;
                 }
-                "item" => {
-                    if arg.is_empty() {
-                        lines.push("-".to_string());
-                    } else {
-                        lines.push(format!("- {arg}"));
+            }
+            Some(("end", _)) => in_format_region = false,
+            _ if in_format_region => {}
+            _ => match pod_directive_word(line) {
+                Some((word, arg)) => match word {
+                    // Heading text survives as plain text; a bare `=headN` with no
+                    // argument carries nothing.
+                    "head1" | "head2" | "head3" | "head4" | "head5" | "head6"
+                        if !arg.is_empty() =>
+                    {
+                        lines.push(arg.to_string());
                     }
-                }
-                // Structural directives carry no user-facing text.
-                _ => {}
+                    "item" => {
+                        if arg.is_empty() {
+                            lines.push("-".to_string());
+                        } else {
+                            lines.push(format!("- {arg}"));
+                        }
+                    }
+                    // Structural directives carry no user-facing text.
+                    _ => {}
+                },
+                None => lines.push(line.to_string()),
             },
-            None => lines.push(line.to_string()),
         }
     }
     lines.join("\n").trim().to_string()
@@ -1537,6 +1556,17 @@ mod tests {
                 "raw directive {directive} must be dropped, got: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn render_pod_block_documentation_excludes_format_regions() {
+        let block =
+            "=head1 NAME\n\nText.\n\n=begin html\n\n<p>html</p>\n\n=end html\n\nMore.\n\n=cut\n";
+        let rendered = super::render_pod_block_documentation(block);
+        assert!(rendered.contains("Text."), "plain text kept, got: {rendered}");
+        assert!(rendered.contains("More."), "text after the region kept, got: {rendered}");
+        assert!(!rendered.contains("<p>html</p>"), "format content excluded, got: {rendered}");
+        assert_eq!(super::render_pod_block_documentation("=pod\n\n=cut\n"), "");
     }
 
     // Issue #17298: directive detection matches the whole command word.

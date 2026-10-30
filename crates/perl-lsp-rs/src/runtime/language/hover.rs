@@ -807,7 +807,9 @@ impl LspServer {
                 if matches!(
                     sym.kind,
                     crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                ) && (token != sym.name || token_is_arrow_receiver)
+                ) && ((token != sym.name
+                    && token != sym.name.rsplit("::").next().unwrap_or(&sym.name))
+                    || token_is_arrow_receiver)
                 {
                     let special = Self::extract_special_variable(text, offset)
                         .unwrap_or_else(|| token.clone());

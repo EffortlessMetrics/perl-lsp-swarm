@@ -2716,6 +2716,13 @@ my %config = (key => "value");
             decl.kind
         );
         assert_eq!(decl.name, "n");
+
+        let use_pos = code.rfind("$n;").ok_or("bare iterator use not found")? + 2;
+        let used = analyzer.find_definition(use_pos).ok_or("bare iterator use unresolved")?;
+        assert_eq!(
+            used.location, decl.location,
+            "the bare iterator use must resolve to the iterator declaration"
+        );
         Ok(())
     }
 
