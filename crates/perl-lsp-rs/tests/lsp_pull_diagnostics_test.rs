@@ -388,3 +388,96 @@ fn test_workspace_diagnostic_with_previous_ids() -> Result<(), Box<dyn std::erro
 
     Ok(())
 }
+
+#[test]
+fn test_pull_diagnostics_suppressed_until_full_resync() -> Result<(), Box<dyn std::error::Error>> {
+    // #17752: after a ranged didChange is rejected under the Full sync
+    // envelope, pull diagnostics must not reparse retained last-good text.
+    // The report is a full empty report with no reusable resultId until an
+    // explicit full resync restores currentness.
+    let server = LspServer::new();
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".into(),
+        params: Some(json!({"processId": 1, "capabilities": {}})),
+    });
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: Some(json!({})),
+    });
+
+    let uri = "file:///desync.pl";
+    let content = "use strict;\nuse warnings;\nmy $x = 1;\nprint $y;\n";
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didOpen".into(),
+        params: Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": content}
+        })),
+    });
+
+    let pull = |id: i64| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let response = server
+            .handle_request(JsonRpcRequest {
+                _jsonrpc: "2.0".into(),
+                id: Some(perl_lsp::protocol::JsonRpcId::Integer(id)),
+                method: "textDocument/diagnostic".into(),
+                params: Some(json!({"textDocument": {"uri": uri}})),
+            })
+            .ok_or("diagnostic request failed")?;
+        Ok(response.result.ok_or("response missing result")?)
+    };
+
+    let before = pull(2).map_err(|e| format!("initial pull failed: {e}"))?;
+    assert_eq!(before["kind"], "full");
+    assert!(before["resultId"].is_string(), "current document must mint a resultId");
+    assert!(
+        !before["items"].as_array().ok_or("items array")?.is_empty(),
+        "current document must report its diagnostics"
+    );
+
+    // Ranged change: rejected under the advertised Full envelope.
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didChange".into(),
+        params: Some(json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{
+                "range": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 8}},
+                "text": "z"
+            }]
+        })),
+    });
+
+    let desynced = pull(3).map_err(|e| format!("pull during desync failed: {e}"))?;
+    assert_eq!(desynced["kind"], "full");
+    assert!(
+        desynced["items"].as_array().ok_or("items array")?.is_empty(),
+        "desynchronized pull must not reparse retained text, got: {desynced}"
+    );
+    assert!(desynced["resultId"].is_null(), "desynchronized pull must not mint a resultId");
+
+    // Explicit full resync restores current diagnostics.
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: None,
+        method: "textDocument/didChange".into(),
+        params: Some(json!({
+            "textDocument": {"uri": uri, "version": 3},
+            "contentChanges": [{"text": content}]
+        })),
+    });
+
+    let recovered = pull(4).map_err(|e| format!("pull after recovery failed: {e}"))?;
+    assert!(recovered["resultId"].is_string(), "resync must restore resultId minting");
+    assert!(
+        !recovered["items"].as_array().ok_or("items array")?.is_empty(),
+        "resync must restore real diagnostics, not blanket suppression"
+    );
+    Ok(())
+}

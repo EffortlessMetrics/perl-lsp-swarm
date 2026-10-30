@@ -63,6 +63,10 @@ impl LspServer {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
         }
 
+        // Forward any client-visible notices recorded while applying
+        // configuration during initialize (#18056).
+        self.flush_client_notices();
+
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
         self.register_file_watchers_if_needed();
@@ -144,21 +148,48 @@ impl LspServer {
     }
 
     /// Handle exit request
+    // The abnormal-exit branch below writes its reason to stderr directly:
+    // under the default `warn` tracing filter an info record is dropped, and
+    // with no subscriber at all every record is dropped (#17337).
+    #[expect(
+        clippy::print_stderr,
+        reason = "abnormal protocol exit must leave its reason on stderr where the default warn filter drops the info-level trace (#17337)"
+    )]
     pub(super) fn handle_exit_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
         // `process::exit` skips destructors. Close all outbound admission gates
         // and give the existing writer a bounded chance to flush frames that
         // were already accepted. A timeout remains unsettled and is reported
         // as such; it must never be treated as successful delivery.
-        let settlement = self.outbound.close_and_wait(OUTBOUND_SETTLEMENT_TIMEOUT);
-        match settlement.as_ref() {
-            Some(outcome) => outcome.report_settlement(),
-            None => tracing::error!("outbound writer did not settle before process exit"),
-        }
+        let settlement = self.outbound.settle_for_exit(OUTBOUND_SETTLEMENT_TIMEOUT);
+        settlement.report();
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
         let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
-        tracing::info!(exit_code, "LSP server exiting");
+        if exit_code == 0 {
+            tracing::info!(exit_code, "LSP server exiting");
+        } else {
+            // #17337: this `process::exit` is the only mid-session exit path in
+            // the binary, and its sole trace used to be an info-level record —
+            // dropped by the default `warn` filter that `run_server` installs
+            // when logging was not requested. A death here left only the
+            // startup banner on stderr with no attributable cause. An exit
+            // carrying a failure code is abnormal teardown, so it must stay
+            // visible under that filter and survive even a missing subscriber.
+            tracing::warn!(
+                exit_code,
+                "LSP server exiting: `exit` notification received without a prior `shutdown`"
+            );
+            let settlement_note = match settlement.writer.as_ref() {
+                Some(outcome) if !outcome.is_io_failure() => "outbound settled",
+                Some(_) => "outbound settled with I/O failure",
+                None => "outbound did not settle",
+            };
+            eprintln!(
+                "perl-lsp: exiting with code {exit_code}: `exit` notification received \
+                 without a prior `shutdown` request ({settlement_note})"
+            );
+        }
         // `process::exit` skips Rust destructors, including the non-blocking
         // file writer guard. Drain it explicitly so the final lifecycle log
         // record is durable before the process terminates.
@@ -244,6 +275,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::must_err_with;
     use proptest::prelude::*;
 
     type TestResult = Result<(), String>;
@@ -350,14 +382,11 @@ mod tests {
         // on the accepted-session authority, so a consumed-but-unaccepted
         // connection is refused outright (ServerNotInitialized), matching the
         // routing-layer expectation for a rejected first initialize.
-        let err = server
-            .handle_initialized_dispatch()
-            .err()
-            .ok_or("initialized notification without an accepted contract must fail")?;
-        assert_eq!(
-            err.code, -32002,
-            "initialized without an accepted contract is ServerNotInitialized"
+        let err = must_err_with(
+            server.handle_initialized_dispatch().map(|_| ()).map_err(|e| e.code),
+            "initialized without an accepted contract must be refused",
         );
+        assert_eq!(err, -32002, "initialized without an accepted contract is ServerNotInitialized");
 
         // Then
         assert!(

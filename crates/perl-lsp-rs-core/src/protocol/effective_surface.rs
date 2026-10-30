@@ -833,13 +833,10 @@ impl EffectiveLspSurface {
         }
 
         // ---- client/runtime-shaped families -----------------------------
-        // Workspace-symbol shape: the resolve variant overrides the simple
-        // boolean when both survive; suppressing `lsp.workspace_symbol`
-        // alone cannot withdraw advertisement while resolve remains (the
-        // shipped builder behaves identically).
-        let ws_base =
-            inputs.build_flags.workspace_symbol || inputs.build_flags.workspace_symbol_resolve;
-        let ws_post = flags.workspace_symbol || flags.workspace_symbol_resolve;
+        // Resolve selects the parent's option shape, never its availability.
+        // Suppressing the parent also withdraws its resolve advertisement.
+        let ws_base = inputs.build_flags.workspace_symbol;
+        let ws_post = flags.workspace_symbol;
         let ws_outcome = if !ws_base {
             FamilyOutcome::UnadvertisedUnsupported
         } else if !ws_post {
@@ -1482,6 +1479,8 @@ fn project_server_capabilities(
                 "quickfix",
                 "refactor",
                 "refactor.extract",
+                "refactor.extract.variable",
+                "refactor.extract.subroutine",
                 "refactor.rewrite",
                 "source.fixAll",
                 "source.modernize",

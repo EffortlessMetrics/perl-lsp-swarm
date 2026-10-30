@@ -12,7 +12,11 @@
 //! Tests are structured to fail initially (TDD red phase) due to missing implementation,
 //! establishing a solid foundation for implementing enhanced cancellation capabilities.
 
-#![allow(unused_imports)] // Some imports may not be used yet in scaffolding
+#![allow(unused_imports)]
+// Some imports may not be used yet in scaffolding
+// Timeout-path diagnostics (exhausted-retry attempt counts) print to stderr
+// for CI troubleshooting; this is not the LSP server's stdio transport.
+#![allow(clippy::print_stderr)]
 
 use serde_json::{Value, json};
 use std::collections::HashMap;

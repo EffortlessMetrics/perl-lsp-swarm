@@ -13,6 +13,19 @@ Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Pyth
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
+Host profiles for the jobs knob (#17673): the default of two protects
+constrained and shared hosts. On a dedicated host with at least eight logical
+cores and memory headroom for parallel rustc processes, setting
+`CARGO_BUILD_JOBS=4` in the shell environment (never in tracked config,
+#5204) is the supported faster profile. Measured on an 8-core/16-thread,
+80 GiB host (fresh target, shared cargo-home, `check -p perl-parser`,
+one run per setting): cold 80.2s at jobs=2 versus 31.9s at jobs=4; warm and
+single-crate edited checks are under two seconds at either setting, so the
+win is concentrated in cold and multi-crate work. Peak memory at jobs=4
+was not captured, so treat the profile as unqualified on memory-tight
+hosts and on hosted CI runners, which have different core/memory envelopes
+and should keep the default.
+
 One admission/lease slot is keyed by canonical Git common directory, hostname and
 OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
 exclusion domain; independent clones and Windows/WSL do not. Within that slot,
@@ -46,6 +59,21 @@ normal edits, not one new target per task or commit. Storage therefore grows wit
 retained worktrees, and the capacity gate remains necessary. Do not repurpose a
 worktree path or restore backdated source over its build state without a separately
 verified fresh qualification; this path partition is not content-addressed state.
+
+For a focused `xtask` gate, use the supported builtin `run` route from the same
+canonical worktree and with the same admitted `DEVPLANE`, Cargo home and temporary-storage
+settings as the earlier producer:
+
+```bash
+scripts/cargo-admitted run -p xtask --locked -- gates --gate perl_token_leaf_contract --receipt --base origin/main
+```
+
+The `xtask` alias itself is refused. A raw `cargo run` retry without the admitted
+target/build settings can rebuild under the repository's `target/`.
+Verify the earlier producer's settlement and released lease before retrying;
+preserve gate profiles, features and timeouts. On constrained hosts, prepare a
+budget and preflight for this exact command as described below. Reusing the same
+paths does not guarantee freshness across different dependency/feature graphs.
 
 The wrapper refuses aliases, arbitrary external subcommands (including nextest), +toolchain,
 clean, manifest/config/path overrides (including output/artifact/build directory
@@ -143,6 +171,47 @@ receipts make product exit independent of terminality. Any product status can be
 returned after proven closure and matching release; cancellation returns 130.
 Incomplete closure or failed release returns 75 and retains ownership.
 
+### Explicit Linux proc-parent/pidfd discovery
+
+`CARGO_ADMITTED_CHILD_DISCOVERY=proc-parent-pidfd` explicitly selects a bounded
+alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. The default
+`proc-children` profile is unchanged; no missing-table detection silently selects
+a namespace scan. The alternate profile reads only visible numeric PID `stat`
+records, including their parent and kernel starttime. It does not read process
+environments, command lines, descriptors, mappings or executable paths.
+
+`child_discovery_capability(mode)` validates the live calling owner before any
+lease or allocation. The profile requires one native CPython owner thread, default
+SIGCHLD, matching singleton procfs/native PID identities, the same current and
+child PID namespaces, and one full procfs root without hidepid restrictions or
+numeric/task-path overmounts. It revalidates these observations on discovery
+turns. Unreadable or malformed records, changed roots, more than 32,768 numeric
+entries, or a discovery turn exceeding one second refuse. This elapsed-time
+threshold includes metadata and the final observation; it does not preempt an
+individual blocking procfs syscall. Vanished entries may
+be skipped; no incomplete snapshot claims closure.
+
+PPID only nominates a direct-child candidate. `track()` must bind a pidfd and
+validate kernel child waitability with `__WALL` before that handle may receive a
+signal. An exited Popen leader's stale numeric ledger key is removed before a
+new child is bound; its completed status never hides a reused PID. The exclusive
+single owner does not reap between discovery and binding, so a genuinely owned
+unreaped child retains its PID. A stale or foreign nomination cannot become
+signal authority through PPID alone.
+
+Cancellation repeats discovery between kernel drains to cover new adoption and
+detached generations. Final ECHILD remains the sole closure authority; bounds,
+observation failures and unsettled descendants retain the original lease. The
+selected profile is captured in the native budget environment digest, resource
+descriptor and settlement receipt. Cgroups shared with provider/other tasks do
+not supply exclusive cancellation authority.
+
+A separate cohort consumer must explicitly qualify and select the same admitted
+profile at preflight and owner construction. The public constructor supports
+`ClippyTree(child_discovery=mode)`; a capability descriptor is an observation,
+not a permanent completeness attestation or release permission. This extension
+does not automatically activate a cohort branch or qualify its disk budget.
+
 Other platforms retain the legacy builtin behavior: exit 0/101 releases its
 matching lease, without a descendant-settlement guarantee; abnormal statuses and
 interruption retain it. This Linux correction does not qualify native Windows,
@@ -158,13 +227,88 @@ represent a Cargo panic: an exit status is not proof that all descendants ended.
 The root must verify independent consumers before assigning the slot again.
 No age/PID-based stealing or automatic deletion exists.
 
+### Cohort lifecycle prerequisite (#17617)
+
+`scripts/cargo_cohort.py` provides a dedicated-process `Cohort` API beneath an
+already admitted Linux outer owner. It neither acquires nor releases the outer
+lease. The original resource descriptor must belong to a live ancestor and match
+the native resource plan, original lease directory, and unique ownership marker.
+The cohort reuses `ClippyTree`; it requires readable child discovery for its
+actual live thread before launching work, then requires kernel `ECHILD (__WALL)`
+before reclamation. A successful producer or consumer exit alone is insufficient.
+Unavailable discovery refuses without starting the producer.
+
+The trusted producer supplies complete source/profile manifests with absolute
+worktree file paths and SHA256 digests, exact expected compiler target/feature/
+profile records, pinned paths, and a new evidence path outside both executable
+roots. The API rechecks manifest digests and each listed file. Manifest
+completeness, command provenance, effective compiler configuration, test selection,
+and absence of independent consumers remain the admitted caller's obligations;
+this library does not authenticate a fabricated descriptor or Cargo JSON. Its
+single producer and exact executable consumers run within one owned child scope.
+The original outer owner must keep both private resources exclusive throughout.
+
+Only newly emitted, non-fresh test-harness compiler artifacts matching the
+expected records can become cleanup candidates. Each executable is bound to its
+canonical path, parent directory, device/inode, file metadata, and SHA256. The
+cohort executes that exact path and revalidates it before unlinking. Preexisting,
+pinned, foreign, replaced, symlinked, and multiply linked files refuse. Successful
+reclamation consumes that path's cleanup authority; repeated cleanup cannot adopt
+a replacement. Before reclamation, producer failure, consumer failure,
+interruption, uncertain settlement, or changed bindings prevents reclamation.
+An error during sequential per-path reclamation stops further deletion and
+preserves remaining artifacts; cleanup is not transactional. Product status and
+effective status are separate: uncertain closure is 75; settled cancellation is 130.
+Producer JSON evidence remains retained. Before deletion, a flushed and synced
+sidecar records captured file identities/hashes, source/profile bindings,
+consumption, and kernel settlement; successful per-path reclamation is appended.
+Failure to persist authorization prevents deletion. The unlink and completion
+record are not an atomic transaction. Inherited diagnostic and consumer streams
+must also be captured by the admitted caller.
+
+This is a lifecycle prerequisite, not the routed-test producer. Cargo's hardlinked
+target/build aliases are deliberately refused until a separately qualified exact
+alias-ownership extension exists. No gate command, package, feature, profile,
+reserve, timeout, or quarantine changes. The API is not an adversarial filesystem
+sandbox: exclusive cooperative ownership is required, and final unlink is not an
+atomic compare-and-delete against hostile concurrent writers. Tests distinguish
+filesystem/interface doubles from actual native process proof:
+
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
+```
+
+In the default discovery profile, a host without readable
+`/proc/<owner-pid>/task/<owner-tid>/children` must demonstrate prelaunch refusal.
+Known-child pidfds and eventual
+subreaper closure do not supply discovery of unknown live detached children.
+End-to-end cohort cancellation and reclamation require a supported native host;
+portable fault-injected controls cannot replace that qualification.
+
+Nested host/test runners that promise reaping before return must own and reap
+their inner child scope before reporting that boundary. Later cohort or outer
+Cargo settlement cannot retroactively satisfy it. A terminated but unreaped
+zombie does not satisfy a synchronous-reaping contract, and changing its liveness
+oracle to report dead would weaken that proof. Inner runner failures remain
+product failures even when the cohort subsequently settles successfully.
+
 ### Staged native Clippy
 
-The existing owner admits only this finite Linux request (optional `--offline`):
+The existing owner admits these finite Linux requests (optional `--offline`):
 
 ```text
 python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked -- -D warnings
 ```
+
+Select exactly one of `--all-targets` or `--test NAME`. A named test uses one literal
+ASCII name beginning with a letter or digit and containing only letters, digits,
+underscores or hyphens; patterns, paths, joined forms, multiple selectors and other
+target/feature selectors refuse before allocation. Cargo still checks prerequisites
+of that target and reports a missing target as a product failure. The selected name
+remains in the request digest, so its budget cannot transfer to another target or
+all-targets work. A focused result covers only the selected compilation graph; it
+does not replace a required all-targets gate or qualify an unvisited target.
 
 Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
 installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,
@@ -203,10 +347,12 @@ unqualified; other platforms are refused.
 Cancellation uses bound pidfds validated as this owner's waitable children.
 The current driver's unreaped native session can receive TERM; owned handles
 receive TERM then KILL after2seconds, with at most30seconds of post-leader drain.
-Only the owner's immediate-child table may discover adopted cancellation
+In the default discovery profile, only the owner's immediate-child table discovers adopted cancellation
 candidates. If that table is unavailable, kernel waits can still prove eventual
 settlement, but unknown surviving detached helpers cannot safely be signaled:
-deadline/error retains the lease. There is no broad /proc fallback. Missing
+deadline/error retains the lease. There is no automatic broad /proc fallback;
+the separately selected proc-parent/pidfd profile above supplies discovery only.
+Missing
 capabilities, existing children/threads, lost subreaper ownership, ambiguous waits,
 owner death and incomplete cancellation never become release authority.
 

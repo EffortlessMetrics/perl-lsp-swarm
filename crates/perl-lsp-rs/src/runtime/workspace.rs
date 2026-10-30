@@ -28,7 +28,7 @@ use crate::runtime::workspace_progress::{
 };
 use crate::state::workspace_symbol_cap;
 use perl_lsp_rs_core::config::{
-    ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
+    ExternalIncludePathAuthority, Perl5LibPrecedence, UnauthorizedExternalIncludePathSource,
     WorkspaceConfigUpdateContext,
 };
 use perl_module::file_path_to_module_name;
@@ -587,10 +587,31 @@ impl LspServer {
             return;
         };
         let mut folders = self.workspace_folders.lock();
-        let previous_include_paths: HashMap<String, Vec<String>> = folders
+        // Snapshot every resolution-relevant effective setting a pulled
+        // payload can change, not just include paths: `useSystemInc`,
+        // `usePerl5lib`, `perl5libPrecedence`, and `resolutionTimeout`
+        // also change what the resolver probes or how long it may run,
+        // so a flip in any of them must refresh diagnostics exactly like
+        // an include-path change (#17444).
+        // `perlPath`/`perlArgs` are deliberately not honoured from
+        // workspace-supplied settings, so they cannot change here.
+        let previous_resolution_settings: HashMap<
+            String,
+            (Vec<String>, bool, bool, Perl5LibPrecedence, u64),
+        > = folders
             .iter()
             .map(|folder| {
-                (folder.uri.clone(), folder.effective_workspace_config.include_paths.clone())
+                let config = &folder.effective_workspace_config;
+                (
+                    folder.uri.clone(),
+                    (
+                        config.include_paths.clone(),
+                        config.use_system_inc,
+                        config.use_perl5lib,
+                        config.perl5lib_precedence.clone(),
+                        config.resolution_timeout_ms,
+                    ),
+                )
             })
             .collect();
         let init_options_perl = self.initialization_options_perl_settings.lock();
@@ -603,9 +624,16 @@ impl LspServer {
             init_options_perl.as_ref(),
             &|rejected| self.warn_rejected_client_include_paths(rejected),
         );
-        let include_paths_changed = folders.iter().any(|folder| {
-            previous_include_paths.get(&folder.uri)
-                != Some(&folder.effective_workspace_config.include_paths)
+        let resolution_settings_changed = folders.iter().any(|folder| {
+            let config = &folder.effective_workspace_config;
+            previous_resolution_settings.get(&folder.uri)
+                != Some(&(
+                    config.include_paths.clone(),
+                    config.use_system_inc,
+                    config.use_perl5lib,
+                    config.perl5lib_precedence.clone(),
+                    config.resolution_timeout_ms,
+                ))
         });
         drop(init_options_perl);
         drop(folders);
@@ -613,16 +641,17 @@ impl LspServer {
 
         // A null didChangeConfiguration only invalidates the scoped pull; it
         // intentionally leaves each folder's current config intact. Once the
-        // response changes include paths, refresh all open documents: every
-        // folder's paths can contribute fallback module roots to another.
-        if include_paths_changed {
+        // response changes any resolution-relevant setting, refresh all open
+        // documents: every folder's paths can contribute fallback module
+        // roots to another, and resolver toggles change resolution for all.
+        if resolution_settings_changed {
             self.invalidate_workspace_identity();
             if self.client_supports_pull_diags.load(Ordering::Relaxed) {
                 // Pull diagnostics do not use the push publication path. Ask
                 // after every accepted change; a leading-edge debounce can
                 // lose a second change while the client still has old reports.
                 if let Err(error) = self.request_diagnostic_refresh() {
-                    tracing::warn!(%error, "Failed to refresh pull diagnostics after include paths changed");
+                    tracing::warn!(%error, "Failed to refresh pull diagnostics after resolution settings changed");
                 }
             } else {
                 let open_uris: Vec<String> = self.documents.lock().keys().cloned().collect();
@@ -1502,76 +1531,97 @@ impl LspServer {
                 let extractor = crate::symbol::SymbolExtractor::new_with_source(&doc.text);
                 let symbol_table = extractor.extract(ast);
 
-                // Find matching symbol
+                // Find matching symbol. Prefer the declaration whose start
+                // matches the requested location, so duplicate names in one
+                // file resolve to the declaration the client asked about.
+                let requested_start = symbol
+                    .get("location")
+                    .and_then(|location| location.get("range"))
+                    .and_then(|range| range.get("start"))
+                    .and_then(|start| {
+                        Some((start.get("line")?.as_u64()?, start.get("character")?.as_u64()?))
+                    });
+                let mut first_match = None;
+                let mut chosen = None;
                 for symbols in symbol_table.symbols.values() {
                     for sym in symbols {
                         if sym.name == name {
-                            // Return enhanced symbol with detail and accurate range
-                            let start_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.start);
-                            let end_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.end);
-
-                            // Start with the provided symbol JSON so we can add
-                            // additional details without panicking if fields are missing
-                            let mut resolved = json!(symbol);
-
-                            use crate::symbol::VarKind;
-                            // Add detail based on symbol kind
-                            let detail = match sym.kind {
-                                crate::symbol::SymbolKind::Subroutine => {
-                                    format!("sub {}", name)
-                                }
-                                crate::symbol::SymbolKind::Method => {
-                                    format!("method {}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
-                                    format!("${}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Array) => {
-                                    format!("@{}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
-                                    format!("%{}", name)
-                                }
-                                crate::symbol::SymbolKind::Package => {
-                                    format!("package {}", name)
-                                }
-                                crate::symbol::SymbolKind::Constant => {
-                                    format!("constant {}", name)
-                                }
-                                _ => name.to_string(),
-                            };
-                            resolved["detail"] = json!(detail);
-                            if let Some(doc) = &sym.documentation {
-                                resolved["documentation"] = json!(doc);
+                            if first_match.is_none() {
+                                first_match = Some(sym);
                             }
-
-                            // Update location with accurate range
-                            resolved["location"]["range"] = json!({
-                                "start": {
-                                    "line": start_pos.0,
-                                    "character": start_pos.1,
-                                },
-                                "end": {
-                                    "line": end_pos.0,
-                                    "character": end_pos.1,
+                            if let Some(want) = requested_start {
+                                let pos = doc
+                                    .line_starts
+                                    .offset_to_position(&doc.text, sym.location.start);
+                                if (u64::from(pos.0), u64::from(pos.1)) == want {
+                                    chosen = Some(sym);
                                 }
-                            });
-
-                            // Add container name derived from qualified symbol name
-                            if let Some(container) =
-                                perl_parser_core::qualified_name::container_name(
-                                    &sym.qualified_name,
-                                )
-                            {
-                                resolved["containerName"] =
-                                    json!(perl_module::normalize_package_separator(container));
                             }
-
-                            return Ok(Some(json!(resolved)));
                         }
                     }
+                }
+                if let Some(sym) = chosen.or(first_match) {
+                    // Return enhanced symbol with detail and accurate range
+                    let start_pos =
+                        doc.line_starts.offset_to_position(&doc.text, sym.location.start);
+                    let end_pos = doc.line_starts.offset_to_position(&doc.text, sym.location.end);
+
+                    // Start with the provided symbol JSON so we can add
+                    // additional details without panicking if fields are missing
+                    let mut resolved = json!(symbol);
+
+                    use crate::symbol::VarKind;
+                    // Add detail based on symbol kind
+                    let detail = match sym.kind {
+                        crate::symbol::SymbolKind::Subroutine => {
+                            format!("sub {}", name)
+                        }
+                        crate::symbol::SymbolKind::Method => {
+                            format!("method {}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
+                            format!("${}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Array) => {
+                            format!("@{}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
+                            format!("%{}", name)
+                        }
+                        crate::symbol::SymbolKind::Package => {
+                            format!("package {}", name)
+                        }
+                        crate::symbol::SymbolKind::Constant => {
+                            format!("constant {}", name)
+                        }
+                        _ => name.to_string(),
+                    };
+                    resolved["detail"] = json!(detail);
+                    if let Some(doc) = &sym.documentation {
+                        resolved["documentation"] = json!(doc);
+                    }
+
+                    // Update location with accurate range
+                    resolved["location"]["range"] = json!({
+                        "start": {
+                            "line": start_pos.0,
+                            "character": start_pos.1,
+                        },
+                        "end": {
+                            "line": end_pos.0,
+                            "character": end_pos.1,
+                        }
+                    });
+
+                    // Add container name derived from qualified symbol name
+                    if let Some(container) =
+                        perl_parser_core::qualified_name::container_name(&sym.qualified_name)
+                    {
+                        resolved["containerName"] =
+                            json!(perl_module::normalize_package_separator(container));
+                    }
+
+                    return Ok(Some(json!(resolved)));
                 }
             }
         }
@@ -1847,6 +1897,12 @@ impl LspServer {
                 // Critic/AI push still triggers a scoped pull below, but must leave the
                 // current folder include paths intact until its response arrives.
                 if perl.get("workspace").is_some() {
+                    // Notifications are patches. Rebuild with the accumulated
+                    // client layer so omitted fields keep earlier client values,
+                    // just as the global config's in-place update does. Clone
+                    // before taking folder locks; the replay cache is already
+                    // advanced above.
+                    let client_settings = self.last_client_settings.lock().clone();
                     // Apply global client settings to each folder's effective config immediately.
                     // The async workspace/configuration pull that follows will refine per-folder
                     // settings once the client responds, but we update now so the window between
@@ -1899,7 +1955,7 @@ impl LspServer {
                                 }
                             }
                             let rejected = effective_config.update_from_value_with_context(
-                                perl,
+                                client_settings.as_ref().unwrap_or(perl),
                                 WorkspaceConfigUpdateContext {
                                     workspace_root: folder.path.as_deref(),
                                     external_include_paths: ExternalIncludePathAuthority::Untrusted(
@@ -1985,6 +2041,12 @@ impl LspServer {
         // republish runs once, after the metadata refresh below (#17332).
         let mut watched_delete = false;
 
+        // Whether a CREATED/CHANGED event was processed immediately (not
+        // queued for the debounced batch); those change the facts open
+        // consumers resolved through just as a delete does, so they earn
+        // the same republish tail (#17332).
+        let mut watched_create_or_change = false;
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -2028,6 +2090,7 @@ impl LspServer {
                     // processing so degraded modes never lose events.
                     metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
                     self.process_file_watcher_uri_immediate(&uri);
+                    watched_create_or_change = true;
                 }
                 _ => {}
             }
@@ -2042,9 +2105,12 @@ impl LspServer {
         // publications (e2e mode, or a missing/unavailable debouncer) use the
         // refreshed facts — a deleted metadata file retires its include root
         // here — and a bulk delete costs one sweep instead of one per change.
-        // Matches the `handle_did_delete_files` seam order.
-        if watched_delete {
-            self.republish_open_document_diagnostics();
+        // Matches the `handle_did_delete_files` seam order. A create or
+        // change processed immediately earns the same tail: restoring or
+        // editing a dependency must clear (or introduce) findings in open
+        // consumers with no buffer edit (#17332).
+        if watched_delete || watched_create_or_change {
+            self.refresh_diagnostics_after_watched_change();
         }
 
         // This is a notification, no response needed
@@ -2067,6 +2133,31 @@ impl LspServer {
         // folder once for the whole batch (#13640).
         let metadata_roots = self.project_metadata_roots_for_batch(uris.iter().map(String::as_str));
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // The batch only ever carries CREATED/CHANGED events, and the
+        // re-index above changed facts open consumers may have resolved
+        // through: republish (or ask pull clients to re-pull) once for the
+        // whole batch, mirroring the DELETED tail (#17332).
+        if !uris.is_empty() {
+            self.refresh_diagnostics_after_watched_change();
+        }
+    }
+
+    /// Republish diagnostics for open consumers after watched-file facts
+    /// changed, or ask a pull-diagnostics client to re-pull (#17332).
+    ///
+    /// The push republish is a no-op for a pull-diagnostics client, so its
+    /// open consumers would keep stale findings after a dependency delete,
+    /// restore, or edit. Ask it to re-pull instead, mirroring the
+    /// include-path seam.
+    pub(crate) fn refresh_diagnostics_after_watched_change(&self) {
+        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+            if let Err(error) = self.request_diagnostic_refresh() {
+                tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
+            }
+        } else {
+            self.republish_open_document_diagnostics();
+        }
     }
 
     /// Evict every indexed URI whose filesystem path is a descendant of
@@ -2468,10 +2559,12 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
 
                 metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
@@ -2505,8 +2598,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file creations
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!("Failed to refresh client after file creations: {}", e);
+            }
+
+            // Each usable event invalidates consumer diagnostics. The pull
+            // request must not be lost in the controller's leading-edge debounce.
+            if processed_any {
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 
@@ -2527,6 +2626,7 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(old_uri) = file["oldUri"].as_str() else {
                     continue;
@@ -2534,6 +2634,7 @@ impl LspServer {
                 let Some(new_uri) = file["newUri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
 
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
@@ -2649,8 +2750,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file renames
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after file renames");
+            }
+
+            // Pair push republish with a capability-aware pull refresh for
+            // every usable event, including successive operations (#18116).
+            if processed_any {
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 
@@ -4880,6 +4987,89 @@ mod tests {
     }
 
     #[test]
+    fn pulled_resolver_toggle_invalidates_identity_without_include_path_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #17444: a pulled `useSystemInc` flip with identical include paths
+        // must invalidate workspace identity so diagnostics refresh; the
+        // include-paths-only gate left published diagnostics stale.
+        let (server, output) = server_with_output_capture();
+        let temp = tempfile::tempdir()?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|_| "failed to create folder URI")?
+            .to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
+        server.client_capabilities.lock().workspace_configuration_support = true;
+        server.initialized.store(true, Ordering::Release);
+        let doc = url::Url::from_file_path(temp.path().join("main.pl"))
+            .map_err(|_| "invalid document URI")?
+            .to_string();
+        server.test_apply_did_open(&doc, "use FolderScopedOnlyA;\n", 1)?;
+        server.publish_diagnostics(&doc);
+        let publications_for_doc = |messages: &[Value]| {
+            messages
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("textDocument/publishDiagnostics")
+                        && message.pointer("/params/uri").and_then(Value::as_str)
+                            == Some(doc.as_str())
+                })
+                .count()
+        };
+        let initial_publications = publications_for_doc(&output.messages()?);
+
+        let pull = |payload: serde_json::Value| -> Result<(), Box<dyn std::error::Error>> {
+            server.request_workspace_configuration_for_folders();
+            let request_id = server
+                .pending_workspace_configuration_requests
+                .lock()
+                .keys()
+                .next()
+                .copied()
+                .ok_or("scoped request missing")?;
+            server.handle_client_response(Some(json!({
+                "id": request_id.as_i32(),
+                "result": [{}, payload]
+            })));
+            Ok(())
+        };
+
+        let before = server.workspace_identity_generation.load(Ordering::SeqCst);
+        pull(json!({ "workspace": { "useSystemInc": true } }))?;
+        let after_flip = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert!(
+            after_flip > before,
+            "pulled useSystemInc flip must invalidate identity: before={before}, after={after_flip}"
+        );
+        // The flip must also republish diagnostics for open documents on
+        // the push path; identity invalidation alone would leave stale
+        // PL701 publications on screen.
+        let refresh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if publications_for_doc(&output.messages()?) > initial_publications {
+                break;
+            }
+            if std::time::Instant::now() >= refresh_deadline {
+                return Err("pulled toggle flip did not republish open-document diagnostics".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Control: re-pulling the identical payload changes nothing, so no
+        // further invalidation may fire.
+        pull(json!({ "workspace": { "useSystemInc": true } }))?;
+        let after_repeat = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert_eq!(
+            after_repeat, after_flip,
+            "unchanged pulled settings must not invalidate identity"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn did_change_configuration_ignores_removed_test_runner_authority() {
         let server = LspServer::new();
 
@@ -5346,6 +5536,59 @@ mod tests {
         assert_eq!(server.pending_workspace_configuration_requests.lock().len(), 1);
         assert_eq!(server.workspace_indexing_invocation_count(), before_invocations);
         Ok(())
+    }
+
+    /// #17332 (pull remainder): a watched DELETED event must ask a
+    /// pull-diagnostics client to re-pull, because the push republish is a
+    /// no-op for that client and its open consumers keep stale findings.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_delete_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let dir = tempfile::tempdir()?;
+        let consumer_path = dir.path().join("consumer.pm");
+        let consumer_uri =
+            url::Url::from_file_path(&consumer_path).map_err(|_| "invalid file path")?.to_string();
+        let deleted_uri = url::Url::from_file_path(dir.path().join("gone.pm"))
+            .map_err(|_| "invalid file path")?
+            .to_string();
+        server.client_capabilities.lock().diagnostic_refresh_support = true;
+        server.client_supports_pull_diags.store(true, Ordering::Release);
+        server.initialized.store(true, Ordering::Release);
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": consumer_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Consumer;\nuse Gone;\n1;\n"
+            }
+        }))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": deleted_uri, "type": 3 }]
+        })))?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let refresh_count = output
+                .messages()?
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("workspace/diagnostic/refresh")
+                })
+                .count();
+            if refresh_count == 1 {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "expected one pull diagnostic refresh after a watched delete, saw {refresh_count}"
+                )
+                .into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(feature = "workspace")]

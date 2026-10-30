@@ -77,6 +77,14 @@ pub(crate) enum SessionWarningFamily {
     ClientIncludePath,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// External `perlcritic` engine availability (#16550 review). Never
+    /// cleared by critic-configuration transitions: the subject is the
+    /// environment's engine availability for the session, not a critic
+    /// setting, so `clear_family(Critic)` does not touch it.
+    CriticEngineAvailability,
+    /// Documented formatting options the native formatter cannot honor
+    /// (subject: the ignored key set, fingerprinted).
+    FormatterOptions,
     /// A workspace `.perl-lsp.toml` could not be loaded or applied
     /// (subject: the offending config path, fingerprinted).
     ///
@@ -103,6 +111,14 @@ pub(crate) enum SessionWarningCode {
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// The explicitly configured external `perlcritic` engine could not run
+    /// because the binary is unavailable, so the built-in fallback analyzer
+    /// ran instead (#16550; no variable subject — the condition is
+    /// environment-global for the session).
+    CriticExternalUnavailable,
+    /// Documented formatting options have no native-engine equivalent
+    /// (subject: the ignored key set, fingerprinted).
+    NativeFormatterOptionsIgnored,
     /// A workspace `.perl-lsp.toml` failed to load or apply
     /// (subject: the offending config path fingerprint).
     ///
@@ -281,6 +297,8 @@ pub(crate) struct SessionWarningDedupStore {
     client_setting: FamilyStore,
     client_include_path: FamilyStore,
     ai_backend: FamilyStore,
+    critic_engine_availability: FamilyStore,
+    formatter_options: FamilyStore,
     #[cfg(not(target_arch = "wasm32"))]
     project_config: FamilyStore,
 }
@@ -293,6 +311,8 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::ClientSetting => &self.client_setting,
             SessionWarningFamily::ClientIncludePath => &self.client_include_path,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            SessionWarningFamily::CriticEngineAvailability => &self.critic_engine_availability,
+            SessionWarningFamily::FormatterOptions => &self.formatter_options,
             #[cfg(not(target_arch = "wasm32"))]
             SessionWarningFamily::ProjectConfig => &self.project_config,
         }
@@ -346,6 +366,29 @@ impl SessionWarningDedupStore {
     /// Identities of other families are untouched.
     pub(crate) fn clear_family(&self, family: SessionWarningFamily) {
         self.family(family).clear_for_lifecycle();
+    }
+
+    /// Decide, emit, and roll back on failed delivery for one
+    /// native-formatter ignored-options warning (#18056).
+    ///
+    /// Suppression is keyed on the notice text (which names the ignored
+    /// key set), fingerprinted: the same key set warns once per session
+    /// across client-settings, `.perl-lsp.toml`, and discovered-profile
+    /// applies, while a different key set still warns.
+    pub(crate) fn emit_formatter_options_warning(
+        &self,
+        notice: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        self.emit_once_with(
+            SessionWarningFamily::FormatterOptions,
+            SessionWarningIdentity::fingerprinted(
+                SessionWarningCode::NativeFormatterOptionsIgnored,
+                SessionWarningSubjectTag::None,
+                notice,
+            ),
+            emit,
+        )
     }
 
     /// Consult the store for an invalid editor-provided setting value.
@@ -490,6 +533,10 @@ pub struct SessionWarningDedupSnapshot {
     pub client_include_path: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Critic engine-availability family counters (#16550 review).
+    pub critic_engine_availability: SessionWarningFamilyCounters,
+    /// Native-formatter ignored-options family counters.
+    pub formatter_options: SessionWarningFamilyCounters,
     /// Project-config family counters (absent on WASM targets, where the
     /// project-config loaders do not exist).
     #[cfg(not(target_arch = "wasm32"))]
@@ -506,6 +553,8 @@ impl SessionWarningDedupStore {
             client_setting: self.client_setting.counters(),
             client_include_path: self.client_include_path.counters(),
             ai_backend: self.ai_backend.counters(),
+            critic_engine_availability: self.critic_engine_availability.counters(),
+            formatter_options: self.formatter_options.counters(),
             #[cfg(not(target_arch = "wasm32"))]
             project_config: self.project_config.counters(),
         }
@@ -517,5 +566,31 @@ impl super::LspServer {
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn session_warning_dedup_snapshot(&self) -> SessionWarningDedupSnapshot {
         self.session_warning_dedup.snapshot()
+    }
+
+    /// Forward configuration notices recorded during config application
+    /// (native-formatter ignored options, #18056) to the client as
+    /// deduplicated `window/showMessage` warnings.
+    ///
+    /// Before `initialized`, notices stay pending in the config so the
+    /// `initialized` handler can flush them once the client is ready;
+    /// notifications must not be sent earlier.
+    pub(crate) fn flush_client_notices(&self) {
+        if !self.initialized.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let notices = self.config.lock().take_client_notices();
+        for notice in notices {
+            let _ =
+                self.session_warning_dedup.emit_formatter_options_warning(&notice, || {
+                    match self.show_message(super::window::MessageType::Warning, &notice) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::warn!(%error, "Failed to send formatter options warning");
+                            false
+                        }
+                    }
+                });
+        }
     }
 }

@@ -47,6 +47,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod cargo_failure;
 pub mod client;
 pub mod diagnostics;
 pub mod env;
@@ -77,7 +78,8 @@ pub use project_fixture::{
 };
 pub use recorder::{
     AssertionBasis, AssertionCounts, OperationTiming, RunIdentity, UxCheckFailure, UxRunRecorder,
-    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario, run_ux_scenario_with_evidence_class,
+    UxScenarioRunReceipt, UxScenarioSkip, iso8601_now, run_ux_scenario,
+    run_ux_scenario_with_evidence_class,
 };
 pub use scorecard::{
     EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard,
@@ -437,17 +439,22 @@ impl UxHarness {
 
     /// Apply a full-document text replacement and send `textDocument/didChange`.
     ///
+    /// Returns the document version carried by the notification so callers can
+    /// await the matching `textDocument/publishDiagnostics` payload instead of
+    /// any later publication for the file.
+    ///
     /// The version-ownership lock is held across the notification so legacy and
     /// buffer-only lifecycle sends share one serialization boundary and cannot
     /// interleave out of version order.
-    pub fn change_file_full(&self, relative_path: &str, updated_content: &str) -> Result<()> {
+    pub fn change_file_full(&self, relative_path: &str, updated_content: &str) -> Result<i32> {
         self.workspace.write(relative_path, updated_content)?;
         let uri = self.workspace.uri(relative_path);
         let mut versions = self.document_versions.lock().unwrap_or_else(|e| e.into_inner());
         let entry = versions.entry(uri.clone()).or_insert(1);
         *entry += 1;
         let version = *entry;
-        self.client.did_change_full(&uri, version, updated_content)
+        self.client.did_change_full(&uri, version, updated_content)?;
+        Ok(version)
     }
 
     /// Open a file in the LSP server with an explicit language identifier.
@@ -919,6 +926,29 @@ impl UxHarness {
     ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
         DiagnosticsTracker::wait_for_uri_after_count(&self.client, &uri, already_seen, timeout)
+    }
+
+    /// Wait for a diagnostics notification after `already_seen` prior
+    /// notifications for the file whose publication carries the
+    /// `textDocument/didChange` version `expected_version`.
+    ///
+    /// A delayed publication for a previous document version does not satisfy
+    /// this wait; only the publication sent for the awaited edit does.
+    pub fn wait_for_diagnostics_after_count_and_version(
+        &self,
+        relative_path: &str,
+        already_seen: usize,
+        expected_version: i32,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_uri_after_count_and_version(
+            &self.client,
+            &uri,
+            already_seen,
+            i64::from(expected_version),
+            timeout,
+        )
     }
 
     /// Wait for diagnostics to become empty for a file (cleared UX state).

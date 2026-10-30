@@ -181,9 +181,9 @@ impl<'a> Parser<'a> {
 
     /// Locate one word inside a `qw` token without assigning the whole list span.
     ///
-    /// The cleaned word list can omit comments, so locations are found in the original
-    /// token text and advanced monotonically. A conservative token-wide fallback keeps
-    /// malformed recovery nodes representable when a cleaned word cannot be located.
+    /// Locations are found in the original token body and advanced monotonically.
+    /// A conservative token-wide fallback keeps malformed recovery nodes representable
+    /// when a word cannot be located.
     fn qw_word_location(
         token_text: &str,
         token_start: usize,
@@ -368,13 +368,14 @@ impl<'a> Parser<'a> {
                             content
                         };
 
-                    // Split into words, stripping # line comments first (perlop).
-                    let cleaned = strip_qw_comments(content_str);
+                    // `#` inside qw is literal data, even when Perl warns about
+                    // a possible attempt to put comments in the list (perldiag).
                     // Anchor matching at the original content slice so an
                     // operator/comment prefix cannot steal a matching word.
-                    let content_offset = text.get(2..).and_then(|rest| rest.chars().next()).map_or(2, |delimiter| 2 + delimiter.len_utf8());
+                    let content_offset = quote_parser::quote_operator_open_and_content(text, "qw")
+                        .map_or(2, |(_, content)| text.len() - content.len());
                     let mut search_offset = content_offset;
-                    let words: Vec<Node> = cleaned
+                    let words: Vec<Node> = content_str
                         .split_whitespace()
                         .map(|word| {
                             let location = Self::qw_word_location(

@@ -25,6 +25,32 @@ new_non_rust_requires_review = true
 broad_globs_require_reason = true
 coverage_required_for_production_surfaces = true
 
+[[allow]]
+id = "non-rust-xtask-ai-dependency-proof"
+path = "scripts/tests/test_xtask_ai_dependencies.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Real locked Cargo graph controls inspect optional tooling and retained product AI features without first compiling xtask or requiring network provider access."
+covered_by = ["python3 scripts/tests/test_xtask_ai_dependencies.py"]
+created = "2026-10-13"
+review_after = "2027-01-13"
+
+[[allow]]
+id = "non-rust-xtask-parser-dependency-proof"
+path = "scripts/tests/test_xtask_parser_dependencies.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Locked Cargo graph controls protect xtask's parser-only dependency boundary without compiling the task runner just to inspect its dependencies."
+covered_by = ["python3 scripts/tests/test_xtask_parser_dependencies.py"]
+created = "2026-10-13"
+review_after = "2027-01-13"
+
 # Optional upstream-equivalent advisory capture admitted under #15304. Native cadence
 # and policy/allow.toml classification/promotion remain outside this adapter.
 [[allow]]
@@ -56,6 +82,45 @@ review_after = "2026-11-04"
 # =============================================================================
 # Documentation
 # =============================================================================
+
+[[allow]]
+id = "non-rust-cargo-cohort-owner"
+path = "scripts/cargo_cohort.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "tooling/agents"
+reason = "The cohort lifecycle prerequisite reuses the existing native Python subreaper/pidfd owner before Rust production work; it must refuse missing ownership capabilities without compiling a replacement supervisor."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_cargo_cohort.py -v"]
+created = "2026-10-12"
+review_after = "2027-01-12"
+
+[[allow]]
+id = "non-rust-cargo-cohort-proof"
+path = "scripts/tests/test_cargo_cohort.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Portable filesystem controls and bounded native child fixtures challenge exact reclamation and preserve unsupported-host refusal without Rust builds."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_cargo_cohort.py -v"]
+created = "2026-10-12"
+review_after = "2027-01-12"
+
+[[allow]]
+id = "non-rust-agent-nextest-profile-proof"
+path = "scripts/tests/test_just_agent_nextest.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "tooling/agents"
+reason = "Lightweight Just forwarding controls distinguish Nextest runner and Cargo build profiles and preserve executor failures without requiring a repository build."
+covered_by = ["python3 -m unittest discover -s scripts/tests -p test_just_agent_nextest.py -v"]
+created = "2026-10-12"
+review_after = "2027-01-12"
 
 [[allow]]
 id = "non-rust-changelog-fragments"
@@ -702,6 +767,22 @@ covered_by = [
 broad_glob_reason = "Editor extension is a first-class shipped artifact; TypeScript, package.json, esbuild config, and extension docs all live together."
 created = "2026-05-07"
 review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-demo-workspace-perl-lsp-config"
+path = "demo_workspace/.perl-lsp.toml"
+kind = "config"
+language = "toml"
+surface = "editor"
+classification = "config"
+owner = "editor/vscode"
+reason = "Declarative LSP client config pinning `include_paths = [\"lib\"]` for the tracked demo root (#16592); it is byte-identical to the packaged copy under vscode-extension/assets/demo-project, which the broad `non-rust-vscode-extension` glob already covers."
+covered_by = [
+  "cd vscode-extension && npm test -- --runTestsByPath src/test/packageManifest.test.ts",
+  "cargo xtask non-rust inventory --check",
+]
+created = "2026-10-01"
+review_after = "2026-10-31"
 
 # =============================================================================
 # Build / release tooling

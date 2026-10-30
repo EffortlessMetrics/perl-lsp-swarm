@@ -5,6 +5,29 @@ A generic repository or writer preflight does not establish that a Cargo build
 fits. Moving output under `DEVPLANE` does not add capacity unless it changes the
 actual filesystem. Do not lower `MIN_FREE_GB` merely to make a command run.
 
+## Native Linux linked output
+
+The repository compresses ELF debug sections with zlib for
+`x86_64-unknown-linux-gnu`. This lossless linker setting retains the existing
+dev/agent line tables and source-line backtraces. It applies to all profiles on
+that exact target; it does not thin profiles, remove tests, or compress ordinary
+rlib/rmeta intermediates. Other targets retain their existing configuration.
+
+The setting uses the pinned Rust toolchain's GCC/Clang-compatible linker-driver
+route (`-Wl,--compress-debug-sections=zlib`). Custom direct linkers must supply
+their own compatible flags. Cargo target-specific flags supersede
+`build.rustflags`; `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` supersede this setting.
+Include the compression flag in custom flags when desired. The staged admitted
+Clippy route explicitly clears encoded flags and does not use this setting.
+See [Cargo flag precedence](https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags)
+and [GNU ld debug compression](https://sourceware.org/binutils/docs/ld/Options.html#compress-debug-sections).
+
+Keep flags stable to preserve reuse. Changing them can rebuild dependencies and
+retain both old and new output variants; no existing artifacts are reclaimed.
+Compression savings do not replace capacity admission. Budget total additional
+peak output, downloads and temporary storage for the exact workload, then
+measure both sampled peak and retained allocated bytes with hardlinks deduplicated.
+
 ## Inspect the exact operation before building
 
 After selecting the host's storage root and the smallest relevant proof command:
@@ -39,6 +62,47 @@ repositories, independent clones, raw Cargo, legacy wrappers, unrelated
 processes, and independent later artifact consumers are outside that lease.
 The root/native orchestrator must account for those consumers and own the build
 lane. A preflight report cannot be replayed as permission for a later command.
+
+## Prepare historical inputs in a fresh cloud checkout
+
+Cloud clones and saved snapshots may use `remote.origin.tagOpt=--no-tags`.
+Updating `origin/main` alone then leaves release-history gates without their
+required tag refs. From the repository root, run this existing provenance entry
+after refreshing the source and before setup preflight or gate qualification:
+
+```bash
+python3 scripts/check_release_tag_provenance.py --prepare-git --repo-root .
+```
+
+For a cloud environment's setup script, add that command before its existing
+`just devplane-init` / `just agent-preflight` steps. The script is a repository
+entry; the environment's saved setup configuration must separately invoke it.
+No Rust build is needed for this step (Python 3.11+ or `tomli`, and Git are required).
+
+Preparation reads required names and pinned commit identities from
+[`policy/release-tag-provenance.toml`](../../policy/release-tag-provenance.toml).
+It fetches missing declared live tag refs from `origin` with explicit refspecs,
+and restores full history for a shallow clone. Existing pinned tags are requested
+without destinations during shallow recovery, preserving their tag objects even
+if origin has reannotated the same commit. Configured tracking refmaps are disabled
+for this fetch so they cannot update existing refs implicitly.
+It changes no Git configuration,
+preserves `FETCH_HEAD`, and never forces or prunes refs. A conflicting existing
+tag fails before fetching. Unrelated remote tags are not requested. Audited
+`unresolvable = true` lineage records stay governed by the existing manifest;
+preparation does not manufacture tags or declare those records reachable.
+
+Success requires the existing pin, recorded-object and lineage verification.
+An unavailable remote/ref, conflicting pin, or shallow source that cannot provide
+full history remains a failure, even if some objects were downloaded. A failed
+pin verification may leave the fetched ref available for diagnosis; preparation
+does not delete or rewrite it. Once prepared, `--prepare-git` needs no network
+when all declared live refs are present and history is complete.
+
+For an offline readiness check, use `--verify-git` instead. The default command
+without either Git option validates only manifest structure and does not prove
+historical inputs are available. This step prepares release-history inputs; it
+does not qualify Cargo capacity, selected gate coverage, or a release.
 
 ## Supply an explicit host budget when the default does not apply
 
@@ -100,8 +164,10 @@ scripts/cargo-admitted \
 
 Wrapper options precede the Cargo command. Arguments after Cargo's `--` remain
 program/test arguments, not wrapper options. The existing supported-command and
-path/job-override refusals remain: Clippy, nextest, arbitrary aliases, and `xtask`
-require separately admitted routes rather than raw-Cargo fallback.
+path/job-override refusals remain: Clippy and nextest require separately admitted
+routes, as do arbitrary aliases. For focused `xtask` gates, use the supported
+builtin `run` command described in [Cargo storage guidance](../agents/CARGO_STORAGE.md)
+rather than a raw-Cargo fallback.
 
 `--budget-file` conflicts with **any presence**, including an empty value, of
 `CARGO_STORAGE_POLICY`, `MIN_FREE_GB`, `MAX_USED_PCT`,

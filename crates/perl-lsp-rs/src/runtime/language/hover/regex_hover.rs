@@ -35,6 +35,8 @@ impl LspServer {
         let mut table = "**Regex Pattern**\n\n".to_string();
         table.push_str("| Token | Meaning |\n|-------|-------|\n");
         for (tok, desc) in &entries {
+            // Table cell separators must be escaped even inside a code span.
+            let tok = Self::escape_table_token(tok);
             table.push_str(&format!("| `{}` | {} |\n", tok, desc));
         }
 
@@ -44,6 +46,22 @@ impl LspServer {
                 "value": table,
             },
         }))
+    }
+
+    /// Escape a token for a Markdown table cell. Double every original
+    /// backslash, then escape each pipe with one backslash. Decoding
+    /// (`\\` -> `\`, `\|` -> `|`) therefore recovers the source spelling,
+    /// and every pipe is preceded by an odd run so it cannot delimit.
+    fn escape_table_token(tok: &str) -> String {
+        let mut out = String::with_capacity(tok.len() * 2);
+        for ch in tok.chars() {
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '|' => out.push_str("\\|"),
+                _ => out.push(ch),
+            }
+        }
+        out
     }
 
     /// Return the absolute byte span `[start, end)` of the pattern claimed by
@@ -503,5 +521,112 @@ impl LspServer {
             _ => return (tok, desc),
         };
         (tok, format!("{}{}", desc, suffix))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LspServer, SourceRegionIndex};
+    use perl_tdd_support::must_some;
+
+    #[test]
+    fn regex_hover_escapes_pipe_tokens_in_table_cells() {
+        let cases = [
+            ("my $re = qr/foo|bar/;", "foo|bar", "| `\\| ` | Alternation (OR) |"),
+            (
+                "my $re = qr{[a|b]+};",
+                "[a|b]",
+                "| `[a\\|b]` | Character class, one or more (greedy) |",
+            ),
+            ("my $note = '😀'; my $re = qr{[α|β]};", "[α|β]", "| `[α\\|β]` | Character class |"),
+            (r"my $re = qr{[\|]};", r"[\|]", r"| `[\\\|]` | Character class |"),
+            (r"my $re = qr{[\\|]};", r"[\\|]", r"| `[\\\\\|]` | Character class |"),
+            (
+                "my $re = qr{(?|foo)};",
+                "(?|",
+                "| `(?\\|` | Branch reset group — resets capture numbering per branch |",
+            ),
+            (
+                r"my $re = qr{\d+};",
+                r"\d+",
+                r"| `\\d` | Any decimal digit (0-9), one or more (greedy) |",
+            ),
+        ];
+        for (text, needle, expected_row) in cases {
+            let index = SourceRegionIndex::build(text);
+            let offset = must_some(text.find(needle));
+            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index)));
+            let markdown = must_some(card["contents"]["value"].as_str());
+            let expected = format!(
+                "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n{expected_row}\n"
+            );
+            assert_eq!(markdown, expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn regex_hover_escaped_pipe_row_has_two_cells() {
+        // Independent oracle: parse a real DATA row (not the separator) by
+        // consuming escape pairs (`\\`, `\|`) as literals and splitting on
+        // bare pipes. Decoded cells must show the source token spelling and
+        // the intact Meaning cell. Written inline; does not reuse the encoder.
+        let cases = [
+            ("my $re = qr/foo|bar/;", "foo|bar", "`| `", "Alternation (OR)"),
+            ("my $re = qr{[a|b]};", "[a|b]", "`[a|b]`", "Character class"),
+            (r"my $re = qr{[\|]};", r"[\|]", r"`[\|]`", "Character class"),
+            (r"my $re = qr{[\\|]};", r"[\\|]", r"`[\\|]`", "Character class"),
+        ];
+        for (text, needle, expected_token_cell, expected_meaning) in cases {
+            let index = SourceRegionIndex::build(text);
+            let offset = must_some(text.find(needle));
+            let card = must_some(LspServer::extract_regex_hover(text, offset, Some(&index)));
+            let markdown = must_some(card["contents"]["value"].as_str());
+            // Data rows start with "| `"; header/separator rows do not.
+            let row = must_some(markdown.lines().find(|l| l.starts_with("| `")));
+            let mut cells: Vec<String> = Vec::new();
+            let mut cell = String::new();
+            let mut chars = row.chars();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\\' => match chars.next() {
+                        Some('\\') => cell.push('\\'),
+                        Some('|') => cell.push('|'),
+                        Some(other) => {
+                            cell.push('\\');
+                            cell.push(other);
+                        }
+                        None => cell.push('\\'),
+                    },
+                    '|' => {
+                        cells.push(std::mem::take(&mut cell));
+                    }
+                    _ => cell.push(ch),
+                }
+            }
+            cells.push(cell);
+            assert_eq!(cells.len(), 4, "{text:?} row {row:?} cells {cells:?}");
+            assert_eq!(cells[1].trim(), expected_token_cell, "{text:?} row {row:?}");
+            assert_eq!(cells[2].trim(), expected_meaning, "{text:?} row {row:?}");
+        }
+    }
+
+    #[test]
+    fn regex_hover_pipe_rendering_keeps_source_region_refusals() {
+        for text in [
+            "# qr{[a|b]}\n",
+            "my $help = 'qr{[a|b]}';",
+            "=pod\nqr{[a|b]}\n=cut\n",
+            "my $help = <<'DOC';\nqr{[a|b]}\nDOC\n",
+        ] {
+            let index = SourceRegionIndex::build(text);
+            let offset = must_some(text.find("[a|b]"));
+            assert!(
+                LspServer::extract_regex_hover(text, offset, Some(&index)).is_none(),
+                "{text:?}"
+            );
+        }
+        let text = "my $re = qr{[a|b]};";
+        let offset = must_some(text.find("[a|b]"));
+        assert!(LspServer::extract_regex_hover(text, offset, None).is_none());
     }
 }
