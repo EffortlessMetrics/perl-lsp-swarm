@@ -250,6 +250,15 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // empty on Windows, but the target still needs Windows compile
             // admission so the platform boundary cannot silently bit-rot.
             || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
+            // #18072: the archive-entry path-containment guard in this file
+            // resolves entry names against the extraction destination with
+            // `Path::join`, whose Windows semantics differ from POSIX: a
+            // rooted-but-prefixless name has a root but no drive prefix, so
+            // an `is_absolute`-only guard admits a name that resolves
+            // against the drive root. The proof for that guard only
+            // discriminates on Windows, so the file is admitted to the
+            // Windows runner rather than leaving the proof POSIX-only.
+            || normalized == "xtask/src/vim_host_toolchain.rs"
     })
 }
 
@@ -1277,6 +1286,7 @@ mod tests {
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
             "xtask/tests/release_artifact_size_smoke_script.rs",
+            "xtask/src/vim_host_toolchain.rs",
             "crates/perllsp/src/main.rs",
             "crates/perl-lsp-rs/src/cli.rs",
             "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
