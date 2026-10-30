@@ -2049,6 +2049,25 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Report the #16550 builtin-fallback fact for one `perl.runCritic` result.
+    ///
+    /// Under an explicitly legacy (`external`) critic engine, a result labeled
+    /// `analyzerUsed: "builtin"` can only mean the external `perlcritic` binary
+    /// was unavailable: a present-but-failing binary now surfaces its own
+    /// bounded error instead of degrading silently. The user-facing warning is
+    /// deduped per session via the bounded Critic warning family.
+    pub(crate) fn note_critic_command_fallback(
+        &self,
+        result: &Value,
+        engine: perl_lsp_rs_core::config::CriticEngine,
+    ) {
+        if matches!(engine, perl_lsp_rs_core::config::CriticEngine::Legacy)
+            && result.get("analyzerUsed").and_then(Value::as_str) == Some("builtin")
+        {
+            self.notify_critic_external_unavailable();
+        }
+    }
+
     /// Run `perl.runCritic` for an open document through
     /// [`NativeCriticService::analyze`] (#6969).
     ///
@@ -2434,14 +2453,16 @@ impl LspServer {
             match command {
                 // Keep existing test commands for backward compatibility
                 "perl.runTest" => {
-                    if let Some(test_id) = arguments.first().and_then(|v| v.as_str()) {
-                        return self.run_test(test_id);
-                    }
+                    let test_id = arguments.first().and_then(Value::as_str).ok_or_else(|| {
+                        invalid_params("perl.runTest: arguments[0] must be a test ID string; retry with arguments: [\"file:///path/to/test.t::test name\"].")
+                    })?;
+                    return self.run_test(test_id);
                 }
                 "perl.runTestFile" => {
-                    if let Some(file_uri) = arguments.first().and_then(|v| v.as_str()) {
-                        return self.run_test_file(file_uri);
-                    }
+                    let file_uri = arguments.first().and_then(Value::as_str).ok_or_else(|| {
+                        invalid_params("perl.runTestFile: arguments[0] must be a file URI string; retry with arguments: [\"file:///path/to/test.t\"].")
+                    })?;
+                    return self.run_test_file(file_uri);
                 }
                 "perl.runSubtest" => {
                     // Two argument forms:
@@ -2530,7 +2551,12 @@ impl LspServer {
                 | "perl.debugTestFile"
                 | "perl.explainProviderDecision" => {
                     match provider.execute_command(command, arguments) {
-                        Ok(result) => return Ok(Some(result)),
+                        Ok(result) => {
+                            if command == "perl.runCritic" {
+                                self.note_critic_command_fallback(&result, critic_engine);
+                            }
+                            return Ok(Some(result));
+                        }
                         Err(e) => {
                             // Return proper JSON-RPC error according to LSP 3.17 specification
                             let error_code = if e.contains("Missing") || e.contains("argument") {

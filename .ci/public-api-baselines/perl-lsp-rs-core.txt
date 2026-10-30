@@ -2970,6 +2970,8 @@ pub enum perl_lsp_rs_core::providers::code_actions::CodeActionKind
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::QuickFix
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::Refactor
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorExtract
+pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorExtractSubroutine
+pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorExtractVariable
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorInline
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::RefactorRewrite
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::Source
@@ -3170,6 +3172,7 @@ pub perl_lsp_rs_core::providers::completion::CompletionContext::in_use_statement
 pub perl_lsp_rs_core::providers::completion::CompletionContext::position: usize
 pub perl_lsp_rs_core::providers::completion::CompletionContext::prefix: alloc::string::String
 pub perl_lsp_rs_core::providers::completion::CompletionContext::prefix_start: usize
+pub perl_lsp_rs_core::providers::completion::CompletionContext::suffix_end: usize
 pub perl_lsp_rs_core::providers::completion::CompletionContext::trigger_character: core::option::Option<char>
 pub fn perl_lsp_rs_core::providers::CompletionContext::clone(&self) -> perl_lsp_rs_core::providers::CompletionContext
 pub fn perl_lsp_rs_core::providers::CompletionContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -7478,6 +7481,8 @@ pub enum perl_lsp_rs_core::providers::CodeActionKind
 pub perl_lsp_rs_core::providers::CodeActionKind::QuickFix
 pub perl_lsp_rs_core::providers::CodeActionKind::Refactor
 pub perl_lsp_rs_core::providers::CodeActionKind::RefactorExtract
+pub perl_lsp_rs_core::providers::CodeActionKind::RefactorExtractSubroutine
+pub perl_lsp_rs_core::providers::CodeActionKind::RefactorExtractVariable
 pub perl_lsp_rs_core::providers::CodeActionKind::RefactorInline
 pub perl_lsp_rs_core::providers::CodeActionKind::RefactorRewrite
 pub perl_lsp_rs_core::providers::CodeActionKind::Source
@@ -8490,6 +8495,7 @@ pub perl_lsp_rs_core::providers::CompletionContext::in_use_statement: bool
 pub perl_lsp_rs_core::providers::CompletionContext::position: usize
 pub perl_lsp_rs_core::providers::CompletionContext::prefix: alloc::string::String
 pub perl_lsp_rs_core::providers::CompletionContext::prefix_start: usize
+pub perl_lsp_rs_core::providers::CompletionContext::suffix_end: usize
 pub perl_lsp_rs_core::providers::CompletionContext::trigger_character: core::option::Option<char>
 pub fn perl_lsp_rs_core::providers::CompletionContext::clone(&self) -> perl_lsp_rs_core::providers::CompletionContext
 pub fn perl_lsp_rs_core::providers::CompletionContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result

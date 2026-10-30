@@ -477,6 +477,9 @@ pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::Cancelled
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -1036,6 +1039,9 @@ pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::Strin
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::error::ParseError::Cancelled
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -3972,6 +3978,9 @@ pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::Cancelled
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -4882,6 +4891,9 @@ pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::ParseError::CStyleForContinueBlock
 pub perl_parser_core::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::ParseError::Cancelled
+pub perl_parser_core::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::ParseError::CoreBudgetExhausted
 pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::ParseError::CoreBudgetExhausted::limit: usize

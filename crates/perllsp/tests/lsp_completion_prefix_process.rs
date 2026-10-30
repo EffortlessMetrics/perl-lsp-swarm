@@ -202,14 +202,44 @@ fn generic_prefix_is_leading_and_case_sensitive() -> Result<()> {
 }
 
 #[test]
-fn mid_token_method_prefix_preserves_existing_prefix_edit_range() -> Result<()> {
+fn mid_token_method_edit_stops_before_existing_parentheses() -> Result<()> {
     let mut client = start(&format!("{DOG}my $answer = $dog->speak();"))?;
-    // Cursor after 'sp' inside 'speak'. This pins existing prefix-only geometry;
-    // it does not claim to repair replacement of the suffix after the cursor.
+    // Geometry only: existing-parentheses normalization remains unresolved.
     let items = complete(&mut client, json!("mid-token"), 6, 21)?;
-    assert_edit(item(&items, "speak")?, 6, 19, 21, "speak()")?;
-    ensure!(items.len() == 1, "mid-token admission must exclude unrelated generics: {items:?}");
+    assert_edit(item(&items, "speak")?, 6, 19, 24, "speak()")?;
+    ensure!(items.len() == 1, "expected only the speak result in this fixture: {items:?}");
     finish(client)
+}
+
+#[test]
+fn method_completion_applies_whole_token_at_midpoint_and_end() -> Result<()> {
+    let source = format!("{DOG}my $answer = $dog->speak;");
+    let expected = format!("{DOG}my $answer = $dog->speak();");
+    ensure!(source.is_ascii(), "this fixture maps UTF-16 columns directly to bytes");
+    for (id, cursor) in [("mid-token-apply", 21), ("end-token-apply", 24)] {
+        let mut client = start(&source)?;
+        let items = complete(&mut client, json!(id), 6, cursor)?;
+        let completion = item(&items, "speak")?;
+        assert_edit(completion, 6, 19, 24, "speak()")?;
+        ensure!(items.len() == 1, "expected only the speak result in this fixture: {items:?}");
+
+        // assert_edit pins both returned lines to 6; DOG is exactly those six lines.
+        // Read the actual returned edit rather than reconstructing expected bytes.
+        let edit = &completion["textEdit"];
+        let start = usize::try_from(
+            edit["range"]["start"]["character"].as_u64().ok_or_else(|| anyhow!("missing start"))?,
+        )?;
+        let end = usize::try_from(
+            edit["range"]["end"]["character"].as_u64().ok_or_else(|| anyhow!("missing end"))?,
+        )?;
+        let text = edit["newText"].as_str().ok_or_else(|| anyhow!("missing newText"))?;
+        ensure!(start <= end && end <= source.len() - DOG.len(), "edit outside call line");
+        let applied =
+            format!("{}{}{}", &source[..DOG.len() + start], text, &source[DOG.len() + end..]);
+        ensure!(applied == expected, "completion must preserve the full document: {applied}");
+        finish(client)?;
+    }
+    Ok(())
 }
 
 #[test]
