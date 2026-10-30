@@ -189,7 +189,7 @@
               "program": {
                 "type": "string",
                 "description": "Perl script to debug",
-                "default": "${workspaceFolder}/script.pl"
+                "default": "${file}"
               },
               "args": {
                 "type": "array",
@@ -317,7 +317,7 @@
             "type": "perl",
             "request": "launch",
             "name": "Perl: Launch Script",
-            "program": "${workspaceFolder}/script.pl",
+            "program": "${file}",
             "stopOnEntry": true
           },
           {
@@ -430,6 +430,17 @@
             "order": 53,
             "description": "Grace period in milliseconds between requesting prove termination and forcing it.",
             "markdownDescription": "Grace period in milliseconds between requesting `prove` termination and forcing it."
+          },
+          "perl-lsp.debug.trustedRoots": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "scope": "machine",
+            "order": 54,
+            "description": "Absolute trusted root directories the debugger may launch programs from. Forwarded to the debug adapter as --trusted-root, one per entry, at every debug start; with an open workspace folder the folder is forwarded as well. With no workspace folder open and no roots here, a launch is refused with a warning before the adapter starts. User/machine scope only — workspace settings cannot grant launch authority.",
+            "markdownDescription": "Absolute trusted root directories the debugger may launch programs from (#16554). Forwarded to `perl-dap` as `--trusted-root`, one per entry, at every debug start; with an open workspace folder the folder is forwarded as well. With no workspace folder open and no roots here, a launch is refused with a warning before the adapter starts. **User/machine scope only** — committed workspace settings cannot grant launch authority."
           }
         }
       },
@@ -471,18 +482,16 @@
           "perl-lsp.critic.engine": {
             "type": "string",
             "enum": [
-              "native",
-              "legacy"
+              "native"
             ],
             "enumDescriptions": [
-              "Native built-in critic (default, no external tools required)",
-              "Legacy external Perl::Critic (requires the perlcritic binary on PATH)"
+              "Native built-in critic (default, no external tools required)"
             ],
             "default": "native",
             "scope": "machine",
             "order": 33,
-            "description": "Critic engine. 'native' uses the built-in critic (default); 'legacy' shells out to an external perlcritic binary for compatibility.",
-            "markdownDescription": "Critic engine. `native` uses the built-in critic (default, no external tools); `legacy` shells out to an external `perlcritic` binary for compatibility and requires it on `PATH`."
+            "description": "Critic engine. Only 'native' (built-in, default) takes effect from VS Code settings; the server logs and ignores 'legacy' on this channel. Legacy engine values supplied through VS Code settings are ignored; use the native critic settings to configure diagnostics.",
+            "markdownDescription": "Critic engine. Only `native` (built-in, default, no external tools) takes effect from VS Code settings; the server logs and ignores `legacy` on this channel. Legacy engine values supplied through VS Code settings are ignored; use the native critic settings to configure diagnostics."
           },
           "perl-lsp.critic.profile": {
             "type": "string",
@@ -510,11 +519,11 @@
               5
             ],
             "enumDescriptions": [
-              "Severity 1 - very permissive",
-              "Severity 2 - permissive",
-              "Severity 3 - balanced default",
-              "Severity 4 - strict",
-              "Severity 5 - very strict"
+              "Severity 1 - report all severities (most diagnostics)",
+              "Severity 2 - report severity 2 and above",
+              "Severity 3 - report severity 3 and above (default)",
+              "Severity 4 - report severity 4 and above",
+              "Severity 5 - report only severity 5 (fewest diagnostics)"
             ],
             "default": 3,
             "scope": "resource",
@@ -564,11 +573,11 @@
               5
             ],
             "enumDescriptions": [
-              "Severity 1 - very permissive",
-              "Severity 2 - permissive",
-              "Severity 3 - balanced default",
-              "Severity 4 - strict",
-              "Severity 5 - very strict"
+              "Severity 1 - report all severities (most diagnostics)",
+              "Severity 2 - report severity 2 and above",
+              "Severity 3 - report severity 3 and above (default)",
+              "Severity 4 - report severity 4 and above",
+              "Severity 5 - report only severity 5 (fewest diagnostics)"
             ],
             "default": 3,
             "scope": "resource",
@@ -605,14 +614,6 @@
             "order": 60,
             "description": "Enable Test::More and Test2 integration for the VS Code Test Explorer panel.",
             "markdownDescription": "Enable `Test::More` and `Test2` integration for the VS Code Test Explorer panel."
-          },
-          "perl-lsp.autoPopulateNewFiles": {
-            "type": "boolean",
-            "default": true,
-            "scope": "resource",
-            "order": 70,
-            "description": "Auto-populate new .pm files with a package declaration and new .t files with Test::More boilerplate.",
-            "markdownDescription": "Auto-populate new `.pm` files with a `package` declaration and new `.t` files with `Test::More` boilerplate."
           }
         }
       },
@@ -624,16 +625,16 @@
             "default": false,
             "scope": "machine",
             "order": 10,
-            "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
-            "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+            "description": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the AI completion reference.",
+            "markdownDescription": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
           },
           "perl-lsp.aiCompletion.streaming.enabled": {
             "type": "boolean",
             "default": true,
             "scope": "machine",
             "order": 20,
-            "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
-            "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+            "description": "Client preference for progressive inline-completion display. Requires aiCompletion.enabled. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build.",
+            "markdownDescription": "Client preference for progressive inline-completion display. Requires `aiCompletion.enabled`. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
           }
         }
       },
@@ -1004,6 +1005,18 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "perl-lsp.createModule",
+        "title": "%command.createModule.title%",
+        "category": "Perl",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "perl-lsp.createTest",
+        "title": "%command.createTest.title%",
+        "category": "Perl",
+        "icon": "$(new-file)"
+      },
+      {
         "command": "perl-lsp.showParserAst",
         "title": "%command.showParserAst.title%",
         "category": "Perl",
@@ -1132,6 +1145,14 @@
         },
         {
           "command": "perl-lsp.openModule",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.createModule",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.createTest",
           "when": "workspaceFolderCount >= 1"
         },
         {
@@ -1327,8 +1348,8 @@
           },
           {
             "id": "verify-perl",
-            "title": "Verify Your Perl Installation",
-            "description": "Run [Perl: Run Health Check](command:perl-lsp.runHealthCheck) to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
+            "title": "Check Optional Perl Runtime",
+            "description": "The core language server works without Perl. [Run Health Check](command:perl-lsp.runHealthCheck) checks for optional Perl to run tests. Debugging requires Perl 5.10+. Native formatting and critic are built in; perltidy and perlcritic are optional external-compatibility tools.",
             "media": {
               "image": "media/walkthrough/verify-perl.svg",
               "altText": "Verify Perl"
@@ -1355,7 +1376,7 @@
           {
             "id": "try-goto-definition",
             "title": "Go to Definition",
-            "description": "Hold Ctrl and click a symbol to jump to its definition.",
+            "description": "Right-click a symbol and choose Go to Definition, or press F12.",
             "media": {
               "image": "media/walkthrough/try-goto-definition.svg",
               "altText": "Go to Definition"
@@ -1410,6 +1431,7 @@
     "compile:test": "npm run clean:test && node scripts/governed-tsc.js -p ./tsconfig.test.json",
     "watch:bundle": "npm run clean:out && rolldown -c rolldown.config.mjs --watch",
     "watch:types": "node scripts/governed-tsc.js -watch --noEmit -p ./tsconfig.json",
+    "test:watch-lifecycle": "node --test scripts/typescript-watch-lifecycle.test.js && node scripts/typescript-watch-lifecycle.js",
     "dev": "node scripts/dev-supervisor.js",
     "lint": "npm run lint:canary && node scripts/check-oxlint-warning-budget.js",
     "lint:ratchet": "node scripts/check-oxlint-warning-budget.js",
@@ -1420,7 +1442,7 @@
     "test:ci": "npm run compile:test && npm run test:receipt-summary && node scripts/run-jest.js --ci --coverage --verbose",
     "test:grammar": "vscode-tmgrammar-snap --config package.json \"test/grammar/fixtures/*.pl\"",
     "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
-    "test:receipt-summary": "node --test --test-concurrency=1 scripts/summarize-vscode-receipts.test.js scripts/sample-local-vsix-smoke.test.js scripts/run-local-vsix-smoke.test.js scripts/check-vsix-inventory.test.js scripts/package-command.test.js scripts/check-vsix-prebuilt-payload.test.js scripts/check-publisher-tools.test.js scripts/vscode-toolchain-workflows.test.js scripts/check-source-map.test.js scripts/check-typescript-authority.test.js scripts/governed-tsc.test.js scripts/checked-command-contract.test.js scripts/reporter.test.js scripts/build-script.test.js scripts/dev-supervisor.test.js scripts/dev-launch-contract.test.js scripts/js-yaml-security.test.js",
+    "test:receipt-summary": "node --test --test-concurrency=1 scripts/assemble-installed-acceptance.test.js scripts/summarize-vscode-receipts.test.js scripts/sample-local-vsix-smoke.test.js scripts/run-local-vsix-smoke.test.js scripts/check-vsix-inventory.test.js scripts/package-command.test.js scripts/check-vsix-prebuilt-payload.test.js scripts/check-publisher-tools.test.js scripts/vscode-toolchain-workflows.test.js scripts/check-source-map.test.js scripts/check-typescript-authority.test.js scripts/governed-tsc.test.js scripts/checked-command-contract.test.js scripts/reporter.test.js scripts/build-script.test.js scripts/dev-supervisor.test.js scripts/dev-launch-contract.test.js scripts/typescript-watch-lifecycle.test.js scripts/js-yaml-security.test.js",
     "check:package-inventory": "node scripts/check-vsix-inventory.js",
     "check:source-map": "node scripts/check-source-map.js",
     "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
@@ -1432,9 +1454,9 @@
     "bundle-lsp": "node ./scripts/bundle-lsp.js",
     "check:publisher-tools": "node scripts/check-publisher-tools.js",
     "package": "node scripts/package-vsix.js",
-    "publish": "npm exec --offline --no -- @vscode/vsce publish",
+    "publish": "node ./scripts/refuse-local-publication.cjs",
     "verify:marketplace": "npm run bundle-lsp && npm run package",
-    "publish:openvsx": "npm exec --offline --no -- ovsx publish",
+    "publish:openvsx": "node ./scripts/refuse-local-publication.cjs",
     "check:openvsx": "npm exec --offline --no -- ovsx --version"
   },
   "dependencies": {
@@ -1444,20 +1466,21 @@
   },
   "overrides": {
     "@babel/core": "7.29.6",
-    "brace-expansion@1": "1.1.18",
-    "brace-expansion@2": "2.1.4",
-    "brace-expansion@5": "5.0.9",
-    "fast-uri": "3.1.6",
+    "brace-expansion@1": "1.1.21",
+    "brace-expansion@2": "2.1.7",
+    "brace-expansion@5": "5.0.12",
+    "fast-uri": "3.1.8",
     "form-data": "4.0.6",
     "linkify-it": "5.0.2",
     "lodash": "4.18.1",
-    "markdown-it": "14.2.0",
+    "markdown-it": "14.3.1",
     "picomatch@2": "2.3.2",
     "picomatch@4": "4.0.4",
     "qs": "6.16.0",
     "serialize-javascript": "7.0.5",
+    "tinypool": "2.1.2",
     "tmp": "0.2.7",
-    "undici": "7.29.0",
+    "undici": "7.29.1",
     "uuid": "11.1.1"
   },
   "devDependencies": {
@@ -1470,14 +1493,14 @@
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "ajv": "^8.20.0",
-    "jest": "^30.5.1",
-    "jszip": "^3.10.1",
-    "mocha": "^12.0.0",
+    "jest": "^30.5.2",
+    "jszip": "^3.10.2",
+    "mocha": "^12.0.3",
     "ovsx": "1.1.1",
-    "oxfmt": "0.66.0",
-    "oxlint": "1.81.0",
-    "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.7",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "oxlint-tsgolint": "7.0.2004",
+    "rolldown": "1.2.13",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

@@ -1,0 +1,9 @@
+project: product
+component: Parser
+kind: Fixed
+body: "Compound declaration initializers such as my $value x= 3 lower again to a simple declaration assignment wrapping the compound assignment, restoring HIR declaration reachability for repetition assignment."
+time: 2026-10-21T00:00:00Z
+custom:
+  PR: "18288"
+  Slug: compound-declaration-initializer-wrap
+  Breaking: "no"

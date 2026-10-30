@@ -2561,7 +2561,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 28] = [
+    const FIXTURES: [(&str, &str); 29] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2637,6 +2637,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/valid-proof-level-does-not-manufacture-10831.json"
+            )),
+        ),
+        (
+            "valid-proof-level-do-not-implement-15465",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-do-not-implement-15465.json"
             )),
         ),
         (
@@ -3902,6 +3909,66 @@ mod tests {
             assert!(
                 !proof_level_from_bodies(issue, pr)?,
                 "structural negation failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_do_not_implement_disarms_implement_family() -> Result<()> {
+        // #15465: the implement-family verb is not in the polarity marker
+        // list, but structural negation (`not` before the verb `implement`)
+        // disarms the same way as `must not change` / `does not require`.
+        // Each row pairs an issue that excludes a proof level with a PR that
+        // also excludes the same level; the PR exclusion must remain valid
+        // because the issue's negation disarms the requirement.
+        for (term, pr, issues) in [
+            (
+                "Public",
+                "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n",
+                [
+                    "## Objective\nDo not implement public proof here.\n",
+                    "## Objective\nDoes not implement public proof either.\n",
+                    "## Objective\nMust not implement public proof in this slice.\n",
+                    "## Acceptance\nDo not implement public proof; release evidence is the only required level.\n",
+                ],
+            ),
+            (
+                "Installed",
+                "## Claim Boundary\nInstalled evidence is explicitly out of scope.\n\nCloses #1\n",
+                [
+                    "## Objective\nDo not implement installed proof here.\n",
+                    "## Objective\nDo not implement the full installed-name model here.\n",
+                    "## Objective\nMust not implement installed proof in this slice.\n",
+                    "## Objective\nDoesn't implement installed proof either.\n",
+                ],
+            ),
+        ] {
+            for issue in issues {
+                assert!(
+                    !proof_level_from_bodies(issue, pr)?,
+                    "do-not-implement phrasing must disarm CP00 for {term}: {issue:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_implement_without_negation_still_arms() -> Result<()> {
+        // Negative control: when the issue positively requires an
+        // implement-style proof level, the rule must still arm even though
+        // the verb family is the same. The structural-negation gate only
+        // fires when a negation token precedes the verb, so a bare
+        // "implement" requirement still trips CP00.
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\nCloses #1\n";
+        for issue in [
+            "## Acceptance\nImplement public proof here.\n",
+            "## Acceptance\nThis PR must implement public proof before merge.\n",
+        ] {
+            assert!(
+                proof_level_from_bodies(issue, pr)?,
+                "an implement-style requirement must still arm CP00: {issue:?}"
             );
         }
         Ok(())

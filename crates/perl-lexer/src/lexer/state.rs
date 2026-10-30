@@ -20,6 +20,10 @@ pub struct PerlLexer<'a> {
     pub(crate) delimiter_stack: Vec<char>,
     pub(crate) in_prototype: bool,
     pub(crate) prototype_depth: usize,
+    /// Set when the current post-`sub` window has shown signature evidence
+    /// (a sigil-named parameter or a default assignment), so quote-like
+    /// words in it are expression operators, not prototype payload.
+    pub(crate) prototype_signature_seen: bool,
     pub(crate) after_sub: bool,
     pub(crate) after_arrow: bool,
     pub(crate) hash_brace_depth: usize,
@@ -51,6 +55,8 @@ pub struct PerlLexer<'a> {
     pub(crate) current_quote_op: Option<quote_handler::QuoteOperatorInfo>,
     pub(crate) qw_recovery_enabled: bool,
     pub(crate) eof_emitted: bool,
+    /// Memo of the next line-start `=cut`: `(scanned_from, position)`; `None` position means none.
+    pub(crate) pod_cut_cache: Option<(usize, Option<usize>)>,
     /// Temporary upper bound used while segmenting a heredoc body.
     pub(crate) scan_limit: Option<usize>,
     /// Optional logical source bound by a producer (#4851 / #7747).

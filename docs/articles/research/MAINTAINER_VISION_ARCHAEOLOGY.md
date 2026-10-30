@@ -1,4 +1,9 @@
 # Maintainer Vision Archaeology
+
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../../agents/AUTHORITY_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../../agents/AUTHORITY_STATUS.md).
+
 ## How Maintainer Intent Kept Getting Recast Into Better Agent Surfaces
 
 One of the most distinctive patterns in this repository is that maintainer
@@ -21,7 +26,7 @@ state, and reusable control-plane surfaces.
 ## 1. First Wave: Direct Orchestration
 
 The earliest durable control-plane artifact is
-[.claude/ORCHESTRATION_GUIDE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/ORCHESTRATION_GUIDE.md),
+[.claude/ORCHESTRATION_GUIDE.md](../../reference/archive/cycle-5-research/ORCHESTRATION_GUIDE.md),
 added in `3341bebdb` on `2025-08-28`.
 
 It already contains the core instinct:
@@ -56,9 +61,9 @@ That is a major conceptual improvement over direct orchestration. The guidance
 is no longer only "do careful work." It is a model of who owns each stage of
 delivery.
 
-[CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
+[CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
 and
-[REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
+[REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
 together show that the repo was expressing the same vision in two ways:
 
 - local role packs and flow files
@@ -76,11 +81,11 @@ The `.jules/` phase is another important transition.
 Instead of one general instruction surface, the repo preserves lane-specific
 judgment:
 
-- [bolt.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/bolt.md)
+- [bolt.md](../../../.jules/bolt.md)
   for performance and hot paths
-- [sentinel.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/sentinel.md)
+- [sentinel.md](../../../.jules/sentinel.md)
   for security and trust boundaries
-- [palette.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.jules/palette.md)
+- [palette.md](../../../.jules/palette.md)
   for UX and editor behavior
 
 This is a more durable form of vision transfer:
@@ -90,7 +95,7 @@ This is a more durable form of vision transfer:
 - later work can reuse the memory without reconstructing the philosophy from
   scratch
 
-[JULES_BOT_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md)
+[JULES_BOT_ANALYSIS.md](../../project/JULES_BOT_ANALYSIS.md)
 shows the same pattern from the PR side: the maintainer is curating and
 bridging, not just reviewing code line by line.
 
@@ -155,12 +160,12 @@ That is not a bug in the story. It is the story.
 
 ## Evidence Pointers
 
-- [CONTROL_PLANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/CONTROL_PLANE_ARCHAEOLOGY.md)
-- [SWARM_SURFACE_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
-- [REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
-- [JULES_LANE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/JULES_LANE_ARCHAEOLOGY.md)
-- [MAINTAINER_GATEKEEPER_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MAINTAINER_GATEKEEPER_ARCHAEOLOGY.md)
-- [CLAUDE_MD_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CLAUDE_MD_EVOLUTION.md)
-- [AGENTIC_DEV.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md)
-- [AGENTIC_SWARM_ERA.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_SWARM_ERA.md)
+- [CONTROL_PLANE_ARCHAEOLOGY.md](CONTROL_PLANE_ARCHAEOLOGY.md)
+- [SWARM_SURFACE_EVOLUTION.md](SWARM_SURFACE_EVOLUTION.md)
+- [REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
+- [JULES_LANE_ARCHAEOLOGY.md](JULES_LANE_ARCHAEOLOGY.md)
+- [MAINTAINER_GATEKEEPER_ARCHAEOLOGY.md](MAINTAINER_GATEKEEPER_ARCHAEOLOGY.md)
+- [CLAUDE_MD_EVOLUTION.md](../../project/CLAUDE_MD_EVOLUTION.md)
+- [AGENTIC_DEV.md](../../project/AGENTIC_DEV.md)
+- [AGENTIC_SWARM_ERA.md](../../project/AGENTIC_SWARM_ERA.md)
 - `3341bebdb`, `c8b38260d`, `9cc2d3b9a`, `d17b84393`, `dfdd3be72`, `cb4251735`

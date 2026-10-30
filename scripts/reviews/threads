@@ -80,6 +80,13 @@ fi
 [[ "$REPO" == */* ]] || die_usage "[owner/repo] must look like owner/name (got '$REPO')"
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
+# OWNER and NAME are interpolated into the GraphQL query below; restrict
+# them to the GitHub name charset so a crafted repo argument cannot break
+# out of the quoted strings (fail closed on anything else).
+[[ "$OWNER" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] \
+    || die_usage "[owner/repo] owner contains characters GitHub does not allow (got '$OWNER')"
+[[ "$NAME" =~ ^[A-Za-z0-9._-]+$ && "$NAME" != "." && "$NAME" != ".." ]] \
+    || die_usage "[owner/repo] name contains characters GitHub does not allow (got '$NAME')"
 
 PAGE_SIZE="${REVIEW_THREADS_PAGE_SIZE:-50}"
 

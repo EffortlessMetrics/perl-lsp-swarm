@@ -819,9 +819,46 @@ export async function runDiscoveredIncludePathGuidance(
   return reports;
 }
 
+interface AiCompletionClient {
+  initializeResult?: { capabilities?: unknown | undefined } | undefined;
+  getFeature?: (
+    method: 'textDocument/inlineCompletion',
+  ) => { getState(): { kind: string; registrations?: boolean } } | undefined;
+}
+
+const aiCompletionPrompts = new WeakSet<vscode.ExtensionContext>();
+
+/**
+ * The prompt requires explicit activation support and a registered display
+ * provider. A dynamic provider need not appear in initializeResult. This is a
+ * client journey contract, not a claim about legacy servers' activation rules.
+ */
+function serverAdvertisesAiActivation(client: AiCompletionClient): boolean {
+  const capabilities = client.initializeResult?.capabilities;
+  if (!capabilities || typeof capabilities !== 'object') {
+    return false;
+  }
+  const record = capabilities as Record<string, unknown>;
+  const experimental = record.experimental;
+  if (!experimental || typeof experimental !== 'object') {
+    return false;
+  }
+  if ((experimental as Record<string, unknown>).perlAiCompletionActivation !== true) {
+    return false;
+  }
+  // The language client's registry is authoritative once available: a static
+  // capability can remain in initializeResult after its provider is removed.
+  if (client.getFeature) {
+    const state = client.getFeature('textDocument/inlineCompletion')?.getState();
+    return state?.kind === 'document' && state.registrations === true;
+  }
+  const provider = record.inlineCompletionProvider;
+  return provider !== undefined && provider !== false && provider !== null;
+}
+
 export async function suggestAiCompletionIfSupported(
   context: vscode.ExtensionContext,
-  client: { initializeResult?: { capabilities?: unknown | undefined } | undefined } | undefined,
+  client: AiCompletionClient | undefined,
 ): Promise<void> {
   if (!client) {
     return;
@@ -832,42 +869,55 @@ export async function suggestAiCompletionIfSupported(
     return;
   }
 
-  const capabilities = client.initializeResult?.capabilities;
-  const inlineProvider =
-    !!capabilities && typeof capabilities === 'object'
-      ? (capabilities as Record<string, unknown>).inlineCompletionProvider
-      : undefined;
-  if (inlineProvider === undefined || inlineProvider === false || inlineProvider === null) {
+  if (!serverAdvertisesAiActivation(client)) {
     return;
   }
 
-  const stateKey = 'perl-lsp.aiCompletion.firstRunNotificationShown';
-  if (context.workspaceState.get<boolean>(stateKey, false)) {
+  // #16585 review: versioned receipt. The unversioned key was written by the
+  // obsolete prompt, whose gate every shipped server satisfied before the user
+  // responded, so an old receipt suppresses this corrected journey exactly
+  // where it first becomes able to deliver. The version suffix re-offers the
+  // journey once under the corrected gate without disturbing the old receipt.
+  const stateKey = 'perl-lsp.aiCompletion.firstRunNotificationShown.v2';
+  if (context.workspaceState.get<boolean>(stateKey, false) || aiCompletionPrompts.has(context)) {
     return;
   }
-  await context.workspaceState.update(stateKey, true);
-
-  const choice = await vscode.window.showInformationMessage(
-    'Perl LSP: your language server supports AI-powered inline completions. They are off by default — enable them now?',
-    'Enable',
-    'Learn More',
-    'Dismiss',
-  );
-
-  if (choice === 'Enable') {
+  // Keep eligibility and display in the same synchronous turn. Persisting the
+  // receipt first would let provider removal or client replacement race display.
+  // Hold the overlap guard through the choice and receipt persistence.
+  aiCompletionPrompts.add(context);
+  try {
+    const choice = await vscode.window.showInformationMessage(
+      'Perl LSP: your language server supports AI-powered inline completions. They are off by default — enable them now?',
+      'Enable',
+      'Learn More',
+      'Dismiss',
+    );
     try {
-      await config.update('aiCompletion.enabled', true, vscode.ConfigurationTarget.Global);
-      void vscode.window.showInformationMessage('AI-powered inline completions enabled.');
+      await context.workspaceState.update(stateKey, true);
     } catch (error: unknown) {
-      void vscode.window.showWarningMessage(
-        `Perl LSP: could not enable AI completions: ${errorMessage(error)}`,
+      // A failed receipt can allow a later re-offer, but must not discard the
+      // choice the user has already made in this prompt.
+      console.warn('Perl LSP: could not persist AI completion prompt receipt:', error);
+    }
+
+    if (choice === 'Enable') {
+      try {
+        await config.update('aiCompletion.enabled', true, vscode.ConfigurationTarget.Global);
+        void vscode.window.showInformationMessage('AI-powered inline completions enabled.');
+      } catch (error: unknown) {
+        void vscode.window.showWarningMessage(
+          `Perl LSP: could not enable AI completions: ${errorMessage(error)}`,
+        );
+      }
+    } else if (choice === 'Learn More') {
+      void vscode.commands.executeCommand(
+        'workbench.action.openSettings',
+        '@ext:EffortlessMetrics.perl-lsp-rs perl-lsp.aiCompletion',
       );
     }
-  } else if (choice === 'Learn More') {
-    void vscode.commands.executeCommand(
-      'workbench.action.openSettings',
-      '@ext:EffortlessMetrics.perl-lsp-rs perl-lsp.aiCompletion',
-    );
+  } finally {
+    aiCompletionPrompts.delete(context);
   }
 }
 

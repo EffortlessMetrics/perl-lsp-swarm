@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Show a bounded warning when an oversized first didOpen is refused before the document is stored, so the editor user can tell that the buffer was not opened."
+time: 2026-09-29T09:45:00Z
+custom:
+  PR: "16782"
+  Slug: refused-first-didopen-warning
+  Breaking: "no"

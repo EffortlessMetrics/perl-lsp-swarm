@@ -47,12 +47,15 @@
     clippy::module_name_repetitions
 )]
 
+pub mod cargo_failure;
 pub mod client;
 pub mod diagnostics;
 pub mod env;
 pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
+/// Structured evidence for an exact-subject UX regression run.
+pub mod regression_receipt;
 pub mod reverse_request_fixture;
 pub mod scorecard;
 pub mod server_request_fixture;
@@ -75,7 +78,8 @@ pub use project_fixture::{
 };
 pub use recorder::{
     AssertionBasis, AssertionCounts, OperationTiming, RunIdentity, UxCheckFailure, UxRunRecorder,
-    UxScenarioRunReceipt, UxScenarioSkip, run_ux_scenario, run_ux_scenario_with_evidence_class,
+    UxScenarioRunReceipt, UxScenarioSkip, iso8601_now, run_ux_scenario,
+    run_ux_scenario_with_evidence_class,
 };
 pub use scorecard::{
     EditorUxScorecard, ScenarioScore, aggregate_editor_ux_scorecard,
@@ -144,12 +148,107 @@ fn is_index_ready_event(event: &LspEvent) -> bool {
     method == "perl-lsp/index-ready" && params.get("ready").and_then(Value::as_bool) == Some(true)
 }
 
+/// An index wait's terminal reason and the latest index-readiness notification
+/// actually observed while evaluating that wait.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexReadyWaitEnd {
+    /// The exact terminal reason returned by the observation stream.
+    pub end: WaitEnd,
+    /// Latest observed `perl-lsp/index-ready` params, including limited states.
+    pub last_observed: Option<Value>,
+}
+
+/// Add the awaited subject to a typed wait outcome at a scenario assertion boundary.
+pub fn wait_with_subject<T, E: std::error::Error + Send + Sync + 'static>(
+    subject: &str,
+    observed: std::result::Result<T, E>,
+) -> Result<T> {
+    observed.map_err(|end| {
+        let context = format!("wait for {subject}: {end}");
+        anyhow::Error::new(end).context(context)
+    })
+}
+
+/// Emit the accepted-absence breadcrumb for an optional wait to stderr so a
+/// later starved assertion keeps the terminal reason in CI test logs (#15870).
+#[expect(
+    clippy::print_stderr,
+    reason = "the breadcrumb must survive into cargo test output for starved-\
+              completion triage; the harness initializes no tracing subscriber, \
+              so a tracing event would be invisible (issue #16952 review)"
+)]
+fn trace_accepted_absence(subject: &str, reason: &str) {
+    eprintln!("wait for {subject}: {reason} (accepted as absence)");
+}
+
+/// Retain an optional readiness wait without hiding a closed or failed stream.
+/// A live deadline leaves the later useful-result predicate in charge.
+pub fn optional_wait_with_subject<T>(
+    subject: &str,
+    observed: std::result::Result<T, WaitEnd>,
+) -> Result<Option<T>> {
+    match observed {
+        Ok(value) => Ok(Some(value)),
+        // A live deadline is accepted as absence, but not silently: a later
+        // starved assertion keeps the terminal reason as a breadcrumb (#15870).
+        Err(end @ WaitEnd::Deadline { .. }) => {
+            trace_accepted_absence(subject, &end.describe());
+            Ok(None)
+        }
+        Err(end) => {
+            let context = format!("wait for {subject}: {end}");
+            Err(anyhow::Error::new(end).context(context))
+        }
+    }
+}
+
+impl std::fmt::Display for IndexReadyWaitEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}; latest index-readiness notification: {:?}", self.end, self.last_observed)
+    }
+}
+
+impl std::error::Error for IndexReadyWaitEnd {}
+
+fn wait_for_index_ready_event(
+    events: &impl client::EventSource,
+    already_seen: usize,
+    timeout: Duration,
+) -> std::result::Result<(), IndexReadyWaitEnd> {
+    let mut last_observed = None;
+    events
+        .wait_for_events(timeout, |observed| {
+            last_observed = observed
+                .iter()
+                .filter_map(|event| match event {
+                    LspEvent::Other { method, params } if method == "perl-lsp/index-ready" => {
+                        Some(params.clone())
+                    }
+                    _ => None,
+                })
+                .next_back();
+            let seen = observed.iter().filter(|event| is_index_ready_event(event)).count();
+            (seen > already_seen).then_some(())
+        })
+        .map_err(|end| IndexReadyWaitEnd { end, last_observed })
+}
+
 fn is_active_document_ready_event(event: &LspEvent, uri: &str) -> bool {
     let LspEvent::Other { method, params } = event else {
         return false;
     };
     method == "perl-lsp/active-document-ready"
         && params.get("uri").and_then(Value::as_str) == Some(uri)
+}
+
+fn wait_for_active_document_ready_event(
+    events: &impl client::EventSource,
+    uri: &str,
+    timeout: Duration,
+) -> std::result::Result<(), WaitEnd> {
+    events.wait_for_events(timeout, |observed| {
+        observed.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
+    })
 }
 
 /// Configuration for a UX scenario.
@@ -288,6 +387,48 @@ pub struct UxHarness {
     document_versions: Mutex<HashMap<String, i32>>,
 }
 
+/// Outcome of a deadline-bounded quality poll over inline completion.
+///
+/// A quality poll either satisfied the supplied predicate before the
+/// budget expired ([`Self::Matched`]) or exhausted the budget with the
+/// predicate still false ([`Self::Deadline`]). Distinguishing the two
+/// lets the assertion message — and the receipt classifier that reads
+/// the log downstream — tell a load-induced budget exhaustion apart
+/// from a fast-but-wrong completion server response, without changing
+/// the assertion itself (#16103).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QualityPollOutcome {
+    /// The predicate matched before the deadline elapsed.
+    Matched,
+    /// The deadline expired while the predicate was still false.
+    Deadline {
+        /// The bound the caller supplied.
+        timeout: Duration,
+    },
+}
+
+impl QualityPollOutcome {
+    /// Render the outcome as a human-readable sentence for assertion
+    /// messages.
+    ///
+    /// The `Deadline` wording deliberately contains the literal
+    /// substring `deadline expired after`, the marker that
+    /// `xtask`'s `ux_regression_receipt` classifier keys on
+    /// (`xtask/src/tasks/ux_regression_receipt.rs`) to route a
+    /// budget-exhausted poll to `BudgetExceeded` rather than the
+    /// generic `assertion failed → ProviderRegression` arm.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Matched => "poll satisfied before the deadline".to_string(),
+            Self::Deadline { timeout } => format!(
+                "deadline expired after {}ms with the stream still live",
+                timeout.as_millis()
+            ),
+        }
+    }
+}
+
 impl UxHarness {
     /// Spawn a fresh LSP server and set up a clean workspace.
     pub fn new(config: ScenarioConfig) -> Result<Self> {
@@ -340,17 +481,22 @@ impl UxHarness {
 
     /// Apply a full-document text replacement and send `textDocument/didChange`.
     ///
+    /// Returns the document version carried by the notification so callers can
+    /// await the matching `textDocument/publishDiagnostics` payload instead of
+    /// any later publication for the file.
+    ///
     /// The version-ownership lock is held across the notification so legacy and
     /// buffer-only lifecycle sends share one serialization boundary and cannot
     /// interleave out of version order.
-    pub fn change_file_full(&self, relative_path: &str, updated_content: &str) -> Result<()> {
+    pub fn change_file_full(&self, relative_path: &str, updated_content: &str) -> Result<i32> {
         self.workspace.write(relative_path, updated_content)?;
         let uri = self.workspace.uri(relative_path);
         let mut versions = self.document_versions.lock().unwrap_or_else(|e| e.into_inner());
         let entry = versions.entry(uri.clone()).or_insert(1);
         *entry += 1;
         let version = *entry;
-        self.client.did_change_full(&uri, version, updated_content)
+        self.client.did_change_full(&uri, version, updated_content)?;
+        Ok(version)
     }
 
     /// Open a file in the LSP server with an explicit language identifier.
@@ -490,6 +636,31 @@ impl UxHarness {
         character: u32,
         context: Value,
     ) -> Result<Vec<Value>> {
+        self.inline_completion_with_context_and_timeout(
+            relative_path,
+            line,
+            character,
+            context,
+            self.config.timeout,
+        )
+    }
+
+    /// Request inline completion with an explicit LSP context and a
+    /// per-request timeout.
+    ///
+    /// Deadline-polling callers pass the remaining wall-clock budget so one
+    /// blocking request cannot outrun the caller's own deadline (mirrors
+    /// [`UxHarness::completion_with_timeout`]; the default
+    /// `ScenarioConfig::timeout` is 30 s and is independent of any local
+    /// polling deadline).
+    pub fn inline_completion_with_context_and_timeout(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        context: Value,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
             "textDocument/inlineCompletion",
@@ -498,7 +669,7 @@ impl UxHarness {
                 "position": { "line": line, "character": character },
                 "context": context
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("inline completion returned error: {}", resp["error"]));
@@ -506,6 +677,98 @@ impl UxHarness {
         match resp["result"]["items"].as_array() {
             Some(items) => Ok(items.clone()),
             None => Ok(Vec::new()),
+        }
+    }
+
+    /// Poll `textDocument/inlineCompletion` until the supplied quality
+    /// predicate is true or `timeout` elapses.
+    ///
+    /// The deadline is an outer bound on the whole poll, not just the
+    /// gaps between requests: every request is bounded by the remaining
+    /// budget, the inter-poll sleep is capped at that budget, and a match
+    /// that only arrives once the budget is gone is reported as
+    /// [`QualityPollOutcome::Deadline`], not [`QualityPollOutcome::Matched`].
+    /// On deadline the helper returns the most recently observed
+    /// `insertText` values alongside the outcome so the caller can
+    /// distinguish a budget exhaustion from a real mismatch in its
+    /// assertion message. The poll always runs at least one request even
+    /// when the budget is already spent.
+    ///
+    /// Typical use:
+    ///
+    /// ```ignore
+    /// let (texts, outcome) =
+    ///     harness.poll_inline_completion_until_quality(
+    ///         path, line, character, Duration::from_secs(30),
+    ///         |inserts| missing_expected(inserts, expected).is_empty(),
+    ///     )?;
+    /// assert!(outcome == QualityPollOutcome::Matched,
+    ///     "expected inserts did not arrive; {}", outcome.describe());
+    /// ```
+    pub fn poll_inline_completion_until_quality<F>(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+        mut predicate: F,
+    ) -> Result<(Vec<String>, QualityPollOutcome)>
+    where
+        F: FnMut(&[String]) -> bool,
+    {
+        let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        // The poll must run at least once: an empty initial value would let a
+        // predicate that observed the pre-poll state match before any
+        // `inlineCompletion` request landed, hiding the budget exhaustion the
+        // outcome type exists to expose.
+        let mut last_inserts: Vec<String> = Vec::new();
+        loop {
+            // Each request is bounded by the remaining poll budget so one
+            // blocking request cannot outrun the deadline it is meant to
+            // enforce.
+            let remaining = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
+            let items = match self.inline_completion_with_context_and_timeout(
+                relative_path,
+                line,
+                character,
+                json!({ "triggerKind": 1 }),
+                remaining,
+            ) {
+                Ok(items) => items,
+                // A request that errored because the poll budget ran out
+                // under it is a deadline exhaustion, not a harness fault;
+                // any earlier error is a real fault worth propagating.
+                Err(err) => {
+                    if Instant::now() >= deadline {
+                        return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+                    }
+                    return Err(err);
+                }
+            };
+            last_inserts = items
+                .iter()
+                .filter_map(|item| {
+                    item.get("insertText").and_then(Value::as_str).map(str::to_string)
+                })
+                .collect();
+            // A match that arrives only after the budget is gone is still a
+            // budget exhaustion: report the deadline so the receipt
+            // classifier routes it to `BudgetExceeded`.
+            if Instant::now() >= deadline {
+                return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+            }
+            if predicate(&last_inserts) {
+                return Ok((last_inserts, QualityPollOutcome::Matched));
+            }
+            // Cap the inter-poll sleep to the remaining budget so the poll
+            // cannot sleep past its own deadline and start another request
+            // with none left.
+            let remaining = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
+            if remaining.is_zero() {
+                return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+            }
+            // ux-timing: product-retry
+            std::thread::sleep(Duration::from_millis(100).min(remaining));
         }
     }
 
@@ -563,6 +826,9 @@ impl UxHarness {
     /// or an empty vec if the server returned null/empty. `DocumentSymbol`
     /// objects may include nested `children`; use [`document_symbol_names`] for
     /// recursive name assertions.
+    ///
+    /// The LSP result envelope is exactly one array variant or `null`; a bare
+    /// object is a malformed envelope and is rejected rather than normalized.
     pub fn document_symbols(&self, relative_path: &str) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
@@ -575,16 +841,7 @@ impl UxHarness {
         if resp.get("error").is_some() {
             return Err(anyhow!("documentSymbol returned error: {}", resp["error"]));
         }
-        match resp["result"].as_array() {
-            Some(syms) => Ok(syms.clone()),
-            None => {
-                if resp["result"].is_null() {
-                    Ok(Vec::new())
-                } else {
-                    Ok(vec![resp["result"].clone()])
-                }
-            }
-        }
+        normalize_document_symbol_result(&resp["result"])
     }
 
     /// Request workspace symbols (`workspace/symbol`).
@@ -592,12 +849,22 @@ impl UxHarness {
     /// Returns the flat list of workspace symbol objects, or an empty vec if
     /// the server returned null/empty.
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<Value>> {
+        self.workspace_symbols_with_timeout(query, self.config.timeout)
+    }
+
+    /// Request workspace symbols with a caller-supplied RPC deadline budget.
+    /// Useful when an overall scenario deadline must also bound this request.
+    pub fn workspace_symbols_with_timeout(
+        &self,
+        query: &str,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let resp = self.client.request(
             "workspace/symbol",
             json!({
                 "query": query
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("workspace/symbol returned error: {}", resp["error"]));
@@ -650,7 +917,10 @@ impl UxHarness {
     }
 
     /// Wait until the harness observes a ready workspace index.
-    pub fn wait_for_index_ready(&self, timeout: Duration) -> bool {
+    pub fn wait_for_index_ready(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<(), IndexReadyWaitEnd> {
         self.wait_for_index_ready_event_after(0, timeout)
     }
 
@@ -659,27 +929,36 @@ impl UxHarness {
         self.client.peek_events().iter().filter(|event| is_index_ready_event(event)).count()
     }
 
-    /// Wait until the server confirms that a specific active document has
-    /// completed its E2E background indexing pass.
-    pub fn wait_for_active_document_ready(&self, uri: &str, timeout: Duration) -> bool {
-        self.client
-            .wait_for_events(timeout, |events| {
-                events.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
-            })
-            .is_ok()
+    /// Wait until the server confirms parser-core readiness for a specific
+    /// active document's diagnostics and document-symbol effects.
+    pub fn wait_for_active_document_ready(
+        &self,
+        uri: &str,
+        timeout: Duration,
+    ) -> std::result::Result<(), WaitEnd> {
+        self.wait_for_active_document_ready_result(uri, timeout)
+    }
+
+    /// Wait for active-document readiness while retaining the reason a wait ended.
+    /// A live-stream deadline and a closed or failed stream have different causes.
+    pub fn wait_for_active_document_ready_result(
+        &self,
+        uri: &str,
+        timeout: Duration,
+    ) -> std::result::Result<(), observation::WaitEnd> {
+        wait_for_active_document_ready_event(&self.client, uri, timeout)
     }
 
     /// Wait until a ready-index notification arrives after `already_seen` events.
     ///
     /// The wait is event-driven: it blocks on the notification rather than
     /// sampling a counter on a timer.
-    pub fn wait_for_index_ready_event_after(&self, already_seen: usize, timeout: Duration) -> bool {
-        self.client
-            .wait_for_events(timeout, |events| {
-                let seen = events.iter().filter(|event| is_index_ready_event(event)).count();
-                (seen > already_seen).then_some(())
-            })
-            .is_ok()
+    pub fn wait_for_index_ready_event_after(
+        &self,
+        already_seen: usize,
+        timeout: Duration,
+    ) -> std::result::Result<(), IndexReadyWaitEnd> {
+        wait_for_index_ready_event(&self.client, already_seen, timeout)
     }
 
     /// Notify the server that workspace folders changed.
@@ -750,71 +1029,44 @@ impl UxHarness {
     /// for the given file, then return the first published diagnostics collected
     /// for it.
     ///
-    /// Returns an empty vec if the deadline expires with no diagnostics published.
+    /// Returns the typed reason if no publication was observed.
     /// To get the most recently published diagnostics instead, use
     /// [`UxHarness::wait_for_latest_diagnostics`].
-    // Intentional stderr use: a wait that ends without a match must say why in
-    // the test output, or a dead server masquerades as clean diagnostics.
-    // `tracing` has no subscriber in scenario runs, so it would stay silent.
-    #[allow(clippy::print_stderr)]
     pub fn wait_for_diagnostics(
         &self,
         relative_path: &str,
         timeout: std::time::Duration,
-    ) -> Vec<Value> {
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
-        self.client
-            .wait_for_events(timeout, |events| {
-                events.iter().find_map(|event| match event {
-                    LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. }
-                        if *diag_uri == uri =>
-                    {
-                        Some(diagnostics.clone())
-                    }
-                    _ => None,
-                })
-            })
-            .unwrap_or_else(|end| {
-                // An empty vec hides why the wait ended: log the reason so a
-                // dead server never masquerades as clean diagnostics.
-                eprintln!("wait_for_diagnostics ended without a match: {}", end.describe());
-                Vec::new()
-            })
+        DiagnosticsTracker::wait_for_first_uri_event(&self.client, &uri, timeout)
+    }
+
+    /// Wait for the first diagnostics publication for a file, preserving a
+    /// matching empty payload as success and the typed reason for no event.
+    /// Use this for readiness gates where absence must fail closed.
+    pub fn wait_for_diagnostics_event(
+        &self,
+        relative_path: &str,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_first_uri_event(&self.client, &uri, timeout)
     }
 
     /// Wait up to `timeout` for a `textDocument/publishDiagnostics` notification
     /// for the given file, then return the most recently published diagnostics
     /// for the URI, ignoring earlier buffered publications.
     ///
-    /// Returns an empty vec if the deadline expires with no diagnostics published —
-    /// and also when the stream ends first (see [`UxHarness::wait_for_diagnostics`]).
+    /// Returns the typed reason if no publication was observed.
     /// Use this when you need the latest server state after an edit; for the
     /// initial (first published) diagnostics use [`UxHarness::wait_for_diagnostics`].
-    // Same intentional stderr use as `wait_for_diagnostics` above.
-    #[allow(clippy::print_stderr)]
     pub fn wait_for_latest_diagnostics(
         &self,
         relative_path: &str,
         timeout: std::time::Duration,
-    ) -> Vec<Value> {
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
-        self.client
-            .wait_for_events(timeout, |events| {
-                events.iter().rev().find_map(|event| match event {
-                    LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. }
-                        if *diag_uri == uri =>
-                    {
-                        Some(diagnostics.clone())
-                    }
-                    _ => None,
-                })
-            })
-            .unwrap_or_else(|end| {
-                // Same visibility rule as `wait_for_diagnostics` above: never
-                // let an empty vec silently stand in for a dead server.
-                eprintln!("wait_for_latest_diagnostics ended without a match: {}", end.describe());
-                Vec::new()
-            })
+        DiagnosticsTracker::wait_for_latest_uri_event(&self.client, &uri, timeout)
     }
 
     /// Count diagnostics notifications already observed for a file.
@@ -830,31 +1082,53 @@ impl UxHarness {
         relative_path: &str,
         already_seen: usize,
         timeout: std::time::Duration,
-    ) -> Option<Vec<Value>> {
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
         DiagnosticsTracker::wait_for_uri_after_count(&self.client, &uri, already_seen, timeout)
     }
 
+    /// Wait for a diagnostics notification after `already_seen` prior
+    /// notifications for the file whose publication carries the
+    /// `textDocument/didChange` version `expected_version`.
+    ///
+    /// A delayed publication for a previous document version does not satisfy
+    /// this wait; only the publication sent for the awaited edit does.
+    pub fn wait_for_diagnostics_after_count_and_version(
+        &self,
+        relative_path: &str,
+        already_seen: usize,
+        expected_version: i32,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_uri_after_count_and_version(
+            &self.client,
+            &uri,
+            already_seen,
+            i64::from(expected_version),
+            timeout,
+        )
+    }
+
     /// Wait for diagnostics to become empty for a file (cleared UX state).
     ///
-    /// Returns `true` if an explicit `textDocument/publishDiagnostics` with an
+    /// Returns success if an explicit `textDocument/publishDiagnostics` with an
     /// **empty** diagnostics array arrives within `timeout`, or if the latest
     /// buffered notification for that URI already has an empty array.
     ///
-    /// Returns `false` on timeout.  Note that if the server clears diagnostics
-    /// silently (no explicit notification) this method will timeout and return
-    /// `false`.  In that case prefer checking that no *new* non-empty
+    /// Returns the typed reason on timeout or stream end. Note that if the server clears diagnostics
+    /// silently (no explicit notification) this method will time out. In that case prefer checking that no *new* non-empty
     /// notifications arrive within the deadline instead.
     pub fn wait_for_no_diagnostics(
         &self,
         relative_path: &str,
         timeout: std::time::Duration,
-    ) -> bool {
+    ) -> std::result::Result<(), WaitEnd> {
         let uri = self.workspace.uri(relative_path);
         DiagnosticsTracker::wait_for_uri_matching(&self.client, &uri, timeout, |diagnostics| {
             diagnostics.is_empty()
         })
-        .is_some()
+        .map(|_| ())
     }
 
     /// Request go-to-definition.
@@ -1101,7 +1375,10 @@ impl UxHarness {
         timeout: Duration,
     ) -> Result<Vec<Value>> {
         self.change_file_full(relative_path, updated_content)?;
-        Ok(self.wait_for_diagnostics(relative_path, timeout))
+        wait_with_subject(
+            &format!("diagnostics for {relative_path}"),
+            self.wait_for_diagnostics(relative_path, timeout),
+        )
     }
 
     /// Normalize LSP payloads for platform-stable expectations.
@@ -1441,6 +1718,19 @@ pub fn find_perlcritic() -> Option<String> {
     which::which("perlcritic").ok().map(|p| p.to_string_lossy().to_string())
 }
 
+/// Normalize a `textDocument/documentSymbol` result envelope. The LSP result is
+/// exactly one array variant or `null`; a bare object is a malformed envelope
+/// and is rejected instead of being silently wrapped into a one-element array.
+fn normalize_document_symbol_result(result: &Value) -> Result<Vec<Value>> {
+    match result.as_array() {
+        Some(syms) => Ok(syms.clone()),
+        None if result.is_null() => Ok(Vec::new()),
+        None => Err(anyhow!(
+            "documentSymbol result must be DocumentSymbol[] | SymbolInformation[] | null, got: {result}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod normalize_tests {
     #![expect(
@@ -1449,13 +1739,130 @@ mod normalize_tests {
     )]
     use super::{
         document_symbol_names, find_binary_near_exe, is_active_document_ready_event,
-        is_index_ready_event, is_truthy_env_value, normalize_lsp_payload,
-        normalize_uri_for_expectations,
+        is_index_ready_event, is_truthy_env_value, normalize_document_symbol_result,
+        normalize_lsp_payload, normalize_uri_for_expectations,
+        wait_for_active_document_ready_event, wait_for_index_ready_event, wait_with_subject,
     };
-    use crate::LspEvent;
+    use crate::{Inbox, LspEvent, StreamEnd, WaitEnd};
+    use perl_test_must::must_err_with;
     use serde_json::{Value, json};
     use std::path::Path;
+    use std::time::Duration;
     use tempfile::TempDir;
+
+    #[test]
+    fn index_wait_retains_limited_state_and_typed_terminal_reason() -> anyhow::Result<()> {
+        let limited = json!({"ready": false, "state": "ready_limited"});
+        let inbox = Inbox::new();
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/index-ready", "params": limited
+        }));
+        let timeout = Duration::from_millis(20);
+        let deadline = wait_for_index_ready_event(&inbox, 0, timeout);
+        let Err(deadline) = deadline else {
+            anyhow::bail!("limited state must not satisfy ready:true: {deadline:?}");
+        };
+        anyhow::ensure!(deadline.end == WaitEnd::Deadline { timeout }, "{deadline:?}");
+        anyhow::ensure!(deadline.last_observed == Some(limited.clone()), "{deadline:?}");
+        let assertion =
+            wait_with_subject::<(), _>("index readiness for workspace", Err(deadline.clone()))
+                .err()
+                .map(|error| error.to_string())
+                .ok_or_else(|| anyhow::anyhow!("expected index readiness assertion failure"))?;
+        anyhow::ensure!(
+            assertion.contains("ready_limited")
+                && assertion.contains("deadline expired")
+                && assertion.contains("workspace"),
+            "assertion lost subject or observed outcome: {assertion}"
+        );
+
+        let absent = Inbox::new();
+        absent.close(StreamEnd::ServerClosed);
+        let closed = wait_for_index_ready_event(&absent, 0, timeout);
+        let Err(closed) = closed else {
+            anyhow::bail!("closed stream must not satisfy readiness: {closed:?}");
+        };
+        anyhow::ensure!(
+            closed.end == WaitEnd::Ended(StreamEnd::ServerClosed) && closed.last_observed.is_none(),
+            "{closed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn index_wait_keeps_ready_predicate_and_transport_end() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/index-ready",
+            "params": {"ready": false, "state": "building"}
+        }));
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/index-ready",
+            "params": {"ready": true, "state": "ready"}
+        }));
+        anyhow::ensure!(
+            wait_for_index_ready_event(&inbox, 0, Duration::ZERO) == Ok(()),
+            "an observed ready:true must satisfy readiness"
+        );
+
+        let failed = Inbox::new();
+        failed.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/other",
+            "params": {"ready": true}
+        }));
+        failed.close(StreamEnd::TransportFailure { detail: "invalid frame".to_string() });
+        let result = wait_for_index_ready_event(&failed, 0, Duration::from_secs(1));
+        let Err(end) = result else {
+            anyhow::bail!("unrelated event must not satisfy readiness: {result:?}");
+        };
+        anyhow::ensure!(
+            end.end
+                == WaitEnd::Ended(StreamEnd::TransportFailure {
+                    detail: "invalid frame".to_string()
+                })
+                && end.last_observed.is_none(),
+            "transport failure must remain typed and unrelated event ignored: {end:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn active_document_wait_keeps_uri_and_terminal_reason() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(json!({
+            "jsonrpc": "2.0", "method": "perl-lsp/active-document-ready",
+            "params": {"uri": "file:///other.pl", "generation": 1}
+        }));
+        inbox.close(StreamEnd::ServerClosed);
+        let result = wait_for_active_document_ready_event(
+            &inbox,
+            "file:///wanted.pl",
+            Duration::from_secs(1),
+        );
+        anyhow::ensure!(
+            result == Err(WaitEnd::Ended(StreamEnd::ServerClosed)),
+            "other URI cannot satisfy readiness and orderly close must remain typed: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn document_symbol_result_accepts_arrays_and_null_only() {
+        let array = json!([{ "name": "greet", "kind": 12 }]);
+        assert_eq!(
+            normalize_document_symbol_result(&array).unwrap(),
+            vec![json!({ "name": "greet", "kind": 12 })]
+        );
+        assert!(normalize_document_symbol_result(&Value::Null).unwrap().is_empty());
+        let bare = json!({ "name": "greet", "kind": 12 });
+        let error = must_err_with(
+            normalize_document_symbol_result(&bare),
+            "a bare object is a malformed result envelope",
+        );
+        assert!(
+            error.to_string().contains("must be DocumentSymbol[] | SymbolInformation[] | null")
+        );
+    }
 
     #[test]
     fn document_symbol_names_collects_top_level_and_nested_names() -> anyhow::Result<()> {
@@ -1824,5 +2231,63 @@ mod strict_binary_guard_subprocess_tests {
         );
 
         Ok(())
+    }
+}
+
+// ─────────────── Deadline-classified quality poll (#16103) ──────
+
+#[cfg(test)]
+mod quality_poll_outcome_tests {
+    use super::{Duration, QualityPollOutcome};
+
+    /// The `Matched` arm is the boring outcome and renders a stable sentence.
+    /// Pinning the wording keeps human and CLI readers in sync with the
+    /// receipt classifier, which keys on the literal `deadline expired after`
+    /// substring in the `Deadline` arm only.
+    #[test]
+    fn matched_describes_itself_without_deadline_marker() {
+        let described = QualityPollOutcome::Matched.describe();
+        assert_eq!(described, "poll satisfied before the deadline");
+        assert!(
+            !described.contains("deadline expired"),
+            "matched arm must not contain the deadline marker; got {described}"
+        );
+    }
+
+    /// `Deadline { timeout }` must emit the literal substring
+    /// `deadline expired after` plus the timeout in milliseconds, in the
+    /// exact wording the receipt classifier keys on. Without this marker a
+    /// load-induced budget exhaustion is reported as a generic
+    /// `assertion failed` and routed to `fix_provider` instead of
+    /// `triage_timeout` (see `xtask/src/tasks/ux_regression_receipt.rs:39`,
+    /// the `DEADLINE_MARKER` constant, and the `infer_failure_class` arm
+    /// below it at line 422).
+    #[test]
+    fn deadline_describes_timeout_in_milliseconds_and_includes_marker() {
+        let described =
+            QualityPollOutcome::Deadline { timeout: Duration::from_secs(30) }.describe();
+        assert!(
+            described.contains("deadline expired after"),
+            "missing the receipt-classifier marker; got: {described}"
+        );
+        assert!(described.contains("30000"), "missing the timeout-in-ms token; got: {described}");
+        assert!(
+            described.contains("with the stream still live"),
+            "missing the 'stream still live' clause; got: {described}"
+        );
+    }
+
+    /// The marker text must remain stable across the integer-ms conversion.
+    /// `as_millis()` rounds down for sub-millisecond durations; pin the
+    /// floor-zero behavior so a future `Duration::from_micros(…)` change
+    /// does not silently drop the marker.
+    #[test]
+    fn deadline_marker_survives_sub_second_rounding() {
+        let described =
+            QualityPollOutcome::Deadline { timeout: Duration::from_micros(999) }.describe();
+        assert!(
+            described.contains("deadline expired after 0ms"),
+            "sub-ms timeouts must still emit the marker; got: {described}"
+        );
     }
 }

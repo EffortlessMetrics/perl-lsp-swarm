@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "The symbol-table prepass no longer treats a line-initial POD directive directly after a code line ending with a bare `/` as a POD opener: the directive may be the body of a multiline bare regex (`my $r = /` newline `=pod`), which the prepass cannot track, and trusting it hid every following `sub` declaration so later `name /regex/` sites could disagree with the lexer. The guard arms only from code-state scans, quote-like closers never arm it, and it clears after one line so a real POD opener is delayed by at most one line."
+time: 2026-10-05T00:00:00Z
+custom:
+  PR: "17324"
+  Slug: prepass-pod-gate-bare-regex
+  Breaking: "no"

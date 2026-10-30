@@ -20,6 +20,49 @@ fn parse(src: &str) -> Result<perl_parser_core::Node> {
     Ok(parser.parse()?)
 }
 
+fn assert_parsed_wrapper_initializer(source: &str) -> Result<()> {
+    let ast = parse(source)?;
+    fn has_wrapper_initializer(node: &perl_parser_core::Node) -> bool {
+        if let perl_ast::NodeKind::FunctionCall { name, args } = &node.kind
+            && matches!(name.as_str(), "const" | "Readonly")
+            && args.iter().any(|arg| {
+                matches!(
+                    &arg.kind,
+                    perl_ast::NodeKind::VariableDeclaration { initializer: Some(_), .. }
+                        | perl_ast::NodeKind::VariableListDeclaration { initializer: Some(_), .. }
+                )
+            })
+        {
+            return true;
+        }
+        let mut found = false;
+        node.for_each_child(|child| found |= has_wrapper_initializer(child));
+        found
+    }
+    assert!(has_wrapper_initializer(&ast), "fixture must exercise a wrapper initializer");
+    let declarations = extract_symbol_decls(&ast, Some("main"));
+    assert_eq!(declarations.len(), 2, "one constant and one nested named sub");
+    assert_eq!(declarations[0].kind, SymbolKind::Constant);
+    assert_eq!(declarations[0].name, "X");
+    assert_eq!(declarations[0].anchor_span, Some((26, 28)));
+    assert_eq!(declarations[1].kind, SymbolKind::Subroutine);
+    assert_eq!(declarations[1].name, "ub");
+    assert_eq!(declarations[1].qualified_name, "main::ub");
+    assert_eq!(declarations[1].full_span, (37, 46));
+    assert_eq!(declarations[1].anchor_span, Some((41, 43)));
+    Ok(())
+}
+
+#[test]
+fn const_fast_real_parser_preserves_initializer_declarations() -> Result<()> {
+    assert_parsed_wrapper_initializer("use Const::Fast; const my $X = sub { sub ub {} };")
+}
+
+#[test]
+fn readonly_real_parser_preserves_initializer_declarations() -> Result<()> {
+    assert_parsed_wrapper_initializer("use Readonly; Readonly my $X = sub { sub ub {} };")
+}
+
 #[test]
 fn surface_bank_covers_representative_workspace_parity_constructs() -> Result<()> {
     let cases = vec![
