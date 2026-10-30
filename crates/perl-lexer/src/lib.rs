@@ -211,10 +211,9 @@ pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
+pub use unicode::is_perl_identifier_continue;
 
-use unicode::{
-    is_perl_identifier_continue, is_perl_identifier_start, is_perl_package_segment_start,
-};
+use unicode::{is_perl_identifier_start, is_perl_package_segment_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
@@ -1124,7 +1123,7 @@ impl<'a> PerlLexer<'a> {
         // runs the unterminated-quote recovery, which consumes through
         // end-of-line: it errors when a newline follows (#12363) and silently
         // swallows the rest of the line otherwise. A multiplication such as
-        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        // `$a * ";"` is excluded using the lexer mode and existing operand exclusions.
         if matches!(quote, '"' | '\'' | '`')
             && self.peek_char(1) == Some(';')
             && self.glob_sigil_precedes()
@@ -1151,6 +1150,11 @@ impl<'a> PerlLexer<'a> {
     /// position (preceded by an operator or the start of input, not by an
     /// operand — `$a * x` is multiplication, `= *x` is a glob).
     fn glob_sigil_precedes(&self) -> bool {
+        // A multiplication operator expects its right operand; a glob term
+        // expects an operator. Reuse that Unicode-aware token classification.
+        if self.mode != LexerMode::ExpectOperator {
+            return false;
+        }
         let bytes = self.input.as_bytes();
         let mut index = self.position;
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
@@ -1163,15 +1167,16 @@ impl<'a> PerlLexer<'a> {
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
             index -= 1;
         }
-        if index == 0 {
-            return true;
-        }
-        let before = bytes[index - 1] as char;
-        !(before.is_ascii_alphanumeric()
-            || matches!(
-                before,
-                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
-            ))
+        // The ASCII star/whitespace scan leaves `index` on a scalar boundary.
+        // Keep the historical ASCII exclusions: widening this predicate to
+        // Unicode identifiers would mistake preceding comment text for operands.
+        !self.input[..index].chars().next_back().is_some_and(|before| {
+            before.is_ascii_alphanumeric()
+                || matches!(
+                    before,
+                    '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+                )
+        })
     }
 
     #[inline]

@@ -579,6 +579,8 @@ mod tests {
             "quickfix",
             "refactor",
             "refactor.extract",
+            "refactor.extract.variable",
+            "refactor.extract.subroutine",
             "refactor.rewrite",
             "source.fixAll",
             "source.modernize",
@@ -823,10 +825,13 @@ mod tests {
     }
 
     /// Assert `workspaceSymbolProvider` is advertised with `resolveProvider: true`
-    /// when `workspace_symbol_resolve` is enabled.
+    /// when the workspace-symbol request and its resolve option are both enabled.
     ///
     /// The resolve variant is required for on-demand name resolution of
-    /// workspace symbols without serializing the full detail up-front.
+    /// workspace symbols without serializing the full detail up-front. The
+    /// resolve option cannot be advertised while the parent request is disabled
+    /// (`sections::apply_symbol_and_workspace_features`), so the fixture enables
+    /// both flags.
     #[test]
     fn workspace_symbol_provider_advertises_resolve_when_enabled() {
         // Resolve advertisement requires the parent workspace_symbol request:
@@ -863,6 +868,26 @@ mod tests {
         assert!(
             capabilities_for(resolve_only).workspace_symbol_provider.is_none(),
             "workspace_symbol_resolve alone must not advertise the provider"
+        );
+    }
+
+    /// Assert `workspaceSymbolProvider` is absent when the parent workspace-symbol
+    /// request is disabled, even when the resolve option is enabled.
+    ///
+    /// Resolve options cannot advertise a disabled parent request. This is the
+    /// `(parent=false, resolve=true)` cell of the truth table proven in
+    /// `crates/perllsp/tests/ripr_seam_proof_capability_negotiation.rs`; it is
+    /// asserted here as well because that proof is an integration target, while
+    /// this module is exercised by the `--lib` gate.
+    #[test]
+    fn workspace_symbol_provider_absent_when_parent_disabled() {
+        let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        let caps = capabilities_for(flags);
+
+        assert!(
+            caps.workspace_symbol_provider.is_none(),
+            "workspaceSymbolProvider must be absent when workspace_symbol is disabled, \
+             even if workspace_symbol_resolve is enabled"
         );
     }
 

@@ -1716,8 +1716,10 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 // ---------------------------------------------------------------------------
 describe('suggestAiCompletionIfSupported (#1634)', () => {
   function makeWorkspaceState(shown = false) {
+    // #16585 review: the receipt is versioned per corrected gate; the
+    // unversioned key belonged to the obsolete pre-gate prompt.
     const store = new Map<string, unknown>([
-      ['perl-lsp.aiCompletion.firstRunNotificationShown', shown],
+      ['perl-lsp.aiCompletion.firstRunNotificationShown.v2', shown],
     ]);
     return {
       get: jest.fn((key: string, defaultValue?: unknown) =>
@@ -1746,6 +1748,16 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
   const clientWithoutInline: CapabilityClient = {
     initializeResult: { capabilities: { hoverProvider: true } },
   };
+  // Gated on a server that can actually arm the backend, not on
+  // `inlineCompletionProvider`, which every shipped profile advertises (#16585).
+  const clientWithActivation: CapabilityClient = {
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
+  };
 
   afterEach(() => {
     jest.clearAllMocks();
@@ -1758,7 +1770,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     context.workspaceState = makeWorkspaceState(false);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Enable');
 
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('AI-powered inline completions'),
@@ -1772,7 +1784,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
       vscode.ConfigurationTarget.Global,
     );
     expect(context.workspaceState.update).toHaveBeenCalledWith(
-      'perl-lsp.aiCompletion.firstRunNotificationShown',
+      'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
       true,
     );
   });
@@ -1785,11 +1797,25 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
+  test('stays silent when only inline-completion support is advertised (#16585)', async () => {
+    // The dead end this issue removes: the journey fired for every user and
+    // reported a success the server cannot honour.
+    const update = mountConfig(false);
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(context.workspaceState.update).not.toHaveBeenCalled();
+  });
+
   test('stays silent when AI completion is already enabled', async () => {
     mountConfig(true);
     const context = makeContext();
     context.workspaceState = makeWorkspaceState(false);
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
@@ -1797,7 +1823,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     mountConfig(false);
     const context = makeContext();
     context.workspaceState = makeWorkspaceState(true);
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
