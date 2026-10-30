@@ -272,6 +272,18 @@ describe('warnConfiguredServerPathMissing (perl-lsp.serverPath fallback, #16535)
     );
   });
 
+  test('an unavailable fallback does not consume the once-per-session warning', () => {
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'unavailable');
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+
+    // A later resolution with a real fallback must still warn, and only then
+    // does the once-per-session guard latch.
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
+  });
+
   test.each([
     ['bundled', 'using the bundled binary instead.'],
     ['path', 'using a binary from PATH instead.'],

@@ -558,6 +558,35 @@ void test('published smoke rejects health and Test Explorer selectors before loa
   }
 });
 
+void test('published smoke rejects health and update-closure selectors before loading a suite', async () => {
+  const previousFailure = process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+  const previousClosure = process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE;
+  const originalAddFile = Mocha.prototype.addFile;
+  let suiteLoadCalls = 0;
+  Mocha.prototype.addFile = function () {
+    suiteLoadCalls += 1;
+    return this;
+  };
+  try {
+    process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE = '1';
+    process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE = '1';
+    await assert.rejects(runPublishedSuite(), /Published smoke selectors are mutually exclusive/);
+    assert.equal(suiteLoadCalls, 0);
+  } finally {
+    Mocha.prototype.addFile = originalAddFile;
+    if (previousFailure === undefined) {
+      delete process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+    } else {
+      process.env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE = previousFailure;
+    }
+    if (previousClosure === undefined) {
+      delete process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE;
+    } else {
+      process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE = previousClosure;
+    }
+  }
+});
+
 void test('candidate-bound Marketplace latest is refused before installation', () => {
   assert.throws(
     () =>

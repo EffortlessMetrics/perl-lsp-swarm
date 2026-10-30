@@ -2067,7 +2067,7 @@ export function warnConfiguredServerPathMissing(
   if (serverPathMissingWarningShown) {
     return;
   }
-  serverPathMissingWarningShown = true;
+  serverPathMissingWarningShown = source !== 'unavailable';
   const fallback =
     source === 'downloaded'
       ? 'using the auto-downloaded binary instead.'

@@ -955,6 +955,7 @@ describe('Versioned managed install layout', () => {
     expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
     expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
     expect(readManagedCurrentSelection(baseDir)?.selection_generation).toBe(3);
+    expect(fs.existsSync(path.join(baseDir, 'current.tmp'))).toBe(false);
   });
 
   test('getLocalBinaryPath resolves the policy-governed current candidate', () => {

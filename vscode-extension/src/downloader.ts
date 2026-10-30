@@ -2186,6 +2186,7 @@ export class BinaryDownloader {
     try {
       fs.renameSync(tmpPath, pointerPath);
     } catch (error: unknown) {
+      fs.rmSync(tmpPath, { force: true });
       // A failed rename follows the selection write. Restore the old
       // candidate as a new generation; if that cannot be proven, surface
       // uncertainty rather than claiming the previous selection survived.
