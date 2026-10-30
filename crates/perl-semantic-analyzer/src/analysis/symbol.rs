@@ -3852,6 +3852,24 @@ mod tests {
         );
     }
 
+    /// Issue #18029 cross-seam probe: the inverted-slice inputs that panicked
+    /// `arg_contains_exporter` (see export_analyzer.rs) must not panic this
+    /// seam either. This seam's `start < end` guard compares same-frame
+    /// absolute offsets: for an ASCII delimiter the slice starts one byte
+    /// later, and a multi-byte self-delimited `qw` cannot overlap itself in
+    /// UTF-8, so the guard already implies `start + open.len_utf8() <= end`.
+    /// Unterminated or degenerate args fall back to the whole-arg name.
+    #[test]
+    fn class_tiny_qw_issue_18029_inverted_slice_inputs_do_not_panic() {
+        assert_eq!(expand_class_tiny_arg_to_names("qw\u{2022}"), vec!["qw\u{2022}".to_string()]);
+        assert_eq!(expand_class_tiny_arg_to_names("qw/"), vec!["qw/".to_string()]);
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw\u{ab}Exporter\u{bb}"),
+            vec!["qw\u{ab}Exporter\u{bb}".to_string()]
+        );
+        assert_eq!(expand_class_tiny_arg_to_names("qw x"), vec!["qw x".to_string()]);
+    }
+
     /// DESTROY/AUTOLOAD are interpreter special-method hooks (perlobj), not
     /// real `UNIVERSAL::` subs (perldoc.perl.org/UNIVERSAL lists exactly
     /// `isa`, `can`, `DOES`, `VERSION`). `is_universal_method` must reject

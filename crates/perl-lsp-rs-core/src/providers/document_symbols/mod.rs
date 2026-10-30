@@ -74,7 +74,19 @@ pub fn source_backed_document_symbols_from_ast(
     let declarations = extract_symbol_decls(ast, None);
     let mut declaration_names: DeclarationNames<'_> = HashMap::new();
     for declaration in &declarations {
-        if matches!(declaration.kind, SymbolKind::Package | SymbolKind::Subroutine) {
+        // ADJUST blocks deliberately use a Method node without a name span.
+        // Keep that unported block shape on the compatibility path; a named
+        // `method ADJUST` has an anchor and participates in the exact join.
+        if declaration.kind == SymbolKind::Method
+            && declaration.name == "ADJUST"
+            && declaration.anchor_span.is_none()
+        {
+            continue;
+        }
+        if matches!(
+            declaration.kind,
+            SymbolKind::Package | SymbolKind::Subroutine | SymbolKind::Method
+        ) {
             let key = (
                 declaration.kind,
                 declaration.full_span.0,
@@ -205,6 +217,9 @@ struct PendingSymbol {
 }
 
 fn sort_pending_indices(indices: &mut [usize], pending: &[Option<PendingSymbol>]) {
+    // #18111: (priority, start, end, name) ties must not fall through to the
+    // HashMap-derived bucket order of the flattened symbol table; `kind` is
+    // the final deterministic tiebreak. Order only — no entry or kind changes.
     indices.sort_by(|&a, &b| {
         let (Some(left), Some(right)) = (&pending[a], &pending[b]) else {
             return std::cmp::Ordering::Equal;
@@ -214,12 +229,14 @@ fn sort_pending_indices(indices: &mut [usize], pending: &[Option<PendingSymbol>]
             left.start,
             left.end,
             left.document_symbol.name.as_str(),
+            left.document_symbol.kind,
         )
             .cmp(&(
                 right.document_symbol.sort_priority,
                 right.start,
                 right.end,
                 right.document_symbol.name.as_str(),
+                right.document_symbol.kind,
             ))
     });
 }
@@ -454,25 +471,38 @@ fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
     WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end)
 }
 
-/// Project existing canonical package/subroutine name spans. Known missing,
+/// Project existing canonical package/subroutine/named-method spans. Known missing,
 /// conflicting or invalid anchors cannot fall back to source-search inference.
 fn symbol_name_range(
     source: &str,
     symbol: &Symbol,
     declaration_names: &DeclarationNames<'_>,
 ) -> Option<WireRange> {
-    let key = (symbol.kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
-    if let Some(declaration) = declaration_names.get(&key) {
-        let declaration = (*declaration)?;
-        let (start, end) = declaration.anchor_span?;
-        if start >= end
-            || start < declaration.full_span.0
-            || end > declaration.full_span.1
-            || source.get(start..end).is_none()
-        {
-            return None;
+    // The compatibility extractor reclassifies a framework `package` as
+    // Class or Role, while its canonical declaration record stays Package
+    // (#17924). A reclassified namespace therefore retries the Package key
+    // with the same exact name and full span; the fail-closed handling of a
+    // present record (conflicting/missing/invalid anchor) is unchanged.
+    // Native class/role declarations have no Package record at the same
+    // span, so they still take the compatibility path below.
+    let lookup_kinds: &[SymbolKind] = match symbol.kind {
+        SymbolKind::Class | SymbolKind::Role => &[symbol.kind, SymbolKind::Package],
+        _ => &[symbol.kind],
+    };
+    for &lookup_kind in lookup_kinds {
+        let key = (lookup_kind, symbol.location.start, symbol.location.end, symbol.name.as_str());
+        if let Some(declaration) = declaration_names.get(&key) {
+            let declaration = (*declaration)?;
+            let (start, end) = declaration.anchor_span?;
+            if start >= end
+                || start < declaration.full_span.0
+                || end > declaration.full_span.1
+                || source.get(start..end).is_none()
+            {
+                return None;
+            }
+            return Some(WireRange::from_byte_offsets(source, start, end));
         }
-        return Some(WireRange::from_byte_offsets(source, start, end));
     }
     // Compatibility for unported declaration families and synthesized symbols
     // (phasers, typeglob callables, framework members, etc.). This bounded slice
@@ -967,6 +997,108 @@ mod tests {
         Ok(())
     }
 
+    /// #18111: top-level and child outline order must be deterministic.
+    ///
+    /// The fixture combines the two probe shapes that permuted across
+    /// processes before the deterministic sorts: a global variable and a sub
+    /// declared before the first package (symbols that used to follow the
+    /// symbol-table HashMap bucket order at the top level), and two
+    /// Class::Tiny attribute batches whose members all share one
+    /// `use Class::Tiny` span, so the child sort keys tie beyond
+    /// (priority, start, end) and used to keep HashMap insertion order.
+    /// Every iteration rebuilds the table from a fresh parse, so the symbol
+    /// table's HashMaps re-seed; the exact pinned order must hold each time.
+    #[test]
+    fn document_symbols_order_deterministic_multiple_packages_shared_class_tiny_span()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $global_thing = 1;\nsub before_pkg { 2 }\npackage Alpha;\nuse Class::Tiny qw(zeta alpha middle);\nsub method1 { 1 }\npackage Beta;\nuse Class::Tiny qw(zulu able mike);\nsub method2 { 2 }\n";
+        // LSP SymbolKind numeric values below: 5 = Class, 7 = Property,
+        // 12 = Function, 13 = Variable.
+        let expected_top: Vec<(&str, u32)> =
+            vec![("$global_thing", 13), ("before_pkg", 12), ("Alpha", 5), ("Beta", 5)];
+        let expected_children: Vec<(&str, Vec<(&str, u32)>)> = vec![
+            ("Alpha", vec![("alpha", 7), ("middle", 7), ("zeta", 7), ("method1", 12)]),
+            ("Beta", vec![("able", 7), ("mike", 7), ("zulu", 7), ("method2", 12)]),
+        ];
+        let mut pinned: Option<Vec<DocumentSymbol>> = None;
+        for _ in 0..32 {
+            let ast = must(Parser::new(source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, source);
+            let top_identities: Vec<(&str, u32)> =
+                result.symbols.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+            assert_eq!(
+                top_identities, expected_top,
+                "top-level order and kinds must be pinned: {:?}",
+                result.symbols
+            );
+            for (package, children) in &expected_children {
+                let symbol = result
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == *package)
+                    .ok_or_else(|| format!("no {package} symbol"))?;
+                let child_identities: Vec<(&str, u32)> =
+                    symbol.children.iter().map(|c| (c.name.as_str(), c.kind)).collect();
+                assert_eq!(
+                    child_identities, *children,
+                    "{package} children must be pinned: shared-span Class::Tiny attributes sort by name, then the method: {:?}",
+                    symbol.children
+                );
+            }
+            assert_ranges_contained(&result.symbols);
+            if let Some(previous) = &pinned {
+                assert_eq!(
+                    &result.symbols, previous,
+                    "the complete outline must be identical for every fresh HashMap seeding"
+                );
+            }
+            pinned = Some(result.symbols);
+        }
+        Ok(())
+    }
+
+    /// #18111: `kind` is the final child-order tiebreak. When
+    /// (priority, start, end, name) tie exactly, the lower LSP `SymbolKind`
+    /// number must sort first regardless of the input (HashMap bucket) order;
+    /// a stable sort without the `kind` comparison would keep the input
+    /// order instead.
+    #[test]
+    fn child_sort_kind_tiebreak_orders_full_key_tie_from_either_input_order() {
+        let tied = |kind: u32| PendingSymbol {
+            document_symbol: DocumentSymbol {
+                name: "twin".to_string(),
+                detail: String::new(),
+                kind,
+                range: perl_position_tracking::WireRange {
+                    start: perl_position_tracking::WirePosition { line: 0, character: 0 },
+                    end: perl_position_tracking::WirePosition { line: 1, character: 6 },
+                },
+                selection_range: perl_position_tracking::WireRange {
+                    start: perl_position_tracking::WirePosition { line: 0, character: 4 },
+                    end: perl_position_tracking::WirePosition { line: 0, character: 8 },
+                },
+                children: Vec::new(),
+                sort_priority: CALLABLE_DOCUMENT_SYMBOL_PRIORITY,
+            },
+            start: 0,
+            end: 20,
+            extent: (0, 20),
+            container: false,
+        };
+        // LSP SymbolKind values: 7 = Property, 12 = Function.
+        let pending = vec![Some(tied(12)), Some(tied(7))];
+        let mut forward = vec![0, 1];
+        sort_pending_indices(&mut forward, &pending);
+        assert_eq!(forward, vec![1usize, 0], "kind 7 (Property) must precede kind 12 (Function)");
+        let mut reversed = vec![1usize, 0];
+        sort_pending_indices(&mut reversed, &pending);
+        assert_eq!(
+            reversed,
+            vec![1usize, 0],
+            "the `kind` tiebreak, not the input order, must decide a full-key tie"
+        );
+    }
+
     /// Review regression (#18184): `use EV` synthesizes a framework class
     /// symbol at the import site. It declares no package region, so it
     /// must not end P's extent or absorb the following sub.
@@ -1293,6 +1425,72 @@ mod tests {
             range_char_span
         );
 
+        Ok(())
+    }
+
+    fn find_named<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+        for symbol in symbols {
+            if symbol.name == name {
+                return Some(symbol);
+            }
+            if let Some(found) = find_named(&symbol.children, name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn framework_package_name_selection_keeps_package_anchor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #17924: the compatibility extractor reclassifies a framework
+        // package as Class/Role, but the outline selection must stay on the
+        // declared name (chars 8-11), not slide into the `package` keyword
+        // (chars 4-7, the first substring occurrence of "age").
+        // (framework module, expected wire kind: Class = 5, Role = 11)
+        for (module, expected_kind) in [
+            ("Moo", 5),
+            ("Moose", 5),
+            ("Moo::Role", 11),
+            ("Moose::Role", 11),
+            ("Role::Tiny", 11),
+            ("Class::Tiny", 5),
+        ] {
+            let source = format!("package age {{ use {module}; }}");
+            let ast = must(Parser::new(&source).parse());
+            let result = source_backed_document_symbols_from_ast(&ast, &source);
+            let symbol = find_named(&result.symbols, "age")
+                .ok_or_else(|| format!("expected 'age' symbol for {module}"))?;
+            assert_eq!(
+                (symbol.selection_range.start.line, symbol.selection_range.start.character),
+                (0, 8),
+                "{module}: selection must start at the declared name"
+            );
+            assert_eq!(
+                (symbol.selection_range.end.line, symbol.selection_range.end.character),
+                (0, 11),
+                "{module}: selection must end after the declared name"
+            );
+            assert_eq!(
+                symbol.kind, expected_kind,
+                "{module}: wire kind stays the reclassified Class/Role kind"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn plain_package_name_selection_keeps_package_anchor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "package age;";
+        let ast = must(Parser::new(source).parse());
+        let result = source_backed_document_symbols_from_ast(&ast, source);
+        let symbol = find_named(&result.symbols, "age").ok_or("expected 'age' package symbol")?;
+        assert_eq!(
+            (symbol.selection_range.start.character, symbol.selection_range.end.character),
+            (8, 11)
+        );
+        assert_eq!(symbol.kind, 2, "plain package keeps Module kind");
         Ok(())
     }
 

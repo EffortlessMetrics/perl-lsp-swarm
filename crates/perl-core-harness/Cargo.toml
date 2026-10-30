@@ -29,7 +29,6 @@ winapi = { version = "0.3.9", features = ["fileapi", "handleapi", "winnt"] }
 nix = { version = "0.31.3", features = ["signal", "process"] }
 
 [dev-dependencies]
-perl-tdd-support = { workspace = true }
 perl-test-must = { workspace = true }
 
 [lints]

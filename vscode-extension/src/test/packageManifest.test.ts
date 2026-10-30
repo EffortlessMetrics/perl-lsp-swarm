@@ -96,7 +96,7 @@ describe('first-run demo content (#16591)', () => {
   test('bundled demo has exactly the same files and bytes as the source demo', () => {
     const sourceFiles = filesUnder(sourceRoot).sort();
     expect(sourceFiles).toEqual(
-      ['README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl']
+      ['.perl-lsp.toml', 'README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl']
         .map((file) => path.normalize(file))
         .sort(),
     );
@@ -105,6 +105,24 @@ describe('first-run demo content (#16591)', () => {
       expect(fs.readFileSync(path.join(bundledRoot, file))).toEqual(
         fs.readFileSync(path.join(sourceRoot, file)),
       );
+    }
+  });
+
+  test('both demo copies pin include_paths to the directory the demo uses (#16592)', () => {
+    // A `.perl-lsp.toml` that merely exists would leave the demo exactly as
+    // unpinned as before, so assert the *content* names the real module dir.
+    for (const root of [sourceRoot, bundledRoot]) {
+      const config = fs.readFileSync(path.join(root, '.perl-lsp.toml'), 'utf8');
+      // Pin the whole uncommented, nonblank document to its fixed TOML form.
+      // A textual `[perl]` table inside a multiline string must not satisfy
+      // this assertion, and malformed syntax must not fall back to defaults.
+      const entries = config
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^[ \t]+|[ \t]+$/g, ''))
+        .filter((line) => line.length > 0 && !line.startsWith('#'));
+      expect(entries).toEqual(['[perl]', 'include_paths = ["lib"]']);
+      // And that directory is the one holding the demo's modules.
+      expect(fs.existsSync(path.join(root, 'lib', 'Utils.pm'))).toBe(true);
     }
   });
 

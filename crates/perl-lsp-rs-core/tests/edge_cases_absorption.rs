@@ -10,7 +10,7 @@
 //! 3. Cross-module dependencies within features submodules
 //! 4. Downstream consumer integration patterns
 //! 5. Capability map edge cases (empty input, large input)
-//! 6. Type identity and re-export correctness
+//! 6. Type identity within core (facade checks live in perl-lsp-rs/tests/core_facade_contract.rs)
 
 #[allow(unused_imports)]
 use perl_tdd_support::must_some;
@@ -150,30 +150,6 @@ fn test_capability_map_duplicate_features_idempotent() -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Test that capability_map module is accessible from both core and facade.
-///
-/// Wave F acceptance criterion: capability_map should be accessible as both:
-/// - perl_lsp_rs_core::capability_map (direct)
-/// - perl_lsp::capability_map (facade re-export)
-#[test]
-fn test_capability_map_dual_access_paths() -> Result<(), Box<dyn std::error::Error>> {
-    use perl_lsp::capability_map as facade_map;
-    use perl_lsp_rs_core::capability_map as core_map;
-
-    // Both paths should resolve to the same function
-    let facade_result = facade_map::caps_from_feature_ids(&[]);
-    let core_result = core_map::caps_from_feature_ids(&[]);
-
-    // Results should be structurally identical
-    assert_eq!(
-        std::any::type_name_of_val(&facade_result),
-        std::any::type_name_of_val(&core_result),
-        "facade and core capability_map should return identical types"
-    );
-
-    Ok(())
-}
-
 /// Test governance consumer shape: 5 of 8 absorbed crates are used by governance.
 ///
 /// perl-lsp-feature-governance (Wave G3, published) depends on:
@@ -274,26 +250,6 @@ fn test_grid_reexports_policy_feature_profile() -> Result<(), Box<dyn std::error
     assert_eq!(
         grid_type, policy_type,
         "grid::FeatureProfile should be the same as policy::FeatureProfile (re-export)"
-    );
-
-    Ok(())
-}
-
-/// Test that facade re-exports don't create type duplication.
-///
-/// Edge case: when perl-lsp re-exports from perl-lsp-rs-core, do the types
-/// remain identical, or are they duplicated?
-#[test]
-fn test_facade_reexports_preserve_type_identity() -> Result<(), Box<dyn std::error::Error>> {
-    use perl_lsp::features::contracts::FeatureProfileKind as FacadeContractKind;
-    use perl_lsp_rs_core::features::contracts::FeatureProfileKind as CoreContractKind;
-
-    let facade_name = std::any::type_name::<FacadeContractKind>();
-    let core_name = std::any::type_name::<CoreContractKind>();
-
-    assert_eq!(
-        facade_name, core_name,
-        "facade re-export should preserve type identity (not duplicate)"
     );
 
     Ok(())

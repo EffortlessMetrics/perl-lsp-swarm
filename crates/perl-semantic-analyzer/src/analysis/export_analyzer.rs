@@ -598,6 +598,32 @@ mod tests {
         let _ = parse_and_extract("use parent qw\u{2022}Exporter;");
     }
 
+    /// Positive controls for the #18029 guard: well-formed `qw` args must
+    /// keep their answers. A guard that over-tightened the slice bounds
+    /// would silently turn every `qw` into "no Exporter" and drop `use
+    /// parent -qw(Exporter)`-shaped imports from export detection.
+    #[test]
+    fn arg_contains_exporter_wellformed_qw_still_matches() {
+        assert!(
+            ExportSymbolExtractor::arg_contains_exporter("qw(Exporter)"),
+            "normalized qw(...) form must still match"
+        );
+        assert!(
+            ExportSymbolExtractor::arg_contains_exporter("qw\u{2022}Exporter\u{2022}"),
+            "terminated multi-byte self-delimited qw must still match"
+        );
+        assert!(
+            !ExportSymbolExtractor::arg_contains_exporter("qw (Exporter)"),
+            "space-delimited form: the first non-alphanumeric char after `qw` is \
+             the delimiter (a space here), so this seam sees no qw content; the \
+             parser normalises `qw(...)` without the inner space"
+        );
+        assert!(
+            !ExportSymbolExtractor::arg_contains_exporter("qw(Strict)"),
+            "well-formed qw without Exporter must still not match"
+        );
+    }
+
     #[test]
     fn test_detect_use_exporter_import() {
         let code = r#"

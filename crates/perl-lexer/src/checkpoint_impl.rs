@@ -21,6 +21,7 @@ impl Checkpointable for PerlLexer<'_> {
             delimiter_stack,
             in_prototype,
             prototype_depth,
+            prototype_signature_seen,
             after_sub,
             after_arrow,
             hash_brace_depth,
@@ -77,6 +78,7 @@ impl Checkpointable for PerlLexer<'_> {
             delimiter_stack: delimiter_stack.clone(),
             in_prototype: *in_prototype,
             prototype_depth: *prototype_depth,
+            prototype_signature_seen: *prototype_signature_seen,
             after_sub: *after_sub,
             after_arrow: *after_arrow,
             hash_brace_depth: *hash_brace_depth,
@@ -138,6 +140,7 @@ impl Checkpointable for PerlLexer<'_> {
         self.delimiter_stack.clone_from(&replay.delimiter_stack);
         self.in_prototype = replay.in_prototype;
         self.prototype_depth = replay.prototype_depth;
+        self.prototype_signature_seen = replay.prototype_signature_seen;
         self.after_sub = replay.after_sub;
         self.after_arrow = replay.after_arrow;
         self.hash_brace_depth = replay.hash_brace_depth;

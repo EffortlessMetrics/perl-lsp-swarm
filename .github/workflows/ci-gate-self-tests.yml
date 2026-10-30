@@ -32,6 +32,9 @@ on:
       - 'scripts/storage-doctor'
       - 'scripts/tests/test_storage_doctor.py'
       - 'justfile'
+      # Ordinary doctor entrypoint regressions (#8639, landed in #17556).
+      - 'scripts/tests/test_just_doctor.py'
+      - 'scripts/ci/test_just_doctor_workflow.py'
       - 'scripts/cargo_allow_cadence.py'
       - 'scripts/tests/test_cargo_allow_cadence.py'
       - 'scripts/cargo-package-workspace-dry-run.sh'
@@ -70,6 +73,7 @@ on:
       - 'scripts/ci/check-pr-review-convergence'
       - 'scripts/ci/fixtures/convergence/**'
       - 'scripts/tests/test-check-pr-review-convergence.sh'
+      - 'scripts/tests/test-check-pr-review-convergence-cleanup.py'
       # Paginator accumulator stdin portability regression (#15034): the test
       # pins the jq stdin form inside check-pr-review-convergence-core, and
       # the core is the implementation it gates, so both halves re-run this
@@ -143,6 +147,8 @@ on:
       - '.github/workflows/qualification-rehearsal.yml'
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
+      - 'scripts/ci/pr_smoke_artifact_inventory.py'
+      - 'scripts/ci/test_pr_smoke_artifact_inventory.py'
       - 'scripts/ci/test_pr_smoke_workflow_guard.py'
       - '.github/workflows/ci.yml'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
@@ -160,6 +166,7 @@ on:
       # The reporter's own workflow calls into that module for the one decision
       # its inline snapshot step makes, so an edit here must re-prove it.
       - '.github/workflows/ripr-liveness.yml'
+      - 'scripts/ci/test_ripr_liveness_pagination_16153.py'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -456,8 +463,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Run review-convergence gate self-test
-        run: bash scripts/tests/test-check-pr-review-convergence.sh
+      - name: Run review-convergence and fixture cleanup self-tests
+        run: python3 -B scripts/tests/test-check-pr-review-convergence-cleanup.py -v
 
       # (#15034) The paginator accumulator must stay on the jq stdin form; a
       # silent revert to jq -n --argjson passes every other gated check.
@@ -501,6 +508,9 @@ jobs:
       - name: Run PR smoke disk-guard oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
 
+      - name: Run PR Smoke artifact inventory tests (#17231)
+        run: python3 -m unittest -v scripts.ci.test_pr_smoke_artifact_inventory
+
       - name: Run PR Smoke workflow/helper compatibility controls (#17835)
         run: python3 -m unittest scripts.ci.test_pr_smoke_workflow_guard
 
@@ -512,6 +522,9 @@ jobs:
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness
+
+      - name: Run ripr liveness pagination contract tests (#16153)
+        run: python3 -m unittest scripts.ci.test_ripr_liveness_pagination_16153
 
       - name: Run optional cargo-allow cadence capture tests (#15304)
         run: python3 -m unittest scripts.tests.test_cargo_allow_cadence
@@ -672,6 +685,21 @@ jobs:
       - name: Run agent preflight self-test
         run: bash scripts/test-agent-preflight.sh
 
+      - name: Install just for doctor regressions
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
+        with:
+          tool: just@1.46.0
+          fallback: none
+
+      - name: Run doctor entrypoint and CI route regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          just --version
+          git --version
+          bash --version
+          python3 -B -m unittest scripts.tests.test_just_doctor scripts.ci.test_just_doctor_workflow -v
+
       - name: Summary
         if: always()
         env:
@@ -761,7 +789,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
-          toolchain: stable
+          # The real-toolchain fixture runs from this repo's pinned root.
+          # Guard probes refuse missing pins rather than installing them.
+          toolchain: '1.95.0'
 
       - name: Run guard decision-function and coverage self-test
         run: bash scripts/tests/test-cargo-toolchain-guard.sh

@@ -5036,3 +5036,26 @@ created = "2026-10-11"
 review_after = "2026-11-11"
 expires = "2027-01-11"
 removal_criteria = "Remove when EffortlessMetrics/ripr traces criterion bench-group owners to a static test path (making the structural no_static_path answer go away), or at expiry. Drop the support-file identity (probe:crates_perl-workspace_benches_support_index_real_corpus.rs:error_path:7ee1b25a) from gap_ids as soon as a receipt classifies that seam exposed via stage_copy_names_the_failing_paths_on_error. Narrow immediately if a receipt reports an executable no_static_path or reachable_unrevealed seam in either listed file outside the identities in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
+# PR #16619 (#16612): the changed workspace trust report code and resolution
+# status are checked by fallible direct and execute-command tests. RIPR 0.10.0
+# finds those tests but does not recognize their Err-returning comparisons as
+# oracles. The three probe identities below are the full new-gap basis in run
+# 36560184603; unrelated findings in this file remain visible.
+[[suppress]]
+id = "ripr-suppress-16619-workspace-trust-report-fallible-oracles"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs"]
+classification = ["reachable_unrevealed"]
+gap_ids = [
+  "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:call_deletion:fd4b74cb",
+  "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:side_effect:5e015ccd",
+  "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:return_value:2c0368a6",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1453"
+reason = "PR #16619 (#16612): RIPR run 36560184603 reports three reachable_unrevealed probes on the changed setup_hints_summary hint code and resolution status. setup_hints_report_module_probe_policy_without_claiming_a_probe calls the owner directly, requires the exact resolution status, selects the hint by exact code, and returns Err on disagreement; test_execute_command_workspace_trust_report checks both through the live LSP command. Focused local tests passed at 70a4a474f9 (direct 1/1, command 2/2); the 0fcd170703 Rust Small test job also passed. raw-check.json classifies the related direct test's fallible comparisons as oracle_strength none. The review guidance's configured_perl_path suggestions concern a different unchanged helper. This entry names only those three executable literal probes and leaves every other finding in the file visible."
+created = "2026-09-29"
+review_after = "2026-10-29"
+expires = "2026-11-30"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1453 recognizes the named fallible oracles, or replace with recognized focused proof that preserves the repo's panic-free test policy. Re-audit immediately if the hint text, code, status, or their tests change; do not extend this entry to another probe identity."
