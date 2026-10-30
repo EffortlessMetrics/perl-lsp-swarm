@@ -15,6 +15,73 @@ use serde_json::{Value, json};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+fn require_symbol_shape(condition: bool, context: &str) -> TestResult {
+    if condition { Ok(()) } else { Err(std::io::Error::other(context.to_owned()).into()) }
+}
+
+fn direct_symbol_named<'a>(
+    symbols: &'a [Value],
+    name: &str,
+) -> Result<&'a Value, Box<dyn std::error::Error>> {
+    let mut matches =
+        symbols.iter().filter(|symbol| symbol.get("name").and_then(Value::as_str) == Some(name));
+    let symbol = matches.next().ok_or_else(|| format!("direct symbol {name:?} not found"))?;
+    require_symbol_shape(matches.next().is_none(), &format!("duplicate direct symbol {name:?}"))?;
+    Ok(symbol)
+}
+
+fn document_symbol_children(symbol: &Value) -> Result<&[Value], Box<dyn std::error::Error>> {
+    symbol
+        .get("children")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| "document symbol has no child array".into())
+}
+
+fn require_symbol_kind(symbol: &Value, kind: u64) -> TestResult {
+    require_symbol_shape(
+        symbol.get("kind").and_then(Value::as_u64) == Some(kind),
+        &format!("symbol {:?} must retain kind {kind}", symbol.get("name")),
+    )
+}
+
+fn require_fixture_package_members(
+    symbols: &[Value],
+    package: &str,
+    expected: &[(&str, u64)],
+) -> TestResult {
+    let package_symbol = direct_symbol_named(symbols, package)?;
+    require_symbol_shape(
+        matches!(package_symbol.get("kind").and_then(Value::as_u64), Some(2 | 4)),
+        "package must retain its Module(2) or Package(4) wire kind",
+    )?;
+    let children = document_symbol_children(package_symbol)?;
+    for &(name, kind) in expected {
+        require_symbol_kind(direct_symbol_named(children, name)?, kind)?;
+        require_symbol_shape(
+            !symbols.iter().any(|symbol| symbol.get("name").and_then(Value::as_str) == Some(name)),
+            &format!("package member {name:?} must not float at the root"),
+        )?;
+    }
+    Ok(())
+}
+
+fn require_statement_package_hierarchy(symbols: &[Value]) -> TestResult {
+    require_fixture_package_members(
+        symbols,
+        "Parent",
+        &[("parent_method", 12), ("$package_var", 13)],
+    )?;
+    require_fixture_package_members(symbols, "Child", &[("child_method", 12)])?;
+    let parent_children = document_symbol_children(direct_symbol_named(symbols, "Parent")?)?;
+    require_symbol_shape(
+        !parent_children
+            .iter()
+            .any(|child| child.get("name").and_then(Value::as_str) == Some("Child")),
+        "separate statement packages must remain root siblings",
+    )
+}
+
 fn setup_server() -> LspServer {
     setup_server_with_capabilities(json!({}))
 }
@@ -126,42 +193,12 @@ sub calculate {
     let response = server.handle_request(request).ok_or("No response from server")?;
     let result = response.result.ok_or("Missing result")?;
 
-    // Check that we have symbols
-    assert!(result.is_array());
     let symbols = result.as_array().ok_or("Result is not an array")?;
-    assert!(!symbols.is_empty());
-
-    // Check for package symbol
-    let package_symbol = symbols.iter().find(|s| s["name"].as_str() == Some("MyModule"));
-    assert!(package_symbol.is_some());
-    let package_symbol = package_symbol.ok_or("Package symbol not found")?;
-    // Kind can be 4 (Package) or 2 (Module) depending on client cap/server version
-    let kind = package_symbol["kind"].as_i64().unwrap_or(0);
-    assert!(kind == 4 || kind == 2, "Expected Package(4) or Module(2), got {}", kind);
-
-    // Check for subroutine symbols
-    let hello_sub = symbols.iter().find(|s| s["name"].as_str() == Some("hello"));
-    assert!(hello_sub.is_some());
-    let hello_sub = hello_sub.ok_or("hello sub not found")?;
-    assert_eq!(hello_sub["kind"], 12); // Function
-
-    let calc_sub = symbols.iter().find(|s| s["name"].as_str() == Some("calculate"));
-    assert!(calc_sub.is_some());
-    let calc_sub = calc_sub.ok_or("calculate sub not found")?;
-    assert_eq!(calc_sub["kind"], 12); // Function
-
-    // Check for variable symbols
-    let global_var = symbols.iter().find(|s| s["name"].as_str() == Some("$global_var"));
-    assert!(global_var.is_some());
-    let global_var = global_var.ok_or("global_var not found")?;
-    assert_eq!(global_var["kind"], 13); // Variable
-
-    let shared_array = symbols.iter().find(|s| s["name"].as_str() == Some("@shared_array"));
-    assert!(shared_array.is_some());
-    let shared_array = shared_array.ok_or("shared_array not found")?;
-    assert_eq!(shared_array["kind"], 18); // Array
-
-    Ok(())
+    require_fixture_package_members(
+        symbols,
+        "MyModule",
+        &[("hello", 12), ("calculate", 12), ("$global_var", 13), ("@shared_array", 18)],
+    )
 }
 
 #[test]
@@ -366,24 +403,15 @@ sub another_sub {
 
     let symbols = result.as_array().ok_or("Result is not an array")?;
 
-    // Check for both packages
-    let outer_package = symbols.iter().find(|s| s["name"].as_str() == Some("Outer"));
-    assert!(outer_package.is_some());
-
-    let inner_package = symbols.iter().find(|s| s["name"].as_str() == Some("Inner"));
-    assert!(inner_package.is_some());
-
-    // Check for subroutines
-    let parent_sub = symbols.iter().find(|s| s["name"].as_str() == Some("parent_sub"));
-    if parent_sub.is_none() {
-        println!("Symbols found: {:?}", symbols);
-    }
-    assert!(parent_sub.is_some(), "parent_sub not found");
-
-    let another_sub = symbols.iter().find(|s| s["name"].as_str() == Some("another_sub"));
-    assert!(another_sub.is_some());
-
-    Ok(())
+    require_fixture_package_members(symbols, "Outer", &[("parent_sub", 12)])?;
+    require_fixture_package_members(symbols, "Inner", &[("another_sub", 12)])?;
+    let outer_children = document_symbol_children(direct_symbol_named(symbols, "Outer")?)?;
+    require_symbol_shape(
+        !outer_children
+            .iter()
+            .any(|child| child.get("name").and_then(Value::as_str) == Some("Inner")),
+        "separate Outer and Inner statement packages must remain siblings",
+    )
 }
 
 #[test]
@@ -614,31 +642,73 @@ sub child_method {
     let result = response.result.ok_or("Missing result")?;
 
     let symbols = result.as_array().ok_or("Result is not an array")?;
-    let all_symbols = flatten_symbols(symbols);
+    require_statement_package_hierarchy(symbols)
+}
 
-    // Check that we have the expected symbols, whether returned flat or nested.
-    assert!(all_symbols.iter().any(|s| s["name"].as_str() == Some("Parent")));
-    assert!(all_symbols.iter().any(|s| s["name"].as_str() == Some("Child")));
-    assert!(all_symbols.iter().any(|s| s["name"].as_str() == Some("parent_method")));
-    assert!(all_symbols.iter().any(|s| s["name"].as_str() == Some("child_method")));
-    assert!(all_symbols.iter().any(|s| s["name"].as_str() == Some("$package_var")));
+#[test]
+fn package_member_oracle_rejects_floating_members() -> TestResult {
+    let flat = json!([
+        { "name": "MyModule", "kind": 2, "children": [] },
+        { "name": "hello", "kind": 12 },
+        { "name": "calculate", "kind": 12 },
+        { "name": "$global_var", "kind": 13 },
+        { "name": "@shared_array", "kind": 18 }
+    ]);
+    let symbols = flat.as_array().ok_or("flat negative fixture must be an array")?;
+    require_symbol_shape(
+        require_fixture_package_members(
+            symbols,
+            "MyModule",
+            &[("hello", 12), ("calculate", 12), ("$global_var", 13), ("@shared_array", 18)],
+        )
+        .is_err(),
+        "having every name at the root must not satisfy package ownership",
+    )
+}
 
-    let parent_sym = symbols
-        .iter()
-        .find(|symbol| symbol["name"].as_str() == Some("Parent"))
-        .ok_or("Parent symbol not found")?;
-    let parent_children =
-        parent_sym["children"].as_array().ok_or("Parent symbol has no children")?;
-    assert!(
-        parent_children.iter().any(|child| child["name"].as_str() == Some("parent_method")),
-        "parent_method should be nested under Parent"
-    );
-    assert!(
-        parent_children.iter().any(|child| child["name"].as_str() == Some("Child")),
-        "Child should be nested under Parent for this source-backed hierarchy fixture"
-    );
+#[test]
+fn package_member_oracle_rejects_root_duplicate_of_nested_member() -> TestResult {
+    // Discriminating control for the root-exclusion clause alone: the
+    // member is correctly nested (so the child lookup and kind check
+    // pass) and also present at the root, so only that clause can fail.
+    let duplicated = json!([
+        { "name": "MyModule", "kind": 2, "children": [
+            { "name": "hello", "kind": 12 }
+        ] },
+        { "name": "hello", "kind": 12 }
+    ]);
+    let symbols = duplicated.as_array().ok_or("duplicated fixture must be an array")?;
+    require_symbol_shape(
+        require_fixture_package_members(symbols, "MyModule", &[("hello", 12)]).is_err(),
+        "a member duplicated at the root must not satisfy package ownership",
+    )
+}
 
-    Ok(())
+#[test]
+fn statement_package_oracle_rejects_wrongly_nested_package() -> TestResult {
+    let nested = json!([
+        { "name": "Child", "kind": 2, "children": [
+            { "name": "child_method", "kind": 12 }
+        ] },
+        { "name": "Parent", "kind": 2, "children": [
+            { "name": "parent_method", "kind": 12 },
+            { "name": "$package_var", "kind": 13 },
+            { "name": "Child", "kind": 2, "children": [
+                { "name": "child_method", "kind": 12 }
+            ] }
+        ] }
+    ]);
+    let symbols = nested.as_array().ok_or("nested negative fixture must be an array")?;
+    require_fixture_package_members(
+        symbols,
+        "Parent",
+        &[("parent_method", 12), ("$package_var", 13)],
+    )?;
+    require_fixture_package_members(symbols, "Child", &[("child_method", 12)])?;
+    require_symbol_shape(
+        require_statement_package_hierarchy(symbols).is_err(),
+        "finding every name recursively must not admit wrongly nested statement packages",
+    )
 }
 
 // ---- POD section tests (issue #2341) ----
