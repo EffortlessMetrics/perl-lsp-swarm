@@ -206,7 +206,18 @@ else
 fi
 # HOME=/ (containers/CI) skips redaction instead of replacing every `/`
 # with `~` (#17453 review).
-if HOME=/ PATH="$STUB:$PATH" STUB_FAIL_MODE="homepath" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
+#
+# The toolchain probe at run-benchmarks.sh:68 runs under `set -euo pipefail`,
+# so a failing `rustc --version` aborts the runner before it writes any
+# receipt. With HOME=/ and RUSTUP_HOME unset, rustup resolves its home to
+# /.rustup, which is not creatable, so the runner died before the cargo
+# stub ran and the receipt was empty — this case then measured "no
+# receipt" rather than the redaction guard it claims to check. Pin the
+# ambient rustup home (captured before HOME is overridden) so the runner
+# reaches the stub and the assertion below tests the slash-only HOME
+# redaction path instead of a broken toolchain.
+AMBIENT_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+if HOME=/ RUSTUP_HOME="$AMBIENT_RUSTUP_HOME" PATH="$STUB:$PATH" STUB_FAIL_MODE="homepath" bash "$RUNNER" --category ripr >"$OUT" 2>"$ERR"; then
     bad "slash-HOME run exited 0; expected nonzero"
 else
     ok "slash-HOME run exits nonzero"
