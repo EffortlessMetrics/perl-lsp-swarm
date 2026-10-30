@@ -503,3 +503,86 @@ action = 'docker/setup-buildx-action'
 sha = '37fe631027851001ddb9b187196cc803df7f5f0e'
 kind = 'release_tag'
 value = 'v4.3.0'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/codecov/codecov-action/git/ref/tags/v7.1.1 -> annotated tag
+#   2320916714171c258d01dbd81040d64d798c6f8e -> commit 303a32d7a59b442fa8d48b6a1cc6825c09c847a5
+[[pin]]
+action = 'codecov/codecov-action'
+sha = '303a32d7a59b442fa8d48b6a1cc6825c09c847a5'
+kind = 'release_tag'
+value = 'v7.1.1'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/shogo82148/actions-setup-perl/git/ref/tags/v1.44.2 -> 8b574cdc2dffdae49f803204a4f2b716a2fa1db7
+#   (lightweight tag)
+[[pin]]
+action = 'shogo82148/actions-setup-perl'
+sha = '8b574cdc2dffdae49f803204a4f2b716a2fa1db7'
+kind = 'release_tag'
+value = 'v1.44.2'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/taiki-e/install-action/git/ref/tags/v2.87.28 -> 1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+#   (lightweight tag)
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '1168f6810a3cb30a3514bf5756a3b7f0422c6df8'
+kind = 'release_tag'
+value = 'v2.87.28'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/dtolnay/rust-toolchain/git/ref/heads/master -> 683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#   (master is the branch the stable workflow tracks)
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '683b588c487a69d01f6c6ddf40f036ff682cc2c8'
+kind = 'branch_commit'
+value = 'stable (master)'
+
+# Same verified master-head commit serving the nightly-toolchain jobs;
+# recorded as the second projection for this sha, mirroring the
+# 02cb101e nightly (master) block above.
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '683b588c487a69d01f6c6ddf40f036ff682cc2c8'
+kind = 'legacy_debt'
+value = 'nightly (master)'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/actions/upload-artifact/git/ref/tags/v7.0.2 -> cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#   (lightweight tag; the movable v7 tag resolves to the same commit)
+[[pin]]
+action = 'actions/upload-artifact'
+sha = 'cf430e030ddbb5b0abf93d22962f4752f3646cd9'
+kind = 'release_tag'
+value = 'v7.0.2'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/actions/download-artifact/git/ref/tags/v8.0.2 -> 9000827ccba6bdab643e8b6fd33ac0654aef8333
+#   (lightweight tag)
+[[pin]]
+action = 'actions/download-artifact'
+sha = '9000827ccba6bdab643e8b6fd33ac0654aef8333'
+kind = 'release_tag'
+value = 'v8.0.2'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/actions/download-artifact/git/ref/tags/v8 -> 9000827ccba6bdab643e8b6fd33ac0654aef8333
+#   (movable major tag; resolves to the same commit as v8.0.2 on this date;
+#   recorded as the second projection for this sha)
+[[pin]]
+action = 'actions/download-artifact'
+sha = '9000827ccba6bdab643e8b6fd33ac0654aef8333'
+kind = 'legacy_debt'
+value = 'v8'
+
+# Verified against upstream on 2026-10-29 via the GitHub Git refs API:
+#   repos/actions/upload-artifact/git/ref/tags/v7 -> cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#   (movable major tag; resolves to the same commit as v7.0.2 on this date;
+#   recorded as the second projection for this sha)
+[[pin]]
+action = 'actions/upload-artifact'
+sha = 'cf430e030ddbb5b0abf93d22962f4752f3646cd9'
+kind = 'legacy_debt'
+value = 'v7'
