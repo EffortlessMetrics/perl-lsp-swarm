@@ -549,6 +549,9 @@ mod tests {
         let captured = SharedBuffer::default();
         let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
         let server = LspServer::with_output(output);
+        server
+            .handle_initialize(None)
+            .map_err(|error| format!("initialize failed: {error:?}"))?;
         let shutdown = server.handle_request(request(2, "shutdown"));
         if shutdown.as_ref().is_none_or(|response| response.error.is_some()) {
             return Err(format!("first shutdown must succeed: {shutdown:?}").into());
@@ -579,7 +582,16 @@ mod tests {
         let captured = SharedBuffer::default();
         let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
         let server = LspServer::with_output(output);
-        let _ = server.handle_request(request(2, "shutdown"));
+        server
+            .handle_initialize(None)
+            .map_err(|error| format!("initialize failed: {error:?}"))?;
+        let shutdown = server.handle_request(request(2, "shutdown"));
+        if shutdown.as_ref().is_none_or(|response| response.error.is_some()) {
+            return Err(format!("first shutdown must succeed: {shutdown:?}").into());
+        }
+        // Initialization may write to the captured output; only bytes after
+        // this baseline can be a response invented for the notification.
+        let baseline_len = captured.bytes().len();
         server.admit_handler_response(JsonRpcRequest {
             _jsonrpc: "2.0".to_string(),
             id: None,
@@ -590,8 +602,12 @@ mod tests {
             .outbound
             .close_and_wait(std::time::Duration::from_secs(1))
             .ok_or("writer did not settle after the post-shutdown notification")?;
-        if !captured.bytes().is_empty() {
-            return Err("a post-shutdown notification must not invent a response".into());
+        // Server notifications (e.g. index-ready from initialize) may still
+        // flush after the baseline; a response invented for this notification
+        // would carry an `error` or `result` member, which neither has.
+        let wire = String::from_utf8_lossy(&captured.bytes()[baseline_len..]).into_owned();
+        if wire.contains("\"error\"") || wire.contains("\"result\"") {
+            return Err(format!("a post-shutdown notification must not invent a response, got: {wire}").into());
         }
         Ok(())
     }
