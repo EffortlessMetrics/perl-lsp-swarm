@@ -1117,6 +1117,19 @@ impl DebugAdapter {
         }
     }
 
+    /// Effective framed-debugger-query window, for tests (#18348).
+    ///
+    /// Some dap unit tests pace fixtures or assert wall-clock bounds against
+    /// the framed-query budget, which [`Self::debugger_timeout_budget_ms`]
+    /// clamps to >=15s under coverage instrumentation. Those tests must derive
+    /// instrumentation-sensitive expectations from this window instead of
+    /// re-checking `LLVM_PROFILE_FILE`/`CARGO_LLVM_COV` themselves: delegating
+    /// here can never drift from the production budget decision.
+    #[cfg(test)]
+    fn framed_query_window_for_test(base_ms: u64) -> Duration {
+        Duration::from_millis(Self::debugger_timeout_budget_ms(base_ms))
+    }
+
     /// Convert i64 values in protocol payloads to i32 with saturation.
     fn i64_to_i32_saturating(value: i64) -> i32 {
         match i32::try_from(value) {
@@ -2326,7 +2339,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_invalid = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
@@ -2341,7 +2354,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_ambiguous = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {

@@ -1724,6 +1724,19 @@ impl LspServer {
                     perl_parser_core::syntax::source_context::SourceRegionIndex::build(source_text);
 
                 let lines: Vec<&str> = source_text.lines().collect();
+                // True byte start of each line. `lines()` drops `\r\n`, so
+                // summing `len() + 1` per line drifts one byte early per
+                // CRLF line (#18096); scanning terminators once is exact
+                // and O(n) instead of recomputed per line.
+                let line_byte_starts: Vec<usize> = {
+                    let mut starts = vec![0usize];
+                    let mut pos = 0usize;
+                    for chunk in source_text.split_inclusive('\n') {
+                        pos += chunk.len();
+                        starts.push(pos);
+                    }
+                    starts
+                };
                 let requested_line_count = effective_end
                     .checked_sub(start_line)
                     .map_or(0, |line_delta| line_delta.saturating_add(1) as usize);
@@ -1779,11 +1792,10 @@ impl LspServer {
                     // Compute the byte offset of this line's start in the
                     // full source so we can classify match ranges against the
                     // SourceRegionIndex.
-                    let line_byte_start = source_text
-                        .lines()
-                        .take(line_num as usize)
-                        .map(|l| l.len() + 1) // +1 for the \n
-                        .sum::<usize>();
+                    let line_byte_start = line_byte_starts
+                        .get(line_num as usize)
+                        .copied()
+                        .unwrap_or(source_text.len());
                     for cap in re.captures_iter(line_text) {
                         if let Some(m) = cap.get(0) {
                             let var_text = m.as_str();
@@ -2035,6 +2047,25 @@ impl LspServer {
         }
 
         Ok(Some(json!([])))
+    }
+
+    /// Report the #16550 builtin-fallback fact for one `perl.runCritic` result.
+    ///
+    /// Under an explicitly legacy (`external`) critic engine, a result labeled
+    /// `analyzerUsed: "builtin"` can only mean the external `perlcritic` binary
+    /// was unavailable: a present-but-failing binary now surfaces its own
+    /// bounded error instead of degrading silently. The user-facing warning is
+    /// deduped per session via the bounded Critic warning family.
+    pub(crate) fn note_critic_command_fallback(
+        &self,
+        result: &Value,
+        engine: perl_lsp_rs_core::config::CriticEngine,
+    ) {
+        if matches!(engine, perl_lsp_rs_core::config::CriticEngine::Legacy)
+            && result.get("analyzerUsed").and_then(Value::as_str) == Some("builtin")
+        {
+            self.notify_critic_external_unavailable();
+        }
     }
 
     /// Run `perl.runCritic` for an open document through
@@ -2422,14 +2453,16 @@ impl LspServer {
             match command {
                 // Keep existing test commands for backward compatibility
                 "perl.runTest" => {
-                    if let Some(test_id) = arguments.first().and_then(|v| v.as_str()) {
-                        return self.run_test(test_id);
-                    }
+                    let test_id = arguments.first().and_then(Value::as_str).ok_or_else(|| {
+                        invalid_params("perl.runTest: arguments[0] must be a test ID string; retry with arguments: [\"file:///path/to/test.t::test name\"].")
+                    })?;
+                    return self.run_test(test_id);
                 }
                 "perl.runTestFile" => {
-                    if let Some(file_uri) = arguments.first().and_then(|v| v.as_str()) {
-                        return self.run_test_file(file_uri);
-                    }
+                    let file_uri = arguments.first().and_then(Value::as_str).ok_or_else(|| {
+                        invalid_params("perl.runTestFile: arguments[0] must be a file URI string; retry with arguments: [\"file:///path/to/test.t\"].")
+                    })?;
+                    return self.run_test_file(file_uri);
                 }
                 "perl.runSubtest" => {
                     // Two argument forms:
@@ -2518,7 +2551,12 @@ impl LspServer {
                 | "perl.debugTestFile"
                 | "perl.explainProviderDecision" => {
                     match provider.execute_command(command, arguments) {
-                        Ok(result) => return Ok(Some(result)),
+                        Ok(result) => {
+                            if command == "perl.runCritic" {
+                                self.note_critic_command_fallback(&result, critic_engine);
+                            }
+                            return Ok(Some(result));
+                        }
                         Err(e) => {
                             // Return proper JSON-RPC error according to LSP 3.17 specification
                             let error_code = if e.contains("Missing") || e.contains("argument") {
@@ -2893,6 +2931,49 @@ mod tests {
             Some(json!([])),
             "empty documents should return an empty inline value array"
         );
+        Ok(())
+    }
+
+    /// CRLF line starts must be exact: a `$var` in code after CRLF lines
+    /// is returned, while a `$var` inside a string stays suppressed
+    /// (#18096). With the old `len() + 1` cursor the string's absolute
+    /// range drifted one byte early per CRLF line, so classification
+    /// against the region index misclassified both.
+    #[test]
+    fn inline_value_crlf_document_classifies_code_and_string_vars()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = make_server_with_caps(ClientCapabilities::default());
+        let uri = "file:///inline_value_crlf_lib.pl";
+        // A multi-line string occupies the first 11 CRLF lines, so the old
+        // `len() + 1` cursor placed `$shown`'s absolute range 11 bytes
+        // early — uniformly inside the string region — and dropped it.
+        let source = concat!(
+            "# \u{1F600} comment\r\n",
+            "my $s = \"aaa\r\n",
+            "bbb\r\nbbb\r\nbbb\r\nbbb\r\nbbb\r\nbbb\r\nbbb\r\nbbb\r\nbbb\r\n",
+            "ccc\";\r\n",
+            "$shown = 1;\r\n",
+            "my $t = \"$hidden\";\r\n",
+        );
+        server.test_apply_did_open(uri, source, 1)?;
+
+        let result = server.handle_inline_value(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 13, "character": 0 }
+            },
+            "context": {}
+        })))?;
+        let values = result.ok_or("inline value response missing")?;
+        let names: Vec<&str> = values
+            .as_array()
+            .ok_or("inline values must be an array")?
+            .iter()
+            .filter_map(|value| value["variableName"].as_str())
+            .collect();
+        assert!(names.contains(&"$shown"), "code var must be returned: {values}");
+        assert!(!names.contains(&"$hidden"), "string var must stay suppressed: {values}");
         Ok(())
     }
 

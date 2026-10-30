@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Startup validation for a provisioned Linux cloud image; see docs/how-to/CLOUD_STARTUP.md.
+set -euo pipefail
+
+script_dir="${BASH_SOURCE[0]%/*}"
+if [[ "$script_dir" == "${BASH_SOURCE[0]}" ]]; then
+    script_dir=.
+fi
+repo="$(cd -- "$script_dir/.." && pwd)"
+shared="${PERL_LSP_CLOUD_SHARED:-/workspace/shared}"
+export CARGO_HOME="$shared/cargo"
+export RUSTUP_HOME="$shared/rustup"
+export DEVPLANE="$shared/devplane/perl-lsp-swarm"
+export npm_config_cache="$shared/npm-cache"
+export PATH="$CARGO_HOME/bin:$shared/node-v26.6.0-linux-x64/bin${PATH:+:$PATH}"
+# A standalone assignment preserves parser failure under set -e.
+RUSTUP_TOOLCHAIN="$(python3 - "$repo/rust-toolchain.toml" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+channel = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["toolchain"]["channel"]
+if not isinstance(channel, str) or not channel.strip():
+    raise ValueError("rust-toolchain.toml must declare a nonempty toolchain channel")
+print(channel)
+PY
+)"
+export RUSTUP_TOOLCHAIN
+export RUSTUP_AUTO_INSTALL=0
+
+# Provisioning is separate: do not install tools, change rustup's global default,
+# lower a capacity floor, choose more jobs, or compile Cargo utilities at startup.
+rustc --version
+cargo --version
+just --version
+
+cd "$repo"
+python3 scripts/check_release_tag_provenance.py --prepare-git --repo-root .
+just devplane-init
+just agent-preflight
+
+cd "$repo/vscode-extension"
+# The repository's doctor owns the supported Node/npm versions.
+npm run doctor
+npm ci

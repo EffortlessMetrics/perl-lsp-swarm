@@ -1345,9 +1345,23 @@ fn semantic_definition_query_symbol(
 
 #[cfg(feature = "workspace")]
 fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, group: usize) -> bool {
-    regex
-        .captures_iter(text)
-        .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
+    regex_capture_text_at_cursor(regex, text, cursor, group).is_some()
+}
+
+/// The captured text of `group` when the cursor sits inside that capture of
+/// some match, else `None`. `cursor_in_regex_capture` is the yes/no shape of
+/// the same question; callers that need to know *what* was captured use this.
+#[cfg(feature = "workspace")]
+fn regex_capture_text_at_cursor<'a>(
+    regex: &regex::Regex,
+    text: &'a str,
+    cursor: usize,
+    group: usize,
+) -> Option<&'a str> {
+    regex.captures_iter(text).find_map(|cap| {
+        let matched = cap.get(group)?;
+        (cursor >= matched.start() && cursor <= matched.end()).then_some(matched.as_str())
+    })
 }
 
 /// Which `::`-separated component of a fully-qualified name the cursor is on.
@@ -1534,6 +1548,25 @@ fn same_file_definition_matches_qualification(
         crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
     ) || (definition.kind == crate::symbol::SymbolKind::Constant
         && definition.declaration.as_deref() == Some("constant"));
+    // A missing named CodeRef can otherwise select its containing route/sub
+    // through SemanticModel's general symbol-at-position fallback.
+    if let Some(node) = crate::declaration::find_node_at_offset(ast, offset)
+        && let crate::ast::NodeKind::AmperCall { name, .. } = &node.kind
+        && !name.is_empty()
+        && !name.starts_with(['$', '@', '%'])
+    {
+        let matches_name = definition.name == *name
+            || definition.qualified_name == *name
+            // Leading `::` addresses Perl's root namespace: `::handler`
+            // denotes `main::handler`, and `::App::handler` denotes App's sub.
+            || name.strip_prefix("::").is_some_and(|absolute_name| {
+                definition.qualified_name.strip_prefix("main::").unwrap_or(&definition.qualified_name)
+                    == absolute_name
+            });
+        if !is_callable || !matches_name {
+            return false;
+        }
+    }
     let Ok(regex) = get_fqn_regex() else {
         return true;
     };
@@ -2095,7 +2128,7 @@ impl LspServer {
                         // empty rather than falling through to the workspace-index lookup —
                         // the index is @INC-unaware and would surface files that `no lib`
                         // has cancelled. Fixes #8537.
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),
@@ -2138,7 +2171,7 @@ impl LspServer {
                         return Ok(Some(json!([])));
                     }
                     EarlyDefinitionTarget::Module(module_name) => {
-                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
+                        if let Some(module_path) = self.resolve_module_for_definition(
                             &module_name,
                             Some(&doc_text),
                             Some(uri),
@@ -2886,6 +2919,49 @@ impl LspServer {
                                     | crate::symbol::SymbolKind::Method
                             )
                         {
+                            return Ok(Some(json!([])));
+                        }
+                        // #18110: an unresolvable `->method` selector has no
+                        // same-file definition. The semantic analyzer falls
+                        // back to the sub whose span contains the cursor —
+                        // the enclosing sub — which is not the method's
+                        // definition. Reject exactly that artifact: the
+                        // cursor sits on a method selector and the offered
+                        // callable both encloses the cursor and does not
+                        // carry the method's name (same-name recursion still
+                        // navigates to its own declaration).
+                        let var_method_re = get_var_method_regex()?;
+                        let cursor_method_name = regex_capture_text_at_cursor(
+                            get_arrow_method_regex()?,
+                            &text_around,
+                            cursor_in_text,
+                            2,
+                        )
+                        .or_else(|| {
+                            regex_capture_text_at_cursor(
+                                var_method_re,
+                                &text_around,
+                                cursor_in_text,
+                                2,
+                            )
+                        });
+                        if let Some(method_name) = cursor_method_name
+                            && matches!(
+                                definition.kind,
+                                crate::symbol::SymbolKind::Subroutine
+                                    | crate::symbol::SymbolKind::Method
+                            )
+                            && definition.location.start <= offset
+                            && offset <= definition.location.end
+                            && definition.name != method_name
+                        {
+                            tracing::debug!(
+                                offset,
+                                method = %method_name,
+                                enclosing = %definition.name,
+                                "Suppressing same-file enclosing-sub fallback for an \
+                                 unresolvable method call (#18110)"
+                            );
                             return Ok(Some(json!([])));
                         }
                         // #17252: use the typed semantic identity at this tier.
@@ -5057,6 +5133,42 @@ mod tests {
         let receipt =
             explanation.get("request_receipt").cloned().ok_or("missing request_receipt")?;
         Ok((result, receipt))
+    }
+
+    /// #18110: goto-definition on an unresolvable `->method` selector must not
+    /// return the enclosing sub. The same-file tier's semantic fallback answers
+    /// an unknown method name with the sub containing the cursor; the same-file
+    /// tier has to refuse that artifact instead of jumping the editor to the
+    /// top of the sub it is already in.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn unresolvable_method_selector_refuses_instead_of_returning_the_enclosing_sub()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/gotodef-18110-widget.pm";
+        let text = "package Widget;\nsub check {\n    my ($self) = @_;\n    return $self->isa('Widget');\n}\n";
+        server.test_apply_did_open(uri, text, 1)?;
+        server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        // Cursor on the `isa` selector (line 3, character 18). Before the fix
+        // this answered `sub check`'s own span (line 1 through line 4).
+        let (result, _receipt) = goto_definition_request_receipt(&server, uri, 3, 18)?;
+        assert!(
+            result.as_ref().is_some_and(Value::is_null)
+                || result.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty),
+            "an unresolvable `$self->isa` must refuse without the enclosing sub, got {result:?}"
+        );
+
+        // Control: the sub's own name still navigates to its declaration.
+        let (known, _receipt) = goto_definition_request_receipt(&server, uri, 1, 8)?;
+        let known = known.ok_or("goto-def on a declared sub name must answer")?;
+        assert_eq!(
+            known.pointer("/0/range/start/line").and_then(Value::as_u64),
+            Some(1),
+            "goto-def on `check` must land on its declaration, got {known:?}"
+        );
+        Ok(())
     }
 
     /// Cross-file definition must not consume predecessor workspace facts while

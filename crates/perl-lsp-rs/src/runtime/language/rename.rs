@@ -727,6 +727,24 @@ impl LspServer {
     fn rename_blocked_at(doc: &crate::state::DocumentState, offset: usize) -> bool {
         Self::offset_is_generated_accessor_declaration(&doc.text, offset)
             || Self::offset_is_inside_quoted_string(&doc.text, offset)
+            || {
+                let regions = SourceRegionIndex::build(&doc.text);
+                let is_comment_region = |probe| {
+                    matches!(
+                        regions.classify_offset(probe).proven_kind(),
+                        Some(
+                            SourceRegionKind::LineComment
+                                | SourceRegionKind::Pod
+                                | SourceRegionKind::DataSection
+                        )
+                    )
+                };
+                // Token selection also accepts a cursor just after the word,
+                // including EOF, where there is no source byte to classify.
+                is_comment_region(offset)
+                    || Self::token_span_at(&doc.text, offset)
+                        .is_some_and(|(start, _)| is_comment_region(start))
+            }
     }
 
     /// True when the cursor is not on a symbol this provider will rename.
@@ -755,7 +773,8 @@ impl LspServer {
             return false;
         };
 
-        // A `package Foo;` / `package Foo { ... }` declaration name. The cursor
+        // A `package Foo;` / `package Foo { ... }` / `class Foo { ... }`
+        // declaration name. The cursor
         // classifier below does not resolve a declaration name to a symbol, so
         // this reads the declaration's own `name_span`, which the AST carries
         // precisely for cursor-accurate LSP navigation.
@@ -787,7 +806,13 @@ impl LspServer {
         )
     }
 
-    /// True when `offset` falls inside the name of a `package` declaration.
+    /// True when `offset` falls inside the name of a `package` or `class`
+    /// declaration.
+    ///
+    /// A native `class Foo { ... }` name is a package name for rename
+    /// purposes: class rename is no more implemented than package rename,
+    /// so it must refuse at `prepareRename` exactly as `package Foo;` does
+    /// instead of offering a rename box that `rename` then answers `null`.
     ///
     /// Descends only into subtrees that actually span `offset`, matching
     /// `current_package_at` and `find_node_at_offset`. Without that bound this
@@ -798,6 +823,12 @@ impl LspServer {
             return false;
         }
         if let perl_parser_core::NodeKind::Package { name_span, .. } = &ast.kind
+            && name_span.start <= offset
+            && offset <= name_span.end
+        {
+            return true;
+        }
+        if let perl_parser_core::NodeKind::Class { name_span: Some(name_span), .. } = &ast.kind
             && name_span.start <= offset
             && offset <= name_span.end
         {
@@ -3644,6 +3675,48 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_rename_refuses_comment_regions_and_preserves_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/CommentRegions.pl";
+        let source = "my $note = 1;\nsub wave { return $note; }\nwave(); # wave $note\n# 😀 wave $note\n=pod\nwave $note\n=cut\nwave();\n__DATA__\nwave $note\n";
+        server.test_apply_did_open(uri, source, 1)?;
+
+        for (line, character) in [(2, 10), (2, 15), (3, 5), (3, 10), (5, 0), (5, 5), (9, 0), (9, 5)]
+        {
+            let prepared = server.handle_prepare_rename(Some(serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            })))?;
+            assert_eq!(
+                prepared,
+                Some(serde_json::Value::Null),
+                "non-code position {line}:{character}"
+            );
+        }
+
+        for (line, start, end, placeholder) in
+            [(0, 3, 8, "$note"), (1, 4, 8, "wave"), (7, 0, 4, "wave")]
+        {
+            let prepared = server.handle_prepare_rename(Some(serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": start }
+            })))?;
+            assert_eq!(
+                prepared,
+                Some(serde_json::json!({
+                    "range": {
+                        "start": { "line": line, "character": start },
+                        "end": { "line": line, "character": end }
+                    },
+                    "placeholder": placeholder
+                }))
+            );
+        }
         Ok(())
     }
 

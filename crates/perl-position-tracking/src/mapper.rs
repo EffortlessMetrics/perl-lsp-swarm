@@ -359,7 +359,7 @@ pub fn last_line_column_utf8(text: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must_some;
+    use perl_test_must::must_some;
 
     #[test]
     fn test_lf_positions() {

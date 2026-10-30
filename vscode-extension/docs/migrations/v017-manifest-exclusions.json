@@ -14,8 +14,8 @@
       "default": false,
       "scope": "machine",
       "order": 10,
-      "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
-      "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+      "description": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the AI completion reference.",
+      "markdownDescription": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
     },
     "issue": 14968,
     "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
@@ -35,8 +35,8 @@
       "default": true,
       "scope": "machine",
       "order": 20,
-      "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
-      "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+      "description": "Client preference for progressive inline-completion display. Requires aiCompletion.enabled. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build.",
+      "markdownDescription": "Client preference for progressive inline-completion display. Requires `aiCompletion.enabled`. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
     },
     "issue": 14968,
     "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
@@ -316,11 +316,11 @@
       "type": "number",
       "enum": [1, 2, 3, 4, 5],
       "enumDescriptions": [
-        "Severity 1 - very permissive",
-        "Severity 2 - permissive",
-        "Severity 3 - balanced default",
-        "Severity 4 - strict",
-        "Severity 5 - very strict"
+        "Severity 1 - report all severities (most diagnostics)",
+        "Severity 2 - report severity 2 and above",
+        "Severity 3 - report severity 3 and above (default)",
+        "Severity 4 - report severity 4 and above",
+        "Severity 5 - report only severity 5 (fewest diagnostics)"
       ],
       "default": 3,
       "scope": "resource",

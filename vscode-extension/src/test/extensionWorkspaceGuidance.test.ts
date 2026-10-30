@@ -1379,7 +1379,7 @@ test('keeps committed settings when the folder is removed after update', async (
   );
 });
 
-test('does not prompt for AI completion without a real server capability', async () => {
+test('does not prompt for AI completion without an activation capability', async () => {
   (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
     get: jest.fn(() => false),
     update: jest.fn(),
@@ -1393,7 +1393,48 @@ test('does not prompt for AI completion without a real server capability', async
   expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
 });
 
-test('offers AI completion when the server advertises inline completions', async () => {
+test('stays silent when only inline-completion support is advertised (#16585)', async () => {
+  // `inlineCompletionProvider` is advertised by every shipped profile
+  // (`features/flags.rs` `production()`/`ga_lock()`), so it selects nothing. The
+  // server also rejects `aiCompletion.enabled` on arrival (#4997) and fails
+  // closed on remote construction until #10817, so offering the journey here
+  // would write a setting that cannot do what the success message claims.
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update,
+  });
+  const workspaceState = makeState();
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: { capabilities: { inlineCompletionProvider: {} } },
+  });
+
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  expect(update).not.toHaveBeenCalled();
+  expect(workspaceState.update).not.toHaveBeenCalled();
+});
+
+test('stays silent when the activation capability is absent from experimental (#16585)', async () => {
+  const update = jest.fn(async () => undefined);
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update,
+  });
+  const workspaceState = makeState();
+
+  // Unlike the preceding test, `experimental` is present but carries no
+  // `perlAiCompletionActivation`, so this exercises the missing-activation
+  // branch rather than the absent-`experimental` branch.
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: { capabilities: { experimental: {}, inlineCompletionProvider: {} } },
+  });
+
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  expect(update).not.toHaveBeenCalled();
+});
+
+test('offers AI completion when the server advertises AI activation (#16585)', async () => {
   const update = jest.fn(async () => undefined);
   (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
     get: jest.fn(() => false),
@@ -1403,7 +1444,12 @@ test('offers AI completion when the server advertises inline completions', async
   const workspaceState = makeState();
 
   await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
-    initializeResult: { capabilities: { inlineCompletionProvider: {} } },
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
   });
 
   expect(update).toHaveBeenCalledWith(
@@ -1415,7 +1461,211 @@ test('offers AI completion when the server advertises inline completions', async
     'AI-powered inline completions enabled.',
   );
   expect(workspaceState.update).toHaveBeenCalledWith(
-    'perl-lsp.aiCompletion.firstRunNotificationShown',
+    'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
     true,
+  );
+});
+
+test('no journey when the server cannot display inline completions (#16585 review)', async () => {
+  // The activation capability proves only that the server can arm the
+  // backend; the extension's inline completion owner is middleware on the
+  // client provider, which exists only when `inlineCompletionProvider` is
+  // advertised. Without that surface, accepting Enable would enable a feature
+  // the user cannot see.
+  for (const capabilities of [
+    { experimental: { perlAiCompletionActivation: true } },
+    { inlineCompletionProvider: false, experimental: { perlAiCompletionActivation: true } },
+    { inlineCompletionProvider: null, experimental: { perlAiCompletionActivation: true } },
+  ]) {
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn(() => false),
+      update: jest.fn(),
+    });
+    const workspaceState = makeState();
+
+    await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+      initializeResult: { capabilities },
+    });
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(workspaceState.update).not.toHaveBeenCalled();
+  }
+});
+
+test('an old unversioned prompt receipt does not suppress the corrected journey (#16585 review)', async () => {
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update: jest.fn(),
+  });
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+  const workspaceState = makeState();
+  // Seed the pre-gate receipt the obsolete prompt wrote.
+  await workspaceState.update('perl-lsp.aiCompletion.firstRunNotificationShown', true);
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
+  });
+
+  // The versioned receipt key is what suppresses; the pre-gate receipt is
+  // ignored so the corrected journey is offered once.
+  expect(workspaceState.get).toHaveBeenCalledWith(
+    'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
+    false,
+  );
+  expect(vscode.window.showInformationMessage).toHaveBeenCalled();
+});
+
+test('a non-true activation capability does not open the journey (#16585)', async () => {
+  // Fails closed on shape as well as value: a truthy-but-not-`true` capability is
+  // not a server that says it can arm the backend.
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update: jest.fn(),
+  });
+  const workspaceState = makeState();
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: 'yes' },
+      },
+    },
+  });
+
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+});
+
+describe('AI journey with registered inline providers', () => {
+  const capabilities = { experimental: { perlAiCompletionActivation: true } };
+  beforeEach(() => {
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn(() => false),
+      update: jest.fn(),
+    });
+  });
+
+  test('offers the journey for a dynamic provider without a static capability', async () => {
+    const workspaceState = makeState();
+    const getFeature = jest.fn(() => ({
+      getState: () => ({ kind: 'document', registrations: true }),
+    }));
+    await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+      initializeResult: { capabilities },
+      getFeature,
+    });
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(getFeature).toHaveBeenCalledWith('textDocument/inlineCompletion');
+  });
+
+  test.each([undefined, { kind: 'document', registrations: false }, { kind: 'static' }])(
+    'does not mistake an old static capability for a registered provider: %p',
+    async (state) => {
+      const workspaceState = makeState();
+      await suggestAiCompletionIfSupported(
+        { workspaceState } as unknown as vscode.ExtensionContext,
+        {
+          initializeResult: { capabilities: { ...capabilities, inlineCompletionProvider: {} } },
+          getFeature: () => (state ? { getState: () => state } : undefined),
+        },
+      );
+      expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+      expect(workspaceState.update).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([undefined, false, null, 'true', 1])(
+    'dynamic support cannot substitute for activation %p',
+    async (activation) => {
+      const workspaceState = makeState();
+      await suggestAiCompletionIfSupported(
+        { workspaceState } as unknown as vscode.ExtensionContext,
+        {
+          initializeResult: {
+            capabilities: { experimental: { perlAiCompletionActivation: activation } },
+          },
+          getFeature: () => ({ getState: () => ({ kind: 'document', registrations: true }) }),
+        },
+      );
+      expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+      expect(workspaceState.update).not.toHaveBeenCalled();
+    },
+  );
+
+  test('startup and registration overlap cannot show duplicate prompts before receipt persistence', async () => {
+    const choice = new Deferred<string | undefined>();
+    const receipt = new Deferred<void>();
+    (vscode.window.showInformationMessage as jest.Mock).mockReturnValueOnce(choice.promise);
+    const workspaceState = { get: jest.fn(() => false), update: jest.fn(() => receipt.promise) };
+    const context = { workspaceState } as unknown as vscode.ExtensionContext;
+    let registrations = true;
+    const client = {
+      initializeResult: { capabilities },
+      getFeature: () => ({ getState: () => ({ kind: 'document', registrations }) }),
+    };
+    const startup = suggestAiCompletionIfSupported(context, client);
+    const registration = suggestAiCompletionIfSupported(context, client);
+    // Display must not yield between checking the registered provider and
+    // showing the prompt. The old receipt-first order fails this assertion.
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(workspaceState.update).not.toHaveBeenCalled();
+    registrations = false;
+    choice.resolve('Dismiss');
+    await Promise.resolve();
+    expect(workspaceState.update).toHaveBeenCalledTimes(1);
+    registrations = true;
+    await suggestAiCompletionIfSupported(context, client);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    receipt.resolve(undefined);
+    await Promise.all([startup, registration]);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['Enable', 'Learn More'])(
+    'receipt rejection preserves the %s choice',
+    async (choice) => {
+      const update = jest.fn(async () => undefined);
+      (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+        get: jest.fn(() => false),
+        update,
+      });
+      (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(choice);
+      const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const workspaceState = {
+        get: jest.fn(() => false),
+        update: jest.fn(async () => {
+          throw new Error('receipt storage unavailable');
+        }),
+      };
+      try {
+        await suggestAiCompletionIfSupported(
+          { workspaceState } as unknown as vscode.ExtensionContext,
+          {
+            initializeResult: { capabilities },
+            getFeature: () => ({ getState: () => ({ kind: 'document', registrations: true }) }),
+          },
+        );
+        expect(workspaceState.update).toHaveBeenCalledTimes(1);
+        if (choice === 'Enable') {
+          expect(update).toHaveBeenCalledWith(
+            'aiCompletion.enabled',
+            true,
+            vscode.ConfigurationTarget.Global,
+          );
+        } else {
+          expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+            'workbench.action.openSettings',
+            '@ext:EffortlessMetrics.perl-lsp-rs perl-lsp.aiCompletion',
+          );
+        }
+      } finally {
+        warning.mockRestore();
+      }
+    },
   );
 });

@@ -139,6 +139,33 @@ pub(crate) struct OutboundSender {
     completion: Arc<WriterCompletion>,
 }
 
+/// A background observer may publish a notification while the session lives,
+/// without keeping the outbound writer alive during server shutdown.
+pub(crate) struct WeakOutboundSender {
+    gate: std::sync::Weak<parking_lot::Mutex<Option<tokio::sync::mpsc::Sender<OutboundMessage>>>>,
+}
+
+impl WeakOutboundSender {
+    pub(crate) fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        if let Some(reason) = crate::protocol::method_direction::outbound_rejection(method) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("outbound notification `{method}` {reason}"),
+            ));
+        }
+        let gate = self
+            .gate
+            .upgrade()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        let gate = gate.lock();
+        let tx = gate
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        tx.try_send(OutboundMessage::Notification { method: method.to_string(), params })
+            .map_err(map_try_send_error)
+    }
+}
+
 #[derive(Default)]
 struct WriterCompletion {
     outcome: parking_lot::Mutex<Option<WriterTerminalOutcome>>,
@@ -149,11 +176,17 @@ struct WriterCompletion {
 
 impl WriterCompletion {
     fn publish(&self, outcome: WriterTerminalOutcome) {
-        if outcome.is_io_failure() {
+        let io_failure = outcome.is_io_failure();
+        // Publish the outcome before arming the failure wake: the serving
+        // loop snapshots the terminal outcome to log it at teardown (#18349),
+        // so `failed` must never be observable before the outcome it
+        // promises. The `Release` store below and the snapshot's `Acquire`
+        // load give that snapshot its happens-before edge.
+        *self.outcome.lock() = Some(outcome);
+        if io_failure {
             self.failed.store(true, Ordering::Release);
             self.failure_notify.notify_waiters();
         }
-        *self.outcome.lock() = Some(outcome);
         self.ready.notify_all();
     }
 
@@ -196,6 +229,9 @@ fn map_try_send_error<T>(e: tokio::sync::mpsc::error::TrySendError<T>) -> io::Er
 }
 
 impl OutboundSender {
+    pub(crate) fn downgrade(&self) -> WeakOutboundSender {
+        WeakOutboundSender { gate: Arc::downgrade(&self.gate) }
+    }
     fn from_parts(
         tx: tokio::sync::mpsc::Sender<OutboundMessage>,
         completion: Arc<WriterCompletion>,
@@ -255,6 +291,20 @@ impl OutboundSender {
 
     pub(crate) async fn response_failure_notified(&self) {
         self.completion.failure_notified().await;
+    }
+
+    /// Snapshot the writer's terminal outcome without waiting (#18349).
+    ///
+    /// `None` means the writer thread has settled no I/O failure yet: serving
+    /// was torn down by an admission-path failure signal (`signal_failure`
+    /// from a refused required response) with no sink I/O failure settled —
+    /// a pending writer write may still settle later, so no writer-health or
+    /// transport-cause attribution may be drawn from `None`. `Some(outcome)`
+    /// is the writer's first causal termination, published before the
+    /// failure wake (see [`WriterCompletion::publish`]), so a failure wake
+    /// never observes `None` from this snapshot.
+    pub(crate) fn terminal_outcome_snapshot(&self) -> Option<WriterTerminalOutcome> {
+        self.completion.outcome.lock().clone()
     }
 
     pub(crate) fn response_delivery_failed(&self) -> bool {
@@ -1099,6 +1149,47 @@ pub(crate) mod tests {
         if !outcome.is_io_failure() || attempted.load(Ordering::SeqCst) == 0 {
             return Err("writer failure wake lacked a causal I/O outcome".into());
         }
+        Ok(())
+    }
+
+    /// #18349: the failure wake must imply a published terminal outcome, so
+    /// the serving loop's snapshot always names the causal failure when the
+    /// writer died on I/O. `publish` therefore stores the outcome before
+    /// arming the wake, and the snapshot reflects the writer's settlement.
+    #[test]
+    fn response_failure_wake_implies_published_terminal_outcome_snapshot()
+    -> Result<(), Box<dyn Error>> {
+        let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (sender, handle) = spawn_writer(Box::new(WriteFailsSink {
+            write_kind: io::ErrorKind::ConnectionAborted,
+            attempted_bytes: Arc::clone(&attempted),
+        }));
+        sender.send_notification("window/logMessage", json!({"wake": true}))?;
+
+        assert!(
+            sender.terminal_outcome_snapshot().is_none(),
+            "an unsettled writer must snapshot as None (admission-path shape)"
+        );
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), sender.response_failure_notified())
+                .await
+                .map_err(|_| "writer failure did not wake the response waiter")
+        })?;
+        let snapshot = sender
+            .terminal_outcome_snapshot()
+            .ok_or("failure wake fired without a published terminal outcome")?;
+        assert!(
+            matches!(
+                snapshot,
+                WriterTerminalOutcome::WriteFailed { kind, .. }
+                    if kind == io::ErrorKind::ConnectionAborted
+            ),
+            "snapshot must carry the first causal I/O outcome, got {snapshot:?}"
+        );
+        let settled = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(snapshot, settled, "snapshot must match the writer's terminal outcome");
         Ok(())
     }
 
