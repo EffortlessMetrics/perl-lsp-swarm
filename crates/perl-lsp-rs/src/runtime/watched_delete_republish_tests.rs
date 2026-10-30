@@ -296,7 +296,9 @@ fn wait_for_publish(
         if found {
             return Ok(messages.len());
         }
-        assert!(Instant::now() < deadline, "{what}: tail {messages:?}");
+        if Instant::now() >= deadline {
+            return Err(format!("{what}: tail {messages:?}").into());
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -415,4 +417,438 @@ fn watched_create_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+// -------------------------------------------------------------------------
+// Save / file-operation tails (#18116)
+//
+// The watched-file tails above republish open consumers after external
+// mutation. Two dependency-change seams earned no tail: saving an open
+// dependency (no watched event is guaranteed to echo the save) and
+// `didCreateFiles`/`didRenameFiles` (whose `refresh_all` tail only sends
+// pull-refresh requests, so push consumers never republish).
+// -------------------------------------------------------------------------
+
+// The marker is fixture-only, not an outbound production protocol method.
+#[cfg(test)]
+mod output_boundary {
+    use super::*;
+
+    /// A FIFO marker drains the outbound writer after synchronous diagnostic
+    /// publication. These fixtures install a parse worker, never a debounce scheduler.
+    pub(super) fn save_output_boundary(
+        server: &LspServer,
+        output: &OutputCapture,
+        phase: &str,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        server.notify("test/save-proof-boundary", json!({ "phase": phase }))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let messages = output.messages()?;
+            if let Some(position) = messages.iter().position(|message| {
+                message.get("method").and_then(Value::as_str) == Some("test/save-proof-boundary")
+                    && message.pointer("/params/phase").and_then(Value::as_str) == Some(phase)
+            }) {
+                return Ok(position + 1);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("outbound boundary {phase} never arrived").into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+use output_boundary::save_output_boundary;
+
+fn settle_save_worker(server: &LspServer, key: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let worker = server.parse_worker().ok_or("parse worker must be installed")?;
+    if !worker.wait_until_settled(key, Duration::from_secs(5)) {
+        return Err("save parse worker did not settle".into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while server.pending_index_tasks() != 0 {
+        if Instant::now() >= deadline {
+            return Err("save background indexing did not settle".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+struct ReleaseSaveSideEffects<'a>(&'a LspServer);
+
+impl Drop for ReleaseSaveSideEffects<'_> {
+    fn drop(&mut self) {
+        self.0.test_parse_worker_release_side_effect_barrier();
+    }
+}
+
+const SAVE_ROLE_ORIGINAL: &str = "package Save::RoleA;\nuse Role::Tiny;\nsub original { 1 }\n1;\n";
+const SAVE_ROLE_CONFLICT: &str =
+    "package Save::RoleA;\nuse Role::Tiny;\nsub shared_method { 1 }\n1;\n";
+
+fn open_save_role_fixture() -> Result<
+    (Arc<LspServer>, OutputCapture, String, String, tempfile::TempDir),
+    Box<dyn std::error::Error>,
+> {
+    let (server, output) = server_with_output_capture();
+    let dir = tempfile::tempdir()?;
+    let uri = |name: &str| -> Result<String, Box<dyn std::error::Error>> {
+        Ok(url::Url::from_file_path(dir.path().join(name))
+            .map_err(|_| "invalid role URI")?
+            .to_string())
+    };
+    let role_uri = uri("RoleA.pm")?;
+    let other_uri = uri("RoleB.pm")?;
+    let consumer_uri = uri("Consumer.pm")?;
+    // Open/index the roles before the consumer, using the synchronous fallback.
+    server.test_apply_did_open(&role_uri, SAVE_ROLE_ORIGINAL, 1)?;
+    server.test_apply_did_open(
+        &other_uri,
+        "package Save::RoleB;\nuse Role::Tiny;\nsub shared_method { 2 }\n1;\n",
+        1,
+    )?;
+    server.test_apply_did_open(
+        &consumer_uri,
+        "package Save::Consumer;\nuse Role::Tiny::With;\nwith 'Save::RoleA', 'Save::RoleB';\n1;\n",
+        1,
+    )?;
+    let server = Arc::new(server);
+    server.install_default_parse_worker();
+    let keys = [consumer_uri.clone(), server.normalize_uri_key(&consumer_uri)];
+    let end = save_output_boundary(&server, &output, "role-baseline")?;
+    let messages = output.messages()?;
+    let baseline = messages
+        .iter()
+        .take(end)
+        .rev()
+        .find(|m| is_publish_for(m, &keys))
+        .ok_or("role consumer must have a baseline publication")?;
+    if message_has_pl303(baseline) {
+        return Err("distinct role methods must not initially conflict".into());
+    }
+    Ok((server, output, consumer_uri, role_uri, dir))
+}
+
+fn message_has_pl303(message: &Value) -> bool {
+    message.pointer("/params/diagnostics").and_then(Value::as_array).is_some_and(|diagnostics| {
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.get("code") == Some(&json!("PL303"))
+                && diagnostic
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("shared_method"))
+        })
+    })
+}
+
+/// A positive cross-file finding rejects empty/stale publications and a refresh
+/// computed before the dependency's new source reaches the workspace index.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn dependency_save_republishes_open_consumer_diagnostics() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (server, output, consumer_uri, role_uri, _dir) = open_save_role_fixture()?;
+    let keys = [consumer_uri.clone(), server.normalize_uri_key(&consumer_uri)];
+    let key = server.normalize_uri_key(&role_uri);
+    let before = save_output_boundary(&server, &output, "before-saved-text")?;
+    server.test_parse_worker_arm_side_effect_barrier(&key, 2);
+    let release = ReleaseSaveSideEffects(&server);
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": role_uri }, "text": SAVE_ROLE_CONFLICT
+    })))?;
+    server.test_parse_worker_wait_until_side_effects_paused();
+    let index = server.coordinator().ok_or("workspace coordinator required")?.index();
+    if index.indexed_generation(&key) != Some(1) {
+        return Err("held saved-text effects must not touch the predecessor's index".into());
+    }
+    drop(release);
+    settle_save_worker(&server, &key)?;
+    if index.indexed_generation(&key) != Some(2) {
+        return Err("released save must commit the accepted generation".into());
+    }
+    let end = save_output_boundary(&server, &output, "saved-text-settled")?;
+    if !output
+        .messages()?
+        .iter()
+        .take(end)
+        .skip(before)
+        .any(|m| is_publish_for(m, &keys) && message_has_pl303(m))
+    {
+        return Err("saved role conflict never reached the unchanged consumer as PL303".into());
+    }
+    Ok(())
+}
+
+/// Exercise the no-text path while a real edit is held between parse publication
+/// and index commit; then prove already-current saves do not refresh consumers.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn dependency_no_text_save_republishes_only_when_index_stale()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, consumer_uri, role_uri, _dir) = open_save_role_fixture()?;
+    let keys = [consumer_uri.clone(), server.normalize_uri_key(&consumer_uri)];
+    let key = server.normalize_uri_key(&role_uri);
+    server.test_parse_worker_arm_side_effect_barrier(&key, 2);
+    let release = ReleaseSaveSideEffects(&server);
+    server.test_apply_did_change(&role_uri, SAVE_ROLE_CONFLICT, 2)?;
+    server.test_parse_worker_wait_until_side_effects_paused();
+    let index = server.coordinator().ok_or("workspace coordinator required")?.index();
+    if index.indexed_generation(&key) != Some(1)
+        || !server.workspace_index_stale_for_document(&role_uri)
+    {
+        return Err("fixture must hold generation 2 behind indexed generation 1".into());
+    }
+    let before = save_output_boundary(&server, &output, "before-no-text")?;
+    server.handle_did_save(Some(json!({ "textDocument": { "uri": role_uri } })))?;
+    if index.indexed_generation(&key) != Some(2) {
+        return Err("no-text save did not reconcile the held generation".into());
+    }
+    let symbols = index.file_symbols(&key);
+    if !symbols.iter().any(|s| s.name == "shared_method")
+        || symbols.iter().any(|s| s.name == "original")
+    {
+        return Err("no-text save retained the predecessor's symbols".into());
+    }
+    let end = save_output_boundary(&server, &output, "no-text-held")?;
+    if !output
+        .messages()?
+        .iter()
+        .take(end)
+        .skip(before)
+        .any(|m| is_publish_for(m, &keys) && message_has_pl303(m))
+    {
+        return Err("no-text save must publish the new PL303 before worker release".into());
+    }
+    drop(release);
+    settle_save_worker(&server, &key)?;
+    let mut boundary = save_output_boundary(&server, &output, "no-text-settled")?;
+    for (phase, params) in [
+        ("no-text-again", json!({ "textDocument": { "uri": role_uri } })),
+        (
+            "identical-text",
+            json!({ "textDocument": { "uri": role_uri }, "text": SAVE_ROLE_CONFLICT }),
+        ),
+    ] {
+        server.handle_did_save(Some(params))?;
+        let end = save_output_boundary(&server, &output, phase)?;
+        if index.indexed_generation(&key) != Some(2)
+            || output.messages()?.iter().take(end).skip(boundary).any(|m| is_publish_for(m, &keys))
+        {
+            return Err(
+                format!("{phase} must leave index and consumer publications unchanged").into()
+            );
+        }
+        boundary = end;
+    }
+
+    // Identical bytes with a newer accepted generation can return NoOp while
+    // still repairing index freshness; this is not an already-current save.
+    server.test_parse_worker_arm_side_effect_barrier(&key, 3);
+    let release = ReleaseSaveSideEffects(&server);
+    server.test_apply_did_change(&role_uri, SAVE_ROLE_CONFLICT, 3)?;
+    server.test_parse_worker_wait_until_side_effects_paused();
+    if index.indexed_generation(&key) != Some(2) {
+        return Err("same-content edit must leave a held generation gap".into());
+    }
+    let before = save_output_boundary(&server, &output, "same-content-held")?;
+    server.handle_did_save(Some(json!({ "textDocument": { "uri": role_uri } })))?;
+    let end = save_output_boundary(&server, &output, "same-content-reconciled")?;
+    if index.indexed_generation(&key) != Some(3)
+        || !output.messages()?.iter().take(end).skip(before).any(|m| is_publish_for(m, &keys))
+    {
+        return Err(
+            "NoOp content reconciliation must advance freshness and refresh consumers".into()
+        );
+    }
+    drop(release);
+    settle_save_worker(&server, &key)?;
+    Ok(())
+}
+
+/// The second parse-ticket producer must retain consumer refresh when an
+/// unavailable worker makes the real save path use its synchronous fallback.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn dependency_save_worker_shutdown_fallback_republishes_role_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, consumer_uri, role_uri, _dir) = open_save_role_fixture()?;
+    server.parse_worker().ok_or("parse worker required")?.request_shutdown();
+    let keys = [consumer_uri.clone(), server.normalize_uri_key(&consumer_uri)];
+    let key = server.normalize_uri_key(&role_uri);
+    let before = save_output_boundary(&server, &output, "fallback-before")?;
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": role_uri }, "text": SAVE_ROLE_CONFLICT
+    })))?;
+    let end = save_output_boundary(&server, &output, "fallback-after")?;
+    if server
+        .coordinator()
+        .ok_or("workspace coordinator required")?
+        .index()
+        .indexed_generation(&key)
+        != Some(2)
+        || !output
+            .messages()?
+            .iter()
+            .take(end)
+            .skip(before)
+            .any(|m| is_publish_for(m, &keys) && message_has_pl303(m))
+    {
+        return Err(
+            "worker-shutdown fallback must commit and republish the saved role conflict".into()
+        );
+    }
+    Ok(())
+}
+
+/// #18116 regression: renaming a file into the path an open consumer
+/// resolves must clear the consumer's stale module-not-found diagnostic
+/// for push clients (the `refresh_all` tail alone sends them nothing).
+#[cfg(feature = "workspace")]
+#[test]
+fn file_operation_rename_clears_stale_consumer_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, app_uri, alpha_uri, alpha_path, dir) =
+        open_consumer_fixture_with_dependency(false)?;
+    let publish_keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+
+    // Baseline: without the dependency the open consumer is stale (PL701).
+    let baseline_len = wait_for_publish(&output, &publish_keys, 0, true, "baseline never stale")?;
+
+    // Stage the module under a non-resolving name, then rename it into
+    // place through the file-operation seam only.
+    let staging_path = dir.path().join("lib").join("Local").join("Staging.pm");
+    std::fs::write(&staging_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    let staging_uri =
+        url::Url::from_file_path(&staging_path).map_err(|_| "invalid staging URI")?.to_string();
+    std::fs::rename(&staging_path, &alpha_path)?;
+    server.handle_did_rename_files(Some(json!({
+        "files": [{ "oldUri": staging_uri, "newUri": alpha_uri }]
+    })))?;
+
+    wait_for_publish(
+        &output,
+        &publish_keys,
+        baseline_len,
+        false,
+        "didRenameFiles never cleared the open consumer",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn file_operation_create_clears_stale_consumer_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, app_uri, alpha_uri, alpha_path, _dir) =
+        open_consumer_fixture_with_dependency(false)?;
+    let keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+    let baseline = wait_for_publish(&output, &keys, 0, true, "baseline never stale")?;
+    std::fs::write(&alpha_path, "package Local::Alpha;\nsub helper { 1 }\n1;\n")?;
+    server.handle_did_create_files(Some(json!({ "files": [{ "uri": alpha_uri }] })))?;
+    wait_for_publish(&output, &keys, baseline, false, "didCreateFiles never cleared PL701")?;
+    Ok(())
+}
+
+#[test]
+fn file_operations_without_usable_entries_do_not_republish_consumers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, app_uri, _alpha_uri, _alpha_path, _dir) = open_consumer_fixture()?;
+    let keys = [app_uri.clone(), server.normalize_uri_key(&app_uri)];
+    let before = save_output_boundary(&server, &output, "empty-operations-before")?;
+    for params in [json!({ "files": [] }), json!({ "files": [{}] })] {
+        server.handle_did_create_files(Some(params.clone()))?;
+        server.handle_did_rename_files(Some(params))?;
+    }
+    let end = save_output_boundary(&server, &output, "empty-operations-after")?;
+    if output.messages()?.iter().take(end).skip(before).any(|m| is_publish_for(m, &keys)) {
+        return Err("empty/malformed file operations must not republish the consumer".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn file_operation_create_and_rename_refresh_pull_clients() -> Result<(), Box<dyn std::error::Error>>
+{
+    for rename in [false, true] {
+        let (mut server, output, _app_uri, alpha_uri, alpha_path, dir) =
+            open_consumer_fixture_with_dependency(false)?;
+        // A generous injected window makes the second-event control independent
+        // of machine speed; successful invalidations must bypass this timer.
+        server.refresh_controller =
+            super::refresh::RefreshController::with_debounce(Duration::from_secs(60));
+        server.client_capabilities.lock().diagnostic_refresh_support = true;
+        server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
+        server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+        // The client may finish the first pull before the second event arrives.
+        // A leading-edge debounce must not swallow that second invalidation.
+        for attempt in 0..2 {
+            let before =
+                save_output_boundary(&server, &output, &format!("pull-file-before-{attempt}"))?;
+            std::fs::write(
+                &alpha_path,
+                format!("package Local::Alpha;\nsub helper {{ {attempt} }}\n1;\n"),
+            )?;
+            if rename {
+                let old_uri =
+                    url::Url::from_file_path(dir.path().join(format!("Staging{attempt}.pm")))
+                        .map_err(|_| "invalid staging URI")?
+                        .to_string();
+                server.handle_did_rename_files(Some(json!({
+                    "files": [{ "oldUri": old_uri, "newUri": alpha_uri }]
+                })))?;
+            } else {
+                server.handle_did_create_files(Some(json!({ "files": [{ "uri": alpha_uri }] })))?;
+            }
+            let end =
+                save_output_boundary(&server, &output, &format!("pull-file-after-{attempt}"))?;
+            let refreshes = output
+                .messages()?
+                .iter()
+                .take(end)
+                .skip(before)
+                .filter(|m| {
+                    m.get("method").and_then(Value::as_str) == Some("workspace/diagnostic/refresh")
+                })
+                .count();
+            if refreshes != 1 {
+                return Err(format!("file operation rename={rename}, attempt={attempt}: expected one pull refresh, got {refreshes}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn dependency_save_refreshes_pull_clients_after_reconciliation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (server, output, consumer_uri, role_uri, _dir) = open_save_role_fixture()?;
+    let keys = [consumer_uri.clone(), server.normalize_uri_key(&consumer_uri)];
+    let key = server.normalize_uri_key(&role_uri);
+    server.client_capabilities.lock().diagnostic_refresh_support = true;
+    server.client_supports_pull_diags.store(true, std::sync::atomic::Ordering::Relaxed);
+    server.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+    let before = save_output_boundary(&server, &output, "pull-save-before")?;
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": role_uri }, "text": SAVE_ROLE_CONFLICT
+    })))?;
+    settle_save_worker(&server, &key)?;
+    let end = save_output_boundary(&server, &output, "pull-save-after")?;
+    let messages = output.messages()?;
+    let tail = messages.iter().take(end).skip(before);
+    if server
+        .coordinator()
+        .ok_or("workspace coordinator required")?
+        .index()
+        .indexed_generation(&key)
+        != Some(2)
+        || !tail.clone().any(|m| {
+            m.get("method").and_then(Value::as_str) == Some("workspace/diagnostic/refresh")
+        })
+        || tail.clone().any(|m| is_publish_for(m, &keys))
+    {
+        return Err("pull save must reconcile then request refresh without pushing consumer".into());
+    }
+    Ok(())
 }

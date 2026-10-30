@@ -1185,6 +1185,7 @@ impl LspServer {
                         next_gen,
                         Arc::clone(&generation_handle),
                         Arc::clone(&text_arc),
+                        allow_same_version,
                     );
                     if enqueue_result.is_ok() {
                         documents.insert(normalized_uri.clone(), doc_state);
@@ -1535,6 +1536,7 @@ impl LspServer {
                     generation: next_gen,
                     snapshot,
                     text: Arc::from(text.as_str()),
+                    refresh_consumers_after_index: allow_same_version,
                     // No worker, no queue, no `finish()` settle hook on
                     // this path -- `run_post_parse_side_effects` must keep
                     // firing `notify_parse_complete` itself. See
@@ -1726,14 +1728,29 @@ impl LspServer {
                         coordinator_clone.notify_parse_complete(&uri_owned);
                     }
                     task_counter.fetch_sub(1, Ordering::SeqCst);
+                    matches!(
+                        indexed,
+                        Some(SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp)
+                    )
                 };
 
-                match tokio::runtime::Handle::try_current() {
-                    Ok(handle) => {
-                        handle.spawn_blocking(task);
+                if ticket.refresh_consumers_after_index {
+                    // Already on the off-lock parse worker for ordinary saves.
+                    // Keep the accepted ticket's index commit before its consumer
+                    // refresh; spawning another task would reopen the gap.
+                    if task() {
+                        self.commit_parse_effect_if_current(&ticket, || {
+                            self.refresh_diagnostics_after_watched_change();
+                        });
                     }
-                    Err(_) => {
-                        task();
+                } else {
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => {
+                            handle.spawn_blocking(task);
+                        }
+                        Err(_) => {
+                            task();
+                        }
                     }
                 }
 
@@ -1770,6 +1787,11 @@ impl LspServer {
         self.commit_parse_effect_if_current(&ticket, || {
             self.publish_diagnostics_debounced(&ticket.uri);
         });
+        if ticket.refresh_consumers_after_index {
+            self.commit_parse_effect_if_current(&ticket, || {
+                self.refresh_diagnostics_after_watched_change();
+            });
+        }
     }
 
     /// The ONLY sanctioned way to commit a deferred post-parse side effect.

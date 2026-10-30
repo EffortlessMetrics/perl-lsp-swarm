@@ -50,7 +50,7 @@ pub(super) fn complete_dispatch(
         return flow;
     }
 
-    if complete_symbol_namespace_context(provider, completions, context) {
+    if complete_symbol_namespace_context(provider, completions, context, source) {
         return CompletionFlow::SortAndReturn;
     }
 
@@ -594,9 +594,14 @@ fn complete_symbol_namespace_context(
     provider: &CompletionProvider,
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
+    source: &str,
 ) -> bool {
     if context.prefix.starts_with('&') {
-        functions::add_function_completions(completions, context, &provider.symbol_table);
+        functions::add_function_completions(
+            completions,
+            &functions::context_with_function_suffix(context, source),
+            &provider.symbol_table,
+        );
         return true;
     }
 
@@ -685,7 +690,11 @@ fn complete_general_context(
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }
-        functions::add_function_completions(completions, context, &provider.symbol_table);
+        functions::add_function_completions(
+            completions,
+            &functions::context_with_function_suffix(context, source),
+            &provider.symbol_table,
+        );
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }
