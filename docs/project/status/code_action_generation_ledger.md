@@ -124,8 +124,8 @@ handler does not satisfy it.
 | provider_original | refactor.extract.variable | redundant_behavior | — |
 | provider_enhanced | refactor.extract.subroutine | canonical_candidate | — |
 | provider_original | refactor.extract.subroutine | redundant_behavior | — |
-| provider_original | refactor.extract:basic_fallback | shadow_only_candidate | — |
-| disabled_extract_placeholder | refactor.extract:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
+| provider_original | refactor.extract.variable:basic_fallback | shadow_only_candidate | — |
+| disabled_extract_placeholder | refactor.extract.variable:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
 | provider_enhanced | refactor.rewrite:enhanced_transforms | canonical_candidate | — |
 | provider_original | refactor.rewrite:enhanced_transforms | redundant_behavior | — |
 | provider_original | source.modernize:modernize | canonical_candidate | — |
@@ -304,7 +304,7 @@ The corpus covers the outcome classes #9188 requires:
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
-| recorded gap (`NOT_PROVEN`) | the remaining `text_fallback` row, `refactor.extract.subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract:basic_fallback` carry a `proof_gap` instead of a parity fixture — four rows |
+| recorded gap (`NOT_PROVEN`) | the remaining `text_fallback` row, `refactor.extract.subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract.variable:basic_fallback` carry a `proof_gap` instead of a parity fixture — four rows |
 
 Every `cac-parity-*` id named anywhere on this page is checked against the
 ledger's routes. This table previously named a fixture that had been renamed,
