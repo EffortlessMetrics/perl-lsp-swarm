@@ -57,11 +57,13 @@ pub(crate) fn is_upstream_merged_alias_pair(a_code: Option<&str>, b_code: Option
 }
 
 /// Whether two diagnostics at the same `(range, severity)` collapse into one
-/// row: exactly one of the two codes must be a native-critic code, and the
-/// pair must not be a reviewed upstream-merged alias (#11918).
+/// row: the pair must be one native-critic row and one built-in `PL*` row,
+/// and must not be a reviewed upstream-merged alias (#11918).
 pub(crate) fn codes_collapse_pair(a_code: Option<&str>, b_code: Option<&str>) -> bool {
-    (is_native_critic_code(a_code) ^ is_native_critic_code(b_code))
-        && !is_upstream_merged_alias_pair(a_code, b_code)
+    let is_builtin = |code: Option<&str>| code.is_some_and(|c| c.starts_with("PL"));
+    let native_builtin_pair = (is_native_critic_code(a_code) && is_builtin(b_code))
+        || (is_builtin(a_code) && is_native_critic_code(b_code));
+    native_builtin_pair && !is_upstream_merged_alias_pair(a_code, b_code)
 }
 
 /// Wire code of an LSP diagnostic, when it carries a string code.
@@ -235,6 +237,17 @@ mod tests {
         assert!(
             !codes_collapse_pair(Some("PL406"), None),
             "a codeless row is not a native-critic twin either"
+        );
+        assert!(
+            !codes_collapse_pair(
+                Some("native.testing.require_use_strict"),
+                Some("dead-code-subroutine")
+            ),
+            "a native row beside a dead-code row has no PL twin to represent it"
+        );
+        assert!(
+            !codes_collapse_pair(Some("native.testing.require_use_strict"), None),
+            "a native row beside a codeless row must not collapse either"
         );
     }
 
