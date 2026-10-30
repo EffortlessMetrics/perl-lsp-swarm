@@ -476,7 +476,10 @@ fn run_pinned_launch_paths_proof(source_perl: &Path) -> Result<(), Box<dyn Error
 
 #[test]
 #[serial(dap_debuggee_environment)]
-#[allow(clippy::print_stderr)]
+#[expect(
+    clippy::print_stderr,
+    reason = "SKIP diagnostic for a missing Perl interpreter in an integration test"
+)]
 fn stop_on_entry_publishes_one_real_frame() -> Result<(), Box<dyn Error>> {
     let Some(perl) = find_configured_or_path_pipe_perl()? else {
         eprintln!("SKIP stop_on_entry_publishes_one_real_frame: Perl unavailable");
