@@ -155,6 +155,13 @@ pub(crate) enum CliCommand {
         #[arg(long, value_name = "PATH", conflicts_with = "inventory")]
         identity_registry: Option<PathBuf>,
     },
+    /// Fail when the change deletes test files/cases or hollows assertions without a linked justification marker (#17405).
+    CheckTestDeletion {
+        /// Base ref to diff the working tree against. Defaults to `$CI_SCOPE_BASE`,
+        /// `$GITHUB_BASE_REF`, `origin/main`, `main`, then `HEAD~1`.
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+    },
     /// Enforce that every `compile_fail` doctest contract sits inside the gate that runs `--doc` (#13774).
     CheckDoctestEnforcement,
     /// Enforce no raw print macros in library source (println!/eprintln! belong in tracing).
@@ -220,6 +227,30 @@ mod tests {
                 &["--fail-on-regression", "--threshold=-0.5", "baseline.json", "candidate.json",]
             )
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_deletion_parses_optional_base() -> Result<()> {
+        let default_cli = Cli::try_parse_from(["perl-ci-hygiene", "check-test-deletion"])?;
+        let CliCommand::CheckTestDeletion { base } = default_cli.command else {
+            return Err(eyre!("expected check-test-deletion command"));
+        };
+        assert_eq!(
+            base, None,
+            "omitted --base must stay None so the resolver tries its candidates"
+        );
+
+        let explicit_cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-test-deletion",
+            "--base",
+            "origin/main",
+        ])?;
+        let CliCommand::CheckTestDeletion { base } = explicit_cli.command else {
+            return Err(eyre!("expected check-test-deletion command"));
+        };
+        assert_eq!(base.as_deref(), Some("origin/main"));
         Ok(())
     }
 
