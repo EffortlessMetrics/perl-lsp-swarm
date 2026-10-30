@@ -1391,6 +1391,7 @@ jobs:
             scripts/ci/test_run_gate_shard.py
             scripts/ci/test_scope_cache_key.py
             scripts/ci/test_candidate_meta_self_tests.py
+            scripts/ci/test_local_publication_containment.py
           )
           for self_test in "${meta_self_tests[@]}"; do
             if [[ ! -e "$self_test" && ! -L "$self_test" ]]; then
