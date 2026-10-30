@@ -26,7 +26,7 @@ use std::env;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::time::{Duration, sleep};
@@ -75,6 +75,7 @@ where
             print!(
                 "{}",
                 format_info_output(
+                    &command_name,
                     env!("CARGO_PKG_VERSION"),
                     revision_label,
                     revision,
@@ -87,12 +88,16 @@ where
         }
         LaunchAction::Check => run_check(&command_name, &launch_plan.files),
         LaunchAction::CheckProject { ref dir } => check_project::run_check_project(dir),
-        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json),
-        LaunchAction::DoctorExternalTools { json } => doctor::run_doctor_external_tools(json),
-        LaunchAction::DoctorCriticCompatibility { json } => {
-            doctor::run_doctor_critic_compatibility(json)
+        LaunchAction::Doctor { ref dir, json } => doctor::run_doctor(dir, json, &command_name),
+        LaunchAction::DoctorExternalTools { json } => {
+            doctor::run_doctor_external_tools(json, &command_name)
         }
-        LaunchAction::DoctorDevEnvironment { json } => doctor::run_doctor_dev_environment(json),
+        LaunchAction::DoctorCriticCompatibility { json } => {
+            doctor::run_doctor_critic_compatibility(json, &command_name)
+        }
+        LaunchAction::DoctorDevEnvironment { json } => {
+            doctor::run_doctor_dev_environment(json, &command_name)
+        }
         LaunchAction::Completion { ref shell } => {
             if let Some(script) = shell_completion(shell) {
                 print!("{}", render_shell_completion(script, &command_name));
@@ -124,12 +129,14 @@ where
             ref head,
             ref fact_classes,
             ref out,
-        } => perl_ripr_facts::run_ripr_facts(
+            ref diff_path,
+        } => perl_ripr_facts::run_ripr_facts_with_diff_path(
             schema,
             root,
             base.as_deref(),
             head.as_deref(),
             fact_classes,
+            diff_path.as_deref(),
             out,
         ),
         LaunchAction::Help => {
@@ -195,6 +202,7 @@ fn run_perlcritic_compat_report(profile: &str) -> i32 {
 fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
     reader: R,
     tx: tokio::sync::mpsc::Sender<crate::JsonRpcRequest>,
+    server: Weak<LspServer>,
 ) {
     use crate::transport::ContentLengthMessageReader;
     std::thread::spawn(move || {
@@ -208,11 +216,11 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
                     }
                 }
                 Ok(Some(Err(error))) => {
-                    tracing::warn!(
-                        stage = error.stage().as_str(),
-                        payload_bytes = error.payload_bytes(),
-                        "incoming message rejected"
-                    );
+                    // A blocked detached reader must not retain the session.
+                    let Some(server) = server.upgrade() else { break };
+                    if server.reject_incoming_message(&error).is_err() {
+                        break;
+                    }
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -454,7 +462,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                     );
                 }
 
-                spawn_reader_thread(std::io::stdin(), tx);
+                spawn_reader_thread(std::io::stdin(), tx, Arc::downgrade(&server));
 
                 if logging_enabled {
                     let report = startup_timer.finish();
@@ -587,7 +595,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                 conn_timer.checkpoint("server_construction");
 
                                 let (tx, rx) = tokio::sync::mpsc::channel(64);
-                                spawn_reader_thread(reader, tx);
+                                spawn_reader_thread(reader, tx, Arc::downgrade(&server));
 
                                 if logging_enabled {
                                     let report = conn_timer.finish();
@@ -714,7 +722,7 @@ mod tests {
     #[test]
     fn help_text_documents_ripr_facts_flags() {
         // The --ripr-facts surface must be discoverable from --help output.
-        // Regression guard for issue #5278 — covers all 7 --ripr-* flags.
+        // Regression guard for issue #5278 — covers all 8 --ripr-* flags.
         let rendered = render_help_text("perllsp");
         for flag in [
             "--ripr-facts",
@@ -724,6 +732,7 @@ mod tests {
             "--ripr-head",
             "--ripr-fact-classes",
             "--ripr-out",
+            "--ripr-diff",
         ] {
             assert!(rendered.contains(flag), "help must list {flag}");
         }

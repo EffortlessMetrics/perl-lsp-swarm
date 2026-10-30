@@ -6,6 +6,8 @@
 # Idempotency is based on stable finding identity (the GitHub thread),
 # disposition class, and evidence identity. The observed PR head is forensic
 # metadata; unrelated head movement does not create another disposition reply.
+# A historical match may be replayed only while it is the latest observed
+# disposition. Later findings/decisions require a fresh evidence-bearing action.
 set -euo pipefail
 
 die_usage() { echo "ERROR: $1" >&2; exit 2; }
@@ -195,6 +197,8 @@ if ! MARKER_STATE="$(jq -ce --arg class "$CLASS" --argjson evidence "$EVIDENCE" 
               $parsed[]
               | select(. != null and ((.v // null) == 1) and .class == $class and .evidence == $evidence)
             ] | length),
+            latest_matching: (($parsed[-1] // {}) |
+              .v == 1 and .class == $class and .evidence == $evidence),
             is_resolved: ($node.isResolved == true)
           }
       end
@@ -206,12 +210,21 @@ fi
 INVALID="$(jq -r '.invalid' <<<"$MARKER_STATE")"
 EXISTING="$(jq -r '.matching' <<<"$MARKER_STATE")"
 IS_RESOLVED="$(jq -r '.is_resolved' <<<"$MARKER_STATE")"
-if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ || ! "$IS_RESOLVED" =~ ^(true|false)$ ]]; then
+LATEST_MATCHING="$(jq -r '.latest_matching' <<<"$MARKER_STATE")"
+if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ || ! "$IS_RESOLVED" =~ ^(true|false)$ || ! "$LATEST_MATCHING" =~ ^(true|false)$ ]]; then
     echo "ERROR: invalid disposition state values for thread $THREAD" >&2
     exit 2
 fi
 if [[ "$INVALID" -gt 0 ]]; then
     echo "ERROR: thread $THREAD contains $INVALID malformed disposition marker(s); refusing mutation" >&2
+    exit 2
+fi
+
+# An old successful action is not current permission. Refuse before any write
+# if a later typed disposition superseded the requested class/evidence pair.
+# New repair evidence can still be posted through the ordinary path below.
+if [[ "$EXISTING" -gt 0 && "$LATEST_MATCHING" != "true" ]]; then
+    echo "ERROR: superseded disposition on thread $THREAD; inspect the latest finding and provide current evidence before retrying" >&2
     exit 2
 fi
 

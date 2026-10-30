@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Fixed document-symbol name selections for package and named subroutine declarations whose names also occur in keywords or bodies, including declarations inside conditional blocks and malformed editable code.
+time: 2026-10-13T03:41:30Z
+custom:
+  PR: "17778"
+  Slug: document-symbol-canonical-name-spans
+  Breaking: "no"

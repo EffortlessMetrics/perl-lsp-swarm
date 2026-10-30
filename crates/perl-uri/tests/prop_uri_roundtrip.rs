@@ -370,6 +370,6 @@ fn regression_roundtrip_path_with_spaces() {
         return;
     };
     let recovered = uri_to_fs_path(&uri);
-    let recovered_path = perl_tdd_support::must_some(recovered);
+    let recovered_path = perl_test_must::must_some(recovered);
     assert_eq!(recovered_path.to_string_lossy(), path);
 }

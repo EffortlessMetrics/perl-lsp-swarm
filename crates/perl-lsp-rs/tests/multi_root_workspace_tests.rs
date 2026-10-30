@@ -35,6 +35,102 @@ use support::test_workspace::TempWorkspace;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn definition_reports_distinct_module_candidates_once_per_session() -> TestResult {
+    let ws = TempWorkspace::new()?;
+    let first_root = create_folder_with_config(&ws, "first", &["lib"])?;
+    let second_root = create_folder_with_config(&ws, "second", &["lib"])?;
+    let selected = create_module(&ws, "first/lib/Duplicate.pm", "package Duplicate; 1;\n")?;
+    let shadowed = create_module(&ws, "second/lib/Duplicate.pm", "package Duplicate; 1;\n")?;
+    let other_selected = create_module(&ws, "first/lib/Alternate.pm", "package Alternate; 1;\n")?;
+    let other_shadowed = create_module(&ws, "second/lib/Alternate.pm", "package Alternate; 1;\n")?;
+    let solo = create_module(&ws, "first/lib/Solo.pm", "package Solo; 1;\n")?;
+    let arrow_selected = create_module(&ws, "first/lib/Arrow.pm", "package Arrow; 1;\n")?;
+    let arrow_shadowed = create_module(&ws, "second/lib/Arrow.pm", "package Arrow; 1;\n")?;
+    let source = "use Duplicate;\nuse Alternate;\nuse Solo;\nArrow->new();\n";
+    let caller = create_script(&ws, "first/caller.pl", source)?;
+
+    let mut harness = LspHarness::new_raw();
+    harness.request(
+        "initialize",
+        json!({
+            "processId": std::process::id(), "capabilities": {},
+            "workspaceFolders": [
+                {"uri": first_root, "name": "first"},
+                {"uri": second_root, "name": "second"}
+            ]
+        }),
+    )?;
+    harness.notify("initialized", json!({}));
+    harness.open(&caller, source)?;
+    harness.wait_for_idle(Duration::from_millis(500));
+    for (line, character, target_uri, module, shadowed_uri, expect_notice) in [
+        (0, 6, &selected, "Duplicate", Some(&shadowed), true),
+        (0, 6, &selected, "Duplicate", Some(&shadowed), false),
+        (1, 6, &other_selected, "Alternate", Some(&other_shadowed), true),
+        (2, 6, &solo, "Solo", None, false),
+        (3, 2, &arrow_selected, "Arrow", Some(&arrow_shadowed), true),
+    ] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": caller},
+                "position": {"line": line, "character": character}
+            }),
+        )?;
+        let target = definition
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item["uri"].as_str())
+            .ok_or("missing definition target")?;
+        assert_eq!(target, target_uri);
+
+        let mut notices = Vec::new();
+        if expect_notice {
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_secs(2) {
+                notices.extend(harness.drain_notifications(Some("window/logMessage"), 100));
+                if notices.iter().any(|notice: &serde_json::Value| {
+                    notice["params"]["message"].as_str().is_some_and(|message| {
+                        message.contains("multiple definition targets") && message.contains(module)
+                    })
+                }) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        // The barrier pumps the raw response buffer, where LspHarness keeps
+        // its second copy of a server notification.
+        harness.barrier();
+        notices.extend(harness.drain_notifications(Some("window/logMessage"), 100));
+        let ambiguity: Vec<_> = notices
+            .iter()
+            .filter(|notice| {
+                notice["params"]["message"].as_str().is_some_and(|message| {
+                    message.contains("multiple definition targets") && message.contains(module)
+                })
+            })
+            .collect();
+        // LspHarness records each notification in its writer and response
+        // drain queues; one server emission appears twice in this API.
+        assert_eq!(
+            ambiguity.len(),
+            if expect_notice { 2 } else { 0 },
+            "unexpected ambiguity notices for {module}: {notices:?}"
+        );
+        if let Some(shadowed_uri) = shadowed_uri {
+            for notice in ambiguity {
+                assert_eq!(notice["params"]["type"], 3);
+                let message = notice["params"]["message"].as_str().ok_or("missing message")?;
+                assert!(message.contains(target_uri), "selected URI absent: {message}");
+                assert!(message.contains(shadowed_uri), "shadowed URI absent: {message}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Adaptive timeout for indexing operations
 fn indexing_timeout() -> Duration {
     let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();

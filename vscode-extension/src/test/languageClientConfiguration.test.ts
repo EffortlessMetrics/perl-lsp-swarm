@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { COEXISTENCE_CONFIGURATION_INPUTS } from '../coexistenceAdvisory';
 import {
   buildDisabledFeaturesFromConfig,
+  buildGlobalWorkspaceConfigurationPayload,
   buildLanguageClientConfigurationPayload,
   buildPerlCriticConfiguration,
   buildUserAiCompletionConfigurationPayload,
@@ -19,7 +20,9 @@ import {
 
 function makeConfig(values: Record<string, unknown>, explicit = Object.keys(values)) {
   return {
-    get: jest.fn((key: string, defaultValue?: unknown) => values[key] ?? defaultValue),
+    get: jest.fn((key: string, defaultValue?: unknown) =>
+      values[key] === undefined ? defaultValue : values[key],
+    ),
     inspect: jest.fn((key: string) =>
       explicit.includes(key) ? { workspaceValue: values[key] } : undefined,
     ),
@@ -44,6 +47,48 @@ describe('language client configuration', () => {
 
     expect(payload).toEqual({
       workspace: { includePaths: ['vendor/lib', 'local/lib/perl5'] },
+    });
+  });
+
+  test('global payload answers from user scope only, never workspace/folder scope (#17334)', () => {
+    // The unscoped pull item feeds the server's session-global layer: a
+    // workspace/folder value visible to `get()` and to `inspect()`'s
+    // workspace fields must not be able to enter it.
+    const config = {
+      get: jest.fn(() => ['/folder-should-not-win']),
+      inspect: jest.fn((key: string) =>
+        key === 'includePaths'
+          ? { workspaceValue: ['/workspace-should-not-win'], workspaceFolderValue: ['/folder'] }
+          : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toBeUndefined();
+  });
+
+  test('global payload carries user-scoped include paths (#17334)', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'includePaths' ? { globalValue: ['user/lib', 42, null] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { includePaths: ['user/lib'] },
+    });
+  });
+
+  test('global payload forwards global external include paths', () => {
+    const config = {
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      inspect: jest.fn((key: string) =>
+        key === 'externalIncludePaths' ? { globalValue: ['/opt/perl/lib'] } : undefined,
+      ),
+    } as unknown as vscode.WorkspaceConfiguration;
+
+    expect(buildGlobalWorkspaceConfigurationPayload(config)).toEqual({
+      workspace: { externalIncludePaths: ['/opt/perl/lib'] },
     });
   });
 
@@ -291,6 +336,55 @@ describe('language client configuration', () => {
       'lsp.formatting',
     ]);
     expect(disabledFeatures).toEqual(['lsp.hover']);
+  });
+
+  test.each([null, true, false, 0, 42, {}, 'lsp.hover'])(
+    'ignores non-array disabledFeatures %p and retains boolean aliases',
+    (disabledFeatures) => {
+      expect(buildDisabledFeaturesFromConfig(makeConfig({ disabledFeatures }))).toEqual([]);
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+        ),
+      ).toEqual(['lsp.semantic_tokens', 'lsp.formatting']);
+    },
+  );
+
+  test('filters non-string disabled features while preserving strings and the input array', () => {
+    const disabledFeatures = Object.freeze(['lsp.hover', null, 42, false, {}, 'lsp.formatting']);
+
+    expect(
+      buildDisabledFeaturesFromConfig(
+        makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+      ),
+    ).toEqual(['lsp.hover', 'lsp.formatting', 'lsp.semantic_tokens']);
+    expect(disabledFeatures).toEqual(['lsp.hover', null, 42, false, {}, 'lsp.formatting']);
+  });
+
+  test.each([null, undefined, 0, 1, '', 'false', [], {}, true])(
+    'does not treat malformed or enabled boolean settings %p as false',
+    (value) => {
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ enableSemanticTokens: value, enableFormatting: false }),
+        ),
+      ).toEqual(['lsp.formatting']);
+      expect(
+        buildDisabledFeaturesFromConfig(
+          makeConfig({ enableSemanticTokens: false, enableFormatting: value }),
+        ),
+      ).toEqual(['lsp.semantic_tokens']);
+    },
+  );
+
+  test('preserves an empty default and avoids appending existing aliases', () => {
+    expect(buildDisabledFeaturesFromConfig(makeConfig({}))).toEqual([]);
+    const disabledFeatures = Object.freeze(['lsp.semantic_tokens', 'lsp.formatting']);
+    expect(
+      buildDisabledFeaturesFromConfig(
+        makeConfig({ disabledFeatures, enableSemanticTokens: false, enableFormatting: false }),
+      ),
+    ).toEqual(disabledFeatures);
   });
 
   test.each([

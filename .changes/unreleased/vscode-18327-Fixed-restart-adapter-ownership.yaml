@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Fixed
+body: "Restarting the language server or rebuilding Test Explorer integration no longer retains disposed test adapters in the extension host subscription array."
+time: 2026-10-22T00:00:00Z
+custom:
+  PR: "18327"
+  Slug: restart-adapter-ownership
+  Breaking: "no"

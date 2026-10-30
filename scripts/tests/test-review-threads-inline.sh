@@ -270,6 +270,18 @@ test_threads_usage_error() {
     fi
 }
 
+# A crafted repo argument must fail closed before any gh call: OWNER/NAME are
+# interpolated into the GraphQL query, so quote-bearing values are rejected.
+test_threads_rejects_crafted_repo() {
+    reset_stub
+    run_threads 9999 'evil"/x' --json
+    if [[ "$RUN_EXIT" -eq 2 && ! -s "$GH_STUB_LOG" ]]; then
+        pass "threads: crafted repo argument exits 2 without calling gh"
+    else
+        fail "threads crafted repo — exit=$RUN_EXIT log=$(cat "$GH_STUB_LOG") out=$RUN_OUT"
+    fi
+}
+
 # `threads` is read-only. Nothing it does may mutate the PR.
 test_threads_is_read_only() {
     reset_stub
@@ -817,6 +829,7 @@ test_threads_json_shape
 test_threads_id_feeds_disposition
 test_threads_human_output_is_actionable
 test_threads_usage_error
+test_threads_rejects_crafted_repo
 test_threads_is_read_only
 test_threads_refuses_truncation
 test_threads_survives_large_payload

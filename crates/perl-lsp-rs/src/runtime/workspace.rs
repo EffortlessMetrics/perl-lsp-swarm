@@ -22,12 +22,13 @@ use crate::runtime::readiness::{
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::window::RequestProgressGuard;
 use crate::runtime::workspace_progress::{
-    WORKSPACE_INDEX_PROGRESS_TOKEN, send_index_ready_notification, send_progress_begin,
-    send_progress_create, send_progress_end, send_progress_report,
+    WORKSPACE_INDEX_PROGRESS_TOKEN, send_index_budget_exceeded_notification,
+    send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
+    send_progress_report,
 };
 use crate::state::workspace_symbol_cap;
 use perl_lsp_rs_core::config::{
-    ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
+    ExternalIncludePathAuthority, Perl5LibPrecedence, UnauthorizedExternalIncludePathSource,
     WorkspaceConfigUpdateContext,
 };
 use perl_module::file_path_to_module_name;
@@ -415,8 +416,15 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
 }
 
 #[cfg(feature = "workspace")]
-fn indexing_cancellation_request_id(progress_create_id: ServerRequestId) -> JsonRpcId {
-    JsonRpcId::String(format!("workspace-indexing:{}", progress_create_id.as_i32()))
+fn indexing_cancellation_request_id() -> JsonRpcId {
+    // The registry is process-wide, while wire request IDs belong to one server.
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    JsonRpcId::String(format!("workspace-indexing:{}", NEXT_ID.fetch_add(1, Ordering::Relaxed)))
+}
+
+#[cfg(feature = "workspace")]
+fn indexing_cancellation_is_requested(registered: bool, request_id: &JsonRpcId) -> bool {
+    registered && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(request_id)
 }
 
 #[cfg(feature = "workspace")]
@@ -579,10 +587,31 @@ impl LspServer {
             return;
         };
         let mut folders = self.workspace_folders.lock();
-        let previous_include_paths: HashMap<String, Vec<String>> = folders
+        // Snapshot every resolution-relevant effective setting a pulled
+        // payload can change, not just include paths: `useSystemInc`,
+        // `usePerl5lib`, `perl5libPrecedence`, and `resolutionTimeout`
+        // also change what the resolver probes or how long it may run,
+        // so a flip in any of them must refresh diagnostics exactly like
+        // an include-path change (#17444).
+        // `perlPath`/`perlArgs` are deliberately not honoured from
+        // workspace-supplied settings, so they cannot change here.
+        let previous_resolution_settings: HashMap<
+            String,
+            (Vec<String>, bool, bool, Perl5LibPrecedence, u64),
+        > = folders
             .iter()
             .map(|folder| {
-                (folder.uri.clone(), folder.effective_workspace_config.include_paths.clone())
+                let config = &folder.effective_workspace_config;
+                (
+                    folder.uri.clone(),
+                    (
+                        config.include_paths.clone(),
+                        config.use_system_inc,
+                        config.use_perl5lib,
+                        config.perl5lib_precedence.clone(),
+                        config.resolution_timeout_ms,
+                    ),
+                )
             })
             .collect();
         let init_options_perl = self.initialization_options_perl_settings.lock();
@@ -593,10 +622,18 @@ impl LspServer {
             results,
             i64::from(id.as_i32()),
             init_options_perl.as_ref(),
+            &|rejected| self.warn_rejected_client_include_paths(rejected),
         );
-        let include_paths_changed = folders.iter().any(|folder| {
-            previous_include_paths.get(&folder.uri)
-                != Some(&folder.effective_workspace_config.include_paths)
+        let resolution_settings_changed = folders.iter().any(|folder| {
+            let config = &folder.effective_workspace_config;
+            previous_resolution_settings.get(&folder.uri)
+                != Some(&(
+                    config.include_paths.clone(),
+                    config.use_system_inc,
+                    config.use_perl5lib,
+                    config.perl5lib_precedence.clone(),
+                    config.resolution_timeout_ms,
+                ))
         });
         drop(init_options_perl);
         drop(folders);
@@ -604,16 +641,17 @@ impl LspServer {
 
         // A null didChangeConfiguration only invalidates the scoped pull; it
         // intentionally leaves each folder's current config intact. Once the
-        // response changes include paths, refresh all open documents: every
-        // folder's paths can contribute fallback module roots to another.
-        if include_paths_changed {
+        // response changes any resolution-relevant setting, refresh all open
+        // documents: every folder's paths can contribute fallback module
+        // roots to another, and resolver toggles change resolution for all.
+        if resolution_settings_changed {
             self.invalidate_workspace_identity();
             if self.client_supports_pull_diags.load(Ordering::Relaxed) {
                 // Pull diagnostics do not use the push publication path. Ask
                 // after every accepted change; a leading-edge debounce can
                 // lose a second change while the client still has old reports.
                 if let Err(error) = self.request_diagnostic_refresh() {
-                    tracing::warn!(%error, "Failed to refresh pull diagnostics after include paths changed");
+                    tracing::warn!(%error, "Failed to refresh pull diagnostics after resolution settings changed");
                 }
             } else {
                 let open_uris: Vec<String> = self.documents.lock().keys().cloned().collect();
@@ -1493,76 +1531,97 @@ impl LspServer {
                 let extractor = crate::symbol::SymbolExtractor::new_with_source(&doc.text);
                 let symbol_table = extractor.extract(ast);
 
-                // Find matching symbol
+                // Find matching symbol. Prefer the declaration whose start
+                // matches the requested location, so duplicate names in one
+                // file resolve to the declaration the client asked about.
+                let requested_start = symbol
+                    .get("location")
+                    .and_then(|location| location.get("range"))
+                    .and_then(|range| range.get("start"))
+                    .and_then(|start| {
+                        Some((start.get("line")?.as_u64()?, start.get("character")?.as_u64()?))
+                    });
+                let mut first_match = None;
+                let mut chosen = None;
                 for symbols in symbol_table.symbols.values() {
                     for sym in symbols {
                         if sym.name == name {
-                            // Return enhanced symbol with detail and accurate range
-                            let start_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.start);
-                            let end_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.end);
-
-                            // Start with the provided symbol JSON so we can add
-                            // additional details without panicking if fields are missing
-                            let mut resolved = json!(symbol);
-
-                            use crate::symbol::VarKind;
-                            // Add detail based on symbol kind
-                            let detail = match sym.kind {
-                                crate::symbol::SymbolKind::Subroutine => {
-                                    format!("sub {}", name)
-                                }
-                                crate::symbol::SymbolKind::Method => {
-                                    format!("method {}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
-                                    format!("${}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Array) => {
-                                    format!("@{}", name)
-                                }
-                                crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
-                                    format!("%{}", name)
-                                }
-                                crate::symbol::SymbolKind::Package => {
-                                    format!("package {}", name)
-                                }
-                                crate::symbol::SymbolKind::Constant => {
-                                    format!("constant {}", name)
-                                }
-                                _ => name.to_string(),
-                            };
-                            resolved["detail"] = json!(detail);
-                            if let Some(doc) = &sym.documentation {
-                                resolved["documentation"] = json!(doc);
+                            if first_match.is_none() {
+                                first_match = Some(sym);
                             }
-
-                            // Update location with accurate range
-                            resolved["location"]["range"] = json!({
-                                "start": {
-                                    "line": start_pos.0,
-                                    "character": start_pos.1,
-                                },
-                                "end": {
-                                    "line": end_pos.0,
-                                    "character": end_pos.1,
+                            if let Some(want) = requested_start {
+                                let pos = doc
+                                    .line_starts
+                                    .offset_to_position(&doc.text, sym.location.start);
+                                if (u64::from(pos.0), u64::from(pos.1)) == want {
+                                    chosen = Some(sym);
                                 }
-                            });
-
-                            // Add container name derived from qualified symbol name
-                            if let Some(container) =
-                                perl_parser_core::qualified_name::container_name(
-                                    &sym.qualified_name,
-                                )
-                            {
-                                resolved["containerName"] =
-                                    json!(perl_module::normalize_package_separator(container));
                             }
-
-                            return Ok(Some(json!(resolved)));
                         }
                     }
+                }
+                if let Some(sym) = chosen.or(first_match) {
+                    // Return enhanced symbol with detail and accurate range
+                    let start_pos =
+                        doc.line_starts.offset_to_position(&doc.text, sym.location.start);
+                    let end_pos = doc.line_starts.offset_to_position(&doc.text, sym.location.end);
+
+                    // Start with the provided symbol JSON so we can add
+                    // additional details without panicking if fields are missing
+                    let mut resolved = json!(symbol);
+
+                    use crate::symbol::VarKind;
+                    // Add detail based on symbol kind
+                    let detail = match sym.kind {
+                        crate::symbol::SymbolKind::Subroutine => {
+                            format!("sub {}", name)
+                        }
+                        crate::symbol::SymbolKind::Method => {
+                            format!("method {}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Scalar) => {
+                            format!("${}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Array) => {
+                            format!("@{}", name)
+                        }
+                        crate::symbol::SymbolKind::Variable(VarKind::Hash) => {
+                            format!("%{}", name)
+                        }
+                        crate::symbol::SymbolKind::Package => {
+                            format!("package {}", name)
+                        }
+                        crate::symbol::SymbolKind::Constant => {
+                            format!("constant {}", name)
+                        }
+                        _ => name.to_string(),
+                    };
+                    resolved["detail"] = json!(detail);
+                    if let Some(doc) = &sym.documentation {
+                        resolved["documentation"] = json!(doc);
+                    }
+
+                    // Update location with accurate range
+                    resolved["location"]["range"] = json!({
+                        "start": {
+                            "line": start_pos.0,
+                            "character": start_pos.1,
+                        },
+                        "end": {
+                            "line": end_pos.0,
+                            "character": end_pos.1,
+                        }
+                    });
+
+                    // Add container name derived from qualified symbol name
+                    if let Some(container) =
+                        perl_parser_core::qualified_name::container_name(&sym.qualified_name)
+                    {
+                        resolved["containerName"] =
+                            json!(perl_module::normalize_package_separator(container));
+                    }
+
+                    return Ok(Some(json!(resolved)));
                 }
             }
         }
@@ -1685,6 +1744,38 @@ impl LspServer {
         }
     }
 
+    /// Surface rejected client `includePaths` entries to the editor user
+    /// (#17164), mirroring the invalid-enum `show_message` path above.
+    ///
+    /// Suppression identity lives in the bounded session-warning dedup store,
+    /// keyed per entry plus bounded reason kind and fingerprinted, so the raw
+    /// path is never retained: the same rejected entry warns once per session
+    /// across every channel that re-validates it, while a different entry or
+    /// reason still warns. The `tracing::warn!` log copy at each validation
+    /// site is unchanged; this adds the editor-visible surface only.
+    pub(crate) fn warn_rejected_client_include_paths(
+        &self,
+        rejected: &[perl_lsp_rs_core::config::RejectedClientIncludePath],
+    ) {
+        for entry in rejected {
+            let message = format!(
+                "Perl LSP rejected a `perl.workspace.includePaths` entry: {}",
+                entry.render()
+            );
+            let decision = self.session_warning_dedup.emit_client_include_path_warning(
+                &entry.entry,
+                entry.reason.dedup_key(),
+                || {
+                    self.show_message(crate::runtime::window::MessageType::Warning, &message)
+                        .is_ok()
+                },
+            );
+            if !matches!(decision, super::session_warning_dedup::SessionWarningDecision::Suppress) {
+                tracing::debug!(?decision, "rejected includePaths warning emission decided");
+            }
+        }
+    }
+
     /// Handle workspace/didChangeConfiguration notification
     ///
     /// Updates both ServerConfig and WorkspaceConfig when the client
@@ -1785,6 +1876,7 @@ impl LspServer {
                             ),
                         },
                     );
+                    self.warn_rejected_client_include_paths(&rejected);
                     for entry in rejected {
                         tracing::warn!(
                             target: "perl_lsp::config",
@@ -1805,6 +1897,12 @@ impl LspServer {
                 // Critic/AI push still triggers a scoped pull below, but must leave the
                 // current folder include paths intact until its response arrives.
                 if perl.get("workspace").is_some() {
+                    // Notifications are patches. Rebuild with the accumulated
+                    // client layer so omitted fields keep earlier client values,
+                    // just as the global config's in-place update does. Clone
+                    // before taking folder locks; the replay cache is already
+                    // advanced above.
+                    let client_settings = self.last_client_settings.lock().clone();
                     // Apply global client settings to each folder's effective config immediately.
                     // The async workspace/configuration pull that follows will refine per-folder
                     // settings once the client responds, but we update now so the window between
@@ -1834,6 +1932,7 @@ impl LspServer {
                                         ),
                                     },
                                 );
+                                self.warn_rejected_client_include_paths(&rejected);
                                 for entry in rejected {
                                     tracing::warn!(
                                         target: "perl_lsp::config",
@@ -1856,7 +1955,7 @@ impl LspServer {
                                 }
                             }
                             let rejected = effective_config.update_from_value_with_context(
-                                perl,
+                                client_settings.as_ref().unwrap_or(perl),
                                 WorkspaceConfigUpdateContext {
                                     workspace_root: folder.path.as_deref(),
                                     external_include_paths: ExternalIncludePathAuthority::Untrusted(
@@ -1864,6 +1963,7 @@ impl LspServer {
                                     ),
                                 },
                             );
+                            self.warn_rejected_client_include_paths(&rejected);
                             for entry in rejected {
                                 tracing::warn!(
                                     target: "perl_lsp::config",
@@ -1899,13 +1999,7 @@ impl LspServer {
 
                 self.invalidate_workspace_identity();
 
-                let open_uris: Vec<String> = {
-                    let documents = self.documents.lock();
-                    documents.keys().cloned().collect()
-                };
-                for open_uri in open_uris {
-                    self.publish_diagnostics_debounced(&open_uri);
-                }
+                self.republish_open_document_diagnostics();
             }
         }
 
@@ -1943,6 +2037,16 @@ impl LspServer {
         let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
             std::collections::BTreeSet::new();
 
+        // Whether this notification carried a DELETED change; the all-open
+        // republish runs once, after the metadata refresh below (#17332).
+        let mut watched_delete = false;
+
+        // Whether a CREATED/CHANGED event was processed immediately (not
+        // queued for the debounced batch); those change the facts open
+        // consumers resolved through just as a delete does, so they earn
+        // the same republish tail (#17332).
+        let mut watched_create_or_change = false;
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -1970,6 +2074,8 @@ impl LspServer {
                     if let Some(coordinator) = self.coordinator() {
                         coordinator.notify_parse_complete(&uri);
                     }
+
+                    watched_delete = true;
                 }
                 FileChangeType::CREATED | FileChangeType::CHANGED
                     // CREATED and CHANGED are debounced so that bulk operations
@@ -1984,6 +2090,7 @@ impl LspServer {
                     // processing so degraded modes never lose events.
                     metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
                     self.process_file_watcher_uri_immediate(&uri);
+                    watched_create_or_change = true;
                 }
                 _ => {}
             }
@@ -1991,6 +2098,20 @@ impl LspServer {
 
         // One refresh per affected folder for the whole notification (#13640).
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // Eviction above dropped indexed facts open buffers may have resolved
+        // dependencies through, and no buffer edit is coming to republish for
+        // them (#17332). One sweep after the refresh, so immediate-path
+        // publications (e2e mode, or a missing/unavailable debouncer) use the
+        // refreshed facts — a deleted metadata file retires its include root
+        // here — and a bulk delete costs one sweep instead of one per change.
+        // Matches the `handle_did_delete_files` seam order. A create or
+        // change processed immediately earns the same tail: restoring or
+        // editing a dependency must clear (or introduce) findings in open
+        // consumers with no buffer edit (#17332).
+        if watched_delete || watched_create_or_change {
+            self.refresh_diagnostics_after_watched_change();
+        }
 
         // This is a notification, no response needed
         Ok(None)
@@ -2012,6 +2133,31 @@ impl LspServer {
         // folder once for the whole batch (#13640).
         let metadata_roots = self.project_metadata_roots_for_batch(uris.iter().map(String::as_str));
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // The batch only ever carries CREATED/CHANGED events, and the
+        // re-index above changed facts open consumers may have resolved
+        // through: republish (or ask pull clients to re-pull) once for the
+        // whole batch, mirroring the DELETED tail (#17332).
+        if !uris.is_empty() {
+            self.refresh_diagnostics_after_watched_change();
+        }
+    }
+
+    /// Republish diagnostics for open consumers after watched-file facts
+    /// changed, or ask a pull-diagnostics client to re-pull (#17332).
+    ///
+    /// The push republish is a no-op for a pull-diagnostics client, so its
+    /// open consumers would keep stale findings after a dependency delete,
+    /// restore, or edit. Ask it to re-pull instead, mirroring the
+    /// include-path seam.
+    pub(crate) fn refresh_diagnostics_after_watched_change(&self) {
+        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+            if let Err(error) = self.request_diagnostic_refresh() {
+                tracing::warn!(%error, "Failed to refresh pull diagnostics after watched file change");
+            }
+        } else {
+            self.republish_open_document_diagnostics();
+        }
     }
 
     /// Evict every indexed URI whose filesystem path is a descendant of
@@ -2274,6 +2420,11 @@ impl LspServer {
 
             self.refresh_project_metadata_facts(&metadata_roots);
 
+            // Same repair as the watched-DELETED seam (#17332): eviction above
+            // dropped index facts open consumers may have resolved through, and
+            // a buffer edit is not coming to republish for them.
+            self.republish_open_document_diagnostics();
+
             // Trigger client refresh after file deletions
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after file deletions");
@@ -2408,10 +2559,12 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
 
                 metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
@@ -2445,8 +2598,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file creations
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!("Failed to refresh client after file creations: {}", e);
+            }
+
+            // Each usable event invalidates consumer diagnostics. The pull
+            // request must not be lost in the controller's leading-edge debounce.
+            if processed_any {
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 
@@ -2467,6 +2626,7 @@ impl LspServer {
             let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
                 std::collections::BTreeSet::new();
 
+            let mut processed_any = false;
             for file in files {
                 let Some(old_uri) = file["oldUri"].as_str() else {
                     continue;
@@ -2474,6 +2634,7 @@ impl LspServer {
                 let Some(new_uri) = file["newUri"].as_str() else {
                     continue;
                 };
+                processed_any = true;
 
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
@@ -2589,8 +2750,14 @@ impl LspServer {
             self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file renames
-            if let Err(e) = self.refresh_controller.refresh_all(self) {
+            if let Err(e) = self.refresh_controller.refresh_non_diagnostic_providers(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after file renames");
+            }
+
+            // Pair push republish with a capability-aware pull refresh for
+            // every usable event, including successive operations (#18116).
+            if processed_any {
+                self.refresh_diagnostics_after_watched_change();
             }
         }
 
@@ -2872,24 +3039,28 @@ impl LspServer {
         // progress-create request ID is server-generated, while the registry
         // also contains client request IDs; sharing numeric IDs would allow a
         // progress registration to overwrite an unrelated client request.
-        let progress_request_id = indexing_cancellation_request_id(progress_create_id);
+        let progress_request_id = indexing_cancellation_request_id();
         let progress_tokens = resources.progress_tokens;
         let progress_token_to_request = resources.progress_token_to_request;
-        if work_done_progress {
+        let cancellation_registered = if work_done_progress {
             let cancellation_token = PerlLspCancellationToken::new(
                 progress_request_id.clone(),
                 "workspace-indexing".to_string(),
             );
             if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_token(cancellation_token) {
                 tracing::warn!(%error, "Failed to register workspace indexing cancellation token");
+                false
             } else {
                 progress_tokens.lock().insert(WORKSPACE_INDEX_PROGRESS_TOKEN.to_string());
                 progress_token_to_request.lock().insert(
                     WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
                     progress_request_id.clone(),
                 );
+                true
             }
-        }
+        } else {
+            false
+        };
         let permission_denied_shown = resources.permission_denied_shown;
         let readiness_receipt = resources.readiness_receipt;
         #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
@@ -2905,11 +3076,12 @@ impl LspServer {
             #[cfg(test)]
             let mut scan_observation = scan_observation;
             let _guard = indexing_guard; // moved into closure, drops when closure exits
-            let _cancellation_guard = work_done_progress.then(|| WorkspaceIndexCancellationGuard {
-                progress_tokens,
-                progress_token_to_request,
-                request_id: progress_request_id.clone(),
-            });
+            let _cancellation_guard =
+                cancellation_registered.then(|| WorkspaceIndexCancellationGuard {
+                    progress_tokens,
+                    progress_token_to_request,
+                    request_id: progress_request_id.clone(),
+                });
             #[cfg(test)]
             if let Some(observation) = &scan_observation {
                 observation.worker_started();
@@ -2953,11 +3125,23 @@ impl LspServer {
 
             let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
+            // #17245: the initial scan budget no longer stops the scan. When the
+            // budget trips, the scan reports the partial-index window once
+            // (ready_limited) — during discovery if discovery alone overruns
+            // the budget, otherwise at the indexing loop's first check — and
+            // keeps indexing the remaining files, so coverage completes instead
+            // of freezing at a permanent partial index.
+            // `initial_budget_reported` makes that report fire exactly once;
+            // `discovery_budget_warned` de-duplicates the discovery-phase warn
+            // log.
+            let mut initial_budget_reported = false;
+            let mut discovery_budget_warned = false;
             let mut indexing_receipt = WorkspaceIndexingReceipt::default();
             let discovery_started = Instant::now();
 
             'scan: for folder_state in workspace_folders {
-                if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                if indexing_cancellation_is_requested(cancellation_registered, &progress_request_id)
+                {
                     let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                     early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
                     break 'scan;
@@ -2982,8 +3166,10 @@ impl LspServer {
                     &workspace_config.include_paths,
                     &discovery_config,
                     || {
-                        work_done_progress
-                            && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
+                        indexing_cancellation_is_requested(
+                            cancellation_registered,
+                            &progress_request_id,
+                        )
                     },
                 );
 
@@ -2994,7 +3180,10 @@ impl LspServer {
                 }
 
                 for path in discovery.files {
-                    if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                    if indexing_cancellation_is_requested(
+                        cancellation_registered,
+                        &progress_request_id,
+                    ) {
                         let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                         early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
                         break 'scan;
@@ -3012,10 +3201,28 @@ impl LspServer {
                         break 'scan;
                     }
 
-                    if elapsed_ms > caps.initial_scan_budget_ms {
-                        early_exit =
-                            Some((EarlyExitReason::InitialTimeBudget, elapsed_ms, 0, total_files));
-                        break 'scan;
+                    if elapsed_ms > caps.initial_scan_budget_ms && !discovery_budget_warned {
+                        // #17245: discovery past the budget no longer abandons
+                        // the scan, and the partial-index window is reported
+                        // HERE rather than waiting for the indexing loop: on a
+                        // workspace whose discovery alone outlasts the budget,
+                        // the client would otherwise stay on an unqualified
+                        // building report well past the configured budget
+                        // (review on PR #17274). The index is empty-but-partial
+                        // at this moment, so the ready_limited payload is
+                        // honest. Setting `initial_budget_reported` keeps the
+                        // indexing loop from reporting a second time; discovery
+                        // continues toward the max_files limit.
+                        discovery_budget_warned = true;
+                        initial_budget_reported = true;
+                        send_index_budget_exceeded_notification(&outbound, elapsed_ms);
+                        tracing::warn!(
+                            elapsed_ms,
+                            discovered = total_files,
+                            budget_ms = caps.initial_scan_budget_ms,
+                            "Initial scan budget exhausted during discovery; \
+                             discovery continues (#17245)"
+                        );
                     }
                 }
             }
@@ -3033,21 +3240,43 @@ impl LspServer {
             let mut last_reported = 0usize;
 
             for path in files {
-                if GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id) {
+                if indexing_cancellation_is_requested(cancellation_registered, &progress_request_id)
+                {
                     let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                     early_exit =
                         Some((EarlyExitReason::Cancelled, elapsed_ms, indexed_files, total_files));
                     break;
                 }
                 let elapsed_ms = budget_start.elapsed().as_millis() as u64;
-                if elapsed_ms > caps.initial_scan_budget_ms {
-                    early_exit = Some((
-                        EarlyExitReason::InitialTimeBudget,
+                if elapsed_ms > caps.initial_scan_budget_ms && !initial_budget_reported {
+                    // #17245: the initial scan budget degrades readiness
+                    // reporting, not coverage. The index IS partial at this
+                    // moment, so report the ready_limited window once, right
+                    // away, and keep indexing the remaining files instead of
+                    // freezing the workspace at a permanent partial index that
+                    // no pass ever catches up. Completion below still runs the
+                    // post-scan reconciliation and transitions to Ready, so
+                    // the client sees ready_limited -> ready as coverage
+                    // finishes.
+                    //
+                    // The coordinator deliberately stays in its live Building
+                    // state: the scan is still running, `record_early_exit`
+                    // must not count a scan that will complete as an early
+                    // exit, and a mid-scan Degraded state would let generic
+                    // parse-storm recovery mark the workspace Ready while
+                    // unindexed files remain (review on PR #17274). The
+                    // notification payload is exactly what a
+                    // Degraded(ScanTimeout) state produces.
+                    initial_budget_reported = true;
+                    send_index_budget_exceeded_notification(&outbound, elapsed_ms);
+                    tracing::warn!(
                         elapsed_ms,
                         indexed_files,
                         total_files,
-                    ));
-                    break;
+                        budget_ms = caps.initial_scan_budget_ms,
+                        "Initial scan budget exhausted; indexing continues in the \
+                         background while readiness reports ready_limited (#17245)"
+                    );
                 }
 
                 let read_started = Instant::now();
@@ -3330,6 +3559,11 @@ impl LspServer {
                             kind: ResourceKind::MaxFiles,
                         });
                     }
+                    // #17245: InitialTimeBudget cannot currently reach
+                    // `early_exit` — a budget trip degrades readiness and
+                    // continues the scan instead of exiting. The arm stays as a
+                    // safety net so a future early exit on this reason still
+                    // lands in the honest degraded state.
                     EarlyExitReason::InitialTimeBudget | EarlyExitReason::IncrementalTimeBudget => {
                         coordinator
                             .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms });
@@ -3345,9 +3579,10 @@ impl LspServer {
                 }
                 readiness_receipt.lock().log();
                 send_index_ready_notification(&outbound, &coordinator.state());
-            } else if work_done_progress
-                && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
-            {
+            } else if indexing_cancellation_is_requested(
+                cancellation_registered,
+                &progress_request_id,
+            ) {
                 let elapsed_ms = budget_start.elapsed().as_millis() as u64;
                 coordinator.transition_to_degraded(DegradationReason::Cancelled);
                 coordinator.record_early_exit(
@@ -4618,6 +4853,117 @@ mod tests {
     }
 
     #[test]
+    fn rejected_include_path_entry_is_shown_once_and_keeps_valid_sibling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+
+        // The #17164 live repro: an absolute entry alongside a valid
+        // workspace-relative sibling, delivered twice on the same channel.
+        // Validation behavior is unchanged (absolute dropped, sibling kept);
+        // only visibility is added: one editor-visible warning, deduped.
+        let payload = json!({
+            "settings": {
+                "perl": { "workspace": { "includePaths": [absolute, "lib"] } }
+            }
+        });
+        server.test_handle_did_change_configuration(Some(payload.clone()));
+        server.test_handle_did_change_configuration(Some(payload));
+
+        let include_paths = server.workspace_config.lock().include_paths.clone();
+        drop(server);
+
+        let messages = output.messages()?;
+        let warnings: Vec<&Value> = messages
+            .iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+            })
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the rejected entry must surface exactly once per session: {warnings:?}"
+        );
+        let warning = warnings[0];
+        assert_eq!(warning.pointer("/params/type").and_then(Value::as_i64), Some(2));
+        let text = warning
+            .pointer("/params/message")
+            .and_then(Value::as_str)
+            .ok_or("expected warning message text")?;
+        assert!(text.contains(absolute), "warning must name the rejected entry: {text}");
+        assert!(
+            !text.contains("externalIncludePaths"),
+            "warning must not advise the inert `externalIncludePaths` setting (#17164): {text}"
+        );
+        assert!(
+            text.contains("workspace-relative"),
+            "warning must name the supported form: {text}"
+        );
+        assert!(
+            include_paths.iter().any(|path| path == "lib"),
+            "the workspace-relative sibling must still be accepted: {include_paths:?}"
+        );
+        assert!(
+            !include_paths.iter().any(|path| path == absolute),
+            "the absolute entry must stay rejected: {include_paths:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_include_path_in_configuration_response_warns_once_across_pulls()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        let temp = tempfile::tempdir()?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|_| "failed to create folder URI")?
+            .to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
+        {
+            let mut capabilities = server.client_capabilities.lock();
+            capabilities.workspace_configuration_support = true;
+        }
+        server.initialized.store(true, Ordering::Release);
+
+        // The same rejected entry arriving through two scoped
+        // `workspace/configuration` pulls must surface once (#17164).
+        for _ in 0..2 {
+            server.request_workspace_configuration_for_folders();
+            let request_id = server
+                .pending_workspace_configuration_requests
+                .lock()
+                .keys()
+                .next()
+                .copied()
+                .ok_or("scoped request missing")?;
+            server.handle_client_response(Some(json!({
+                "id": request_id.as_i32(),
+                "result": [{}, { "workspace": { "includePaths": [absolute, "lib"] } }]
+            })));
+        }
+
+        drop(server);
+        let messages = output.messages()?;
+        let warnings: Vec<&Value> = messages
+            .iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("window/showMessage")
+            })
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "one rejected entry across two configuration pulls must warn once: {warnings:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn configuration_change_invalidates_identity_before_and_after_application() {
         let server = LspServer::new();
         let before = server.workspace_identity_generation.load(Ordering::SeqCst);
@@ -4638,6 +4984,89 @@ mod tests {
             "configuration changes must invalidate both before and after application: \
              before={before}, after={after}"
         );
+    }
+
+    #[test]
+    fn pulled_resolver_toggle_invalidates_identity_without_include_path_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #17444: a pulled `useSystemInc` flip with identical include paths
+        // must invalidate workspace identity so diagnostics refresh; the
+        // include-paths-only gate left published diagnostics stale.
+        let (server, output) = server_with_output_capture();
+        let temp = tempfile::tempdir()?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|_| "failed to create folder URI")?
+            .to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
+        server.client_capabilities.lock().workspace_configuration_support = true;
+        server.initialized.store(true, Ordering::Release);
+        let doc = url::Url::from_file_path(temp.path().join("main.pl"))
+            .map_err(|_| "invalid document URI")?
+            .to_string();
+        server.test_apply_did_open(&doc, "use FolderScopedOnlyA;\n", 1)?;
+        server.publish_diagnostics(&doc);
+        let publications_for_doc = |messages: &[Value]| {
+            messages
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("textDocument/publishDiagnostics")
+                        && message.pointer("/params/uri").and_then(Value::as_str)
+                            == Some(doc.as_str())
+                })
+                .count()
+        };
+        let initial_publications = publications_for_doc(&output.messages()?);
+
+        let pull = |payload: serde_json::Value| -> Result<(), Box<dyn std::error::Error>> {
+            server.request_workspace_configuration_for_folders();
+            let request_id = server
+                .pending_workspace_configuration_requests
+                .lock()
+                .keys()
+                .next()
+                .copied()
+                .ok_or("scoped request missing")?;
+            server.handle_client_response(Some(json!({
+                "id": request_id.as_i32(),
+                "result": [{}, payload]
+            })));
+            Ok(())
+        };
+
+        let before = server.workspace_identity_generation.load(Ordering::SeqCst);
+        pull(json!({ "workspace": { "useSystemInc": true } }))?;
+        let after_flip = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert!(
+            after_flip > before,
+            "pulled useSystemInc flip must invalidate identity: before={before}, after={after_flip}"
+        );
+        // The flip must also republish diagnostics for open documents on
+        // the push path; identity invalidation alone would leave stale
+        // PL701 publications on screen.
+        let refresh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if publications_for_doc(&output.messages()?) > initial_publications {
+                break;
+            }
+            if std::time::Instant::now() >= refresh_deadline {
+                return Err("pulled toggle flip did not republish open-document diagnostics".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Control: re-pulling the identical payload changes nothing, so no
+        // further invalidation may fire.
+        pull(json!({ "workspace": { "useSystemInc": true } }))?;
+        let after_repeat = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert_eq!(
+            after_repeat, after_flip,
+            "unchanged pulled settings must not invalidate identity"
+        );
+        Ok(())
     }
 
     #[test]
@@ -5109,6 +5538,59 @@ mod tests {
         Ok(())
     }
 
+    /// #17332 (pull remainder): a watched DELETED event must ask a
+    /// pull-diagnostics client to re-pull, because the push republish is a
+    /// no-op for that client and its open consumers keep stale findings.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_delete_requests_pull_diagnostic_refresh() -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let dir = tempfile::tempdir()?;
+        let consumer_path = dir.path().join("consumer.pm");
+        let consumer_uri =
+            url::Url::from_file_path(&consumer_path).map_err(|_| "invalid file path")?.to_string();
+        let deleted_uri = url::Url::from_file_path(dir.path().join("gone.pm"))
+            .map_err(|_| "invalid file path")?
+            .to_string();
+        server.client_capabilities.lock().diagnostic_refresh_support = true;
+        server.client_supports_pull_diags.store(true, Ordering::Release);
+        server.initialized.store(true, Ordering::Release);
+
+        server.did_open(json!({
+            "textDocument": {
+                "uri": consumer_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Consumer;\nuse Gone;\n1;\n"
+            }
+        }))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": deleted_uri, "type": 3 }]
+        })))?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let refresh_count = output
+                .messages()?
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("workspace/diagnostic/refresh")
+                })
+                .count();
+            if refresh_count == 1 {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "expected one pull diagnostic refresh after a watched delete, saw {refresh_count}"
+                )
+                .into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[cfg(feature = "workspace")]
     #[test]
     fn watched_delete_resolves_raw_uri_spelling_under_open_buffer_authority()
@@ -5567,7 +6049,7 @@ mod tests {
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
 
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         server.handle_progress_cancel(Some(json!({
             "token": "workspace-index"
         })));
@@ -5619,6 +6101,224 @@ mod tests {
     }
 
     #[cfg(feature = "workspace")]
+    fn assert_indexing_cancellation_is_session_scoped(
+        other_supports_progress: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cancelled_dir = tempfile::tempdir()?;
+        let other_dir = tempfile::tempdir()?;
+        const FILE_COUNT: usize = 40;
+        for (directory, prefix) in
+            [(cancelled_dir.path(), "CancelledSession"), (other_dir.path(), "OtherSession")]
+        {
+            for index in 0..FILE_COUNT {
+                std::fs::write(
+                    directory.join(format!("session-{index:03}.pm")),
+                    format!(
+                        "package {prefix}{index:03};\nsub symbol_{index:03} {{ {index} }}\n1;\n"
+                    ),
+                )?;
+            }
+        }
+        let (mut cancelled_server, _cancelled_output) = server_with_output_capture();
+        let (mut other_server, _other_output) = server_with_output_capture();
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let receipt_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        for (server, directory, supports_progress, budget_ms) in [
+            (&mut cancelled_server, cancelled_dir.path(), true, 30_000),
+            (&mut other_server, other_dir.path(), other_supports_progress, 0),
+        ] {
+            server.client_capabilities.lock().work_done_progress_support = supports_progress;
+            server.index_coordinator =
+                Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                    IndexResourceLimits::default(),
+                    IndexPerformanceCaps {
+                        initial_scan_budget_ms: budget_ms,
+                        ..Default::default()
+                    },
+                )));
+            let uri = url::Url::from_directory_path(directory)
+                .map_err(|_| "invalid session workspace path")?
+                .to_string();
+            server.workspace_folders.lock().push(
+                crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
+                    .with_path(directory.to_path_buf()),
+            );
+            server
+                .readiness_receipt_observer_id
+                .store(receipt_guard.id(), std::sync::atomic::Ordering::Relaxed);
+        }
+        let (cancelled_started_tx, cancelled_started_rx) = std::sync::mpsc::channel();
+        let (cancelled_release_tx, cancelled_release_rx) = std::sync::mpsc::channel();
+        cancelled_server
+            .test_gate_workspace_indexing_start(cancelled_started_tx, cancelled_release_rx);
+        let (other_started_tx, other_started_rx) = std::sync::mpsc::channel();
+        let (other_release_tx, other_release_rx) = std::sync::mpsc::channel();
+        other_server.test_gate_workspace_indexing_start(other_started_tx, other_release_rx);
+        let mut cancelled_scan = cancelled_server.test_observe_indexing_scan()?;
+        let mut other_scan = other_server.test_observe_indexing_scan()?;
+        cancelled_server.start_workspace_indexing();
+        cancelled_started_rx.recv_timeout(SCAN_GATE_WAIT)?;
+        other_server.start_workspace_indexing();
+        other_started_rx.recv_timeout(SCAN_GATE_WAIT)?;
+        let cancelled_request = cancelled_server
+            .progress_token_to_request
+            .lock()
+            .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
+            .cloned()
+            .ok_or("cancelled session did not register progress")?;
+        let other_request = other_server
+            .progress_token_to_request
+            .lock()
+            .get(WORKSPACE_INDEX_PROGRESS_TOKEN)
+            .cloned();
+        cancelled_server.handle_progress_cancel(Some(json!({"token": "workspace-index"})));
+        // Keep A paused with its cancelled token live while B completes. This
+        // makes the historical cross-session collision deterministic.
+        other_release_tx.send(())?;
+        receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        cancelled_release_tx.send(())?;
+        receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        cancelled_scan.wait_for_exit(SCAN_GATE_WAIT);
+        other_scan.wait_for_exit(SCAN_GATE_WAIT);
+        assert_eq!(
+            cancelled_scan.snapshot_at(std::time::Instant::now()).state(),
+            "exited_before_first_commit_gate"
+        );
+        assert_eq!(
+            other_scan.snapshot_at(std::time::Instant::now()).state(),
+            "exited_after_first_commit_gate"
+        );
+        let other_coordinator = other_server.coordinator().ok_or("missing other coordinator")?;
+        assert!(
+            matches!(other_coordinator.state(), IndexState::Ready { .. }),
+            "another session's cancellation changed readiness: {:?}",
+            other_coordinator.state()
+        );
+        assert_eq!(other_coordinator.index().file_count(), FILE_COUNT);
+        let cancelled_coordinator =
+            cancelled_server.coordinator().ok_or("missing cancelled coordinator")?;
+        assert!(matches!(
+            cancelled_coordinator.state(),
+            IndexState::Degraded { reason: DegradationReason::Cancelled, .. }
+        ));
+        assert!(cancelled_server.progress_token_to_request.lock().is_empty());
+        assert!(other_server.progress_token_to_request.lock().is_empty());
+        assert!(GLOBAL_CANCELLATION_REGISTRY.get_token(&cancelled_request).is_none());
+        if let Some(other_request) = other_request {
+            assert_ne!(cancelled_request, other_request);
+            assert!(GLOBAL_CANCELLATION_REGISTRY.get_token(&other_request).is_none());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_cancellation_does_not_cross_progress_sessions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_indexing_cancellation_is_session_scoped(true)
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_cancellation_does_not_cross_sessions_without_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_indexing_cancellation_is_session_scoped(false)
+    }
+
+    /// #17245: a tripped initial scan budget must degrade readiness reporting,
+    /// not coverage. With a zero-length budget every scan trips immediately;
+    /// the scan must still index every discovered file, report ready_limited
+    /// once at the trip, and finish in the Ready state with a ready=true
+    /// index-ready notification.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn budget_limited_initial_scan_reports_limited_then_completes_coverage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        const FILE_COUNT: usize = 40;
+        for index in 0..FILE_COUNT {
+            std::fs::write(
+                dir.path().join(format!("budget-{index:03}.pm")),
+                format!("package Budget{index:03};\nsub symbol_{index:03} {{ {index} }}\n1;\n"),
+            )?;
+        }
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+
+        let (mut server, output) = server_with_output_capture();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 0, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let _receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+
+        server.start_workspace_indexing();
+        // The readiness receipt is the observable completion barrier; the
+        // timeout only prevents a broken indexing thread from hanging the test.
+        receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if !matches!(coordinator.state(), IndexState::Ready { .. }) {
+            return Err(format!(
+                "a budget-limited scan that continued to completion must end Ready, got {:?}",
+                coordinator.state()
+            )
+            .into());
+        }
+        let indexed_files = coordinator.index().file_count();
+        if indexed_files != FILE_COUNT {
+            return Err(format!(
+                "budget-limited scan covered {indexed_files} of {FILE_COUNT} files; the \
+                 continuation must index every discovered file (#17245)"
+            )
+            .into());
+        }
+
+        drop(server);
+        let messages = output.messages()?;
+        let index_ready: Vec<&Value> = messages
+            .iter()
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str) == Some("perl-lsp/index-ready")
+            })
+            .collect();
+        if !index_ready.iter().any(|message| {
+            message.pointer("/params/ready").and_then(Value::as_bool) == Some(false)
+                && message.pointer("/params/state").and_then(Value::as_str) == Some("ready_limited")
+        }) {
+            return Err(
+                "budget trip did not report ready_limited at the moment the index was partial \
+                 (#17245)"
+                    .into(),
+            );
+        }
+        let last_ready = index_ready.last().ok_or("no perl-lsp/index-ready notification")?;
+        if last_ready.pointer("/params/ready").and_then(Value::as_bool) != Some(true)
+            || last_ready.pointer("/params/state").and_then(Value::as_str) != Some("ready")
+        {
+            return Err(format!(
+                "the final index-ready after a completed continuation must be ready=true, got \
+                 {last_ready}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
     #[test]
     fn workspace_folder_change_during_indexing_triggers_rescan()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -5657,7 +6357,7 @@ mod tests {
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
 
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
 
         server.handle_did_change_workspace_folders(Some(json!({
             "event": {
@@ -5761,11 +6461,50 @@ mod tests {
         Ok(server)
     }
 
+    /// Budget for waiting on the background workspace-indexing scan to reach
+    /// one of its test gates, or to exit.
+    ///
+    /// This has to outlast the harness's own lease, and it deliberately
+    /// matches it. `readiness::INDEXING_START_GATE_WAIT_MS` parks a scan for
+    /// 30s waiting to be released, and `wait_for_indexing_completion` below
+    /// already waits 30s for that same scan to finish. A shorter test-side
+    /// wait is not a stricter measurement of anything — it is a structural
+    /// race with the harness. When the whole `perl-lsp-rs` lib suite runs in
+    /// parallel, thousands of tests contend for the scheduler, the spawned
+    /// scan thread can be started well after the test has begun waiting, and
+    /// the test then reports `RecvTimeoutError::Timeout` at 5s with
+    /// `admitted: true, started: true, commit_gate_reached: false`. That
+    /// failure reads like a product defect and is not one: the invariant the
+    /// test exists to prove was simply never exercised.
+    ///
+    /// These are scheduling budgets, not assertions. What the test asserts
+    /// about the scan's behavior is unchanged.
+    #[cfg(feature = "workspace")]
+    const SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// #16695: a test that waits less than the gate's own release lease can
+    /// time out while its scan is still legitimately parked at the gate, and
+    /// the resulting `RecvTimeoutError` reports a defect that was never
+    /// measured. This pins the relationship so a future edit to either side
+    /// cannot silently reintroduce that race.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn scan_gate_test_budget_outlasts_the_harness_gate_lease() {
+        let lease = std::time::Duration::from_millis(
+            crate::runtime::readiness::INDEXING_START_GATE_WAIT_MS,
+        );
+        assert!(
+            SCAN_GATE_WAIT >= lease,
+            "test wait budget {SCAN_GATE_WAIT:?} is shorter than the gate's own release lease \
+             {lease:?}, so a scan parked at the gate can outlive the test that is waiting for it"
+        );
+    }
+
     /// Shared harness: block until the background scan releases the indexing
     /// slot.
     #[cfg(feature = "workspace")]
     fn wait_for_indexing_completion(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + SCAN_GATE_WAIT;
         while server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
             if std::time::Instant::now() >= deadline {
                 return Err("indexing thread did not finish before timeout".into());
@@ -5798,7 +6537,7 @@ mod tests {
         server.start_workspace_indexing();
         // The scan is now paused at the first file's commit seam, before
         // `zzz_swapped.pm` is read.
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         std::fs::remove_file(&swapped_path)?;
         let fifo = std::process::Command::new("mkfifo")
             .arg(&swapped_path)
@@ -5845,7 +6584,7 @@ mod tests {
         server.start_workspace_indexing();
         // The scan is now paused holding `indexing_transition_lock` at the
         // first file's commit seam, before `zzz_swapped_script` is read.
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         // The replacement keeps the symbol text but loses the Perl shebang:
         // unfixed code indexes it (shell content as Perl), fixed code must
         // reject it at the seam, so the assertion discriminates both ways.
@@ -5984,7 +6723,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_indexing_commit(started_tx, release_rx);
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
         release_tx.send(())?;
         wait_for_indexing_completion(&server)?;
@@ -6491,7 +7230,7 @@ mod tests {
         server.test_gate_indexing_commit(started, release_receiver);
         let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
-        observation.wait_for_exit(std::time::Duration::from_secs(5));
+        observation.wait_for_exit(SCAN_GATE_WAIT);
         let snapshot = observation.snapshot_at(std::time::Instant::now());
         if snapshot.state() != "exited_before_first_commit_gate" {
             return Err(
@@ -6520,7 +7259,7 @@ mod tests {
         let (release, release_receiver) = std::sync::mpsc::channel();
         server.test_gate_workspace_indexing_start(started, release_receiver);
         server.start_workspace_indexing();
-        if let Err(error) = receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+        if let Err(error) = receiver.recv_timeout(SCAN_GATE_WAIT) {
             let _ = release.send(());
             first.wait_for_exit(std::time::Duration::from_secs(1));
             return Err(error.into());
@@ -6539,8 +7278,8 @@ mod tests {
         server.start_workspace_indexing();
         let queued_snapshot = second.snapshot_at(std::time::Instant::now());
         let _ = release.send(());
-        first.wait_for_exit(std::time::Duration::from_secs(5));
-        second.wait_for_exit(std::time::Duration::from_secs(5));
+        first.wait_for_exit(SCAN_GATE_WAIT);
+        second.wait_for_exit(SCAN_GATE_WAIT);
         if queued_snapshot.state() != "no_scan_admission_observed"
             || first.snapshot_at(std::time::Instant::now()).state()
                 != "exited_before_first_commit_gate"
@@ -6568,7 +7307,7 @@ mod tests {
         let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
         let wait_started = std::time::Instant::now();
-        let wait_budget = std::time::Duration::from_secs(5);
+        let wait_budget = SCAN_GATE_WAIT;
         let deadline =
             wait_started.checked_add(wait_budget).ok_or("commit-gate deadline overflow")?;
         if let Err(error) = started_rx.recv_timeout(wait_budget) {
@@ -6787,7 +7526,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_workspace_indexing_start(started_tx, release_rx);
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         server.test_apply_did_open(&active_uri, active_text, 1)?;
 
         let provider_result = server.test_handle_completion(Some(json!({
@@ -6907,7 +7646,7 @@ mod tests {
             .store(receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
 
         server.start_workspace_indexing();
-        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        started_rx.recv_timeout(SCAN_GATE_WAIT)?;
         server.test_apply_did_open(&active_uri, active_text, 1)?;
 
         let provider_result = server.test_handle_completion(Some(json!({

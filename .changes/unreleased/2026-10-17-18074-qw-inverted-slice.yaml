@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Stop a server panic when a use statement carries an unterminated or mismatched qw delimiter (for example use parent qw•Exporter; typed mid-edit). Exporter detection now treats the inverted delimiter range as no qw content instead of slicing past the end."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18074"
+  Slug: qw-inverted-slice
+  Breaking: "no"

@@ -520,7 +520,7 @@ mod tests {
             "textDocument": { "uri": uri },
             "options": { "tabSize": 4, "insertSpaces": true },
         })))?;
-        if !formatting.as_ref().and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()) {
+        if formatting.as_ref().and_then(Value::as_array).is_none_or(|edits| edits.is_empty()) {
             return Err("formatting must remain available after a rejected textless save".into());
         }
 
@@ -562,7 +562,7 @@ mod tests {
             "textDocument": { "uri": uri },
             "options": { "tabSize": 4, "insertSpaces": true },
         })))?;
-        if !recovered.as_ref().and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()) {
+        if recovered.as_ref().and_then(Value::as_array).is_none_or(|edits| edits.is_empty()) {
             return Err("admitted full replacement must restore formatting edits".into());
         }
         drop(server);
