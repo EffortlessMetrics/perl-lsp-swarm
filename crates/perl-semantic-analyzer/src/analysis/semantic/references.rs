@@ -267,8 +267,7 @@ impl SemanticAnalyzer {
                 let same_our_alias = symbol.declaration.as_deref() == Some("our")
                     && binding.declaration.as_deref() == Some("our")
                     && binding.qualified_name == symbol.qualified_name;
-                return !same_our_alias
-                    && binding.location.start != symbol.location.start;
+                return !same_our_alias && binding.location.start != symbol.location.start;
             }
             // No capturing declaration has taken effect in this scope yet
             // (the reference precedes the end of its declaring statement,

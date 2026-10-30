@@ -2743,7 +2743,8 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
         let request_uri = "file:///workspace/lib/PartialLexicalOnly/Pkg.pm";
-        let request_source = "package PartialLexicalOnly::Pkg;\nsub run { my $value = $value; }\n1;\n";
+        let request_source =
+            "package PartialLexicalOnly::Pkg;\nsub run { my $value = $value; }\n1;\n";
         server.test_apply_did_open(request_uri, request_source, 1)?;
         server
             .test_index_file_in_building_state(request_uri, request_source)
