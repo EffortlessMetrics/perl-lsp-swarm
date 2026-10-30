@@ -183,9 +183,9 @@ That graph is the reason the swarm can be replayed after the fact.
 
 ## Evidence Pointers
 
-- [ISSUE_PR_GENEALOGY_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ISSUE_PR_GENEALOGY_ARCHAEOLOGY.md)
-- [ISSUE_ROUTING_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ISSUE_ROUTING_ARCHAEOLOGY.md)
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [ISSUE_PR_GENEALOGY_ARCHAEOLOGY.md](ISSUE_PR_GENEALOGY_ARCHAEOLOGY.md)
+- [ISSUE_ROUTING_ARCHAEOLOGY.md](ISSUE_ROUTING_ARCHAEOLOGY.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
 - [#20](https://github.com/EffortlessMetrics/perl-lsp/pull/20)
 - [#16](https://github.com/EffortlessMetrics/perl-lsp/issues/16)
 - [#21](https://github.com/EffortlessMetrics/perl-lsp/issues/21)

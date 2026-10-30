@@ -19,6 +19,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NATIVE_CONVERGENCE="$SCRIPT_DIR/ci/check-pr-review-convergence"
 SEMANTIC_CURRENTNESS_BIN="${SEMANTIC_CURRENTNESS_BIN:-$SCRIPT_DIR/ci/check-pr-semantic-review-currentness.py}"
 
+# Presence includes an empty value. A leaked evaluator fixture is not a live
+# integration observation; refuse rather than silently clearing it.
+if [[ -n "${SEMANTIC_REVIEW_TEST_FIXTURE+x}" ]]; then
+    echo "FAIL PR #$PR: semantic review fixture environment is NOT_PROVEN" >&2
+    exit 1
+fi
+
 json_read() {
     local filter="$1"
     printf '%s' "$PR_JSON" | jq -r "$filter" | tr -d '\r'
@@ -158,6 +165,7 @@ fi
 
 set +e
 python3 "$SEMANTIC_CURRENTNESS_BIN" "$PR" "$REVIEW_REPO" \
+    --expected-head "$(json_read '.headRefOid')" \
     >"$TMP_DIR/semantic-review.out" 2>"$TMP_DIR/semantic-review.err"
 SEMANTIC_RC=$?
 set -e
@@ -168,6 +176,15 @@ if [[ "$SEMANTIC_RC" -ge 2 || -z "$SEMANTIC_JSON" ]] || ! jq -e . >/dev/null 2>&
     FAILED=1
 else
     SEMANTIC_CLASS="$(jq -r '.classification // "NOT_PROVEN"' <<<"$SEMANTIC_JSON")"
+    if ! jq -e --arg repo "$REVIEW_REPO" --arg pr "$PR" \
+        --arg head "$(json_read '.headRefOid')" '
+        .schema_version == "semantic_review_currentness.v1" and
+        .acquisition_mode == "gh_live" and .repo == $repo and
+        .pr == ($pr | tonumber) and .current_head == $head
+        ' >/dev/null <<<"$SEMANTIC_JSON"; then
+        echo "FAIL PR #$PR: semantic acquisition subject/mode is NOT_PROVEN" >&2
+        FAILED=1
+    fi
     if [[ "$SEMANTIC_RC" -ne 0 || "$SEMANTIC_CLASS" != "REVIEW_CURRENT" ]]; then
         SEMANTIC_REASON="$(jq -r '.reason // "unknown"' <<<"$SEMANTIC_JSON")"
         echo "FAIL PR #$PR: substantive review is $SEMANTIC_CLASS ($SEMANTIC_REASON)" >&2

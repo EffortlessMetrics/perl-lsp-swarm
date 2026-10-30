@@ -16,7 +16,7 @@ This index provides a centralized navigation point for all strategic documentati
 
 | Document | Location | Purpose | Audience |
 |----------|----------|---------|----------|
-| **TECHNICAL_VISION.md** | [Root](../TECHNICAL_VISION.md) | Long-term technical direction (3-5 years) | Architects, Maintainers |
+| **TECHNICAL_VISION.md** | [Root](../TECHNICAL_VISION.md) | Historical aspirational vision (classified `historical` in `docs/agents/authority_status.toml`); not current direction or acceptance truth — use `docs/project/CURRENT_STATUS.md` | Architects, Maintainers |
 | **ROADMAP.md** | [Root](../ROADMAP.md) | Version milestones and deliverables | All stakeholders |
 | **NOW_NEXT_LATER.md** | [Root](../NOW_NEXT_LATER.md) | Current quarter priorities | Contributors, Team leads |
 

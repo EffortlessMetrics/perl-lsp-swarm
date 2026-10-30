@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Reject malformed debugger launch arguments instead of silently dropping non-string entries or launching with an empty argument list.
+time: 2026-10-13T01:23:36Z
+custom:
+  PR: "17738"
+  Slug: launch-args
+  Breaking: "no"

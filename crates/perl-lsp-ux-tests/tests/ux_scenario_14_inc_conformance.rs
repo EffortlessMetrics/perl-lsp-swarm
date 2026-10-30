@@ -54,8 +54,11 @@ use std::time::Duration;
 /// Diagnostic code for missing module — PL701.
 const PL701: &str = "PL701";
 
-/// Wait for diagnostics and return them, or empty vec on timeout.
-fn wait_diagnostics(harness: &UxHarness, file: &str) -> Vec<serde_json::Value> {
+/// Wait for an observed publication; an empty payload is still a publication.
+fn wait_diagnostics(
+    harness: &UxHarness,
+    file: &str,
+) -> Result<Vec<serde_json::Value>, perl_lsp_ux_tests::WaitEnd> {
     harness.wait_for_diagnostics(file, Duration::from_secs(5))
 }
 
@@ -273,7 +276,8 @@ fn scenario_14_relative_include_path() -> Result<(), String> {
     harness.open_file("fixture.pl", RELATIVE_INCLUDE_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     // PL701 must NOT fire — module should resolve.
     let pl701_absent = !has_pl701(&diags);
 
@@ -402,7 +406,8 @@ fn scenario_14_use_lib_lexical() -> Result<(), String> {
     harness.open_file("fixture.pl", USE_LIB_LEXICAL_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     let pl701_absent = !has_pl701(&diags);
 
     // `use LexicalModule` is at line 3, col 4.
@@ -517,7 +522,8 @@ fn scenario_14_external_include_paths_unauthorized_zero_visibility() -> Result<(
     harness.open_file("fixture.pl", ABSOLUTE_INCLUDE_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     // PL701 MUST fire — the unauthorized external root must not resolve.
     let pl701_fires = has_pl701(&diags);
 
@@ -624,10 +630,10 @@ sub gone { return \"I should not be found\" }\n\
 ";
 
 #[test]
-fn scenario_14_no_lib_cancellation() {
+fn scenario_14_no_lib_cancellation() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_no_lib_cancellation: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -640,7 +646,8 @@ fn scenario_14_no_lib_cancellation() {
     harness.open_file("fixture.pl", NO_LIB_CANCEL_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     // PL701 MUST fire — the no lib cancelled the use lib before the use GoneModule line.
     let pl701_fires = has_pl701(&diags);
 
@@ -714,6 +721,7 @@ fn scenario_14_no_lib_cancellation() {
     );
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 // =============================================================================
@@ -834,11 +842,7 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     // publication before treating absence as a positive cell (#14152 review).
     let diags = harness
         .wait_for_diagnostics_after_count("fixture.pl", 0, Duration::from_secs(5))
-        .ok_or_else(|| {
-        "No diagnostics publication observed for fixture.pl within 5s; publication silence \
-             cannot prove PL701 absence (findbin_relative)"
-            .to_string()
-    })?;
+        .map_err(|end| format!("No diagnostics publication for fixture.pl; cannot prove PL701 absence (findbin_relative): {end}"))?;
     let pl701_absent = !has_pl701(&diags);
 
     // `use FindBinModule` at line 4, col 4.
@@ -942,11 +946,7 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     // observed publication, not deadline silence (#14152 review).
     let escape_diags = harness
         .wait_for_diagnostics_after_count("escape.pl", 0, Duration::from_secs(5))
-        .ok_or_else(|| {
-            "No diagnostics publication observed for escape.pl within 5s; publication silence \
-             cannot drive the boundary refusal cell (findbin_relative)"
-                .to_string()
-        })?;
+        .map_err(|end| format!("No diagnostics publication for escape.pl; cannot drive the boundary refusal cell (findbin_relative): {end}"))?;
     let escape_pl701_fires = has_pl701(&escape_diags);
 
     // `use OutsideProbe` at line 2, col 4.
@@ -1063,7 +1063,8 @@ fn scenario_14_perl5lib_env() -> Result<(), String> {
     harness.open_file("fixture.pl", SYSTEM_INC_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     let pl701_absent = !has_pl701(&diags);
 
     // `use SystemModule` at line 2, col 4.
@@ -1164,7 +1165,8 @@ fn scenario_14_nested_module_relative_include_path() -> Result<(), String> {
     harness.open_file("fixture.pl", NESTED_INCLUDE_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     let pl701_absent = !has_pl701(&diags);
 
     // `use Nested::Deep` at line 2, col 4.
@@ -1268,7 +1270,8 @@ fn scenario_14_include_path_missing_module_consistency() -> Result<(), String> {
     harness.open_file("fixture.pl", INCLUDE_MISSING_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     let pl701_fires = has_pl701(&diags);
 
     // `use MissingFromInclude` at line 2, col 4.
@@ -1496,7 +1499,8 @@ fn scenario_14_perl5lib_completion_without_system_inc() -> Result<(), String> {
     harness.open_file("fixture.pl", PR1_PERL5LIB_USE_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     let pl701_absent = !has_pl701(&diags);
 
     // `use Pr1MatrixModule;` is at line 2, col 4.
@@ -1631,12 +1635,12 @@ fn scenario_14_perl5lib_disabled_ignores_env_even_when_system_inc_enabled() {
 // EffectiveIncContext, so goto-def and completion must still be empty.
 
 #[test]
-fn scenario_14_no_lib_cancellation_workspace_index() {
+fn scenario_14_no_lib_cancellation_workspace_index() -> Result<(), String> {
     if !binary_available() {
         eprintln!(
             "SKIP scenario_14_no_lib_cancellation_workspace_index: perl-lsp binary not found"
         );
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -1655,7 +1659,8 @@ fn scenario_14_no_lib_cancellation_workspace_index() {
     harness.open_file("fixture.pl", NO_LIB_CANCEL_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(700));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     let pl701_fires = has_pl701(&diags);
 
     // goto-definition on `use GoneModule` at line 4, col 4.
@@ -1701,6 +1706,7 @@ fn scenario_14_no_lib_cancellation_workspace_index() {
     );
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 // =============================================================================
@@ -1728,10 +1734,10 @@ use Gone\n\
 ";
 
 #[test]
-fn scenario_14_use_lib_with_workspace_index() {
+fn scenario_14_use_lib_with_workspace_index() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_14_use_lib_with_workspace_index: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -1750,7 +1756,8 @@ fn scenario_14_use_lib_with_workspace_index() {
     harness.open_file("fixture.pl", USE_LIB_WITH_INDEX_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(700));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    let diags = wait_diagnostics(&harness, "fixture.pl")
+        .map_err(|end| format!("diagnostics for fixture.pl: {end}"))?;
     // PL701 must NOT fire — the `use lib 'lib'` is in effect (no `no lib`).
     let pl701_absent = !has_pl701(&diags);
 
@@ -1797,4 +1804,5 @@ fn scenario_14_use_lib_with_workspace_index() {
     );
 
     harness.assert_no_crash();
+    Ok(())
 }

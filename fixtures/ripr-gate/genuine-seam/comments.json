@@ -1,0 +1,47 @@
+{
+  "schema_version": "0.1",
+  "tool": "ripr",
+  "status": "advisory",
+  "base": "origin/main",
+  "base_sha": "e1-base-sha-0000000000000000000000000000000000000001",
+  "head": "HEAD",
+  "head_sha": "E1_HEAD_SHA",
+  "summary": {
+    "comments": 2,
+    "summary_only": 0,
+    "suppressed": 0
+  },
+  "comments": [
+    {
+      "canonical_gap_id": "E1-SEAM-1",
+      "kind": "focused_test",
+      "severity": "severe",
+      "reason": "E1 seam 1: changed branch has only weak proof",
+      "placement": {
+        "path": "crates/perl-parser/src/lib.rs",
+        "line": 41,
+        "mode": "exact_seam_line"
+      },
+      "suggested_test": {
+        "intent": "prove E1 seam 1 branch recovery"
+      }
+    },
+    {
+      "canonical_gap_id": "E1-SEAM-2",
+      "kind": "focused_test",
+      "severity": "severe",
+      "reason": "E1 seam 2: changed branch has only weak proof",
+      "placement": {
+        "path": "crates/perl-parser/src/lib.rs",
+        "line": 42,
+        "mode": "exact_seam_line"
+      },
+      "suggested_test": {
+        "intent": "prove E1 seam 2 branch recovery"
+      }
+    }
+  ],
+  "summary_only": [],
+  "suppressed": [],
+  "warnings": []
+}

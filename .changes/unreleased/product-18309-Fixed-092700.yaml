@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Document symbols now select the exact parser-owned name of native methods, including names that also occur inside the method keyword or body. ADJUST blocks retain their existing outline behavior."
+time: 2026-10-22T09:27:00Z
+custom:
+  PR: "18309"
+  Slug: named-method-selection-ranges
+  Breaking: "no"

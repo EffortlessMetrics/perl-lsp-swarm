@@ -132,6 +132,22 @@ class RiprLivenessPaginationTests(unittest.TestCase):
             "exactly one call must be page one (no page parameter), so the "
             "newest runs cannot be silently dropped",
         )
+        # Pin the values, not just the presence of a page parameter:
+        # page=1 fetches page one twice and page=3 skips page two, and both
+        # pass a presence-only count while silently restoring a wrong
+        # window. per_page is likewise part of the window arithmetic.
+        paged = [call for call in calls if PAGE_PARAM.search(call)]
+        self.assertIn(
+            "page=2", paged[0],
+            "the paged call must fetch page two explicitly; any other "
+            "value reintroduces a wrong-window snapshot",
+        )
+        for call in calls:
+            self.assertIn(
+                "per_page=100", call,
+                "each call must request a full 100-run page; a smaller "
+                "page size silently shrinks the scanned window",
+            )
 
     def test_the_snapshots_step_fetches_more_than_one_page(self) -> None:
         """A single page caps at 100 runs; the predecessor can fall off it."""
@@ -153,9 +169,10 @@ class RiprLivenessPaginationTests(unittest.TestCase):
             "the snapshot must bound its final size to keep the cron quick",
         )
         self.assertGreaterEqual(
-            int(bound.group(1)), 100,
-            "the bound must be at least one page, otherwise we are back to "
-            "the one-page defect",
+            int(bound.group(1)), 200,
+            "the bound must retain both fetched pages (2 x 100 runs), "
+            "otherwise a predecessor past the bound is truncated even "
+            "though it was fetched: the one-page defect in merge form",
         )
         self.assertLessEqual(
             int(bound.group(1)), 1000,
@@ -213,6 +230,32 @@ class RiprLivenessPaginationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assert_page_identity(mutated)
 
+    def test_a_wrong_page_value_is_rejected(self) -> None:
+        """Negative control: the paged call must name page two, not any page.
+
+        page=1 fetches page one twice and page=3 skips page two; both keep
+        exactly one explicit page parameter, so a presence-only identity
+        check passes them while the scanned window is silently wrong.
+        """
+        for wrong in ("page=1", "page=3"):
+            mutated = self.run_script.replace("page=2", wrong, 1)
+            self.assertNotEqual(
+                mutated, self.run_script,
+                "the page-value mutation must actually change the script",
+            )
+            with self.assertRaises(AssertionError, msg=f"{wrong} must fail"):
+                self.assert_page_identity(mutated)
+
+    def test_a_smaller_page_size_is_rejected(self) -> None:
+        """Negative control: per_page is part of the window arithmetic."""
+        mutated = self.run_script.replace("per_page=100&page=2", "per_page=1&page=2", 1)
+        self.assertNotEqual(
+            mutated, self.run_script,
+            "the page-size mutation must actually change the script",
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_page_identity(mutated)
+
     def test_a_one_page_snapshot_is_rejected(self) -> None:
         """Negative control: the defect class is a single-page snapshot."""
         # Strip the second-page call and the jq-merge. The remaining script
@@ -236,6 +279,8 @@ class RiprLivenessPaginationTests(unittest.TestCase):
             "so the contract fires fail-closed; the regex above is the "
             "intended mutation surface",
         )
+        with self.assertRaises(AssertionError):
+            self.assert_page_identity(mutated)
 
 
 if __name__ == "__main__":

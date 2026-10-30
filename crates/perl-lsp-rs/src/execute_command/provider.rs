@@ -788,12 +788,13 @@ impl ExecuteCommandProvider {
 
         if self.external_critic_requested() {
             // Legacy engine: external `perlcritic` when present, else the
-            // `BuiltInAnalyzer` (Perl::Critic-compatible) fallback. Legacy
-            // behavior is unchanged.
-            if command_exists("perlcritic")
-                && let Ok(result) = self.run_external_critic(&canonical_path)
-            {
-                return Ok(result);
+            // `BuiltInAnalyzer` (Perl::Critic-compatible) fallback.
+            if command_exists("perlcritic") {
+                // A present-but-failing `perlcritic` (e.g. an unparsable
+                // `.perlcriticrc`) must surface its bounded error instead of
+                // silently degrading to a rule set the client did not
+                // request (#16550). Only a missing binary falls back.
+                return self.run_external_critic(&canonical_path);
             }
             return self.run_builtin_critic(&canonical_path);
         }
@@ -831,10 +832,11 @@ impl ExecuteCommandProvider {
         }
 
         if self.external_critic_requested() {
-            if command_exists("perlcritic")
-                && let Ok(result) = self.run_external_critic(path)
-            {
-                return Ok(result);
+            if command_exists("perlcritic") {
+                // Same #16550 contract as `run_critic_secure`: a present-but-
+                // failing perlcritic surfaces its error instead of silently
+                // falling back to the builtin analyzer.
+                return self.run_external_critic(path);
             }
             return self.run_builtin_critic(path);
         }
@@ -926,8 +928,7 @@ impl ExecuteCommandProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(code_text, &ast, &critic_config);
-        let profile =
-            NativeCriticProfile::parse_legacy(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
+        let profile = NativeCriticProfile::parse(&cfg.profile).unwrap_or_default();
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
         let file = file_path.to_string_lossy();
 
@@ -1033,11 +1034,15 @@ impl ExecuteCommandProvider {
             })
             .collect();
 
+        // `builtin` (not `native`): this is the Perl::Critic-compatible
+        // fallback analyzer, a different rule set from the native registry.
+        // Labeling it `native` made the two engines indistinguishable to the
+        // client (#16550).
         Ok(json!({
             "status": "success",
             "violations": formatted_violations,
             "violationCount": formatted_violations.len(),
-            "analyzerUsed": "native"
+            "analyzerUsed": "builtin"
         }))
     }
 
