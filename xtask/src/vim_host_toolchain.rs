@@ -2643,7 +2643,15 @@ mod tests {
     #[test]
     fn rooted_entry_name_is_refused() -> Result<()> {
         let dest = Path::new("dest");
-        for name in ["/etc/x", "//etc/x", "\\etc\\x", "/C:/x", "C:foo"] {
+        // `\etc\x` is only a rooted shape on Windows: on POSIX a backslash
+        // is an ordinary filename character, and the production caller has
+        // already normalized `\` to `/` (yielding the covered `//etc/x`).
+        let names: &[&str] = if cfg!(windows) {
+            &["/etc/x", "//etc/x", "\\etc\\x", "/C:/x", "C:foo"]
+        } else {
+            &["/etc/x", "//etc/x", "/C:/x", "C:foo"]
+        };
+        for name in names {
             let error = resolve_entry_target(dest, name)
                 .err()
                 .ok_or_else(|| anyhow::anyhow!("rooted entry name {name:?} must be refused"))?;
