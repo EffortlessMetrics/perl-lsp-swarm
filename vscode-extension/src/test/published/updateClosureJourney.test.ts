@@ -221,6 +221,18 @@ suite('Installed update closure', function () {
     fs.writeFileSync(file, JSON.stringify(stage, null, 2));
     const reload = vscode.commands.executeCommand('workbench.action.reloadWindow');
     fs.writeFileSync(path.join(path.dirname(file), 'update-closure-reload-dispatched'), '1\n');
-    await reload;
+    try {
+      await reload;
+    } catch (error: unknown) {
+      // The orchestrator must not read a rejected reload command as the
+      // expected first-host interruption: record the failure distinctly so
+      // it rethrows instead of starting the second host.
+      const message = error instanceof Error ? error.message : String(error);
+      fs.writeFileSync(
+        path.join(path.dirname(file), 'update-closure-reload-failed'),
+        `${message}\n`,
+      );
+      throw error;
+    }
   });
 });

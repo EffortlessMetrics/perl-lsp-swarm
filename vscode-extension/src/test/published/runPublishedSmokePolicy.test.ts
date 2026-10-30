@@ -12,6 +12,7 @@ import {
   configureCurrentSourceSmoke,
   hasCompleteCandidateIdentity,
   isDeterministicPublishedInstallFailure,
+  isExpectedReloadInterruption,
   retryPublishedInstall,
 } from './runPublishedSmoke';
 import { assertSmokeSelector, run as runPublishedSuite } from './suite';
@@ -847,5 +848,23 @@ void test('the compiled child reserves exit 2 with a file receipt root on unsupp
     assert.equal(parent.reason, 'candidate_bound_platform_unavailable');
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+void test('a rejected reload command is not an expected first-host interruption', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reload-interruption-'));
+  try {
+    assert.equal(isExpectedReloadInterruption(root), false);
+    fs.writeFileSync(path.join(root, 'update-closure-stage.json'), '{}\n');
+    assert.equal(isExpectedReloadInterruption(root), false);
+    fs.writeFileSync(path.join(root, 'update-closure-reload-dispatched'), '1\n');
+    assert.equal(isExpectedReloadInterruption(root), true);
+    // The journey writes this marker when the reload command itself rejects;
+    // both earlier markers remain, so this is the only signal that separates
+    // a failed first host from an interrupted one.
+    fs.writeFileSync(path.join(root, 'update-closure-reload-failed'), 'reload rejected\n');
+    assert.equal(isExpectedReloadInterruption(root), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -496,6 +496,19 @@ function configureCrashRecoverySmoke(userDataDir: string): void {
   fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
 }
 
+// The first host is expected to die only because Reload Window terminated
+// it. A rejected reload command also leaves the stage and dispatched
+// markers behind, so those two alone cannot classify the interruption: the
+// journey records that failure in its own marker, and its presence here
+// means the first host failed, not that it was interrupted.
+export function isExpectedReloadInterruption(receiptsRoot: string): boolean {
+  return (
+    fs.existsSync(path.join(receiptsRoot, 'update-closure-stage.json')) &&
+    fs.existsSync(path.join(receiptsRoot, 'update-closure-reload-dispatched')) &&
+    !fs.existsSync(path.join(receiptsRoot, 'update-closure-reload-failed'))
+  );
+}
+
 async function main(): Promise<void> {
   const source = publishedSource();
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
@@ -556,6 +569,7 @@ async function main(): Promise<void> {
     fs.rmSync(path.join(receiptsRoot, 'update-closure-stage.json'), { force: true });
     fs.rmSync(path.join(receiptsRoot, 'update-closure-result.json'), { force: true });
     fs.rmSync(path.join(receiptsRoot, 'update-closure-reload-dispatched'), { force: true });
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-reload-failed'), { force: true });
   }
 
   if (!configuredWorkspace) {
@@ -640,10 +654,7 @@ async function main(): Promise<void> {
       try {
         await runHost();
       } catch (error: unknown) {
-        if (
-          !fs.existsSync(path.join(receiptsRoot, 'update-closure-stage.json')) ||
-          !fs.existsSync(path.join(receiptsRoot, 'update-closure-reload-dispatched'))
-        ) {
+        if (!isExpectedReloadInterruption(receiptsRoot)) {
           throw error;
         }
         firstHostInterrupted = true;
