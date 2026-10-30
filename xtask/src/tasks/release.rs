@@ -1,218 +1,149 @@
-//! Release task implementation
+//! Retired `release prepare` front door (#15392).
+//!
+//! The historical implementation could report a complete, tested release
+//! preparation while running no declared proof (the `test_lsp_features.sh`
+//! harness did not exist, so the test step silently succeeded), building
+//! `perl-dap` from the wrong package, and assembling artifacts outside any
+//! transactional receipt. The authoritative release-preparation route is the
+//! `cargo xtask release-turnkey` orchestration (#13768 transaction).
+//!
+//! After successful CLI parsing, this surface refuses with a non-zero exit
+//! and performs zero filesystem, git, tool, or network mutation. Clap handles
+//! help and malformed arguments before dispatch. No input — including `--yes` — can make
+//! the legacy pipeline eligible again; a supported adapter would have to be a
+//! thin typed façade over the same exact release-candidate pipeline, not a
+//! second implementation that can drift.
 
-use color_eyre::eyre::{Result, WrapErr, bail};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::fs;
-use std::path::Path;
-use std::process::Command;
+use color_eyre::eyre::{Result, bail};
 
+/// Canonical release-preparation route that replaces the retired command.
+pub const CANONICAL_ROUTE: &str = "cargo xtask release-turnkey";
+
+/// Typed refusal produced by the retired `release prepare` front door.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrepareRefusal {
+    /// The retired command surface.
+    pub retired_command: &'static str,
+    /// Why the command refuses to run.
+    pub reason: &'static str,
+    /// The single supported replacement route.
+    pub canonical_route: &'static str,
+    /// Controlling issue recording the retirement ruling.
+    pub ruling_issue: u32,
+}
+
+impl PrepareRefusal {
+    /// Operator-facing rendering of the refusal.
+    pub fn render(&self, version: &str) -> String {
+        let route = if plausible_version(version) {
+            format!("{} --version {version}", self.canonical_route)
+        } else {
+            format!("{} --version <VERSION> (supply a reviewed release version)", self.canonical_route)
+        };
+        format!(
+            "REFUSED: {} is retired and fail-closed.\nReason: {}.\nUse {} instead (ruling: #{})",
+            self.retired_command, self.reason, route, self.ruling_issue
+        )
+    }
+}
+
+fn plausible_version(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.len() <= 9 && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+/// The one refusal this surface can produce.
+///
+/// The refusal is deliberately independent of caller input: the version and
+/// confirmation flag carry no eligibility authority, so no argument can
+/// re-enable the retired pipeline.
+pub fn refusal() -> PrepareRefusal {
+    PrepareRefusal {
+        retired_command: "cargo xtask release prepare",
+        reason: "the legacy implementation ran no declared release proof, built perl-dap \
+                 from the wrong package, and assembled artifacts without an exact \
+                 source/version/artifact receipt",
+        canonical_route: CANONICAL_ROUTE,
+        ruling_issue: 15392,
+    }
+}
+
+/// Entry point for `cargo xtask release prepare`.
+///
+/// `--yes` cannot bypass the refusal and no version string can make the legacy pipeline eligible. The function
+/// performs no mutation and always returns an error so the process exits
+/// non-zero.
 pub fn run(version: String, yes: bool) -> Result<()> {
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {wide_msg}")
-            .context("Failed to create progress bar template")?,
-    );
+    let _ = yes;
+    let refusal = refusal();
+    // The rendered refusal travels as the error message so the top-level
+    // handler surfaces it on stderr with a non-zero exit; this module prints
+    // nothing and mutates nothing.
+    bail!("{}", refusal.render(&version));
+}
 
-    // Check prerequisites
-    spinner.set_message("Checking prerequisites...");
-    check_prerequisites()?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use color_eyre::eyre::{Result, bail};
 
-    // Check for uncommitted changes
-    if !check_git_status()? {
-        bail!("You have uncommitted changes. Please commit or stash them before releasing.");
-    }
-
-    // Confirm release
-    if !yes {
-        println!("🚀 Preparing release v{}", version);
-        println!("This will:");
-        println!("  - Build release binaries");
-        println!("  - Package VSCode extension");
-        println!("  - Run tests");
-        println!("  - Create release artifacts");
-        println!();
-        print!("Continue? [y/N] ");
-        use std::io::{self, Write};
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Release cancelled.");
-            return Ok(());
+    #[test]
+    fn refusal_is_stable_and_names_the_canonical_route() -> Result<()> {
+        let refusal = refusal();
+        if refusal.canonical_route != CANONICAL_ROUTE || refusal.ruling_issue != 15392
+            || !refusal.retired_command.contains("release prepare") || refusal.reason.is_empty() {
+            bail!("retirement refusal identity changed: {refusal:?}");
         }
+        Ok(())
     }
 
-    // Create release directory
-    let release_dir = Path::new("release");
-    if release_dir.exists() {
-        fs::remove_dir_all(release_dir)?;
-    }
-    fs::create_dir_all(release_dir.join("binaries"))?;
-
-    // Build release binaries
-    spinner.set_message("Building release binaries...");
-    build_binaries(release_dir)?;
-    spinner.finish_with_message("✅ Binaries built");
-
-    // Package VSCode extension
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {wide_msg}")
-            .context("Failed to create progress bar template")?,
-    );
-    spinner.set_message("Packaging VSCode extension...");
-    package_vscode_extension(release_dir)?;
-    spinner.finish_with_message("✅ VSCode extension packaged");
-
-    // Run tests
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {wide_msg}")
-            .context("Failed to create progress bar template")?,
-    );
-    spinner.set_message("Running tests...");
-    run_tests()?;
-    spinner.finish_with_message("✅ Tests passed");
-
-    // Create checksums
-    create_checksums(release_dir)?;
-
-    // Create release archive
-    create_release_archive(release_dir, &version)?;
-
-    println!();
-    println!("✅ Release preparation complete!");
-    println!("================================================");
-    println!("Release artifacts in: release/");
-    println!();
-
-    // List artifacts
-    let output = Command::new("ls").arg("-lh").arg("release/").output()?;
-    println!("{}", String::from_utf8_lossy(&output.stdout));
-
-    println!("📋 Next steps:");
-    println!("1. Review the release artifacts");
-    println!("2. Create git tag: git tag -a v{} -m 'Release v{}'", version, version);
-    println!("3. Push tag: git push origin v{}", version);
-    println!("4. Create GitHub release and upload artifacts");
-    println!("5. Run: cargo xtask publish-crates");
-    println!("6. Run: cargo xtask publish-vscode");
-
-    Ok(())
-}
-
-fn check_prerequisites() -> Result<()> {
-    // Check for required tools
-    let tools = ["cargo", "strip", "tar", "sha256sum", "npx"];
-    for tool in &tools {
-        if !command_exists(tool) {
-            bail!("Required tool '{}' not found", tool);
+    #[test]
+    fn render_names_command_reason_route_and_ruling() -> Result<()> {
+        let rendered = refusal().render("0.18.0");
+        if !rendered.contains("REFUSED") || !rendered.contains("cargo xtask release prepare")
+            || !rendered.contains("cargo xtask release-turnkey --version 0.18.0")
+            || !rendered.contains("#15392") {
+            bail!("incomplete refusal: {rendered}");
         }
-    }
-    Ok(())
-}
-
-fn command_exists(cmd: &str) -> bool {
-    Command::new("which").arg(cmd).output().map(|output| output.status.success()).unwrap_or(false)
-}
-
-fn check_git_status() -> Result<bool> {
-    let output = Command::new("git").args(["diff-index", "--quiet", "HEAD", "--"]).output()?;
-    Ok(output.status.success())
-}
-
-fn build_binaries(release_dir: &Path) -> Result<()> {
-    // Build perllsp
-    let output = Command::new("cargo").args(["build", "--release", "-p", "perllsp"]).output()?;
-    if !output.status.success() {
-        bail!("Failed to build perllsp: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    // Build perl-dap
-    let output = Command::new("cargo")
-        .args(["build", "--release", "-p", "perl-parser", "--bin", "perl-dap"])
-        .output()?;
-    if !output.status.success() {
-        bail!("Failed to build perl-dap: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    // Copy binaries
-    fs::copy("target/release/perllsp", release_dir.join("binaries/perllsp"))?;
-    fs::copy("target/release/perl-dap", release_dir.join("binaries/perl-dap"))?;
-
-    // Strip binaries
-    Command::new("strip").arg(release_dir.join("binaries/perllsp")).output()?;
-    Command::new("strip").arg(release_dir.join("binaries/perl-dap")).output()?;
-
-    Ok(())
-}
-
-fn package_vscode_extension(release_dir: &Path) -> Result<()> {
-    // Change to vscode-extension directory
-    let output = Command::new("npm").current_dir("vscode-extension").arg("install").output()?;
-    if !output.status.success() {
-        bail!("Failed to install dependencies: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    let output =
-        Command::new("npm").current_dir("vscode-extension").args(["run", "build"]).output()?;
-    if !output.status.success() {
-        bail!("Failed to run checked extension build: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    let output =
-        Command::new("npx").current_dir("vscode-extension").args(["vsce", "package"]).output()?;
-    if !output.status.success() {
-        bail!("Failed to package extension: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    // Move VSIX to release directory
-    for entry in fs::read_dir("vscode-extension")? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("vsix")
-            && let Some(file_name) = path.file_name()
-        {
-            fs::rename(&path, release_dir.join(file_name))?;
+        for unsafe_version in ["../../escape", "", "v1.2.3 with spaces", "1.2.3;echo"] {
+            let rendered = refusal().render(unsafe_version);
+            if rendered.contains(unsafe_version) && !unsafe_version.is_empty() {
+                bail!("untrusted version forwarded: {rendered}");
+            }
+            if !rendered.contains("--version <VERSION>") {
+                bail!("missing safe replacement guidance: {rendered}");
+            }
         }
+        Ok(())
     }
 
-    Ok(())
-}
-
-fn run_tests() -> Result<()> {
-    // Run test_lsp_features.sh
-    if Path::new("test_lsp_features.sh").exists() {
-        let output = Command::new("./test_lsp_features.sh").output()?;
-        if !output.status.success() {
-            bail!("LSP tests failed");
+    #[test]
+    fn no_input_makes_the_legacy_pipeline_eligible() -> Result<()> {
+        // Mutation check on the eligibility boundary: the refusal must be
+        // total across confirmation flags and version shapes, including a
+        // plausible release version, a path-like injection attempt, and an
+        // empty string. Any input reaching an Ok path would be a regression
+        // to the unsafe front door.
+        let cases = [
+            ("0.13.0", true),
+            ("0.13.0", false),
+            ("../../escape", true),
+            ("", false),
+            ("v1.2.3 with spaces", true),
+        ];
+        for (version, yes) in cases {
+            let outcome = run(version.to_string(), yes);
+            let Err(error) = outcome else {
+                bail!("legacy preparation became eligible for {version:?}");
+            };
+            let message = format!("{error:#}");
+            if !message.contains("fail-closed") || !message.contains(CANONICAL_ROUTE) {
+                bail!("unexpected error: {message}");
+            }
         }
+        Ok(())
     }
-    Ok(())
-}
-
-fn create_checksums(release_dir: &Path) -> Result<()> {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(format!("cd {} && sha256sum binaries/* *.vsix > checksums.txt", release_dir.display()))
-        .output()?;
-    if !output.status.success() {
-        bail!("Failed to create checksums");
-    }
-    Ok(())
-}
-
-fn create_release_archive(release_dir: &Path, version: &str) -> Result<()> {
-    let output = Command::new("tar")
-        .current_dir(release_dir.join("binaries"))
-        .args(["-czf", &format!("../perllsp-{}-linux-x64.tar.gz", version), "perllsp", "perl-dap"])
-        .output()?;
-    if !output.status.success() {
-        bail!("Failed to create release archive");
-    }
-    Ok(())
 }
