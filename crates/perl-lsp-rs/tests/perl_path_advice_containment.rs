@@ -362,9 +362,8 @@ fn assertion_exemption_is_limited_to_the_guard_line() -> Result<(), Box<dyn std:
         if !unexpected_tokens(Path::new(relative), allowed_line).is_empty() {
             return Err(format!("guard line in {relative} must be allowed").into());
         }
-        let with_bad_advice = format!(
-            "{allowed_line}\nSet `perl.workspace.perlPath` to choose the interpreter."
-        );
+        let with_bad_advice =
+            format!("{allowed_line}\nSet `perl.workspace.perlPath` to choose the interpreter.");
         if unexpected_tokens(Path::new(relative), &with_bad_advice).is_empty() {
             return Err(format!(
                 "a second setting reference in {relative} was hidden by its guard line"
