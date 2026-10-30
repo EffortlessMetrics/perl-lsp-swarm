@@ -146,6 +146,11 @@ fn each_per_channel_step_checks_idempotency_against_existing_dispatch() -> Resul
             &format!("actions/workflows/{channel}/runs?event=workflow_dispatch"),
             "display_title",
             "RELEASE_TAG",
+            // A failed, cancelled, or timed-out prior run must not count as
+            // the dispatch: this workflow is the retry path for it.
+            "!= \"failure\"",
+            "!= \"cancelled\"",
+            "!= \"timed_out\"",
             "skipping duplicate dispatch",
             "disposition=duplicate-skipped",
             "disposition=dispatched",
@@ -172,13 +177,49 @@ fn fan_out_step_dispatches_against_same_release_tag_for_each_channel() -> Result
     // lookup can find a prior dispatch by display title; matching on
     // head_sha cannot work because the child records the default-branch tip
     // at dispatch time.
-    for bump in PACKAGE_CHANNELS.iter() {
+    let document = release_workflow()?;
+    let job = dispatch_publishers(&document)?;
+    let steps = steps(job)?;
+
+    for (bump, expected_id) in PACKAGE_CHANNELS.iter().zip(DISPATCH_STEP_IDS.iter()) {
         let path = root()?.join(".github/workflows").join(bump);
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         ensure!(
             source.contains("run-name:") && source.contains("inputs.tag"),
             "{bump} must declare a run-name carrying the tag input"
+        );
+
+        // The idempotency lookup matches the literal title prefix the bump
+        // workflow stamps into its run-name; the two must not drift apart.
+        let run_name = source
+            .lines()
+            .find(|line| line.trim_start().starts_with("run-name:"))
+            .with_context(|| format!("{bump} declares no run-name"))?;
+        let run_name_prefix = run_name
+            .split('"')
+            .nth(1)
+            .with_context(|| format!("{bump} run-name is not quoted"))?
+            .split("${{")
+            .next()
+            .unwrap_or("")
+            .trim_end();
+
+        let step = steps
+            .iter()
+            .find(|step| step_id(step).map(|id| id == *expected_id) == Some(true))
+            .with_context(|| format!("missing dispatch step `{expected_id}`"))?;
+        let text = step_run_text(step);
+        let title = text
+            .split("--arg title \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .with_context(|| format!("{expected_id} declares no lookup title"))?;
+        let title_prefix = title.trim_end_matches("$RELEASE_TAG").trim_end();
+
+        ensure!(
+            run_name_prefix == title_prefix,
+            "{bump} run-name prefix `{run_name_prefix}` must match the dispatch lookup title prefix `{title_prefix}`"
         );
     }
     Ok(())

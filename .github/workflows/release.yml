@@ -741,17 +741,12 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          # #15460: per-channel idempotency check. A prior workflow_dispatch of
-          # brew-bump.yml on the default branch with the same release SHA means
-          # this channel was already dispatched for the same release (e.g., a
-          # re-run of the dispatch-publishers job). Skip rather than dispatch
-          # again — the bump workflows have their own per-tag concurrency group,
-          # so a duplicate would just queue behind the in-flight run.
           # #15460: match the prior dispatch by its durable release identity:
           # the child's run-name carries the tag, unlike head_sha, which is the
           # default-branch tip at dispatch time and moves during a long release.
           # Fail closed: unavailable idempotency evidence is not proof that no
-          # prior run exists.
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
           if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/brew-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
             printf '::error::brew-bump duplicate lookup failed; failing this channel closed\n'
             exit 1
@@ -761,7 +756,7 @@ jobs:
             exit 1
           fi
           existing_id=$(printf '%s' "$response" | jq -r --arg title "Homebrew Auto-Bump $RELEASE_TAG" \
-            '.workflow_runs[]? | select(.display_title == $title) | .id' | head -n1)
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
           if [ -n "$existing_id" ]; then
             printf '::notice::brew-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
             printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
@@ -788,7 +783,8 @@ jobs:
           # the child's run-name carries the tag, unlike head_sha, which is the
           # default-branch tip at dispatch time and moves during a long release.
           # Fail closed: unavailable idempotency evidence is not proof that no
-          # prior run exists.
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
           if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/scoop-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
             printf '::error::scoop-bump duplicate lookup failed; failing this channel closed\n'
             exit 1
@@ -798,7 +794,7 @@ jobs:
             exit 1
           fi
           existing_id=$(printf '%s' "$response" | jq -r --arg title "Scoop Manifest Refresh $RELEASE_TAG" \
-            '.workflow_runs[]? | select(.display_title == $title) | .id' | head -n1)
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
           if [ -n "$existing_id" ]; then
             printf '::notice::scoop-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
             printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
@@ -825,7 +821,8 @@ jobs:
           # the child's run-name carries the tag, unlike head_sha, which is the
           # default-branch tip at dispatch time and moves during a long release.
           # Fail closed: unavailable idempotency evidence is not proof that no
-          # prior run exists.
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
           if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/chocolatey-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
             printf '::error::chocolatey-bump duplicate lookup failed; failing this channel closed\n'
             exit 1
@@ -835,7 +832,7 @@ jobs:
             exit 1
           fi
           existing_id=$(printf '%s' "$response" | jq -r --arg title "Chocolatey Manifest Refresh $RELEASE_TAG" \
-            '.workflow_runs[]? | select(.display_title == $title) | .id' | head -n1)
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
           if [ -n "$existing_id" ]; then
             printf '::notice::chocolatey-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
             printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
@@ -862,7 +859,8 @@ jobs:
           # the child's run-name carries the tag, unlike head_sha, which is the
           # default-branch tip at dispatch time and moves during a long release.
           # Fail closed: unavailable idempotency evidence is not proof that no
-          # prior run exists.
+          # prior run exists. A prior run that failed, was cancelled, or timed
+          # out does not count: this workflow is the retry path for it.
           if ! response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/winget-bump.yml/runs?event=workflow_dispatch&per_page=100"); then
             printf '::error::winget-bump duplicate lookup failed; failing this channel closed\n'
             exit 1
@@ -872,7 +870,7 @@ jobs:
             exit 1
           fi
           existing_id=$(printf '%s' "$response" | jq -r --arg title "Winget Manifest Refresh $RELEASE_TAG" \
-            '.workflow_runs[]? | select(.display_title == $title) | .id' | head -n1)
+            '.workflow_runs[]? | select(.display_title == $title and (.conclusion // "") != "failure" and (.conclusion // "") != "cancelled" and (.conclusion // "") != "timed_out") | .id' | head -n1)
           if [ -n "$existing_id" ]; then
             printf '::notice::winget-bump already dispatched for %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$existing_id"
             printf 'disposition=duplicate-skipped\n' >> "$GITHUB_OUTPUT"
