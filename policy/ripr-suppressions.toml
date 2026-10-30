@@ -4935,13 +4935,16 @@ removal_criteria = "Remove when EffortlessMetrics/ripr#1428 or #1429 connects ha
 # LSP stdio round-trip criterion bench (PR #17179): measurement plumbing.
 #
 # crates/perl-lsp-rs/benches/lsp_stdio_roundtrip_benchmark.rs is a
-# harness=false criterion bench. It only executes under an explicit
-# `cargo bench` run that spawns the real perllsp binary over stdio against the
-# committed mojolicious fixture (baseline recorded in the PR description).
-# Plain `cargo test` cannot reach its internals by construction: a
-# harness=false target is executed as a binary, so #[cfg(test)] units inside
-# it never run, and the receipt pass is deliberately gated off under cargo
-# test. The blocking findings here are the spawn/sample collectors, the
+# harness=false criterion bench. It produces its receipt measurements under an
+# explicit `cargo bench` run that spawns the real perllsp binary over stdio
+# against the committed mojolicious fixture (baseline recorded in the PR
+# description). A bare `cargo test` does not select this bench target, but
+# `cargo test --benches` and `cargo test --all-targets` execute the
+# harness=false binary without `--bench`: they create the warm session and run
+# the Criterion group closures, while `run()` checks the process args for
+# `--bench` and skips the receipt pass, including the spawn/sample collectors
+# and receipt writer, so the receipt pass is gated off in every test-mode
+# form. The blocking findings here are the spawn/sample collectors, the
 # receipt writer, and the criterion group closures — measurement plumbing
 # whose honest validation is executing the bench and the committed receipt
 # (.ci/metrics/lsp_roundtrip.json), not static test reachability; focused

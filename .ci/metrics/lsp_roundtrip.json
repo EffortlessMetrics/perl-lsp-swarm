@@ -1,5 +1,5 @@
 {
-  "commit": "23ba886442",
+  "commit": "1c8dd49399",
   "corpus": {
     "entry_file": "lib/Mojolicious.pm",
     "file_count": 13,
@@ -9,51 +9,79 @@
   "kind": "lsp_stdio_roundtrip",
   "lanes": {
     "completion": {
-      "p50_ms": 1,
-      "p95_ms": 1,
-      "p99_ms": 1,
+      "p50_ms": 5,
+      "p95_ms": 5,
+      "p99_ms": 5,
       "samples": 50
     },
+    "completion_lexical": {
+      "p50_ms": 5,
+      "p95_ms": 5,
+      "p99_ms": 6,
+      "samples": 200
+    },
+    "completion_method_position": {
+      "p50_ms": 10,
+      "p95_ms": 11,
+      "p99_ms": 11,
+      "samples": 200
+    },
+    "completion_package_prefix": {
+      "p50_ms": 5,
+      "p95_ms": 5,
+      "p99_ms": 5,
+      "samples": 200
+    },
     "definition": {
-      "p50_ms": 0,
-      "p95_ms": 0,
-      "p99_ms": 0,
+      "p50_ms": 5,
+      "p95_ms": 5,
+      "p99_ms": 6,
+      "samples": 50
+    },
+    "diagnostics_after_edit": {
+      "duplicate_pushes": 0,
+      "p50_ms": 265,
+      "p95_ms": 276,
+      "p99_ms": 280,
       "samples": 50
     },
     "did_open_to_diagnostics": {
       "p50_ms": 264,
-      "p95_ms": 266,
-      "p99_ms": 266,
+      "p95_ms": 267,
+      "p99_ms": 268,
       "samples": 12
     },
     "hover": {
-      "p50_ms": 0,
-      "p95_ms": 0,
-      "p99_ms": 0,
+      "p50_ms": 5,
+      "p95_ms": 5,
+      "p99_ms": 5,
       "samples": 50
     },
     "initialize": {
-      "p50_ms": 96,
-      "p95_ms": 123,
-      "p99_ms": 123,
+      "p50_ms": 57,
+      "p95_ms": 74,
+      "p99_ms": 74,
       "samples": 10
     },
     "workspace_symbol": {
-      "p50_ms": 0,
-      "p95_ms": 0,
-      "p99_ms": 1,
+      "p50_ms": 5,
+      "p95_ms": 5,
+      "p99_ms": 5,
       "samples": 50
     }
   },
-  "measured_at": "2026-10-04T04:37:50Z",
+  "measured_at": "2026-10-12T19:45:58Z",
   "runtime": {
-    "binary": "F:\\code\\Rust2\\plrs-bench-matrix\\target\\release\\perllsp.exe",
+    "binary": "F:\\code\\Rust2\\plrs-bench-lat\\target\\release\\perllsp.exe",
     "binary_profile": "release",
     "index_ready": true,
     "workspace_env": "PERL_LSP_WORKSPACE=1 (fixture_scenario_config)"
   },
   "sampling": {
+    "completion_sublane_samples": 200,
+    "completion_sublane_warmup": 10,
     "did_open_samples": 12,
+    "didchange_edit_samples": 50,
     "initialize_samples": 10,
     "request_samples_per_lane": 50,
     "request_warmup_per_lane": 5

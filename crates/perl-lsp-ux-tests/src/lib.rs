@@ -49,6 +49,7 @@
 
 pub mod cargo_failure;
 pub mod client;
+pub mod completion;
 pub mod diagnostics;
 pub mod env;
 pub mod observation;
@@ -67,6 +68,9 @@ pub use client::{
     server_request_script::{
         ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
     },
+};
+pub use completion::{
+    CompletionProbeOutcome, classify_completion_probe, validate_completion_response,
 };
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
