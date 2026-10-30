@@ -31,7 +31,9 @@ use regex::Regex;
 /// `[ \t]` rather than `\s` throughout: `\s` matches a newline, which would let
 /// one match straddle a blank line and adopt the next line's name.
 static RESULT_LINE_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
-    Regex::new(r"(?m)^[ \t]*test[ \t]+(.+?)[ \t]+\.\.\.[ \t]+(ok|FAILED|ignored)[ \t\r]*$")
+    Regex::new(
+        r"(?m)^[ \t]*test[ \t]+(.+?)[ \t]+\.\.\.[ \t]+(ok|FAILED|ignored(?:,[^\r\n]*)?)[ \t\r]*$",
+    )
 });
 
 /// Cargo's trailing report prints one `---- <name> stdout ----` block per
@@ -315,6 +317,10 @@ mod tests {
     #[test]
     fn a_result_line_with_trailing_prose_is_not_a_result() {
         assert_eq!(result_line("test tasks::a::b ... FAILED trailing"), None);
+        assert_eq!(
+            result_line("test tasks::a::b ... ignored, needs a fixture"),
+            Some(("tasks::a::b", TestOutcome::Ignored))
+        );
         assert_eq!(
             result_line("test tasks::a::b ... FAILED\r"),
             Some(("tasks::a::b", TestOutcome::Failed))
