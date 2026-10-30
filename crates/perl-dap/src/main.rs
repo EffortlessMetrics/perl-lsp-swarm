@@ -123,28 +123,97 @@ const EXTERNAL_PEER_POLL: Duration = Duration::from_millis(50);
 /// running debugger peer at `peer_addr` and translate DAP ↔ the Perl Debugger
 /// Peer Protocol.
 fn run_external_peer_bridge_stdio(peer_addr: &str) -> anyhow::Result<()> {
-    tracing::info!(peer = peer_addr, "Starting external-peer DAP session on stdio");
-    let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
-        .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
+    // Validate the spec's HOST:PORT shape before any connect attempt (#16556):
+    // the transport's own failure for a malformed spec is a raw "invalid socket
+    // address" that never names the expected format.
+    let (peer_host, peer_port) = parse_peer_connect_spec(peer_addr).map_err(anyhow::Error::msg)?;
+    tracing::info!(peer = peer_addr, peer_host = %peer_host, peer_port, "Starting external-peer DAP session on stdio");
+    // Dial the validated `HOST:PORT`, not the raw CLI string: the parser trims
+    // and accepts surrounding whitespace (`  host:5000  `), but the transport's
+    // `ToSocketAddrs` rejects that raw input, so an accepted spec would still
+    // fail with a raw socket error (#16556).
+    let dial_addr = format!("{peer_host}:{peer_port}");
+    let backend =
+        ExternalDebuggerPeerBackend::connect(dial_addr.as_str(), EXTERNAL_PEER_TIMEOUT)
+            .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
     run_external_peer_session_stdio(bridge, EXTERNAL_PEER_POLL)?;
     Ok(())
 }
 
+/// Parse a `HOST:PORT` dial spec for `--external-peer` into host and port.
+///
+/// The whole spec is later handed to the peer transport, whose own failure for
+/// a malformed spec is the raw "invalid socket address" — it never names the
+/// expected shape (#16556). Validating here turns a typo'd rendezvous into a
+/// startup error that names `HOST:PORT` instead. The host may be a hostname or
+/// IPv4 address with no whitespace (bracketed IPv6 literals like `[::1]` are
+/// accepted); the port must be numeric.
+///
+/// # Errors
+/// Names the offending spec and the expected `HOST:PORT` format.
+fn parse_peer_connect_spec(spec: &str) -> Result<(String, u16), String> {
+    let spec = spec.trim();
+    let expected = "expected HOST:PORT where HOST is a hostname or IP literal with no \
+                    whitespace or unbracketed colons and PORT is numeric 0-65535 \
+                    (for example 127.0.0.1:13604)";
+    let reject =
+        |reason: &str| format!("invalid --external-peer spec '{spec}': {reason}; {expected}");
+    let Some((host, port)) = spec.rsplit_once(':') else {
+        return Err(reject("missing ':' separator"));
+    };
+    if host.is_empty() {
+        return Err(reject("host is empty"));
+    }
+    if host.chars().any(char::is_whitespace) {
+        return Err(reject("host contains whitespace"));
+    }
+    let bracketed_ipv6 = host.starts_with('[') && host.ends_with(']');
+    if host.contains(':') && !bracketed_ipv6 {
+        return Err(reject("host contains unbracketed colons"));
+    }
+    match port.trim().parse::<u16>() {
+        Ok(port) => Ok((host.to_owned(), port)),
+        Err(_) => Err(reject("port is not a number in 0..=65535")),
+    }
+}
+
 /// Parse a `HOST` or `HOST:PORT` bind spec for `--external-peer-listen`.
 ///
 /// A bare host (or empty string) binds an ephemeral loopback port (`port = 0`).
-/// A `HOST:PORT` binds the given port. An unparseable port falls back to `0`.
-fn parse_listen_bind(spec: &str) -> (String, u16) {
+/// A `HOST:PORT` binds the given port. An explicit-but-unparseable port is a
+/// startup error: silently falling back to `0` would move the rendezvous
+/// contract the peer must dial, and the session would then time out with no
+/// explanation of why the peer never arrived (#16556).
+///
+/// # Errors
+/// Names the offending spec and the expected `HOST[:PORT]` format.
+fn parse_listen_bind(spec: &str) -> Result<(String, u16), String> {
     let spec = spec.trim();
+    // Tuple-based address resolution takes an IPv6 host without URL-style
+    // brackets. Normalize only the listen host; dial specs retain their brackets.
+    let unbracket_host = |host: &str| {
+        host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host).to_owned()
+    };
     if spec.is_empty() {
-        return ("127.0.0.1".to_string(), 0);
+        return Ok(("127.0.0.1".to_string(), 0));
+    }
+    // A bare bracketed IPv6 literal (`[::1]`) is a HOST form that binds an
+    // ephemeral port; splitting it at its last colon would misread `1]` as a
+    // port and fail startup on a documented bare-host form.
+    if spec.ends_with(']') {
+        return Ok((unbracket_host(spec), 0));
     }
     match spec.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => {
-            (host.to_string(), port.trim().parse().unwrap_or(0))
-        }
-        _ => (spec.to_string(), 0),
+        Some((host, port)) if !host.is_empty() => match port.trim().parse::<u16>() {
+            Ok(port) => Ok((unbracket_host(host), port)),
+            Err(_) => Err(format!(
+                "invalid --external-peer-listen spec '{spec}': PORT must be numeric 0-65535 \
+                 when given; expected HOST[:PORT], where a bare HOST or empty value binds an \
+                 ephemeral port (for example 127.0.0.1:13604)"
+            )),
+        },
+        _ => Ok((spec.to_string(), 0)),
     }
 }
 
@@ -157,7 +226,7 @@ fn parse_listen_bind(spec: &str) -> (String, u16) {
 /// host side of the mirror session, proven end-to-end against a fake peer in the
 /// crate tests. The editor speaks DAP over stdio only.
 fn run_external_peer_listen(spec: &str) -> anyhow::Result<()> {
-    let (host, port) = parse_listen_bind(spec);
+    let (host, port) = parse_listen_bind(spec).map_err(anyhow::Error::msg)?;
     let config = ExternalPeerLaunchConfig {
         mode: PeerRendezvousMode::Listen,
         control: ControlMode::Mirror,
@@ -425,15 +494,15 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         Args, DEFAULT_DAP_PORT, decode_one_shot_source, editor_socket_retired,
-        load_one_shot_packet, native_editor_socket_retired, resolve_socket_port,
-        windows_shell_quote,
+        load_one_shot_packet, native_editor_socket_retired, parse_listen_bind,
+        parse_peer_connect_spec, resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
         BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, IdentityRequest,
         requested_identity,
     };
-    use perl_test_must::{must_err_with, must_with};
+    use perl_test_must::{must, must_err_with, must_with};
     use std::path::Path;
 
     /// Parseable Perl with Latin-1 `é` (0xE9), not UTF-8 `c3 a9`.
@@ -572,6 +641,167 @@ mod tests {
         assert_eq!(resolve_socket_port(&args), None);
     }
 
+    fn clap_port_error(argv: &[&str]) -> String {
+        must_err_with(Args::try_parse_from(argv), format!("expected clap to reject {argv:?}"))
+            .to_string()
+    }
+
+    fn assert_no_parse_int_leak(rendered: &str, argv: &[&str]) {
+        assert!(
+            !rendered.contains("invalid digit found in string"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(
+            !rendered.contains("number too large to fit in target type"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(
+            !rendered.contains("cannot parse integer from empty string"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(!rendered.contains("0..="), "leaked Rust range syntax for {argv:?}: {rendered}");
+    }
+
+    /// `perl-dap` parses `--port` through shared `TransportArgs`, not the
+    /// `perllsp` launcher prevalidate path. Invalid tokens must still name the
+    /// 0-65535 contract instead of clap's `u16` parse-source wording (#16562).
+    #[test]
+    fn dap_port_rejections_state_the_accepted_range_instead_of_parse_int_error() {
+        struct Case {
+            argv: &'static [&'static str],
+            reason: &'static str,
+        }
+
+        let cases = [
+            Case { argv: &["perl-dap", "--port", "65536"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port=65536"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port", "99999"], reason: "Expected a port in 0-65535." },
+            Case {
+                argv: &["perl-dap", "--port", "99999999999999999999999999"],
+                reason: "Expected a port in 0-65535.",
+            },
+            Case { argv: &["perl-dap", "--port", "-1"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port=-1"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port", "+65536"], reason: "Expected a port in 0-65535." },
+            Case {
+                argv: &["perl-dap", "--port", "abc"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port=abc"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "0x10"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "8080.0"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "1e2"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "80_80"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "+"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "-"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "-0"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port=-000"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case { argv: &["perl-dap", "--port="], reason: "Expected a whole number in 0-65535." },
+        ];
+
+        for case in cases {
+            let rendered = clap_port_error(case.argv);
+            assert!(
+                rendered.contains(case.reason),
+                "argv={:?} missing {reason:?} in {rendered}",
+                case.argv,
+                reason = case.reason
+            );
+            assert_no_parse_int_leak(&rendered, case.argv);
+            assert!(
+                !rendered.contains("perllsp"),
+                "DAP --port must not point at perllsp: {rendered}"
+            );
+            assert!(
+                rendered.contains("--help") || rendered.contains("perl-dap --help"),
+                "DAP --port rejection must keep a DAP help pointer: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_accepted_ports_reach_transport_resolution_unchanged() {
+        let cases: &[(&[&str], u16)] = &[
+            (&["perl-dap", "--port", "0"], 0),
+            (&["perl-dap", "--port", "65535"], 65535),
+            (&["perl-dap", "--port=0"], 0),
+            (&["perl-dap", "--port=65535"], 65535),
+            (&["perl-dap", "--port", "+0"], 0),
+            (&["perl-dap", "--port", "+65535"], 65535),
+            (&["perl-dap", "--port", "0000"], 0),
+            (&["perl-dap", "--port", "08080"], 8080),
+            (&["perl-dap", "--port", "1"], 1),
+        ];
+
+        for (argv, port) in cases {
+            let parsed = must_with(
+                Args::try_parse_from(*argv),
+                format!("valid --port must parse for {argv:?}"),
+            );
+            assert_eq!(parsed.transport.port, Some(*port), "argv={argv:?}");
+            assert_eq!(
+                resolve_socket_port(&parsed.transport),
+                Some(*port),
+                "accepted port must still resolve so later editor-socket retirement can refuse it; argv={argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_missing_port_value_is_not_a_parse_int_error() {
+        for argv in [&["perl-dap", "--port"][..], &["perl-dap", "--port", "--stdio"][..]] {
+            let rendered = clap_port_error(argv);
+            assert_no_parse_int_leak(&rendered, argv);
+            assert!(
+                !rendered.contains("Expected a port in 0-65535."),
+                "a missing value must not be reclassified as an out-of-range port: {rendered}"
+            );
+            assert!(
+                !rendered.contains("Expected a whole number in 0-65535."),
+                "a following flag must not be swallowed as a port token: {rendered}"
+            );
+            assert!(
+                !rendered.contains("perllsp"),
+                "DAP missing --port must not point at perllsp: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_cli_help_pointer_stays_on_perl_dap() {
+        assert_eq!(Args::command().get_name(), "perl-dap");
+        let help = Args::command().render_long_help().to_string();
+        assert!(help.contains("Usage: perl-dap"), "{help}");
+        assert!(!help.contains("perllsp --help"), "{help}");
+    }
+
     #[test]
     fn fn_main_still_fails_socket_flags_via_native_editor_socket_retired() {
         // The inventory scan ratchets `native_editor_socket_retired` inside
@@ -682,5 +912,121 @@ mod tests {
             "an empty readable file is a successful read, not an unreadable program",
         );
         assert_eq!(packet.program, program);
+    }
+
+    #[test]
+    fn listen_ephemeral_fallback_forms_survive_spec_validation() {
+        assert_eq!(must(parse_listen_bind("")), ("127.0.0.1".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("localhost")), ("localhost".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("[::1]")), ("::1".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("[::1]:5000")), ("::1".to_owned(), 5000));
+        assert_eq!(must(parse_listen_bind("127.0.0.1:5000")), ("127.0.0.1".to_owned(), 5000));
+    }
+
+    #[test]
+    fn listen_bracketed_ipv6_specs_reach_the_loopback_listener() {
+        use super::{
+            ControlMode, ExternalPeerLaunchConfig, PeerRendezvousMode,
+            prepare_mirror_listen_session,
+        };
+        use std::net::{IpAddr, Ipv6Addr, TcpStream};
+        use std::time::Duration;
+
+        for spec in ["[::1]", "[::1]:0"] {
+            let (host, port) = must(parse_listen_bind(spec));
+            let config = ExternalPeerLaunchConfig {
+                mode: PeerRendezvousMode::Listen,
+                control: ControlMode::Mirror,
+                host,
+                port,
+                ..ExternalPeerLaunchConfig::default()
+            };
+            let (listener, endpoint, _bridge) = must_with(
+                prepare_mirror_listen_session(&config),
+                "a bracketed IPv6 listen spec must reach the real listener setup",
+            );
+            assert_eq!(endpoint.addr.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST), "{spec}");
+            assert_ne!(endpoint.addr.port(), 0, "{spec}");
+            assert_eq!(must(listener.local_addr()), endpoint.addr, "{spec}");
+            let _peer = must_with(
+                TcpStream::connect_timeout(&endpoint.addr, Duration::from_secs(1)),
+                "the advertised IPv6 loopback endpoint must accept a connection",
+            );
+        }
+    }
+
+    #[test]
+    fn listen_explicit_unparseable_port_is_a_startup_error_naming_the_format() {
+        for spec in [
+            "127.0.0.1:notaport",
+            "127.0.0.1:1364O",
+            "127.0.0.1:",
+            "127.0.0.1:70000",
+            "[::1]:notaport",
+            "[::1]:70000",
+        ] {
+            let error = must_err_with(
+                parse_listen_bind(spec),
+                "an explicit-but-unparseable port must fail startup instead of binding ephemeral (#16556)",
+            );
+            assert!(error.contains("HOST[:PORT]"), "{error}");
+            assert!(error.contains(spec), "{error}");
+        }
+    }
+
+    #[test]
+    fn peer_connect_spec_accepts_documented_host_port_forms() {
+        assert_eq!(
+            must(parse_peer_connect_spec("127.0.0.1:13604")),
+            ("127.0.0.1".to_owned(), 13_604)
+        );
+        assert_eq!(must(parse_peer_connect_spec("localhost:5000")), ("localhost".to_owned(), 5000));
+        assert_eq!(
+            must(parse_peer_connect_spec("  localhost:5000  ")),
+            ("localhost".to_owned(), 5000)
+        );
+        assert_eq!(must(parse_peer_connect_spec("[::1]:5000")), ("[::1]".to_owned(), 5000));
+    }
+
+    #[test]
+    fn peer_connect_spec_malformed_specs_error_naming_host_port_format() {
+        for spec in [
+            "no-colon-thing",
+            ":5000",
+            "host name:5000",
+            "a:b:5000",
+            "127.0.0.1:notaport",
+            "127.0.0.1:",
+            "127.0.0.1:70000",
+        ] {
+            let error = must_err_with(
+                parse_peer_connect_spec(spec),
+                "a malformed spec must fail startup before any connect attempt (#16556)",
+            );
+            assert!(error.contains("HOST:PORT"), "{error}");
+            assert!(error.contains(spec), "{error}");
+        }
+    }
+
+    #[test]
+    fn peer_bridge_dials_the_normalized_spec_a_raw_padded_spec_would_reject() {
+        use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
+
+        // The raw padded spec is accepted by `parse_peer_connect_spec` but
+        // rejected by the transport's `ToSocketAddrs`; the bridge must dial the
+        // normalized host:port instead (#16556).
+        let raw = "  127.0.0.1:5000  ";
+        assert!(
+            raw.to_socket_addrs().is_err(),
+            "precondition: the raw padded spec must not resolve as a socket address"
+        );
+        let (host, port) = must(parse_peer_connect_spec(raw));
+        let dial_addr = format!("{host}:{port}");
+        let resolved: Vec<SocketAddr> =
+            must_with(dial_addr.to_socket_addrs(), "the normalized spec must resolve").collect();
+        assert_eq!(
+            resolved,
+            vec![SocketAddr::V4(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 5000))]
+        );
     }
 }

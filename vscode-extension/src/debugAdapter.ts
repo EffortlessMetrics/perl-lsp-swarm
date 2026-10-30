@@ -1133,9 +1133,7 @@ export function activateDebugger(context: vscode.ExtensionContext) {
       // `startDebugging(undefined, …)` as a folderless session (#16554
       // review); the containing folder, not the first folder, so a
       // multi-root workspace still roots the session where the program lives.
-      const workspaceFolder = vscode.workspace.getWorkspaceFolder(
-        vscode.Uri.file(target.program),
-      );
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(target.program));
       const refusal = folderlessDebugLaunchRefusal(config, workspaceFolder);
       if (refusal) {
         void vscode.window.showWarningMessage(refusal);

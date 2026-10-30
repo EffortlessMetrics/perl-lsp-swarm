@@ -51,6 +51,7 @@ pub mod schema_apply;
 pub mod source_authority;
 pub mod stack_increment;
 pub mod standalone_diagnostics;
+pub mod unsupported_fact_catalog;
 pub mod utils;
 pub mod vendored_catalog;
 pub mod vim_host_diagnostics_run;

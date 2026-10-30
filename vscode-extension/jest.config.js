@@ -48,4 +48,10 @@ module.exports = {
   },
   transform: {},
   coverageProvider: 'v8',
+  // #17335: under default parallelism on Windows, a moving set of suites hit
+  // the 5 s jest default purely from worker CPU starvation (real local HTTP
+  // servers, child processes). 15 s keeps genuine hangs loud while removing
+  // the load-shaped false failures; targeted tests keep their own explicit
+  // timeouts where they want tighter budgets.
+  testTimeout: 15_000,
 };

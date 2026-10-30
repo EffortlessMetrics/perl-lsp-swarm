@@ -100,6 +100,69 @@ class FormatResultsReceiptGuardTests(unittest.TestCase):
             self.assertIn("Total benchmarks:  1", proc.stdout)
             self.assertIn("STATUS: COMPLETE", proc.stdout)
 
+    def test_partial_category_failure_is_incomplete_and_fails(self) -> None:
+        """A failed category marker (#17218) must survive to the receipt.
+
+        One category produced timings while another failed: the receipt must
+        name the failed category and report INCOMPLETE, never COMPLETE.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            results_file = Path(tmp) / "latest.json"
+            results_file.write_text(
+                json.dumps(
+                    {
+                        "version": "0.9.0",
+                        "timestamp": "2026-07-12T00:00:00Z",
+                        "git_sha": "abc123",
+                        "results": {
+                            "index": {
+                                "incremental update single file": {"mean_ns": 209_000},
+                            },
+                            "ripr": {
+                                "_status": "failed",
+                                "_error": (
+                                    "cargo bench -p perl-ripr-facts "
+                                    "--bench ripr_facts_benchmark failed (exit 101)"
+                                ),
+                                "_category": "ripr",
+                            },
+                        },
+                    }
+                )
+            )
+
+            proc = _run(_FORMAT_RESULTS, [str(results_file), "--receipt"])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Total benchmarks:  1", proc.stdout)
+            self.assertIn("ripr", proc.stdout)
+            self.assertIn("STATUS: INCOMPLETE", proc.stdout)
+            self.assertNotIn("STATUS: COMPLETE", proc.stdout)
+
+    def test_all_categories_failed_is_incomplete_and_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            results_file = Path(tmp) / "latest.json"
+            results_file.write_text(
+                json.dumps(
+                    {
+                        "version": "0.9.0",
+                        "timestamp": "2026-07-12T00:00:00Z",
+                        "git_sha": "abc123",
+                        "results": {
+                            "ripr": {
+                                "_status": "failed",
+                                "_error": "cargo bench failed (exit 101)",
+                                "_category": "ripr",
+                            },
+                        },
+                    }
+                )
+            )
+
+            proc = _run(_FORMAT_RESULTS, [str(results_file), "--receipt"])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("STATUS: INCOMPLETE", proc.stdout)
+            self.assertNotIn("STATUS: COMPLETE", proc.stdout)
+
 
 class CompareMissingBenchmarkGuardTests(unittest.TestCase):
     def _write(self, path: Path, results: dict) -> None:
@@ -191,6 +254,102 @@ class CompareMissingBenchmarkGuardTests(unittest.TestCase):
             proc = _run(_COMPARE, [str(baseline), str(current), "--fail-on-regression"])
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("REGRESSION DETECTED", proc.stdout)
+
+
+class CompareInputGuardTests(unittest.TestCase):
+    """Killed-run input is an operational error, not a traceback (#17452)."""
+
+    def test_killed_run_partial_names_input_without_traceback(self) -> None:
+        # run-benchmarks.sh streams the header and opens a category before
+        # waiting for cargo. A timeout at that point leaves these open braces.
+        fixture = _SCRIPTS_DIR / "fixtures" / "killed-run-latest.json.partial"
+        with tempfile.TemporaryDirectory() as tmp:
+            current = Path(tmp) / "latest.json"
+            current.write_bytes(fixture.read_bytes())
+            proc = _run(_COMPARE, [str(_REPO_ROOT / "benchmarks/baselines/v0.10.0.json"), str(current)])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(str(current), proc.stderr)
+            self.assertIn("partial", proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+            self.assertNotIn("STATUS: PASS", proc.stdout)
+
+    def test_invalid_input_shapes_name_the_bad_file(self) -> None:
+        baseline = _REPO_ROOT / "benchmarks/baselines/v0.10.0.json"
+        for data in ([], None, {}, {"results": None}, {"benchmarks": []},
+                     {"results": {}, "metadata": []}):
+            with self.subTest(data=data), tempfile.TemporaryDirectory() as tmp:
+                current = Path(tmp) / "latest.json"
+                current.write_text(json.dumps(data))
+                proc = _run(_COMPARE, [str(baseline), str(current)])
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(str(current), proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr)
+
+    def test_invalid_baseline_names_baseline_instead_of_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.json"
+            baseline.write_text('{"results":')
+            current = _REPO_ROOT / "benchmarks/baselines/v0.10.0.json"
+            proc = _run(_COMPARE, [str(baseline), str(current)])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(str(baseline), proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+
+    def test_unreadable_input_is_a_clean_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # A directory is reliably unreadable as a JSON file, including as root.
+            current = Path(tmp) / "latest.json"
+            current.mkdir()
+            proc = _run(_COMPARE, [str(_REPO_ROOT / "benchmarks/baselines/v0.10.0.json"), str(current)])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(str(current), proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+
+    def test_complete_committed_results_still_emit_verdicts(self) -> None:
+        baseline = _REPO_ROOT / "benchmarks/baselines/v0.10.0.json"
+        proc = _run(_COMPARE, [str(baseline), str(baseline)])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("STATUS: PASS", proc.stdout)
+        self.assertIn("[", proc.stdout)  # Per-benchmark verdicts, not just a header.
+        self.assertIn("OK", proc.stdout)
+
+    def test_detailed_format_keeps_complete_verdicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            current = Path(tmp) / "latest.json"
+            current.write_text(json.dumps({"metadata": {"version": "fixture"},
+                                          "benchmarks": {"parser": {
+                                              "example": {"mean": {"nanoseconds": 1000}}}}}))
+            proc = _run(_COMPARE, [str(current), str(current)])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("example", proc.stdout)
+            self.assertIn("OK", proc.stdout)
+            self.assertIn("STATUS: PASS", proc.stdout)
+
+    def test_invalid_encoding_names_the_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            current = Path(tmp) / "latest.json"
+            current.write_bytes(b"\xff\xfe")
+            proc = _run(_COMPARE, [str(_REPO_ROOT / "benchmarks/baselines/v0.10.0.json"), str(current)])
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(str(current), proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+
+    def test_valid_partial_keeps_comparable_rows_and_missing_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.json"
+            current = Path(tmp) / "latest.json"
+            baseline.write_text(json.dumps({"results": {"parser": {
+                "completed": {"mean_ns": 1000}, "missing": {"mean_ns": 2000}}}}))
+            current.write_text(json.dumps({"results": {"parser": {
+                "completed": {"mean_ns": 1000}}}}))
+            for flags, expected in (([], 0), (["--fail-on-regression"], 1)):
+                proc = _run(_COMPARE, [str(baseline), str(current), *flags])
+                self.assertEqual(proc.returncode, expected, proc.stderr)
+                self.assertIn("completed", proc.stdout)
+                self.assertIn("OK", proc.stdout)
+                self.assertIn("MISSING", proc.stdout)
+                self.assertIn("STATUS: INCOMPLETE", proc.stdout)
+                self.assertNotIn("Traceback", proc.stderr)
 
 
 class NightlyWorkflowGuardTests(unittest.TestCase):

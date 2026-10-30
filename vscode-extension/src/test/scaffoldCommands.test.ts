@@ -130,8 +130,8 @@ test('a nonlocal seed folder defers to a local workspace folder', async () => {
   (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = {
     document: { uri: remote },
   };
-  (vscode.workspace.getWorkspaceFolder as jest.Mock).mockImplementation(
-    (uri: vscode.Uri) => (uri.scheme === undefined ? { uri: remote } : { uri: second }),
+  (vscode.workspace.getWorkspaceFolder as jest.Mock).mockImplementation((uri: vscode.Uri) =>
+    uri.scheme === undefined ? { uri: remote } : { uri: second },
   );
 
   (vscode.window.showSaveDialog as jest.Mock).mockResolvedValue(

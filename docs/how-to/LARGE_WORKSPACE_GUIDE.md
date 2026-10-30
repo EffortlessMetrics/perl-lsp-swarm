@@ -553,7 +553,9 @@ are exceeded or when incremental updates fail to apply cleanly.
    ```
 
 3. If the server frequently enters `Degraded`, it is hitting resource limits. Review
-   your workspace scope (`.perl-lspignore`) and memory-budget settings.
+   whether the editor opened a broad repository or parent directory, and open a
+   narrower workspace folder if it includes unrelated project areas. Also review
+   memory-budget settings.
 
 **Remediation**:
 - File a bug if `Degraded` is entered without hitting documented limits

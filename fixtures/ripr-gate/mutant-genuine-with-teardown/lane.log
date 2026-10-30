@@ -1,0 +1,3 @@
+2026-10-04T04:39:50Z quality gate failed; see receipt target/receipts/quality/quality-gate.json and summary target/receipts/quality/quality-gate.md
+2026-10-04T04:39:51Z ##[error]Process completed with exit code 101.
+2026-10-04T04:40:02Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.

@@ -181,6 +181,64 @@ fn project_root() -> PathBuf {
     dir
 }
 
+fn post_merge_status_workflow_text() -> Result<String, Box<dyn std::error::Error>> {
+    let workflow_path = project_root().join(".github/workflows/post-merge-status.yml");
+    Ok(fs::read_to_string(&workflow_path)?)
+}
+
+fn parse_workflow(content: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(serde_yaml_ng::from_str(content)?)
+}
+
+fn status_generator_job(workflow: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+    jobs.iter()
+        .find(|(_, job)| {
+            job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
+                steps.iter().any(|step| {
+                    step.get("run")
+                        .and_then(Value::as_str)
+                        .is_some_and(|run| run.contains("update-status --write"))
+                })
+            })
+        })
+        .map(|(_, job)| job)
+        .ok_or_else(|| "no job in post-merge-status.yml runs `update-status --write`".into())
+}
+
+fn generator_timeout_minutes(workflow: &Value) -> Result<i64, Box<dyn std::error::Error>> {
+    status_generator_job(workflow)?
+        .get("timeout-minutes")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "the status generator job must declare numeric timeout-minutes".into())
+}
+
+/// Rewrite the first `timeout-minutes:` of the current generate-job value and
+/// confirm the parser still attributes the new value to that same job.
+fn with_generate_job_timeout(
+    source: &str,
+    minutes: i64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let current = generator_timeout_minutes(&parse_workflow(source)?)?;
+    let from = format!("    timeout-minutes: {current}\n");
+    let to = format!("    timeout-minutes: {minutes}\n");
+    let rewritten = source.replacen(&from, &to, 1);
+    if rewritten == source {
+        return Err("failed to rewrite generate job timeout-minutes".into());
+    }
+    let observed = generator_timeout_minutes(&parse_workflow(&rewritten)?)?;
+    if observed != minutes {
+        return Err(format!(
+            "rewriter changed a non-generator timeout; generate job still has timeout-minutes: {observed}"
+        )
+        .into());
+    }
+    Ok(rewritten)
+}
+
 fn assert_marker_count(
     content: &str,
     target_file: &str,
@@ -550,6 +608,45 @@ fn test_post_merge_generator_job_is_read_only() -> Result<(), Box<dyn std::error
         checkout.get("with").and_then(|with| with.get("persist-credentials")),
         Some(&Value::Bool(false)),
         "the generating checkout must set `persist-credentials: false`"
+    );
+    Ok(())
+}
+
+/// #16568 action 1: the generate job's 20-minute ceiling killed slow-mode runs
+/// at job_start+20m (check-run annotation "The job has exceeded the maximum
+/// execution time of 20m0s"). The production value landed as 30 via #16673;
+/// this pin keeps a silent revert to 20 from going green.
+#[test]
+fn generate_job_timeout_minutes_is_thirty() -> Result<(), Box<dyn std::error::Error>> {
+    let workflow = parse_workflow(&post_merge_status_workflow_text()?)?;
+    assert_eq!(
+        generator_timeout_minutes(&workflow)?,
+        30,
+        "the job that runs `update-status --write` must keep timeout-minutes: 30. \
+         Slow-mode step 5 reached 19m39s against the 20m budget (#16568); \
+         hosted run 36525243589 later completed Generate bounded status payload \
+         in ~21m12s under the 30m ceiling."
+    );
+    Ok(())
+}
+
+/// Negative control: restoring the confirmed killer (`timeout-minutes: 20`)
+/// must be visible to the pin. A hardcoded `30` oracle would stay green here.
+#[test]
+fn generate_job_timeout_pin_rejects_the_confirmed_twenty_minute_killer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let killer = with_generate_job_timeout(&post_merge_status_workflow_text()?, 20)?;
+    let workflow = parse_workflow(&killer)?;
+    assert_eq!(
+        generator_timeout_minutes(&workflow)?,
+        20,
+        "the timeout pin must read the generate job's timeout-minutes; \
+         the confirmed killer is timeout-minutes: 20 (#16568)"
+    );
+    assert_ne!(
+        generator_timeout_minutes(&workflow)?,
+        30,
+        "a 20-minute generate budget must not satisfy the 30-minute pin"
     );
     Ok(())
 }

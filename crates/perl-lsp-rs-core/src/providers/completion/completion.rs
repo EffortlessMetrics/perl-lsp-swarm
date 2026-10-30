@@ -325,6 +325,22 @@ pub(super) fn is_completion_identifier_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
+/// Return the byte offset just past the identifier suffix that follows
+/// `position` (the not-yet-typed remainder of a mid-token invocation).
+/// Returns `position` itself when no suffix follows or the offset is not
+/// a char boundary.
+fn word_suffix_end(source: &str, position: usize) -> usize {
+    let Some(rest) = source.get(position..) else { return position };
+    let mut end = position;
+    for (offset, ch) in rest.char_indices() {
+        if !(ch.is_alphanumeric() || ch == '_') {
+            break;
+        }
+        end = position + offset + ch.len_utf8();
+    }
+    end
+}
+
 impl CompletionProvider {
     /// Create a new completion provider from parsed AST for Perl script analysis
     ///
@@ -906,6 +922,7 @@ impl CompletionProvider {
         );
         context.cursor_scope_id =
             scope_distance::scope_at_position(&self.symbol_table, source, position);
+        context.suffix_end = word_suffix_end(source, position);
         context
     }
 
@@ -1744,5 +1761,7 @@ impl CompletionProvider {
 
 #[cfg(test)]
 mod keyword_role_tests;
+#[cfg(test)]
+mod same_file_role_completion_tests;
 #[cfg(test)]
 mod tests;

@@ -17,6 +17,7 @@ use perl_parser_core::syntax::source_context::{
     RangeClassification, SourceRegionIndex, SourceRegionKind,
 };
 use std::sync::Arc;
+mod closed_file_hover;
 mod hover_cards;
 mod hover_extracted;
 #[cfg(test)]
@@ -30,6 +31,34 @@ use hover_extracted::HoverExtracted;
 #[cfg(feature = "workspace")]
 use qualified_token::indexed_member_matches_qualified_callable;
 use qualified_token::{QualifiedHoverKind, classify_qualified_hover_token};
+
+/// How a computed hover answer may be published.
+///
+/// The open-document publication gates on the captured document generation so
+/// a Full-sync invalidation that lands while the provider is off-lock cannot
+/// present superseded source as current. The disk-snapshot publication
+/// (#16647) has no open generation to gate on: the answer was computed from a
+/// file that was not open, and is published only if it is still not open — a
+/// `didOpen` racing the request supersedes disk text and fails closed to null.
+#[derive(Debug, Clone, Copy)]
+// The disk-snapshot arm only exists when the workspace index does; without the
+// workspace feature every hover still flows through the open-document arm.
+#[cfg_attr(not(feature = "workspace"), allow(dead_code))]
+enum HoverPublication {
+    /// Open document: publish only while this generation is still current.
+    OpenGeneration(u32),
+    /// Disk-index snapshot of a not-open workspace file (#16647).
+    DiskSnapshot { index_matches_disk: bool },
+}
+
+impl HoverPublication {
+    fn workspace_facts_are_current(self) -> bool {
+        match self {
+            Self::OpenGeneration(_) => true,
+            Self::DiskSnapshot { index_matches_disk } => index_matches_disk,
+        }
+    }
+}
 
 thread_local! {
     /// Trace-only source-region kind for the hover request running on *this*
@@ -147,11 +176,49 @@ impl LspServer {
         value
     }
 
+    /// Decode escapes written by `escape_table_token`: `\\` -> `\`,
+    /// `\|` -> `|`, a lone `\` (or `\` before any other char) is kept.
+    fn decode_regex_table_escapes(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.clone().next() {
+                    Some('\\') => {
+                        chars.next();
+                        out.push('\\');
+                    }
+                    Some('|') => {
+                        chars.next();
+                        out.push('|');
+                    }
+                    _ => out.push('\\'),
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
     /// Minimal markdown-to-plaintext conversion for clients without markdown
     /// support. Strips common markdown formatting while preserving readability.
     fn markdown_to_plaintext(md: &str) -> String {
+        let mut in_regex_card = false;
+        let mut seen_table_row = false;
         md.lines()
             .map(|line| {
+                if line.trim() == "**Regex Pattern**" {
+                    in_regex_card = true;
+                    seen_table_row = false;
+                }
+                let is_table_row = line.trim_start().starts_with('|');
+                let decode_row = in_regex_card && is_table_row;
+                if is_table_row {
+                    seen_table_row = true;
+                } else if in_regex_card && seen_table_row && !line.trim().is_empty() {
+                    in_regex_card = false;
+                }
                 // Strip markdown headers (# ... ######)
                 let line = line.trim_start_matches('#').trim_start();
                 // Strip bold/italic markers
@@ -159,6 +226,9 @@ impl LspServer {
                 let line = line.replace(['*', '_'], "");
                 // Strip inline code backticks
                 let line = line.replace('`', "");
+                // Undo table escapes only inside the Regex Pattern card;
+                // unrelated content keeps its genuine backslashes.
+                let line = if decode_row { Self::decode_regex_table_escapes(&line) } else { line };
                 // Strip link syntax: [text](url) -> text
                 regex_lite_strip_links(&line)
             })
@@ -223,9 +293,8 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let (extracted, live_compiler_context, hover_range, captured_generation) = match locked
-            {
-                Some((_, _, _, _, true, _)) | None => {
+            let (extracted, live_compiler_context, hover_range, publication) = match locked {
+                Some((_, _, _, _, true, _)) => {
                     if timing_on {
                         crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
                             "provider.hover.analyze",
@@ -233,8 +302,37 @@ impl LspServer {
                             crate::runtime::timing::uri_tail(uri),
                         ));
                     }
+                    // Full-sync-required: the predecessor text is evidence only
+                    // and must not answer the user.
                     return Ok(Some(json!(null)));
                 }
+                // Not open (#16647): the open-documents gate was the only
+                // reason hover declined for a file the disk index already
+                // holds while references, definition, and workspace/symbol
+                // answered from it. Fall back to that indexed file; URIs the
+                // index does not hold still fail closed to null.
+                None => match self.closed_file_hover_parts(uri, line, character) {
+                    Some(parts) => (
+                        parts.extracted,
+                        parts.live_compiler_context,
+                        parts.hover_range,
+                        HoverPublication::DiskSnapshot {
+                            index_matches_disk: parts.index_matches_disk,
+                        },
+                    ),
+                    None => {
+                        if timing_on {
+                            crate::runtime::timing::emit(
+                                crate::runtime::timing::TimingSpan::labeled(
+                                    "provider.hover.analyze",
+                                    crate::runtime::timing::elapsed_ms(t_analyze_start),
+                                    crate::runtime::timing::uri_tail(uri),
+                                ),
+                            );
+                        }
+                        return Ok(Some(json!(null)));
+                    }
+                },
                 Some((offset, parsed, text, range, false, generation)) => {
                     // Generation-bound source-region evidence (#5003). Beyond the
                     // dispatcher trace, it now routes the generic fallback paths:
@@ -339,15 +437,20 @@ impl LspServer {
                                 offset,
                             )
                         } else {
-                            self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
+                            self.extract_symbol_hover(uri, ast, &text, offset, &parsed, true)
                         };
-                        (extracted, live_compiler_context, range, generation)
+                        (
+                            extracted,
+                            live_compiler_context,
+                            range,
+                            HoverPublication::OpenGeneration(generation),
+                        )
                     } else {
                         (
                             Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
                             live_compiler_context,
                             range,
-                            generation,
+                            HoverPublication::OpenGeneration(generation),
                         )
                     }
                 }
@@ -368,13 +471,13 @@ impl LspServer {
                     {
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(compiler_hover, &hover_range),
                         );
                     }
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(value, &hover_range),
                     );
                 }
@@ -387,7 +490,7 @@ impl LspServer {
                     );
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(hv, &hover_range),
                     );
                 }
@@ -396,7 +499,7 @@ impl LspServer {
                         self.build_module_hover(&pkg_name, &doc_text, &doc_uri, Some(doc_offset));
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(hv, &hover_range),
                     );
                 }
@@ -407,7 +510,9 @@ impl LspServer {
                         // open document is newer than the index, matching
                         // navigation. Caller-only freshness would present a
                         // stale defining-file symbol as current.
-                        if !self.workspace_index_stale_for_any_open_document() {
+                        if publication.workspace_facts_are_current()
+                            && !self.workspace_index_stale_for_any_open_document()
+                        {
                             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                             if let Some(hover_value) =
                                 self.build_qualified_callable_hover(&package, &name)
@@ -418,13 +523,13 @@ impl LspServer {
                                 ) {
                                     return self.publish_hover_answer(
                                         uri,
-                                        captured_generation,
+                                        publication,
                                         Self::inject_hover_range_opt(compiler_hover, &hover_range),
                                     );
                                 }
                                 return self.publish_hover_answer(
                                     uri,
-                                    captured_generation,
+                                    publication,
                                     Self::inject_hover_range_opt(hover_value, &hover_range),
                                 );
                             }
@@ -442,13 +547,13 @@ impl LspServer {
                     {
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(compiler_hover, &hover_range),
                         );
                     }
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(generic, &hover_range),
                     );
                 }
@@ -459,14 +564,16 @@ impl LspServer {
                     doc_uri,
                     dynamic_fallback,
                 ) => {
-                    if !self.workspace_index_stale_for_document(&doc_uri) {
+                    if publication.workspace_facts_are_current()
+                        && !self.workspace_index_stale_for_document(&doc_uri)
+                    {
                         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                         if let Some(hover_value) =
                             self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
                         {
                             return self.publish_hover_answer(
                                 uri,
-                                captured_generation,
+                                publication,
                                 Self::inject_hover_range_opt(hover_value, &hover_range),
                             );
                         }
@@ -487,13 +594,13 @@ impl LspServer {
                         ) {
                             return self.publish_hover_answer(
                                 uri,
-                                captured_generation,
+                                publication,
                                 Self::inject_hover_range_opt(compiler_hover, &hover_range),
                             );
                         }
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(hover_value, &hover_range),
                         );
                     }
@@ -506,13 +613,13 @@ impl LspServer {
                     {
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(compiler_hover, &hover_range),
                         );
                     }
                 }
             }
-            self.publish_hover_answer(uri, captured_generation, Some(json!(null)))
+            self.publish_hover_answer(uri, publication, Some(json!(null)))
         } else {
             Ok(Some(json!(null)))
         }
@@ -521,15 +628,28 @@ impl LspServer {
     fn publish_hover_answer(
         &self,
         uri: &str,
-        generation: u32,
+        publication: HoverPublication,
         value: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        Ok(Some(self.publish_user_answer_value(
-            uri,
-            generation,
-            value.unwrap_or(json!(null)),
-            json!(null),
-        )))
+        let value = match publication {
+            HoverPublication::OpenGeneration(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value.unwrap_or(json!(null)),
+                json!(null),
+            ),
+            HoverPublication::DiskSnapshot { .. } => {
+                if self.document_generation(uri).is_some() {
+                    // The file was opened while the disk answer was being
+                    // computed; the open buffer supersedes disk text, so fail
+                    // closed instead of answering over a live document (#16647).
+                    json!(null)
+                } else {
+                    value.unwrap_or(json!(null))
+                }
+            }
+        };
+        Ok(Some(value))
     }
 
     fn inject_hover_range_opt(mut value: Value, range: &Option<Value>) -> Option<Value> {
@@ -561,6 +681,7 @@ impl LspServer {
         text: &str,
         offset: usize,
         parsed: &Option<Arc<ParsedSnapshot>>,
+        allow_workspace_facts: bool,
     ) -> HoverExtracted {
         let source_region = parsed.as_ref().map(|snapshot| snapshot.source_region_index());
         let source_region = source_region.as_deref();
@@ -707,6 +828,19 @@ impl LspServer {
                 // symbol (e.g. hovering on `sub run` where cursor is on `run`).
                 if token == sym.name || token.is_empty() {
                     return true; // keep — cursor is directly on the symbol
+                }
+                // #17296: `find_definition` falls back to the enclosing sub for
+                // tokens it cannot resolve (built-ins, call-site package names).
+                // Presenting that sub as the hovered entity is confidently wrong:
+                // drop it so the generic token/builtin fallback can answer (or
+                // decline) for the actual token. A qualified symbol still matches
+                // through its last `::` segment (`Foo::bar` hovered as `bar`).
+                if matches!(
+                    sym.kind,
+                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                ) && sym.name.rsplit("::").next() != Some(token.as_str())
+                {
+                    return false;
                 }
                 true
             })
@@ -962,6 +1096,9 @@ impl LspServer {
                             return HoverExtracted::Complete(card);
                         }
 
+                        if !allow_workspace_facts {
+                            return HoverExtracted::None;
+                        }
                         // No in-file ancestor found — defer to Phase 2 workspace BFS
                         return HoverExtracted::InheritedMethod(
                             receiver_pkg,
@@ -1169,8 +1306,8 @@ impl LspServer {
                 return HoverExtracted::Complete(hover);
             }
 
-            let bare = hover_text.trim_start_matches(['$', '@', '%']);
-            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(bare) {
+            // Preserve variable sigils: `$length` is not the `length` builtin.
+            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(&hover_text) {
                 return HoverExtracted::Complete(json!({
                     "contents": {
                         "kind": "markdown",
@@ -1188,6 +1325,7 @@ impl LspServer {
             }
 
             // Check Test::More/Test2 function hover when source imports a test framework
+            let bare = hover_text.trim_start_matches(['$', '@', '%']);
             let is_test_source = text.contains("use Test::More") || text.contains("use Test2");
             if is_test_source
                 && let Some((sig, desc)) = crate::completion::get_test_more_documentation(bare)
@@ -2907,5 +3045,39 @@ Not found in workspace or configured include paths.
                 "value": text,
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod plaintext_tests {
+    use super::LspServer;
+
+    #[test]
+    fn plaintext_hover_undoes_table_pipe_escapes() {
+        // Rows inside the generated Regex Pattern card decode exactly the
+        // encoder inverse: `\|` -> `|`, `\\` -> `\`.
+        let md = "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n| `\\| ` | Alternation (OR) |\n| `[a\\|b]` | Character class |\n| `[\\\\\\|]` | Character class |\n| `[\\\\\\\\\\|]` | Character class |\n| `\\\\d` | Any decimal digit (0-9) |";
+        let plain = LspServer::markdown_to_plaintext(md);
+        assert!(plain.contains("| |  | Alternation (OR) |"), "{plain}");
+        assert!(plain.contains("[a|b]"), "{plain}");
+        assert!(plain.contains(r"[\|]"), "{plain}");
+        assert!(plain.contains(r"[\\|]"), "{plain}");
+        assert!(plain.contains(r"\d"), "{plain}");
+        assert!(!plain.contains(r"\\d"), "{plain}");
+    }
+
+    #[test]
+    fn plaintext_hover_keeps_genuine_backslashes_outside_regex_card() {
+        // Unrelated content (e.g. a POD synopsis fence) passes through
+        // byte-identical for backslash-pipe sequences.
+        let md = r"my $re = qr{[\|]}; also [a\|b] and \\| here";
+        assert_eq!(LspServer::markdown_to_plaintext(md), md);
+        let fenced = "```perl\nmy $re = qr{[\\|]};\n```";
+        let plain = LspServer::markdown_to_plaintext(fenced);
+        assert!(plain.contains(r"qr{[\|]}"), "{plain}");
+        // A lone backslash inside a card row is kept, not dropped.
+        let card = "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n| `\\d` | digit |";
+        let plain = LspServer::markdown_to_plaintext(card);
+        assert!(plain.contains(r"\d"), "{plain}");
     }
 }

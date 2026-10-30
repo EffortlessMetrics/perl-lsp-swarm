@@ -196,7 +196,7 @@ The LSP server itself uses whichever `perl` is on your `PATH`. To use a custom P
       "request": "launch",
       "name": "Debug with perlbrew Perl",
       "program": "${workspaceFolder}/script.pl",
-      "perlPath": "/home/you/.perlbrew/perls/perl-5.38.0/bin/perl",
+      "perlPath": "/home/user/.perlbrew/perls/perl-5.38.0/bin/perl",
       "includePaths": ["${workspaceFolder}/lib"],
       "cwd": "${workspaceFolder}"
     }
@@ -547,16 +547,7 @@ perllsp --features-json --feature-profile production | python3 -m json.tool
 
 ### Server is slow to start on a large project
 
-This is expected on first open — the server is indexing your workspace. Subsequent opens are fast (the index is cached). If it is taking more than a few minutes, exclude cold directories with `.perl-lspignore`:
-
-```json
-{
-  "perl": {
-    "limits": {
-    }
-  }
-}
-```
+This is expected on first open — the server is indexing your workspace. Subsequent opens are fast (the index is cached). If it is taking more than a few minutes, check whether the editor opened a broad repository or parent directory. Open a narrower workspace folder containing the project area you need; workspace indexing scans the folders opened in the editor.
 
 ---
 

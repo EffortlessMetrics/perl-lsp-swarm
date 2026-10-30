@@ -323,16 +323,19 @@ fn empty_qw_is_a_zero_arg_call_not_two_statements() {
 }
 
 #[test]
-fn all_comment_qw_call_span_covers_the_list() {
+fn hash_word_qw_call_span_covers_the_list() {
     let source = "has qw(# none\n);";
     assert_clean_parse(source);
-    let (_, args) = named_call(source, "has");
-    assert!(args.is_empty(), "comment-only qw must flatten to no args, got {} args", args.len());
+    assert_eq!(call_string_payloads(source, "has"), ["#", "none"]);
     assert_eq!(
         call_span(source, "has"),
         "has qw(# none\n)",
-        "comment-only qw must keep the call span through the list"
+        "hash-bearing qw must keep the call span through the list"
     );
+    let trailing_operator = "has qw(# none\n) or die;";
+    assert_eq!(call_string_payloads(trailing_operator, "has"), ["#", "none"]);
+    assert_eq!(call_span(trailing_operator, "has"), "has qw(# none\n)");
+    assert_eq!(call_span("has qw(red green);", "has"), "has qw(red green)");
 }
 
 #[test]
@@ -340,6 +343,7 @@ fn comma_after_immediate_qw_still_collects_later_args() {
     let source = "has qw(a b), $x;";
     assert_clean_parse(source);
     assert_eq!(call_arg_kinds(source, "has"), ["String", "String", "Variable"]);
+    assert_eq!(call_span(source, "has"), "has qw(a b), $x");
 }
 
 #[test]

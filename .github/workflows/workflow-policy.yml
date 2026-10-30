@@ -7,6 +7,8 @@ on:
       - 'xtask/src/tasks/workflow_policy_lint.rs'
       - 'policy/self-hosted-runner-isolation.toml'
       - 'xtask/src/tasks/ux_regression_receipt.rs'
+      - 'crates/perl-lsp-ux-tests/src/regression_receipt.rs'
+      - 'crates/perl-lsp-ux-tests/src/bin/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
@@ -22,6 +24,7 @@ on:
       - 'scripts/tests/test-public-api-label.sh'
       - 'docs/ci/labels.md'
       - 'justfile'
+      - 'scripts/tests/test_just_agent_nextest.py'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
       - 'xtask/tests/fixtures/workflow-policy/**'
   push:
@@ -31,6 +34,8 @@ on:
       - 'xtask/src/tasks/workflow_policy_lint.rs'
       - 'policy/self-hosted-runner-isolation.toml'
       - 'xtask/src/tasks/ux_regression_receipt.rs'
+      - 'crates/perl-lsp-ux-tests/src/regression_receipt.rs'
+      - 'crates/perl-lsp-ux-tests/src/bin/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
@@ -46,6 +51,7 @@ on:
       - 'scripts/tests/test-public-api-label.sh'
       - 'docs/ci/labels.md'
       - 'justfile'
+      - 'scripts/tests/test_just_agent_nextest.py'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
       - 'xtask/tests/fixtures/workflow-policy/**'
   workflow_dispatch:
@@ -130,7 +136,11 @@ jobs:
             --proof public_api_pr_gating_workflow=xtask/tests/public_api_pr_gating_workflow.rs \
             --proof corpus_windows_reparse_cache_contract=xtask/tests/corpus_windows_reparse_cache_contract.rs \
             --proof public_api_label_stub=scripts/tests/test-public-api-label.sh \
-            --proof public_api_ratchet=scripts/tests/test-public-api-ratchet.sh
+            --proof public_api_ratchet=scripts/tests/test-public-api-ratchet.sh \
+            --proof agent_nextest_recipe=scripts/tests/test_just_agent_nextest.py
+      - name: Agent Nextest recipe forwarding proof
+        if: steps.candidate-proofs.outputs.agent_nextest_recipe != 'absent_and_undeclared'
+        run: python3 -m unittest discover -s scripts/tests -p test_just_agent_nextest.py -v
       - name: UX receipt workflow policy proof
         if: steps.candidate-proofs.outputs.ux_regression_gate_workflow_policy != 'absent_and_undeclared'
         run: cargo test -p xtask --test ux_regression_gate_workflow_policy --locked

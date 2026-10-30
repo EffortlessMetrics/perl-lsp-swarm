@@ -133,17 +133,23 @@ fn scenario_58_guard_condition_inline_completion_quality_stdio() -> Result<()> {
     harness.open_file(NEXT_GUARD_PATH, NEXT_GUARD_SOURCE)?;
     // Same readiness race as #15870: synchronize on the server's own
     // analysis-readiness signal instead of a fixed sleep.
-    let readiness = harness.wait_for_diagnostics(RETURN_GUARD_PATH, Duration::from_secs(30));
+    let readiness = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", RETURN_GUARD_PATH),
+        harness.wait_for_diagnostics(RETURN_GUARD_PATH, Duration::from_secs(30)),
+    )?;
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
-            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+            "analysis readiness: observed empty diagnostics payload; this scenario requires nonempty diagnostics (#15899)"
         )
         .into());
     }
-    let readiness = harness.wait_for_diagnostics(NEXT_GUARD_PATH, Duration::from_secs(30));
+    let readiness = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", NEXT_GUARD_PATH),
+        harness.wait_for_diagnostics(NEXT_GUARD_PATH, Duration::from_secs(30)),
+    )?;
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
-            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+            "analysis readiness: observed empty diagnostics payload; this scenario requires nonempty diagnostics (#15899)"
         )
         .into());
     }
