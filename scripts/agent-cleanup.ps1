@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
-Remove a disposable agent worktree and its external Cargo target directory.
+Remove a disposable agent worktree only when its external target is absent.
 
 .DESCRIPTION
-This script is the stop-the-line cleanup gate for per-PR agent work. It removes
-only the computed worktree and target paths for the supplied issue/slug, and it
-fails instead of guessing when the worktree is dirty, the PR is not merged, or a
-path falls outside the configured roots.
+This script retains external Cargo targets: issue/slug paths do not prove build
+allocation ownership, consumer settlement, regenerability, or evidence redundancy.
+An existing target refuses before any Git/worktree mutation. Exact target
+reclamation belongs to the ownership planning contract in #11671. Existing
+no-target worktree and branch checks remain in effect.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -147,6 +148,13 @@ if (-not (Test-Path -Path $canonical -PathType Container)) {
     Fail "Canonical checkout does not exist: $canonical"
 }
 
+# Do not infer disposal authority from a worktree's PR/abandonment status or a
+# target name. In particular this legacy helper cannot join cargo-admitted's
+# private target/build ownership and retained leases. Refuse before Git mutation.
+if (Test-Path -LiteralPath $targetPath) {
+    Fail "External target cleanup is retired; retain $targetPath and the worktree. Reclamation requires exact allocation/consumer/evidence verification under #11671."
+}
+
 if ($PrNumber -gt 0) {
     # Bind the lookup to the repository origin points at. Without --repo, gh
     # infers it from the working directory, so the PR consulted may not belong
@@ -213,14 +221,7 @@ else {
     Write-Host "worktree already absent: $worktreePath"
 }
 
-if (Test-Path -Path $targetPath) {
-    if ($PSCmdlet.ShouldProcess($targetPath, 'remove external Cargo target directory')) {
-        Remove-Item -Path $targetPath -Recurse -Force
-    }
-}
-else {
-    Write-Host "target already absent: $targetPath"
-}
+Write-Host "external target cleanup retired; no target removal attempted: $targetPath"
 
 if (-not [string]::IsNullOrWhiteSpace($Branch) -and -not $Abandoned) {
     $localBranches = @(Invoke-Git -Repository $canonical -GitArgs @('branch', '--format', '%(refname:short)', '--list', $Branch))
@@ -315,7 +316,7 @@ if (Test-Path -Path $storageDoctor) {
 Write-Host 'agent cleanup ok'
 Write-Host "canonical=$canonical"
 Write-Host "removed_worktree=$worktreePath"
-Write-Host "removed_target=$targetPath"
+Write-Host "target_path=$targetPath"
 if (-not [string]::IsNullOrWhiteSpace($Branch)) {
     Write-Host "branch=$Branch"
 }

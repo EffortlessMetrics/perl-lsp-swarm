@@ -3420,8 +3420,17 @@ mod tests {
         std::fs::write(root.path().join("real.md"), "inside")?;
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), root.path().join("link.md"))?;
+        // Stock Windows without Developer Mode / SeCreateSymbolicLinkPrivilege
+        // cannot create symlinks (os error 1314): skip visibly, don't fail
+        // (#17367). The shared helper honors PLSW_REQUIRE_SYMLINK_PRIVILEGE,
+        // so required-proof runs still fail closed; Linux CI runs the real
+        // assertions through the advisory pr-fast lane.
         #[cfg(windows)]
-        std::os::windows::fs::symlink_file(outside.path(), root.path().join("link.md"))?;
+        if perl_tdd_support::try_create_file_symlink(outside.path(), &root.path().join("link.md"))?
+            .is_none()
+        {
+            return Ok(());
+        }
         let canonical_root = root.path().canonicalize()?;
         assert!(
             resolve_contained_evidence(root.path(), &canonical_root, "real.md", "cell").is_ok()

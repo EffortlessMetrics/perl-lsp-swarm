@@ -26,8 +26,9 @@
 //! [`NativeDebugSexpResult`]. [`Node::to_sexp`] is a `String` convenience over
 //! that engine and cannot prove completeness.
 
-use super::{FieldId, GotoTargetForm, Node, NodeKind, Token, TokenKind};
+use super::{FieldId, GotoTargetForm, Node, NodeKind, RegexSurfaceForm, Token, TokenKind};
 use std::fmt::{self, Write as _};
+use std::ops::ControlFlow;
 
 /// Grammar identity for this native debug projection.
 pub const NATIVE_DEBUG_SEXP_GRAMMAR: &str = "perl-ast-native-debug-sexp/v1";
@@ -342,8 +343,10 @@ impl<'tree, 'write, W: fmt::Write> Renderer<'tree, 'write, W> {
     }
 
     fn open_top(&mut self) -> Result<(), RenderStop> {
-        let (is_child, field, binder, node) = match self.stack.last() {
-            Some(frame) => (frame.is_child, frame.field, frame.catch_binder, frame.node),
+        let (is_child, field, binder, node, depth) = match self.stack.last() {
+            Some(frame) => {
+                (frame.is_child, frame.field, frame.catch_binder, frame.node, frame.depth)
+            }
             None => {
                 return Err(RenderStop::Instrument(
                     NativeDebugSexpInstrumentCause::InternalFrameState,
@@ -364,10 +367,21 @@ impl<'tree, 'write, W: fmt::Write> Renderer<'tree, 'write, W> {
             self.emit(" ")?;
         }
         self.emit("(")?;
-        let kind = node.kind.grammar_kind_name();
-        self.emit_atom(&kind)?;
+        if let Some(kind) = node.kind.grammar_kind_name_static() {
+            self.emit_atom(kind)?;
+        } else {
+            self.emit_atom(&node.kind.grammar_kind_name())?;
+        }
         self.charge_work(1)?;
         write_payloads(&node.kind, self)?;
+        if self.limits.max_depth.is_some_and(|limit| depth >= limit)
+            && node.try_for_each_child_with_field(|_, _| ControlFlow::Break(())).is_break()
+        {
+            // Preserve the rejected-edge check order without collecting children
+            // that this render cannot enter. Leaves still complete normally.
+            self.check_node_limit()?;
+            self.descend(depth)?;
+        }
         let children = load_children(node);
         match self.stack.last_mut() {
             Some(frame) => {
@@ -475,8 +489,11 @@ impl<W: fmt::Write> SexpSink for Renderer<'_, '_, W> {
     }
 
     fn emit_atom(&mut self, value: &str) -> Result<(), RenderStop> {
+        if !needs_quoting(value) {
+            return self.emit(value);
+        }
         self.scratch.clear();
-        write_atom(&mut self.scratch, value);
+        write_quoted_atom(&mut self.scratch, value);
         let encoded = std::mem::take(&mut self.scratch);
         let result = self.emit(&encoded);
         self.scratch = encoded;
@@ -587,7 +604,8 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
         NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
             write_named(out, "name", name)
         }
-        NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+        NodeKind::Regex { form, pattern, replacement, modifiers, has_embedded_code } => {
+            write_named(out, "form", regex_form_atom(form))?;
             write_named(out, "pattern", pattern)?;
             if let Some(replacement) = replacement {
                 write_named(out, "replacement", replacement)?;
@@ -701,6 +719,14 @@ fn goto_form_atom(form: &GotoTargetForm) -> &'static str {
     }
 }
 
+fn regex_form_atom(form: &RegexSurfaceForm) -> &'static str {
+    match form {
+        RegexSurfaceForm::Qr => "qr",
+        RegexSurfaceForm::MatchOperator => "m",
+        RegexSurfaceForm::BarePattern => "bare",
+    }
+}
+
 fn write_named(out: &mut impl SexpSink, name: &str, value: &str) -> Result<(), RenderStop> {
     out.emit(" ")?;
     out.emit("(")?;
@@ -760,16 +786,12 @@ fn write_found_token(out: &mut impl SexpSink, token: &Token) -> Result<(), Rende
     out.emit(")")
 }
 
-fn write_atom(out: &mut String, value: &str) {
-    if needs_quoting(value) {
-        out.push('"');
-        for ch in value.chars() {
-            write_escaped_char(out, ch);
-        }
-        out.push('"');
-    } else {
-        out.push_str(value);
+fn write_quoted_atom(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        write_escaped_char(out, ch);
     }
+    out.push('"');
 }
 
 fn write_escaped_char(out: &mut String, ch: char) {
@@ -805,7 +827,7 @@ fn needs_quoting(value: &str) -> bool {
 mod tests {
     use super::{
         NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NativeDebugSexpLimits, NativeDebugSexpResult,
-        needs_quoting, write_atom,
+        needs_quoting, write_quoted_atom,
     };
     use crate::ast::{Node, NodeKind, SourceLocation};
 
@@ -829,14 +851,14 @@ mod tests {
     #[test]
     fn quoted_atoms_preserve_printable_unicode() {
         let mut out = String::new();
-        write_atom(&mut out, "café\n");
+        write_quoted_atom(&mut out, "café\n");
         assert_eq!(out, "\"café\\n\"");
     }
 
     #[test]
     fn escape_policy_covers_quotes_backslash_newline_and_controls() {
         let mut out = String::new();
-        write_atom(&mut out, "say \"hi\"\\\n\t");
+        write_quoted_atom(&mut out, "say \"hi\"\\\n\t");
         assert_eq!(out, r#""say \"hi\"\\\n\t""#);
     }
 

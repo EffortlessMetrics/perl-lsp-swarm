@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Report a syntax error for direct subscripts after a postfix hash slice, while preserving parenthesized and explicit-arrow forms.
+time: "2026-10-04T08:57:00Z"
+custom:
+  PR: "17207"
+  Slug: postfix-hash-slice-subscript-boundary
+  Breaking: "no"

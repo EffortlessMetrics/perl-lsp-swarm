@@ -1,6 +1,6 @@
 # API Documentation Standards - perl-parser crate
 
-> Currentness note: this page retains historical documentation-infrastructure material. Use the [current public API documentation guide](../reference/MISSING_DOCUMENTATION_GUIDE.md) for present-day examples and workflow; the historical 605+ baseline below is not a current metric.
+> Currentness note: the original baseline and four-phase remediation plan below are historical context, not current status. Use [MISSING_DOCUMENTATION_GUIDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/MISSING_DOCUMENTATION_GUIDE.md) for the current public-surface workflow and example contract; compiled-example enforcement remains tracked separately in issue #4947.
 
 *Diataxis: How-to Guide* - Comprehensive API documentation requirements for production-quality perl-parser crate.
 
@@ -313,7 +313,13 @@ Systematic validation using property-based tests ensures:
 
 - **Documentation Coverage**: All public APIs must have documentation
 - **Style Validation**: Automated checking of documentation formatting
-- **Doctest Execution**: All doctests must compile and pass
+- **Doctest Execution**: doctests are executed by the `doctest_contract_proof`
+  merge gate for the packages that route names — *not* for the whole
+  workspace. A workspace-wide `cargo test --doc` currently has failures
+  outside that list. See
+  [`../ci/test-evidence-lanes.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/ci/test-evidence-lanes.md#doctests-as-proof)
+  for which packages are enforced and where a negative type-level contract
+  belongs (#13774).
 - **Cross-Reference Validation**: Links must resolve correctly
 
 ### Development Workflow
@@ -364,6 +370,9 @@ cargo test -p perl-parser --test missing_docs_ac_tests -- property_test_cross_re
 
 # Documentation generation and validation
 cargo doc --no-deps --package perl-parser
+# Note: perl-parser is not on the doctest_contract_proof route, and its
+# `incremental` doctests are behind a non-default feature, so this command
+# does not reach them. See docs/ci/test-evidence-lanes.md (#13774).
 cargo test --doc -p perl-parser
 ```
 
@@ -391,8 +400,8 @@ The **successfully implemented infrastructure** provides systematic documentatio
 
 ## Related Documentation
 
-- **[Missing Documentation Guide](MISSING_DOCUMENTATION_GUIDE.md)** - Current-surface workflow for public API documentation and examples; completeness enforcement remains a separate follow-up
-- **[ADR-002: API Documentation Infrastructure](adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md)** - Implementation architecture and decisions
-- **[Comprehensive Testing Guide](../tutorials/COMPREHENSIVE_TESTING_GUIDE.md)** - Complete test framework documentation
+- **[Missing Documentation Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/MISSING_DOCUMENTATION_GUIDE.md)** - Current-surface workflow for public API documentation and examples; completeness enforcement remains a separate follow-up
+- **[ADR-0002: API Documentation Infrastructure](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/adr/0002-api-documentation-infrastructure.md)** - Implementation architecture and decisions
+- **[Comprehensive Testing Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/COMPREHENSIVE_TESTING_GUIDE.md)** - Complete test framework documentation
 
 For questions or clarification, refer to the test suite validation criteria and existing well-documented modules as examples.

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Preserve semicolon-leading quoted strings after Unicode multiplication operands without broadening punctuation typeglob recognition.
+time: 2026-10-22T12:51:50Z
+custom:
+  PR: "18336"
+  Slug: unicode-typeglob-guard
+  Breaking: "no"

@@ -228,6 +228,15 @@ impl<'a> GateRoute<'a> {
             fallback_result: "skipped",
         }
     }
+
+    fn github_cancelled() -> Self {
+        Self {
+            router_target: "github",
+            selfhosted_result: "skipped",
+            github_result: "cancelled",
+            fallback_result: "skipped",
+        }
+    }
 }
 
 fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
@@ -242,8 +251,55 @@ fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
 }
 
 fn fallback_quality_gate_command(check: bool) -> String {
-    let command = "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base origin/main --ripr-head HEAD --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md";
+    let command = format!(
+        "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base {FALLBACK_BASE} --ripr-head {FALLBACK_EVALUATED} --ripr-pr-head {FALLBACK_RAW_HEAD} --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md"
+    );
     if check { format!("{command} --check") } else { command.to_owned() }
+}
+
+// Literal identities from the independently verified real-Git operand fixture.
+// This existing receipt harness still uses controlled Git/Cargo/checkout shims.
+const FALLBACK_BASE: &str = "022a38b47cf27baf086611017cc522b89ec1df2f";
+const FALLBACK_RAW_HEAD: &str = "7db766bf1941a7faa960074e63ed5b204d7fe04b";
+const FALLBACK_EVALUATED: &str = "b193a7840cf3e9df7c9883dff94d5bdc90cffbf3";
+
+fn install_subject_guard(sandbox: &std::path::Path) -> Result<()> {
+    let scripts = sandbox.join("scripts/ci");
+    fs::create_dir_all(&scripts)?;
+    fs::copy(
+        project_root()?.join("scripts/ci/require-ripr-subject.sh"),
+        scripts.join("require-ripr-subject.sh"),
+    )?;
+    Ok(())
+}
+
+fn subject_environment(command: &mut Command) -> &mut Command {
+    command
+        .env("GITHUB_EVENT_NAME", "pull_request")
+        .env("RIPR_BASE_SHA", FALLBACK_BASE)
+        .env("RIPR_EVENT_HEAD_SHA", FALLBACK_RAW_HEAD)
+        .env("RIPR_EVALUATED_SHA", FALLBACK_EVALUATED)
+        .env("PR_HEAD_SHA", FALLBACK_RAW_HEAD)
+        .env("FAKE_BASE", FALLBACK_BASE)
+        .env("FAKE_PR_HEAD_SHA", FALLBACK_RAW_HEAD)
+        .env("FAKE_HEAD", FALLBACK_EVALUATED)
+}
+
+fn subject_git_shim() -> &'static str {
+    r#"
+git() {
+  case "$*" in
+    "cat-file -e $FAKE_BASE^{commit}"|"cat-file -e $FAKE_PR_HEAD_SHA^{commit}"|"cat-file -e $FAKE_HEAD^{commit}") ;;
+    "rev-parse --verify $FAKE_BASE^{commit}") printf '%s\n' "$FAKE_BASE" ;;
+    "rev-parse --verify $FAKE_PR_HEAD_SHA^{commit}") printf '%s\n' "$FAKE_PR_HEAD_SHA" ;;
+    "rev-parse --verify $FAKE_HEAD^{commit}"|"rev-parse --verify HEAD^{commit}"|"rev-parse HEAD") printf '%s\n' "$FAKE_HEAD" ;;
+    "cat-file commit $FAKE_HEAD") printf 'parent %s\nparent %s\n\nfixture integration\n' "$FAKE_BASE" "$FAKE_PR_HEAD_SHA" ;;
+    "merge-base --is-ancestor $FAKE_BASE $FAKE_BASE") ;;
+    *) return 1 ;;
+  esac
+}
+export -f git
+"#
 }
 
 fn run_gate_with_fake_gh(
@@ -363,7 +419,10 @@ fn run_gate_with_fake_gh_logs(
             run = run.replace("repos/${GITHUB_REPOSITORY}/", "repos/Other/repository/");
         }
         GhApiControl::WrongRun => {
-            run = run.replace("actions/runs/${GITHUB_RUN_ID}/jobs", "actions/runs/9999/jobs");
+            run = run.replace(
+                "actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs",
+                "actions/runs/9999/attempts/${GITHUB_RUN_ATTEMPT}/jobs",
+            );
         }
         GhApiControl::WrongLogJob => {
             run = run.replace("actions/jobs/${lane_job_id}/logs", "actions/jobs/99999/logs");
@@ -425,7 +484,7 @@ gh() {
       shift
     fi
   done
-  local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/jobs?per_page=100"
+  local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/attempts/1/jobs?per_page=100"
   local expected_log_url="repos/${FAKE_REPOSITORY}/actions/jobs/${FAKE_JOB_ID}/logs"
   local expected_annotations_url="repos/${FAKE_REPOSITORY}/check-runs/${FAKE_JOB_ID}/annotations"
   case "$url" in
@@ -512,6 +571,7 @@ gh() {
         .env("FALLBACK_RESULT", route.fallback_result)
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("GITHUB_RUN_ID", "4242")
+        .env("GITHUB_RUN_ATTEMPT", "1")
         .env("GITHUB_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("GITHUB_TOKEN", "gate-token")
         .env("GH_TOKEN", token.unwrap_or(""))
@@ -750,6 +810,9 @@ ci-disk-guard() {
         .env("TMPDIR", scratch.join("tmp"))
         .env("CARGO_TARGET_DIR", scratch.join("target"))
         .env("CARGO_HOME", cache.join("cargo-home"))
+        // The real preflight run block ends with `mkdir -p ... "$RIPR_CACHE_DIR"`
+        // under `set -u` (ripr.yml), so the sandbox must provide it (#17182).
+        .env("RIPR_CACHE_DIR", cache.join("ripr"))
         .env("GITHUB_OUTPUT", &output_file)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
@@ -844,6 +907,10 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
         .iter()
         .position(|name| *name == "Checkout")
         .ok_or_else(|| anyhow!("ripr-fallback checkout step is missing"))?;
+    let subject_index = step_names
+        .iter()
+        .position(|name| *name == "Require immutable RIPR subject")
+        .ok_or_else(|| anyhow!("ripr-fallback subject guard is missing"))?;
     let evidence_index = step_names
         .iter()
         .position(|name| *name == "Generate PR evidence")
@@ -852,8 +919,13 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
         .iter()
         .position(|name| *name == "Enforce new RIPR gap quality gate")
         .ok_or_else(|| anyhow!("ripr-fallback quality-gate step is missing"))?;
-    if checkout_index >= evidence_index || evidence_index >= quality_index {
-        bail!("ripr-fallback must checkout before evidence and quality-gate steps");
+    if checkout_index >= subject_index
+        || subject_index >= evidence_index
+        || evidence_index >= quality_index
+    {
+        bail!(
+            "ripr-fallback must checkout and guard its subject before evidence and quality-gate steps"
+        );
     }
 
     let checkout = workflow_step_value("ripr-fallback", "Checkout")?;
@@ -883,9 +955,9 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
     }
 
     let sandbox = tempfile::tempdir().context("creating fallback path sandbox")?;
+    install_subject_guard(sandbox.path())?;
     let calls = sandbox.path().join("fallback-calls");
     let checkout_marker = sandbox.path().join("checkout-marker");
-    let github_env = sandbox.path().join("github-env");
     let summary = sandbox.path().join("summary.md");
     let quality_receipt = sandbox.path().join("target/receipts/quality/quality-gate-ripr.json");
     let quality_summary = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
@@ -895,8 +967,8 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
     fs::write(freshness_handoff.join("clear-succeeded"), format!("{freshness_token}\n"))?;
     let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
         .replace("${{ needs.route-ripr.outputs.target }}", "selfhosted");
-    let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
     let executable_steps = [
+        "Require immutable RIPR subject",
         "Toolchain (rust-toolchain.toml pins 1.95.0)",
         "Install ripr",
         "Run ripr doctor",
@@ -923,18 +995,14 @@ rustc() {
 ripr() {
   printf 'ripr %s\n' "$*" >> "$FAKE_CALLS"
 }
-git() {
-  [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ] || return 1
-  printf '%s\n' "$FAKE_HEAD"
-}
     cargo() {
       printf 'cargo %s\n' "$*" >> "$FAKE_CALLS"
       [ "$1" = "xtask" ] || return 0
       case "$2" in
         ripr-pr)
           [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || return 1
-          [ "$3" = "--base" ] && [ "$4" = "origin/main" ] || return 1
-          [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
+          [ "$3" = "--base" ] && [ "$4" = "$FAKE_BASE" ] || return 1
+          [ "$5" = "--head" ] && [ "$6" = "$FAKE_HEAD" ] || return 1
           [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
           if [ "$#" -eq 9 ]; then [ "$9" = "--check" ] || return 1; fi
           ;;
@@ -943,8 +1011,8 @@ git() {
           if [ "$#" -eq 5 ]; then [ "$5" = "--check" ] || return 1; elif [ "$#" -ne 4 ]; then return 1; fi
           ;;
         ripr-review-comments)
-          [ "$3" = "--base" ] && [ "$4" = "origin/main" ] || return 1
-          [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
+          [ "$3" = "--base" ] && [ "$4" = "$FAKE_BASE" ] || return 1
+          [ "$5" = "--head" ] && [ "$6" = "$FAKE_HEAD" ] || return 1
           [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
           if [ "$#" -eq 10 ]; then
             [ "$9" = "--timeout-seconds" ] && [ "${10}" = "3600" ] || return 1
@@ -969,15 +1037,16 @@ git() {
           [ "$5" = "--ripr-receipt" ] && [ "$6" = "target/receipts/quality/ripr-plus.json" ] || return 1
           [ "$7" = "--ripr-pr-receipt" ] && [ "$8" = "target/ripr/pr/repo-exposure.json" ] || return 1
           [ "$9" = "--review-receipt" ] && [ "${10}" = "target/ripr/review/comments.json" ] || return 1
-          [ "${11}" = "--ripr-base" ] && [ "${12}" = "origin/main" ] || return 1
-          [ "${13}" = "--ripr-head" ] && [ "${14}" = "HEAD" ] || return 1
-          [ "${15}" = "--receipt" ] && [ "${16}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
-          [ "${17}" = "--summary" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
-          if [ "$#" -eq 19 ]; then [ "${19}" = "--check" ] || return 1; elif [ "$#" -ne 18 ]; then return 1; fi
+          [ "${11}" = "--ripr-base" ] && [ "${12}" = "$FAKE_BASE" ] || return 1
+          [ "${13}" = "--ripr-head" ] && [ "${14}" = "$FAKE_HEAD" ] || return 1
+          [ "${15}" = "--ripr-pr-head" ] && [ "${16}" = "$FAKE_PR_HEAD_SHA" ] || return 1
+          [ "${17}" = "--receipt" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
+          [ "${19}" = "--summary" ] && [ "${20}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
+          if [ "$#" -eq 21 ]; then [ "${21}" = "--check" ] || return 1; elif [ "$#" -ne 20 ]; then return 1; fi
           mkdir -p target/receipts/quality
           decision=pass
           if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then decision=fail; fi
-          if [ "$#" -eq 18 ]; then
+          if [ "$#" -eq 20 ]; then
             printf '{"schema_version":1,"kind":"quality_gate","mode":"enforce-new-ripr","decision":"%s","head":"%s"}\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.json
             printf 'decision: %s\nhead: %s\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.md
           else
@@ -989,29 +1058,24 @@ git() {
       ;;
   esac
 }
-checkout_action
 "#,
     );
+    script.push_str(subject_git_shim());
+    script.push_str("\ncheckout_action\n");
     script.push_str(&annotation);
     script.push_str("\n");
-    script.push_str(&normalize);
-    // GITHUB_ENV is applied between Actions steps. The harness runs the real
-    // run blocks in one shell, so apply the same step boundary explicitly.
-    script.push_str("\nBASE_REF=main\n");
     for step_name in executable_steps {
         script.push_str("\n");
         script.push_str(&workflow_run_block("ripr-fallback", step_name)?);
         script.push_str("\n");
     }
 
-    let mut child = Command::new(bash_executable())
+    let mut command = Command::new(bash_executable());
+    let mut child = subject_environment(&mut command)
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
-        .env("BASE_REF", "refs/heads/main")
-        .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("PR_LABELS", "ci")
         .env("RIPR_VERSION", "0.10.0")
-        .env("GITHUB_ENV", &github_env)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("RIPR_FRESHNESS_HANDOFF", &freshness_handoff)
         .env("RIPR_FRESHNESS_TOKEN", freshness_token)
@@ -1026,8 +1090,6 @@ checkout_action
         )
         .env("FAKE_CHECKOUT_DEPTH", "0")
         .env("FAKE_QUALITY_GATE", if quality_gate_fails { "fail" } else { "pass" })
-        .env("FAKE_PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
-        .env("FAKE_HEAD", "0123456789abcdef0123456789abcdef01234567")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1047,7 +1109,6 @@ checkout_action
     let checkout_text = fs::read_to_string(&checkout_marker)?;
     let calls_text = fs::read_to_string(&calls)?;
     let summary_text = fs::read_to_string(&summary)?;
-    let env_text = fs::read_to_string(&github_env)?;
     let quality_summary_text =
         fs::read_to_string(&quality_summary).context("reading fallback quality-gate summary")?;
     let quality_receipt_text = match fs::read_to_string(&quality_receipt) {
@@ -1058,11 +1119,11 @@ checkout_action
     Ok(FallbackPathEvidence {
         output,
         transcript: format!(
-            "{combined}\ncheckout={checkout_text}calls={calls_text}summary={summary_text}quality_summary={quality_summary_text}env={env_text}quality_receipt={quality_receipt_text:?}"
+            "{combined}\ncheckout={checkout_text}calls={calls_text}summary={summary_text}quality_summary={quality_summary_text}quality_receipt={quality_receipt_text:?}"
         ),
         receipt: quality_receipt_text,
         summary: quality_summary_text,
-        head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+        head: FALLBACK_EVALUATED.to_owned(),
     })
 }
 
@@ -1102,13 +1163,49 @@ fn write_retry_artifact(path: &std::path::Path, artifact_mode: &str) -> Result<(
         }
         "malformed" => {
             archive.start_file("ripr-gate-classification.env", options)?;
-            archive.write_all(b"classification=infra-no-proof\nrun_id=not-a-number\n")?;
-        }
-        "valid" | "download-failure" | "missing" => {
-            archive.start_file("ripr-gate-classification.env", options)?;
+            // A well-formed evaluated SHA keeps the missing-SHA guard (which
+            // has its own `missing-evaluated-head` fixture) out of the way so
+            // the invalid run id is the first failing sanity guard this
+            // negative control names.
             archive.write_all(
-                b"classification=infra-no-proof\nlane_name=ripr+ on GitHub Hosted\nlane_job_id=97001\nhead_sha=0123456789abcdef0123456789abcdef01234567\nrouter_target=github\nrun_id=4242\n",
+                b"classification=infra-no-proof\nhead_sha=0123456789abcdef0123456789abcdef01234567\nrun_id=not-a-number\n",
             )?;
+        }
+        "valid"
+        | "download-failure"
+        | "missing"
+        | "missing-attempt"
+        | "stale-attempt"
+        | "stale-job"
+        | "wrong-job-name"
+        | "missing-evaluated-head"
+        | "timeout"
+        | "unknown-cancel" => {
+            archive.start_file("ripr-gate-classification.env", options)?;
+            let classification = match artifact_mode {
+                "timeout" => "configured-timeout-no-proof",
+                "unknown-cancel" => "cancelled-no-verdict",
+                _ => "infra-no-proof",
+            };
+            let attempt = match artifact_mode {
+                "missing-attempt" => "",
+                "stale-attempt" => "run_attempt=2\n",
+                _ => "run_attempt=1\n",
+            };
+            let lane_job_id = if artifact_mode == "stale-job" { "97002" } else { "97001" };
+            let evaluated_sha = if artifact_mode == "missing-evaluated-head" {
+                "not-a-sha"
+            } else {
+                "0123456789abcdef0123456789abcdef01234567"
+            };
+            let lane_name = if artifact_mode == "wrong-job-name" {
+                "ripr+ on Self Hosted"
+            } else {
+                "ripr+ on GitHub Hosted"
+            };
+            archive.write_all(format!(
+                "classification={classification}\nlane_name={lane_name}\nlane_job_id={lane_job_id}\nhead_sha={evaluated_sha}\nrouter_target=github\nrun_id=4242\n{attempt}"
+            ).as_bytes())?;
         }
         _ => bail!("unknown artifact fixture: {artifact_mode}"),
     }
@@ -1204,6 +1301,8 @@ gh() {
   local expected_artifacts_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/artifacts?per_page=100"
   local expected_artifact_zip_url="repos/${FAKE_REPOSITORY}/actions/artifacts/${FAKE_ARTIFACT_ID}/zip"
   local expected_run_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}"
+  local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100"
+  local expected_source_ref_url="repos/${FAKE_REPOSITORY}/git/ref/heads%2Ffixture"
   local expected_rerun_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/rerun-failed-jobs"
   printf '%s %s\n' "$method" "$url" >> "$FAKE_API_CALLS"
   if [ "$url" = "$expected_artifacts_url" ]; then
@@ -1229,6 +1328,14 @@ gh() {
       fi
       printf '{"run_attempt":%s,"status":"%s"}\n' "$FAKE_LIVE_ATTEMPT" "$FAKE_LIVE_STATUS" > "$FAKE_LIVE_RESPONSE"
       jq -r "$jq_selector" "$FAKE_LIVE_RESPONSE"
+  elif [ "$url" = "$expected_jobs_url" ]; then
+      [ "$method" = "GET" ] || return 1
+      printf '{"jobs":[{"id":97001,"name":"ripr+ on GitHub Hosted"}]}\n' > "$FAKE_LIVE_RESPONSE"
+      jq -r "$jq_selector" "$FAKE_LIVE_RESPONSE"
+  elif [ "$url" = "$expected_source_ref_url" ]; then
+      [ "$method" = "GET" ] || return 1
+      printf '{"object":{"sha":"%s"}}\n' "$HEAD_SHA" > "$FAKE_LIVE_RESPONSE"
+      jq -r "$jq_selector" "$FAKE_LIVE_RESPONSE"
   elif [ "$url" = "$expected_rerun_url" ]; then
       [ "$method" = "POST" ] || return 1
       : > "$FAKE_POST_CALLED"
@@ -1249,6 +1356,9 @@ gh() {
         .env("RUN_ID", "4242")
         .env("RUN_ATTEMPT", run_attempt)
         .env("HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
+        .env("SOURCE_EVENT", "pull_request")
+        .env("SOURCE_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
+        .env("SOURCE_BRANCH", "fixture")
         .env("FAKE_ARTIFACT_MODE", artifact_mode)
         .env("FAKE_ARTIFACTS_JSON", artifact_response_with_id(artifact_mode, artifact_id))
         .env("FAKE_ARTIFACT_RESPONSE", &artifact_response_file)
@@ -1359,7 +1469,7 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
             )
             && hosted_producer.contains("sudo -n chown -R \"$(id -u):$(id -g)\" target")
             && hosted_producer.contains(
-                "cargo xtask ripr-pr --base \"$base_arg\" --head HEAD --pr-head \"$PR_HEAD_SHA\""
+                "cargo xtask ripr-pr --base \"$base_arg\" --head \"$RIPR_EVALUATED_SHA\" --pr-head \"$PR_HEAD_SHA\""
             ),
         "normal GitHub-hosted RIPR production must use the bounded Docker producer"
     );
@@ -1634,17 +1744,20 @@ fn ripr_append_summary_suppresses_stale_files_without_freshness_handoff() -> Res
 #[test]
 fn ripr_validation_requires_freshness_before_invoking_consumers() -> Result<()> {
     let sandbox = tempfile::tempdir()?;
+    install_subject_guard(sandbox.path())?;
     let calls = sandbox.path().join("cargo-calls");
     let script = workflow_run_block("ripr-fallback", "Validate PR evidence contracts")?;
-    let fake_cargo =
-        format!("cargo() {{ printf '%s\\n' \"$*\" >> '{}' ; }}\n{}", calls.display(), script);
+    let fake_cargo = format!(
+        "{}\ncargo() {{ printf '%s\\n' \"$*\" >> '{}' ; }}\n{}",
+        subject_git_shim(),
+        calls.display(),
+        script
+    );
     let run = |handoff: Option<(&PathBuf, &str)>| -> Result<std::process::Output> {
         let mut command = Command::new(bash_executable());
-        command
+        subject_environment(&mut command)
             .args(["--noprofile", "--norc", "-s"])
             .current_dir(sandbox.path())
-            .env("BASE_REF", "main")
-            .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1791,13 +1904,13 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
             "checkout=uses=actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 fetch-depth=0",
         )
         || !fallback_path_output.contains(
-            "cargo xtask ripr-pr --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567",
+            &format!("cargo xtask ripr-pr --base {FALLBACK_BASE} --head {FALLBACK_EVALUATED} --pr-head {FALLBACK_RAW_HEAD}"),
         )
         || !fallback_path_output.contains(&expected_quality_gate)
         || !fallback_path_output.contains(&expected_quality_gate_check)
         || !fallback_path_output.contains("fallback PR evidence summary")
         || !fallback_path_output.contains("fallback warning annotation")
-        || !fallback_path_output.contains("env=BASE_REF=main")
+        || !fallback_path_output.contains(&format!("RIPR subject verified: base={FALLBACK_BASE} event_head={FALLBACK_RAW_HEAD} evaluated={FALLBACK_EVALUATED}"))
         || !fallback_path_output.contains("quality_receipt=Some(")
     {
         bail!(
@@ -1805,14 +1918,18 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         );
     }
     for expected_command in [
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json",
-        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 3600",
-        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --check",
-        "cargo xtask impacted-evidence --labels-csv ci",
-        "cargo xtask impacted-evidence --labels-csv ci --check",
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json".to_owned(),
+        "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check".to_owned(),
+        format!(
+            "cargo xtask ripr-review-comments --base {FALLBACK_BASE} --head {FALLBACK_EVALUATED} --pr-head {FALLBACK_RAW_HEAD} --timeout-seconds 3600"
+        ),
+        format!(
+            "cargo xtask ripr-review-comments --base {FALLBACK_BASE} --head {FALLBACK_EVALUATED} --pr-head {FALLBACK_RAW_HEAD} --check"
+        ),
+        "cargo xtask impacted-evidence --labels-csv ci".to_owned(),
+        "cargo xtask impacted-evidence --labels-csv ci --check".to_owned(),
     ] {
-        if !fallback_path_output.contains(expected_command) {
+        if !fallback_path_output.contains(&expected_command) {
             bail!(
                 "fallback wiring did not execute the exact receipt/evidence command `{expected_command}`:\n{fallback_path_output}"
             );
@@ -1964,7 +2081,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && evaluate_step.contains("write_gate_classification \"ripr-failure\"")
             && evaluate_step.contains("> ripr-gate-classification.env")
             && evaluate_step.contains("head_sha=${GITHUB_SHA}")
-            && evaluate_step.contains("run_id=${GITHUB_RUN_ID}"),
+            && evaluate_step.contains("run_id=${GITHUB_RUN_ID}")
+            && evaluate_step.contains("run_attempt=${GITHUB_RUN_ATTEMPT}")
+            && evaluate_step.contains("lane_job_id=${lane_job_id:-unknown}")
+            && evaluate_step.contains("write_gate_classification \"configured-timeout-no-proof\"")
+            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\""),
         "the ripr gate must emit every classified lane verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
@@ -2011,6 +2132,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     assert!(
         retry.contains("[ \"${gate_run_id}\" != \"${RUN_ID}\" ]"),
         "ripr-infra-retry must verify the classification run id matches the event run"
+    );
+    assert!(
+        retry.contains("[ \"${gate_attempt}\" != \"${RUN_ATTEMPT}\" ]")
+            && retry.contains("/attempts/${RUN_ATTEMPT}/jobs?per_page=100"),
+        "retry must bind the artifact attempt and its lane job to the event attempt"
     );
     assert_eq!(
         retry_gh_token_binding()?,
@@ -2074,6 +2200,30 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     {
         bail!("valid classification data must reach the bounded rerun API:\n{valid_output}");
     }
+    for (mode, expected) in [
+        ("missing-attempt", "classification attempt (invalid)"),
+        ("stale-attempt", "classification attempt (2)"),
+        ("stale-job", "is not in current run attempt 1"),
+        ("wrong-job-name", "lane name does not match current run attempt 1"),
+        ("missing-evaluated-head", "classification lacks a valid evaluated SHA"),
+        ("timeout", "classification is not infra-no-proof"),
+        ("unknown-cancel", "classification is not infra-no-proof"),
+    ] {
+        let (outcome, output, posted) = run_retry_case(mode, "1")?;
+        if !outcome.status.success() || posted || !output.contains(expected) {
+            bail!("{mode} artifact must not arm an automatic retry:\n{output}");
+        }
+    }
+    let (stale_attempt_two, stale_attempt_two_output, stale_attempt_two_posted) =
+        run_retry_case("valid", "2")?;
+    if !stale_attempt_two.status.success()
+        || stale_attempt_two_posted
+        || !stale_attempt_two_output.contains("single automatic same-head retry is exhausted")
+    {
+        bail!(
+            "attempt-1 artifact delivered for attempt 2 must remain exhausted:\n{stale_attempt_two_output}"
+        );
+    }
     let (in_progress, in_progress_output, in_progress_posted) = run_retry_case_with_live(
         "valid",
         "1",
@@ -2099,6 +2249,7 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     for expected_call in [
         "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/artifacts?per_page=100",
         "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/artifacts/99001/zip",
+        "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/attempts/1/jobs?per_page=100",
         "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242",
         "POST repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/rerun-failed-jobs",
     ] {
@@ -2137,6 +2288,147 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
         bail!("attempt two must take the loud manual NOT_PROVEN path:\n{exhausted_output}");
     }
 
+    Ok(())
+}
+
+#[test]
+fn configured_timeout_pin_matches_hosted_job_budget() -> Result<()> {
+    // #16980: the classifier pins GitHub's exact 135-minute timeout
+    // annotation (`2h15m0s`). If ripr-github's budget changes, the pin
+    // silently stops matching and configured timeouts degrade to
+    // cancelled-no-verdict. Couple them so drift fails the suite.
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let minutes = yaml
+        .get("jobs")
+        .and_then(|jobs| jobs.get("ripr-github"))
+        .and_then(|job| job.get("timeout-minutes"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("ripr-github timeout-minutes is missing"))?;
+    assert_eq!(minutes, 135, "ripr-github budget moved; update the classifier pin with it");
+    let classifier = fs::read_to_string(root.join("scripts/ci/classify-ripr-lane-termination"))?;
+    assert!(
+        classifier.contains("The job has exceeded the maximum execution time of 2h15m0s"),
+        "classifier must pin the exact 135-minute timeout annotation"
+    );
+    Ok(())
+}
+
+#[test]
+fn ripr_cancelled_gate_requires_current_job_timeout_annotation() -> Result<()> {
+    // The steps endpoint serves the raw jobs listing; the gate projects the
+    // selected lane job through first(.jobs[] | select(.name == ...)) itself,
+    // so the canned body must use the API listing shape (as the #16431
+    // fixtures above do), not the classifier's projected shape.
+    let hosted_cancelled_steps = r#"{"total_count":1,"jobs":[{"name":"ripr+ on GitHub Hosted","id":97001,"conclusion":"cancelled","steps":[{"name":"Run RIPR","status":"in_progress","conclusion":null}]}]}"#;
+    let fallback_cancelled_steps = r#"{"total_count":1,"jobs":[{"name":"ripr+ (Disk-Full Fallback)","id":88001,"conclusion":"cancelled","steps":[{"name":"Run RIPR","status":"in_progress","conclusion":null}]}]}"#;
+    let steps = hosted_cancelled_steps;
+    let exact = r#"[{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 2h15m0s"}]"#;
+    let near_miss = r#"[{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 2h15m1s"}]"#;
+    for (name, annotation, class) in [
+        ("configured timeout", exact, "configured-timeout-no-proof"),
+        ("near-miss timeout", near_miss, "cancelled-no-verdict"),
+        ("unknown cancellation", "[]", "cancelled-no-verdict"),
+    ] {
+        let (outcome, output, artifact) = run_gate_with_fake_gh_logs(
+            Some(""),
+            "",
+            0,
+            0,
+            GateRoute::github_cancelled(),
+            GhApiControl::Valid,
+            Some("gate-token"),
+            0,
+            30,
+            annotation,
+            steps,
+        )?;
+        if outcome.status.success()
+            || !output.contains(&format!("RIPR_GATE_VERDICT={class}"))
+            || !artifact.as_deref().unwrap_or("").contains(&format!("classification={class}"))
+            || !artifact.as_deref().unwrap_or("").contains("run_attempt=1")
+        {
+            bail!(
+                "{name} must block with an attempt-bound {class} receipt:\n{output}\n{artifact:?}"
+            );
+        }
+    }
+    // The log endpoint can remain unavailable for the entire cancelled-lane
+    // retrieval window. Each failed request consumes 30 seconds so the old
+    // shared-deadline loop would use all 240 seconds before API evidence.
+    // The gate must preserve time for the exact annotation and current job.
+    let (unavailable_log_outcome, unavailable_log_output, unavailable_log_artifact) =
+        run_gate_with_fake_gh_logs(
+            None,
+            "",
+            0,
+            0,
+            GateRoute::github_cancelled(),
+            GhApiControl::Valid,
+            Some("gate-token"),
+            0,
+            30,
+            exact,
+            steps,
+        )?;
+    if unavailable_log_outcome.status.success()
+        || !unavailable_log_output.contains("RIPR_GATE_VERDICT=configured-timeout-no-proof")
+        || !unavailable_log_artifact
+            .as_deref()
+            .unwrap_or("")
+            .contains("classification=configured-timeout-no-proof")
+        || !unavailable_log_artifact.as_deref().unwrap_or("").contains("evidence=api-evidence")
+    {
+        bail!(
+            "unavailable cancelled-lane log must leave time for exact timeout API evidence:\n{unavailable_log_output}\n{unavailable_log_artifact:?}"
+        );
+    }
+    let (outcome, output, artifact) = run_gate_with_fake_gh_logs(
+        Some("quality gate failed; see receipt\n"),
+        "",
+        0,
+        0,
+        GateRoute::github_cancelled(),
+        GhApiControl::Valid,
+        Some("gate-token"),
+        0,
+        30,
+        exact,
+        steps,
+    )?;
+    if outcome.status.success()
+        || !output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || !artifact.as_deref().unwrap_or("").contains("classification=ripr-failure")
+    {
+        bail!("a genuine gap receipt must outrank a timeout annotation:\n{output}\n{artifact:?}");
+    }
+    // Even an inconsistent graph with a successful selected hosted lane and
+    // a cancelled fallback cannot be reported as a successful proof.
+    let inconsistent = GateRoute {
+        router_target: "github",
+        selfhosted_result: "skipped",
+        github_result: "success",
+        fallback_result: "cancelled",
+    };
+    let (outcome, output, _) = run_gate_with_fake_gh_logs(
+        Some(""),
+        "",
+        0,
+        0,
+        inconsistent,
+        GhApiControl::Valid,
+        Some("gate-token"),
+        0,
+        30,
+        "[]",
+        fallback_cancelled_steps,
+    )?;
+    if outcome.status.success() || !output.contains("RIPR_GATE_VERDICT=cancelled-no-verdict") {
+        bail!(
+            "any cancelled evidence lane must block even with an inconsistent hosted success:\n{output}"
+        );
+    }
     Ok(())
 }
 
@@ -2215,6 +2507,7 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
     );
     for verdict in [
         "RIPR_GATE_VERDICT=infra-no-proof",
+        "RIPR_GATE_VERDICT=configured-timeout-no-proof",
         "RIPR_GATE_VERDICT=ripr-failure",
         "RIPR_GATE_VERDICT=cancelled-no-verdict",
         "RIPR_GATE_VERDICT=neutral-router-skipped",
@@ -2311,7 +2604,14 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
     let timeout_prefix = "timeout --signal=TERM --kill-after=5s";
-    if run.matches("bounded_gh_api ").count() != 4
+    // #16980 still routes every production call through one deadline-bounded
+    // helper chain: the annotation and attempts lookups use the
+    // whole-gate-deadline `bounded_gh_api` wrapper, while the lane lookup and
+    // the cancelled-lane log fetch use the explicit `bounded_gh_api_until`
+    // cutoff (the wrapper's own delegation is the third
+    // `bounded_gh_api_until` reference).
+    if run.matches("bounded_gh_api ").count() != 2
+        || run.matches("bounded_gh_api_until ").count() != 3
         || run.matches(timeout_prefix).count() != 1
         || !run.contains("gate_deadline=\"${RIPR_GATE_DEADLINE_EPOCH:-}\"")
         || !run.contains("remaining_until_deadline")
@@ -2451,7 +2751,11 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     {
         bail!("an unretrievable log must fail closed without arming the retry:\n{never_output}");
     }
-    if !never_output.contains("lookup=Some(\"1\")\nfetch=Some(\"15\")")
+    // #16431 counts here too: the harness increments the lookup counter for
+    // every jobs-URL hit, so `lookup` is 1 lane lookup (resolved first try)
+    // plus 2 API-evidence-fallback steps-state reads spending the remaining
+    // ~13s of reserve after the fetch loop's fifteen attempts (227s).
+    if !never_output.contains("lookup=Some(\"3\")\nfetch=Some(\"15\")")
         || !never_output.contains("elapsed=Some(\"240\\n\")")
         || !never_output.contains("was not retrievable after 15 attempts")
         || !never_output

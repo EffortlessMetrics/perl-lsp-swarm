@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
@@ -16,6 +16,7 @@ const {
   concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
+  hasCandidateIdentity,
   interpretBehavioralSmokeExit,
   inventoryTransitionArgs,
   interpretTestExplorerExit,
@@ -31,6 +32,7 @@ const {
   stageServerForPackage,
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
+  observeSmokeArtifact,
   validateVerifiedCandidateReceipt,
   observedVscodeVersion,
   validateCrashRecoveryChildReceipts,
@@ -253,6 +255,116 @@ void test('verified packaged child receipt rejects stale source, identity, and a
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
+void test('verified packaged child receipt hashes and parses one source snapshot', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-verified-snapshot-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const receiptFile = path.join(directory, 'verified_child_receipt.json');
+  const sourceReceiptFile = path.join(directory, 'packaged_bundle_journey_receipt.json');
+  const env = {
+    PERL_LSP_CANDIDATE_ID: 'candidate-1',
+    PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+    PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+  };
+  const artifactHashes = {
+    vsix_sha256: 'b'.repeat(64),
+    bundled_server_sha256: 'c'.repeat(64),
+  };
+  const healthySource = {
+    repository_sha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+    artifact_hashes: artifactHashes,
+    vscode_version: '1.125.0',
+    outcome: 'not_proven',
+    product_blockers: [],
+    server_identity: {
+      path: 'C:/extension/bin/win32-x64/perllsp.exe',
+      source: 'packaged_vsix_bundle',
+      startup_source: 'bundled',
+    },
+    startup: {
+      lifecycle_state: 'running',
+      binary_resolution_status: 'ok',
+      server_start_status: 'ok',
+      initialize_status: 'ok',
+    },
+    requests: {
+      immediate: Object.fromEntries(
+        ['completion', 'hover', 'definition', 'references', 'symbols'].map((key) => [
+          key,
+          { status: 'ok' },
+        ]),
+      ),
+      after_edit: { status: 'ok', immediate_requery: { status: 'ok' } },
+    },
+    shutdown: 'stopped',
+  };
+  // Preserve non-canonical whitespace: the envelope binds raw bytes, not reserialized JSON.
+  const healthyBytes = Buffer.from(`${JSON.stringify(healthySource, null, 2)}\n`);
+  const failedBytes = Buffer.from(
+    JSON.stringify({
+      ...healthySource,
+      outcome: 'failed',
+      product_blockers: [{ label: 'provider', result: { status: 'error' } }],
+    }),
+  );
+  const bindSource = (bytes) => {
+    fs.writeFileSync(sourceReceiptFile, bytes);
+    fs.writeFileSync(
+      receiptFile,
+      JSON.stringify({
+        schema_version: 'verified_child_receipt.v1',
+        receipt_schema_version: 'installed_acceptance.v1',
+        candidate_id: env.PERL_LSP_CANDIDATE_ID,
+        frozen_product_sha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+        artifact_set_id: env.PERL_LSP_ARTIFACT_SET_ID,
+        status: 'not_proven',
+        source_receipt_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        artifact_hashes: artifactHashes,
+      }),
+    );
+  };
+  const validate = () =>
+    validateVerifiedCandidateReceipt({
+      receiptFile,
+      sourceReceiptFile,
+      env,
+      expectedVsixSha256: artifactHashes.vsix_sha256,
+      expectedBundledServerSha256: artifactHashes.bundled_server_sha256,
+      expectedPlatform: 'windows',
+    });
+
+  bindSource(healthyBytes);
+  const stable = validate();
+  assert.equal(stable.ok, true, JSON.stringify(stable));
+  assert.deepEqual(stable.source_receipt, healthySource);
+
+  fs.writeFileSync(sourceReceiptFile, Buffer.concat([healthyBytes, Buffer.from('\n')]));
+  const mismatched = validate();
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.violations?.join(' ') ?? '', /digest does not match/);
+
+  bindSource(failedBytes);
+  const failed = validate();
+  assert.equal(failed.ok, false);
+  assert.match(failed.violations?.join(' ') ?? '', /does not prove the bounded/);
+
+  const readFile = fs.readFileSync;
+  let sourceReads = 0;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    const bytes = readFile(file, ...args);
+    if (file === sourceReceiptFile && ++sourceReads === 1) {
+      // Model a producer replacing a failed receipt after its first snapshot was read.
+      fs.writeFileSync(sourceReceiptFile, healthyBytes);
+    }
+    return bytes;
+  });
+  const rewritten = validate();
+  t.mock.restoreAll();
+  assert.ok(sourceReads > 0, 'the source rewrite control must execute');
+  assert.equal(rewritten.ok, false, 'behavior from replacement bytes must not be accepted');
+  assert.match(rewritten.violations?.join(' ') ?? '', /does not prove the bounded/);
+  assert.equal(sourceReads, 1, 'hashing and parsing must share a single source read');
+});
+
 void test('candidate construction binds hashes and rejects partial or supplied identity', () => {
   const env = {
     PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
@@ -465,9 +577,9 @@ void test(
         (_env) => ({ phase: 'child', result: { status: 2 } }),
       );
       assert.deepEqual(result, {
-        status: 'not_proven',
+        status: 'failed',
         exit_code: 2,
-        reason: 'candidate_bound_platform_unavailable',
+        reason: 'test_explorer_journey_failed',
       });
 
       for (const name of names.slice(0, 4)) delete process.env[name];
@@ -1248,9 +1360,48 @@ void test('the orchestrator reads the child receipt where the child writes it', 
   }
 });
 
+const identityFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'current-leaf-identity-'));
+after(() => fs.rmSync(identityFixtureRoot, { recursive: true, force: true }));
+const isolatedExtensionsRoot = path.join(identityFixtureRoot, 'extensions');
+const installedExtensionRoot = path.join(isolatedExtensionsRoot, 'extension');
+fs.mkdirSync(installedExtensionRoot, { recursive: true });
+const inputServerFile = path.join(identityFixtureRoot, 'server');
+const installedServerFile = path.join(installedExtensionRoot, 'server');
+const inputVsixFile = path.join(identityFixtureRoot, 'candidate.vsix');
+fs.writeFileSync(inputServerFile, 'known-server');
+fs.writeFileSync(installedServerFile, 'known-server');
+fs.writeFileSync(inputVsixFile, 'known-vsix');
+const observedInputServer = observeSmokeArtifact(inputServerFile);
+const observedInputVsix = observeSmokeArtifact(inputVsixFile);
+function installedIdentity() {
+  const selected = observeSmokeArtifact(installedServerFile);
+  return {
+    schema_version: 'installed_lsp_vsix_bytes.v1',
+    extension_root: installedExtensionRoot,
+    extensions_root: isolatedExtensionsRoot,
+    before_provider: selected,
+    after_restart: selected,
+    after_shutdown: selected,
+    vsix_before: observedInputVsix,
+    vsix_after: observedInputVsix,
+  };
+}
+function selectedMetrics() {
+  return {
+    binary_resolution_status: 'ok',
+    binary_resolution_source: 'bundled',
+    binary_resolution_path: installedServerFile,
+    server_start_status: 'ok',
+    initialize_status: 'ok',
+  };
+}
+
 const CHILD_SUBJECT = {
   expectedRevision: 'a'.repeat(40),
-  expectedVsixSha256: 'b'.repeat(64),
+  expectedVsixSha256: observedInputVsix.sha256,
+  expectedServerObservation: observedInputServer,
+  expectedVsixObservation: observedInputVsix,
+  expectedExtensionsRoot: isolatedExtensionsRoot,
   expectedServerSourceSha: 'a'.repeat(40),
   expectedVscodeVersion: 'stable',
   expectedSourceLabel: 'hosted-linux-current-source',
@@ -1260,6 +1411,9 @@ function childReceipt(overrides = {}, environmentOverrides = {}) {
   return {
     outcome: 'completed',
     failures: [],
+    installed_byte_identity: installedIdentity(),
+    startup: { language_client: selectedMetrics() },
+    lifecycle: { restart: { language_client: selectedMetrics() } },
     environment: {
       source_revision: CHILD_SUBJECT.expectedRevision,
       server_source_revision: CHILD_SUBJECT.expectedServerSourceSha,
@@ -1288,6 +1442,77 @@ void test('a child receipt bound to this run admits behavioral proof', () => {
   const result = validateChild(childReceipt());
   assert.equal(result.ok, true);
 });
+
+const snapshotVsixFile = path.join(identityFixtureRoot, 'snapshot', 'candidate.vsix');
+fs.mkdirSync(path.dirname(snapshotVsixFile));
+fs.copyFileSync(inputVsixFile, snapshotVsixFile);
+const observedSnapshotVsix = observeSmokeArtifact(snapshotVsixFile);
+// The published runner removes its owned snapshot before the parent reads the receipt.
+fs.rmSync(snapshotVsixFile);
+function snapshotChildReceipt() {
+  const receipt = childReceipt();
+  receipt.installed_byte_identity.vsix_before = observedSnapshotVsix;
+  receipt.installed_byte_identity.vsix_after = observedSnapshotVsix;
+  return receipt;
+}
+
+void test('a cleaned-up private VSIX snapshot binds the parent-owned package bytes', () => {
+  assert.notEqual(observedSnapshotVsix.path, observedInputVsix.path);
+  assert.equal(fs.existsSync(snapshotVsixFile), false);
+  const result = validateChild(snapshotChildReceipt());
+  assert.equal(result.ok, true, result.ok ? '' : result.violations.join('; '));
+});
+
+for (const name of ['different digest', 'different size', 'relative path', 'missing path']) {
+  void test(`a private VSIX snapshot receipt rejects ${name}`, () => {
+    const receipt = snapshotChildReceipt();
+    const observation = { ...observedSnapshotVsix };
+    if (name === 'different digest') observation.sha256 = 'd'.repeat(64);
+    else if (name === 'different size') observation.size += 1;
+    else if (name === 'relative path') observation.path = 'candidate.vsix';
+    else Reflect.deleteProperty(observation, 'path');
+    receipt.installed_byte_identity.vsix_before = observation;
+    receipt.installed_byte_identity.vsix_after = observation;
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /installed byte identity/);
+  });
+}
+
+void test('a private VSIX snapshot cannot change paths between receipt phases', () => {
+  const receipt = snapshotChildReceipt();
+  receipt.installed_byte_identity.vsix_after = observedInputVsix;
+  const result = validateChild(receipt);
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /installed byte identity/);
+});
+
+for (const field of ['sha256', 'size']) {
+  void test(`a private VSIX snapshot cannot change ${field} after the initial observation`, () => {
+    const receipt = snapshotChildReceipt();
+    receipt.installed_byte_identity.vsix_after =
+      field === 'sha256'
+        ? { ...observedSnapshotVsix, sha256: 'd'.repeat(64) }
+        : { ...observedSnapshotVsix, size: observedSnapshotVsix.size + 1 };
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /installed byte identity/);
+  });
+}
+
+for (const mutation of ['replacement', 'deletion']) {
+  void test(`a private VSIX snapshot cannot hide parent package ${mutation}`, () => {
+    try {
+      if (mutation === 'replacement') fs.writeFileSync(inputVsixFile, 'different-vsix');
+      else fs.rmSync(inputVsixFile);
+      const result = validateChild(snapshotChildReceipt());
+      assert.equal(result.ok, false);
+      assert.match(result.violations.join('; '), /installed byte identity/);
+    } finally {
+      fs.writeFileSync(inputVsixFile, 'known-vsix');
+    }
+  });
+}
 
 void test('a missing child receipt is never behavioral proof', () => {
   const result = validateChild(childReceipt(), { present: false });
@@ -1431,6 +1656,20 @@ void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
   });
   assert.equal(result.status, 'not_proven');
   assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+});
+
+void test('a standalone first-hour SHA does not make Windows exit 2 a candidate boundary', () => {
+  const standalone = { PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40) };
+  assert.equal(hasCandidateIdentity(standalone), false);
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: hasCandidateIdentity(standalone),
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-first-hour-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
+  assert.equal(hasCandidateIdentity({ ...standalone, PERL_LSP_CANDIDATE_ID: 'partial' }), true);
 });
 
 void test('a complete Windows candidate-bound exit 2 remains a product failure', () => {
@@ -3208,6 +3447,10 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
       if (name === 'fs')
         return {
           existsSync: () => true,
+          lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false }),
+          realpathSync: (file) => file,
+          mkdirSync() {},
+          mkdtempSync: (prefix) => prefix + 'owned-fixture',
           readFileSync: () => JSON.stringify({ name: 'fixture', version: '1.0.0' }),
           rmSync() {},
         };
@@ -3271,7 +3514,9 @@ void test('main records manifest failures before packaging and exits not proven'
   const cases = [
     {
       label: 'missing',
-      read: () => { throw new Error('ENOENT: package.json missing'); },
+      read: () => {
+        throw new Error('ENOENT: package.json missing');
+      },
       reason: /ENOENT/,
     },
     { label: 'malformed', read: () => '{', reason: /JSON/ },
@@ -3309,7 +3554,8 @@ void test('main records manifest failures before packaging and exits not proven'
         persisted.push({ destination, receipt: JSON.parse(JSON.stringify(receipt)) }),
     };
     const code = vm.runInNewContext(
-      source + `
+      source +
+        `
         gitRevision = () => '${revision}';
         ensureCleanWorkingTree = () => {};
         sha256File = () => 'b'.repeat(64);
@@ -3334,4 +3580,55 @@ void test('main records manifest failures before packaging and exits not proven'
     assert.equal(receipt.stages.package_inventory.status, 'not_proven', scenario.label);
     assert.equal(receipt.stages.behavioral_smoke.status, 'not_run', scenario.label);
   }
+});
+
+void test('old receipts still parse but cannot satisfy current observed identity', () => {
+  const old = childReceipt();
+  Reflect.deleteProperty(old, 'installed_byte_identity');
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify(old)));
+  const result = validateChild(old);
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /missing current installed byte observations/);
+});
+
+void test('forged observations cannot conceal actual same-length installed bytes', () => {
+  const receipt = childReceipt();
+  fs.writeFileSync(installedServerFile, 'wrong-server');
+  try {
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /actual file bytes/);
+  } finally {
+    fs.writeFileSync(installedServerFile, 'known-server');
+  }
+});
+
+void test('wrong selected VSIX bytes refuse independent parent acceptance', () => {
+  const receipt = childReceipt();
+  fs.writeFileSync(inputVsixFile, 'wrong-vsix');
+  try {
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /actual file bytes/);
+  } finally {
+    fs.writeFileSync(inputVsixFile, 'known-vsix');
+  }
+});
+
+void test('missing observation and restart path substitution refuse', () => {
+  const missing = childReceipt();
+  Reflect.deleteProperty(missing.installed_byte_identity, 'after_restart');
+  assert.equal(validateChild(missing).ok, false);
+  const changed = childReceipt();
+  changed.lifecycle.restart.language_client.binary_resolution_path = inputServerFile;
+  assert.equal(validateChild(changed).ok, false);
+});
+
+void test('same-prefix installed profile and unavailable selected file refuse', () => {
+  const outside = childReceipt();
+  outside.installed_byte_identity.extension_root = identityFixtureRoot;
+  assert.equal(validateChild(outside).ok, false);
+  const absent = childReceipt();
+  absent.installed_byte_identity.before_provider.path = path.join(installedExtensionRoot, 'absent');
+  assert.equal(validateChild(absent).ok, false);
 });

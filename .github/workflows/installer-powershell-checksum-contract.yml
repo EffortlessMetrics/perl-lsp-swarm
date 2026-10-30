@@ -5,8 +5,12 @@ on:
     branches: [main, master]
     paths:
       - 'install.ps1'
+      - 'scripts/agent-cleanup.ps1'
+      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
       - 'scripts/install.sh'
       - 'scripts/tests/test-install-ps1-checksum-required.ps1'
+      - 'scripts/tests/new-install-ps1-native-fixture.ps1'
+      - 'scripts/tests/test-install-ps1-installed-verification.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
       - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
       - 'policy/standalone-archive-safety.v1.toml'
@@ -16,8 +20,12 @@ on:
     branches: [main, master]
     paths:
       - 'install.ps1'
+      - 'scripts/agent-cleanup.ps1'
+      - 'scripts/tests/test-agent-cleanup-target-retention.ps1'
       - 'scripts/install.sh'
       - 'scripts/tests/test-install-ps1-checksum-required.ps1'
+      - 'scripts/tests/new-install-ps1-native-fixture.ps1'
+      - 'scripts/tests/test-install-ps1-installed-verification.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
       - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
       - 'policy/standalone-archive-safety.v1.toml'
@@ -54,7 +62,11 @@ jobs:
         run: |
           foreach ($Path in @(
               'install.ps1',
+              'scripts/agent-cleanup.ps1',
+              'scripts/tests/test-agent-cleanup-target-retention.ps1',
               'scripts/tests/test-install-ps1-checksum-required.ps1',
+              'scripts/tests/new-install-ps1-native-fixture.ps1',
+              'scripts/tests/test-install-ps1-installed-verification.ps1',
               'scripts/tests/test-install-ps1-archive-safety.ps1',
               'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
           )) {
@@ -71,9 +83,26 @@ jobs:
               }
           }
 
+      # Parse-only guard under Windows PowerShell 5.1 (shell: powershell on
+      # windows runners). pwsh defaults to UTF-8, so the pwsh parse step above
+      # cannot see encoding damage: a BOM-less file carrying non-ASCII glyphs
+      # parses there but fails under 5.1, which decodes BOM-less files as
+      # Windows-1252. This step never executes the installer.
+      - name: Parse PowerShell sources under Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/tests/test-powershell-51-parse-guard.ps1
+
       - name: Run checksum negative controls
         shell: pwsh
         run: ./scripts/tests/test-install-ps1-checksum-required.ps1
+
+      - name: Verify installed native binaries under PowerShell 7
+        shell: pwsh
+        run: ./scripts/tests/test-install-ps1-installed-verification.ps1
+
+      - name: Verify installed native binaries under Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/tests/test-install-ps1-installed-verification.ps1
 
       - name: Run archive-safety controls
         shell: pwsh
@@ -82,3 +111,24 @@ jobs:
       - name: Run product-unit promotion controls
         shell: pwsh
         run: ./scripts/tests/test-install-ps1-product-unit-promotion.ps1
+
+      - name: Run target-retention controls under PowerShell 7
+        id: target-retention-pwsh7
+        shell: pwsh
+        run: ./scripts/tests/test-agent-cleanup-target-retention.ps1 -ProofRoot (Join-Path $env:RUNNER_TEMP 'target-retention-pwsh7')
+
+      - name: Run target-retention controls under Windows PowerShell 5.1
+        # Collect both runtime results without bypassing a failed earlier setup.
+        if: ${{ !cancelled() && (steps.target-retention-pwsh7.outcome == 'success' || steps.target-retention-pwsh7.outcome == 'failure') }}
+        shell: powershell
+        run: ./scripts/tests/test-agent-cleanup-target-retention.ps1 -ProofRoot (Join-Path $env:RUNNER_TEMP 'target-retention-windows51')
+
+      - name: Preserve target-retention results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-target-retention-results
+          path: |
+            ${{ runner.temp }}/target-retention-pwsh7/results.json
+            ${{ runner.temp }}/target-retention-windows51/results.json
+          if-no-files-found: warn

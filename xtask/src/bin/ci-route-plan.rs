@@ -157,6 +157,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, CliError> 
 #[cfg(test)]
 mod publication_spec {
     use super::*;
+    use perl_tdd_support::{must_err_with, must_with};
     use std::path::PathBuf;
     use std::sync::Barrier;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -233,10 +234,11 @@ mod publication_spec {
     }
 
     fn compiled_bytes() -> Vec<u8> {
-        CiRoutePlanV1::compile(input("merge_gate"))
-            .expect("fixture compiles")
-            .canonical_json()
-            .expect("fixture encodes")
+        must_with(
+            must_with(CiRoutePlanV1::compile(input("merge_gate")), "fixture compiles")
+                .canonical_json(),
+            "fixture encodes",
+        )
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -248,7 +250,7 @@ mod publication_spec {
                 .map(|duration| duration.as_nanos())
                 .unwrap_or(0)
         ));
-        fs::create_dir_all(&dir).expect("temp dir");
+        must_with(fs::create_dir_all(&dir), "temp dir");
         dir
     }
 
@@ -257,11 +259,10 @@ mod publication_spec {
         let dir = temp_dir("success");
         let target = dir.join("plan.json");
         let bytes = compiled_bytes();
-        publish_atomically(&target, &bytes).expect("publication succeeds");
-        assert_eq!(fs::read(&target).expect("read back"), bytes);
-        let residue: Vec<_> = fs::read_dir(&dir)
-            .expect("list dir")
-            .map(|entry| entry.expect("entry").file_name())
+        must_with(publish_atomically(&target, &bytes), "publication succeeds");
+        assert_eq!(must_with(fs::read(&target), "read back"), bytes);
+        let residue: Vec<_> = must_with(fs::read_dir(&dir), "list dir")
+            .map(|entry| must_with(entry, "entry").file_name())
             .collect();
         assert_eq!(residue, vec![std::ffi::OsString::from("plan.json")], "no temporary residue");
         drop(fs::remove_dir_all(&dir));
@@ -274,14 +275,14 @@ mod publication_spec {
         let dir = temp_dir("overwrite");
         let target = dir.join("plan.json");
         let first = compiled_bytes();
-        let second = CiRoutePlanV1::compile(input("commit"))
-            .expect("second compiles")
-            .canonical_json()
-            .expect("second encodes");
+        let second = must_with(
+            must_with(CiRoutePlanV1::compile(input("commit")), "second compiles").canonical_json(),
+            "second encodes",
+        );
         assert_ne!(first, second);
-        publish_atomically(&target, &first).expect("first publication");
-        publish_atomically(&target, &second).expect("second publication replaces");
-        assert_eq!(fs::read(&target).expect("read back"), second);
+        must_with(publish_atomically(&target, &first), "first publication");
+        must_with(publish_atomically(&target, &second), "second publication replaces");
+        assert_eq!(must_with(fs::read(&target), "read back"), second);
         drop(fs::remove_dir_all(&dir));
     }
 
@@ -290,10 +291,10 @@ mod publication_spec {
         let dir = temp_dir("concurrent");
         let target = dir.join("plan.json");
         let left = compiled_bytes();
-        let right = CiRoutePlanV1::compile(input("nightly"))
-            .expect("right compiles")
-            .canonical_json()
-            .expect("right encodes");
+        let right = must_with(
+            must_with(CiRoutePlanV1::compile(input("nightly")), "right compiles").canonical_json(),
+            "right encodes",
+        );
         assert_ne!(left, right);
         let barrier = std::sync::Arc::new(Barrier::new(2));
         let left_path = target.clone();
@@ -310,8 +311,8 @@ mod publication_spec {
             right_barrier.wait();
             publish_atomically(&right_path, &right_payload)
         });
-        let left_result = left_thread.join().expect("left writer");
-        let right_result = right_thread.join().expect("right writer");
+        let left_result = must_with(left_thread.join(), "left writer");
+        let right_result = must_with(right_thread.join(), "right writer");
         // The last writer to rename always reads back its own bytes, so at
         // least one publication succeeds. A writer that loses the read-back
         // race is a typed refusal — but it must never remove the winner's
@@ -330,7 +331,7 @@ mod publication_spec {
                 );
             }
         }
-        let final_bytes = fs::read(&target).expect("final artifact exists");
+        let final_bytes = must_with(fs::read(&target), "final artifact exists");
         assert!(
             final_bytes == left || final_bytes == right,
             "final artifact must be exactly one writer's complete bytes"
@@ -345,13 +346,12 @@ mod publication_spec {
         // file artifact left behind at the requested path.
         let dir = temp_dir("rename-failure");
         let target = dir.join("plan.json");
-        fs::create_dir(&target).expect("directory occupies the target path");
+        must_with(fs::create_dir(&target), "directory occupies the target path");
         let bytes = compiled_bytes();
-        let error = publish_atomically(&target, &bytes).expect_err("rename must fail");
+        let error = must_err_with(publish_atomically(&target, &bytes), "rename must fail");
         assert!(error.to_string().contains("atomic rename"), "{error}");
-        let residue: Vec<_> = fs::read_dir(&dir)
-            .expect("list dir")
-            .map(|entry| entry.expect("entry").file_name())
+        let residue: Vec<_> = must_with(fs::read_dir(&dir), "list dir")
+            .map(|entry| must_with(entry, "entry").file_name())
             .collect();
         assert_eq!(
             residue,
@@ -367,9 +367,10 @@ mod publication_spec {
         // creation fail: typed refusal, no artifact.
         let dir = temp_dir("dir-failure");
         let blocker = dir.join("blocker");
-        fs::write(&blocker, b"not a directory").expect("blocker");
+        must_with(fs::write(&blocker, b"not a directory"), "blocker");
         let target = blocker.join("nested").join("plan.json");
-        let error = publish_atomically(&target, b"{}").expect_err("directory creation must fail");
+        let error =
+            must_err_with(publish_atomically(&target, b"{}"), "directory creation must fail");
         assert!(error.to_string().contains("create directory"), "{error}");
         drop(fs::remove_dir_all(&dir));
     }
@@ -378,9 +379,11 @@ mod publication_spec {
     fn read_back_mismatch_is_refused() {
         let dir = temp_dir("readback");
         let target = dir.join("plan.json");
-        publish_atomically(&target, b"{}").expect("publication succeeds");
-        let error =
-            verify_published(&target, b"differs").expect_err("mismatched read-back must refuse");
+        must_with(publish_atomically(&target, b"{}"), "publication succeeds");
+        let error = must_err_with(
+            verify_published(&target, b"differs"),
+            "mismatched read-back must refuse",
+        );
         assert!(error.to_string().contains("read-back mismatch"), "{error}");
         drop(fs::remove_dir_all(&dir));
     }
@@ -393,9 +396,9 @@ mod publication_spec {
         // must trust the typed refusal, never artifact presence/absence.
         let dir = temp_dir("stale-destination");
         let target = dir.join("plan.json");
-        fs::write(&target, b"stale plan for another subject").expect("stale artifact");
+        must_with(fs::write(&target, b"stale plan for another subject"), "stale artifact");
         let temp = dir.join(".ci-route-plan.0.0.0.tmp");
-        fs::write(&temp, b"partial").expect("temp artifact");
+        must_with(fs::write(&temp, b"partial"), "temp artifact");
         let refusal = PublicationError::ReadBackMismatch {
             path: target.clone(),
             expected_len: 2,
@@ -420,10 +423,10 @@ mod publication_spec {
         let dir = temp_dir("interleaved-pre-promotion");
         let target = dir.join("plan.json");
         let winner = compiled_bytes();
-        publish_atomically(&target, &winner).expect("writer B completes first");
+        must_with(publish_atomically(&target, &winner), "writer B completes first");
         // Writer A's pre-promotion failure: its own unique temporary plus
         // the typed refusal the write/sync/read-back step returns.
-        let (temp, file) = create_unique_temp(&dir).expect("writer A temp");
+        let (temp, file) = must_with(create_unique_temp(&dir), "writer A temp");
         drop(file);
         let refusal = PublicationError::ReadBackMismatch {
             path: temp.clone(),
@@ -437,7 +440,7 @@ mod publication_spec {
         );
         assert!(!temp.exists(), "the losing writer's temporary is removed");
         assert_eq!(
-            fs::read(&target).expect("writer B's completed artifact survives"),
+            must_with(fs::read(&target), "writer B's completed artifact survives"),
             winner,
             "a pre-promotion refusal must never delete a concurrent writer's completed artifact"
         );
@@ -449,25 +452,29 @@ mod publication_spec {
         // The canonical contract spells absent optionals as omitted keys;
         // an explicit null is a second byte encoding of the same semantics
         // and must fail closed at the input adapter, not validate.
-        let plan = CiRoutePlanV1::compile(input("merge_gate")).expect("compile");
-        let mut payload = serde_json::to_value(&plan).expect("serialize");
+        let plan = must_with(CiRoutePlanV1::compile(input("merge_gate")), "compile");
+        let mut payload = must_with(serde_json::to_value(&plan), "serialize");
         payload["subject"]["base_sha"] = serde_json::Value::Null;
-        let error = serde_json::from_value::<CiRoutePlanV1>(payload)
-            .expect_err("explicit null optional must refuse");
+        let error = must_err_with(
+            serde_json::from_value::<CiRoutePlanV1>(payload),
+            "explicit null optional must refuse",
+        );
         assert!(error.to_string().contains("null"), "{error}");
 
-        let mut compile_input = serde_json::to_value(&input("merge_gate")).expect("serialize");
+        let mut compile_input = must_with(serde_json::to_value(input("merge_gate")), "serialize");
         compile_input["expansion"]["detail"] = serde_json::Value::Null;
-        let error = serde_json::from_value::<CompileRoutePlanInput>(compile_input)
-            .expect_err("explicit null input optional must refuse");
+        let error = must_err_with(
+            serde_json::from_value::<CompileRoutePlanInput>(compile_input),
+            "explicit null input optional must refuse",
+        );
         assert!(error.to_string().contains("null"), "{error}");
     }
 
     #[test]
     fn temp_names_are_unique_per_publication() {
         let dir = temp_dir("temp-names");
-        let (first, _file_one) = create_unique_temp(&dir).expect("first temp");
-        let (second, _file_two) = create_unique_temp(&dir).expect("second temp");
+        let (first, _file_one) = must_with(create_unique_temp(&dir), "first temp");
+        let (second, _file_two) = must_with(create_unique_temp(&dir), "second temp");
         assert_ne!(first, second, "two writers never share a temporary path");
         assert!(first.file_name().is_some_and(|name| name.to_string_lossy().ends_with(".tmp")));
         drop(fs::remove_dir_all(&dir));
@@ -480,7 +487,7 @@ mod publication_spec {
         let mut payload = input("bogus_profile");
         payload.expansion.resolution = ExpansionStatus::Invalid;
         payload.expansion.detail = Some("unknown profile".to_string());
-        let error = CiRoutePlanV1::compile(payload).expect_err("invalid profile must refuse");
+        let error = must_err_with(CiRoutePlanV1::compile(payload), "invalid profile must refuse");
         assert!(error.contains("not consumable"), "{error}");
     }
 
@@ -489,16 +496,18 @@ mod publication_spec {
         let mut payload = input("release");
         payload.expansion.resolution = ExpansionStatus::Unsupported;
         payload.expansion.detail = Some("no reviewed composition".to_string());
-        let error = CiRoutePlanV1::compile(payload).expect_err("unsupported must refuse");
+        let error = must_err_with(CiRoutePlanV1::compile(payload), "unsupported must refuse");
         assert!(error.contains("not consumable"), "{error}");
     }
 
     #[test]
     fn parse_refuses_unknown_input_fields() {
-        let json = serde_json::to_string(&input("merge_gate")).expect("serialize");
+        let json = must_with(serde_json::to_string(&input("merge_gate")), "serialize");
         let tampered = json.replacen("\"workflow_digest\"", "\"legacy_workflow_digest\"", 1);
-        let error = serde_json::from_str::<CompileRoutePlanInput>(&tampered)
-            .expect_err("unknown input field must refuse");
+        let error = must_err_with(
+            serde_json::from_str::<CompileRoutePlanInput>(&tampered),
+            "unknown input field must refuse",
+        );
         assert!(
             error.to_string().contains("unknown field"),
             "deny_unknown_fields refusal: {error}"
@@ -509,7 +518,7 @@ mod publication_spec {
     fn baseline_row_shape_is_proof_backed_run() {
         // Fixture sanity for the falsifiers above: the compiled row is a
         // proof-backed run so `compiled_bytes` exercises the full payload.
-        let plan = CiRoutePlanV1::compile(input("merge_gate")).expect("compile");
+        let plan = must_with(CiRoutePlanV1::compile(input("merge_gate")), "compile");
         assert_eq!(plan.rows.len(), 1);
         assert_eq!(plan.rows[0].applicability, Applicability::Applicable);
         assert!(matches!(&plan.rows[0].outcome, PlannedOutcome::Run { .. }));

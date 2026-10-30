@@ -323,8 +323,13 @@ impl ExportSymbolExtractor {
             if let (Some(start), Some(end)) =
                 (arg[open_pos..].find(|c: char| !c.is_whitespace()), arg.rfind(close))
             {
-                let content = &arg[open_pos + start + 1..end];
-                return content.split_whitespace().any(|w| w == "Exporter");
+                let delim_len = arg[open_pos + start..].chars().next().map_or(1, char::len_utf8);
+                // Unterminated or mismatched delimiters make `rfind` land on
+                // the opening delimiter itself, inverting the range; such an
+                // argument has no qw content to inspect (#18029).
+                if let Some(content) = arg.get(open_pos + start + delim_len..end) {
+                    return content.split_whitespace().any(|w| w == "Exporter");
+                }
             }
         }
         false
@@ -563,6 +568,60 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = parser.parse().ok()?;
         ExportSymbolExtractor::extract(&ast)
+    }
+
+    /// A multi-byte `qw` delimiter must not panic Exporter detection: the
+    /// content slice starts after the whole delimiter char, not one byte
+    /// after its first byte.
+    #[test]
+    fn arg_contains_exporter_multibyte_delimiter_does_not_panic() {
+        assert!(ExportSymbolExtractor::arg_contains_exporter("qw\u{2022}Exporter\u{2022}"));
+        assert!(!ExportSymbolExtractor::arg_contains_exporter("qw\u{2022}Other\u{2022}"));
+        assert!(
+            ExportSymbolExtractor::arg_contains_exporter("qw(Exporter)"),
+            "the normalized qw(...) form keeps working"
+        );
+    }
+
+    /// Unterminated or mismatched self-delimited `qw` forms make `rfind`
+    /// land on the opening delimiter, which inverted the content slice and
+    /// panicked before #18029. Each must simply report "no Exporter".
+    #[test]
+    fn arg_contains_exporter_unterminated_qw_does_not_panic() {
+        for arg in ["qw\u{2022}", "qw/", "qw\u{AB}Exporter\u{BB}", "qw x", "qw"] {
+            assert!(
+                !ExportSymbolExtractor::arg_contains_exporter(arg),
+                "unterminated qw form {arg:?} must not panic or match"
+            );
+        }
+        // End to end: the parser shape proven to reach this function.
+        let _ = parse_and_extract("use parent qw\u{2022}Exporter;");
+    }
+
+    /// Positive controls for the #18029 guard: well-formed `qw` args must
+    /// keep their answers. A guard that over-tightened the slice bounds
+    /// would silently turn every `qw` into "no Exporter" and drop `use
+    /// parent -qw(Exporter)`-shaped imports from export detection.
+    #[test]
+    fn arg_contains_exporter_wellformed_qw_still_matches() {
+        assert!(
+            ExportSymbolExtractor::arg_contains_exporter("qw(Exporter)"),
+            "normalized qw(...) form must still match"
+        );
+        assert!(
+            ExportSymbolExtractor::arg_contains_exporter("qw\u{2022}Exporter\u{2022}"),
+            "terminated multi-byte self-delimited qw must still match"
+        );
+        assert!(
+            !ExportSymbolExtractor::arg_contains_exporter("qw (Exporter)"),
+            "space-delimited form: the first non-alphanumeric char after `qw` is \
+             the delimiter (a space here), so this seam sees no qw content; the \
+             parser normalises `qw(...)` without the inner space"
+        );
+        assert!(
+            !ExportSymbolExtractor::arg_contains_exporter("qw(Strict)"),
+            "well-formed qw without Exporter must still not match"
+        );
     }
 
     #[test]

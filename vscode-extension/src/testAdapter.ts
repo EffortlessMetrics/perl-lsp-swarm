@@ -406,8 +406,85 @@ function configuredProveLimits(resource?: vscode.Uri): ProveExecutionLimits {
  * and runs them via `prove -v`, mapping TAP output to VSCode test results.
  */
 
+/** How long one candidate Perl may take to report `$^X` before it is skipped. */
+const PERL_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * Injectable seams for `resolveProveCommand`, so its unit tests can sandbox
+ * the host PATH and Perl probes instead of inheriting the developer machine's
+ * environment (#17333).
+ */
+export type ProveCommandProbeOptions = {
+  /** Override the platform branch (defaults to `process.platform === 'win32'`). */
+  isWindows?: boolean;
+  /** Candidate Perl executables in preference order. */
+  perlCandidates?: () => string[];
+  /**
+   * Run one candidate Perl with `-e print $^X` and return the reported
+   * interpreter path, or null when the candidate is unusable.
+   */
+  probePerlExecutablePath?: (candidate: string) => string | null;
+  /** Probe the filesystem for an adjacent prove shim (defaults to `fs.existsSync`). */
+  fileExists?: (candidatePath: string) => boolean;
+};
+
+function pathCandidateDirectories(): string[] {
+  const raw = process.env.PATH ?? process.env.Path ?? '';
+  return raw.split(path.delimiter).filter((entry) => entry.length > 0);
+}
+
+/**
+ * Enumerate the Perl executables `resolveProveCommand` probes, in PATH order.
+ *
+ * The bare `perl` entry comes first so PATH resolution (including PATHEXT on
+ * Windows) keeps selecting exactly what the previous single-probe behavior
+ * selected; every PATH directory's Perl then follows so an unusable first
+ * install no longer defeats a matching one later on PATH (#17333).
+ */
+export function defaultPerlCandidates(isWindows: boolean): string[] {
+  const executableName = isWindows ? 'perl.exe' : 'perl';
+  const candidates = ['perl'];
+  for (const directory of pathCandidateDirectories()) {
+    candidates.push(path.join(directory, executableName));
+  }
+  return candidates;
+}
+
+function probePerlExecutable(candidate: string): string | null {
+  try {
+    const { execFileSync } = require('child_process') as {
+      execFileSync: (
+        file: string,
+        args: readonly string[],
+        options: { encoding: string; timeout: number },
+      ) => string | Buffer;
+    };
+    const reported = execFileSync(candidate, ['-e', 'print $^X'], {
+      encoding: 'utf8',
+      timeout: PERL_PROBE_TIMEOUT_MS,
+    })
+      .toString()
+      .trim();
+    if (!reported || !path.isAbsolute(reported)) {
+      // A bare or relative `$^X` (cygwin/msys Perl prints `perl`) cannot locate
+      // an adjacent prove shim; treat the candidate as unusable and keep
+      // walking PATH instead of resolving `prove` against the cwd (#17333).
+      return null;
+    }
+    return reported;
+  } catch {
+    // Candidate missing or failed to execute — keep walking.
+    return null;
+  }
+}
+
 /**
  * Resolve the `prove` command for the current platform.
+ *
+ * Probe every Perl on PATH in order until one reports an interpreter path
+ * whose directory carries the matching `prove` shim, so an unusable first
+ * install (e.g. a cygwin/msys Perl whose `$^X` is the bare string `perl`)
+ * no longer defeats a matching installation later on PATH (#17333).
  *
  * On Windows, invoke the matching Perl interpreter directly against its
  * adjacent `prove.bat` with the documented stdin-list form. This preserves
@@ -417,32 +494,36 @@ function configuredProveLimits(resource?: vscode.Uri): ProveExecutionLimits {
  *
  * Returns `{ command, args, shell }` for use with `child_process.spawn`.
  */
-export function resolveProveCommand(extraArgs: string[]): {
+export function resolveProveCommand(
+  extraArgs: string[],
+  probeOptions: ProveCommandProbeOptions = {},
+): {
   command: string;
   args: string[];
   shell: boolean;
   error?: string;
 } {
-  const isWindows = process.platform === 'win32';
+  const isWindows = probeOptions.isWindows ?? process.platform === 'win32';
+  const candidates = probeOptions.perlCandidates?.() ?? defaultPerlCandidates(isWindows);
+  const probe = probeOptions.probePerlExecutablePath ?? probePerlExecutable;
+  const exists = probeOptions.fileExists ?? fs.existsSync;
 
   // Try to find `perl` and its matching `prove` on PATH.
   let perlPath: string | null = null;
   let provePath: string | null = null;
-  try {
-    const { execFileSync } = require('child_process');
-    perlPath = execFileSync('perl', ['-e', 'print $^X'], {
-      encoding: 'utf8',
-      timeout: 3000,
-    }).trim();
-    if (perlPath) {
-      const perlDir = path.dirname(perlPath);
-      const candidate = path.join(perlDir, isWindows ? 'prove.bat' : 'prove');
-      if (fs.existsSync(candidate)) {
-        provePath = candidate;
-      }
+  const seenReportedPaths = new Set<string>();
+  for (const candidate of candidates) {
+    const reported = probe(candidate);
+    if (!reported || seenReportedPaths.has(reported)) {
+      continue;
     }
-  } catch {
-    // perl not on PATH or execFileSync failed — report an actionable resolution error.
+    seenReportedPaths.add(reported);
+    const candidateProve = path.join(path.dirname(reported), isWindows ? 'prove.bat' : 'prove');
+    if (exists(candidateProve)) {
+      perlPath = reported;
+      provePath = candidateProve;
+      break;
+    }
   }
 
   if (isWindows && perlPath && provePath) {

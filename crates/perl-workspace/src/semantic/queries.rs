@@ -168,6 +168,20 @@ pub trait SemanticQueries {
         None
     }
 
+    /// Resolve many anchors to their owning source URI and byte spans, in the
+    /// same order as `anchor_ids`.
+    ///
+    /// Each entry answers exactly what [`Self::anchor_source_span`] answers for
+    /// the same id: `None` for unresolvable, degenerate, or duplicated ids,
+    /// with duplicates failing closed. The default resolves one id at a time;
+    /// implementations backed by a shared fact snapshot should override this
+    /// with a single pass so per-occurrence callers (find-references answers
+    /// one location per occurrence) do not pay one full-snapshot scan per
+    /// occurrence (#17247).
+    fn anchor_source_spans(&self, anchor_ids: &[AnchorId]) -> Vec<Option<AnchorSourceSpan>> {
+        anchor_ids.iter().map(|id| self.anchor_source_span(*id)).collect()
+    }
+
     /// Return symbols visible at a given file position and scope.
     fn visible_symbols_at(
         &self,
@@ -566,6 +580,49 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             }
         }
         found
+    }
+
+    /// Batched [`Self::anchor_source_span`] over the borrowed shard snapshot.
+    ///
+    /// One pass over the shards resolves every requested id; per-id semantics
+    /// are identical to the single-anchor form, including duplicate ids across
+    /// (or within) shards failing closed and degenerate spans resolving to
+    /// `None`. This is the find-references hot path: one location is wired per
+    /// occurrence, so a per-id scan is quadratic in the workspace (#17247).
+    /// An empty request returns an empty vector without walking the shards,
+    /// so a no-result find-references request pays no anchor scan.
+    fn anchor_source_spans(&self, anchor_ids: &[AnchorId]) -> Vec<Option<AnchorSourceSpan>> {
+        if anchor_ids.is_empty() {
+            return Vec::new();
+        }
+        let requested: std::collections::HashSet<AnchorId> = anchor_ids.iter().copied().collect();
+        let mut resolved: std::collections::HashMap<AnchorId, Option<AnchorSourceSpan>> =
+            anchor_ids.iter().map(|id| (*id, None)).collect();
+        let mut claimed: std::collections::HashMap<AnchorId, usize> =
+            std::collections::HashMap::new();
+        for shard in self.fact_shards.values() {
+            for anchor in shard.anchors.iter().filter(|a| requested.contains(&a.id)) {
+                let claimed = claimed.entry(anchor.id).or_default();
+                *claimed += 1;
+                if *claimed > 1 {
+                    resolved.insert(anchor.id, None);
+                    continue;
+                }
+                if anchor.span_end_byte <= anchor.span_start_byte {
+                    resolved.insert(anchor.id, None);
+                    continue;
+                }
+                resolved.insert(
+                    anchor.id,
+                    Some(AnchorSourceSpan {
+                        source_uri: shard.source_uri.clone(),
+                        start_byte: anchor.span_start_byte,
+                        end_byte: anchor.span_end_byte,
+                    }),
+                );
+            }
+        }
+        anchor_ids.iter().map(|id| resolved.get(id).cloned().flatten()).collect()
     }
 
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)> {
@@ -1858,6 +1915,67 @@ mod tests {
         assert!(
             queries.anchor_source_span(AnchorId(42)).is_none(),
             "duplicate AnchorId across shards must fail closed rather than pick a HashMap winner"
+        );
+        Ok(())
+    }
+
+    /// #17247: the batched snapshot resolution must answer exactly what the
+    /// single-anchor form answers, per id, preserving order — including ids
+    /// that resolve, ids that do not exist, and duplicates that fail closed.
+    #[test]
+    fn anchor_source_spans_batch_matches_single_resolution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let shard_a = colliding_anchor_shard("file:///lib/A.pm", FileId(1), 0, 7);
+        let shard_b = colliding_anchor_shard("file:///lib/B.pm", FileId(2), 10, 17);
+        let (file_id_c, shard_c) = simple_shard();
+        let shard_c_uri = shard_c.source_uri.clone();
+        let shard_c_anchor_ids: Vec<AnchorId> =
+            shard_c.anchors.iter().map(|anchor| anchor.id).collect();
+        let mut shards = HashMap::new();
+        shards.insert(shard_a.source_uri.clone(), shard_a);
+        shards.insert(shard_b.source_uri.clone(), shard_b);
+        shards.insert(shard_c_uri.clone(), shard_c);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let mut ids: Vec<AnchorId> = shard_c_anchor_ids;
+        ids.push(AnchorId(42)); // duplicate across A and B — must fail closed
+        ids.push(AnchorId(9_999_999)); // nonexistent — must stay None
+
+        let batch = queries.anchor_source_spans(&ids);
+        assert_eq!(batch.len(), ids.len(), "batch must keep the requested order and count");
+        for (anchor_id, span) in ids.iter().zip(&batch) {
+            assert_eq!(
+                span,
+                &queries.anchor_source_span(*anchor_id),
+                "batch and single resolution must agree for {anchor_id:?}"
+            );
+        }
+        let _ = file_id_c;
+        Ok(())
+    }
+
+    /// The duplicate fail-closed rule is observable through the batch form:
+    /// both colliding entries must resolve to `None`, not to whichever shard
+    /// the single-pass iteration reaches first.
+    #[test]
+    fn anchor_source_spans_batch_fails_closed_for_duplicate_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let shard_a = colliding_anchor_shard("file:///lib/A.pm", FileId(1), 0, 7);
+        let shard_b = colliding_anchor_shard("file:///lib/B.pm", FileId(2), 10, 17);
+        let mut shards = HashMap::new();
+        shards.insert(shard_a.source_uri.clone(), shard_a);
+        shards.insert(shard_b.source_uri.clone(), shard_b);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let batch = queries.anchor_source_spans(&[AnchorId(42)]);
+        assert_eq!(
+            batch.first().cloned().flatten(),
+            None,
+            "batch duplicate AnchorId across shards must fail closed"
         );
         Ok(())
     }
