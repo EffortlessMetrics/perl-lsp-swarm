@@ -100,7 +100,7 @@ impl FoldingRangeExtractor {
                     start_offset: token.start,
                     end_offset: token.end,
                     kind: Some(FoldingRangeKind::Region),
-                    end_offset_on_content_line: true,
+                    end_offset_on_content_line: false,
                 });
             }
 
@@ -753,6 +753,10 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert!(matches!(range.kind.as_ref(), Some(FoldingRangeKind::Region)));
         assert!(body.contains("select 1"));
+        assert!(
+            !range.end_offset_on_content_line,
+            "lexer body tokens end at the terminator-line start, so the fold must not claim a content line"
+        );
         assert!(body.contains("from dual"));
         assert!(!body.contains("<<"));
 
