@@ -147,8 +147,12 @@ fn main() {
         wrapper = ROOT / "scripts/cargo_admitted.py"
         argv = ["build", "--offline"]
         preflight = run([sys.executable, wrapper, "--preflight", *argv], cls.manifest, cls.env, False)
-        line = next(x for x in preflight.stderr.splitlines()
-                    if x.startswith("cargo-admitted preflight: "))
+        line = next((x for x in preflight.stderr.splitlines()
+                     if x.startswith("cargo-admitted preflight: ")), None)
+        if line is None:
+            tail = "\n".join(preflight.stderr.splitlines()[-20:])
+            raise RuntimeError(
+                f"preflight failed (exit {preflight.returncode}) without a report line; stderr tail:\n{tail}")
         plan = json.loads(line.split(": ", 1)[1])
         budget = cls.sandbox / "budget.json"
         budget.write_text(json.dumps({"schema_version": 1, "scope": plan["scope"],
@@ -160,8 +164,13 @@ fn main() {
         (cls.sandbox / "build.stderr").write_text(build.stderr, encoding="utf-8")
         if build.returncode:
             raise RuntimeError(f"fixture build exit {build.returncode}; see {cls.sandbox}/build.stderr")
-        descriptor = next(json.loads(x.split(": ", 1)[1]) for x in build.stderr.splitlines()
-                          if x.startswith("cargo-admitted resources: "))
+        descriptor_line = next((x for x in build.stderr.splitlines()
+                                if x.startswith("cargo-admitted resources: ")), None)
+        if descriptor_line is None:
+            tail = "\n".join(build.stderr.splitlines()[-20:])
+            raise RuntimeError(
+                f"build failed (exit {build.returncode}) without a resources line; stderr tail:\n{tail}")
+        descriptor = json.loads(descriptor_line.split(": ", 1)[1])
         cls.binary = cls.sandbox / ("probe" + (".exe" if os.name == "nt" else ""))
         # Resolve the private target from the admitted descriptor, never a shared cache.
         target = Path(descriptor["resources"]["target"])
