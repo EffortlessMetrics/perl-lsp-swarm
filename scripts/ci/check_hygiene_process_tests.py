@@ -17,7 +17,9 @@ def validate(output: str) -> int:
     completed = False
     for line in output.splitlines():
         start = re.fullmatch(r"running (\d+) tests?", line)
-        record = re.fullmatch(r"test (\S+) \.\.\. (ok|ignored|FAILED)", line)
+        record = re.fullmatch(
+            r"test (\S+)(?: - should panic)? \.\.\. (ok|ignored|FAILED)(?:, .*)?", line
+        )
         summary = re.fullmatch(
             r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
             r"(\d+) measured; \d+ filtered out; finished in .+", line,

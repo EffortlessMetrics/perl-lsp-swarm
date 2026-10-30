@@ -31,6 +31,23 @@ class HygieneProcessSelectionTests(unittest.TestCase):
     def test_intended_pass_is_accepted(self):
         self.check_output(transcript(), True)
 
+    def test_should_panic_pass_is_accepted(self):
+        self.check_output(
+            transcript().replace(
+                "test process::tests::probe ... ok",
+                "test process::tests::probe - should panic ... ok",
+            ), True
+        )
+
+    def test_ignored_with_reason_is_recorded(self):
+        self.check_output(
+            "running 2 tests\n"
+            "test process::tests::probe ... ok\n"
+            "test process::tests::skipped ... ignored, needs Windows fixture\n\n"
+            "test result: ok. 1 passed; 0 failed; 1 ignored; "
+            "0 measured; 10 filtered out; finished in 0.01s\n", True
+        )
+
     def test_windows_newlines_are_accepted(self):
         self.check_output(transcript().replace("\n", "\r\n"), True)
 
