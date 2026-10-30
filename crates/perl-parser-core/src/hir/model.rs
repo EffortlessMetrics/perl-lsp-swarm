@@ -116,11 +116,16 @@ pub enum RecoveryConfidence {
 /// v7 adds the [`HirExpr::Literal`] first-cohort scalar leaf (#17538), which
 /// replaces the previous `Opaque` fallback for plain decimal numbers,
 /// noninterpolating strings, and `undef`, and retains the exact payload.
+/// v8 retains the `qr//`, `m//`, and bare `/.../` surface form in
+/// [`HirRegex::form`](super::body::HirRegex::form) (#14638). This slice
+/// originally claimed v7; `main` took that number for the Literal leaf
+/// first, so the regex form layout is a further increment rather than a
+/// second meaning for one version.
 ///
 /// [`HirExpr::Try`]: super::body::HirExpr::Try
 /// [`HirCatchHandler`]: super::body::HirCatchHandler
 /// [`HirExpr::Literal`]: super::body::HirExpr::Literal
-pub const HIR_BODY_MODEL_VERSION: u32 = 7;
+pub const HIR_BODY_MODEL_VERSION: u32 = 8;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
