@@ -40,13 +40,19 @@ impl CriticTrap {
             "'{}'",
             marker.to_str().context("trap marker path is not UTF-8")?.replace('\'', "'\\''")
         );
+        // Write under a scratch name and rename into place: executing a
+        // file another thread still holds open for writing (including via
+        // an inherited fork descriptor) fails with ETXTBSY on Linux, and
+        // these tests run in parallel in one process.
+        let scratch = directory.path().join("perlcritic.write");
         fs::write(
-            &executable,
+            &scratch,
             format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {quoted_marker}\nexit {exit_code}\n"),
         )
         .context("write executable Critic trap")?;
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o755))
             .context("make Critic trap executable")?;
+        fs::rename(&scratch, &executable).context("publish executable Critic trap")?;
 
         // Prove the instrument really executes and records an invocation.
         // A missing interpreter, noexec mount or failed write is not a pass.
