@@ -1875,7 +1875,7 @@ mod tests {
     }
 
     fn artifact(role: ArtifactRole, path: &str, contents: &str) -> ArtifactInput {
-        ArtifactInput { role: role, path: path.to_string(), contents: contents.to_string() }
+        ArtifactInput { role, path: path.to_string(), contents: contents.to_string() }
     }
 
     /// A canonical packet body carrying the schema discriminator and the

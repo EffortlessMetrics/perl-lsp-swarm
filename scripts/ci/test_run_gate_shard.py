@@ -2052,6 +2052,7 @@ class IntegrationSubjectTests(unittest.TestCase):
                 "test_run_gate_shard.py",
                 "test_scope_cache_key.py",
                 "test_candidate_meta_self_tests.py",
+                "test_local_publication_containment.py",
             ):
                 (tests / filename).write_text(
                     "import unittest\nfrom pathlib import Path\nPath('gate-script-executed').touch()\n"
@@ -2122,6 +2123,7 @@ class IntegrationSubjectTests(unittest.TestCase):
                 "scripts/ci/test_run_gate_shard.py",
                 "scripts/ci/test_scope_cache_key.py",
                 "scripts/ci/test_candidate_meta_self_tests.py",
+                "scripts/ci/test_local_publication_containment.py",
             ):
                 if expected not in listed:
                     raise RuntimeError(f"consolidated meta step no longer runs {expected}")

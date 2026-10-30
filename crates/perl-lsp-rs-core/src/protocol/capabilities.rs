@@ -579,6 +579,8 @@ mod tests {
             "quickfix",
             "refactor",
             "refactor.extract",
+            "refactor.extract.variable",
+            "refactor.extract.subroutine",
             "refactor.rewrite",
             "source.fixAll",
             "source.modernize",
@@ -832,6 +834,9 @@ mod tests {
     /// both flags.
     #[test]
     fn workspace_symbol_provider_advertises_resolve_when_enabled() {
+        // Resolve advertisement requires the parent workspace_symbol request:
+        // the guard withdraws resolve-only flags since #18315 (resolve options
+        // cannot advertise a disabled parent request).
         let flags = BuildFlags {
             workspace_symbol: true,
             workspace_symbol_resolve: true,
@@ -856,6 +861,13 @@ mod tests {
             Some(true),
             "workspaceSymbolProvider.resolveProvider must be true when \
              workspace_symbol_resolve is enabled"
+        );
+
+        // Resolve without the parent request must stay fully withdrawn.
+        let resolve_only = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
+        assert!(
+            capabilities_for(resolve_only).workspace_symbol_provider.is_none(),
+            "workspace_symbol_resolve alone must not advertise the provider"
         );
     }
 

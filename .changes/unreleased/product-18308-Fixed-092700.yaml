@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Tied-variable hover no longer presents interpolated or command string expressions as exact class names. The optional class annotation is conservatively omitted for all interpolating quote modes, including constant double-quoted names."
+time: 2026-10-22T09:27:00Z
+custom:
+  PR: "18308"
+  Slug: hover-dynamic-tied-class
+  Breaking: "no"
