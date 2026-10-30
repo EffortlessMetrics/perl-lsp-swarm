@@ -419,14 +419,16 @@ enum Commands {
         check: bool,
     },
 
-    /// Validate a `no_publish_side_effects.v1` surface inventory against the
-    /// canonical release topology (#9414).
+    /// Validate a `no_publish_side_effects.v1` surface inventory against
+    /// caller-supplied release-topology bytes (#9414; self-consistent
+    /// projection, canonical admission out of scope).
     #[command(name = "no-publish-side-effects")]
     NoPublishSideEffects {
         /// Path to the inventory JSON document.
         #[arg(long)]
         inventory: std::path::PathBuf,
-        /// Path to the canonical release-topology.json artifact.
+        /// Path to the caller-supplied release-topology.json artifact
+        /// (canonical admission out of scope).
         #[arg(long)]
         topology: std::path::PathBuf,
     },

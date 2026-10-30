@@ -499,7 +499,7 @@ pub fn validate_inventory(inventory: &NoPublishSideEffectsInventory) -> Result<(
     if !well_formed {
         bail!(
             "topology_digest {:?} is malformed; expected {}<64 lowercase hex> over the \
-             canonical release topology bytes",
+             supplied release topology bytes",
             inventory.topology_digest,
             TOPOLOGY_DIGEST_PREFIX
         );
@@ -591,7 +591,8 @@ pub fn validate_inventory(inventory: &NoPublishSideEffectsInventory) -> Result<(
             && surface.expected_public_state == PublicState::NotApplicable
         {
             bail!(
-                "surface {:?} is applicable but expects not_applicable; positive                  applicability cannot shed the surface's public-state expectation",
+                "surface {:?} is applicable but expects not_applicable; positive \
+applicability cannot shed the surface's public-state expectation",
                 surface.surface_id
             );
         }
@@ -610,7 +611,7 @@ pub fn validate_topology_binding(
 ) -> Result<()> {
     if inventory.topology_digest != authority.digest {
         bail!(
-            "topology_digest {:?} does not match the canonical release topology bytes \
+            "topology_digest {:?} does not match the supplied release topology bytes \
              ({:?}); the inventory is stale or fabricated",
             inventory.topology_digest,
             authority.digest
@@ -628,7 +629,7 @@ pub fn validate_topology_binding(
     for surface in &inventory.surfaces {
         let spec = authority.surfaces.get(&surface.surface_id).ok_or_else(|| {
             color_eyre::eyre::eyre!(
-                "surface {:?} is absent from the canonical release topology; invented \
+                "surface {:?} is absent from the supplied release topology; invented \
                  surfaces fail the closed-world authority",
                 surface.surface_id
             )
@@ -669,7 +670,9 @@ pub fn validate_topology_binding(
             && surface.applicability_evidence != spec.deferral_evidence
         {
             bail!(
-                "surface {:?} names applicability evidence {:?} but the canonical topology                  defers it with {:?}; fabricated deferral evidence fails the closed-world                  authority",
+                "surface {:?} names applicability evidence {:?} but the supplied topology \
+defers it with {:?}; fabricated deferral evidence fails the closed-world \
+authority",
                 surface.surface_id,
                 surface.applicability_evidence,
                 spec.deferral_evidence
@@ -986,10 +989,7 @@ mod tests {
             Ok(()) => eyre!("invented surface unexpectedly bound"),
             Err(error) => error,
         };
-        assert!(
-            error.to_string().contains("absent from the canonical release topology"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("absent from the supplied release topology"), "{error}");
         Ok(())
     }
 
