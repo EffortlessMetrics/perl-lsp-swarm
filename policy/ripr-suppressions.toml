@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-10-06"
+updated = "2026-10-11"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -4930,3 +4930,109 @@ review_after = "2026-10-29"
 expires = "2026-12-28"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1428 or #1429 connects handle_identifier's strict_subs_mode early return and UnquotedBareword push to the named --lib tests (strict_subs_off_does_not_emit_unquoted_bareword, unparenthesized_require_dbi_does_not_emit_unquoted_bareword, expression_dbi_emits_unquoted_bareword, parenthesized_require_dbi_emits_unquoted_bareword), or at expiry. Narrow immediately if a receipt reports a no_static_path seam in uses.rs outside the three identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
 
+
+# -----------------------------------------------------------------------------
+# LSP stdio round-trip criterion bench (PR #17179): measurement plumbing.
+#
+# crates/perl-lsp-rs/benches/lsp_stdio_roundtrip_benchmark.rs is a
+# harness=false criterion bench. It only executes under an explicit
+# `cargo bench` run that spawns the real perllsp binary over stdio against the
+# committed mojolicious fixture (baseline recorded in the PR description).
+# Plain `cargo test` cannot reach its internals by construction: a
+# harness=false target is executed as a binary, so #[cfg(test)] units inside
+# it never run, and the receipt pass is deliberately gated off under cargo
+# test. The blocking findings here are the spawn/sample collectors, the
+# receipt writer, and the criterion group closures — measurement plumbing
+# whose honest validation is executing the bench and the committed receipt
+# (.ci/metrics/lsp_roundtrip.json), not static test reachability; focused
+# unit tests would be proof theatre in the same sense the declaration-probe
+# entries below already record.
+#
+# The #17159 benchmark matrix plans further slices in this same file
+# (diagnostics_after_edit_latency, a dedicated startup-to-ready split, server
+# RSS), so the selector is the path plus the two merge-blocking classes, not a
+# frozen gap-id list: new measurement lines must not re-wedge the New Gap
+# Gate. The scope stays deliberately narrower than the ux-receipt-tests entry:
+# exactly one bench file, and only the two classes the gate blocks on, so the
+# weakly_exposed bucket stays visible in telemetry. Any production behavior
+# landing in this file is a narrowing trigger per removal_criteria.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-17179-lsp-stdio-roundtrip-bench-measurement"
+kind = "bench_measurement_surface"
+paths = ["crates/perl-lsp-rs/benches/lsp_stdio_roundtrip_benchmark.rs"]
+classification = ["reachable_unrevealed", "no_static_path"]
+owner = "proof-lane"
+issue = "#17159"
+reason = "PR #17179 (#17159 first slice): all 61 merge-blocking findings on head c4926e25e (ripr run 38090430580, merge preview 192e7cee, base 1f973039d8) sit in the new harness=false criterion bench lsp_stdio_roundtrip_benchmark.rs — 49 no_static_path plus 12 reachable_unrevealed — and none in the PR's production changes (lifecycle.rs is comment-only plus a test-helper migration and carries only non-blocking weakly_gripped annotations). A harness=false bench is executed as a binary, so cargo test cannot reach its internals and the honest proof is running the bench against the real perllsp binary plus the committed receipt. Selector is the path plus the two blocking classes because #17159 slices 2-4 extend this same bench; a frozen gap-id list would re-wedge the gate on every new measurement line."
+created = "2026-10-11"
+review_after = "2026-11-11"
+expires = "2027-01-31"
+removal_criteria = "Remove if this bench ever gains behavior reachable from a shipped target (split that behavior into a tested module and narrow this entry to the residual measurement lines), or at expiry. Re-check at review_after against the newest receipt: if the bench file's blocking buckets reach zero without the entry, retire it."
+
+
+# -----------------------------------------------------------------------------
+# Criterion bench harness, #17159 matrix row 5 (`workspace_index_benchmark`):
+# the bench target is `harness = false` and is only ever compiled as a
+# criterion binary, so no test can statically reach a criterion group body,
+# its `b.iter_batched` setup/routine closures, or its `eprintln!` reporting.
+# The tracer's answer for those owners is structural ("No static test path
+# found for the changed owner"), not a gap a focused test can close; the
+# behavior proof for the slice lives in the receipt target
+# `tests/workspace_index_real_corpus_receipt.rs` (always-on sampler proofs
+# plus the `#[ignore]`d numeric receipt).
+#
+# Identity key: `gap_ids` lists the 24 probe identities from the hosted
+# receipt (run 38090507013: branch head a016c9b6c6, merge tree ad0b1a94b,
+# base 1f973039d8): 23 no_static_path findings in the bench file plus the one
+# reachable_unrevealed error_path at `benches/support/index_real_corpus.rs:143`
+# (the `std::fs::copy` map_err `?` inside `stage_copy`). The support-file seam
+# is closed for real in the same change by the always-on
+# `stage_copy_names_the_failing_paths_on_error` receipt test, which observes
+# and discriminates the named error; its identity is listed only so the
+# new-gap gate cannot block on the analyzer's conservative class during the
+# transition. Path + classification are additional filters, not the selector.
+# A future executable seam in these files with a different probe id stays
+# visible. `kind` is descriptive metadata, not a declaration selector.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-17159-workspace-index-bench-harness"
+kind = "call_presence_static_tracing_limit"
+paths = [
+  "crates/perl-workspace/benches/workspace_index_benchmark.rs",
+  "crates/perl-workspace/benches/support/index_real_corpus.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+gap_ids = [
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:side_effect:7f67eea6",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:e97d5fd6",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:e9908f06",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:204529a2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:24399df6",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:8f6999c7",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:b86862e7",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:ded23a18",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:204529a2.2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:24399df6.2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:dd946191",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:ded23a18.2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:7eec60d1",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:e97d5fd6.2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:e9908f06.2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:204529a2.3",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:24399df6.3",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:8f6999c7.2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:204529a2.4",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:24399df6.4",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:dd946191.2",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:ded23a18.3",
+  "probe:crates_perl-workspace_benches_workspace_index_benchmark.rs:call_deletion:7eec60d1.2",
+  "probe:crates_perl-workspace_benches_support_index_real_corpus.rs:error_path:7ee1b25a"
+]
+owner = "proof-lane"
+issue = "#17159"
+reason = "PR #17243 (#17159 row 5): hosted RIPR run 38090507013 counted new_unresolved = 24 on the diff-scoped receipt — 23 no_static_path findings in benches/workspace_index_benchmark.rs (criterion group bodies, b.iter_batched setup/routine closures, and the eprintln! reporting line; every one reads 'No static test path found for the changed owner') plus 1 reachable_unrevealed error_path at benches/support/index_real_corpus.rs:143, the std::fs::copy map_err ? inside stage_copy. A criterion bench target compiled with harness = false is reachable only from the bench runner, so no focused test can give these 23 owners a static test path; the seam-level behavior proof for the slice is the receipt target tests/workspace_index_real_corpus_receipt.rs, whose always-on tests pin the sampler arithmetic, the indexed predicate, discovery labels, and stage_copy content staging. The line-143 error path is now asserted directly by the new always-on stage_copy_names_the_failing_paths_on_error test (named source and target paths in the message), so its identity is expected to reclassify as exposed and drop out; it is listed only to keep the gate from blocking on the analyzer's conservative class in the meantime. Same call_presence static-tracing class as ripr-suppress-type-hierarchy-cancellation-routing. Selector is the 24 probe identities from that receipt, not the path; classification-qualified to no_static_path + reachable_unrevealed."
+created = "2026-10-11"
+review_after = "2026-11-11"
+expires = "2027-01-11"
+removal_criteria = "Remove when EffortlessMetrics/ripr traces criterion bench-group owners to a static test path (making the structural no_static_path answer go away), or at expiry. Drop the support-file identity (probe:crates_perl-workspace_benches_support_index_real_corpus.rs:error_path:7ee1b25a) from gap_ids as soon as a receipt classifies that seam exposed via stage_copy_names_the_failing_paths_on_error. Narrow immediately if a receipt reports an executable no_static_path or reachable_unrevealed seam in either listed file outside the identities in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."

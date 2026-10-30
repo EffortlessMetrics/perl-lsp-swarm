@@ -240,7 +240,7 @@ pub fn add_keyword_completions(
                 ))),
                 filter_text: Some(Cow::Borrowed(keyword)),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::for_authored_body(insert_text),
                 label_details: None,
@@ -267,6 +267,7 @@ mod tests {
             current_package: "main".to_string(),
             prefix: prefix.to_string(),
             prefix_start: 0,
+            suffix_end: prefix.len(),
             cursor_scope_id: 0,
         }
     }

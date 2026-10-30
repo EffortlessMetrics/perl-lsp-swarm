@@ -44,7 +44,8 @@ impl ScopeAnalyzer {
         let Some(between) = source.get(call.location.start..operand.location.start) else {
             return false;
         };
-        between.contains('(')
+        // A comment may contain punctuation without changing require's operand syntax.
+        between.lines().any(|line| line.split('#').next().unwrap_or_default().contains('('))
     }
 }
 
@@ -120,6 +121,48 @@ mod tests {
             !ScopeAnalyzer::require_call_parenthesizes_operand(parent, node, code),
             "no '(' between require and DBI"
         );
+    }
+
+    #[test]
+    fn comment_parentheses_do_not_parenthesize_require_module_operand() {
+        let cases = [
+            "require # ( note\n DBI;",
+            "require # ( note\r\n DBI;",
+            "require # ( café\n # ( another note\n DBI;",
+        ];
+        for code in cases {
+            let ast = parse(code);
+            let analyzer = ScopeAnalyzer::new();
+            let (node, ancestors) = first_named(&ast, "DBI");
+            let parent = must_some_with(ancestors.last().copied(), "require FunctionCall parent");
+            assert!(
+                !ScopeAnalyzer::require_call_parenthesizes_operand(parent, node, code),
+                "parentheses inside a line comment are not require syntax in {code:?}"
+            );
+            assert!(
+                analyzer.is_require_module_operand(node, &ancestors, code),
+                "comment trivia must preserve the direct module operand in {code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_parentheses_around_require_operand_survive_comments() {
+        let cases = ["require # ( note\n (DBI);", "require ( # ( note\r\n DBI);"];
+        for code in cases {
+            let ast = parse(code);
+            let analyzer = ScopeAnalyzer::new();
+            let (node, ancestors) = first_named(&ast, "DBI");
+            let parent = must_some_with(ancestors.last().copied(), "require FunctionCall parent");
+            assert!(
+                ScopeAnalyzer::require_call_parenthesizes_operand(parent, node, code),
+                "real parentheses before or after comments must remain syntax in {code:?}"
+            );
+            assert!(
+                !analyzer.is_require_module_operand(node, &ancestors, code),
+                "a comment must not exempt a parenthesized expression operand in {code:?}"
+            );
+        }
     }
 
     #[test]

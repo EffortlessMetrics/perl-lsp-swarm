@@ -26,7 +26,8 @@ target-gc *args:
     ./scripts/target-gc.sh {{args}}
 
 agent-preflight: storage-doctor
-    @echo "agent preflight ok"
+    @echo "storage layout preflight ok; Cargo build capacity was not assessed"
+    @echo "For build admission: scripts/cargo-admitted --preflight <exact Cargo command>"
 
 # Agent-safe check: routed target/build dirs, incremental off, bounded sccache, build lock.
 agent-check:
@@ -38,8 +39,10 @@ agent-test:
 agent-clippy:
     {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
 
+# Nextest's runner profile and Cargo's build profile are separate selectors.
+# Match agent-test's build profile so switching runners reuses its test binaries.
 agent-nextest:
-    {{cargo_safe}} nextest run --workspace --profile agent
+    {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent
 
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
@@ -54,6 +57,10 @@ cached *args:
 # (no Edit/Write/NotebookEdit/Agent in their tools: allowlist).
 check-agent-capabilities:
     {{cargo_safe}} xtask check-agent-capabilities
+
+# Docs gate (#17689): stale product names must not return to user docs.
+check-stale-doc-names:
+    bash scripts/check-stale-doc-names.sh
 
 # ============================================================================
 # Tiered CI Execution (works locally via Nix and in GitHub Actions)
@@ -498,7 +505,7 @@ ready: doctor pr-fast
 # Run before any agent-spawning session. Safe to run repeatedly (idempotent).
 # Checks: core.bare corruption (#3205), stale branches, worktree leaks, orphaned
 # worktree dirs, pre-push hook, workspace cleanliness, master fast-forward state.
-# Workspace health check — auto-detects and auto-fixes recurring state corruption
+# Workspace health check — reports findings without repairing Git configuration
 doctor:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -506,7 +513,6 @@ doctor:
     echo
 
     issues=0
-    fixed=0
 
     # ------------------------------------------------------------------
     # Locate main checkout. NOTE: on Git Bash for Windows, every external
@@ -543,18 +549,21 @@ doctor:
     # ------------------------------------------------------------------
     # Check 1: core.bare = true corruption (#3205)
     # ------------------------------------------------------------------
-    bare_value=$(git --git-dir="$main_git_dir" config --local --get core.bare 2>/dev/null || true)
+    bare_status=0
+    bare_value=$(git --git-dir="$main_git_dir" config --local --type=bool --get core.bare) || bare_status=$?
+    if [ "$bare_status" -ne 0 ] && [ "$bare_status" -ne 1 ]; then
+        echo "❌ could not inspect local core.bare (git config exited $bare_status)"
+        echo "   No repair performed; resolve the Git configuration error and rerun just doctor."
+        exit 1
+    fi
     if [ "$bare_value" = "true" ]; then
         echo "⚠️  git config core.bare = true detected in main checkout (#3205)"
-        if git --git-dir="$main_git_dir" config --local --unset core.bare 2>/dev/null; then
-            echo "   Auto-fixed: unset core.bare"
-            fixed=$((fixed + 1))
-        else
-            echo "   Fix: git --git-dir=\"$main_git_dir\" config --local --unset core.bare"
-            issues=$((issues + 1))
-        fi
+        echo "   No repair performed. Only if this is an ordinary checkout, run explicitly:"
+        printf '   Fix: git --git-dir=%q config --local --unset core.bare\n' "$main_git_dir"
+        echo "   Remaining checks not run: worktree observations require non-bare configuration."
+        exit 1
     else
-        echo "✅ git config core.bare unset (was OK)"
+        echo "✅ local core.bare is false or unset"
     fi
 
     # ------------------------------------------------------------------
@@ -787,10 +796,10 @@ doctor:
     fi
 
     echo
-    if [ "$issues" -eq 0 ] && [ "$fixed" -eq 0 ]; then
+    if [ "$issues" -eq 0 ]; then
         echo "✅ all checks passed"
     else
-        echo "$issues issues found, $fixed auto-fixed"
+        echo "$issues issues found; no repairs performed"
     fi
     exit 0
 
@@ -1303,6 +1312,21 @@ ux-tests-full:
         cargo test -p perl-lsp-ux-tests --features integration-test -- --test-threads=1
     @echo "UX tests (full) passed"
 
+# Memory ceiling + startup-to-ready bench receipts over the mojolicious
+# fixture (#17159 matrix rows 3-4: server_startup_to_ready + server_rss_memory;
+# memory lane also tracks #10015). Builds the release server, then runs the
+# single ignored receipt test, which writes .ci/metrics/lsp_memory_startup.json.
+# Nightly-scale (~2 min): 15 cold spawns plus a 600-message RSS soak.
+ux-bench-memory-startup:
+    @echo "Running memory + startup-to-ready bench receipts..."
+    @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 \
+        cargo build --release -p perllsp
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        PERL_LSP_BIN={{justfile_directory()}}/target/release/perllsp \
+        PERL_LSP_UX_REQUIRE_BINARY=1 \
+        cargo test -p perl-lsp-ux-tests --test lsp_memory_startup -- --test-threads=1 --ignored --nocapture
+    @echo "Memory + startup bench receipts written"
+
 # @INC consumer-consistency conformance harness.
 # Verifies that goto-definition, hover, and PL701 diagnostic agree on module resolution
 # across 5 resolution modes: relative includePaths, lexical use lib, no lib cancellation,
@@ -1518,7 +1542,7 @@ swarm-summary:
 # Check for machine-specific paths in documentation
 ci-doc-paths:
     @echo "🔍 Checking documentation paths..."
-    @cargo xtask ci-hygiene check-doc-paths docs
+    @cargo run --quiet -p perl-ci-hygiene --bin perl-ci-hygiene --locked -- check-doc-paths docs
     @echo "✅ Documentation paths check passed"
 
 # Verify publication facts against live codebase metrics (informational, non-blocking)
@@ -2917,19 +2941,12 @@ bump-version VERSION:
 release-turnkey VERSION *ARGS="":
     @cargo xtask release-turnkey "{{VERSION}}" {{ARGS}}
 
-# Dispatch publish-to-crates.io workflow for a release version.
+# Legacy dispatch-only helper; not the release transaction or proof of publication (#16799).
 publish-release VERSION *ARGS="":
     @cargo xtask publish-release "{{VERSION}}" {{ARGS}}
 
-# Manually publish the 4 new crates for v0.12.2 one at a time with 10-min gaps.
-# Use when the automated workflow is blocked by crates.io's new-crate rate limit
-# (burst=5, refill=1/10 min — separate from the update limit fixed in #3307).
-# See docs/reference/MANUAL_PUBLISH_NEW_CRATES.md for full context.
-#
-# Dry run (safe, no actual publishing):
-#   DRY_RUN=true just publish-new-crates
-# Live run:
-#   CARGO_REGISTRY_TOKEN=<token> just publish-new-crates
+# Retired ambient publisher: always refuses (#16802).
+# Follow the reviewed release transaction (#13768 / #6055): docs/release/RUNBOOK.md.
 publish-new-crates:
     bash scripts/publish-new-crates-manually.sh
 
