@@ -296,6 +296,24 @@ pub fn shadow_references_with_pir(
     target_name: &str,
     target_body_idx: usize,
 ) -> PirShadowCompareReceipt {
+    shadow_references_with_pir_for_query(
+        receipt,
+        legacy_result,
+        target_name,
+        target_body_idx,
+        None,
+        None,
+    )
+}
+
+fn shadow_references_with_pir_for_query(
+    receipt: &LexicalExtractorReceipt,
+    legacy_result: &[(usize, usize)],
+    target_name: &str,
+    target_body_idx: usize,
+    target_sigil: Option<&str>,
+    query_byte_offset: Option<usize>,
+) -> PirShadowCompareReceipt {
     if let Some(reason) = evaluate_refusal(
         target_name,
         target_body_idx,
@@ -311,9 +329,13 @@ pub fn shadow_references_with_pir(
     let matching: Vec<_> = receipt.bodies[target_body_idx]
         .facts
         .iter()
-        .filter(|fact| fact.name.name == target_name && fact.source_anchor.is_anchored())
+        .filter(|fact| {
+            fact.name.name == target_name
+                && target_sigil.is_none_or(|sigil| fact.name.sigil == sigil)
+                && fact.source_anchor.is_anchored()
+        })
         .collect();
-    let matching = match selected_facts(matching, None) {
+    let matching = match selected_facts(matching, query_byte_offset) {
         Ok(matching) => matching,
         Err(reason) => return PirShadowCompareReceipt::refused(reason),
     };
@@ -723,11 +745,13 @@ pub fn references_pir_promote(
             // which operates on the byte-offset level (no uri_mapper needed for the
             // scorecard). The candidate evaluation result flows into the receipt via
             // the compiler-set counts. Emit via tracing::debug! for aggregation.
-            let receipt = shadow_references_with_pir(
+            let receipt = shadow_references_with_pir_for_query(
                 pir_receipt,
                 legacy_result,
                 target_name,
                 target_body_idx,
+                Some(target_sigil),
+                opts.query_byte_offset,
             );
             // Extract receipt fields to local variables so coverage tools can
             // track these expressions independently of the tracing::debug! macro
@@ -785,7 +809,7 @@ pub fn references_pir_promote(
 mod promote_tests {
     use super::{
         DEFAULT_PROMOTION_MODE, PirShadowRefusalReason, PromotionMode, ReferenceOptions,
-        ReferencesPirPromoteOutcome, references_pir_promote,
+        ReferencesPirPromoteOutcome, references_pir_promote, shadow_references_with_pir_for_query,
     };
     use perl_parser_core::{Parser, hir::lower_ast, pir::extract_lexical_facts};
 
@@ -874,6 +898,35 @@ mod promote_tests {
         if let ReferencesPirPromoteOutcome::LegacyFallback { result, .. } = outcome {
             assert_eq!(result, legacy, "shadow mode must preserve legacy result");
         }
+    }
+
+    #[test]
+    fn shadow_compare_filters_mixed_sigil_bindings_by_target_sigil() {
+        let receipt = receipt_for("my $x = 1;\nmy @x = (1, 2);\nprint $x;\nprint @x;\n");
+        let legacy = vec![(3usize, 5usize), (33usize, 35usize)];
+        let receipt =
+            shadow_references_with_pir_for_query(&receipt, &legacy, "x", 0, Some("$"), None);
+        assert_eq!(receipt.refusal_reason, None, "sigil-filtered compare must run: {receipt:?}");
+        assert_eq!(receipt.compiler_candidate_count, 2, "{receipt:?}");
+        assert!(receipt.missing_from_compiler.is_empty(), "{receipt:?}");
+        assert!(receipt.extra_in_compiler.is_empty(), "{receipt:?}");
+    }
+
+    #[test]
+    fn shadow_compare_query_offset_selects_inner_shadowed_binding() {
+        let receipt = receipt_for("my $x = 1;\n{\n    my $x = 2;\n    print $x;\n}\nprint $x;\n");
+        let legacy =
+            vec![(3usize, 5usize), (20usize, 22usize), (38usize, 40usize), (50usize, 52usize)];
+        let receipt =
+            shadow_references_with_pir_for_query(&receipt, &legacy, "x", 0, Some("$"), Some(20));
+        assert_eq!(receipt.refusal_reason, None, "inner-cursor compare must run: {receipt:?}");
+        assert_eq!(receipt.compiler_candidate_count, 2, "{receipt:?}");
+        assert_eq!(
+            receipt.missing_from_compiler,
+            vec![(3usize, 5usize), (50usize, 52usize)],
+            "the outer ranges are the ones the inner binding does not cover: {receipt:?}"
+        );
+        assert!(receipt.extra_in_compiler.is_empty(), "{receipt:?}");
     }
 
     // ── PromoteExact → Exact for valid receipt ─────────────────────────────
