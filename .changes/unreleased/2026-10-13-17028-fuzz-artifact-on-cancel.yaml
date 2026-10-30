@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Nightly fuzz crash artifacts now upload when a job is cancelled by its timeout as well as when a step fails, so a crash found just before the timeout no longer loses its reproducer with the job."
+time: 2026-10-13T00:00:00Z
+custom:
+  PR: "17821"
+  Slug: fuzz-artifact-on-cancel
+  Breaking: "no"

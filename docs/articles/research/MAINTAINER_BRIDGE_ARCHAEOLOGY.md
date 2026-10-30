@@ -210,11 +210,11 @@ first bridge PR."
 
 ## Evidence Pointers
 
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
-- [PR_LIFECYCLE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_LIFECYCLE_ARCHAEOLOGY.md)
-- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/PR_REVIEW_LOOP_ARCHAEOLOGY.md)
-- [JULES_BOT_ANALYSIS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/JULES_BOT_ANALYSIS.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
+- [PR_LIFECYCLE_ARCHAEOLOGY.md](PR_LIFECYCLE_ARCHAEOLOGY.md)
+- [PR_REVIEW_LOOP_ARCHAEOLOGY.md](PR_REVIEW_LOOP_ARCHAEOLOGY.md)
+- [JULES_BOT_ANALYSIS.md](../../project/JULES_BOT_ANALYSIS.md)
 - [PR #159](https://github.com/EffortlessMetrics/perl-lsp/pull/159)
 - [PR #165](https://github.com/EffortlessMetrics/perl-lsp/pull/165)
 - [PR #170](https://github.com/EffortlessMetrics/perl-lsp/pull/170)

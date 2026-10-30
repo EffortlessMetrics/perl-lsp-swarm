@@ -138,7 +138,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ci_runner_fmt_check_routes_to_package_formatter() -> Result<()> {
-        if crate::test_support::FakeCargo::child_requested() {
+        if crate::test_support::FakeCargoChild::child_requested() {
             return run_fmt_check();
         }
 
@@ -155,9 +155,7 @@ mod tests {
 
         let invocations = fake_cargo.invocations()?;
         assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));
-        assert!(invocations.iter().any(|line| {
-            line.starts_with("fmt --manifest-path ") && line.ends_with(" -- --check")
-        }));
+        fake_cargo.assert_package_formatting()?;
         Ok(())
     }
 }

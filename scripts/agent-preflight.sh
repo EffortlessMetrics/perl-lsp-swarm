@@ -10,6 +10,7 @@
 #   4 — cwd issue (running from the main repo root, not a worktree path)
 #   5 — CARGO_TARGET_DIR is set (defeats automatic per-worktree isolation)
 #   6 — stash issue (shared stash has entries — cross-contamination risk)
+#   7 — hooks issue (installed pre-push hook missing, stale, or not executable)
 #
 # Usage:
 #   bash scripts/agent-preflight.sh
@@ -146,18 +147,86 @@ else
     STASH_OK=true
 fi
 
-# ── Check 7: pre-push hook is current (Windows MAX_PATH guard) ──────────────
-# Warning-only — a stale hook does not block agent work, only push.
+# ── Check 7: pre-push hook is provisioned and current (issue #17406) ──────────
+# Failing check — a missing or stale hook voids every hook-assumed guard
+# (placeholder-identity refusal, hook currency, the pre-push gate itself),
+# so an agent must not reason "the hooks will catch it" until this passes.
+# Local hooks cannot be strictly enforced (fresh clones, --no-verify
+# bypass); this check is the drift detector at agent entry, and
+# scripts/worktree-add.sh + worktree-manager allocate are the provisioning
+# paths that keep it green by default.
 
 REPO_ROOT_AGENT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-INSTALLED_HOOK="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
+# --git-path honors the installer's repo-local core.hooksPath, so this checks
+# this tree's own hooks dir (#17414 rule C). The output is relative to the
+# cwd, which is where this script runs, so no --path-format is needed.
+INSTALLED_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-push"
+INSTALLED_COMMIT_HOOK="$(git rev-parse --git-path hooks 2>/dev/null)/pre-commit"
 CHECKED_IN_HOOK="$REPO_ROOT_AGENT/hooks/pre-push"
-if [ -f "$INSTALLED_HOOK" ] && [ -f "$CHECKED_IN_HOOK" ]; then
-    if ! diff -q "$INSTALLED_HOOK" "$CHECKED_IN_HOOK" >/dev/null 2>&1; then
-        printf 'WARN pre-push hook is stale (Windows os error 206 risk)\n'
-        printf '     Fix: cargo xtask ci-hygiene install-githooks\n'
+HOOK_INSTALLER_FIX="bash scripts/install-githooks.sh"
+if [[ ! -f "$CHECKED_IN_HOOK" ]]; then
+    # No authority in this checkout (e.g. a bare fixture repo, not perl-lsp):
+    # nothing to verify against — skip without failing.
+    ok "pre-push hook check skipped (no hooks/pre-push authority here)"
+    HOOKS_OK=true
+elif [[ ! -f "$INSTALLED_HOOK" ]]; then
+    err "pre-push hook is missing ($INSTALLED_HOOK). Hook-assumed guards are void until it is installed."
+    echo "    Fix: $HOOK_INSTALLER_FIX (run from the repo root)"
+    HOOKS_OK=false
+elif [[ "$(tr -d '\r' < "$INSTALLED_HOOK")" != "$(tr -d '\r' < "$CHECKED_IN_HOOK")" ]]; then
+    # Command-substitution comparison strips trailing newlines, mirroring
+    # check_githooks' normalization: the installer appends one "\n" to the
+    # generated script, so a byte-exact diff would always report drift.
+    err "pre-push hook is stale (installed copy differs from hooks/pre-push; Windows os error 206 risk)."
+    echo "    Fix: $HOOK_INSTALLER_FIX (run from the repo root)"
+    HOOKS_OK=false
+else
+    case "$(uname -s 2>/dev/null || echo unknown)" in
+        MINGW* | MSYS* | CYGWIN*)
+            HOOK_EXEC_OK=true
+            ;; # Windows has no exec-bit semantics (mirrors check_githooks' cfg gate)
+        *)
+            if [[ -x "$INSTALLED_HOOK" ]]; then
+                HOOK_EXEC_OK=true
+            else
+                HOOK_EXEC_OK=false
+            fi
+            ;;
+    esac
+    if [[ "$HOOK_EXEC_OK" == true ]]; then
+        # pre-commit has no checked-in authority (its bytes are generated
+        # inside the installer), so it gets presence + executable instead of
+        # a byte comparison. The installer writes both hooks in one
+        # invocation, so a current pre-push implies a current pre-commit
+        # unless the latter was deleted or de-executed outright.
+        COMMIT_OK=true
+        COMMIT_PROBLEM=""
+        if [[ ! -f "$INSTALLED_COMMIT_HOOK" ]]; then
+            COMMIT_OK=false
+            COMMIT_PROBLEM="missing ($INSTALLED_COMMIT_HOOK). Commits run without the staged gate."
+        else
+            case "$(uname -s 2>/dev/null || echo unknown)" in
+                MINGW* | MSYS* | CYGWIN*) ;;
+                *)
+                    if [[ ! -x "$INSTALLED_COMMIT_HOOK" ]]; then
+                        COMMIT_OK=false
+                        COMMIT_PROBLEM="not executable ($INSTALLED_COMMIT_HOOK). Git silently skips non-executable hooks."
+                    fi
+                    ;;
+            esac
+        fi
+        if [[ "$COMMIT_OK" == true ]]; then
+            ok "pre-push hook is current"
+            HOOKS_OK=true
+        else
+            err "pre-commit hook is $COMMIT_PROBLEM"
+            echo "    Fix: $HOOK_INSTALLER_FIX (run from the repo root)"
+            HOOKS_OK=false
+        fi
     else
-        ok "pre-push hook is current"
+        err "pre-push hook is not executable ($INSTALLED_HOOK). Git silently skips non-executable hooks."
+        echo "    Fix: $HOOK_INSTALLER_FIX (run from the repo root)"
+        HOOKS_OK=false
     fi
 fi
 
@@ -188,6 +257,10 @@ fi
 
 if [[ "$STASH_OK" == false ]]; then
     exit 6
+fi
+
+if [[ "$HOOKS_OK" == false ]]; then
+    exit 7
 fi
 
 echo ""

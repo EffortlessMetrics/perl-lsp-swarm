@@ -10,10 +10,11 @@ use crate::syntax::regex_analysis::RegexAnalysisFamily;
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
-    HirExprId, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt,
-    HirStmtId, HirSubscript, HirSubstitution, HirTransliteration, HirVariable,
-    LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil, SubscriptKind,
-    UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    HirExprId, HirLiteral, HirLiteralKind, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch,
+    HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution, HirTransliteration,
+    HirVariable, LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    strip_string_quotes,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -172,6 +173,8 @@ impl Lowerer {
                     } else {
                         ScopeKind::Block
                     };
+                let enclosing_stack_len = self.scope_stack.len();
+                let enclosing_package = self.package_context.clone();
                 let scope_id =
                     self.enter_scope(scope_kind, node.location, self.package_context.clone());
                 self.push_item(
@@ -185,7 +188,26 @@ impl Lowerer {
                 for statement in statements {
                     self.visit(statement, confidence);
                 }
+                // Statement-form packages push a scope frame that outlives
+                // their own visit; it ends with this block. Reap only those
+                // package frames (other visitors pair their own exits) and
+                // restore the enclosing package context, or the package
+                // frame leaks and enclosing exits pop the wrong frames
+                // (#18221).
+                while self.scope_stack.len() > enclosing_stack_len + 1 {
+                    let top = self.current_scope();
+                    let top_is_package = self
+                        .scope_graph
+                        .scopes
+                        .get(top.index() as usize)
+                        .is_some_and(|frame| frame.kind == ScopeKind::Package);
+                    if !top_is_package {
+                        break;
+                    }
+                    self.exit_scope();
+                }
                 self.exit_scope();
+                self.package_context = enclosing_package;
             }
             NodeKind::Package { name, name_span, block } => {
                 let package_scope =
@@ -838,7 +860,7 @@ impl Lowerer {
                     Some(site_scope),
                 );
             }
-            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code, .. } => {
                 self.push_item(
                     node,
                     None,
@@ -1228,7 +1250,23 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // The orphaned-`else` recovery shell fabricates its "true"
+                // condition to keep the stranded block visible (#15032). That
+                // fabrication must not inherit the enclosing `Parsed`
+                // confidence, or a consumer reading condition truth or branch
+                // reachability would treat an invented operand as source-backed.
+                // Only the condition changes: the block's real contents are
+                // genuinely in the file and keep their own confidence.
+                if is_synthesized_true_condition(condition) {
+                    self.visit_children_distinguishing(
+                        node,
+                        confidence,
+                        condition,
+                        RecoveryConfidence::Recovered,
+                    );
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::Ternary { condition, .. } => {
                 self.push_item(
@@ -1287,7 +1325,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::Foreach { variable, continue_block, .. } => {
+            NodeKind::Foreach { variable, list, body, continue_block } => {
                 let label = self.pending_label.take();
                 self.push_item(
                     node,
@@ -1303,7 +1341,40 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // A `foreach my $i` iterator is loop-private in Perl: it
+                // shadows an outer same-spelling lexical for the loop's
+                // extent only (#14173). Record it in a scope opened for the
+                // whole loop (parent of the body block's own scope), so
+                // body and `continue` reads resolve to it while reads after
+                // the loop keep resolving outward. The list is evaluated
+                // outside that scope: visit it with the loop scope popped,
+                // which also keeps HIR items in source order (iterator
+                // declaration first, then the list). Non-lexical iterators
+                // keep the enclosing scope.
+                let lexical_iterator = matches!(
+                    &variable.kind,
+                    NodeKind::VariableDeclaration { declarator, .. }
+                    | NodeKind::VariableListDeclaration { declarator, .. }
+                        if matches!(declarator.as_str(), "my" | "state")
+                );
+                if lexical_iterator {
+                    let loop_scope = self.enter_scope(
+                        ScopeKind::Block,
+                        node.location,
+                        self.package_context.clone(),
+                    );
+                    self.visit(variable, confidence);
+                    self.scope_stack.pop();
+                    self.visit(list, confidence);
+                    self.scope_stack.push(loop_scope);
+                    self.visit(body, confidence);
+                    if let Some(continue_block) = continue_block {
+                        self.visit(continue_block, confidence);
+                    }
+                    self.exit_scope();
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::LabeledStatement { label, statement } => {
                 let previous = self.pending_label.replace(label.clone());
@@ -1465,6 +1536,33 @@ impl Lowerer {
         node.for_each_child(|child| self.visit(child, confidence));
     }
 
+    /// Visit a node's children in order, lowering the child identical to
+    /// `distinguished` with `distinguished_confidence` and every other child
+    /// with `confidence`.
+    ///
+    /// Child identity is compared by address so the shared `for_each_child` walk
+    /// stays the single source of child order and shape; this only changes the
+    /// confidence one already-known child is lowered with. That keeps a
+    /// fabricated child from inheriting its parent's provenance without
+    /// re-deriving the AST child walk (which would risk a silent reorder or a
+    /// dropped branch).
+    fn visit_children_distinguishing(
+        &mut self,
+        node: &Node,
+        confidence: RecoveryConfidence,
+        distinguished: &Node,
+        distinguished_confidence: RecoveryConfidence,
+    ) {
+        node.for_each_child(|child| {
+            let child_confidence = if std::ptr::eq(child, distinguished) {
+                distinguished_confidence
+            } else {
+                confidence
+            };
+            self.visit(child, child_confidence);
+        });
+    }
+
     fn current_scope(&self) -> HirScopeId {
         self.scope_stack.last().copied().unwrap_or_else(|| HirScopeId::from_index(0))
     }
@@ -1505,6 +1603,11 @@ impl Lowerer {
         match self.bareword_context {
             BarewordContext::ModuleRequest => BarewordRole::ModuleRequest,
             BarewordContext::MethodReceiver => BarewordRole::MethodReceiver,
+            // A sigil-prefixed indirect receiver (`new $class`) is a dynamic
+            // constructor target, not a static class bareword (#15031).
+            BarewordContext::IndirectObject if is_sigil_prefixed(name) => {
+                BarewordRole::DynamicIndirectObject
+            }
             BarewordContext::IndirectObject => BarewordRole::IndirectObject,
             BarewordContext::HashKey => BarewordRole::HashKey,
             BarewordContext::Expression if name.contains("::") => BarewordRole::QualifiedName,
@@ -2912,9 +3015,9 @@ fn is_sigil_prefixed(value: &str) -> bool {
 /// and an earlier revision that relied on it was wrong: `new $class` is a legal
 /// dynamic indirect constructor whose receiver arrives here as a real
 /// `Identifier { name: "$class" }` spanning the characters the author typed.
-/// Discarding that would drop a source-backed fact. (Whether such a receiver
-/// should be classified as a *bareword* at all is a separate defect, #15031;
-/// this predicate deliberately leaves that behavior unchanged.)
+/// Discarding that would drop a source-backed fact. (Such a receiver is
+/// still recorded; `classify_bareword` gives it the distinct
+/// `DynamicIndirectObject` role rather than the static one, #15031.)
 ///
 /// The sigil test is defence in depth rather than a proven discriminator. A finite
 /// probe over malformed and recovery-path inputs found no zero-width
@@ -3523,6 +3626,49 @@ fn is_synthesized_default_topic(expr: &Node) -> bool {
         && expr.location.start == expr.location.end
 }
 
+/// Whether a branch condition is the parser-fabricated "true" operand of an
+/// orphaned-`else` recovery shell.
+///
+/// `parse_orphaned_else` wraps a stranded `else` block in an `If` whose
+/// condition is a fabricated zero-width `Number("1")`, so the block stays visible
+/// to the LSP. Both conditions here are load-bearing: a written `1` in an `if`
+/// always spans at least one source character, so a zero-width `Number` reached
+/// through a branch arm can only be the fabrication.
+///
+/// The predicate is deliberately scoped to branch conditions. `while () { }`
+/// fabricates the same shape for the empty-condition infinite-loop idiom, but
+/// that is a `While` node and never reaches the `If` arm, so this cannot silently
+/// claim a sibling arm it has not been proven against. Broadening that is a
+/// separate change under #6666's honesty sweep, not a widening of this one.
+fn is_synthesized_true_condition(condition: &Node) -> bool {
+    matches!(&condition.kind, NodeKind::Number { value } if value == "1")
+        && condition.location.start == condition.location.end
+}
+
+/// Whether a numeric token is a plain decimal literal admitted to the first
+/// scalar cohort (#17538). The lexeme must be one or more ASCII digits with no
+/// base prefix, fraction, exponent, or separator, and no leading zero: Perl
+/// reads multi-digit leading-zero forms as octal (`010` is 8, `09` is a
+/// syntax error), so only the lone `0` is plain decimal. Anything else keeps
+/// falling through to `Opaque` so no normalization or coercion is implied.
+fn is_plain_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
+}
+
+/// Whether a scalar leaf node is absent from the source text (#17538).
+///
+/// Covers parser recovery fabrication (orphaned-`else` shells, missing
+/// operands such as `!;`) and valid-idiom desugaring (`while ()` empty
+/// condition): all share the zero-width point location, and a written token
+/// always spans at least one character, so the marker is truthful for every
+/// scalar arm. Call only with scalar nodes; broader fabrication coverage
+/// belongs to #6666's honesty sweep, not to this leaf.
+fn is_fabricated_scalar(node: &Node) -> bool {
+    node.location.start == node.location.end
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -3592,21 +3738,24 @@ fn lower_bodies_into_file(ast: &Node, file: &mut HirFile) {
         file.bodies.push(root_body);
     }
 
-    // Sub/method bodies: walk the top-level AST for Subroutine and Method nodes.
-    collect_sub_bodies(ast, file, &mut 0u32, &mut 0u32);
+    // Sub/method/class bodies: walk the top-level AST for Subroutine, Method,
+    // and Class nodes.
+    collect_sub_bodies(ast, file, &mut 0u32, &mut 0u32, &mut 0u32);
 }
 
-/// Walk `node` looking for `Subroutine` and `Method` AST nodes and lower their bodies.
+/// Walk `node` looking for `Subroutine`, `Method`, and `Class` AST nodes and
+/// lower their bodies.
 fn collect_sub_bodies(
     node: &Node,
     file: &mut HirFile,
     sub_ordinal: &mut u32,
     method_ordinal: &mut u32,
+    class_ordinal: &mut u32,
 ) {
     match &node.kind {
         NodeKind::Program { statements } => {
             for stmt in statements {
-                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         NodeKind::Subroutine { name, body, .. } => {
@@ -3622,7 +3771,7 @@ fn collect_sub_bodies(
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
             // Recurse into the body for nested subs/methods
-            collect_sub_bodies(body, file, sub_ordinal, method_ordinal);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
         }
         NodeKind::Method { name, body, .. } => {
             let owner_kind = BodyOwnerKind::Method { name: name.clone() };
@@ -3634,22 +3783,39 @@ fn collect_sub_bodies(
             let body_id = HirBodyId(file.bodies.len() as u32);
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
-            collect_sub_bodies(body, file, sub_ordinal, method_ordinal);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
+        }
+        NodeKind::Class { name, body, .. } => {
+            // A class body is its own body owner (#13844): its direct
+            // statements (`field`, `my`) lower into this arena so the body
+            // graph agrees with the scope graph. The class body block keeps
+            // its `ScopeKind::Class` frame as the lowering start scope, and
+            // nested subs/methods/classes are collected by recursing below.
+            let owner_kind = BodyOwnerKind::Class { name: name.clone() };
+            let ordinal = *class_ordinal;
+            *class_ordinal += 1;
+            let body_scope = find_body_scope(&file.scope_graph, body.location);
+            let hir_body =
+                lower_body_from_ast(body, owner_kind.clone(), body_scope, &file.scope_graph);
+            let body_id = HirBodyId(file.bodies.len() as u32);
+            file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
+            file.bodies.push(hir_body);
+            collect_sub_bodies(body, file, sub_ordinal, method_ordinal, class_ordinal);
         }
         NodeKind::Block { statements } => {
             for stmt in statements {
-                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(stmt, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         NodeKind::Package { block, .. } => {
             if let Some(block) = block {
-                collect_sub_bodies(block, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(block, file, sub_ordinal, method_ordinal, class_ordinal);
             }
         }
         _ => {
             // Recurse into children via the AST's child-iteration.
             node.for_each_child(|child: &Node| {
-                collect_sub_bodies(child, file, sub_ordinal, method_ordinal);
+                collect_sub_bodies(child, file, sub_ordinal, method_ordinal, class_ordinal);
             });
         }
     }
@@ -3824,11 +3990,30 @@ impl<'a> BodyBuilder2<'a> {
     /// [`HirRegexTarget::DefaultTopic`] so that an implicit topic stays
     /// distinguishable from an explicitly written `$_ =~ /x/`.
     fn lower_regex_target(&mut self, expr: &Node) -> HirRegexTarget {
+        self.lower_regex_target_with_access(expr, false)
+    }
+
+    /// Lower a regex-family target, marking a mutated place target as
+    /// read-modify-write (#14639). A mutating `s///` or `tr///` (no `/r`)
+    /// reads its target, transforms it, and writes it back, which is the
+    /// same occurrence shape as compound assignment; the occurrence must
+    /// say so, or write queries cannot see the reassignment. `/r` forms
+    /// and non-place targets stay plain reads: `/r` provably does not
+    /// write, and a non-place target is not a valid lvalue in Perl.
+    fn lower_regex_target_mutating(&mut self, expr: &Node, mutates: bool) -> HirRegexTarget {
+        self.lower_regex_target_with_access(expr, mutates)
+    }
+
+    fn lower_regex_target_with_access(&mut self, expr: &Node, rmw: bool) -> HirRegexTarget {
         if is_synthesized_default_topic(expr) {
             return HirRegexTarget::DefaultTopic;
         }
         let (kind, ast_kind) = classify_regex_target(expr);
-        let id = self.lower_expr(expr);
+        let id = if rmw && kind == RegexTargetKind::Place {
+            self.lower_expr_as_place(expr, AccessMode::ReadModifyWrite)
+        } else {
+            self.lower_expr(expr)
+        };
         HirRegexTarget::Bound { expr: id, kind, ast_kind }
     }
 
@@ -3867,13 +4052,12 @@ impl<'a> BodyBuilder2<'a> {
     /// `lower_nested_block`), two same-spelling lexicals declared in nested
     /// scopes of one body resolve to their own bindings.
     ///
-    /// The known package-root boundary remains separate from position-aware
-    /// binding lookup (#14173). The walk only ascends. A `package NAME;`
-    /// statement opens a *child* scope, while the program-root body still
-    /// starts at the file scope, so declarations made at package top level
-    /// are not visible to program-root occurrences and resolve to `None`.
-    /// The pre-existing `VariableKind` fallback already mis-reported such a
-    /// `my` as `Package`.
+    /// The walk only ascends. A statement-form `package NAME;` opens a
+    /// *child* scope, so statement sequences re-point `start_scope` at it
+    /// for the rest of the enclosing block (see
+    /// [`switch_to_package_scope`](Self::switch_to_package_scope)), which
+    /// makes declarations at package top level visible to the occurrences
+    /// that follow them (#14173).
     ///
     /// The walk itself is the shared [`resolve_binding_in_scope_graph`], the
     /// same lookup the first pass uses, so the two views cannot answer
@@ -3926,6 +4110,36 @@ impl<'a> BodyBuilder2<'a> {
                     && binding.name == name
             })
             .map(|binding| binding.id)
+    }
+
+    /// Whether a declared binding is a class-field declaration — a `field`
+    /// that is a direct statement of a `class` body (#13817).
+    fn is_class_field_binding(&self, id: HirBindingId) -> bool {
+        self.scope_graph
+            .bindings
+            .iter()
+            .any(|recorded| recorded.id == id && recorded.storage == StorageClass::ClassField)
+    }
+
+    /// Storage class for a declaration lowered into a body arena.
+    ///
+    /// A `field` that the first pass recorded as a class-field binding lowers
+    /// with `DeclStorageClass::Field`. The scope graph is the shared
+    /// authority, so the arena agrees with it by construction. Any other
+    /// `field`-shaped node is a legacy call and keeps
+    /// `DeclStorageClass::Unknown`.
+    fn body_storage_for_decl(
+        &self,
+        declarator: &str,
+        binding: Option<HirBindingId>,
+    ) -> DeclStorageClass {
+        if declarator == "field" {
+            if binding.is_some_and(|id| self.is_class_field_binding(id)) {
+                return DeclStorageClass::Field;
+            }
+            return DeclStorageClass::Unknown;
+        }
+        storage_class_for_decl(declarator)
     }
 
     /// Coarse lexical/package classification for an occurrence.
@@ -4048,6 +4262,14 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_stmt(HirStmt::Block(block_id), range)
             }
 
+            // A block-form package executes its statements in the package's
+            // lexical block. Keep them reachable through the same structured
+            // block path as a bare block, including nested loops and bindings.
+            NodeKind::Package { block: Some(block), .. } => {
+                let block_id = self.lower_nested_block(block);
+                self.alloc_stmt(HirStmt::Block(block_id), range)
+            }
+
             NodeKind::LoopControl { op, label } => {
                 let verb = loop_control_kind(op);
                 let (resolved_target, resolution) = self.resolve_loop_control(label.as_deref());
@@ -4145,11 +4367,12 @@ impl<'a> BodyBuilder2<'a> {
                     &named.var_name,
                     named.binding_node.location,
                 );
+                let storage = self.body_storage_for_decl(declarator, binding);
                 self.alloc_stmt(
                     HirStmt::Let {
                         name: named.var_name,
                         sigil: sigil_from_str(named.sigil_str),
-                        storage: storage_class_for_decl(declarator),
+                        storage,
                         init,
                         binding_range: named.binding_node.location,
                         binding,
@@ -4175,15 +4398,16 @@ impl<'a> BodyBuilder2<'a> {
         range: crate::SourceLocation,
     ) -> HirStmtId {
         let sigil = sigil_from_str(sigil_str);
-        let storage = storage_class_for_decl(declarator);
-        // Unknown storage represents a legacy call. Its argument uses the
-        // visible binding rather than creating a new declaration.
-        let is_legacy_call = storage == DeclStorageClass::Unknown;
         // Canonical identity for the binding this declaration introduces
         // (#14166). Matched on the declaration token's own span, so a nested
         // redeclaration — and a second same-scope declaration of the same
-        // spelling — each name their own binding.
+        // spelling — each name their own binding. Resolved before storage so
+        // a class-body `field` can consult the scope graph's verdict (#13844).
         let binding = self.binding_declared_at(sigil_str, &var_name, binding_node.location);
+        let storage = self.body_storage_for_decl(declarator, binding);
+        // Unknown storage represents a legacy call. Its argument uses the
+        // visible binding rather than creating a new declaration.
+        let is_legacy_call = storage == DeclStorageClass::Unknown;
 
         let init_expr_id = match (initializer, &variable.kind) {
             // An embedded assignment owns its declaration place and RHS. The
@@ -4197,9 +4421,15 @@ impl<'a> BodyBuilder2<'a> {
             // Compound declarations such as `my $x += $x` can put a cloned
             // assignment in `initializer` instead. Its LHS is the declaration
             // place, not a second ordinary occurrence or a second write.
+            // The repetition operator is the exception: `my $value x= 3`
+            // keeps the generic declaration shape (a simple declaration
+            // assignment of the `x=` result) pinned by
+            // repetition_assignment_preserves_hir_declaration_reachability,
+            // so it falls through to the generic initializer branch below.
             (Some(init_node), _)
                 if !is_legacy_call
                     && initializer_is_target_assignment(init_node, binding_node)
+                    && !matches!(&init_node.kind, NodeKind::Assignment { op, .. } if op == "x=")
                     && binding.is_some() =>
             {
                 binding.map(|id| self.lower_assignment_with_declared_place(init_node, id))
@@ -4210,6 +4440,12 @@ impl<'a> BodyBuilder2<'a> {
                 // their argument through the existing scope authority.
                 let place_kind = match declarator {
                     "our" => VariableKind::Package,
+                    // A real field declaration owns a per-object place even
+                    // though the field is not yet visible to ordinary
+                    // resolution at its own initializer (#13844).
+                    "field" if binding.is_some_and(|id| self.is_class_field_binding(id)) => {
+                        VariableKind::Field
+                    }
                     "field" => Self::kind_for(
                         &var_name,
                         self.resolve_visible_binding(sigil_str, &var_name, variable.location.start),
@@ -4361,11 +4597,49 @@ impl<'a> BodyBuilder2<'a> {
             self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
             for statement in statements {
                 block.stmts.push(self.lower_statement(statement));
+                self.switch_to_package_scope(statement);
             }
             self.enclosing_label_stack.pop();
             self.start_scope = previous_scope;
         } else {
             block.stmts.push(self.lower_statement(node));
+            self.switch_to_package_scope(node);
+        }
+    }
+
+    /// A statement-form `package NAME;` opens the package scope for the
+    /// rest of the enclosing block in Perl, and the first pass records the
+    /// following declarations in that scope. Point the body's resolution
+    /// scope at it so program-root and block sequences see those
+    /// declarations instead of resolving them as package globals (#14173).
+    /// The caller's sequence owns the previous scope and restores it when
+    /// the block ends (`lower_nested_block`, labelled blocks), so the
+    /// switch never leaks past the block the declaration appears in.
+    /// Block-form packages own their block and switch nothing here.
+    fn switch_to_package_scope(&mut self, node: &Node) {
+        // Labels and expression-statement wrappers are transparent here:
+        // `LABEL: package P;` opens the package scope just the same.
+        let mut node = node;
+        loop {
+            node = match &node.kind {
+                NodeKind::LabeledStatement { statement, .. } => statement.as_ref(),
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                _ => break,
+            };
+        }
+        if !matches!(&node.kind, NodeKind::Package { block: None, .. }) {
+            return;
+        }
+        if let Some(scope) = self
+            .scope_graph
+            .scopes
+            .iter()
+            .find(|frame| {
+                frame.kind == ScopeKind::Package && frame.range.start == node.location.start
+            })
+            .map(|frame| frame.id)
+        {
+            self.start_scope = scope;
         }
     }
 
@@ -4753,12 +5027,12 @@ impl<'a> BodyBuilder2<'a> {
             // operator that range covers the target and binding operator too,
             // so it is an enclosing anchor and not an exact record key — see
             // `RegexAnalysisAnchor`.
-            NodeKind::Regex { modifiers, has_embedded_code, .. } => {
-                // Unbound regex construct. The AST does not distinguish `qr//`
-                // (regex value) from an unbound `m//` or bare `/.../` against
-                // the default topic, so this form claims neither.
+            NodeKind::Regex { form, modifiers, has_embedded_code, .. } => {
+                // Preserve the parser's source operator: `qr//` constructs a
+                // regex value; `m//` and `/.../` match the default topic.
                 self.alloc_expr(
                     HirExpr::Regex(HirRegex {
+                        form: *form,
                         modifiers: modifiers.clone(),
                         embedded_code: *has_embedded_code,
                         analysis: RegexAnalysisAnchor {
@@ -4788,7 +5062,7 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::Substitution { expr, modifiers, has_embedded_code, negated, .. } => {
-                let target = self.lower_regex_target(expr);
+                let target = self.lower_regex_target_mutating(expr, !modifiers.contains('r'));
                 self.alloc_expr(
                     HirExpr::Substitution(HirSubstitution {
                         target,
@@ -4808,7 +5082,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::Transliteration { expr, modifiers, negated, .. } => {
                 // tr/// is a character-list operator, not a regex: it carries
                 // no analysis anchor and must never reach pattern analysis.
-                let target = self.lower_regex_target(expr);
+                let target = self.lower_regex_target_mutating(expr, !modifiers.contains('r'));
                 self.alloc_expr(
                     HirExpr::Transliteration(HirTransliteration {
                         target,
@@ -5086,6 +5360,45 @@ impl<'a> BodyBuilder2<'a> {
                     range,
                 )
             }
+
+            // First-cohort scalar literals (#17538): typed leaves with exact
+            // source-derived payloads. Anything outside the admitted families
+            // (bases, floats, exponents, interpolated strings, version strings)
+            // keeps falling through to Opaque below.
+            NodeKind::Number { value } if is_plain_decimal(value) => self.alloc_expr(
+                HirExpr::Literal(HirLiteral {
+                    kind: HirLiteralKind::Number,
+                    payload: value.clone(),
+                    synthesized: is_fabricated_scalar(node),
+                }),
+                range,
+            ),
+            NodeKind::String { value, interpolated: false } => {
+                match strip_string_quotes(value) {
+                    Some((content, quote)) => self.alloc_expr(
+                        HirExpr::Literal(HirLiteral {
+                            kind: HirLiteralKind::String(quote),
+                            payload: content.to_string(),
+                            synthesized: is_fabricated_scalar(node),
+                        }),
+                        range,
+                    ),
+                    // Unquoted, mismatched, or quote-like spellings stay
+                    // Opaque: same fallback as the catch-all below.
+                    None => self.alloc_expr(
+                        HirExpr::Opaque { ast_kind: node.kind.kind_name().to_string() },
+                        range,
+                    ),
+                }
+            }
+            NodeKind::Undef => self.alloc_expr(
+                HirExpr::Literal(HirLiteral {
+                    kind: HirLiteralKind::Undef,
+                    payload: String::new(),
+                    synthesized: is_fabricated_scalar(node),
+                }),
+                range,
+            ),
 
             _ => {
                 // Everything else: emit Opaque. This is the "fail closed" path.

@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use xtask::editor_client_compat::{
-    CANONICAL_EXPECTATION_SET_ID, CleanupResult, EvidenceStage, ObservationResult,
+    CANONICAL_EXPECTATION_SET_ID, CleanupResult, EvidenceStage, FailureClass, ObservationResult,
     PlatformIdentity, RegistrationState, WorkspaceFixtureIdentity,
     canonical_expectation_set_digest, fixture_digest,
 };
@@ -1245,16 +1245,119 @@ fn normal_cleanup_requires_observed_clean_comparisons() -> Result<()> {
 }
 
 #[test]
+fn forced_raw_failure_is_judged_from_bounded_settlement() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    // Independent expectations for both forced roles. An immediate survivor
+    // is preserved in the raw ledger; only the later bounded probe decides
+    // whether it settled, survived, or remains unobserved.
+    for host in [2, 3] {
+        for (probe, result, cleanup, cell, failure_class) in [
+            (
+                Some(true),
+                ObservationResult::Pass,
+                CleanupResult::Pass,
+                ObservationResult::Pass,
+                None,
+            ),
+            (
+                Some(false),
+                ObservationResult::Fail,
+                CleanupResult::Fail,
+                ObservationResult::Fail,
+                Some(FailureClass::Cleanup),
+            ),
+            (
+                None,
+                ObservationResult::NotProven,
+                CleanupResult::NotProven,
+                ObservationResult::NotProven,
+                Some(FailureClass::HostClient),
+            ),
+        ] {
+            let mut sessions = canonical_sessions(&plan, &digest);
+            sessions[host].observation.cleanup = CleanupResult::Fail;
+            sessions[host].observation.cleanup_detail =
+                "immediate process comparison observed one survivor".to_string();
+            sessions[host].ledger = Some(ledger_of(333 + host as u64, 1, "available"));
+            sessions[host].settled_probe_clean = probe;
+            let raw_ledger = sessions[host].ledger.clone();
+            let raw_detail = sessions[host].observation.cleanup_detail.clone();
+            let judgment =
+                evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+            let aggregate = aggregate_journey_observation(&sessions);
+            ensure!(
+                judgment.result == result,
+                "host {} probe {probe:?}: expected journey {result:?}, observed {:?}",
+                host + 1,
+                judgment.result
+            );
+            ensure!(
+                judgment.failure_class == failure_class,
+                "host {} probe {probe:?}: failure classification disagrees",
+                host + 1
+            );
+            ensure!(
+                judgment.cells.get(CELL_FAILURE_CLEANUP) == Some(&cell),
+                "host {} probe {probe:?}: failure cleanup disagrees",
+                host + 1
+            );
+            ensure!(
+                aggregate.cleanup == cleanup,
+                "host {} probe {probe:?}: expected aggregate {cleanup:?}, observed {:?}",
+                host + 1,
+                aggregate.cleanup
+            );
+            ensure!(
+                sessions[host].observation.cleanup == CleanupResult::Fail
+                    && sessions[host].ledger == raw_ledger
+                    && sessions[host].observation.cleanup_detail == raw_detail,
+                "the raw immediate failure and survivor must remain visible"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn a_leaked_process_fails_the_whole_journey() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
     let digest = plan.identity.candidate_artifact_sha256.clone();
+    for host in [0, 1] {
+        let mut sessions = canonical_sessions(&plan, &digest);
+        sessions[host].observation.cleanup = CleanupResult::Fail;
+        sessions[host].observation.cleanup_detail =
+            "process-set comparison observed 1 surviving".to_string();
+        sessions[host].ledger = Some(ledger_of(111 + host as u64, 1, "available"));
+        let judgment =
+            evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+        ensure!(judgment.result == ObservationResult::Fail, "an observed leak fails the journey");
+        ensure!(judgment.failure_class == Some(FailureClass::Cleanup));
+        ensure!(judgment.cells.get(CELL_NORMAL_CLEANUP) == Some(&ObservationResult::Fail));
+        ensure!(
+            aggregate_journey_observation(&sessions).cleanup == CleanupResult::Fail,
+            "a clean settle probe must never override an orderly-role failure"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_known_settled_survivor_dominates_another_missing_probe() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
     let mut sessions = canonical_sessions(&plan, &digest);
-    sessions[0].observation.cleanup = CleanupResult::Fail;
-    sessions[0].observation.cleanup_detail =
-        "process-set comparison observed 1 surviving".to_string();
+    sessions[2].settled_probe_clean = None;
+    sessions[3].settled_probe_clean = Some(false);
     let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
-    ensure!(judgment.result == ObservationResult::Fail, "an observed leak fails the journey");
+    ensure!(judgment.result == ObservationResult::Fail);
+    ensure!(judgment.failure_class == Some(FailureClass::Cleanup));
+    ensure!(aggregate_journey_observation(&sessions).cleanup == CleanupResult::Fail);
+    // Missing observation still prevents the cell from claiming its full law.
+    ensure!(judgment.cells.get(CELL_FAILURE_CLEANUP) == Some(&ObservationResult::NotProven));
     Ok(())
 }
 

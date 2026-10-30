@@ -691,6 +691,41 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
         self.assertTrue(all(plan.disposition == "execute" for plan in plans))
         self.assertIn(self.CLASS_GRAMMAR_ADMISSION_ID, lock)
 
+    def test_required_parser_gate_executes_runner_contracts_before_proofs(self) -> None:
+        """A local-only pin cannot prevent a coverage removal from merging green."""
+        policy = (runner.ROOT / ".ci/gate-policy.yaml").read_text(encoding="utf-8")
+        gate = policy.split("  - name: parser_integration\n", 1)[1].split("\n  - name:", 1)[0]
+        command = gate.split("    command:", 1)[1].split("    timeout_seconds:", 1)[0]
+        self.assertEqual(
+            " ".join(command.removeprefix(" >-").split()),
+            "python3 scripts/ci/test_run_parser_integration.py "
+            "&& python3 scripts/ci/run_parser_integration.py",
+        )
+
+    def test_hir_control_flow_is_an_unconditional_integration_target(self) -> None:
+        """#6054: lib-only HIR coverage misses recovery provenance regressions."""
+        plans = runner.load_targets(runner.TARGETS_PATH)
+        matches = [plan for plan in plans if plan.target == "hir_control_flow_tests"]
+        self.assertEqual(len(matches), 1, "HIR control-flow integration proof must execute")
+        plan = matches[0]
+        self.assertEqual(plan.proof_id, "parser.hir.control_flow")
+        self.assertEqual(plan.disposition, "execute")
+        self.assertEqual(plan.boundedness, "focused")
+        self.assertEqual(
+            runner.cargo_command(plan),
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "--package",
+                "perl-parser-core",
+                "--test",
+                "hir_control_flow_tests",
+                "--",
+                "--test-threads=4",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

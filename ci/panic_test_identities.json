@@ -425,6 +425,24 @@
       "state": "retired"
     },
     {
+      "path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+      "enclosing_test_or_function": "ripr_facts_threads_optional_diff_path",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected RiprFacts action, got {other:?}\"),",
+      "selector_identity": "invocation:2341f7ec4387f79e:occurrence:1",
+      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts with change.diff must select RiprFacts and preserve the explicit diff path.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
+      "enclosing_test_or_function": "ripr_facts_threads_optional_diff_path",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected RiprFacts action, got {other:?}\"),",
+      "selector_identity": "invocation:2341f7ec4387f79e:occurrence:2",
+      "accepted_reason": "Intentional #17330/#17152 launcher action oracle: --ripr-facts without a path must select RiprFacts and preserve an absent diff path.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
       "enclosing_test_or_function": "round_trip_every_terminal_state",
       "macro_family": "panic!",
@@ -713,13 +731,67 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-lsp-rs/tests/lsp_call_hierarchy_tests.rs",
+      "enclosing_test_or_function": "test_outgoing_calls_distinguish_bareword_class_receivers",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"missing outgoing callee {}\", qualified_name));",
+      "selector_identity": "invocation:9897144005f5b5c3:occurrence:1",
+      "accepted_reason": "Intentional #17379/#17368 outgoing-call oracle: each expected qualified bareword-class callee must exist before its call-range count is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_children",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));",
+      "selector_identity": "invocation:a9f840cae4aef361:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: nested document-symbol child must have a non-empty name.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_children",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));",
+      "selector_identity": "invocation:c6e55719552d2693:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: nested document-symbol child must include a numeric LSP SymbolKind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_children",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\")",
+      "selector_identity": "invocation:693eb37dd060ccb8:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: nested document-symbol child children must be an array before recursive shape validation.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_row",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: document-symbol row range must have valid ordered LSP positions before selection containment is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_document_symbol_row",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:2",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: document-symbol row selectionRange must have valid ordered LSP positions before range containment is checked.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
       "enclosing_test_or_function": "assert_symbol_shapes",
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));",
       "selector_identity": "invocation:a9f840cae4aef361:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -728,7 +800,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));",
       "selector_identity": "invocation:c6e55719552d2693:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -737,7 +809,7 @@
       "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
       "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -746,7 +818,7 @@
       "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
       "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -755,7 +827,7 @@
       "normalized_snippet": "panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\")",
       "selector_identity": "invocation:693eb37dd060ccb8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -764,6 +836,51 @@
       "normalized_snippet": "panic!(\"SymbolInformation `{name}` location must be an object: {symbol:?}\")",
       "selector_identity": "invocation:054cf9b52594c0ad:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "retired"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol SymbolInformation location.range must have valid ordered LSP positions.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));",
+      "selector_identity": "invocation:a9f840cae4aef361:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol must have a non-empty name.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));",
+      "selector_identity": "invocation:c6e55719552d2693:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol must include a numeric LSP SymbolKind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"DocumentSymbol `{name}` children must be an array: {symbol:?}\")",
+      "selector_identity": "invocation:693eb37dd060ccb8:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol children must be an array before recursive shape validation.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes_with_seen",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"SymbolInformation `{name}` location must be an object: {symbol:?}\")",
+      "selector_identity": "invocation:054cf9b52594c0ad:occurrence:1",
+      "accepted_reason": "Intentional #16509/#13950 document-symbol UX shape oracle: top-level symbol SymbolInformation location must be an object.",
       "state": "active"
     },
     {
@@ -1865,6 +1982,60 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "diagnostic_is_tied_to_the_offending_bareword",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"constant-item diagnostic must exist\");",
+      "selector_identity": "invocation:658a0292af19dff6:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the bareword declaration must produce the constant-item diagnostic before its exact source position is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "diagnostic_is_tied_to_the_offending_bareword",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"fixture contains base\");",
+      "selector_identity": "invocation:6f50106d7bb1d2ee:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the fixture must contain base so the offending-bareword diagnostic has an exact source-position oracle.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "valid_dollar_base_keeps_source_geometry",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"$base must remain in the AST: {}\", ast.to_sexp());",
+      "selector_identity": "invocation:1bb31b83e4ae73e0:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the valid $base declaration must retain a variable AST node before its source geometry is checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_16732_sigilless_decl_list.rs",
+      "enclosing_test_or_function": "valid_dollar_base_keeps_source_geometry",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"fixture contains $base\");",
+      "selector_identity": "invocation:405e41ecf4caaa48:occurrence:1",
+      "accepted_reason": "Intentional #16769/#16732 declaration-list parser oracle: the fixture must contain $base so the preserved variable AST geometry has exact source offsets.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_declaration_write_keeps_its_binding_with_and_without_outer_shadow",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"catch declaration place must be a variable\");",
+      "selector_identity": "invocation:869a741f84454600:occurrence:1",
+      "accepted_reason": "Intentional #16502/#13868 HIR/PIR try-region oracle: the catch declaration place must be a variable before catch-binding identity and declaration write are checked.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_declaration_write_keeps_its_binding_with_and_without_outer_shadow",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"catch must have its declaration place\");",
+      "selector_identity": "invocation:0e68d0a8208af612:occurrence:1",
+      "accepted_reason": "Intentional #16502/#13868 HIR/PIR try-region oracle: the catch handler must retain its declaration place before source-exact binding lookup.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-parser/tests/parser_panic_free_invariant.rs",
       "enclosing_test_or_function": "repository_and_fuzz_corpora_are_panic_free",
       "macro_family": "panic!",
@@ -2018,6 +2189,15 @@
       "state": "retired"
     },
     {
+      "path": "xtask/src/tasks/metrics/parser_stats.rs",
+      "enclosing_test_or_function": "test_find_latest_errors_when_only_receipts_present",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(p) => panic!(\"must error with no parser file, got {}\", p.display()),",
+      "selector_identity": "invocation:80bf7471578f43ee:occurrence:1",
+      "accepted_reason": "Intentional #17390/#17154 parser-statistics discovery oracle: receipt-only results must return the no-parser-compatible-file error, never a benchmark file.",
+      "state": "active"
+    },
+    {
       "path": "xtask/src/tasks/module_train_live_tests.rs",
       "enclosing_test_or_function": "gh_queries_are_bound_to_the_checkout_repository",
       "macro_family": "panic!",
@@ -2051,6 +2231,15 @@
       "normalized_snippet": "panic!(\"could not read declared/total counts from Overall row: {overall}\");",
       "selector_identity": "invocation:48347cc22ee9a1b2:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/test_support.rs",
+      "enclosing_test_or_function": "a_panicking_fake_cargo_child_does_not_poison_later_children",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"intentional child-only harness failure\");",
+      "selector_identity": "invocation:338216ee551c97af:occurrence:1",
+      "accepted_reason": "Intentional #17233 subprocess harness fault injection: only the explicitly requested child panics; the parent verifies child failure and a subsequent healthy child without environment poisoning.",
       "state": "active"
     },
     {
@@ -2869,8 +3058,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(()) => panic!(\"expected validation to reject rows mentioning {fragment}\"),",
       "selector_identity": "invocation:2614f3a9ca651465:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_err_with(validate(rows,evidence)); error still must mention requested fragment.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
@@ -2878,8 +3067,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(()) => panic!(\"a suppressed module was accepted\"),",
       "selector_identity": "invocation:5dc0bec4bb6ab684:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_err_with(reject_suppressed_modules(disabled_mod)); disabled_fixtures and reachability assertions retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
@@ -2887,8 +3076,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(()) => panic!(\"an uncited proof target was accepted\"),",
       "selector_identity": "invocation:8927299b300a9b6b:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_err_with(validate(scaffold,evidence)); new uncited proof name still required in refusal. Historical scanner-derived enclosing label is retained in the identity key.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
@@ -2896,8 +3085,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(()) => panic!(\"whitespace hid the suppressed module in {form:?}\"),",
       "selector_identity": "invocation:fdd1084ef79db4a2:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_err_with(reject_suppressed_modules(form)); tab/newline module forms still require disabled refusal. Historical scanner-derived enclosing label is retained in the identity key.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
@@ -2905,8 +3094,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"`mod` matched inside a word in {form:?}: {error}\"));",
       "selector_identity": "invocation:2bbfa7d606f2388a:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_with(reject_suppressed_modules(form)); modify/commodity identifiers must remain accepted. Historical scanner-derived enclosing label is retained in the identity key.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
@@ -2914,8 +3103,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(()) => panic!(\"a comment hid the suppressed module\"),",
       "selector_identity": "invocation:acb295792adf721d:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_err_with(comment-separated disabled module); refusal must still name disabled. Historical scanner-derived enclosing label is retained in the identity key.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
@@ -2923,8 +3112,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"`mod` matched inside a word: {error}\"));",
       "selector_identity": "invocation:f772ed09ad692934:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_with(reject_suppressed_modules(form)); identifiers containing mod must remain accepted. Historical scanner-derived enclosing label is retained in the identity key.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
@@ -2932,8 +3121,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(()) => panic!(\"a commented-out fixture earned support\"),",
       "selector_identity": "invocation:5f17dd077ce6f948:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after be40aec61e406a95fe77c4afd803f2eee3e1611e (#17822): must_err_with(validate(scaffold_with(row),evidence)); commented fixture must still be nonexistent.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/rust_small_proof.rs",
@@ -2959,8 +3148,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
       "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e4471b82b9256e835512bd33e01be94a6bfe9bf5 (#17712): unexpected PlannedOutcome arm invokes must_some_with(None); selector_evidence_missing code and denominator checks retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan.rs",
@@ -2968,8 +3157,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected quarantined outcome, got {other:?}\"),",
       "selector_identity": "invocation:49198566f6e65666:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e4471b82b9256e835512bd33e01be94a6bfe9bf5 (#17712): unexpected PlannedOutcome arm invokes must_some_with(None); quarantined owner=ci-owner and run/scoped_noop counts retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan.rs",
@@ -2977,8 +3166,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
       "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e4471b82b9256e835512bd33e01be94a6bfe9bf5 (#17712): unexpected PlannedOutcome arm invokes must_some_with(None); unknown applicability and selector_evidence_missing checks retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan.rs",
@@ -2986,8 +3175,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected error outcome for {resolution:?}, got {other:?}\"),",
       "selector_identity": "invocation:a15d1cd26b68bf56:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e4471b82b9256e835512bd33e01be94a6bfe9bf5 (#17712): unexpected PlannedOutcome arm invokes must_some_with(None); expired/invalid disposition code and one healthy runnable gate checks retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan.rs",
@@ -2995,8 +3184,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected error outcome for {state:?}, got {other:?}\"),",
       "selector_identity": "invocation:6bdda4c598c4cc77:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e4471b82b9256e835512bd33e01be94a6bfe9bf5 (#17712): unexpected PlannedOutcome arm invokes must_some_with(None); lifecycle_non_runnable code and exactly one runnable healthy gate retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan.rs",
@@ -3004,8 +3193,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected contradiction error, got {other:?}\"),",
       "selector_identity": "invocation:b5463605ee1378d9:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e4471b82b9256e835512bd33e01be94a6bfe9bf5 (#17712): unexpected PlannedOutcome arm invokes must_some_with(None); first selector_contradiction branch remains checked.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan.rs",
@@ -3013,8 +3202,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"expected contradiction error, got {other:?}\"),",
       "selector_identity": "invocation:b5463605ee1378d9:occurrence:2",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e4471b82b9256e835512bd33e01be94a6bfe9bf5 (#17712): unexpected PlannedOutcome arm invokes must_some_with(None); second selector_contradiction branch remains checked.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3175,8 +3364,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"fixture {name}: {error}\"))",
       "selector_identity": "invocation:5ed344838e120da0:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e53594a367f455f9b1b5ae4d997eb984fa9b27df (#17656): must_with(fs::read(fixturepath)); missing fixture still fails immediately.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan_canonical.rs",
@@ -3184,8 +3373,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "digests[name].as_str().unwrap_or_else(|| panic!(\"digests.json carries {name}\")).to_string()",
       "selector_identity": "invocation:9406fb6ec4c88e2c:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e53594a367f455f9b1b5ae4d997eb984fa9b27df (#17656): must_some_with(digests[name].as_str()); absent or nonstring golden digest still fails.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan_canonical.rs",
@@ -3193,8 +3382,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"read checked schema {SCHEMA_PATH}: {error}\"));",
       "selector_identity": "invocation:c580080e806a7b6e:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e53594a367f455f9b1b5ae4d997eb984fa9b27df (#17656): must_with(fs::read_to_string(SCHEMA_PATH)); unreadable checked schema still fails.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan_canonical.rs",
@@ -3202,8 +3391,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "serde_json::from_str(&text).unwrap_or_else(|error| panic!(\"parse checked schema: {error}\"))",
       "selector_identity": "invocation:c713483ac18fc681:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e53594a367f455f9b1b5ae4d997eb984fa9b27df (#17656): must_with(serde_json::from_str(text)); malformed checked schema still fails.",
+      "state": "retired"
     },
     {
       "path": "xtask/tests/ci_route_plan_canonical.rs",
@@ -3211,8 +3400,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"schema conformance: {error}\"));",
       "selector_identity": "invocation:35cd83aa8ec567d5:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after e53594a367f455f9b1b5ae4d997eb984fa9b27df (#17656): must_with(validate_against_schema(payload,schema,...)); each generated payload still validated.",
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/backend/native_perldb.rs",
@@ -3823,8 +4012,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "CargoHome::Unknown => panic!(\"HOME should win when windows=false\"),",
       "selector_identity": "invocation:6748820c2057eb5f:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 645ba99d9964e52320f03d732b54986e5e12cda7 (#17700): CargoHome::Unknown branch invokes must_some_with(None); Path branch still equals unix HOME/.cargo.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/cargo_rustc_wrappers.rs",
@@ -3832,8 +4021,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "CargoHome::Unknown => panic!(\"USERPROFILE should win when windows=true\"),",
       "selector_identity": "invocation:2c2ad7dae1d99475:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 645ba99d9964e52320f03d732b54986e5e12cda7 (#17700): CargoHome::Unknown branch invokes must_some_with(None); Path branch still equals preferred USERPROFILE/.cargo.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/cargo_rustc_wrappers.rs",
@@ -3841,8 +4030,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "CargoHome::Unknown => panic!(\"HOME is the Windows fallback\"),",
       "selector_identity": "invocation:bf769cc93ecf5e53:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 645ba99d9964e52320f03d732b54986e5e12cda7 (#17700): CargoHome::Unknown branch invokes must_some_with(None); HOME fallback equality retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/cargo_rustc_wrappers.rs",
@@ -3850,8 +4039,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|err| panic!(\"literal path must parse: {err}\"));",
       "selector_identity": "invocation:b8aad669043c33c9:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 645ba99d9964e52320f03d732b54986e5e12cda7 (#17700): must_with(parse_config(rustc_wrapper_config(path))); Windows literal round-trip exact value/flags checks retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/cargo_rustc_wrappers.rs",
@@ -3859,8 +4048,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|err| panic!(\"apostrophe path must parse: {err}\"));",
       "selector_identity": "invocation:b121e4f54bdd5229:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 645ba99d9964e52320f03d732b54986e5e12cda7 (#17700): must_with(parse_config(encoded)); apostrophe/basic-string backslash and exact round-trip checks retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/cargo_rustc_wrappers.rs",
@@ -3868,8 +4057,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "CargoHome::Unknown => panic!(\"POSIX absolute HOME should resolve on this host\"),",
       "selector_identity": "invocation:353f52bc059effb3:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 645ba99d9964e52320f03d732b54986e5e12cda7 (#17700): CargoHome::Unknown branch invokes must_some_with(None) only when host considers POSIX home absolute; host-relative Unknown assertion retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/cargo_rustc_wrappers.rs",
@@ -3877,8 +4066,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "CargoHome::Unknown => panic!(\"cwd should resolve relative CARGO_HOME\"),",
       "selector_identity": "invocation:2820f8e6f610f3af:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 645ba99d9964e52320f03d732b54986e5e12cda7 (#17700): CargoHome::Unknown branch invokes must_some_with(None) with cwd; no-cwd Unknown and resolved /ws/rel-home equality retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/neovim_activation_root_envelope.rs",
@@ -4057,8 +4246,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"no row for {workflow}/{job} in {rows:#?}\"))",
       "selector_identity": "invocation:24c8bae94ad494f1:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 9938e3be677f2ce61e1a5ef4ab4389affc88fcda (#17676): must_some_with(rows.iter().find(workflow/job)); missing denominator row still fails.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/ci_explain.rs",
@@ -4066,8 +4255,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"consumer must keep every producer gate entry, got {:?}\", loaded.gates);",
       "selector_identity": "invocation:7ab1a08c85b6e587:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 1061f5525585a225bf61f39648975fc516cc4f12 (#17800): assert_eq!(loaded.gates.len(),1) dominates index[0]; receipt identity/status/required/command and explanation assertions retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/ci_explain.rs",
@@ -4075,8 +4264,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"drifted schema_version must be a typed refusal, got {other:?}\")",
       "selector_identity": "invocation:d5966ad85ae29034:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 1061f5525585a225bf61f39648975fc516cc4f12 (#17800): nonmatching result arm asserts matches!(UnsupportedSchema(_)); matching arm retains exact 1.0.0 version assertion.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/compiler_performance_receipt.rs",
@@ -4084,8 +4273,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(_) => panic!(\"the typed boundary accepted a receipt it must reject\"),",
       "selector_identity": "invocation:ec6023148ed8f9c3:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 7ed8ac47b9fa5373cc0c127f6cac170c9191f043 (#17691): must_err_with(serde_json::from_value<CompilerPerformanceReceipt>); malformed receipt still cannot be accepted and error text returned.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/compiler_performance_receipt.rs",
@@ -4093,8 +4282,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"a link named {link_name} must not fail this gate: {error:#}\")",
       "selector_identity": "invocation:1a3e55cb6b22d320:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 7ed8ac47b9fa5373cc0c127f6cac170c9191f043 (#17691): must_with(discover_fixtures(root)); unrelated links still must not error; exact committed-only result assertion retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/completion_candidates.rs",
@@ -4147,8 +4336,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{profile} must not assume the claim is vacant\"));",
       "selector_identity": "invocation:3d8f5f6a3534e7c0:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 811756634b2f1c25b7d7dcf6b01950ee0f2862b1 (#17721): must_err_with(compose_builder_packet(...)); each coding profile still must refuse vacant-claim inference and preserve NO_LIVE_OBSERVATION code.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
@@ -4156,8 +4345,8 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"incomplete candidate facts must refuse: {candidates}\"));",
       "selector_identity": "invocation:d578cf4b2f328b3e:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 811756634b2f1c25b7d7dcf6b01950ee0f2862b1 (#17721): must_err_with(compose_reconcile_packet(...)); incomplete/duplicate candidate cases retain MALFORMED_CANDIDATE_FACTS code check.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
@@ -4165,8 +4354,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Err(refusal) => panic!(\"unexpected typed refusal path: {}\", refusal.line()),",
       "selector_identity": "invocation:78c49355227914b2:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 811756634b2f1c25b7d7dcf6b01950ee0f2862b1 (#17721): unexpected typed Err arm invokes must_some_with(None); outer missing-ledger load must still fail with L02-denominator [SUB].",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
@@ -4174,8 +4363,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(_) => panic!(\"a missing checked disposition must never compose a packet\"),",
       "selector_identity": "invocation:67642d52e4f1f278:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 811756634b2f1c25b7d7dcf6b01950ee0f2862b1 (#17721): unexpected Ok arm invokes must_some_with(None); outer missing-ledger load must still fail with no compiled disposition diagnostic.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
@@ -4183,8 +4372,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "Ok(_) => panic!(\"duplicate E02 records must fail the adapter load\"),",
       "selector_identity": "invocation:c8b92f278d82acca:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 811756634b2f1c25b7d7dcf6b01950ee0f2862b1 (#17721): unexpected successful duplicate-ledger load invokes must_some_with(None); duplicate record diagnostic retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
@@ -4192,8 +4381,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"a stale manifest-provenance disposition must fail the adapter load\")",
       "selector_identity": "invocation:18e2c607e2d68d77:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 811756634b2f1c25b7d7dcf6b01950ee0f2862b1 (#17721): unexpected successful stale-ledger load invokes must_some_with(None); L10-provenance [SUB] and re-adjudicate explicitly diagnostics retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/intent_diff_gate.rs",
@@ -4219,8 +4408,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"expected a measured row\");",
       "selector_identity": "invocation:da94c3e56b01a5b4:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 357176754b88d6a5058cf110871e4d8881987d1d (#17724): must_some_with(match Measured => Some(direction,confidence), _=>None); Direction::Up and low confidence at 2 samples retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/metrics/parser_accuracy/registry.rs",
@@ -4228,8 +4417,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"expected a measured row\");",
       "selector_identity": "invocation:da94c3e56b01a5b4:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 357176754b88d6a5058cf110871e4d8881987d1d (#17724): must_some_with(match Measured => Some(confidence), _=>None); high confidence at declared 5 sample threshold retained.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/module_train_live_tests.rs",
@@ -4336,8 +4525,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"injected stderr drain panic\")",
       "selector_identity": "invocation:7cb7970904ad8c73:occurrence:1",
-      "accepted_reason": "Intentional panic injection used to exercise scheduler or worker recovery, poisoning, or panic-payload handling.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after 1683a12a1c9dccea6630e9ae25ca5b9a18e1043d (#17838): std::panic::resume_unwind(Box::new(\"injected stderr drain panic\")); PanickingStderrReader still unwinds and existing test checks panicked error, bounded settlement and non-success reaped child. Intentional unwind injection is retained; only the macro spelling is retired, not unwind behavior.",
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/rust_small_proof.rs",
@@ -5155,8 +5344,8 @@
       "macro_family": "panic!",
       "normalized_snippet": "other => panic!(\"unexpected concurrent initialize outcomes: {other:?}\"),",
       "selector_identity": "invocation:0ec4a736e06a2ad5:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "accepted_reason": "Retired explicit panic! macro identity after a02ffa7cabab1592a0e63490795dd38b871a2033 (#17179): dominating assert!(matches!((valid,malformed),(Ok,Err)|(Err,Err))) then dead fallback; invalid-owner count, exact error codes and accepted-session state checks retained.",
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/src/runtime/v0_18_text_sync_envelope.rs",
@@ -5408,7 +5597,7 @@
       "normalized_snippet": "Ok(_) => panic!(\"expected outright parse failure for `{code}`\"),",
       "selector_identity": "invocation:e8d55bd23f5b3760:occurrence:1",
       "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-parser-core/tests/fix_qualified_loop_control_label_16296.rs",
@@ -5417,7 +5606,7 @@
       "normalized_snippet": "Err(err) => panic!(\"expected clean parse for `{code}`, got: {err:?}\"),",
       "selector_identity": "invocation:d958e5e104cf2cdc:occurrence:1",
       "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-parser-core/tests/fix_orphaned_else_recovery_16300.rs",

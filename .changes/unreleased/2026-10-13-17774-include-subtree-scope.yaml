@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Workspace symbol discovery in projects without Git now keeps explicit dependency include paths scoped to their configured subtrees, excluding unrelated sibling files under vendor or local directories."
+time: 2026-10-13T00:00:00Z
+custom:
+  PR: "17788"
+  Slug: include-subtree-scope
+  Breaking: "no"

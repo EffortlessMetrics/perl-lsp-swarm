@@ -58,6 +58,10 @@ scripts/__pycache__/
 # Linked worktrees created by docs/reference/WORKTREE_PROTOCOL.md — ephemeral, never committed.
 /.worktrees/
 /.claude/settings.local.json
+# Installer-managed per-worktree git hooks (#17414 rule C): the installer sets
+# a repo-local relative core.hooksPath pointing here and writes both hooks on
+# every provision. Ephemeral, never committed.
+/.githooks/
 
 # Swarm ops — ignore the entire directory (contains repo mirror artifacts),
 # but force-track the specific knowledge files we need.

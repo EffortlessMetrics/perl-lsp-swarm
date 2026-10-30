@@ -885,46 +885,14 @@ impl SymbolExtractor {
             }
 
             NodeKind::Foreach { variable, list, body, continue_block: _ } => {
+                // The list is evaluated in the enclosing scope: visit it
+                // before opening the loop scope so its references keep
+                // binding outer variables (`for my $x ($x)` — the list
+                // `$x` is the outer lexical, matching the scope
+                // analyzer's visibility ordering in scope_constructs.rs).
+                self.visit_node(list);
                 self.table.push_scope(ScopeKind::Block, node.location);
-
-                match &variable.kind {
-                    // `for my $x (LIST) { ... }`: the parser wraps the iterator
-                    // in a VariableDeclaration node (`parse_foreach_style_for`).
-                    // Visit it as the declaration it is so the loop variable is
-                    // indexed like any other lexical; passing the wrapper to
-                    // `handle_variable_declaration` used to no-op there (it
-                    // only accepts a bare Variable node), leaving the loop
-                    // variable unindexed so hover/definition answered with the
-                    // enclosing sub's card (#17297). Order mirrors the scope
-                    // analyzer's enteriter semantics: `our` is a compile-time
-                    // package alias visible to LIST itself, while lexical
-                    // `my`/`state` stay hidden until after it, so a same-named
-                    // variable in LIST resolves to the outer binding under
-                    // `for my $x ($x)`.
-                    NodeKind::VariableDeclaration { declarator, .. }
-                    | NodeKind::VariableListDeclaration { declarator, .. } => {
-                        if declarator == "our" {
-                            self.visit_node(variable);
-                            self.visit_node(list);
-                        } else {
-                            self.visit_node(list);
-                            self.visit_node(variable);
-                        }
-                    }
-                    // Bare `for $x (LIST)` and the synthesized implicit `$_`
-                    // are implicitly declared `my` in the loop scope, before
-                    // the list (the alias is visible to LIST).
-                    _ => {
-                        self.handle_variable_declaration(
-                            "my",
-                            variable,
-                            &[],
-                            variable.location,
-                            None,
-                        );
-                        self.visit_node(list);
-                    }
-                }
+                self.declare_foreach_iterator(variable);
                 self.visit_node(body);
 
                 self.table.pop_scope();
@@ -2061,12 +2029,14 @@ impl SymbolExtractor {
                     attributes: vec![format!("http_method={http_method}")],
                 });
 
-                // Legacy string-target -> Subroutine reference synthesis is
-                // Dancer v1 only: upstream Dancer v1 allows an action to be
-                // the name of a subroutine, while Dancer2 route construction
-                // requires a CodeRef handler (#8910 containment). This whole
-                // legacy route path is temporary pending the #8909 provider
-                // cutover (retirement gated on #8928).
+                // Preserve Dancer v1's legacy static string-target -> Subroutine
+                // reference contract; Dancer2 does not use it (#8910 containment).
+                // In the Dancer 1.3522 / Perl 5.40.1 minimal GET proof, quoted
+                // handlers compile and register but dispatch 500 under strict
+                // refs; the matching CodeRef dispatches 200 with "About".
+                // Navigation records the source reference independently of
+                // callback execution. This legacy path is temporary pending
+                // the #8909 provider cutover (retirement gated on #8928).
                 if matches!(web_framework, Some(WebFrameworkKind::Dancer))
                     && let Some(target_node) = args.get(1)
                     && let Some(target_name) =
@@ -3224,6 +3194,42 @@ impl SymbolExtractor {
     }
 
     /// Handle variable declaration
+    /// Declare a `foreach` loop iterator in the current (loop) scope.
+    ///
+    /// The parser wraps an explicit declarator (`for my $item (...)`) in a
+    /// `VariableDeclaration` node; unwrap it so the lexical is actually
+    /// indexed (#17297) — passing the wrapper to
+    /// `handle_variable_declaration` silently recorded nothing.
+    fn declare_foreach_iterator(&mut self, variable: &Node) {
+        match &variable.kind {
+            NodeKind::VariableDeclaration { declarator, variable: inner, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                self.handle_variable_declaration(
+                    declarator,
+                    inner,
+                    attributes,
+                    inner.location,
+                    doc,
+                );
+            }
+            NodeKind::VariableListDeclaration { declarator, variables, attributes, .. } => {
+                let doc = self.extract_leading_comment(variable.location.start);
+                for var in variables {
+                    self.handle_variable_declaration(
+                        declarator,
+                        var,
+                        attributes,
+                        var.location,
+                        doc.clone(),
+                    );
+                }
+            }
+            _ => {
+                self.handle_variable_declaration("my", variable, &[], variable.location, None);
+            }
+        }
+    }
+
     fn handle_variable_declaration(
         &mut self,
         declarator: &str,
@@ -3610,7 +3616,7 @@ fn expand_class_tiny_arg_to_names(arg: &str) -> Vec<String> {
         if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close))
             && start < end
         {
-            let content = &arg[start + 1..end];
+            let content = &arg[start + open.len_utf8()..end];
             return content
                 .split_whitespace()
                 .filter(|s| !s.is_empty())
@@ -3816,6 +3822,40 @@ mod tests {
     use super::*;
     use crate::parser::Parser;
     use perl_tdd_support::{must, must_some};
+
+    /// A multi-byte `qw` delimiter must not panic the Class::Tiny attribute
+    /// expansion: the content slice starts after the whole delimiter char,
+    /// not one byte after its first byte.
+    #[test]
+    fn class_tiny_qw_multibyte_delimiter_does_not_panic() {
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw\u{2022}name age\u{2022}"),
+            vec!["name".to_string(), "age".to_string()]
+        );
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw(name age)"),
+            vec!["name".to_string(), "age".to_string()],
+            "the normalized qw(...) form keeps working"
+        );
+    }
+
+    /// Issue #18029 cross-seam probe: the inverted-slice inputs that panicked
+    /// `arg_contains_exporter` (see export_analyzer.rs) must not panic this
+    /// seam either. This seam's `start < end` guard compares same-frame
+    /// absolute offsets: for an ASCII delimiter the slice starts one byte
+    /// later, and a multi-byte self-delimited `qw` cannot overlap itself in
+    /// UTF-8, so the guard already implies `start + open.len_utf8() <= end`.
+    /// Unterminated or degenerate args fall back to the whole-arg name.
+    #[test]
+    fn class_tiny_qw_issue_18029_inverted_slice_inputs_do_not_panic() {
+        assert_eq!(expand_class_tiny_arg_to_names("qw\u{2022}"), vec!["qw\u{2022}".to_string()]);
+        assert_eq!(expand_class_tiny_arg_to_names("qw/"), vec!["qw/".to_string()]);
+        assert_eq!(
+            expand_class_tiny_arg_to_names("qw\u{ab}Exporter\u{bb}"),
+            vec!["qw\u{ab}Exporter\u{bb}".to_string()]
+        );
+        assert_eq!(expand_class_tiny_arg_to_names("qw x"), vec!["qw x".to_string()]);
+    }
 
     /// DESTROY/AUTOLOAD are interpreter special-method hooks (perlobj), not
     /// real `UNIVERSAL::` subs (perldoc.perl.org/UNIVERSAL lists exactly

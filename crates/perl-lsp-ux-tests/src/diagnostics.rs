@@ -116,6 +116,55 @@ impl DiagnosticsTracker {
             Self::latest_for_uri_after_count(observed, uri, already_seen)
         })
     }
+
+    /// Return the first diagnostics payload published for `uri` with
+    /// `expected_version`, considering only events after `already_seen`
+    /// matching events for `uri`.
+    ///
+    /// A publication for a previous document version that arrives after the
+    /// count was taken does not match: the count skip is applied to the URI
+    /// stream first, then the version filter selects the awaited publication.
+    pub fn first_for_uri_after_count_and_version(
+        events: &[LspEvent],
+        uri: &str,
+        already_seen: usize,
+        expected_version: i64,
+    ) -> Option<Vec<Value>> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                LspEvent::Diagnostics { uri: event_uri, version, diagnostics }
+                    if event_uri == uri =>
+                {
+                    Some((*version, diagnostics))
+                }
+                _ => None,
+            })
+            .skip(already_seen)
+            .find_map(|(version, diagnostics)| {
+                (version == Some(expected_version)).then(|| diagnostics.clone())
+            })
+    }
+
+    /// Wait until a diagnostics publication for `uri` carrying
+    /// `expected_version` arrives after `already_seen` matching events for
+    /// `uri`.
+    pub fn wait_for_uri_after_count_and_version(
+        events: &impl EventSource,
+        uri: &str,
+        already_seen: usize,
+        expected_version: i64,
+        timeout: Duration,
+    ) -> Result<Vec<Value>, WaitEnd> {
+        events.wait_for_events(timeout, |observed| {
+            Self::first_for_uri_after_count_and_version(
+                observed,
+                uri,
+                already_seen,
+                expected_version,
+            )
+        })
+    }
 }
 
 #[cfg(test)]
@@ -136,10 +185,16 @@ mod tests {
     /// Build the raw notification the server actually sends, so these waits are
     /// driven through the same decode path production uses.
     fn publish(uri: &str, diagnostics: Vec<Value>) -> Value {
+        publish_with_version(uri, 1, diagnostics)
+    }
+
+    /// Build a publication carrying an explicit document version, so version-
+    /// aware waits are exercised against the same decode path.
+    fn publish_with_version(uri: &str, version: i64, diagnostics: Vec<Value>) -> Value {
         json!({
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
-            "params": { "uri": uri, "version": 1, "diagnostics": diagnostics },
+            "params": { "uri": uri, "version": version, "diagnostics": diagnostics },
         })
     }
 
@@ -452,6 +507,97 @@ mod tests {
         anyhow::ensure!(
             result == Ok(vec![json!({"message": "new"})]),
             "expected only the newer diagnostic payload, got {result:?}"
+        );
+        Ok(())
+    }
+
+    /// A publication for the previous document version arriving after the
+    /// count was taken must not satisfy the version-aware wait.
+    #[test]
+    fn wait_for_uri_after_count_and_version_ignores_stale_publication() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish_with_version(
+            "file:///a.pl",
+            4,
+            vec![json!({"message": "stale"})],
+        ));
+        inbox.push_event(publish_with_version(
+            "file:///other.pl",
+            5,
+            vec![json!({"message": "other"})],
+        ));
+
+        let timeout = Duration::from_millis(120);
+        let result = DiagnosticsTracker::wait_for_uri_after_count_and_version(
+            &inbox,
+            "file:///a.pl",
+            0,
+            5,
+            timeout,
+        );
+
+        anyhow::ensure!(
+            result == Err(WaitEnd::Deadline { timeout }),
+            "a previous-version publication must not satisfy the wait: {result:?}"
+        );
+        Ok(())
+    }
+
+    /// The count skip applies to the URI stream before the version filter: an
+    /// already-seen publication for the expected version is not a match.
+    #[test]
+    fn wait_for_uri_after_count_and_version_respects_the_seen_count() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish_with_version("file:///a.pl", 5, vec![json!({"message": "seen"})]));
+
+        let timeout = Duration::from_millis(120);
+        let result = DiagnosticsTracker::wait_for_uri_after_count_and_version(
+            &inbox,
+            "file:///a.pl",
+            1,
+            5,
+            timeout,
+        );
+
+        anyhow::ensure!(
+            result == Err(WaitEnd::Deadline { timeout }),
+            "a publication inside the already-seen prefix must not satisfy the wait: {result:?}"
+        );
+        Ok(())
+    }
+
+    /// A stale publication buffered first must not mask the awaited one: the
+    /// wait wakes on the publication carrying the expected version.
+    #[test]
+    fn wait_for_uri_after_count_and_version_wakes_on_the_expected_version() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish_with_version(
+            "file:///a.pl",
+            4,
+            vec![json!({"message": "stale"})],
+        ));
+
+        let publisher = inbox.clone();
+        let later = thread::spawn(move || {
+            publisher.push_event(publish_with_version(
+                "file:///a.pl",
+                5,
+                vec![json!({"message": "current"})],
+            ));
+        });
+
+        let result = DiagnosticsTracker::wait_for_uri_after_count_and_version(
+            &inbox,
+            "file:///a.pl",
+            0,
+            5,
+            GENEROUS,
+        );
+        let _ = later.join();
+
+        anyhow::ensure!(
+            result == Ok(vec![json!({"message": "current"})]),
+            "expected the expected-version payload, got {result:?}"
         );
         Ok(())
     }

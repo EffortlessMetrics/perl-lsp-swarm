@@ -36,6 +36,7 @@ mod test_facts;
 
 pub(crate) use boundaries::emit_boundaries_and_commands;
 pub(crate) use changes::{diff_provenance_unverified_limitation, emit_changes_from_diff};
+pub(crate) use discovery::discovery_scope_skips;
 pub(crate) use owners::emit_files_and_owners;
 pub(crate) use relations::emit_relations_and_discriminators;
 #[allow(unused_imports)]

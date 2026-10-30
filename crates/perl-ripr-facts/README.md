@@ -35,12 +35,15 @@ Three entry points:
   paths and resolved by the process current working directory; `diff` is not
   rebased onto `--root`. The diff file is read as unified diff text and
   forwarded to `RiprFactsRequest.diff`.
-- **`run_ripr_facts(schema, root, base, head, fact_classes, out) -> i32`** —
-  the thin CLI wrapper the `perl-lsp` / `perllsp` `--ripr-facts` flag
-  calls. It forwards its args to `build_ripr_facts_packet`, then validates the
-  output path, writes the packet to `out`, and maps the outcome to a process
-  exit code (`0` success, `1` on any validation or write failure). Use
-  `run_ripr_facts_with_diff` when the caller already has diff text.
+- **`run_ripr_facts_with_diff_path(schema, root, base, head, fact_classes,
+  diff_path, out) -> i32`** — the thin CLI wrapper the `perl-lsp` /
+  `perllsp` `--ripr-facts` flag calls. It reads `--ripr-diff` diff text from
+  `diff_path` (`None` = no-diff packet), forwards its args to
+  `build_ripr_facts_packet`, then validates the output path, writes the packet
+  to `out`, and maps the outcome to a process exit code (`0` success, `1` on
+  any validation or write failure). `run_ripr_facts` is the retained no-diff
+  wrapper; use `run_ripr_facts_with_diff` when the caller already has diff
+  text.
 
 ### Output safety
 
@@ -144,4 +147,6 @@ from base/head instead of accepting caller-supplied bytes) lands in a later
 slice.
 
 The `perl-lsp` / `perllsp` binaries retain the `--ripr-facts` flag as a
-thin wrapper that calls [`run_ripr_facts`].
+thin wrapper that calls [`run_ripr_facts_with_diff_path`], threading
+`--ripr-diff` into `changes[]` (#17152); without the flag the packet keeps
+the no-diff contract (empty `changes[]` plus `no-diff-supplied`).
