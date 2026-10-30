@@ -138,6 +138,10 @@ class ReceiptProblemTests(unittest.TestCase):
             "object gates": (b'{"gates":{}}', "gates must be an array"),
             "string gates": (b'{"gates":""}', "gates must be an array"),
             "non-object row": (b'{"gates":[7]}', "gates[0] must be a JSON object"),
+            "surrogate gate name": (
+                b'{"gates":[{"gate_name":"\\ud800","status":"fail","exit_code":1}]}',
+                "gates[0].gate_name must contain valid UTF-8",
+            ),
             "non-object later row": (
                 b'{"gates":[{"gate_name":"fmt","status":"pass","exit_code":0},null]}',
                 "gates[1] must be a JSON object",

@@ -92,6 +92,18 @@ def summarize(receipt: Path) -> tuple[str, list[tuple[str, str]], str | None]:
             for index, gate in enumerate(gates):
                 if not isinstance(gate, dict):
                     raise ValueError(f"gates[{index}] must be a JSON object")
+                # A lone surrogate (for example "\ud800") parses as a JSON
+                # string but cannot be written as UTF-8, which would crash
+                # the summary write instead of reporting the bad receipt.
+                for field in ("gate_name", "status", "exit_code"):
+                    value = gate.get(field)
+                    if isinstance(value, str):
+                        try:
+                            value.encode("utf-8")
+                        except UnicodeError as error:
+                            raise ValueError(
+                                f"gates[{index}].{field} must contain valid UTF-8"
+                            ) from error
         except (OSError, UnicodeError, ValueError) as error:
             lines.append(f"- Receipt: unreadable ({error})")
             receipt_problem = f"receipt unreadable: {error}"
