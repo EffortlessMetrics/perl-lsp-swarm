@@ -667,6 +667,24 @@ fn package_member_oracle_rejects_floating_members() -> TestResult {
 }
 
 #[test]
+fn package_member_oracle_rejects_root_duplicate_of_nested_member() -> TestResult {
+    // Discriminating control for the root-exclusion clause alone: the
+    // member is correctly nested (so the child lookup and kind check
+    // pass) and also present at the root, so only that clause can fail.
+    let duplicated = json!([
+        { "name": "MyModule", "kind": 2, "children": [
+            { "name": "hello", "kind": 12 }
+        ] },
+        { "name": "hello", "kind": 12 }
+    ]);
+    let symbols = duplicated.as_array().ok_or("duplicated fixture must be an array")?;
+    require_symbol_shape(
+        require_fixture_package_members(symbols, "MyModule", &[("hello", 12)]).is_err(),
+        "a member duplicated at the root must not satisfy package ownership",
+    )
+}
+
+#[test]
 fn statement_package_oracle_rejects_wrongly_nested_package() -> TestResult {
     let nested = json!([
         { "name": "Child", "kind": 2, "children": [
