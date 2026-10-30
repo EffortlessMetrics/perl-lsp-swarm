@@ -32,15 +32,17 @@ fn write_fixture(dir: &Path, name: &str, contents: &str) -> std::io::Result<Path
     Ok(path)
 }
 
-/// Offline fixture whose PR closes an issue the fixture deliberately omits,
-/// so the relation resolves to a row-level `NOT_PROVEN_GITHUB` verdict.
+/// Offline fixture whose PR closes an issue the fixture marks unavailable,
+/// so the relation resolves to a row-level `NOT_PROVEN_GITHUB` verdict. An
+/// omitted issue would instead be a lookup that never ran (an instrument
+/// failure), which is a different contract.
 const NOT_PROVEN_FIXTURE: &str = r#"{
   "schema_version": "semantic_close_containment_fixture.v1",
   "provenance": {
     "captured_at": "2026-09-20T00:00:00Z",
     "sources": ["https://github.com/effortlessmetrics/perl-lsp-swarm/issues/16214"],
     "subject_shas": [""],
-    "boundary": "offline proof fixture; the referenced issue subject is deliberately omitted so the relation resolves to NOT_PROVEN_GITHUB (#16214)"
+    "boundary": "offline proof fixture; the referenced issue is marked unavailable so the relation resolves to NOT_PROVEN_GITHUB (#16214)"
   },
   "repository": "effortlessmetrics/perl-lsp-swarm",
   "pull_request": {
@@ -48,7 +50,13 @@ const NOT_PROVEN_FIXTURE: &str = r#"{
     "title": "typed exit contract proof",
     "body": "Closes #16214\n"
   },
-  "issues": [],
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 16214,
+      "unavailable": true
+    }
+  ],
   "expected": {
     "aggregate_code": "NOT_PROVEN_GITHUB",
     "rows": [

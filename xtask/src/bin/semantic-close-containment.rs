@@ -453,8 +453,17 @@ struct FixturePullRequest {
 struct FixtureIssue {
     repository: String,
     number: u64,
+    #[serde(default)]
     title: String,
+    #[serde(default)]
     body: String,
+    /// Offline stand-in for a lookup that ran and found nothing: the live
+    /// path maps that to IssueEvidence::Unavailable (a NOT_PROVEN_GITHUB
+    /// verdict), while an omitted issue is a fixture that never tried
+    /// (LookupFailed, an instrument failure). Without this, no fixture can
+    /// express a real not-proven verdict.
+    #[serde(default)]
+    unavailable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -763,14 +772,16 @@ fn evaluate_fixture_with_rules(fixture: &Fixture, rules: RuleGate) -> Result<Rep
     for issue in &fixture.issues {
         let key =
             IssueKey { repository: canonical_repository(&issue.repository)?, number: issue.number };
-        issues.insert(
-            key,
+        let evidence = if issue.unavailable {
+            IssueEvidence::Unavailable("fixture marks the issue unavailable".to_string())
+        } else {
             IssueEvidence::Available(IssueSubject {
                 number: issue.number,
                 title: issue.title.clone(),
                 body: issue.body.clone(),
-            }),
-        );
+            })
+        };
+        issues.insert(key, evidence);
     }
     evaluate_with_rules(
         &pull,
@@ -2860,6 +2871,7 @@ mod tests {
             // Through the production helper, not a literal: a report whose
             // headline is hardcoded cannot falsify the headline.
             aggregate_code: aggregate_code(&rows),
+            posture: posture_for_rows(&rows),
             semantic_completion_proven: false,
             rows,
             subject_snapshot: None,
@@ -5233,12 +5245,11 @@ mod tests {
         assert_eq!(not_proven.exit_code(), EXIT_NOT_PROVEN);
         assert_eq!(not_proven.posture(), "NOT_PROVEN");
 
-        // Row-level instrument trouble is still a produced verdict about a
-        // relation: exit 3 with the typed row code in the receipt, never the
-        // whole-run crash code.
+        // Row-level instrument trouble is not a verdict about the subject:
+        // the landed #16233 contract lets it outrank a not-proven verdict, so
+        // the run exits as an instrument failure, never as exit 3.
         let row_instrument = report(vec![row(ResultCode::InstrumentFailure)]);
-        assert_eq!(row_instrument.exit_code(), EXIT_NOT_PROVEN);
-        assert_eq!(row_instrument.posture(), "NOT_PROVEN");
+        assert_eq!(row_instrument.exit_code(), EXIT_INSTRUMENT_FAILURE);
 
         assert_eq!(EXIT_INSTRUMENT_FAILURE, 4);
         assert_ne!(EXIT_INSTRUMENT_FAILURE, EXIT_NOT_PROVEN);
