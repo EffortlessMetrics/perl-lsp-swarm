@@ -29,8 +29,9 @@ const DOCTOR_TOOL_TIMEOUT_SECS: u64 = 5;
 /// `perllsp --doctor --external-tools`: registry-driven, native-first
 /// external-tooling report (#7212). Source-only projection of the canonical
 /// registry (#7209): no probe, install, selection, or execution occurs, and
-/// every verdict comes from the registry rows.
-pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
+/// every verdict comes from the registry rows. `command_name` is the name the
+/// binary was invoked under and flows into the report header (#17163).
+pub(super) fn run_doctor_external_tools(json: bool, command_name: &str) -> i32 {
     let entries = external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY);
     if json {
         match serde_json::to_string_pretty(&entries) {
@@ -44,7 +45,7 @@ pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_external_tool_doctor_text(&entries));
+        print!("{}", render_external_tool_doctor_text(&entries, command_name));
         0
     }
 }
@@ -52,7 +53,7 @@ pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
 /// `perllsp --doctor --critic-compatibility`: registry-driven Perl::Critic
 /// configuration compatibility (#7212). Explains `.perlcriticrc` mapping
 /// process-free; never offers a runtime engine switch.
-pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
+pub(super) fn run_doctor_critic_compatibility(json: bool, command_name: &str) -> i32 {
     let Some(entry) = critic_compatibility_entry(EXTERNAL_TOOL_REGISTRY) else {
         eprintln!("registry does not own a .perlcriticrc compatibility row");
         return 1;
@@ -69,7 +70,7 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_critic_compatibility_text(&entry));
+        print!("{}", render_critic_compatibility_text(&entry, command_name));
         0
     }
 }
@@ -82,7 +83,9 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
 /// identity divergence for DAP E2E / prove consumers. Typed statuses and
 /// copyable fix lines follow the #7212 posture; the symlink probe uses temporary
 /// files with best-effort cleanup and never installs or configures anything.
-pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
+/// `command_name` is the name the binary was invoked under and flows into the
+/// report header (#17163).
+pub(super) fn run_doctor_dev_environment(json: bool, command_name: &str) -> i32 {
     let report = build_dev_environment_report();
     if json {
         match serde_json::to_string_pretty(&report) {
@@ -96,12 +99,12 @@ pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
             }
         }
     } else {
-        print!("{}", render_dev_environment_report(&report));
+        print!("{}", render_dev_environment_report(&report, command_name));
         0
     }
 }
 
-pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
+pub(super) fn run_doctor(dir: &str, json: bool, command_name: &str) -> i32 {
     match build_doctor_report_struct(dir) {
         Ok(report) => {
             if json {
@@ -116,7 +119,7 @@ pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
                     }
                 }
             } else {
-                print!("{}", render_report(report));
+                print!("{}", render_report(report, command_name));
                 0
             }
         }
@@ -215,7 +218,7 @@ struct PerlReport {
     binary: Option<PathBuf>,
     source: &'static str,
     version: Option<String>,
-    error: Option<String>,
+    error: Option<ReportFailure>,
 }
 
 /// Report for an external tool (`perltidy`/`perlcritic`) that perl-lsp may
@@ -227,7 +230,117 @@ struct ToolReport {
     binary: Option<PathBuf>,
     source: &'static str,
     version: Option<String>,
-    error: Option<String>,
+    error: Option<ReportFailure>,
+}
+
+/// Why reporting on a discovered Perl or external tool failed.
+///
+/// One fact, two audiences (#16525). The human summary needs a concise
+/// verdict that states which step failed; the JSON surface keeps the raw
+/// child output for diagnosis. Both render from this type, so no renderer
+/// re-parses a composed error string to work out what happened.
+#[derive(Debug, Clone)]
+enum ReportFailure {
+    /// The binary was located and executed, but the version probe failed.
+    ///
+    /// `status` is already normalized by the constructor, so a summary never
+    /// composes two status phrasings. `stderr` is the raw child stream: it
+    /// belongs in `--json`, never in a one-line summary, where a child that
+    /// denies its own discovery ("Can't find X on PATH") reads as a
+    /// contradiction of the discovery this same line already reported.
+    VersionProbe { label: String, status: String, stderr: String },
+    /// Discovery or spawn itself failed. The message is already a
+    /// user-facing one-line diagnosis with no hidden child output.
+    Message(String),
+    /// A captured verdict and diagnostic detail. Cargo retains its existing
+    /// detail bound without changing the Perl/tool probe representation.
+    Detailed { summary: String, detail: String },
+}
+
+impl ReportFailure {
+    /// A version probe that ran and failed. `label` names the tool in the
+    /// machine detail; the Perl line is already labelled by its own row.
+    fn version_probe(label: &str, status: &std::process::ExitStatus, stderr: &[u8]) -> Self {
+        Self::VersionProbe {
+            label: label.to_string(),
+            status: probe_status_clause(status),
+            stderr: String::from_utf8_lossy(stderr).trim().to_string(),
+        }
+    }
+
+    /// The one-line human verdict, pointing at `--doctor --json` only when
+    /// this failure actually hides child output. The pointer says to add
+    /// `--json` to the same invocation because repeating `--doctor` alone
+    /// would drop an explicit workspace argument and probe a different
+    /// Perl (#16525).
+    fn summary(&self) -> String {
+        match self {
+            Self::VersionProbe { status, stderr, .. } => {
+                let verdict = format!("version probe failed ({status})");
+                if stderr.is_empty() {
+                    verdict
+                } else {
+                    format!("{verdict}; re-run with --json added for probe detail")
+                }
+            }
+            Self::Message(message) => message.clone(),
+            Self::Detailed { summary, .. } => summary.clone(),
+        }
+    }
+
+    /// The machine-readable detail `--json` preserves.
+    fn detail(&self) -> String {
+        match self {
+            Self::VersionProbe { label, status, stderr } => {
+                let prefix = if label.is_empty() { String::new() } else { format!("{label} ") };
+                let mut detail = format!("{prefix}version probe exited with {status}");
+                if !stderr.is_empty() {
+                    detail.push_str("; stderr: ");
+                    detail.push_str(stderr);
+                }
+                detail
+            }
+            Self::Message(message) => message.clone(),
+            Self::Detailed { detail, .. } => detail.clone(),
+        }
+    }
+
+    fn with_bounded_detail(self, max_chars: usize) -> Self {
+        Self::Detailed {
+            summary: self.summary(),
+            detail: truncate_for_detail(&self.detail(), max_chars),
+        }
+    }
+}
+
+/// The `error` field keeps its JSON string shape and retains child stderr
+/// for diagnosis, subject to Cargo's existing detail bound. Status wording is
+/// normalized like the human line (#16525): consumers comparing the old doubled phrasing
+/// (`exited with status exit code: N`) see the new single clause.
+impl Serialize for ReportFailure {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.detail())
+    }
+}
+
+/// Render a process exit status as a single clause.
+///
+/// `ExitStatus`'s own `Display` is already a status phrase ("exit code: 29",
+/// "exit status: 2"), so wrapping it in another template produced
+/// "exited with status exit code: 29" (#16525). The caller owns the wording
+/// and receives the bare fact instead.
+fn probe_status_clause(status: &std::process::ExitStatus) -> String {
+    // On Windows a child that dies hard reports an NTSTATUS in the high bit
+    // (0xC0000142 and friends), which `code()` hands back as a negative
+    // `i32`. Keep std's own hexadecimal rendering for those so the crash
+    // stays recognizable instead of becoming a negative decimal. Everywhere
+    // else a `Some` code is the honest fact, and `Display` is the fallback
+    // when the child was signalled rather than exited.
+    let code = status.code().filter(|code| !cfg!(windows) || *code >= 0);
+    match code {
+        Some(code) => format!("exit code {code}"),
+        None => format!("{status}"),
+    }
 }
 
 #[derive(Serialize)]
@@ -293,7 +406,7 @@ fn load_workspace_config(
             include_source: "default includePaths",
             rejected_include_paths: Vec::new(),
         }),
-        Err(error) => Err(format!("{}: {error}", workspace.join(".perl-lsp.toml").display())),
+        Err(error) => Err(format!("{}: {error}", display_path(&workspace.join(".perl-lsp.toml")))),
     }
 }
 
@@ -316,7 +429,7 @@ fn probe_perl_with_resolver(
                     binary: None,
                     source: "PATH",
                     version: None,
-                    error: Some(format!("{error}")),
+                    error: Some(ReportFailure::Message(format!("{error}"))),
                 };
             }
         },
@@ -337,16 +450,15 @@ fn probe_perl_with_resolver(
             binary: Some(binary),
             source,
             version: None,
-            error: Some(version_probe_error(&output)),
+            error: Some(ReportFailure::version_probe("", &output.status, &output.stderr)),
         },
-        Err(error) => {
-            PerlReport { binary: Some(binary), source, version: None, error: Some(error) }
-        }
+        Err(error) => PerlReport {
+            binary: Some(binary),
+            source,
+            version: None,
+            error: Some(ReportFailure::Message(error)),
+        },
     }
-}
-
-fn version_probe_error(output: &std::process::Output) -> String {
-    version_probe_error_from_parts(&output.status.to_string(), &output.stderr)
 }
 
 /// Locate an external tool on `PATH`, using the hardened resolver on Windows
@@ -387,7 +499,7 @@ fn probe_tool_with_resolver(
                 binary: None,
                 source: "PATH",
                 version: None,
-                error: Some(format!("{name} not found on PATH")),
+                error: Some(ReportFailure::Message(format!("{name} not found on PATH"))),
             };
         }
     };
@@ -408,27 +520,15 @@ fn probe_tool_with_resolver(
             binary: Some(binary),
             source: "PATH",
             version: None,
-            error: Some(tool_version_probe_error(name, &output)),
+            error: Some(ReportFailure::version_probe(name, &output.status, &output.stderr)),
         },
-        Err(error) => {
-            ToolReport { binary: Some(binary), source: "PATH", version: None, error: Some(error) }
-        }
+        Err(error) => ToolReport {
+            binary: Some(binary),
+            source: "PATH",
+            version: None,
+            error: Some(ReportFailure::Message(error)),
+        },
     }
-}
-
-fn tool_version_probe_error(name: &str, output: &std::process::Output) -> String {
-    format!("{name} {}", version_probe_error(output))
-}
-
-fn version_probe_error_from_parts(status: &str, stderr: &[u8]) -> String {
-    let mut error = format!("version probe exited with status {status}");
-    let stderr = String::from_utf8_lossy(stderr);
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        error.push_str("; stderr: ");
-        error.push_str(stderr);
-    }
-    error
 }
 
 fn resolve_perl_path_for_doctor() -> anyhow::Result<(PathBuf, &'static str)> {
@@ -746,7 +846,7 @@ struct CargoToolchainReport {
     provenance: &'static str,
     meets_workspace_pin: Option<bool>,
     honors_toolchain_file: Option<bool>,
-    error: Option<String>,
+    error: Option<ReportFailure>,
     fix: Option<String>,
 }
 
@@ -933,7 +1033,7 @@ fn build_repo_entrypoints_report() -> RepoEntrypointsReport {
             marker: REPO_ENTRYPOINT_MARKER,
             located: true,
             complete: Some(repo_entrypoints_complete(&root)),
-            note: format!("repository root: {}", root.display()),
+            note: format!("repository root: {}", display_path(&root)),
         },
     }
 }
@@ -1943,15 +2043,25 @@ fn shell_cargo_report_from_output(
                 (false, Ok(probe)) => {
                     failed_probe_cargo_report(flavor, probe.cargo_path, Ok(process_output))
                 }
-                (_, Err(parse_error)) => failed_probe_cargo_report(
-                    flavor,
-                    None,
-                    Err(format!(
-                        "shell cargo probe output was invalid: {parse_error}; exit status {}; stderr: {}",
-                        process_output.status,
-                        decode_shell_output(&process_output.stderr).trim()
-                    )),
-                ),
+                (_, Err(parse_error)) => {
+                    let status = probe_status_clause(&process_output.status);
+                    let stderr = decode_shell_output(&process_output.stderr);
+                    let mut detail =
+                        format!("shell cargo probe output was invalid: {parse_error}; {status}");
+                    if !stderr.trim().is_empty() {
+                        detail.push_str("; stderr: ");
+                        detail.push_str(stderr.trim());
+                    }
+                    // Even exit 0 can carry an invalid record. Keep the parse
+                    // diagnosis separate from a failed version probe, and point
+                    // to JSON because the parse reason is withheld here too.
+                    let summary = format!(
+                        "shell cargo probe output was invalid ({status}); re-run with --json added for probe detail"
+                    );
+                    let failure = ReportFailure::Detailed { summary, detail }
+                        .with_bounded_detail(DETAIL_MAX_CHARS);
+                    cargo_probe_error_report(flavor, None, failure)
+                }
             }
         }
         // The shell probe failed before emitting a complete record, so there
@@ -1969,17 +2079,25 @@ fn failed_probe_cargo_report(
     binary: Option<PathBuf>,
     output: ProbeOutput,
 ) -> CargoToolchainReport {
-    let detail = match output {
-        Ok(process_output) => truncate_for_detail(
-            &format!(
-                "probe exited with status {}; stderr: {}",
-                process_output.status,
-                decode_shell_output(&process_output.stderr).trim()
-            ),
-            DETAIL_MAX_CHARS,
-        ),
-        Err(spawn_error) => truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS),
+    let failure = match output {
+        Ok(process_output) => ReportFailure::version_probe(
+            "cargo",
+            &process_output.status,
+            decode_shell_output(&process_output.stderr).as_bytes(),
+        )
+        .with_bounded_detail(DETAIL_MAX_CHARS),
+        Err(spawn_error) => {
+            ReportFailure::Message(truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS))
+        }
     };
+    cargo_probe_error_report(flavor, binary, failure)
+}
+
+fn cargo_probe_error_report(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    failure: ReportFailure,
+) -> CargoToolchainReport {
     CargoToolchainReport {
         flavor,
         status: STATUS_PROBE_ERROR,
@@ -1988,7 +2106,7 @@ fn failed_probe_cargo_report(
         provenance: PROVENANCE_UNKNOWN,
         meets_workspace_pin: None,
         honors_toolchain_file: None,
-        error: Some(detail),
+        error: Some(failure),
         fix: None,
     }
 }
@@ -2008,7 +2126,7 @@ fn finish_reachable_cargo_report_with_context(
         .and_then(|path| classify_cargo_provenance_with_context(path, context));
     let (status, meets_workspace_pin) = reachable_cargo_status(provenance, parsed_version);
     let error = if parsed_version.is_none() {
-        Some(cargo_version_probe_error(version_output))
+        Some(ReportFailure::Message(cargo_version_probe_error(version_output)))
     } else {
         None
     };
@@ -2059,7 +2177,7 @@ fn unreachable_cargo_report(flavor: &'static str, detail: &str) -> CargoToolchai
         provenance: PROVENANCE_UNKNOWN,
         meets_workspace_pin: None,
         honors_toolchain_file: None,
-        error: Some(detail.to_string()),
+        error: Some(ReportFailure::Message(detail.to_string())),
         fix: cargo_fix_line(flavor, STATUS_MISSING),
     }
 }
@@ -2243,10 +2361,15 @@ fn wsl_bash_flavor_report_from_status(status: Result<(), String>) -> BashFlavorR
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
-fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
+fn render_dev_environment_report(report: &DevEnvironmentReport, command_name: &str) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor - development environment\n");
-    out.push_str("=========================================\n\n");
+    // The header names the binary as it was invoked (#17163); the underline
+    // width must keep matching the header so the format stays stable.
+    let header = format!("{command_name} doctor - development environment");
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"=".repeat(header.chars().count()));
+    out.push_str("\n\n");
     out.push_str(&format!(
         "Pins: workspace rust-version {}, rust-toolchain.toml channel {}\n",
         report.workspace_rust_version, report.toolchain_channel_pin
@@ -2262,7 +2385,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     for cargo in &report.cargo_toolchains {
         out.push_str(&format!("  - {}: {}", cargo.flavor, cargo.status));
         if let Some(path) = &cargo.path {
-            out.push_str(&format!(" | {path}"));
+            out.push_str(&format!(" | {}", display_path_text(path)));
         }
         if let Some(version) = &cargo.version {
             out.push_str(&format!(" | {version}"));
@@ -2279,7 +2402,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
             render_optional_bool(cargo.honors_toolchain_file)
         ));
         if let Some(error) = &cargo.error {
-            out.push_str(&format!("      error: {error}\n"));
+            out.push_str(&format!("      error: {}\n", error.summary()));
         }
         if let Some(fix) = &cargo.fix {
             out.push_str(&format!("      Fix: {fix}\n"));
@@ -2290,7 +2413,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     for flavor in &report.bash_flavors {
         out.push_str(&format!("  - {}: {}", flavor.flavor, flavor.status));
         if let Some(path) = &flavor.bash_path {
-            out.push_str(&format!(" | {path}"));
+            out.push_str(&format!(" | {}", display_path_text(path)));
         }
         out.push_str(&format!(
             " | runs repo entrypoints: {}",
@@ -2318,7 +2441,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     match &report.perl_identity.path {
         Some(path) => {
             out.push_str("  resolved: ");
-            out.push_str(path);
+            out.push_str(&display_path_text(path));
             if let Some(version) = &report.perl_identity.version {
                 out.push_str(&format!(" ({version})"));
             }
@@ -2370,11 +2493,138 @@ fn truncate_for_detail(text: &str, max_chars: usize) -> String {
     }
 }
 
-fn render_report(report: DoctorReport) -> String {
+/// Renders `path` for the human-readable doctor report.
+///
+/// Doctor is an action report: its `Next steps` section tells the user which
+/// paths to act on. On Windows `Path::canonicalize` returns the extended-length
+/// `\\?\` spelling (it is `GetFinalPathNameByHandleW` underneath), and `cmd.exe`
+/// refuses that spelling as a working directory — it reports "CMD does not
+/// support UNC paths as current directories", silently falls back to the Windows
+/// directory, and exits 1. So the text surface prints the plain form whenever
+/// the plain form is expressible, and keeps the prefix only where dropping it
+/// would change which path is meant (#16662).
+///
+/// Display-only, with one documented exception. No filesystem operation is
+/// affected and the `--doctor --json` path fields stay extended — the extended
+/// spelling is the lossless one. The one exception is the repository-root
+/// sentence in `RepoEntrypointsReport::note`, which is rendered here at
+/// construction rather than at the render boundary: it is prose, not a path
+/// field, so `--doctor --dev-environment --json` reports it in plain form too.
+fn display_path(path: &Path) -> String {
+    display_path_text(&path.display().to_string())
+}
+
+/// Longest plain-namespace Windows path in UTF-16 code units, excluding the
+/// terminator. Past this the Win32 layer truncates the plain spelling, which is
+/// the whole reason the extended form exists, so a longer path keeps its prefix.
+#[cfg(windows)]
+const MAX_PLAIN_PATH_CHARS: usize = 259;
+
+/// Renders already-rendered path text for the human-readable doctor report.
+///
+/// Same contract as [`display_path`], for the report fields that were
+/// stringified where they were built rather than held as a `PathBuf`.
+#[cfg(windows)]
+fn display_path_text(text: &str) -> String {
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return text.to_string();
+    };
+
+    // `\\?\UNC\server\share` is the extended spelling of the `\\server\share`
+    // namespace. Every other `\\?\` namespace — volume GUID, `GLOBALROOT`,
+    // device object — has no plain spelling at all, so those stay extended
+    // rather than being rendered as a path that resolves elsewhere or nowhere.
+    let plain = match rest.strip_prefix(r"UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None if is_drive_anchored(rest) => rest.to_string(),
+        None => return text.to_string(),
+    };
+
+    // The extended namespace skips Win32 normalization, so an extended path may
+    // carry a component the plain namespace rewrites. Each of those makes the
+    // plain form a *different* path, so keep the prefix and give up
+    // pasteability rather than give up meaning.
+    if !is_lossless_plain_form(&plain) {
+        return text.to_string();
+    }
+
+    plain
+}
+
+/// Windows device names the plain namespace resolves as a device rather than a
+/// file, whatever directory they appear in. `NUL` and `trail.` are the two that
+/// actually occur: an object created through the extended namespace can bear
+/// either, and the plain spelling of both points somewhere else.
+#[cfg(windows)]
+const RESERVED_DEVICE_NAMES: [&str; 28] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+    "LPT9", "LPT¹", "LPT²", "LPT³",
+];
+
+/// Whether the plain (non-extended) namespace can express `plain` as the very
+/// same object the extended form names.
+///
+/// Each arm below is a plain-namespace rewrite that the extended namespace
+/// skips, so a path passing all of them is the one path where dropping the
+/// prefix costs pasteability and nothing else.
+#[cfg(windows)]
+fn is_lossless_plain_form(plain: &str) -> bool {
+    // Win32 counts a path in UTF-16 code units, so a non-BMP character spends
+    // two of the budget rather than one.
+    if plain.encode_utf16().count() > MAX_PLAIN_PATH_CHARS {
+        return false;
+    }
+    if plain.chars().any(|ch| ch.is_control() || matches!(ch, '<' | '>' | '|' | '"' | '?' | '*')) {
+        return false;
+    }
+
+    plain.split(['\\', '/']).all(|component| {
+        if component.is_empty() {
+            return true;
+        }
+        // The plain namespace resolves `.` and `..` before the filesystem sees
+        // them, and strips a trailing `.` or space from any other component.
+        if matches!(component, "." | "..") {
+            return false;
+        }
+        if component.ends_with('.') || component.ends_with(' ') {
+            return false;
+        }
+        // A device name matches on the stem, with or without an extension.
+        let stem = component.split('.').next().unwrap_or(component);
+        !RESERVED_DEVICE_NAMES.iter().any(|reserved| stem.eq_ignore_ascii_case(reserved))
+    })
+}
+
+/// True for an absolute `C:\`-anchored remainder, which is the only non-UNC
+/// `\\?\` namespace with a plain spelling. A drive-relative remainder
+/// (`\\?\C:rest`) is deliberately excluded: the plain form would resolve
+/// against a different current drive.
+#[cfg(windows)]
+fn is_drive_anchored(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    matches!(chars.next(), Some(drive) if drive.is_ascii_alphabetic())
+        && matches!(chars.next(), Some(':'))
+        && matches!(chars.next(), Some('\\'))
+}
+
+/// Non-Windows paths are never extended-length, so this is the identity.
+#[cfg(not(windows))]
+fn display_path_text(text: &str) -> String {
+    text.to_string()
+}
+
+fn render_report(report: DoctorReport, command_name: &str) -> String {
     let mut out = String::new();
-    out.push_str("perl-lsp doctor\n");
-    out.push_str("===============\n\n");
-    out.push_str(&format!("Workspace: {}\n", report.workspace.display()));
+    // The header names the binary as it was invoked (#17163); the underline
+    // width must keep matching the header so the format stays stable.
+    let header = format!("{command_name} doctor");
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"=".repeat(header.chars().count()));
+    out.push_str("\n\n");
+    out.push_str(&format!("Workspace: {}\n", display_path(&report.workspace)));
     out.push_str(&format!("Project config: {}\n", render_project_config_status(&report.config)));
     if !report.config.rejected_include_paths.is_empty() {
         out.push_str("Rejected .perl-lsp.toml include_paths entries:\n");
@@ -2406,7 +2656,7 @@ fn render_report(report: DoctorReport) -> String {
     out.push_str(&format!("System @INC: {}\n", report.system_inc.status));
     if !report.system_inc.paths.is_empty() {
         for path in &report.system_inc.paths {
-            out.push_str(&format!("  - {}\n", path.display()));
+            out.push_str(&format!("  - {}\n", display_path(path)));
         }
     }
     out.push('\n');
@@ -2463,7 +2713,7 @@ fn render_project_config_status(config: &ProjectConfigReport) -> &'static str {
 
 fn render_perl_binary(report: &PerlReport) -> String {
     match &report.binary {
-        Some(path) => format!("{} ({})", path.display(), report.source),
+        Some(path) => format!("{} ({})", display_path(path), report.source),
         None => format!("not found ({})", report.source),
     }
 }
@@ -2472,7 +2722,7 @@ fn render_perl_version(report: &PerlReport) -> String {
     if let Some(version) = report.version.as_deref().filter(|version| !version.is_empty()) {
         version.to_string()
     } else if let Some(error) = &report.error {
-        format!("not available: {error}")
+        format!("not available: {}", error.summary())
     } else {
         "not available".to_string()
     }
@@ -2480,24 +2730,27 @@ fn render_perl_version(report: &PerlReport) -> String {
 
 fn render_tool_report(report: &ToolReport) -> String {
     match &report.binary {
+        // The binary was located, so this line already asserts discovery.
+        // A failure rendered here is the *probe*, not discovery: naming it
+        // that way is what keeps a child that denies its own path from
+        // contradicting the path this line just reported (#16525).
         Some(path) => {
-            let version = report
+            let status = report
                 .version
                 .as_deref()
                 .filter(|version| !version.is_empty())
                 .map(|version| version.to_string())
-                .or_else(|| {
-                    report.error.as_deref().map(|error| format!("version unavailable: {error}"))
-                })
+                .or_else(|| report.error.as_ref().map(|error| error.summary()))
                 .unwrap_or_else(|| "version unavailable".to_string());
-            format!("{} ({}); {}", path.display(), report.source, version)
+            format!("{} ({}); {}", display_path(path), report.source, status)
         }
         None => {
             let error = report
                 .error
-                .as_deref()
+                .as_ref()
+                .map(|error| error.summary())
                 .filter(|error| !error.is_empty())
-                .unwrap_or("not found on PATH");
+                .unwrap_or_else(|| "not found on PATH".to_string());
             format!("not found ({}); {error}", report.source)
         }
     }
@@ -2531,7 +2784,7 @@ fn render_path_reports(out: &mut String, reports: &[PathReport]) {
     for report in reports {
         out.push_str(&format!(
             "  - {} ({}, {}; raw: {})\n",
-            report.resolved.display(),
+            display_path(&report.resolved),
             report.source,
             report.status,
             report.raw
@@ -2837,7 +3090,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        assert_eq!(run_doctor(dir, false), 0);
+        assert_eq!(run_doctor(dir, false, "perl-lsp"), 0);
         Ok(())
     }
 
@@ -2845,11 +3098,11 @@ mod tests {
     fn run_doctor_match_arm_discriminator() -> TestResult {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(dir, false), 0);
+        assert_eq!(run_doctor(dir, false, "perl-lsp"), 0);
 
         let missing = temp.path().join("missing-workspace");
         let missing_dir = missing.to_str().ok_or("non-UTF-8 temp path")?;
-        assert_eq!(run_doctor(missing_dir, false), 1);
+        assert_eq!(run_doctor(missing_dir, false, "perl-lsp"), 1);
         Ok(())
     }
 
@@ -3077,7 +3330,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = render_report(build_doctor_report_struct(dir)?);
+        let report = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(report.contains("Project config: loaded .perl-lsp.toml"));
         assert!(report.contains("custom/lib"));
@@ -3134,7 +3387,7 @@ mod tests {
         )?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let rendered = render_report(build_doctor_report_struct(dir)?);
+        let rendered = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(rendered.contains("Rejected .perl-lsp.toml include_paths entries:"));
         assert!(rendered.contains(absolute));
@@ -3217,18 +3470,81 @@ mod tests {
         assert_eq!(report.binary.as_deref(), Some(current_exe.as_path()));
         assert!(report.version.is_none());
         let error = report.error.ok_or("non-Perl executable should fail version probe")?;
-        assert!(error.contains("version probe exited with status"));
+        assert!(error.detail().contains("version probe exited with exit code "));
         Ok(())
     }
 
+    /// A synthetic non-zero exit status that decodes to exit code 1 on both
+    /// platforms, so the status wording these tests assert is the wording
+    /// production renders, on every CI runner.
+    ///
+    /// This deliberately does not reuse `synthetic_process_output`: its
+    /// failure case is a raw *wait status*, so on unix `from_raw(1)` is
+    /// read as signal 1 (SIGHUP) and `ExitStatus::code()` is `None`. These
+    /// tests need a child that exited with a code, not one that was
+    /// signalled, because `code()` is what `probe_status_clause` reports.
+    fn synthetic_failure_status() -> std::process::ExitStatus {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        // A unix wait status carries the exit code in the high byte.
+        #[cfg(unix)]
+        let raw = 1 << 8;
+        #[cfg(windows)]
+        let raw = 1;
+
+        std::process::ExitStatus::from_raw(raw)
+    }
+
     #[test]
-    fn version_probe_error_preserves_stderr_guidance() {
-        let error = version_probe_error_from_parts("exit status: 2", b"Can't locate App.pm\n");
+    fn version_probe_detail_names_the_status_once_and_keeps_child_stderr() {
+        let failure = ReportFailure::version_probe(
+            "perltidy",
+            &synthetic_failure_status(),
+            b"Can't locate App.pm\n",
+        );
 
         assert_eq!(
-            error,
-            "version probe exited with status exit status: 2; stderr: Can't locate App.pm"
+            failure.detail(),
+            "perltidy version probe exited with exit code 1; stderr: Can't locate App.pm"
         );
+    }
+
+    #[test]
+    fn version_probe_summary_names_the_failed_step_and_withholds_child_stderr() {
+        let failure = ReportFailure::version_probe(
+            "perltidy",
+            &synthetic_failure_status(),
+            b"Can't find C:\\Strawberry\\perl\\bin\\perltidy.BAT on PATH, '.' not in PATH.",
+        );
+
+        let summary = failure.summary();
+        assert_eq!(
+            summary,
+            "version probe failed (exit code 1); re-run with --json added for probe detail"
+        );
+        assert!(
+            !summary.contains("Strawberry"),
+            "the summary must not restate the child's own discovery claim: {summary}"
+        );
+        assert!(!summary.contains("stderr"), "raw child stderr must not leak: {summary}");
+    }
+
+    #[test]
+    fn version_probe_summary_omits_the_detail_pointer_when_the_child_was_silent() {
+        let failure =
+            ReportFailure::version_probe("perlcritic", &synthetic_failure_status(), b"  \n");
+
+        assert_eq!(failure.summary(), "version probe failed (exit code 1)");
+    }
+
+    #[test]
+    fn version_probe_without_a_tool_label_omits_the_prefix() {
+        let failure = ReportFailure::version_probe("", &synthetic_failure_status(), b"");
+
+        assert_eq!(failure.detail(), "version probe exited with exit code 1");
     }
 
     #[test]
@@ -3244,7 +3560,7 @@ mod tests {
         assert!(report.binary.is_none());
         assert!(report.version.is_none());
         let error = report.error.ok_or("missing Perl should report path resolution guidance")?;
-        assert!(error.contains("perl binary not found on PATH"));
+        assert!(error.summary().contains("perl binary not found on PATH"));
         Ok(())
     }
 
@@ -3261,7 +3577,7 @@ mod tests {
         assert_eq!(report.binary.as_deref(), Some(current_exe.as_path()));
         assert!(report.version.is_none());
         let error = report.error.ok_or("non-Perl executable should fail version probe")?;
-        assert!(error.contains("version probe exited with status"));
+        assert!(error.detail().contains("version probe exited with exit code "));
         Ok(())
     }
 
@@ -3278,7 +3594,7 @@ mod tests {
         assert_eq!(report.binary.as_deref(), Some(missing.as_path()));
         assert!(report.version.is_none());
         let error = report.error.ok_or("missing configured Perl should fail to spawn")?;
-        assert!(error.contains("command failed to start"));
+        assert!(error.summary().contains("command failed to start"));
         Ok(())
     }
 
@@ -3290,7 +3606,7 @@ mod tests {
         assert!(report.binary.is_none());
         assert!(report.version.is_none());
         let error = report.error.ok_or("missing tool should report an error")?;
-        assert!(error.contains("perltidy not found on PATH"));
+        assert!(error.summary().contains("perltidy not found on PATH"));
         Ok(())
     }
 
@@ -3303,7 +3619,7 @@ mod tests {
         assert!(report.binary.is_some());
         assert!(report.version.is_none());
         let error = report.error.ok_or("non-perltidy binary should fail version probe")?;
-        assert!(error.contains("perltidy version probe exited with status"));
+        assert!(error.detail().contains("perltidy version probe exited with exit code "));
         Ok(())
     }
 
@@ -3324,11 +3640,15 @@ mod tests {
             binary: Some(PathBuf::from("/usr/bin/perlcritic")),
             source: "PATH",
             version: None,
-            error: Some("perlcritic version probe exited with status 2".to_string()),
+            error: Some(ReportFailure::version_probe(
+                "perlcritic",
+                &synthetic_failure_status(),
+                b"",
+            )),
         };
         assert_eq!(
             render_tool_report(&version_unavailable),
-            "/usr/bin/perlcritic (PATH); version unavailable: perlcritic version probe exited with status 2"
+            "/usr/bin/perlcritic (PATH); version probe failed (exit code 1)"
         );
 
         let no_error = ToolReport {
@@ -3343,13 +3663,40 @@ mod tests {
         );
     }
 
+    /// The whole line from the #16525 live reproduction. Discovery reports
+    /// the binary as found; a Windows `.BAT` probe then fails while the child
+    /// denies the very path this line already reported. The rendered line
+    /// must reconcile that into one honest fact.
+    #[test]
+    fn render_tool_report_does_not_echo_a_child_that_denies_its_own_discovery() {
+        let report = ToolReport {
+            binary: Some(PathBuf::from(r"C:\Strawberry\perl\bin\perltidy.BAT")),
+            source: "PATH",
+            version: None,
+            error: Some(ReportFailure::version_probe(
+                "perltidy",
+                &synthetic_failure_status(),
+                br#"Can't find C:\Strawberry\perl\bin\perltidy.BAT on PATH, '.' not in PATH."#,
+            )),
+        };
+
+        let line = render_tool_report(&report);
+        assert!(
+            line.starts_with(r"C:\Strawberry\perl\bin\perltidy.BAT (PATH); version probe failed ("),
+            "discovery and the failed step must both be stated, without contradiction: {line}"
+        );
+        assert!(!line.contains("Can't find"), "the child's denial must not be echoed: {line}");
+        assert!(!line.contains("stderr"), "raw child stderr must not reach the summary: {line}");
+        assert!(line.ends_with("re-run with --json added for probe detail"), "{line}");
+    }
+
     #[test]
     fn render_tool_report_missing() {
         let report = ToolReport {
             binary: None,
             source: "PATH",
             version: None,
-            error: Some("perltidy not found on PATH".to_string()),
+            error: Some(ReportFailure::Message("perltidy not found on PATH".to_string())),
         };
         assert_eq!(render_tool_report(&report), "not found (PATH); perltidy not found on PATH");
     }
@@ -3359,7 +3706,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = render_report(build_doctor_report_struct(dir)?);
+        let report = render_report(build_doctor_report_struct(dir)?, "perl-lsp");
 
         assert!(report.contains("perltidy:"));
         assert!(report.contains("perlcritic:"));
@@ -3382,37 +3729,223 @@ mod tests {
         let perltidy = probe_tool_with_resolver("perltidy", "--version", |_| None);
         let perlcritic = probe_tool_with_resolver("perlcritic", "--version", |_| None);
 
-        let rendered = render_report(DoctorReport {
-            workspace,
-            config: ProjectConfigReport {
-                status: ProjectConfigStatus::Missing,
-                include_source: "default includePaths",
-                rejected_include_paths: Vec::new(),
+        let rendered = render_report(
+            DoctorReport {
+                workspace,
+                config: ProjectConfigReport {
+                    status: ProjectConfigStatus::Missing,
+                    include_source: "default includePaths",
+                    rejected_include_paths: Vec::new(),
+                },
+                perl: PerlReport {
+                    binary: None,
+                    source: "PATH",
+                    version: None,
+                    error: Some(ReportFailure::Message(
+                        "perl binary not found on PATH".to_string(),
+                    )),
+                },
+                perltidy,
+                perlcritic,
+                perl5lib_paths: Vec::new(),
+                perl5lib_enabled: false,
+                perl5lib_precedence: Perl5LibPrecedence::Prepend,
+                configured_paths: Vec::new(),
+                effective_paths: Vec::new(),
+                system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+                text_sync_envelope: TextSyncEnvelopeReport {
+                    decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+                    text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
+                    position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+                },
             },
-            perl: PerlReport {
-                binary: None,
-                source: "PATH",
-                version: None,
-                error: Some("perl binary not found on PATH".to_string()),
-            },
-            perltidy,
-            perlcritic,
-            perl5lib_paths: Vec::new(),
-            perl5lib_enabled: false,
-            perl5lib_precedence: Perl5LibPrecedence::Prepend,
-            configured_paths: Vec::new(),
-            effective_paths: Vec::new(),
-            system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
-            text_sync_envelope: TextSyncEnvelopeReport {
-                decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
-                text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
-                position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
-            },
-        });
+            "perl-lsp",
+        );
 
         assert!(rendered.contains("Install perltidy (cpanm Perl::Tidy)"));
         assert!(rendered.contains("Install perlcritic (cpanm Perl::Critic)"));
         Ok(())
+    }
+
+    #[test]
+    fn doctor_report_workspace_line_is_pasteable_in_cmd() -> TestResult {
+        // The defect (#16662): `workspace_dir` canonicalizes, and on Windows
+        // `canonicalize` returns the extended-length `\\?\` spelling, which
+        // `cmd.exe` refuses as a working directory. Assert the rendered line
+        // carries the plain form. On non-Windows the canonical path is already
+        // plain, so this is the retained-behavior half of the same contract.
+        let temp = tempfile::tempdir()?;
+        let workspace = workspace_dir(temp.path().to_str().ok_or("non-UTF-8 temp path")?)?;
+        let workspace_text = workspace.display().to_string();
+
+        let rendered = render_report(
+            DoctorReport {
+                workspace,
+                config: ProjectConfigReport {
+                    status: ProjectConfigStatus::Missing,
+                    include_source: "default includePaths",
+                    rejected_include_paths: Vec::new(),
+                },
+                perl: PerlReport {
+                    binary: None,
+                    source: "PATH",
+                    version: None,
+                    error: Some(ReportFailure::Message(
+                        "perl binary not found on PATH".to_string(),
+                    )),
+                },
+                perltidy: probe_tool_with_resolver("perltidy", "--version", |_| None),
+                perlcritic: probe_tool_with_resolver("perlcritic", "--version", |_| None),
+                perl5lib_paths: Vec::new(),
+                perl5lib_enabled: false,
+                perl5lib_precedence: Perl5LibPrecedence::Prepend,
+                configured_paths: Vec::new(),
+                effective_paths: Vec::new(),
+                system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+                text_sync_envelope: TextSyncEnvelopeReport {
+                    decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+                    text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
+                    position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+                },
+            },
+            "perl-lsp",
+        );
+
+        let line = rendered
+            .lines()
+            .find(|line| line.starts_with("Workspace: "))
+            .ok_or("doctor report has no Workspace line")?;
+        assert_eq!(line, &format!("Workspace: {}", display_path(&PathBuf::from(&workspace_text))));
+        // The discriminating half, and the one the test is named for: it does
+        // not route the expectation back through the helper, so a helper that
+        // stopped simplifying anything would fail here rather than pass quietly.
+        assert!(
+            !line.contains(r"\\?\") && !rendered.contains(r"\\?\"),
+            "doctor report still prints an extended-length path; Workspace line was: {line}"
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_keeps_verbatim_form_where_the_plain_form_would_be_lossy() {
+        // The negative control that discriminates a conditional strip from an
+        // unconditional one: a path the plain namespace cannot hold, and
+        // namespaces with no plain spelling at all, must stay verbatim.
+        let too_long = format!(r"\\?\C:\{}", "d".repeat(MAX_PLAIN_PATH_CHARS));
+        assert_eq!(
+            display_path_text(&too_long),
+            too_long,
+            "a path past MAX_PATH must keep its prefix"
+        );
+
+        for text in [
+            r"\\?\Volume{9f1c2a3b-0000-0000-0000-000000000000}\dir",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\dir",
+            r"\\?\C:relative\to\thing",
+            r"\\?\C:\dir\.\other",
+        ] {
+            assert_eq!(display_path_text(text), text, "{text} has no lossless plain form");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_keeps_names_the_plain_namespace_rewrites() {
+        // Verified on this host: an object created through the extended
+        // namespace can bear a trailing `.`/space or a device name, and the
+        // plain spelling of either addresses something else. Stripping the
+        // prefix here would print a path that names a different object, which
+        // is worse than printing an unpasteable one.
+        for text in [
+            r"\\?\C:\code\trail.",
+            r"\\?\C:\code\trailing ",
+            r"\\?\C:\code\NUL",
+            r"\\?\C:\code\con.txt",
+            r"\\?\C:\code\COM1",
+            r"\\?\C:\code\LPT9.log",
+            r"\\?\C:\code\COM¹",
+            r"\\?\C:\code\com².txt",
+            r"\\?\C:\code\COM³",
+            r"\\?\UNC\server\share\LPT¹",
+            r"\\?\C:\code\lpt².log",
+            r"\\?\C:\code\LPT³",
+            r"\\?\UNC\share\aux",
+        ] {
+            assert_eq!(
+                display_path_text(text),
+                text,
+                "{text} would name a different object plainly"
+            );
+        }
+        assert_eq!(display_path_text(r"\\?\C:\code\COM0"), r"C:\code\COM0");
+        assert_eq!(display_path_text(r"\\?\C:\code\COM¹x"), r"C:\code\COM¹x");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_counts_the_length_budget_in_utf16_code_units() {
+        // The budget is UTF-16, not Unicode scalar values. The plain form below
+        // is `C:\` plus 129 astral characters: 132 scalar values, comfortably
+        // under the budget, but 261 UTF-16 code units, which is not.
+        let astra = "\u{1F600}".repeat(129);
+        let over_budget = format!(r"\\?\C:\{astra}");
+        let plain = &over_budget[4..];
+        assert!(
+            plain.chars().count() < MAX_PLAIN_PATH_CHARS,
+            "the case must be under the scalar-value count to be meaningful"
+        );
+        assert!(
+            plain.encode_utf16().count() > MAX_PLAIN_PATH_CHARS,
+            "the case must be over the budget in the unit Win32 actually counts"
+        );
+        assert_eq!(display_path_text(&over_budget), over_budget);
+
+        // The boundary itself, both sides: the plain form is `C:\` (3 units)
+        // plus the filler, so 256 units of filler lands exactly on 259.
+        let filler = |units: usize| format!(r"\\?\C:\{}", "d".repeat(units));
+        let at_budget = filler(MAX_PLAIN_PATH_CHARS - 3);
+        assert_eq!(
+            at_budget.len() - 4,
+            MAX_PLAIN_PATH_CHARS,
+            "the case must sit exactly on the budget"
+        );
+        assert_eq!(
+            display_path_text(&at_budget),
+            format!(r"C:\{}", "d".repeat(MAX_PLAIN_PATH_CHARS - 3))
+        );
+
+        let over_budget = filler(MAX_PLAIN_PATH_CHARS - 2);
+        assert_eq!(display_path_text(&over_budget), over_budget);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_de_verbatims_the_plain_namable_forms() {
+        assert_eq!(display_path_text(r"\\?\C:\code\proj"), r"C:\code\proj");
+        assert_eq!(display_path_text(r"\\?\UNC\server\share\dir"), r"\\server\share\dir");
+        // Retained: anything already plain is returned untouched.
+        assert_eq!(display_path_text(r"C:\code\proj"), r"C:\code\proj");
+        assert_eq!(display_path_text("/usr/bin/perl"), "/usr/bin/perl");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_include_path_rows_are_pasteable_too() {
+        // The issue transcript showed the prefix on every resolved include-path
+        // row, not only the `Workspace:` line: those rows are resolved against
+        // the canonicalized root, so they inherit the same extended spelling.
+        let mut out = String::new();
+        render_path_reports(
+            &mut out,
+            &[PathReport {
+                raw: "lib".to_string(),
+                resolved: PathBuf::from(r"\\?\C:\code\proj\lib"),
+                source: "default includePaths",
+                status: "missing",
+            }],
+        );
+        assert_eq!(out, "  - C:\\code\\proj\\lib (default includePaths, missing; raw: lib)\n");
     }
 
     #[test]
@@ -3493,7 +4026,7 @@ mod tests {
             binary: None,
             source: "PATH",
             version: None,
-            error: Some("probe failed".to_string()),
+            error: Some(ReportFailure::Message("probe failed".to_string())),
         };
         assert_eq!(render_perl_binary(&error_report), "not found (PATH)");
         assert_eq!(render_perl_version(&error_report), "not available: probe failed");
@@ -3505,18 +4038,18 @@ mod tests {
 
     #[test]
     fn run_doctor_external_tools_text_exit_zero() {
-        assert_eq!(run_doctor_external_tools(false), 0);
+        assert_eq!(run_doctor_external_tools(false, "perl-lsp"), 0);
     }
 
     #[test]
     fn run_doctor_external_tools_json_exit_zero() {
-        assert_eq!(run_doctor_external_tools(true), 0);
+        assert_eq!(run_doctor_external_tools(true, "perl-lsp"), 0);
     }
 
     #[test]
     fn run_doctor_critic_compatibility_exit_zero() {
-        assert_eq!(run_doctor_critic_compatibility(false), 0);
-        assert_eq!(run_doctor_critic_compatibility(true), 0);
+        assert_eq!(run_doctor_critic_compatibility(false, "perl-lsp"), 0);
+        assert_eq!(run_doctor_critic_compatibility(true, "perl-lsp"), 0);
     }
 
     #[test]
@@ -3630,7 +4163,7 @@ mod tests {
         assert_eq!(report.status, STATUS_PROBE_ERROR);
         assert_eq!(report.meets_workspace_pin, None);
         assert_eq!(report.fix, None);
-        let error = report.error.ok_or("unparseable cargo error")?;
+        let error = report.error.ok_or("unparseable cargo error")?.detail();
         assert!(error.contains("unparseable version banner"));
         assert!(error.contains("cargo development-build"));
         assert!(error.chars().count() <= DETAIL_MAX_CHARS + 80);
@@ -4006,6 +4539,309 @@ mod tests {
         std::process::Output { status, stdout: stdout.to_vec(), stderr: stderr.to_vec() }
     }
 
+    // Literal exit codes are encoded as native wait statuses; unlike
+    // synthetic_process_output(false), exit 29 is not signal 29 on Unix.
+    fn cargo_exit_output(stdout: &[u8], stderr: &[u8], exit_code: u8) -> std::process::Output {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        #[cfg(unix)]
+        let raw = i32::from(exit_code) << 8;
+        #[cfg(windows)]
+        let raw = u32::from(exit_code);
+
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    fn environment_with_cargo(cargo: CargoToolchainReport) -> DevEnvironmentReport {
+        let mut report = synthetic_dev_environment_report();
+        report.cargo_toolchains = vec![cargo];
+        report
+    }
+
+    #[test]
+    fn cargo_probe_nonzero_output_separates_human_summary_from_json_detail() -> TestResult {
+        let output = cargo_exit_output(b"", b"cargo-child-stderr-sentinel", 29);
+        assert_eq!(output.status.code(), Some(29));
+        let cargo = cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            PathBuf::from("resolved-cargo"),
+            Ok(output),
+            None,
+        );
+        assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+        assert_eq!(cargo.path.as_deref(), Some("resolved-cargo"));
+        assert!(cargo.fix.is_none());
+        let report = environment_with_cargo(cargo);
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(
+            "error: version probe failed (exit code 29); re-run with --json added for probe detail"
+        ));
+        assert!(!rendered.contains("cargo-child-stderr-sentinel"));
+        assert!(!rendered.contains("exited with status"));
+        assert_eq!(rendered.matches("exit code 29").count(), 1);
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some(
+                "cargo version probe exited with exit code 29; stderr: cargo-child-stderr-sentinel"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_empty_stderr_does_not_offer_hidden_detail() -> TestResult {
+        let report = environment_with_cargo(cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            PathBuf::from("resolved-cargo"),
+            Ok(cargo_exit_output(b"", b" \r\n\t", 29)),
+            None,
+        ));
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains("error: version probe failed (exit code 29)\n"));
+        assert!(!rendered.contains("--json"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some("cargo version probe exited with exit code 29")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_invalid_shell_record_has_own_diagnosis_at_zero_and_nonzero_exit() -> TestResult {
+        for (code, clause) in [(0, "exit code 0"), (29, "exit code 29")] {
+            for stderr in [b"shell-child-stderr-sentinel".as_slice(), b"".as_slice()] {
+                let cargo = shell_cargo_report_from_output(
+                    FLAVOR_GIT_BASH,
+                    Ok(cargo_exit_output(b"unterminated", stderr, code)),
+                );
+                assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+                assert!(cargo.path.is_none());
+                assert!(cargo.fix.is_none());
+                let report = environment_with_cargo(cargo);
+                let rendered = render_dev_environment_report(&report, "perllsp");
+                assert!(rendered.contains(&format!(
+                    "error: shell cargo probe output was invalid ({clause}); re-run with --json added for probe detail"
+                )));
+                assert!(!rendered.contains("version probe failed"));
+                assert!(!rendered.contains("shell-child-stderr-sentinel"));
+                assert_eq!(rendered.matches(clause).count(), 1);
+                let json = serde_json::to_value(&report)?;
+                let detail = json
+                    .pointer("/cargo_toolchains/0/error")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("Cargo parse failure must serialize as a JSON string")?;
+                let suffix =
+                    if stderr.is_empty() { "" } else { "; stderr: shell-child-stderr-sentinel" };
+                assert_eq!(
+                    detail,
+                    format!(
+                        "shell cargo probe output was invalid: shell cargo probe omitted its NUL record terminator; {clause}{suffix}"
+                    )
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_json_detail_remains_bounded_after_summary_separation() -> TestResult {
+        let stderr = format!("start-sentinel{}end-sentinel", "x".repeat(500));
+        for malformed in [false, true] {
+            let output = cargo_exit_output(b"unterminated", stderr.as_bytes(), 29);
+            let cargo = if malformed {
+                shell_cargo_report_from_output(FLAVOR_GIT_BASH, Ok(output))
+            } else {
+                cargo_report_from_output(
+                    FLAVOR_NATIVE_SHELL,
+                    PathBuf::from("resolved-cargo"),
+                    Ok(output),
+                    None,
+                )
+            };
+            let report = environment_with_cargo(cargo);
+            let rendered = render_dev_environment_report(&report, "perllsp");
+            assert!(!rendered.contains("start-sentinel"));
+            let json = serde_json::to_value(&report)?;
+            let detail = json
+                .pointer("/cargo_toolchains/0/error")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("Cargo failure detail must stay a string")?;
+            // Existing Cargo policy is 240 characters plus an ellipsis. A
+            // prefix-only cap or unbounded VersionProbe would exceed 243.
+            assert_eq!(detail.chars().count(), 243);
+            assert!(detail.ends_with("..."));
+            assert!(detail.contains("start-sentinel"));
+            assert!(!detail.contains("end-sentinel"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_preserves_decoded_utf16_shell_stderr() -> TestResult {
+        let stderr: Vec<u8> = "\u{feff}shell-provider-utf16-sentinel\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let report = environment_with_cargo(cargo_report_from_output(
+            FLAVOR_WSL,
+            PathBuf::from("resolved-cargo"),
+            Ok(cargo_exit_output(b"", &stderr, 29)),
+            None,
+        ));
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(!rendered.contains("shell-provider-utf16-sentinel"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some(
+                "cargo version probe exited with exit code 29; stderr: shell-provider-utf16-sentinel"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_spawn_and_timeout_remain_execution_failures() -> TestResult {
+        for detail in ["failed to start provider: fixture spawn error", "command timed out"] {
+            let cargo = cargo_report_from_output(
+                FLAVOR_NATIVE_SHELL,
+                PathBuf::from("resolved-cargo"),
+                Err(detail.to_string()),
+                None,
+            );
+            assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+            assert_eq!(cargo.path.as_deref(), Some("resolved-cargo"));
+            assert!(cargo.version.is_none());
+            assert!(cargo.fix.is_none());
+            let report = environment_with_cargo(cargo);
+            assert!(
+                render_dev_environment_report(&report, "perllsp")
+                    .contains(&format!("error: {detail}\n"))
+            );
+            let json = serde_json::to_value(&report)?;
+            assert_eq!(
+                json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+                Some(detail)
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_probe_failure_can_be_diagnosed_and_retried_after_repair() -> TestResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir()?;
+        let cargo_path = temp.path().join("cargo");
+        std::fs::write(
+            &cargo_path,
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo-retry-fixture: repair local provider' >&2\nexit 29\n",
+        )?;
+        std::fs::set_permissions(&cargo_path, std::fs::Permissions::from_mode(0o700))?;
+        let probe = || {
+            let mut command = Command::new(&cargo_path);
+            command.arg("--version").current_dir(temp.path());
+            run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS)
+        };
+
+        let output =
+            probe().map_err(|error| format!("failure fixture did not execute: {error}"))?;
+        assert_eq!(output.status.code(), Some(29));
+        let cargo = cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            cargo_path.clone(),
+            Ok(output),
+            Some(temp.path()),
+        );
+        assert_eq!(cargo.status, STATUS_PROBE_ERROR);
+        assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
+        let report = environment_with_cargo(cargo);
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(
+            "error: version probe failed (exit code 29); re-run with --json added for probe detail"
+        ));
+        assert!(!rendered.contains("cargo-retry-fixture"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/error").and_then(serde_json::Value::as_str),
+            Some(
+                "cargo version probe exited with exit code 29; stderr: cargo-retry-fixture: repair local provider"
+            )
+        );
+
+        // Repair only the failed provider, then repeat the same command/path.
+        std::fs::write(
+            &cargo_path,
+            "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo 1.95.0 (repaired fixture)'\n",
+        )?;
+        let output =
+            probe().map_err(|error| format!("repaired fixture did not execute: {error}"))?;
+        assert_eq!(output.status.code(), Some(0));
+        let cargo = cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            cargo_path.clone(),
+            Ok(output),
+            Some(temp.path()),
+        );
+        assert_eq!(cargo.status, STATUS_PRESENT);
+        assert_eq!(cargo.path.as_deref(), cargo_path.to_str());
+        assert_eq!(cargo.version.as_deref(), Some("cargo 1.95.0 (repaired fixture)"));
+        assert!(cargo.error.is_none());
+        assert!(cargo.fix.is_none());
+        let report = environment_with_cargo(cargo);
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(!rendered.contains("version probe failed"));
+        assert!(!rendered.contains("cargo-retry-fixture"));
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(json.pointer("/cargo_toolchains/0/error"), Some(&serde_json::Value::Null));
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_probe_preserves_abnormal_process_status() -> TestResult {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        #[cfg(unix)]
+        let (raw, expected, forbidden) = (15, "signal: 15", "exit code 0");
+        #[cfg(windows)]
+        let (raw, expected, forbidden) = (0xc0000142, "0xc0000142", "-1073741502");
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let report = environment_with_cargo(cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            PathBuf::from("resolved-cargo"),
+            Ok(output),
+            None,
+        ));
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(expected));
+        assert!(!rendered.contains(forbidden));
+        let json = serde_json::to_value(&report)?;
+        let detail = json
+            .pointer("/cargo_toolchains/0/error")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("abnormal status detail must stay a string")?;
+        assert!(detail.contains(expected));
+        assert!(!detail.contains(forbidden));
+        Ok(())
+    }
+
     #[test]
     fn shell_cargo_probe_parser_preserves_empty_and_relative_context() -> TestResult {
         let output = concat!(
@@ -4043,9 +4879,10 @@ mod tests {
             FLAVOR_WSL,
             Ok(synthetic_process_output(output.as_bytes(), b"", true)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_MISSING
             || report.path.is_some()
-            || report.error.as_deref() != Some("cargo was not found in this shell")
+            || error.as_deref() != Some("cargo was not found in this shell")
             || report.fix.is_none()
         {
             return Err(
@@ -4099,9 +4936,10 @@ mod tests {
             FLAVOR_GIT_BASH,
             Ok(synthetic_process_output(output.as_bytes(), b"cargo failed", false)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_PROBE_ERROR
             || report.path.as_deref() != Some("/usr/bin/cargo")
-            || !report.error.as_deref().is_some_and(|error| error.contains("cargo failed"))
+            || !error.as_deref().is_some_and(|error| error.contains("cargo failed"))
         {
             return Err(format!("failed shell record lost evidence: {report:?}").into());
         }
@@ -4114,12 +4952,10 @@ mod tests {
             FLAVOR_GIT_BASH,
             Ok(synthetic_process_output(b"", b"cargo command not found", false)),
         );
+        let error = report.error.as_ref().map(ReportFailure::detail);
         if report.status != STATUS_PROBE_ERROR
             || report.path.is_some()
-            || !report
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("cargo command not found"))
+            || !error.as_deref().is_some_and(|error| error.contains("cargo command not found"))
         {
             return Err(format!("failed shell startup lost evidence: {report:?}").into());
         }
@@ -4133,11 +4969,16 @@ mod tests {
                 FLAVOR_GIT_BASH,
                 Ok(synthetic_process_output(b"unterminated", b"provider detail", success)),
             );
-            let error = report.error.as_deref().ok_or("malformed record lost its error")?;
+            let error = report.error.as_ref().ok_or("malformed record lost its error")?.detail();
+            #[cfg(unix)]
+            let failed_status = "signal: 1";
+            #[cfg(windows)]
+            let failed_status = "exit code 1";
+            let expected_status = if success { "exit code 0" } else { failed_status };
             if report.status != STATUS_PROBE_ERROR
                 || report.path.is_some()
                 || !error.contains("shell cargo probe omitted its NUL record terminator")
-                || !error.contains("exit status")
+                || !error.contains(expected_status)
                 || !error.contains("provider detail")
             {
                 return Err(format!("malformed record lost evidence: {report:?}").into());
@@ -4759,7 +5600,8 @@ mod tests {
 
     #[test]
     fn render_dev_environment_report_surfaces_findings_and_prescribed_fixes() {
-        let rendered = render_dev_environment_report(&synthetic_dev_environment_report());
+        let rendered =
+            render_dev_environment_report(&synthetic_dev_environment_report(), "perl-lsp");
 
         assert!(rendered.contains("perl-lsp doctor - development environment"));
         assert!(rendered.contains("Symlink privilege: missing"));
@@ -4774,6 +5616,39 @@ mod tests {
         assert!(rendered.matches("Fix:").count() >= 4);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn dev_environment_paths_are_pasteable_without_changing_json_identity() -> TestResult {
+        use serde_json::Value;
+
+        let mut report = synthetic_dev_environment_report();
+        let cargo_path = r"\\?\C:\Users\dev\.cargo\bin\cargo.exe";
+        let perl_path = r"\\?\C:\Strawberry\perl\bin\perl.exe";
+        report.cargo_toolchains.get_mut(0).ok_or("native Cargo row missing")?.path =
+            Some(cargo_path.to_string());
+        report.perl_identity.path = Some(perl_path.to_string());
+
+        let rendered = render_dev_environment_report(&report, "perllsp");
+        assert!(rendered.contains(r"native_shell: present | C:\Users\dev\.cargo\bin\cargo.exe"));
+        assert!(rendered.contains(r"resolved: C:\Strawberry\perl\bin\perl.exe"));
+        assert!(!rendered.contains(r"\\?\"));
+
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/path").and_then(Value::as_str),
+            Some(cargo_path)
+        );
+        assert_eq!(json.pointer("/perl_identity/path").and_then(Value::as_str), Some(perl_path));
+
+        report.cargo_toolchains.get_mut(0).ok_or("native Cargo row missing")?.path =
+            Some(r"\\?\C:\code\COM¹\cargo.exe".to_string());
+        assert!(
+            render_dev_environment_report(&report, "perllsp")
+                .contains(r"\\?\C:\code\COM¹\cargo.exe")
+        );
+        Ok(())
+    }
+
     #[test]
     fn render_dev_environment_report_labels_unproven_entrypoints_explicitly() {
         let mut report = synthetic_dev_environment_report();
@@ -4786,8 +5661,32 @@ mod tests {
             fix: None,
         }];
 
-        let rendered = render_dev_environment_report(&report);
+        let rendered = render_dev_environment_report(&report, "perl-lsp");
         assert!(rendered.contains("runs repo entrypoints: not_proven"));
+    }
+
+    #[test]
+    fn doctor_headers_follow_the_supplied_command_name() -> TestResult {
+        // #17163: the doctor headers used to hard-code the crate name while
+        // `--version` and `--help` followed the invocation name. The header
+        // must carry the name the binary was invoked under, and the `=`
+        // underline must still match the header width so line-oriented
+        // parsers see only the identity token move.
+        let rendered =
+            render_dev_environment_report(&synthetic_dev_environment_report(), "perllsp");
+        let header = rendered.lines().next().ok_or("dev-environment report is empty")?;
+        assert_eq!(header, "perllsp doctor - development environment");
+        let underline = rendered.lines().nth(1).ok_or("dev-environment report has no underline")?;
+        assert_eq!(underline.chars().count(), header.chars().count());
+
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
+        let rendered = render_report(build_doctor_report_struct(dir)?, "perllsp");
+        let header = rendered.lines().next().ok_or("doctor report is empty")?;
+        assert_eq!(header, "perllsp doctor");
+        let underline = rendered.lines().nth(1).ok_or("doctor report has no underline")?;
+        assert_eq!(underline.chars().count(), header.chars().count());
+        Ok(())
     }
 
     #[test]

@@ -167,6 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep POD-shaped regex text out of local subroutine discovery, preserving
+  division for later undeclared names and declarations after the pattern (#17440).
+
 #### LSP integration
 
 - **"Find All References" no longer silently degrades for its default request

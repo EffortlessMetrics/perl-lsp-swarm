@@ -336,6 +336,24 @@ impl LspHarness {
         capabilities: Option<Value>,
         initialization_options: Value,
     ) -> Result<Value, String> {
+        self.initialize_with_root_and_init_options(
+            "file:///workspace",
+            capabilities,
+            initialization_options,
+        )
+    }
+
+    /// Initialize with an explicit workspace root and `initializationOptions`.
+    ///
+    /// Callers own the workspace and keep it alive until the harness shuts down.
+    /// Capability defaults, disabled-feature handling, and timing match
+    /// `initialize_with_init_options`.
+    pub fn initialize_with_root_and_init_options(
+        &mut self,
+        root_uri: &str,
+        capabilities: Option<Value>,
+        initialization_options: Value,
+    ) -> Result<Value, String> {
         let caps = capabilities.unwrap_or_else(|| {
             json!({
                 "textDocument": {
@@ -355,7 +373,7 @@ impl LspHarness {
             "params": {
                 "processId": std::process::id(),
                 "capabilities": caps,
-                "rootUri": "file:///workspace",
+                "rootUri": root_uri,
                 "initializationOptions": initialization_options
             }
         });

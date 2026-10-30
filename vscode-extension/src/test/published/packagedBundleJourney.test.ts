@@ -66,6 +66,167 @@ function readinessDeferredProvider(label: string, reason: string): ReceiptValue 
   };
 }
 
+function fixturePosition(
+  document: vscode.TextDocument,
+  needle: string,
+  offset = 0,
+): vscode.Position {
+  const index = document.getText().indexOf(needle);
+  assert.notEqual(index, -1, `packaged fixture is missing ${needle}`);
+  return document.positionAt(index + offset);
+}
+
+async function expectedCompletion(document: vscode.TextDocument): Promise<ReceiptValue> {
+  const label = '$value';
+  const started = performance.now();
+  try {
+    const answer = await withTimeout(
+      `completion ${label} for ${document.uri.toString()}`,
+      vscode.commands.executeCommand<vscode.CompletionList>(
+        'vscode.executeCompletionItemProvider',
+        document.uri,
+        fixturePosition(document, 'print $value', 'print $va'.length),
+      ),
+      15_000,
+    );
+    // The negative control still starts and queries the installed server. Only
+    // its returned answer is suppressed before the same acceptance check.
+    const items =
+      process.env.PERL_LSP_SUPPRESS_PACKAGED_COMPLETION === '1' ? [] : (answer?.items ?? []);
+    const observedLabels = items.map((item) =>
+      typeof item.label === 'string' ? item.label : item.label.label,
+    );
+    return {
+      status: observedLabels.includes(label) ? 'ok' : 'wrong_answer',
+      subject: document.uri.toString(),
+      expected_label: label,
+      item_count: items.length,
+      sample_labels: observedLabels.slice(0, 10),
+      negative_control:
+        process.env.PERL_LSP_SUPPRESS_PACKAGED_COMPLETION === '1' ? 'completion_suppressed' : null,
+      duration_ms: Math.round(performance.now() - started),
+    };
+  } catch (error: unknown) {
+    return {
+      status: 'error',
+      subject: document.uri.toString(),
+      expected_label: label,
+      message: error instanceof Error ? error.message : String(error),
+      duration_ms: Math.round(performance.now() - started),
+    };
+  }
+}
+
+async function expectedDefinition(document: vscode.TextDocument): Promise<ReceiptValue> {
+  const expected = { uri: document.uri.toString(), line: 3, start: 3, end: 9 };
+  const started = performance.now();
+  try {
+    const answer = await withTimeout(
+      `definition $value for ${document.uri.toString()}`,
+      vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink>>(
+        'vscode.executeDefinitionProvider',
+        document.uri,
+        fixturePosition(document, 'print $value', 'print $'.length),
+      ),
+      15_000,
+    );
+    const locations = (answer ?? []).map((location) => {
+      const uri = location instanceof vscode.Location ? location.uri : location.targetUri;
+      const range =
+        location instanceof vscode.Location
+          ? location.range
+          : (location.targetSelectionRange ?? location.targetRange);
+      return {
+        uri: uri.toString(),
+        line: range.start.line,
+        start: range.start.character,
+        end: range.end.character,
+      };
+    });
+    return {
+      status: locations.some(
+        (location) =>
+          location.uri === expected.uri &&
+          location.line === expected.line &&
+          location.start === expected.start &&
+          location.end === expected.end,
+      )
+        ? 'ok'
+        : 'wrong_answer',
+      subject: document.uri.toString(),
+      expected,
+      locations,
+      duration_ms: Math.round(performance.now() - started),
+    };
+  } catch (error: unknown) {
+    return {
+      status: 'error',
+      subject: document.uri.toString(),
+      expected,
+      message: error instanceof Error ? error.message : String(error),
+      duration_ms: Math.round(performance.now() - started),
+    };
+  }
+}
+
+async function waitForDiagnostic(
+  uri: vscode.Uri,
+  predicate: (diagnostics: readonly vscode.Diagnostic[]) => boolean,
+  label: string,
+  requireChangeEvent = false,
+  signal?: AbortSignal,
+): Promise<vscode.Diagnostic[]> {
+  const timeoutMs = 15_000;
+  const current = vscode.languages.getDiagnostics(uri);
+  if (!requireChangeEvent && predicate(current)) return current;
+  return new Promise((resolve, reject) => {
+    let timeout: NodeJS.Timeout;
+    const dispose = () => {
+      clearTimeout(timeout);
+      subscription.dispose();
+      signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      dispose();
+      reject(new Error(`${label} for ${uri.toString()} was cancelled before the edit completed`));
+    };
+    const subscription = vscode.languages.onDidChangeDiagnostics((event) => {
+      if (!event.uris.some((changed) => changed.toString() === uri.toString())) return;
+      const diagnostics = vscode.languages.getDiagnostics(uri);
+      if (!predicate(diagnostics)) return;
+      dispose();
+      resolve(diagnostics);
+    });
+    timeout = setTimeout(() => {
+      dispose();
+      reject(
+        new Error(
+          `${label} for ${uri.toString()} timed out after ${timeoutMs}ms; observed ${JSON.stringify(vscode.languages.getDiagnostics(uri).map((diagnostic) => ({ code: diagnosticCode(diagnostic), source: diagnostic.source ?? null, message: diagnostic.message, range: diagnostic.range })))}`,
+        ),
+      );
+    }, timeoutMs);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
+
+function diagnosticCode(diagnostic: vscode.Diagnostic): string | number | undefined {
+  const code = diagnostic.code;
+  return typeof code === 'object' && code !== null ? code.value : code;
+}
+
+function expectedStrictDiagnostic(diagnostic: vscode.Diagnostic): boolean {
+  return (
+    diagnosticCode(diagnostic) === 'PL100' &&
+    diagnostic.source === 'perl-lsp' &&
+    diagnostic.range.start.line === 0 &&
+    diagnostic.range.start.character === 0 &&
+    diagnostic.range.end.line === 0 &&
+    diagnostic.range.end.character === 0 &&
+    diagnostic.message.includes("Consider adding 'use strict;'")
+  );
+}
+
 function requireCandidateArtifactManifest(
   observedVsixSha256: string | undefined,
   observedBundledServerSha256: string,
@@ -377,8 +538,9 @@ suite('Packaged VSIX bundled-server journey', function () {
       'print $value;',
       '',
     ].join('\n');
-    fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
     let fixtureDocument: vscode.TextDocument | undefined;
+    const diagnosticFile = path.join(workspacePath, `packaged_diagnostic_${randomUUID()}.pl`);
+    let diagnosticDocument: vscode.TextDocument | undefined;
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const configurationContributions = extension.packageJSON?.contributes?.configuration;
@@ -399,8 +561,13 @@ suite('Packaged VSIX bundled-server journey', function () {
         value: config.inspect<unknown>(key)?.globalValue,
       }));
     const criticSettingRegistered = registeredConfigurationKeys.has('perl-lsp.critic.enabled');
+    let primaryFailure: unknown;
+    let activationStop: (() => Promise<void>) | undefined;
+    let activationStopped = false;
 
     try {
+      fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
+      fs.writeFileSync(diagnosticFile, "use warnings;\nprint 'probe';\n", { flag: 'wx' });
       if (registeredConfigurationKeys.has('perl-lsp.autoDownload')) {
         await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
       }
@@ -429,6 +596,7 @@ suite('Packaged VSIX bundled-server journey', function () {
             stop?: () => Promise<void>;
           }
         | undefined;
+      activationStop = activation?.stop?.bind(activation);
       const activationCompleted = performance.now();
       const bundledVersion = await bundledServerVersion(bundledServerPath);
       const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
@@ -463,24 +631,14 @@ suite('Packaged VSIX bundled-server journey', function () {
           : `provider requests were withheld: ${String(readinessWait.reason ?? 'readiness unavailable')}`;
       const readyProviders = readinessReady
         ? {
-            completion: await providerResult(
-              'bundled completion',
-              'vscode.executeCompletionItemProvider',
-              document.uri,
-              position,
-            ),
+            completion: await expectedCompletion(document),
             hover: await providerResult(
               'bundled hover',
               'vscode.executeHoverProvider',
               document.uri,
               position,
             ),
-            definition: await providerResult(
-              'bundled definition',
-              'vscode.executeDefinitionProvider',
-              document.uri,
-              position,
-            ),
+            definition: await expectedDefinition(document),
             references: await providerResult(
               'bundled references',
               'vscode.executeReferenceProvider',
@@ -595,6 +753,117 @@ suite('Packaged VSIX bundled-server journey', function () {
         };
       }
 
+      let diagnosticAnswer: ReceiptValue = {
+        status: 'not_proven',
+        reason: readinessReason,
+      };
+      if (readinessReady) {
+        diagnosticDocument = await vscode.workspace.openTextDocument(diagnosticFile);
+        await vscode.window.showTextDocument(diagnosticDocument);
+        const diagnosticUri = diagnosticDocument.uri;
+        const diagnosticReadiness = await observeActiveDocumentReadiness(
+          activation?.waitForActiveDocumentReady,
+          diagnosticUri.toString(),
+          30_000,
+        );
+        assert.equal(
+          diagnosticReadiness.status,
+          'ready',
+          `diagnostic document was not ready: ${JSON.stringify(diagnosticReadiness)}`,
+        );
+        // A pull-diagnostic client may have observed this document before its
+        // first parse completed. A real edit after readiness requests a fresh
+        // report for the current document version. The wait subscribes before
+        // the probe edit and requires a change event, so a cached pre-probe
+        // report cannot stand in for the republished probed version.
+        const diagnosticVersionAtOpen = diagnosticDocument.version;
+        const probeEdit = new vscode.WorkspaceEdit();
+        probeEdit.insert(
+          diagnosticUri,
+          new vscode.Position(diagnosticDocument.lineCount, 0),
+          '# probe\n',
+        );
+        const probeWaitAbort = new AbortController();
+        const strictBeforeWait = waitForDiagnostic(
+          diagnosticUri,
+          (items) => items.some(expectedStrictDiagnostic),
+          'diagnostic PL100 with expected code, source, range, and message',
+          true,
+          probeWaitAbort.signal,
+        );
+        // Keep a rejection handler attached if the probe edit fails before this wait is awaited.
+        void strictBeforeWait.catch(() => undefined);
+        let strictBefore: vscode.Diagnostic[];
+        try {
+          assert.ok(
+            await vscode.workspace.applyEdit(probeEdit),
+            'diagnostic probe edit was rejected',
+          );
+          assert.ok(
+            diagnosticDocument.version > diagnosticVersionAtOpen,
+            'diagnostic probe edit did not advance the document version',
+          );
+          strictBefore = await strictBeforeWait;
+        } finally {
+          probeWaitAbort.abort();
+        }
+        const diagnosticVersionBefore = diagnosticDocument.version;
+        const diagnosticWaitAbort = new AbortController();
+        const strictClear = waitForDiagnostic(
+          diagnosticUri,
+          (items) =>
+            !items.some((item) => diagnosticCode(item) === 'PL100') &&
+            items.some(
+              (item) =>
+                diagnosticCode(item) === 'PL102' &&
+                item.source === 'perl-lsp' &&
+                item.message.includes('$fresh_unused'),
+            ),
+          'diagnostic PL100 clearing and new PL102 for $fresh_unused after edit',
+          true,
+          diagnosticWaitAbort.signal,
+        );
+        // Keep a rejection handler attached if the edit fails before this wait is awaited.
+        void strictClear.catch(() => undefined);
+        let strictAfter: vscode.Diagnostic[];
+        try {
+          const strictEdit = new vscode.WorkspaceEdit();
+          strictEdit.insert(
+            diagnosticUri,
+            new vscode.Position(0, 0),
+            'use strict;\nmy $fresh_unused = 1;\n',
+          );
+          assert.ok(
+            await vscode.workspace.applyEdit(strictEdit),
+            `diagnostic edit rejected for ${diagnosticUri}`,
+          );
+          assert.ok(
+            diagnosticDocument.version > diagnosticVersionBefore,
+            `diagnostic version did not advance for ${diagnosticUri}`,
+          );
+          strictAfter = await strictClear;
+        } finally {
+          diagnosticWaitAbort.abort();
+        }
+        diagnosticAnswer = {
+          status: 'ok',
+          subject: diagnosticUri.toString(),
+          before_version: diagnosticVersionBefore,
+          after_version: diagnosticDocument.version,
+          expected_code: 'PL100',
+          before: strictBefore.filter(expectedStrictDiagnostic).map((item) => ({
+            code: diagnosticCode(item),
+            source: item.source,
+            message: item.message,
+            range: item.range,
+          })),
+          after_code_count: strictAfter.filter((item) => diagnosticCode(item) === 'PL100').length,
+          after_fresh_code_count: strictAfter.filter(
+            (item) => diagnosticCode(item) === 'PL102' && item.message.includes('$fresh_unused'),
+          ).length,
+        };
+      }
+
       const diagnostics = vscode.languages.getDiagnostics(document.uri);
       const metrics = activation?.getLanguageClientStartupMetrics
         ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
@@ -648,6 +917,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           after_edit: afterEdit,
           formatting,
           rename,
+          diagnostic_answer: diagnosticAnswer,
         },
         index_generation: 'not_observable_from_public_extension_api',
         readiness_wait: readinessWait,
@@ -678,7 +948,7 @@ suite('Packaged VSIX bundled-server journey', function () {
               ]),
         ],
         product_blockers: [],
-        diagnostics: { count: diagnostics.length },
+        diagnostics: { count: diagnostics.length, known_answer: diagnosticAnswer },
         shutdown: 'pending',
       };
 
@@ -689,9 +959,10 @@ suite('Packaged VSIX bundled-server journey', function () {
         (receipt.artifact_hashes as Record<string, unknown>).bundled_server_sha256 as string,
       );
 
-      if (activation?.stop) {
+      if (activationStop) {
         try {
-          await withTimeout('packaged extension shutdown', activation.stop(), 30_000);
+          await withTimeout('packaged extension shutdown', activationStop(), 30_000);
+          activationStopped = true;
           receipt.shutdown = 'stopped';
         } catch (error: unknown) {
           receipt.shutdown = 'timeout';
@@ -714,6 +985,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       const providerFailures = providerResults.filter(
         ([label, result]) =>
           result.status === 'error' ||
+          ((label === 'completion' || label === 'definition') && result.status !== 'ok') ||
           (label === 'rename' &&
             (result.status === 'unsafe_refusal' ||
               (readinessReady && result.status !== 'applied_text_edits_verified'))),
@@ -817,26 +1089,75 @@ suite('Packaged VSIX bundled-server journey', function () {
       for (const [label, result] of providerResults) {
         assertProviderSucceeded(label, result);
       }
+      assert.equal(
+        readyProviders.completion.status,
+        'ok',
+        `completion $value for ${document.uri}: ${JSON.stringify(readyProviders.completion)}`,
+      );
+      assert.equal(
+        readyProviders.definition.status,
+        'ok',
+        `definition $value for ${document.uri}: ${JSON.stringify(readyProviders.definition)}`,
+      );
       assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
       if (readinessReady) {
         assert.equal(rename.status, 'applied_text_edits_verified', JSON.stringify(rename));
       }
+    } catch (error: unknown) {
+      primaryFailure = error;
+      throw error;
     } finally {
-      try {
-        if (fixtureDocument && !fixtureDocument.isClosed) {
-          await vscode.window.showTextDocument(fixtureDocument);
-          await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+      const cleanupErrors: unknown[] = [];
+      if (activationStop && !activationStopped) {
+        try {
+          await withTimeout('packaged extension shutdown after failure', activationStop(), 30_000);
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
         }
-        assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
-        const cleanup = new vscode.WorkspaceEdit();
-        cleanup.deleteFile(vscode.Uri.file(workspaceFile));
-        assert.ok(await vscode.workspace.applyEdit(cleanup), 'fixture deletion was rejected');
-        assert.ok(!fs.existsSync(workspaceFile), 'owned fixture remains after cleanup');
-      } finally {
-        await Promise.all(
-          inspectedSettings.map(({ key, value }) =>
-            config.update(key, value, vscode.ConfigurationTarget.Global),
-          ),
+      }
+      for (const ownedDocument of [diagnosticDocument, fixtureDocument]) {
+        if (ownedDocument && !ownedDocument.isClosed) {
+          try {
+            await vscode.window.showTextDocument(ownedDocument);
+            await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+          } catch (error: unknown) {
+            cleanupErrors.push(error);
+          }
+        }
+      }
+      if (fs.existsSync(workspaceFile)) {
+        try {
+          assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
+        }
+      }
+      for (const ownedFile of [workspaceFile, diagnosticFile]) {
+        if (!fs.existsSync(ownedFile)) continue;
+        try {
+          const cleanup = new vscode.WorkspaceEdit();
+          cleanup.deleteFile(vscode.Uri.file(ownedFile));
+          assert.ok(
+            await vscode.workspace.applyEdit(cleanup),
+            `fixture deletion was rejected: ${ownedFile}`,
+          );
+          assert.ok(!fs.existsSync(ownedFile), `owned fixture remains after cleanup: ${ownedFile}`);
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
+        }
+      }
+      const settingsResults = await Promise.allSettled(
+        inspectedSettings.map(({ key, value }) =>
+          config.update(key, value, vscode.ConfigurationTarget.Global),
+        ),
+      );
+      for (const result of settingsResults) {
+        if (result.status === 'rejected') cleanupErrors.push(result.reason);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          primaryFailure === undefined ? cleanupErrors : [primaryFailure, ...cleanupErrors],
+          'packaged journey cleanup failed',
         );
       }
     }

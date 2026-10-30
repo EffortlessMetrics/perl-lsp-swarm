@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Reject full-document change batches when an earlier replacement exceeds the line-length limit, preserving last-good text and refusing stale answers until recovery.
+time: 2026-10-11T01:37:00Z
+custom:
+  PR: "17560"
+  Slug: full-member-line-bound
+  Breaking: "no"

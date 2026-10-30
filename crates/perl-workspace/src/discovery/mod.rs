@@ -12,7 +12,7 @@
 //! Explicit include roots can relax that skip only for configured Perl dependency
 //! trees such as `local/lib/perl5`.
 
-use crate::ignore::{is_skipped_dir_name_with_extra, path_contains_skipped_component_with_extra};
+use crate::ignore::path_contains_skipped_component_with_extra;
 use perl_parser_core::source_file::{
     is_perl_source_bytes, is_perl_source_extension, is_perl_source_path,
 };
@@ -364,7 +364,7 @@ fn discover_linked_git_directories(
         let mut candidates = Vec::new();
         for linked_entry in
             WalkDir::new(&path).follow_links(true).into_iter().filter_entry(|entry| {
-                !should_skip_dir_with_allowlist(root, entry, allowlist, config)
+                !should_skip_dir_with_allowlist(root, entry, allowlist)
                     && is_allowed_link_target(root, entry.path(), allowlist)
             })
         {
@@ -605,7 +605,7 @@ fn walk_discovery_with_allowlist(
     let mut cancelled = false;
 
     for entry in WalkDir::new(root).follow_links(true).into_iter().filter_entry(|entry| {
-        if should_skip_dir_with_allowlist(root, entry, allowlist, config) {
+        if should_skip_dir_with_allowlist(root, entry, allowlist) {
             skipped_dir_count += 1;
             return false;
         }
@@ -624,7 +624,10 @@ fn walk_discovery_with_allowlist(
             continue;
         }
 
-        if config.is_discovery_path(entry.path()) {
+        if entry.path().parent().and_then(|parent| parent.strip_prefix(root).ok()).is_some_and(
+            |relative_parent| !allowlist.has_unallowed_skipped_component(relative_parent),
+        ) && config.is_discovery_path(entry.path())
+        {
             files.push(entry.path().to_path_buf());
         } else {
             excluded_count += 1;
@@ -647,28 +650,15 @@ fn walk_discovery_with_allowlist(
 
 #[cfg(test)]
 fn should_skip_dir(entry: &DirEntry) -> bool {
-    should_skip_dir_with_allowlist(
-        Path::new(""),
-        entry,
-        &DiscoveryIncludeAllowlist::default(),
-        &DiscoveryConfig::default(),
-    )
+    should_skip_dir_with_allowlist(Path::new(""), entry, &DiscoveryIncludeAllowlist::default())
 }
 
 fn should_skip_dir_with_allowlist(
     root: &Path,
     entry: &DirEntry,
     allowlist: &DiscoveryIncludeAllowlist,
-    config: &DiscoveryConfig,
 ) -> bool {
     if !entry.file_type().is_dir() {
-        return false;
-    }
-
-    if !is_skipped_dir_name_with_extra(
-        &entry.file_name().to_string_lossy(),
-        &config.extra_skipped_dirs,
-    ) {
         return false;
     }
 
@@ -679,7 +669,10 @@ fn should_skip_dir_with_allowlist(
         return false;
     }
 
-    !allowlist.should_traverse_skipped_dir(relative_path)
+    // Traversing a skipped ancestor only grants access to its explicit include
+    // roots. Ordinary sibling directories remain outside the admitted subtree.
+    allowlist.has_unallowed_skipped_component(relative_path)
+        && !allowlist.should_traverse_skipped_dir(relative_path)
 }
 
 fn sort_paths_lexically(paths: &mut [PathBuf]) {

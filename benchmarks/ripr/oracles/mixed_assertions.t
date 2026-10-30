@@ -1,0 +1,11 @@
+use Test::More;
+use Test::Exception;
+is(1 + 1, 2, 'exact equality');
+cmp_ok(10, '>', 5, 'numeric comparison');
+like("hello", qr/^h/, 'pattern match');
+ok(1, 'smoke');
+throws_ok { die "x" } qr/x/, 'exception observed';
+lives_ok { 1 } 'survival observed';
+use_ok('strict');
+diag('diagnostic, not an oracle');
+done_testing;
