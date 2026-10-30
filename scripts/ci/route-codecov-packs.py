@@ -604,6 +604,10 @@ def main() -> int:
         }
     )
     receipt = {
+        # Canonical ci-route envelope schema id, byte-identical to the Rust
+        # producer (`xtask/src/tasks/ci_route.rs` CURRENT_ENVELOPE_VERSION).
+        # Do not re-spell this string (e.g. the historical underscore form
+        # `ci_route.v1`); consumers of the receipt fail closed on drift (#15388).
         "schema_version": "ci-route.v1",
         "provider_action": "changed_file_proof_routing",
         "claim_boundary": (

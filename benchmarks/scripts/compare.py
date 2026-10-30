@@ -42,10 +42,34 @@ UNIT_MULTIPLIERS = {
 }
 
 
+class BenchmarkInputError(ValueError):
+    """An unreadable or uncomparable benchmark input, with its path."""
+
+
 def load_json(path: Path) -> dict:
-    """Load JSON file."""
-    with open(path) as f:
-        return json.load(f)
+    """Load a benchmark envelope without treating interrupted writes as crashes."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError as error:
+        raise BenchmarkInputError(
+            f"{path}: invalid or partial benchmark JSON "
+            f"(line {error.lineno}, column {error.colno}: {error.msg}); "
+            "rerun the benchmark to produce a complete results file"
+        ) from error
+    except (OSError, UnicodeError) as error:
+        raise BenchmarkInputError(f"{path}: cannot read benchmark input: {error}") from error
+
+    if not isinstance(data, dict):
+        raise BenchmarkInputError(f"{path}: benchmark input must be a JSON object")
+    if "metadata" in data and not isinstance(data["metadata"], dict):
+        raise BenchmarkInputError(f"{path}: benchmark metadata must be a JSON object")
+    # These are the two formats the existing extractor consumes. Do not require
+    # a full baseline denominator: valid subsets still get per-row verdicts.
+    key = "results" if "results" in data else "benchmarks"
+    if not isinstance(data.get(key), dict):
+        raise BenchmarkInputError(f"{path}: uncomparable benchmark input: {key} must be a JSON object")
+    return data
 
 
 def normalize_category_name(name: str) -> str:
@@ -324,7 +348,12 @@ def main():
         print("Run 'just bench' first to generate results.", file=sys.stderr)
         sys.exit(1)
 
-    sys.exit(compare_benchmarks(baseline_file, current_file, args.fail_on_regression))
+    try:
+        result = compare_benchmarks(baseline_file, current_file, args.fail_on_regression)
+    except BenchmarkInputError as error:
+        print(f"{RED}Error: {error}{NC}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(result)
 
 
 if __name__ == "__main__":

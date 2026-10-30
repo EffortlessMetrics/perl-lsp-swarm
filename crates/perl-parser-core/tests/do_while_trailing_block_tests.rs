@@ -281,9 +281,9 @@ fn consume_balanced_and_paren_group_call_observation() -> Result<(), String> {
         unclosed.errors()[0]
     );
 
-    let err = Parser::new("do { $s++; } while (($flag)) { $s++; };")
-        .parse()
-        .expect_err("nested groups must still reject the trailing block");
+    let Err(err) = Parser::new("do { $s++; } while (($flag)) { $s++; };").parse() else {
+        return Err("nested groups must still reject the trailing block".to_string());
+    };
     assert!(
         matches!(err, ParseError::DoWhileTrailingBlock { .. }),
         "nested-group trailing block must raise the exact variant, got: {err:?}"

@@ -38,7 +38,7 @@ pub(crate) use dispatch::SUPPORTED_COMMANDS;
 pub(crate) use dispatch::is_supported_dap_command;
 
 use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};
-use crate::eval::SafeEvaluator;
+use crate::eval::{ReplTrustPolicy, SafeEvaluator};
 use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
@@ -85,12 +85,18 @@ use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 #[cfg(any(test, feature = "test-helpers"))]
 use crate::reload::RuntimeModuleGenerationClock;
 use crate::security;
+use crate::security::launch_authority::LaunchAuthority;
+// The production SIGTERM grace budget is referenced only by the unix branch
+// of `terminate_child_process_with_outcome`; the test-build budget helper
+// replaces it everywhere else (#17173).
+#[cfg(unix)]
+use patterns::DEBUG_SESSION_TERMINATE_WAIT_MS;
 use patterns::{
-    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY,
-    RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine, ansi_escape_re,
-    assignment_ops_re, context_re, dangerous_ops_re, deref_re, die_suffix_re, error_re,
-    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
-    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+    DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer,
+    RecentOutputLine, ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re,
+    debug_session_terminate_wait_ms, deref_re, die_suffix_re, error_re, exception_re, glob_re,
+    inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name, prompt_re,
+    regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
 pub use sync_utils::{DapMessageWithEpoch, DrainEpoch};
@@ -196,6 +202,16 @@ pub struct DebugAdapter {
     next_goto_target_id: Arc<Mutex<i64>>,
     /// Workspace root for path validation (set during launch)
     workspace_root: Arc<Mutex<Option<PathBuf>>>,
+    /// Resolved startup launch authority (#8656). Absent only for direct
+    /// adapter constructions that never went through `DapServer::new`; launch
+    /// requests are refused in that case rather than falling back to implicit
+    /// authority.
+    launch_authority: Arc<Mutex<Option<LaunchAuthority>>>,
+    /// Receipt of the most recently begun authority session (mode, root
+    /// count, identities, generation — no paths). Retained so successful
+    /// launches stay auditable instead of discarding the session record.
+    last_authority_receipt:
+        Arc<Mutex<Option<crate::security::launch_authority::LaunchAuthorityReceipt>>>,
     /// Transport broken flag: set by the event handler on the first write or flush failure
     transport_broken: Arc<AtomicBool>,
     /// Events enqueued but not yet written by the transport's event
@@ -207,6 +223,12 @@ pub struct DebugAdapter {
     cleanup_failure_for_test: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
+    /// Whether the explicit `repl` context may execute side-effectful Perl.
+    ///
+    /// Process-owned and never read from project or workspace configuration, so
+    /// a checked-in project file cannot grant broader execution authority to
+    /// whoever opens the folder (#9385).
+    repl_trust: ReplTrustPolicy,
     /// Reload-family route state (R03, #10102): the exact preview/test
     /// profile gate, session epoch, negotiated family wiring, and
     /// subject bindings. Absent behavior (the default) leaves the family
@@ -269,6 +291,20 @@ impl Default for DebugAdapter {
     }
 }
 
+/// Refusal message for launch requests that arrive with no resolved startup
+/// authority installed (#8656). The native lifecycle resolves authority in
+/// `DapServer::new`; direct adapter constructions must install one explicitly
+/// or every launch fails closed.
+pub(super) const LAUNCH_AUTHORITY_MISSING_MESSAGE: &str = "launch refused: no startup launch authority is configured. Start the adapter through DapServer with trusted roots or an explicit unbounded acknowledgement before launching a session.";
+
+/// Refusal for a launch whose only boundary candidate came from launch
+/// arguments: launch arguments can never create authority (#8656).
+pub(super) const LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE: &str = "launch refused: no startup launch authority is configured, and launch arguments cannot create one. Configure trusted roots (--trusted-root) or an explicit unbounded acknowledgement (--allow-unbounded) at startup.";
+
+/// Refusal for a launch with neither authority nor any configured workspace
+/// boundary (#8656). The historical boundary-free launch path is retired.
+pub(super) const LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE: &str = "launch refused: no startup launch authority or workspace boundary is configured. Configure trusted roots (--trusted-root) or an explicit unbounded acknowledgement (--allow-unbounded) at startup.";
+
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
         // Adapter drop settles every pending broker operation (#8564): the
@@ -306,14 +342,34 @@ impl DebugAdapter {
             goto_targets: Arc::new(Mutex::new(HashMap::new())),
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
+            launch_authority: Arc::new(Mutex::new(None)),
+            last_authority_receipt: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
             event_drain: sync_utils::EventDrainLatch::default(),
             #[cfg(test)]
             cleanup_failure_for_test: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
+            repl_trust: ReplTrustPolicy::default(),
             reload_route: Arc::new(Mutex::new(reload_route::ReloadRouteState::default())),
             operation_broker: Arc::new(operation_broker::OperationBroker::new()),
         }
+    }
+
+    /// Set the trusted-REPL execution policy for this adapter.
+    ///
+    /// Deliberately an in-process constructor-style setter rather than a
+    /// configuration key: project and workspace input must not be able to widen
+    /// execution authority (#9385).
+    #[must_use]
+    pub fn with_repl_trust(mut self, policy: ReplTrustPolicy) -> Self {
+        self.repl_trust = policy;
+        self
+    }
+
+    /// The trusted-REPL execution policy in force for this adapter.
+    #[must_use]
+    pub(crate) fn repl_trust(&self) -> ReplTrustPolicy {
+        self.repl_trust
     }
 
     /// Set the event sender (primarily for testing).
@@ -337,6 +393,91 @@ impl DebugAdapter {
     /// without exclusive access to the adapter.
     pub fn set_workspace_root(&self, root: PathBuf) {
         *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
+    }
+
+    /// Install the resolved startup launch authority (#8656).
+    ///
+    /// Called once by `DapServer::new` after `LaunchAuthority::resolve`
+    /// succeeded. The mode and identity are immutable afterwards; each launch
+    /// begins a new session generation. Launch arguments can never replace or
+    /// widen this authority.
+    pub fn set_launch_authority(&self, authority: LaunchAuthority) {
+        let mut guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
+        if guard.is_none() {
+            *guard = Some(authority);
+        }
+    }
+
+    /// Whether a resolved startup authority is installed.
+    pub(super) fn has_launch_authority(&self) -> bool {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority").is_some()
+    }
+
+    /// Begin a new authority session, returning `(generation, receipt)`.
+    ///
+    /// Returns `None` when no startup authority was installed, which refuses
+    /// the launch. The receipt is retained on the adapter so admitted
+    /// launches stay auditable.
+    pub(super) fn begin_authority_session(
+        &self,
+    ) -> Option<(u64, crate::security::launch_authority::LaunchAuthorityReceipt)> {
+        let mut guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
+        let authority = guard.as_mut()?;
+        let generation = authority.begin_session();
+        let receipt = authority.receipt();
+        *lock_or_recover(&self.last_authority_receipt, "debug_adapter.last_authority_receipt") =
+            Some(receipt.clone());
+        Some((generation, receipt))
+    }
+
+    /// Receipt of the most recently begun authority session, if any.
+    pub fn last_authority_receipt(
+        &self,
+    ) -> Option<crate::security::launch_authority::LaunchAuthorityReceipt> {
+        lock_or_recover(&self.last_authority_receipt, "debug_adapter.last_authority_receipt")
+            .clone()
+    }
+
+    /// Admit the launch program path and resolve the launch-args
+    /// `workspaceRoot` against the installed startup authority (#8656).
+    ///
+    /// Workspace-bound authority requires the program inside a trusted root
+    /// and allows a launch-args root only to narrow one. Explicitly unbounded
+    /// authority admits any program and never creates a boundary from launch
+    /// arguments. Fails closed when no authority was installed.
+    pub(super) fn admit_launch_against_authority(
+        &self,
+        program: Option<&Path>,
+        launch_root: Option<&Path>,
+    ) -> Result<Option<PathBuf>, String> {
+        let guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
+        let authority =
+            guard.as_ref().ok_or_else(|| LAUNCH_AUTHORITY_MISSING_MESSAGE.to_string())?;
+        if let Some(program) = program {
+            authority.admits_launch_path(program)?;
+        }
+        match launch_root {
+            Some(root) => authority.narrow_launch_root(root),
+            None => Ok(None),
+        }
+    }
+
+    /// Whether the installed authority is explicitly unbounded.
+    pub(super) fn launch_authority_is_unbounded(&self) -> bool {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority")
+            .as_ref()
+            .is_some_and(|authority| {
+                authority.mode()
+                    == crate::security::launch_authority::LaunchAuthorityMode::ExplicitUnbounded
+            })
+    }
+
+    /// Canonical trusted root admitting `program`, if any. Used to align the
+    /// spawner's defense-in-depth boundary with the admission decision.
+    pub(super) fn authority_root_for_program(&self, program: &Path) -> Option<PathBuf> {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority")
+            .as_ref()
+            .and_then(|authority| authority.root_for_program(program))
     }
 
     /// Start a new session generation and reset its terminal-event gate.
@@ -593,19 +734,34 @@ impl DebugAdapter {
             .unwrap_or_default()
     }
 
-    /// Ask the live Perl debugger to install one source breakpoint and read
-    /// back the exact perl5db glob slot before accepting the installation.
+    /// Build the framed `p do { … }` probe that reads back one breakpoint's
+    /// perl5db glob slot, resolving the engine's own `_<file` key spelling by
+    /// filesystem object identity when the exact spelling misses (#17246).
+    pub(super) fn engine_breakpoint_probe_command(source_path: &str, line: i64) -> String {
+        let path_hex =
+            source_path.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        format!(
+            "p do {{ my $f = pack(\"H*\", \"{path_hex}\"); my $want = eval {{ require Cwd; \
+             Cwd::realpath($f) }}; my $key = defined $main::{{\"_<$f\"}} ? $f : undef; \
+             if (!defined $key && defined $want) {{ for my $k (grep {{ /^_</ && length $_ > 2 }} \
+             keys %main::) {{ my $c = substr($k, 2); my $r = eval {{ Cwd::realpath($c) }}; \
+             if (defined $r && $r eq $want) {{ $key = $c; last }} }} }} if (defined $key) {{ \
+             DB::break_on_filename_line($key, {line}, 1); my $g = $main::{{\"_<$key\"}}; my $h = \
+             defined($g) ? *{{$g}}{{HASH}} : undef; \"DAP_BP:\" . (defined($h) && \
+             defined($h->{{{line}}}) ? unpack(\"H*\", $h->{{{line}}}) : \"absent\") }} else {{ \
+             \"DAP_BP:absent\" }} }}"
+        )
+    }
+
+    /// Ask the live Perl debugger to acknowledge one source breakpoint by
+    /// probing its exact perl5db glob slot.
     pub(super) fn acknowledge_engine_breakpoint(
         &self,
         source_path: &str,
         line: i64,
         timeout: Duration,
     ) -> Result<(), EngineBreakpointAcknowledgeError> {
-        let path_hex =
-            source_path.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-        let command = format!(
-            "p do {{ my $f = pack(\"H*\", \"{path_hex}\"); DB::break_on_filename_line($f, {line}, 1); my $g = $main::{{\"_<\" . $f}}; my $h = defined($g) ? *{{$g}}{{HASH}} : undef; \"DAP_BP:\" . (defined($h) && defined($h->{{{line}}}) ? unpack(\"H*\", $h->{{{line}}}) : \"absent\") }}"
-        );
+        let command = Self::engine_breakpoint_probe_command(source_path, line);
         let captured_generation = self.current_session_generation();
         let (operation, begin, end, prior_state) = {
             let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
@@ -976,6 +1132,19 @@ impl DebugAdapter {
         }
     }
 
+    /// Effective framed-debugger-query window, for tests (#18348).
+    ///
+    /// Some dap unit tests pace fixtures or assert wall-clock bounds against
+    /// the framed-query budget, which [`Self::debugger_timeout_budget_ms`]
+    /// clamps to >=15s under coverage instrumentation. Those tests must derive
+    /// instrumentation-sensitive expectations from this window instead of
+    /// re-checking `LLVM_PROFILE_FILE`/`CARGO_LLVM_COV` themselves: delegating
+    /// here can never drift from the production budget decision.
+    #[cfg(test)]
+    fn framed_query_window_for_test(base_ms: u64) -> Duration {
+        Duration::from_millis(Self::debugger_timeout_budget_ms(base_ms))
+    }
+
     /// Convert i64 values in protocol payloads to i32 with saturation.
     fn i64_to_i32_saturating(value: i64) -> i32 {
         match i32::try_from(value) {
@@ -1031,13 +1200,9 @@ impl DebugAdapter {
     pub fn seed_running_session_for_test_required(&self) -> Result<(), String> {
         use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
         use crate::debug_adapter::variable_cache::VariableCache;
-        let child = std::process::Command::new("perl")
-            .arg("-e")
-            .arg("1")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+        // #17173: use the cheapest platform no-op child rather than resolving
+        // a `perl` interpreter from PATH for every seeded session.
+        let child = Self::spawn_noop_child_for_test()
             .map_err(|error| format!("could not seed perl session: {error}"))?;
         let mut guard =
             self.session.lock().map_err(|_| "could not lock session while seeding".to_string())?;
@@ -1095,37 +1260,43 @@ impl DebugAdapter {
     }
 
     /// Spawn the cheapest available no-op child process for use in unit tests.
-    /// Tries perl first, then a platform-native no-op. Returns an error if no
-    /// subprocess can be spawned at all — that indicates a broken CI environment.
-    #[cfg(test)]
+    /// Returns an error if no subprocess can be spawned at all — that indicates
+    /// a broken CI environment.
+    ///
+    /// #17173: on Windows the `perl` on `PATH` may resolve to a heavy
+    /// interpreter (MSYS and Strawberry builds differ ~2x in spawn+exit cost),
+    /// so the native `cmd /c exit 0` no-op is preferred there. Unix keeps the
+    /// perl-first order with the platform-native `true` fallback.
+    #[cfg(any(test, feature = "test-helpers"))]
     fn spawn_noop_child_for_test() -> io::Result<Child> {
         use std::process::{Command, Stdio};
-        // perl -e 1 exits immediately with no output.
-        if let Ok(c) = Command::new("perl")
-            .arg("-e")
-            .arg("1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            return Ok(c);
+        fn try_spawn(prog: &str, args: &[&str]) -> io::Result<Child> {
+            // Candidates exit immediately with no output.
+            Command::new(prog)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
         }
-        // Platform-native fallback when perl is not on PATH.
-        #[cfg(windows)]
-        let (prog, args): (&str, &[&str]) = ("cmd", &["/c", "exit", "0"]);
-        #[cfg(not(windows))]
-        let (prog, args): (&str, &[&str]) = ("true", &[]);
-        // SAFETY NOTE: no unsafe — uses only std::process::Command.
-        Command::new(prog)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                io::Error::new(e.kind(), format!("cannot spawn noop subprocess ({prog}): {e}"))
-            })
+        let candidates: &[(&str, &[&str])] = if cfg!(windows) {
+            &[("cmd", &["/c", "exit", "0"]), ("perl", &["-e", "1"])]
+        } else {
+            &[("perl", &["-e", "1"]), ("true", &[])]
+        };
+        let mut last_error: Option<io::Error> = None;
+        for (prog, args) in candidates {
+            match try_spawn(prog, args) {
+                Ok(child) => return Ok(child),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        let last_error =
+            last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no candidates"));
+        Err(io::Error::new(
+            last_error.kind(),
+            format!("cannot spawn noop subprocess: {last_error}"),
+        ))
     }
 
     #[cfg(test)]
@@ -1243,6 +1414,40 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    /// The engine-ack probe must resolve perl5db's own `_<file` key spelling
+    /// by filesystem identity when the exact client spelling misses, and must
+    /// still answer `absent` for an unresolvable file — before #17246 a
+    /// Windows spelling mismatch probed a glob that can never exist and left
+    /// every breakpoint "pending acknowledgement" (#17246).
+    #[test]
+    fn engine_breakpoint_probe_resolves_engine_key_by_realpath() {
+        let source_path = "F:\\w\\deep.pl";
+        let command = DebugAdapter::engine_breakpoint_probe_command(source_path, 6);
+
+        let expected_hex: String = source_path.bytes().map(|byte| format!("{byte:02x}")).collect();
+        assert!(
+            command.contains(&format!("pack(\"H*\", \"{expected_hex}\")")),
+            "client path must arrive hex-encoded: {command}"
+        );
+        // Object-identity resolution of the engine's own key spelling.
+        assert!(
+            command.contains("Cwd::realpath($f)"),
+            "probe must resolve the requested file: {command}"
+        );
+        assert!(
+            command.contains("Cwd::realpath($c)") && command.contains("$key = $c"),
+            "probe must scan the engine's _< globs for the same file: {command}"
+        );
+        // Installation and read-back both go through the resolved key.
+        assert!(command.contains("DB::break_on_filename_line($key, 6, 1)"), "{command}");
+        assert!(command.contains("$main::{\"_<$key\"}"), "{command}");
+        assert!(command.contains("\"DAP_BP:\""), "{command}");
+        assert!(
+            command.contains("\"absent\""),
+            "unresolvable paths must stay honestly absent: {command}"
+        );
     }
 
     #[test]
@@ -1995,7 +2200,9 @@ print "result: $final\n";
                     "breakpoints": [{ "line": 1, "hitCondition": ">= 1", "logMessage": "breakpoint hit" }]
                 })),
                 "setExceptionBreakpoints" => Some(json!({"filters": ["die"]})),
-                "evaluate" => Some(json!({"expression": "$x", "allowSideEffects": true})),
+                "evaluate" => {
+                    Some(json!({"expression": "$x", "context": "repl", "allowSideEffects": true}))
+                }
                 "setVariable" => {
                     Some(json!({"variablesReference": 11, "name": "$x", "value": "1"}))
                 }
@@ -2181,7 +2388,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_invalid = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
@@ -2196,7 +2403,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_ambiguous = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {

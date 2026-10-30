@@ -1035,18 +1035,27 @@ impl LspServer {
             return;
         }
 
+        // The core provider owns method and hash-key positions. This name-only
+        // workspace pass cannot validate receiver identity or key membership;
+        // appending its generic names would reintroduce impossible candidates
+        // after the core provider has selected the appropriate role (#9816).
+        let Some(text_before) = doc_text.get(..offset) else {
+            return;
+        };
+        let is_method_completion =
+            text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
+                suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            });
+        if is_method_completion
+            || CompletionProvider::detect_hash_key_context(doc_text, offset).is_some()
+        {
+            return;
+        }
+
         match workspace_mode {
             IndexAccessMode::Full(coordinator) => {
                 let index = coordinator.index();
 
-                let text_before = &doc_text[..offset.min(doc_text.len())];
-                // Method context survives once a method name is partially typed:
-                // `$obj->` and `$obj->co` are both method-completion positions,
-                // while `$x->[0]` or plain identifiers are not.
-                let is_method_completion =
-                    text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
-                        suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                    });
                 let prefix = text_before
                     .chars()
                     .rev()
@@ -1109,15 +1118,6 @@ impl LspServer {
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
 
-                // The runtime pass has no receiver facts of its own. When the
-                // core provider already attached receiver evidence to this
-                // response, keep its quiet name-only extras; otherwise label
-                // callable candidates honestly instead of emitting an
-                // unlabelled dynamic-boundary insertion (issue #11158).
-                let receiver_evidence_present = completions.iter().any(|completion| {
-                    completion.detail.as_deref().is_some_and(|detail| detail.contains("receiver:"))
-                });
-
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
                         return;
@@ -1131,17 +1131,16 @@ impl LspServer {
                     // symbols, so emitting these as bare insertions can leave
                     // an unimported cross-file reference in the document.
                     // The core provider owns import-aware, current-file, and
-                    // qualified completions for these kinds; retain only the
-                    // module-name kinds here (issue #11158).
-                    if !is_method_completion
-                        && matches!(
-                            symbol.kind,
-                            crate::workspace_index::SymbolKind::Subroutine
-                                | crate::workspace_index::SymbolKind::Method
-                                | crate::workspace_index::SymbolKind::Constant
-                                | crate::workspace_index::SymbolKind::Export
-                        )
-                    {
+                    // qualified completions for these kinds. The method role
+                    // has already returned above (#9816); retain only other
+                    // eligible workspace names here (issue #11158).
+                    if matches!(
+                        symbol.kind,
+                        crate::workspace_index::SymbolKind::Subroutine
+                            | crate::workspace_index::SymbolKind::Method
+                            | crate::workspace_index::SymbolKind::Constant
+                            | crate::workspace_index::SymbolKind::Export
+                    ) {
                         continue;
                     }
 
@@ -1219,21 +1218,7 @@ impl LspServer {
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
-                    let detail = if !receiver_evidence_present
-                        && matches!(
-                            symbol.kind,
-                            crate::workspace_index::SymbolKind::Subroutine
-                                | crate::workspace_index::SymbolKind::Method
-                                | crate::workspace_index::SymbolKind::Constant
-                                | crate::workspace_index::SymbolKind::Export
-                        ) {
-                        // Callable kinds only reach this pass through the
-                        // method-completion gate above, which carries no
-                        // receiver evidence; say so on the item.
-                        Some(format!("{qualified_name} — receiver: unknown, low confidence"))
-                    } else {
-                        Some(qualified_name.clone())
-                    };
+                    let detail = qualified_name.clone();
                     // Invariant: text_edit_range.is_some() ⟺ insert_text is the
                     // fully-qualified name.  The serializer (completion_item_to_lsp_value)
                     // depends on this to locate the newText from `item["insertText"]`.
@@ -1263,7 +1248,7 @@ impl LspServer {
                     completions.push(crate::completion::CompletionItem {
                         label: label.into(),
                         kind: Self::workspace_symbol_kind(&symbol),
-                        detail: detail.map(Into::into),
+                        detail: Some(detail.into()),
                         insert_text: insert_text.map(Into::into),
                         // Workspace enrichment is a fallback tier. Give it an
                         // explicit low-priority rank so unranked labels (for
@@ -1510,6 +1495,52 @@ impl LspServer {
         item
     }
 
+    fn empty_completion_list() -> Value {
+        json!({"isIncomplete": false, "items": []})
+    }
+
+    /// Snapshot completion may answer from, plus whether the current
+    /// generation's parse is still pending (#17775).
+    ///
+    /// The generation-current snapshot is always usable. A stale snapshot
+    /// is usable only when the text it was parsed from still equals the
+    /// current text (a generation bump without a text change); pairing a
+    /// stale AST with newer text made instance methods intermittently
+    /// disappear behind a confident generic-only list. While the parse is
+    /// pending, callers must use the bounded current-text fallback and mark
+    /// the list incomplete instead.
+    fn completion_parsed_snapshot(
+        doc: &DocumentState,
+    ) -> (Option<Arc<crate::state::ParsedSnapshot>>, bool) {
+        if let Some(current) = doc.current_parsed() {
+            return (Some(current), false);
+        }
+        if doc.full_sync_required() {
+            return (None, false);
+        }
+        match doc.latest_parsed() {
+            Some(latest) if latest.source() == doc.text => (Some(latest), false),
+            Some(_) => (None, true),
+            // No snapshot has ever published for this text (a document the
+            // async worker has not caught up with, e.g. created by a
+            // full-buffer didChange): the fallback is bounded, so the list
+            // is incomplete until the first parse lands.
+            None => (None, true),
+        }
+    }
+
+    fn publish_completion_answer(&self, uri: &str, generation: Option<u32>, value: Value) -> Value {
+        match generation {
+            Some(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value,
+                Self::empty_completion_list(),
+            ),
+            None => Self::empty_completion_list(),
+        }
+    }
+
     /// Handle completion request
     pub(crate) fn handle_completion(
         &self,
@@ -1555,9 +1586,12 @@ impl LspServer {
             // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1591,13 +1625,15 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                // Prefer the generation-current snapshot; fall back to the latest
-                // published one when the current generation has no snapshot yet
-                // (e.g. the workspace indexer bumped the generation before the
-                // completion request arrived, leaving `current_parsed()` empty).
-                // For completions, a slightly-stale AST is always more useful than
-                // the symbol-table-free `lexical_complete` fallback (#11858).
-                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                // Use the generation-current snapshot, or a stale one whose
+                // parsed source still equals the current text. While the
+                // current generation's parse is pending, never pair the stale
+                // AST with the new text (#17775); the bounded fallback below
+                // answers instead and the list is marked incomplete. The
+                // indexer-bump case behind #11858 is the same-text stale
+                // snapshot, which stays usable. Full-sync desynchronization
+                // is not pending parse (#8129).
+                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1687,18 +1723,22 @@ impl LspServer {
                     }
 
                     base_completions
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     // Fallback: provide basic keyword completions when AST is unavailable
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
 
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    None,
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        None,
+                    );
+                }
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -1712,6 +1752,7 @@ impl LspServer {
                 }
 
                 let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let is_incomplete = is_incomplete || pending_parse_gap;
                 let (workspace_index_state, workspace_index_reason) =
                     Self::completion_workspace_index_state(&workspace_mode);
                 let completion_decision_context = CompletionDecisionContext {
@@ -1799,11 +1840,15 @@ impl LspServer {
                 ));
             }
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
         }
 
-        Ok(Some(json!({"isIncomplete": false, "items": []})))
+        Ok(Some(Self::empty_completion_list()))
     }
 
     /// Handle completion request with cancellation support
@@ -1894,9 +1939,12 @@ impl LspServer {
             // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1967,13 +2015,11 @@ impl LspServer {
                     break 'completion_response None;
                 }
 
-                // Prefer the generation-current snapshot; fall back to the latest
-                // published one when the current generation has no snapshot yet
-                // (e.g. the workspace indexer bumped the generation before the
-                // completion request arrived, leaving `current_parsed()` empty).
-                // For completions, a slightly-stale AST is always more useful than
-                // the symbol-table-free `lexical_complete` fallback (#11858).
-                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                // Same freshness contract as `handle_completion`: never pair
+                // a stale AST with newer text while the parse is pending
+                // (#17775); same-text stale snapshots stay usable (#11858),
+                // and full-sync desynchronization is not pending parse (#8129).
+                let (parsed, pending_parse_gap) = Self::completion_parsed_snapshot(doc);
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -2034,6 +2080,8 @@ impl LspServer {
                         Some(uri),
                         &cancel_fn,
                     )
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
@@ -2048,13 +2096,15 @@ impl LspServer {
                 }
 
                 let should_continue = || !token.is_cancelled_relaxed();
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    Some(&should_continue),
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        Some(&should_continue),
+                    );
+                }
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
@@ -2090,6 +2140,7 @@ impl LspServer {
 
                 let (completions, is_incomplete) =
                     sort_and_cap_completions(completions, completion_cap());
+                let is_incomplete = is_incomplete || pending_parse_gap;
 
                 if token.is_cancelled_relaxed() {
                     return Err(JsonRpcError {
@@ -2180,10 +2231,14 @@ impl LspServer {
                 ))
             };
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
 
-            Ok(Some(json!({"isIncomplete": false, "items": []})))
+            Ok(Some(Self::empty_completion_list()))
         } else {
             self.handle_completion(params)
         }
@@ -2199,7 +2254,8 @@ impl LspServer {
         let mut completions = Vec::new();
 
         // Get the prefix we're completing
-        let text_before = &content[..offset.min(content.len())];
+        let offset = offset.min(content.len());
+        let text_before = &content[..offset];
         let prefix = text_before
             .chars()
             .rev()
@@ -2208,7 +2264,15 @@ impl LspServer {
             .chars()
             .rev()
             .collect::<String>();
+        // Filter using the prefix, but replace the entire contiguous name token.
+        // Keep sigils, receivers, punctuation and line endings outside the edit.
         let prefix_start = offset.saturating_sub(prefix.len());
+        let suffix_len: usize = content[offset..]
+            .chars()
+            .take_while(|&c| c.is_alphanumeric() || c == '_')
+            .map(char::len_utf8)
+            .sum();
+        let prefix_end = offset + suffix_len;
 
         // Check if we're in a method call context (after ->)
         let is_method_call = text_before.ends_with("->")
@@ -2254,7 +2318,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2277,7 +2341,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2296,7 +2360,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2312,7 +2376,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2331,7 +2395,7 @@ impl LspServer {
                         additional_edits: vec![],
                         sort_text: None,
                         filter_text: None,
-                        text_edit_range: None,
+                        text_edit_range: Some((prefix_start, prefix_end)),
                         commit_characters: None,
                         insert_text_format: InsertTextFormat::PlainText,
                         label_details: None,
@@ -2343,7 +2407,7 @@ impl LspServer {
                     &mut completions,
                     &prefix,
                     prefix_start,
-                    offset,
+                    prefix_end,
                     content,
                     filepath,
                 );
@@ -2360,7 +2424,7 @@ impl LspServer {
                             additional_edits: vec![],
                             sort_text: None,
                             filter_text: None,
-                            text_edit_range: None,
+                            text_edit_range: Some((prefix_start, prefix_end)),
                             commit_characters: None,
                             insert_text_format: InsertTextFormat::PlainText,
                             label_details: None,
@@ -2543,6 +2607,209 @@ mod tests {
     )]
 
     use super::*;
+
+    #[test]
+    fn fallback_prefix_edits_cover_every_existing_candidate() {
+        let server = LspServer::default();
+        for (source, start, end) in [
+            ("sub example { wh", 14, 16),
+            ("sub example { $_", 15, 16),
+            ("sub example { @AR", 15, 17),
+            ("sub example { @_", 15, 16),
+            ("sub example { %EN", 15, 17),
+            ("sub example { $unknown->ge", 24, 26),
+            ("sub example { @", 15, 15),
+            ("sub example { $unknown->", 24, 24),
+        ] {
+            let items = server.lexical_complete(source, source.len(), None);
+            assert!(!items.is_empty(), "fallback fixture must emit candidates: {source}");
+            for item in items {
+                assert_eq!(item.text_edit_range, Some((start, end)), "{source}: {}", item.label);
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_prefix_edits_reach_both_runtime_request_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (before, prefix, label, new_text, after) in [
+            ("sub example { ", "wh", "while", "while", ";"),
+            ("sub example { @", "AR", "ARGV", "ARGV", ";"),
+            ("sub example { %", "EN", "ENV", "ENV", ";"),
+            ("sub example { $", "_", "_", "_", ";"),
+            ("sub example { $unknown->", "ge", "get", "get", "();"),
+            ("sub example { @", "", "ARGV", "ARGV", ";"),
+            ("my $emoji = \"🦀\"; @", "AR", "ARGV", "ARGV", ";"),
+            ("# 🦀\r\nsub example {\r\n    @", "AR", "ARGV", "ARGV", ";"),
+        ] {
+            for cancellable in [false, true] {
+                let server = LspServer::default();
+                let uri = "file:///workspace/fallback_prefix.pl";
+                let source = format!("{before}{prefix}{after}");
+                let doc = crate::state::DocumentState::new(&source, 1);
+                assert!(doc.current_parsed().is_none(), "must exercise no-AST fallback");
+                assert!(doc.latest_parsed().is_none(), "fixture must have no predecessor AST");
+                server.documents_guard().insert(uri.to_string(), doc);
+                let line = before.bytes().filter(|&b| b == b'\n').count() as u32;
+                let start = before
+                    .rsplit('\n')
+                    .next()
+                    .ok_or("missing current line")?
+                    .encode_utf16()
+                    .count() as u32;
+                let end = start + prefix.encode_utf16().count() as u32;
+                let params = Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": end }
+                }));
+                let response = if cancellable {
+                    server.handle_completion_cancellable(params, None)?
+                } else {
+                    server.handle_completion(params)?
+                }
+                .ok_or("completion returned no response")?;
+                let items = response["items"].as_array().ok_or("missing items")?;
+                let item = items
+                    .iter()
+                    .find(|item| item["label"] == label)
+                    .ok_or_else(|| format!("missing {label} in {response}"))?;
+                assert_eq!(
+                    item["textEdit"],
+                    json!({
+                        "range": {
+                            "start": { "line": line, "character": start },
+                            "end": { "line": line, "character": end }
+                        },
+                        "newText": new_text
+                    }),
+                    "source={source:?}, cancellable={cancellable}"
+                );
+                let edit = &item["textEdit"];
+                let docs = server.documents_guard();
+                let doc = server.get_document(&docs, uri).ok_or("missing document")?;
+                let start_byte = server.pos16_to_offset(doc, line, start);
+                let end_byte = server.pos16_to_offset(doc, line, end);
+                let mut applied = source.clone();
+                applied.replace_range(
+                    start_byte..end_byte,
+                    edit["newText"].as_str().ok_or("missing replacement")?,
+                );
+                assert_eq!(applied, format!("{before}{new_text}{after}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply the serialized edit as a client would, independently of server position helpers.
+    fn apply_fallback_client_edit(
+        source: &str,
+        value: &Value,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let edit: lsp_types::TextEdit = serde_json::from_value(value.clone())?;
+        let offset = |position: lsp_types::Position| -> Result<usize, &'static str> {
+            let line_start: usize =
+                source.split_inclusive('\n').take(position.line as usize).map(str::len).sum();
+            let line = source
+                .split_inclusive('\n')
+                .nth(position.line as usize)
+                .ok_or("client edit line outside document")?;
+            let mut character = 0;
+            for (byte, ch) in line.char_indices() {
+                if character == position.character {
+                    return Ok(line_start + byte);
+                }
+                character += ch.len_utf16() as u32;
+            }
+            if character == position.character {
+                Ok(line_start + line.len())
+            } else {
+                Err("client edit column outside UTF-16 boundary")
+            }
+        };
+        let start = offset(edit.range.start)?;
+        let end = offset(edit.range.end)?;
+        let mut applied = source.to_string();
+        applied.replace_range(start..end, &edit.new_text);
+        Ok(applied)
+    }
+
+    #[test]
+    fn fallback_mid_token_edits_apply_without_suffix_duplication()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut failures = Vec::new();
+        for (before, prefix, suffix, label, after) in [
+            ("sub example { ", "wh", "ile", "while", ";"),
+            ("sub example { @", "AR", "GV", "ARGV", ";"),
+            ("sub example { %", "EN", "V", "ENV", ";"),
+            ("sub example { $", "", "_", "_", ";"),
+            ("sub example { ", "dXS", "ARGS", "dXSARGS", ";"),
+            ("sub example { $unknown->", "ge", "t", "get", "();"),
+            ("sub example { ", "wh", "atever_123", "while", "; next_token"),
+            ("sub example { @", "", "ARGV", "ARGV", ";"),
+            ("sub example { $unknown->", "", "get", "get", "();"),
+            ("my $emoji = \"🦀\"; ", "wh", "ile", "while", ";"),
+            ("my $emoji = \"🦀\"; @", "AR", "GV", "ARGV", ";"),
+            ("my $emoji = \"🦀\"; $unknown->", "ge", "t", "get", "();"),
+            ("sub example { ", "wh", "é_123", "while", ";"),
+            ("sub example { ", "wh", "𐐀_123", "while", ";"),
+            ("# 🦀\r\nsub example {\r\n    @", "AR", "GV", "ARGV", ";\r\nnext_token"),
+            ("sub example { ", "wh", "", "while", "\r\nnext_token"),
+        ] {
+            for cancellable in [false, true] {
+                let server = LspServer::default();
+                let uri = if label == "dXSARGS" {
+                    "file:///workspace/fallback_mid_token.xs"
+                } else {
+                    "file:///workspace/fallback_mid_token.pl"
+                };
+                let source = format!("{before}{prefix}{suffix}{after}");
+                let doc = crate::state::DocumentState::new(&source, 1);
+                assert!(doc.current_parsed().is_none(), "must exercise no-AST fallback");
+                assert!(doc.latest_parsed().is_none(), "fixture must have no predecessor AST");
+                server.documents_guard().insert(uri.to_string(), doc);
+                let line = before.bytes().filter(|&b| b == b'\n').count() as u32;
+                let start = before
+                    .rsplit('\n')
+                    .next()
+                    .ok_or("missing current line")?
+                    .encode_utf16()
+                    .count() as u32;
+                let cursor = start + prefix.encode_utf16().count() as u32;
+                let end = cursor + suffix.encode_utf16().count() as u32;
+                let params = Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": cursor }
+                }));
+                let response = if cancellable {
+                    server.handle_completion_cancellable(params, None)?
+                } else {
+                    server.handle_completion(params)?
+                }
+                .ok_or("completion returned no response")?;
+                let item = response["items"]
+                    .as_array()
+                    .ok_or("missing items")?
+                    .iter()
+                    .find(|item| item["label"] == label)
+                    .ok_or_else(|| format!("missing {label} in {response}"))?;
+                let applied = apply_fallback_client_edit(&source, &item["textEdit"])?;
+                let expected = format!("{before}{label}{after}");
+                let expected_range = json!({
+                    "start": { "line": line, "character": start },
+                    "end": { "line": line, "character": end }
+                });
+                if applied != expected || item["textEdit"]["range"] != expected_range {
+                    failures.push(format!(
+                        "source={source:?}, cancellable={cancellable}: \
+                        applied={applied:?}, expected={expected:?}, edit={}",
+                        item["textEdit"]
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "incorrect client applications:\n{}", failures.join("\n"));
+        Ok(())
+    }
 
     /// Render the documentation the runtime would show for `keyword` at the
     /// byte offset of `needle`, using a candidate the *provider* actually
@@ -3597,6 +3864,166 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn completion_does_not_use_predecessor_ast_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/desync_completion.pl";
+        let v1 = "package DesyncCompletion;\nsub unique_pred_for_desync {}\nunique_pred_for_des\n";
+        let v2 = "package DesyncCompletion;\nsub unique_recovered_for_desync {}\nunique_recovered_for_des\n";
+
+        server.test_apply_did_open(uri, v1, 1)?;
+        server.test_index_file_in_building_state(uri, v1).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let fresh = explain_provider_decision(&server, "completion")?;
+        let fresh_receipt = fresh
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing fresh completion request receipt")?;
+        assert_eq!(
+            fresh_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "parsed document must expose AST to completion: {fresh:?}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 25 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let desync = explain_provider_decision(&server, "completion")?;
+        let desync_receipt = desync
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing desync completion request receipt")?;
+        assert_eq!(
+            desync_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(false),
+            "predecessor AST must not answer completion while Full-sync is required: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "desynchronized document must disable workspace-index completion: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("item_count").and_then(Value::as_u64),
+            Some(0),
+            "lexical and declared-dependency fallbacks must not answer from last-good text: {desync:?}"
+        );
+
+        server.test_apply_did_change(uri, v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(uri).ok_or("recovered completion document")?.current_generation()
+        };
+        server.test_index_live_file(uri, v2, recovered_gen).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 3 },
+            "position": { "line": 2, "character": 25 }
+        })))?;
+        let recovered = explain_provider_decision(&server, "completion")?;
+        let recovered_receipt = recovered
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing recovered completion request receipt")?;
+        assert_eq!(
+            recovered_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "full-document recovery must restore AST-backed completion: {recovered:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_does_not_publish_in_flight_predecessor_after_violation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/inflight_completion.pl";
+        let predecessor =
+            "package InflightCompletion;\nsub unique_pred_for_inflight {}\nunique_pred_for_inf\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let snapshot = server
+            .snapshot_user_answer_text(uri)
+            .ok_or("open document must have a usable user-answer snapshot")?;
+        let computed = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("in-flight completion must return a result")?;
+        let live_labels = completion_item_labels(&computed)?;
+        assert!(
+            live_labels.iter().any(|label| label.contains("unique_pred_for_inflight")),
+            "in-flight completion must see the predecessor subroutine: {computed}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 28 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(
+            !server.user_answer_text_is_current(uri, snapshot.generation),
+            "ranged violation must invalidate the captured user-answer generation"
+        );
+        let published = server.publish_completion_answer(uri, Some(snapshot.generation), computed);
+        let published_labels = completion_item_labels(&published)?;
+        assert!(
+            published_labels.is_empty(),
+            "in-flight predecessor completions must not publish after invalidation: {published}"
+        );
+
+        let live = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("live completion must return a result")?;
+        let live_after = completion_item_labels(&live)?;
+        assert!(
+            live_after.is_empty(),
+            "live completion after Full-sync violation must fail closed: {live}"
+        );
+        Ok(())
+    }
+
+    fn completion_item_labels(value: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let items = value
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or("completion must return an items array")?;
+        Ok(items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect())
+    }
+
     #[test]
     fn completion_provider_decision_claim_boundary_requires_shadow_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -4467,6 +4894,46 @@ mod tests {
         Ok(())
     }
 
+    /// #18212: the shipped `printfh` body carries a literal Perl `\n`.
+    /// Both capability branches must keep it intact: snippet clients get
+    /// the authored body (format 2), plain-text clients get the literal
+    /// fallback (format 1) in both `insertText` and the authoritative
+    /// `textEdit.newText`, replacing exactly the typed prefix.
+    #[test]
+    fn printfh_snippet_keeps_literal_backslash_on_both_capability_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let snippet = serialized_completion("printfh", 7, "printfh", true)?;
+        assert_eq!(snippet.get("insertTextFormat").and_then(Value::as_i64), Some(2));
+        assert_eq!(
+            snippet.get("insertText").and_then(Value::as_str),
+            Some("print ${1:\\$fh} ${0:\"data\\n\"};")
+        );
+        assert_eq!(
+            snippet.pointer("/textEdit/newText").and_then(Value::as_str),
+            Some("print ${1:\\$fh} ${0:\"data\\n\"};")
+        );
+
+        let plain = serialized_completion("printfh", 7, "printfh", false)?;
+        assert_eq!(plain.get("insertTextFormat").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            plain.get("insertText").and_then(Value::as_str),
+            Some("print $fh \"data\\n\";"),
+            "plain-text clients must receive the literal Perl escape, not `datan`"
+        );
+        assert_eq!(
+            plain.pointer("/textEdit/newText").and_then(Value::as_str),
+            Some("print $fh \"data\\n\";")
+        );
+        assert_eq!(plain.pointer("/textEdit/range/start/line").and_then(Value::as_i64), Some(0));
+        assert_eq!(
+            plain.pointer("/textEdit/range/start/character").and_then(Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(plain.pointer("/textEdit/range/end/character").and_then(Value::as_i64), Some(7));
+
+        Ok(())
+    }
+
     /// #4956: `submethod`'s body spelled literal Perl `$self` as a snippet
     /// variable, so VS Code inserted an editable `self` placeholder and other
     /// clients could insert nothing.
@@ -4524,10 +4991,11 @@ mod tests {
                         "`{}` has a defective snippet body: {defects:?}",
                         item.label
                     );
+                    // Literal Perl escapes (printfh's `\n`) are literal
+                    // text and must survive (#18212); snippet machinery
+                    // (placeholder braces, tab stops) must not.
                     assert!(
-                        !plain_fallback.contains("${")
-                            && !plain_fallback.contains("$0")
-                            && !plain_fallback.contains('\\'),
+                        !plain_fallback.contains("${") && !plain_fallback.contains("$0"),
                         "`{}` has a fallback that is not literal text: {plain_fallback}",
                         item.label
                     );
@@ -5335,6 +5803,41 @@ our $single_root_var;
                 )
             })
             .collect()
+    }
+
+    /// Core completion claims these structural roles before the runtime
+    /// workspace pass runs. A package variable valid at a normal sigil
+    /// position must not leak back into either role (#9816).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn runtime_workspace_pass_does_not_reopen_method_or_hash_key_roles() {
+        let uri = "file:///project/bin/app.pl";
+        let ordinary = run_workspace_pass_over_secrets_module(uri, "$api", None);
+        assert!(ordinary.iter().any(|(label, _, _)| label == "$api_token"));
+
+        for source in [
+            "my $obj; $obj->",
+            "my $obj; $obj->api",
+            "my $hash; $hash{",
+            "my $hash; $hash{api",
+            // The hashref form is the same hash-key role (#5159): enrichment
+            // must stay out of it too.
+            "my $ref; $ref->{",
+            "my $ref; $ref->{api",
+        ] {
+            let items = run_workspace_pass_over_secrets_module(uri, source, None);
+            assert!(items.is_empty(), "runtime fallback leaked into {source:?}: {items:?}");
+        }
+
+        // The gate concerns the role at the cursor, not an arrow or an
+        // earlier hash subscript elsewhere in the document.
+        for source in ["$obj->call();\n$api", "$hash{key};\n$api"] {
+            let items = run_workspace_pass_over_secrets_module(uri, source, None);
+            assert!(
+                items.iter().any(|(label, _, _)| label == "$api_token"),
+                "ordinary variable position after a completed access lost enrichment: {items:?}"
+            );
+        }
     }
 
     /// A package variable owned by an unimported module must be inserted fully

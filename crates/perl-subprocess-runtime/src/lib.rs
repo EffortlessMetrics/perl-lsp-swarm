@@ -24,6 +24,8 @@
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]
 
+#[cfg(not(target_arch = "wasm32"))]
+mod availability;
 mod error;
 #[cfg(not(target_arch = "wasm32"))]
 mod os_runtime;
@@ -33,6 +35,8 @@ mod output;
 pub mod mock;
 pub mod process;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use availability::command_exists;
 pub use error::SubprocessError;
 #[cfg(not(target_arch = "wasm32"))]
 pub use os_runtime::OsSubprocessRuntime;

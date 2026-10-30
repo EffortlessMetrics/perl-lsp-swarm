@@ -135,13 +135,13 @@ impl std::error::Error for SubjectResolutionError {}
 type SubjectResult<T> = std::result::Result<T, SubjectResolutionError>;
 
 #[derive(Debug, Clone)]
-struct SubjectInput {
-    repository: String,
-    event_kind: CiEventKind,
-    resolution_source: SubjectResolutionSource,
-    diff_mode: SubjectDiffMode,
-    base_sha: String,
-    head_sha: String,
+pub(crate) struct SubjectInput {
+    pub(crate) repository: String,
+    pub(crate) event_kind: CiEventKind,
+    pub(crate) resolution_source: SubjectResolutionSource,
+    pub(crate) diff_mode: SubjectDiffMode,
+    pub(crate) base_sha: String,
+    pub(crate) head_sha: String,
 }
 
 pub fn run(config: CiSubjectConfig) -> Result<()> {
@@ -200,7 +200,7 @@ pub fn load_and_resolve(path: &Path, root: &Path) -> Result<ResolvedCiSubject> {
     Ok(resolved)
 }
 
-fn input_from_config(config: &CiSubjectConfig) -> SubjectResult<SubjectInput> {
+pub(crate) fn input_from_config(config: &CiSubjectConfig) -> SubjectResult<SubjectInput> {
     let event_name = config
         .event_name
         .clone()
@@ -212,7 +212,7 @@ fn input_from_config(config: &CiSubjectConfig) -> SubjectResult<SubjectInput> {
         )?;
 
     match event_name.as_str() {
-        "pull_request" | "push" | "merge_group" => {
+        "pull_request" | "pull_request_target" | "push" | "merge_group" => {
             let event_path = config
                 .event_path
                 .clone()
@@ -278,13 +278,19 @@ fn input_from_event(
     let event_repository = json_string(event, &["repository", "full_name"])?;
     ensure_repository(expected_repository, &event_repository)?;
     match event_name {
-        "pull_request" => {
+        "pull_request" | "pull_request_target" => {
             let base_repository =
                 json_string(event, &["pull_request", "base", "repo", "full_name"])?;
-            let head_repository =
-                json_string(event, &["pull_request", "head", "repo", "full_name"])?;
             ensure_repository(expected_repository, &base_repository)?;
-            ensure_repository(expected_repository, &head_repository)?;
+            // `pull_request_target` executes trusted base code and may safely
+            // fetch the untrusted fork head as inert data. Ordinary
+            // `pull_request` is not that boundary: retain same-repository head
+            // binding so a fork payload cannot be treated as trusted input.
+            if event_name == "pull_request" {
+                let head_repository =
+                    json_string(event, &["pull_request", "head", "repo", "full_name"])?;
+                ensure_repository(expected_repository, &head_repository)?;
+            }
             Ok(SubjectInput {
                 repository: expected_repository.to_string(),
                 event_kind: CiEventKind::PullRequest,
@@ -442,7 +448,7 @@ fn ensure_checkout_head(root: &Path, expected: &str) -> SubjectResult<()> {
     Ok(())
 }
 
-fn validate_sha(value: &str, label: &str) -> SubjectResult<()> {
+pub(crate) fn validate_sha(value: &str, label: &str) -> SubjectResult<()> {
     if value == ZERO_SHA {
         return Err(subject_error(SubjectErrorCode::ZeroSha, format!("{label} SHA is all zero")));
     }
@@ -455,7 +461,7 @@ fn validate_sha(value: &str, label: &str) -> SubjectResult<()> {
     Ok(())
 }
 
-fn ensure_commit(root: &Path, sha: &str) -> SubjectResult<()> {
+pub(crate) fn ensure_commit(root: &Path, sha: &str) -> SubjectResult<()> {
     match object_type(root, sha) {
         Ok(kind) if kind == "commit" => return Ok(()),
         Ok(kind) => {
@@ -567,7 +573,7 @@ fn tree_sha(root: &Path, commit: &str) -> SubjectResult<String> {
     Ok(tree)
 }
 
-fn git_stdout(root: &Path, args: &[&str]) -> SubjectResult<String> {
+pub(crate) fn git_stdout(root: &Path, args: &[&str]) -> SubjectResult<String> {
     let output = Command::new("git").args(args).current_dir(root).output().map_err(|error| {
         subject_error(
             SubjectErrorCode::ObjectUnavailable,
@@ -589,7 +595,7 @@ fn git_stdout(root: &Path, args: &[&str]) -> SubjectResult<String> {
         .map_err(|error| subject_error(SubjectErrorCode::ObjectUnavailable, error.to_string()))
 }
 
-fn repository_identity(root: &Path) -> SubjectResult<String> {
+pub(crate) fn repository_identity(root: &Path) -> SubjectResult<String> {
     let raw = git_stdout(root, &["config", "--get", "remote.origin.url"])?;
     let value = raw.trim_end_matches(".git");
     let repository = value
@@ -611,7 +617,7 @@ fn repository_identity(root: &Path) -> SubjectResult<String> {
     Ok(repository.to_string())
 }
 
-fn ensure_repository(expected: &str, observed: &str) -> SubjectResult<()> {
+pub(crate) fn ensure_repository(expected: &str, observed: &str) -> SubjectResult<()> {
     if expected != observed {
         return Err(subject_error(
             SubjectErrorCode::RepositoryMismatch,
@@ -732,7 +738,10 @@ fn write_failure_receipt(path: &Path, error: &SubjectResolutionError) -> Result<
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn subject_error(code: SubjectErrorCode, message: impl Into<String>) -> SubjectResolutionError {
+pub(crate) fn subject_error(
+    code: SubjectErrorCode,
+    message: impl Into<String>,
+) -> SubjectResolutionError {
     SubjectResolutionError { code, message: message.into() }
 }
 
@@ -879,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn event_mapping_uses_exact_pr_push_and_merge_group_pairs() -> Result<()> {
+    fn event_mapping_uses_exact_pr_target_push_and_merge_group_pairs() -> Result<()> {
         let base = "a".repeat(40);
         let head = "b".repeat(40);
         let repository = "owner/repo";
@@ -894,6 +903,9 @@ mod tests {
         ensure!(pr_input.base_sha == base);
         ensure!(pr_input.head_sha == head);
         ensure!(pr_input.diff_mode == SubjectDiffMode::MergeBase);
+        let target_input = input_from_event("pull_request_target", repository, None, &pr)?;
+        ensure!(target_input.base_sha == base);
+        ensure!(target_input.head_sha == head);
 
         let push = json!({
             "repository": {"full_name": repository},
@@ -917,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_pr_and_push_sha_contradiction_fail_closed() -> Result<()> {
+    fn fork_pr_is_bound_by_base_repository_pr_ref() -> Result<()> {
         let base = "a".repeat(40);
         let head = "b".repeat(40);
         let repository = "owner/repo";
@@ -928,10 +940,13 @@ mod tests {
                 "head": {"sha": head, "repo": {"full_name": "fork/repo"}}
             }
         });
-        let Err(fork_error) = input_from_event("pull_request", repository, None, &fork) else {
-            bail!("cross-repository PR must fail closed");
-        };
-        ensure!(fork_error.code == SubjectErrorCode::RepositoryMismatch);
+        let fork_input = input_from_event("pull_request_target", repository, None, &fork)?;
+        ensure!(fork_input.base_sha == base);
+        ensure!(fork_input.head_sha == head);
+        ensure!(
+            input_from_event("pull_request", repository, None, &fork).is_err(),
+            "ordinary pull_request must retain same-repository head binding"
+        );
 
         let push = json!({
             "repository": {"full_name": repository},

@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Refuse textDocument/formatting with ContentModified after a text-bearing sync notification for a stored document is rejected by the serialized-size ceiling, instead of returning edits computed against the stale snapshot. A warning names the limit once per affected file. A rejected didSave without replacement text leaves the stored document current and formatting available. This closes the format-on-save corruption where the post-format didChange exceeded the ~2.1 MiB sync ceiling, was silently dropped, and the next save re-applied a whole-document edit over the client's already-formatted buffer, duplicating its tail until the file no longer parsed."
+time: 2026-09-28T11:05:00Z
+custom:
+  PR: "16709"
+  Slug: format-stale-snapshot-desync
+  Breaking: "no"

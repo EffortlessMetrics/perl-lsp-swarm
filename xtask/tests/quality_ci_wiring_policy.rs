@@ -1,6 +1,9 @@
 //! Contract tests for first blocking proof-lane CI wiring.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
@@ -38,23 +41,11 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
 
     let smoke_start = must_some(workflow.find("  pr-smoke:"));
     let smoke = &workflow[smoke_start..];
-    let target_start = must_some(smoke.find("- name: Select PR Smoke Cargo target"));
     let warm_start = must_some(smoke.find("- name: Warm xtask"));
-    let target_step = must_some(workflow_step(smoke, "Select PR Smoke Cargo target"));
-    assert!(
-        target_start < warm_start,
-        "PR Smoke must select CARGO_TARGET_DIR before warming xtask"
-    );
-    assert!(
-        target_step.contains("CARGO_TARGET_DIR=$target_dir") && target_step.contains("GITHUB_ENV"),
-        "PR Smoke must persist its cargo target for the shared gate runner"
-    );
-    assert!(
-        target_step.contains("PR_SMOKE_RUN_ID: ${{ github.run_id }}")
-            && target_step.contains("PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}")
-            && target_step.contains("pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"),
-        "PR Smoke must pass run identity through step env into the cargo target path"
-    );
+    // The cargo-target invariant this test used to assert here now lives in
+    // `pr_smoke_builds_into_the_cache_aligned_cargo_target`, because #15528
+    // deleted the step it named and the stale locator took every assertion
+    // below it out of service.
     assert!(
         smoke.contains("\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast"),
         "PR Smoke must invoke the warmed xtask from its selected cargo target"
@@ -127,6 +118,222 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
             "PR Smoke must prebuild `{command}` before running independent gates"
         );
     }
+}
+
+/// `repo_root` panics on a missing parent; these controls report instead.
+fn repo_root_checked() -> Result<PathBuf> {
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow!("the xtask manifest directory has no parent"))?
+        .to_path_buf())
+}
+
+/// The `pr-smoke:` job body, read through checked access end to end.
+///
+/// `find` does return a valid boundary, so `&workflow[start..]` would not
+/// panic here. It is still unchecked slicing, which repository policy bans
+/// outright rather than case by case -- and this very PR exists because
+/// unchecked slicing in `xtask` panicked on a char boundary once `find`'s
+/// offset was computed against a different string. The policy is the cheaper
+/// rule to follow than the analysis is to repeat.
+fn pr_smoke_job(root: &Path) -> Result<String> {
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    let start = workflow
+        .find("  pr-smoke:")
+        .ok_or_else(|| anyhow!("ci.yml no longer declares a `pr-smoke` job"))?;
+    let job = workflow
+        .get(start..)
+        .ok_or_else(|| anyhow!("the `pr-smoke:` job offset {start} is not a char boundary"))?;
+    Ok(job.to_string())
+}
+
+/// #15528 replaced the per-run `Select PR Smoke Cargo target` step with a
+/// job-level env: a run-id-and-attempt path was unique per run, so the lane
+/// cold-built every time and the watchdog killed it mid-compile. The invariant
+/// that survives the step is cache alignment -- the lane must build into the
+/// one tree Swatinem/rust-cache restores and saves -- and it must hold for
+/// every step, the xtask warm-up included, which a job-level env gives and a
+/// step-level export could not.
+#[test]
+fn pr_smoke_builds_into_the_cache_aligned_cargo_target() -> Result<()> {
+    let root = repo_root_checked()?;
+    let smoke = pr_smoke_job(&root)?;
+    let smoke = smoke.as_str();
+
+    let warm_start = smoke
+        .find("- name: Warm xtask")
+        .ok_or_else(|| anyhow!("PR Smoke no longer declares a `Warm xtask` step"))?;
+    let target_env = smoke.find("CARGO_TARGET_DIR: target").ok_or_else(|| {
+        anyhow!("PR Smoke no longer pins the cache-aligned `CARGO_TARGET_DIR: target`")
+    })?;
+    ensure!(
+        target_env < warm_start,
+        "PR Smoke must fix its cache-aligned CARGO_TARGET_DIR before warming xtask"
+    );
+    ensure!(
+        !smoke.contains("pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"),
+        "PR Smoke must not reintroduce a per-run cargo target: it defeats the cache"
+    );
+    Ok(())
+}
+
+/// The #15492 reporter contract, deliberately outside the long wiring test
+/// above rather than appended to it. That test locates steps by literal name
+/// and aborts at the first stale locator, which is how its own #15492
+/// assertions went unrun for a day after #15935 renamed a step out from under
+/// it. These controls are fallible end to end, so a drifted locator reports
+/// what drifted instead of taking the rest of the contract down with it.
+#[test]
+fn pr_smoke_publishes_failing_gate_names_through_the_reporter() -> Result<()> {
+    let root = repo_root_checked()?;
+    let smoke = pr_smoke_job(&root)?;
+    let smoke = smoke.as_str();
+    let summary_step =
+        workflow_step(smoke, "Summarize PR-fast gate failures").ok_or_else(|| {
+            anyhow!("PR Smoke no longer declares a `Summarize PR-fast gate failures` step")
+        })?;
+
+    // The reporter moved out of the workflow body (#15492) so that its
+    // annotation branches could be falsified by a test harness. The wiring
+    // assertion is therefore split: the step must still invoke it, and the
+    // script it invokes must still carry the publication invariants.
+    ensure!(
+        summary_step.contains("python3 scripts/ci/summarize_pr_fast_gates.py"),
+        "PR Smoke must invoke the failing-gate reporter"
+    );
+
+    let reporter = fs::read_to_string(root.join("scripts/ci/summarize_pr_fast_gates.py"))?;
+    for required in ["GITHUB_STEP_SUMMARY", "Non-success gates", "exit_code"] {
+        ensure!(
+            reporter.contains(required),
+            "the reporter must publish failing gate names and exit codes in the job summary \
+             (missing `{required}`)"
+        );
+    }
+
+    // The pr-fast receipt producer (GateResult in xtask/src/tasks/gates.rs)
+    // serializes its identifier as `gate_name`, not `name`: reading `name`
+    // renders every failing gate as `unknown` and defeats the summary's
+    // diagnostic purpose (#15492 review thread).
+    let producer = fs::read_to_string(root.join("xtask/src/tasks/gates.rs"))?;
+    ensure!(
+        producer.contains("pub gate_name: String"),
+        "GateResult must keep serializing its identifier as `gate_name`"
+    );
+    ensure!(
+        reporter.contains("gate.get(\"gate_name\""),
+        "the reporter must read the producer's `gate_name` field, not `name`"
+    );
+
+    // Extraction only buys proof while the self-tests actually run, and they
+    // run on a path filter naming both halves.
+    let self_tests = fs::read_to_string(root.join(".github/workflows/ci-gate-self-tests.yml"))?;
+    for required in [
+        "scripts/ci/summarize_pr_fast_gates.py",
+        "scripts/ci/test_summarize_pr_fast_gates.py",
+        "python3 -m unittest scripts.ci.test_summarize_pr_fast_gates",
+    ] {
+        ensure!(
+            self_tests.contains(required),
+            "the gate self-test workflow must carry `{required}`"
+        );
+    }
+    Ok(())
+}
+
+/// #16214: the validator reports a same-repository HTTP 404 as an absent
+/// issue — a verdict about the pull request — and every other 404 as an
+/// instrument failure, because GitHub answers 404 rather than 403 for a
+/// resource the caller may not be allowed to see. That narrowing is only
+/// sound while this job can actually read the subject repository's issues.
+/// Drop `issues: read` and the same-repo branch starts reporting "the issue
+/// is not there" when the truth is "this token was not allowed to look",
+/// which is the exact defect the split removes. Parsed rather than grepped,
+/// so a permission moved to another job does not satisfy it.
+#[test]
+fn semantic_close_containment_keeps_the_issue_read_its_404_rule_depends_on() -> Result<()> {
+    let root = repo_root_checked()?;
+    let workflow: Value = serde_yaml_ng::from_str(&fs::read_to_string(
+        root.join(".github/workflows/semantic-close-containment.yml"),
+    )?)?;
+
+    let job = workflow.get("jobs").and_then(|jobs| jobs.get("containment")).ok_or_else(|| {
+        anyhow!(
+            "semantic-close-containment.yml no longer declares a `containment` job; the \
+                 404-absence rule's permission control cannot locate what it guards"
+        )
+    })?;
+
+    let issues = job
+        .get("permissions")
+        .and_then(|permissions| permissions.get("issues"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "the `containment` job declares no `issues:` permission; \
+                 `classify_gh_failure` treats a same-repository 404 as an absent issue, which \
+                 is only true while this job can read that repository's issues"
+            )
+        })?;
+    ensure!(
+        issues == "read" || issues == "write",
+        "the `containment` job grants `issues: {issues}`; the same-repository 404-is-absence \
+         rule in `classify_gh_failure` needs read access, or a 404 stops meaning absence"
+    );
+    Ok(())
+}
+
+/// #16214: the exit codes the validator can return, and the workflow's own
+/// header documenting them, drifted apart — the header still said `3 =
+/// NOT_PROVEN/instrument failure` after the two were split. That drift is
+/// silent for anyone reading the YAML as authority, and it re-teaches exactly
+/// the conflation the split removed. Bind the two.
+#[test]
+fn semantic_close_containment_header_documents_every_exit_the_binary_can_return() -> Result<()> {
+    let root = repo_root_checked()?;
+    let binary = fs::read_to_string(root.join("xtask/src/bin/semantic-close-containment.rs"))?;
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/semantic-close-containment.yml"))?;
+
+    let header_end = workflow.find("\nname:").ok_or_else(|| {
+        anyhow!("semantic-close-containment.yml has no `name:` key, so it has no header to check")
+    })?;
+    let header = workflow.get(..header_end).ok_or_else(|| {
+        anyhow!(
+            "the semantic-close-containment.yml header offset {header_end} is not a char boundary"
+        )
+    })?;
+
+    // Every documented exit constant, read off the binary rather than listed
+    // here, so adding a fifth code fails this test instead of passing it.
+    let mut codes = vec![0];
+    for line in binary.lines() {
+        let Some(rest) = line.strip_prefix("const EXIT_") else { continue };
+        let Some((_, value)) = rest.split_once(": i32 = ") else { continue };
+        let value = value.trim_end_matches(';').trim();
+        codes.push(value.parse::<i32>().map_err(|error| {
+            anyhow!("semantic-close-containment.rs declares a non-numeric exit constant {value:?}: {error}")
+        })?);
+    }
+    ensure!(
+        codes.len() >= 4,
+        "expected the binary to declare at least three EXIT_ constants beside 0, found {codes:?}; \
+         the header contract test is not reading the constants it thinks it is"
+    );
+
+    for code in &codes {
+        ensure!(
+            header.contains(&format!("{code} = ")),
+            "the semantic-close-containment.yml header does not document exit {code}, which the \
+             validator can return; a reader outside the web UI sees only the number"
+        );
+    }
+    ensure!(
+        !header.contains("NOT_PROVEN/instrument failure"),
+        "the semantic-close-containment.yml header still documents NOT_PROVEN and instrument \
+         failure as one exit code; #16214 split them"
+    );
+    Ok(())
 }
 
 #[test]

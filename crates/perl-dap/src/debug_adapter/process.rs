@@ -2,13 +2,13 @@
 
 use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
-    Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
-    DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, Mutex, Read, RestartArguments, ResumeMode, Source,
-    StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
-    Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    Arc, BufRead, BufReader, Child, DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState,
+    DisconnectArguments, Duration, EngineBreakpointHitOutcome, Instant,
+    LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE, LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read,
+    RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig, TcpAttachSession,
+    TerminateArguments, TerminationState, Value, Write, ansi_escape_re, catalog_has_feature,
+    context_re, debug_session_terminate_wait_ms, die_suffix_re, error_re, exception_re, json,
+    lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -558,6 +558,43 @@ impl DebugAdapter {
         }
 
         if let Some(args) = arguments {
+            // Reject malformed argv before retaining configuration or touching
+            // interpreter, authority, or process state (#17733). Every accepted
+            // string remains one argument; silently dropping entries changes
+            // the program the client asked us to debug.
+            let perl_args = match Self::parse_launch_script_args(&args) {
+                Ok(args) => args,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+
+            // Reject malformed typed options before retaining configuration
+            // or touching process state (#18027), for the same reason as argv
+            // above: silently coercing them changes what the client asked for
+            // while the launch response still reports success.
+            let (stop_on_entry, debuggee_timeout_secs, env_overrides) =
+                match Self::parse_launch_typed_options(&args) {
+                    Ok(options) => options,
+                    Err(message) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(message),
+                        };
+                    }
+                };
+
             // Store launch arguments for restart support
             *lock_or_recover(&self.last_launch_args, "debug_adapter.last_launch_args") =
                 Some(args.clone());
@@ -574,90 +611,147 @@ impl DebugAdapter {
             // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Determine the workspace boundary for this launch.
+            // Launch-authority admission (#8656).
             //
-            // The server-configured root (set once via `set_workspace_root`,
-            // typically from `DapConfig.workspace_root` at server construction)
-            // is the source of truth. A launch-args `workspaceRoot` may NARROW
-            // that boundary but must never WIDEN it — otherwise a malicious or
-            // misconfigured client could hand itself a broader root than the
-            // server allows. If no server root is configured, a launch-args
-            // `workspaceRoot` is accepted as the boundary for this launch (there
-            // is nothing to widen relative to).
+            // Tier 1 — explicit authority: when the startup configuration
+            // resolved a launch authority, it is the only source of
+            // launch-path authority. Workspace-bound authority admits the
+            // `program` only inside a trusted root and lets a launch-args
+            // `workspaceRoot` only NARROW one; an explicitly unbounded
+            // authority admits any program and never synthesizes a boundary
+            // from launch arguments.
             //
-            // If neither is present, validation is skipped entirely (see the
-            // `None` handling in `launch_debugger`) — this preserves current
-            // behavior for existing users, since `DapConfig.workspace_root` is
-            // not yet populated from any CLI/editor-supplied source (tracked
-            // separately in #5345; that fail-open gap is intentionally out of
-            // scope for this fix).
-            let server_root =
-                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            // Tier 2 — legacy single-root contract: an adapter (or server)
+            // started without authority inputs keeps the historical
+            // narrowing-only `workspace_root` boundary. Its two historical
+            // fail-open paths are retired here: launch arguments can no
+            // longer CREATE the boundary, and a launch with neither
+            // authority nor a configured boundary is refused instead of
+            // running unvalidated.
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
-
-            let effective_root = match (server_root, launch_root_arg) {
-                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
-                    Ok(narrowed) => Some(narrowed),
-                    Err(e) => {
+            let authority_installed = self.has_launch_authority();
+            // Authority admission and process spawning must validate the same
+            // path. A relative program would otherwise be resolved against
+            // one directory for admission and a potentially different cwd
+            // when Perl is spawned. Require callers to provide an absolute
+            // path for authority-backed launches until a single launch-local
+            // path resolver is threaded through the entire transaction.
+            if authority_installed && !program.trim().is_empty() && Path::new(program).is_relative()
+            {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "launch".to_string(),
+                    body: None,
+                    message: Some(
+                        "authority-backed launches require an absolute `program` path so the admitted path and executed path cannot diverge"
+                            .to_string(),
+                    ),
+                };
+            }
+            let narrowed_root = if authority_installed {
+                let admission = self.admit_launch_against_authority(
+                    if program.trim().is_empty() { None } else { Some(Path::new(program)) },
+                    launch_root_arg.as_deref(),
+                );
+                match admission {
+                    Ok(narrowed) => narrowed,
+                    Err(message) => {
                         return DapMessage::Response {
                             seq,
                             request_seq,
                             success: false,
                             command: "launch".to_string(),
                             body: None,
-                            message: Some(format!(
-                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
-                                     folder and cannot widen the server-configured boundary. \
-                                     Details: {}",
-                                launch.display(),
-                                e
-                            )),
+                            message: Some(message),
                         };
                     }
-                },
-                (Some(server), None) => Some(server),
-                (None, Some(launch)) => Some(launch),
-                (None, None) => None,
+                }
+            } else {
+                let server_root =
+                    lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+                match (server_root, launch_root_arg.clone()) {
+                    (Some(server), Some(launch)) => {
+                        match security::validate_path(&launch, &server) {
+                            Ok(narrowed) => Some(narrowed),
+                            Err(e) => {
+                                return DapMessage::Response {
+                                    seq,
+                                    request_seq,
+                                    success: false,
+                                    command: "launch".to_string(),
+                                    body: None,
+                                    message: Some(format!(
+                                        "The launch 'workspaceRoot' ('{}') is outside your \
+                                             workspace folder and cannot widen the \
+                                             server-configured boundary. Details: {}",
+                                        launch.display(),
+                                        e
+                                    )),
+                                };
+                            }
+                        }
+                    }
+                    (Some(server), None) => Some(server),
+                    (None, Some(_)) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE.to_string()),
+                        };
+                    }
+                    (None, None) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE.to_string()),
+                        };
+                    }
+                }
             };
 
-            if let Some(root) = effective_root {
+            // Keep the defense-in-depth workspace boundary aligned with the
+            // authority decision for the spawn window (restored below, so a
+            // request's narrowing never constrains a later launch):
+            // the narrowed root when launch args narrow one, else the
+            // trusted root that admitted the program. A preset legacy root
+            // must not second-guess an admission it did not make, and an
+            // explicitly unbounded authority sets no boundary at all, so a
+            // stale or preset legacy root is cleared for the window instead
+            // of refusing an admitted program in the spawner below.
+            let previous_workspace_root =
+                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            if authority_installed {
+                if self.launch_authority_is_unbounded() {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = None;
+                } else if let Some(root) = narrowed_root.or_else(|| {
+                    if program.trim().is_empty() {
+                        None
+                    } else {
+                        self.authority_root_for_program(Path::new(program))
+                    }
+                }) {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                        Some(root);
+                }
+            } else if let Some(root) = narrowed_root {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
-            let perl_args = args
-                .get("args")
-                .and_then(|a| a.as_array())
-                .map(|arr| {
-                    arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
-
-            // Wall-clock timeout for the perl -d debuggee process (#4640).
-            // 0 (the default) disables the watchdog so legitimate long-running
-            // debug sessions (e.g. a server paused at a breakpoint for minutes)
-            // are not interrupted.  A positive value kills the debuggee after
-            // the specified number of seconds of wall-clock time.
-            let debuggee_timeout_secs =
-                args.get("debuggeeTimeoutSeconds").and_then(|v| v.as_u64()).unwrap_or(0);
-
-            let env_overrides = args
-                .get("env")
-                .and_then(Value::as_object)
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .filter_map(|(key, value)| {
-                            value.as_str().map(|value| (key.clone(), value.to_string()))
-                        })
-                        .collect::<HashMap<String, String>>()
-                })
-                .unwrap_or_default();
+            // `stop_on_entry`, `debuggee_timeout_secs` (the #4640 watchdog;
+            // 0 disables it), and `env_overrides` were admitted without
+            // coercion by `parse_launch_typed_options` above (#18027).
 
             // Launch Perl debugger
-            match self.launch_debugger(
+            let launch_result = self.launch_debugger(
                 program,
                 &perl_interpreter,
                 perl_args,
@@ -665,7 +759,13 @@ impl DebugAdapter {
                 env_overrides,
                 user_cwd,
                 debuggee_timeout_secs,
-            ) {
+            );
+            // A request's narrowing is a launch-local effective boundary;
+            // never let it constrain a later launch on the same adapter.
+            *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                previous_workspace_root;
+
+            match launch_result {
                 // The output reader owns the first debugger context and frame snapshot.
                 // It publishes the entry stop after that snapshot is installed; emitting
                 // here races a client's immediate stackTrace request with the reader.
@@ -675,14 +775,21 @@ impl DebugAdapter {
                 // created with `entry_stop_pending` set and the output reader emits
                 // exactly one `stopped(reason=entry)` from the authoritative
                 // suspension instead.
-                Ok(_thread_id) => DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: true,
-                    command: "launch".to_string(),
-                    body: None,
-                    message: None,
-                },
+                Ok(_thread_id) => {
+                    // Failed attempts must not consume an authority session
+                    // generation. Begin it only after validation and spawn
+                    // have succeeded.
+                    let _ = self.begin_authority_session();
+
+                    DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: None,
+                    }
+                }
                 Err(e) => {
                     let perl_info = detect_perl_info();
                     DapMessage::Response {
@@ -715,6 +822,72 @@ impl DebugAdapter {
                 ),
             }
         }
+    }
+
+    /// Admit the optional script argv without coercion or payload-bearing errors.
+    fn parse_launch_script_args(args: &Value) -> Result<Vec<String>, String> {
+        let values = match args.get("args") {
+            None | Some(Value::Null) => return Ok(Vec::new()),
+            Some(Value::Array(values)) => values,
+            Some(_) => return Err("Invalid launch args: expected an array of strings".to_string()),
+        };
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("Invalid launch args[{index}]: expected a string"))
+            })
+            .collect()
+    }
+
+    /// Read `stopOnEntry` without coercion (#18027): absent or null means
+    /// false; any other non-boolean is a typed refusal, never a silent false.
+    fn typed_stop_on_entry(args: &Value) -> Result<bool, String> {
+        match args.get("stopOnEntry") {
+            None | Some(Value::Null) => Ok(false),
+            Some(value) => {
+                value.as_bool().ok_or_else(|| "Invalid stopOnEntry: expected a boolean".to_string())
+            }
+        }
+    }
+
+    /// Admit the typed launch options without coercion (#18027), following
+    /// the `parse_launch_script_args` precedent: a present-but-wrong-typed
+    /// value fails the request instead of silently changing behavior.
+    /// Error text names options and, for `env`, the offending key only;
+    /// values are never echoed.
+    fn parse_launch_typed_options(
+        args: &Value,
+    ) -> Result<(bool, u64, std::collections::HashMap<String, String>), String> {
+        let stop_on_entry = Self::typed_stop_on_entry(args)?;
+        let debuggee_timeout_secs = match args.get("debuggeeTimeoutSeconds") {
+            None | Some(Value::Null) => 0,
+            Some(value) => value.as_u64().ok_or_else(|| {
+                "Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string()
+            })?,
+        };
+        let env_overrides = match args.get("env") {
+            None | Some(Value::Null) => std::collections::HashMap::new(),
+            Some(Value::Object(entries)) => {
+                let mut map = std::collections::HashMap::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let value = value.as_str().ok_or_else(|| {
+                        format!("Invalid env value for '{key}': expected a string")
+                    })?;
+                    map.insert(key.clone(), value.to_string());
+                }
+                map
+            }
+            Some(_) => {
+                return Err(
+                    "Invalid env: expected an object mapping names to string values".to_string()
+                );
+            }
+        };
+        Ok((stop_on_entry, debuggee_timeout_secs, env_overrides))
     }
 
     /// Resolve the Perl interpreter for a debug launch from its `launch.json`
@@ -971,6 +1144,10 @@ impl DebugAdapter {
             );
         }
 
+        // #15538: make the session child a process-group leader on Unix so
+        // every terminate path can reach its descendants.
+        crate::process_tree::prepare_owned_command(&mut cmd);
+
         match cmd.spawn() {
             Ok(mut child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
@@ -1195,6 +1372,10 @@ impl DebugAdapter {
         // resolves and compiles perl5db.pl, so this cannot flip the verdict —
         // and if that ever stopped being true, the probe would now observe it.
         apply_windows_debugger_transport_env(&mut cmd);
+        // #15538: the bounded probe paths below must reach descendants, not
+        // only the direct child. On Unix this makes the probe a
+        // process-group leader.
+        crate::process_tree::prepare_owned_command(&mut cmd);
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -1226,9 +1407,8 @@ impl DebugAdapter {
                     thread::sleep(DEBUGGER_PROBE_POLL_INTERVAL);
                 }
                 Err(e) => {
-                    // Instrument failure: kill what we spawned and skip.
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Instrument failure: kill the whole owned tree and skip.
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     tracing::warn!(
                         "perl5db capability probe of '{perl_interpreter}' could not be \
                          observed (will attempt the launch anyway): {e}"
@@ -1240,10 +1420,10 @@ impl DebugAdapter {
 
         let Some(status) = status else {
             // Deadline reached with no exit: the probe is inconclusive, not a
-            // capability verdict. Kill the child so nothing outlives the
-            // probe, then keep the launch-continue disposition.
-            let _ = child.kill();
-            let _ = child.wait();
+            // capability verdict. Kill the whole owned tree (#15538) so
+            // nothing outlives the probe, then keep the launch-continue
+            // disposition.
+            let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
             tracing::warn!(
                 "perl5db capability probe of '{perl_interpreter}' exceeded its \
                  {} budget (will attempt the launch anyway)",
@@ -2651,7 +2831,20 @@ impl DebugAdapter {
             }
 
             // Extract host and port for TCP attachment.
-            let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
+            let host = match args.get("host") {
+                None | Some(Value::Null) => "localhost",
+                Some(Value::String(host)) => host.as_str(),
+                Some(_) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some("Invalid host: expected a string".to_string()),
+                    };
+                }
+            };
             let normalized_host = host.trim();
             let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
             if raw_port > 65535 {
@@ -2670,7 +2863,21 @@ impl DebugAdapter {
                 .or_else(|| args.get("timeoutMs"))
                 .and_then(|t| t.as_u64())
                 .map(Self::u64_to_u32_saturating);
-            let stop_on_entry = args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
+            // #18027: a present-but-non-boolean stopOnEntry is a typed
+            // refusal here too, never a silent false.
+            let stop_on_entry = match Self::typed_stop_on_entry(&args) {
+                Ok(value) => value,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
 
             // TCP attachment mode (IMPLEMENTED)
             let mut config = TcpAttachConfig::new(normalized_host.to_string(), port);
@@ -3095,12 +3302,24 @@ impl DebugAdapter {
             let pid = process.id();
             match signal::kill(Pid::from_raw(Self::u32_to_i32_saturating(pid)), Signal::SIGTERM) {
                 Ok(()) => {
+                    // The SIGTERM grace period keeps the production budget:
+                    // it precedes kill(), so a test child that ignores
+                    // SIGTERM would otherwise consume the elevated
+                    // confirmation budget here and push the whole cleanup
+                    // past the cleanup-driving tests' 2s response deadlines
+                    // (CodeRabbit follow-up on #17173). Only the final
+                    // kill-confirmation wait below is elevated in test
+                    // builds.
                     if let outcome @ ChildExitOutcome::Exited =
                         Self::wait_for_child_exit_with_outcome(
                             process,
-                            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                            Duration::from_millis(super::DEBUG_SESSION_TERMINATE_WAIT_MS),
                         )
                     {
+                        // #15538: the direct child exited gracefully, but the
+                        // group it led can still hold descendants (a pager or
+                        // readline helper under `perl -d`).
+                        crate::process_tree::terminate_descendants(process);
                         return outcome;
                     }
                 }
@@ -3110,12 +3329,16 @@ impl DebugAdapter {
             }
         }
 
+        // #15538: reach descendants before the direct child dies — on
+        // Windows by walking the live parent→child tree from this child, on
+        // Unix by killing the process group it leads.
+        crate::process_tree::terminate_descendants(process);
         if let Err(e) = process.kill() {
             tracing::warn!(pid = process.id(), error = %e, "Failed to terminate process");
         }
         Self::wait_for_child_exit_with_outcome(
             process,
-            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+            Duration::from_millis(debug_session_terminate_wait_ms()),
         )
     }
 
@@ -3709,6 +3932,7 @@ fn deliver_reserved_terminated_event(
 
 #[cfg(test)]
 mod tests {
+    use super::super::patterns::DEBUGGER_QUERY_WAIT_MS;
     use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
     use super::{
@@ -3719,11 +3943,255 @@ mod tests {
     };
     use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use crate::reload::RuntimeModuleGenerationClock;
+    use crate::security::launch_authority::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    fn workspace_bound_authority(root: &std::path::Path) -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![root.to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("test authority resolution")
+    }
+
+    fn unbounded_test_authority() -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test session",
+            )),
+        })
+        .expect("test authority resolution")
+    }
+
+    /// #18027: wrong-typed launch options refuse with a typed message;
+    /// absent and well-typed options keep their exact current meaning.
+    #[test]
+    fn launch_typed_options_refuse_wrong_types_without_coercion() {
+        let parse = |args: Value| DebugAdapter::parse_launch_typed_options(&args);
+
+        assert_eq!(
+            parse(json!({ "stopOnEntry": "true" })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "stopOnEntry": 1 })).map_err(|e| e),
+            Err("Invalid stopOnEntry: expected a boolean".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": "30" })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "debuggeeTimeoutSeconds": -5 })).map_err(|e| e),
+            Err("Invalid debuggeeTimeoutSeconds: expected a non-negative integer".to_string())
+        );
+        assert_eq!(
+            parse(json!({ "env": ["A=1"] })).map_err(|e| e),
+            Err("Invalid env: expected an object mapping names to string values".to_string())
+        );
+        let env_err = parse(json!({ "env": { "SECRET_TOKEN": 42 } })).unwrap_err();
+        assert!(env_err.contains("SECRET_TOKEN"), "error names the key: {env_err}");
+        assert!(!env_err.contains("42"), "error must not echo the value: {env_err}");
+
+        let (stop, timeout, env) = parse(json!({})).expect("absent options admit defaults");
+        assert!(!stop && timeout == 0 && env.is_empty());
+        let (stop, timeout, env) = parse(json!({
+            "stopOnEntry": true,
+            "debuggeeTimeoutSeconds": 30,
+            "env": { "A": "1" }
+        }))
+        .expect("well-typed options admit");
+        assert!(stop && timeout == 30 && env.get("A").map(String::as_str) == Some("1"));
+    }
+
+    /// #18027: the TCP attach handler refuses a string `stopOnEntry` before
+    /// any session is created or connected.
+    #[test]
+    fn attach_refuses_string_stop_on_entry_before_connecting() {
+        let adapter = DebugAdapter::new();
+        let message = adapter.handle_attach(
+            1,
+            7,
+            Some(json!({ "host": "127.0.0.1", "port": 13603, "stopOnEntry": "true" })),
+        );
+        match message {
+            DapMessage::Response { success, message, .. } => {
+                assert!(!success, "malformed attach stopOnEntry must fail");
+                assert_eq!(message.as_deref(), Some("Invalid stopOnEntry: expected a boolean"));
+            }
+            other => panic!("expected failed attach response, got {other:?}"),
+        }
+        assert!(
+            lock_or_recover(&adapter.tcp_session, "debug_adapter.tcp_session").is_none(),
+            "no TCP session may be created for a refused attach"
+        );
+    }
+
+    fn launch_failure_message(response: super::DapMessage) -> Option<String> {
+        match response {
+            super::DapMessage::Response { success, message, .. } if !success => message,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn malformed_launch_args_preserve_configuration_and_authority() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+        let accepted = json!({"program": "retained.pl", "args": ["retained"]});
+        *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args") =
+            Some(accepted.clone());
+        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
+            Some(root.path().to_path_buf());
+        let (_, receipt) = adapter.begin_authority_session().ok_or("authority session")?;
+
+        for (invalid, field) in [
+            (json!("private-payload"), "args"),
+            (json!(["valid", 17]), "args[1]"),
+            (json!([null, "valid"]), "args[0]"),
+        ] {
+            let response = adapter.handle_launch(
+                2,
+                9,
+                Some(json!({
+                    "program": root.path().join("missing.pl"),
+                    "perlPath": root.path().join("missing").join("perl"),
+                    "workspaceRoot": root.path().join("missing-root"),
+                    "args": invalid
+                })),
+            );
+            let message = launch_failure_message(response).ok_or("malformed argv was accepted")?;
+            assert!(message.contains(field), "early field-specific refusal: {message}");
+            assert!(!message.contains("private-payload"), "payload leaked: {message}");
+            assert_eq!(
+                *lock_or_recover(&adapter.last_launch_args, "test.last_launch_args"),
+                Some(accepted.clone()),
+                "rejected argv must not replace retained configuration"
+            );
+            assert_eq!(
+                *lock_or_recover(&adapter.workspace_root, "test.workspace_root"),
+                Some(root.path().to_path_buf()),
+                "rejected argv must not mutate workspace state"
+            );
+            assert_eq!(
+                adapter.last_authority_receipt().map(|current| current.session_generation),
+                Some(receipt.session_generation),
+                "rejected argv must not consume a session generation"
+            );
+            assert!(lock_or_recover(&adapter.session, "test.session").is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn launch_without_startup_authority_fails_closed() {
+        let mut adapter = DebugAdapter::new();
+        let _ = adapter.handle_initialize(1, 1, None);
+        let response =
+            adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": "script.pl" })));
+        let message = launch_failure_message(response)
+            .expect("a launch without startup authority must be refused");
+        assert!(
+            message.contains("no startup launch authority"),
+            "refusal should explain the missing authority; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_bound_authority_refuses_program_outside_trusted_roots() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let outside_script = outside.path().join("outside.pl");
+        std::fs::write(&outside_script, b"print 1;").expect("script");
+
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({ "program": outside_script.display().to_string() })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a program outside every trusted root must be refused");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn launch_args_workspace_root_cannot_create_authority() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let script = outside.path().join("script.pl");
+        std::fs::write(&script, b"print 1;").expect("script");
+
+        // A launch-args workspaceRoot outside the trusted roots must be
+        // refused instead of becoming the launch boundary.
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({
+                "program": script.display().to_string(),
+                "workspaceRoot": outside.path().display().to_string(),
+            })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a launch-args workspaceRoot cannot create authority");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn explicitly_unbounded_authority_is_recorded_and_admits_paths() {
+        let adapter = DebugAdapter::new();
+        let authority = unbounded_test_authority();
+        let receipt = authority.receipt();
+        assert_eq!(receipt.mode, "explicit_unbounded");
+        assert!(receipt.acknowledgement_identity.is_some());
+        adapter.set_launch_authority(authority);
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        // Admission succeeds and a session generation begins.
+        assert!(adapter.begin_authority_session().is_some());
+    }
+
+    #[test]
+    fn launch_authority_can_only_be_installed_once() {
+        let first_root = tempfile::tempdir().expect("first temp root");
+        let second_root = tempfile::tempdir().expect("second temp root");
+        let adapter = DebugAdapter::new();
+
+        adapter.set_launch_authority(workspace_bound_authority(first_root.path()));
+        adapter.set_launch_authority(workspace_bound_authority(second_root.path()));
+
+        let (_, receipt) =
+            adapter.begin_authority_session().expect("first authority must remain installed");
+        let first = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![first_root.path().to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("first authority resolution");
+        assert_eq!(receipt.authority_identity, first.receipt().authority_identity);
+    }
 
     #[test]
     fn failed_child_cleanup_retains_owner_until_retry() -> Result<(), String> {
@@ -4116,11 +4584,32 @@ mod tests {
                     if reason != Some("breakpoint") {
                         return Err(format!("expected breakpoint stop, got {reason:?}"));
                     }
-                    let guard = lock_or_recover(&adapter.session, "test.session");
-                    let frame = guard
-                        .as_ref()
-                        .and_then(|session| session.stack_frames.first())
-                        .ok_or("breakpoint frame missing")?;
+                    // The fixture exits after ACTUAL_DONE. Under shard load the
+                    // reader may reap it between the stopped event and this read;
+                    // distinguish that from a session whose frames were never
+                    // published instead of collapsing both into one diagnosis.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let frame =
+                        loop {
+                            {
+                                let guard = lock_or_recover(&adapter.session, "test.session");
+                                match guard.as_ref() {
+                                    None => return Err(
+                                        "session was reaped before the breakpoint frame was read"
+                                            .into(),
+                                    ),
+                                    Some(session) => {
+                                        if let Some(frame) = session.stack_frames.first() {
+                                            break frame.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            if Instant::now() >= deadline {
+                                return Err("breakpoint frame never published".into());
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        };
                     if frame.source.path != source_path || frame.line != 5 {
                         return Err(format!(
                             "breakpoint frame mismatch: path={}, line={}",
@@ -5250,6 +5739,19 @@ mod tests {
         }
     }
 
+    // These protocol fixtures need an owned session, but do not exercise process
+    // termination. Establish natural no-op exit before testing event ordering so
+    // unrelated child shutdown latency cannot consume the cleanup deadline.
+    fn seed_quiescent_protocol_session(adapter: &DebugAdapter) -> Result<(), String> {
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut session = adapter.session.lock().map_err(|_| "session lock poisoned")?;
+        let session = session.as_mut().ok_or("seeded session missing")?;
+        if !DebugAdapter::wait_for_child_exit(&mut session.process, Duration::from_secs(5)) {
+            return Err("protocol fixture no-op child did not exit during setup".to_string());
+        }
+        Ok(())
+    }
+
     #[test]
     fn disconnect_terminal_after_async_completion_and_invalidation() -> Result<(), String> {
         for (invalidate, fail_cleanup) in [(false, false), (true, false), (true, true)] {
@@ -5257,7 +5759,7 @@ mod tests {
             let mut adapter = DebugAdapter::new();
             adapter.set_event_sender(sender);
             if fail_cleanup {
-                adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+                seed_quiescent_protocol_session(&adapter)?;
             }
             let event_sender = adapter.event_sender.as_ref().ok_or("missing event sender")?;
             let generation = adapter.current_session_generation();
@@ -5338,7 +5840,7 @@ mod tests {
             .map_err(|error| error.to_string())?;
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(outbound.clone());
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let generation = adapter.current_session_generation();
         let state = adapter.termination_state.clone();
         let sequence = adapter.seq.clone();
@@ -5454,7 +5956,7 @@ mod tests {
         let (sender, receiver) = sync_channel(4);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let reported_delivery = super::emit_terminated_event_guarded(
             adapter.event_sender.as_ref().ok_or("missing event sender")?,
             &adapter.seq,
@@ -6183,6 +6685,23 @@ mod tests {
 
         let mut adapter = DebugAdapter::new();
 
+        // Install an explicitly unbounded startup authority (#8656): this
+        // test targets the Perl-spawn error path, not boundary validation.
+        // Without an authority the launch is refused before any Perl check.
+        let authority = crate::security::launch_authority::LaunchAuthority::resolve(
+            &crate::security::launch_authority::LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(
+                    crate::security::launch_authority::UnboundedAcknowledgement::new(
+                        crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
+                        "test: reach the Perl spawn error path",
+                    ),
+                ),
+            },
+        )
+        .map_err(|e| format!("authority resolution failed: {e}"))?;
+        adapter.set_launch_authority(authority);
+
         // Initialize first (required by state machine validation)
         let _ = adapter.handle_initialize(1, 1, None);
 
@@ -6670,36 +7189,54 @@ mod tests {
         Ok(())
     }
 
-    /// Call-presence observer for the fast-path seam in
-    /// `terminate_child_process_with_outcome`: a live child must be observed
-    /// by the zero-wait call as not-exited (fast path rejected) and then
-    /// reaped through the kill path, surfacing `Exited` (#15740,
-    /// ripr gaps 41a2480a/41b34a0a).
+    /// An `Exited` outcome for an initially live child must agree with an
+    /// independent OS exit observation, not just the helper's return value
+    /// (#15740, #17557). This does not prescribe the internal signal sequence.
     #[test]
-    fn terminate_child_process_with_outcome_call_presence_observer() -> Result<(), String> {
+    fn terminate_child_process_with_outcome_reports_real_exit() -> Result<(), String> {
         use std::process::{Command, Stdio};
 
         // Spawn a long-running child that outlives the zero-wait probe.
         #[cfg(windows)]
-        let mut child = Command::new("ping")
+        let child = Command::new("ping")
             .args(["-n", "30", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
         #[cfg(not(windows))]
-        let mut child = Command::new("sleep")
+        let child = Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn: {e}"))?;
 
-        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        // Keep early errors and unwinding from abandoning the exact owned child.
+        // Cleanup must not rely on the production helper being tested.
+        struct TestChild(std::process::Child);
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut owned = TestChild(child);
+        if let Some(status) = owned.0.try_wait().map_err(|e| format!("initial child poll: {e}"))? {
+            return Err(format!("fixture must still be running before termination, got {status}"));
+        }
+
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut owned.0);
         if !matches!(outcome, super::ChildExitOutcome::Exited) {
             return Err(format!(
-                "live child must be reaped through the kill path as Exited, got {outcome:?}"
+                "termination must report Exited for the live child, got {outcome:?}"
             ));
         }
-        Ok(())
+        // Observe before the guard cleans up: otherwise false success could
+        // pass merely because the test itself terminated the child.
+        match owned.0.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("reported Exited while its owned child is still running".to_string()),
+            Err(e) => Err(format!("error polling child after termination: {e}")),
+        }
     }
 
     /// Exact error-variant test for the `PollError` arm of the outcome
@@ -6849,30 +7386,49 @@ mod tests {
                 .to_string());
         }
 
-        // Verify the process was actually killed by the watchdog.
-        std::thread::sleep(Duration::from_millis(200));
-        let process_exited = adapter
-            .session
-            .lock()
-            .map_err(|_| "session lock poisoned".to_string())?
-            .as_mut()
-            .and_then(|s| s.process.try_wait().ok().flatten())
-            .is_some();
-        if !process_exited {
-            return Err(
-                "debuggee process is still alive after watchdog should have killed it".to_string()
-            );
+        // Verify the process was actually killed by the watchdog. #17173:
+        // poll instead of a fixed 200ms sleep — TerminateProcess initiation
+        // and the terminated event are not the same moment as the OS-level
+        // exit becoming visible, and under suite load a single early check
+        // raced the kill it was meant to verify.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let process_exited = adapter
+                .session
+                .lock()
+                .map_err(|_| "session lock poisoned".to_string())?
+                .as_mut()
+                .and_then(|s| s.process.try_wait().ok().flatten())
+                .is_some();
+            if process_exited {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("debuggee process is still alive after watchdog should have killed it"
+                    .to_string());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
 
         Ok(())
     }
 
-    fn spawn_reader_fixture_child(mode: &str) -> Result<super::Child, String> {
-        std::process::Command::new("perl")
+    fn spawn_reader_fixture_child(mode: &str) -> Result<(super::Child, String), String> {
+        static NEXT_READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let ready = format!(
+            "READER_READY_{}",
+            NEXT_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let child = std::process::Command::new("perl")
                 .arg("-e")
                 .arg(r##"
-                    my $mode = shift; my $round = 0; my $active;
+                    my $mode = shift; my $ready = shift; my $round = 0; my $active;
                     select STDERR; $|=1; select STDOUT; $|=1;
+                    if ($mode eq 'startup_delayed') {
+                        select undef, undef, undef, 0.9;
+                        $mode = 'valid';
+                    }
+                    print STDERR "$ready\n";
                     while (<STDIN>) {
                         if (/DAP_BEGIN_(\d+)/) {
                             ++$round; $active = $round == 1 ? $mode : 'valid';
@@ -6901,11 +7457,13 @@ mod tests {
                     }
                 "##)
                 .arg(mode)
+                .arg(&ready)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| format!("failed to spawn reader fixture: {error}"))
+                .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        Ok((child, ready))
     }
 
     fn reader_stack_fixture(mode: &str) -> Result<Arc<DebugAdapter>, String> {
@@ -6924,16 +7482,21 @@ mod tests {
             end_column: None,
         }]);
         adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+        let ready;
         {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
             let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
             session.stopped_generation = 1;
-            let child = spawn_reader_fixture_child(mode)?;
+            let (child, child_ready) = spawn_reader_fixture_child(mode)?;
+            ready = child_ready;
             let mut previous = std::mem::replace(&mut session.process, child);
             let _ = previous.kill();
             previous.wait().map_err(|error| format!("failed to reap seed process: {error}"))?;
         }
         adapter.start_output_reader(PathBuf::from("."));
+        // Spawn success does not establish interpreter startup. Start each
+        // unchanged query deadline only after this child's reader is ready.
+        wait_for_reader_barrier(&adapter, &ready)?;
         // Drop owns bounded child cleanup on both success and every error path.
         Ok(adapter)
     }
@@ -6990,8 +7553,61 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts the accepted authority for a `late` fixture payload whose end
+    /// marker landed inside the framed-query window (coverage clamp, #18348):
+    /// the parsed `main` frame replaces the pre-seeded sentinel as the
+    /// response and the cached session frames, and the sentinel arguments are
+    /// dropped with the replaced frame.
+    fn assert_in_window_late_payload_accepted(
+        adapter: &DebugAdapter,
+        response: DapMessage,
+    ) -> Result<(), String> {
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("in-window late stackTrace failed: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or_else(|| format!("missing stack frame: {body}"))?;
+        if frame.get("name").and_then(Value::as_str) != Some("main")
+            || frame.get("line").and_then(Value::as_i64) != Some(9)
+        {
+            return Err(format!("in-window late payload not accepted: {body}"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.reader_late_window");
+        let session = guard.as_ref().ok_or("reader lost the session")?;
+        let cached = session.stack_frames.first().ok_or("reader lost cached frames")?;
+        if cached.name != "main" || cached.line != 9 {
+            return Err("in-window late payload did not reach cached authority".to_string());
+        }
+        if session.stack_frame_arguments.contains_key(&cached.id) {
+            return Err("in-window late payload kept the sentinel arguments".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framed_reader_startup_precedes_query_deadline() -> Result<(), String> {
+        // Startup exceeds the unchanged 600ms query budget. Readiness must
+        // absorb it before the query; query latency still remains bounded.
+        let adapter = reader_stack_fixture("startup_delayed")?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        assert_reader_stack(&adapter, response, "main::run", 7, &["$value", "[1, 2]", "\"a,b\""])
+    }
+
     #[test]
     fn framed_reader_preserves_stack_and_recovers_after_partial_output() -> Result<(), String> {
+        // The `late` fixture withholds its end marker for 0.9s. Against the
+        // plain framed-query window (`DEBUGGER_QUERY_WAIT_MS * 8`) that is
+        // genuinely late: the query times out and the pre-seeded sentinel
+        // frame stays authoritative. Coverage instrumentation clamps the
+        // window to >=15s (#18348), which pulls the marker inside the window,
+        // so the completed poison payload is then legitimately accepted as
+        // stack authority. Derive the expectation from the effective window
+        // rather than raw instrumentation env checks (#18348).
+        let late_marker_in_window = Duration::from_millis(900)
+            <= DebugAdapter::framed_query_window_for_test(DEBUGGER_QUERY_WAIT_MS * 8);
         for mode in ["empty", "internal", "partial", "late", "late_begin", "valid"] {
             let adapter = reader_stack_fixture(mode)?;
             let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
@@ -7004,6 +7620,8 @@ mod tests {
                     7,
                     &["$value", "[1, 2]", "\"a,b\""],
                 )?;
+            } else if mode == "late" && late_marker_in_window {
+                assert_in_window_late_payload_accepted(&adapter, response)?;
             } else {
                 assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
             }
@@ -7046,6 +7664,25 @@ mod tests {
     fn framed_reader_exhaustion_clears_session_instead_of_interpreting_payload()
     -> Result<(), String> {
         let adapter = reader_stack_fixture("overflow")?;
+        // Serve the stack trace once to drive the exhausted reader through
+        // its reap path, then wait deterministically for the session to be
+        // cleared (#15749). Asserting on this first response raced the
+        // reader thread under load and misread the pre-reap sentinel frame
+        // as retained authority.
+        let _ = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("exhausted reader did not reap and clear the session".to_string());
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        // Once the session is cleared, stack authority must be gone: the
+        // response serves empty frames instead of interpreting the exhausted
+        // payload.
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         let DapMessage::Response { success: true, body: Some(body), .. } = response else {
             return Err(format!("unexpected exhausted-frame response: {response:?}"));
@@ -7056,16 +7693,7 @@ mod tests {
                 body.get("stackFrames").and_then(Value::as_array).map_or(0, Vec::len),
             ));
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err("exhausted reader did not reap and clear the session".to_string());
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
+        Ok(())
     }
 
     #[test]
@@ -7074,14 +7702,14 @@ mod tests {
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
         adapter.begin_session_generation();
-        let mut old_child = {
+        let (mut old_child, ready) = {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_replacement");
             let session = guard.as_mut().ok_or("missing old session")?;
-            let child = spawn_reader_fixture_child("valid")?;
+            let (child, ready) = spawn_reader_fixture_child("valid")?;
             session.stack_frames.first_mut().ok_or("missing old frame")?.name =
                 "replacement".to_string();
             session.stack_frame_arguments.insert(1, vec!["replacement_arg".to_string()]);
-            std::mem::replace(&mut session.process, child)
+            (std::mem::replace(&mut session.process, child), ready)
         };
         adapter.operation_broker.open_session();
         adapter.start_output_reader(PathBuf::from("."));
@@ -7090,6 +7718,9 @@ mod tests {
         // must leave the replacement's authorities intact.
         drop(old_child.stdin.take());
         let result = (|| {
+            // The unique marker prevents the previous child's startup from
+            // satisfying replacement readiness under concurrent host load.
+            wait_for_reader_barrier(&adapter, &ready)?;
             if !DebugAdapter::wait_for_child_exit(&mut old_child, Duration::from_secs(5)) {
                 return Err("old reader fixture failed to finish delayed output".to_string());
             }

@@ -278,8 +278,11 @@ fn dynamic_boundary_label_hits(diagnostics: &[Value]) -> Vec<String> {
         .collect()
 }
 
-fn run_probe(harness: &UxHarness, probe: &DiagnosticProbe) -> DiagnosticProbeReport {
-    let diagnostics = harness.wait_for_latest_diagnostics(probe.file, Duration::from_secs(6));
+fn run_probe(harness: &UxHarness, probe: &DiagnosticProbe) -> Result<DiagnosticProbeReport> {
+    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", probe.file),
+        harness.wait_for_latest_diagnostics(probe.file, Duration::from_secs(6)),
+    )?;
     let notification_count = diagnostic_notification_count(harness, probe.file);
     let invalid_shape_count =
         diagnostics.iter().filter(|diagnostic| !is_valid_diagnostic_shape(diagnostic)).count();
@@ -300,7 +303,7 @@ fn run_probe(harness: &UxHarness, probe: &DiagnosticProbe) -> DiagnosticProbeRep
         .map(message_excerpt)
         .collect::<Vec<_>>();
 
-    DiagnosticProbeReport {
+    Ok(DiagnosticProbeReport {
         name: probe.name,
         category: probe.category,
         file: probe.file,
@@ -317,7 +320,7 @@ fn run_probe(harness: &UxHarness, probe: &DiagnosticProbe) -> DiagnosticProbeRep
         dynamic_boundary_label_hits: dynamic_hits,
         message_excerpts,
         fallback_or_empty: diagnostics.is_empty(),
-    }
+    })
 }
 
 #[test]
@@ -348,7 +351,7 @@ fn scenario_31_mojolicious_diagnostics_quality_receipt() {
 
             for probe in &probes {
                 recorder.mark_request_start(probe.name);
-                let report = run_probe(&harness, probe);
+                let report = run_probe(&harness, probe)?;
                 if report.notification_count > 0 {
                     recorder.mark_first_useful_result(probe.name);
                 }

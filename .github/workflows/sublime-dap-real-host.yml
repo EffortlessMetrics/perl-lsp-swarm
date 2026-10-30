@@ -10,6 +10,18 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/sublime-dap-real-host.yml"
+  merge_group: {}
+  push:
+    branches:
+      - main
+    paths:
+      - "clients/sublime/**"
+      - "scripts/sublime/**"
+      - "crates/perl-dap/**"
+      - "crates/perl-lsp-rs-core/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/sublime-dap-real-host.yml"
   workflow_dispatch:
 
 permissions:

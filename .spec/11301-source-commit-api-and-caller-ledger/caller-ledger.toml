@@ -77,12 +77,88 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # By API: index_file +1.
 # The #13120 QuickORM work adds canonical index-initial callers and no
 # compatibility calls of its own.
-# Burndown 694 -> 686 by #14032 (#5231 RefactoringEngine retirement): deleting
+# Growth 694 -> 710 by #15575 (squash e398c6419; #812 inherited-method
+# canonical-graph alias map, same-root transplant of #12353). Explicit
+# attribution of every added call site, all from one reviewed squash-merged PR
+# (checker-equivalent pickaxe scan over e4cdf8278..origin/main: exactly one
+# commit touches a compatibility call line, net +16, base e4cdf8278 = 694):
+#   crates/perl-workspace/src/workspace/workspace_index.rs 148 -> 164 (+16
+#   `.index_file(` calls), all inside the `#[cfg(test)]` module, seeding
+#   parent/child package sources as initial on-disk fixtures for the
+#   inherited-identity tests (shared identity, override precedence, ambiguity
+#   refusal, full ancestor chain, dispatch-ref gating, cross-consumer span).
+# Fixture-only: `index_file` is the documented thin alias of
+# `index_initial_file`, the file is an already-ledgered caller identity under
+# the `crates/perl-workspace/src` owner row, and the path is outside the
+# #11305 banned prefix. No production caller was added.
+# By API: index_file +16.
+# The structural gap (PR CI validates the PR head tree, so a green PR can push
+# post-merge main over this baseline; #11916) recurs here: #15575 landed green
+# and the drift surfaced on #15937. Filing #15937 also asks maintainers to own
+# a companion check that catches drift at the introducing PR.
+# Held at 710 by #16102 (#10949). The structural gap recurred a third time:
+# #16011 (#1789, "avoid synthetic main for library files") landed green on a
+# PR-head tree and pushed post-merge main to 715, so every PR whose merge-gate
+# meta shard ran afterwards failed on a ledger it did not touch. Attribution,
+# measured by running scripts/ci/check_source_commit_api.py across the 25 main
+# commits either side of the landing: every commit through c2d7f20c8 reports
+# 710, and d7d4c5143 (#16011) is the first to report 715. The whole delta was
+# five `.index_file(Url::parse(uri)?, ...)` fixture calls in
+# crates/perl-workspace/src/workspace/workspace_index.rs's #[cfg(test)] module.
+# Resolved by burndown rather than by raising the baseline. `index_file` is a
+# one-line forward to `index_initial_file`, and all five assertions observe
+# `qualified_name` (main::helper / Tool::helper), not wrapper behavior, so the
+# conversion is behavior-identical and costs no coverage. It is also what this
+# prefix's own removal_condition asks for: "initial profile and internal tests
+# use canonical initial names". Baseline therefore stays 710.
+# Held at 710 by #16449 (#16019 lone-minus completion fix): that PR added one
+# `.index_file(Url::parse(...)?, ...)` fixture call in
+# crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+# (test_dash_trigger_ignores_lone_minus_but_keeps_call_chain_receiver,
+# pre-seeding the MyFactory package as initial on-disk state). Resolved by
+# burndown: `index_file` is a one-line forward to `index_initial_file`
+# (workspace_index.rs), and the seeded content is initial state, so the call
+# was converted to the canonical name with identical behavior. Baseline
+# therefore stays 710.
+# Held at 710 by #16934 after #16850 (squash 57801e84c) and #16859
+# (squash 14306e192) added 16 fixture-only aliases: 13 initial seeds move
+# to index_initial_file(_str), and the three synthetic 2/1/3 generation
+# commits move to index_live_file with typed outcomes. The two new caller
+# identities below are owned fixture paths; no production caller is admitted.
+# Held at 710 by #17043 after #16860 (squash 2dcaeac639, landed via #16877)
+# added one fixture-only alias in the already-ledgered caller
+# crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs:
+# test_bare_sigil_offers_local_scalar_not_workspace_package seeded
+# file:///lib/Animal.pm as initial on-disk state through `.index_file(...)`.
+# Resolved by burndown rather than by raising the baseline: `index_file` is a
+# one-line forward to `index_initial_file`, the seeded content is initial
+# state, and the same file already carries the identical #16449-pattern
+# conversion, so the call moved to the canonical name with identical
+# behavior. No production caller, no new caller identity, outside the #11305
+# banned prefix. Baseline therefore stays 710.
+# Reconciled 710 -> 707 by #17045 (completion freshness-seam repair combined with
+# the #16860 racing-anchor re-anchor on the same tree; checker-equivalent count on
+# the combined tree). Explicit attribution of every net change, all inside the
+# completion test module of this PR's own diff:
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs
+#     3 -> 0 (-3): the new freshness-seam test fixtures call the canonical
+#     index_initial_file; index_file is a one-line forward to it, so the
+#     conversion is behavior-identical.
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+#     112 -> 111 (-1): the composed-role test rewrite re-seeds one fixture
+#     through the canonical initial API.
+# Reconciled 707 -> 705 for #17212 after #17206 (squash 2264c4fcfb):
+#   crates/perl-workspace/benches/workspace_index_benchmark.rs
+#     33 -> 31 (-2): the initial batch seed now calls index_initial_files_batch;
+#     repeated updates call index_live_file and check typed Accepted/NoOp outcomes.
+# The squash parent 04baae9ae8 has 707 compatibility calls; the landed tree has
+# 705. No other file changes its compatibility count or caller identity.
+# Burndown 705 -> 697 by #14032 (#5231 RefactoringEngine retirement): deleting
 # crates/perl-parser/src/refactor/refactoring.rs and
 # crates/perl-parser/src/refactor/scoped_rename_tests.rs removed their 8
-# `.index_file(...)` call sites (4 per file, checker-equivalent normalized scan
-# over the origin/main blobs; both files leave caller_paths with them).
-compatibility_baseline = 686
+# `.index_file(...)` call sites (4 per file, verified on the origin/main blobs;
+# both files leave caller_paths with them).
+compatibility_baseline = 697
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -100,6 +176,7 @@ compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion_shadow.rs",
@@ -108,6 +185,7 @@ caller_paths = [
   "crates/perl-lsp-rs-core/tests/detect_dead_code_mid_surrogate_position.rs",
   "crates/perl-lsp-rs-core/tests/dynamic_callable_integration_tests.rs",
   "crates/perl-lsp-rs-core/tests/quickorm_completion_tests.rs",
+  "crates/perl-lsp-rs-core/tests/resolve_at_position_shared_identity_tests.rs",
   "crates/perl-lsp-rs-core/tests/role_conflict_cross_file_wiring_tests.rs",
   "crates/perl-lsp-rs/src/features/workspace_rename.rs",
   "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
@@ -117,6 +195,9 @@ caller_paths = [
   "crates/perl-lsp-rs/src/runtime/language/misc.rs",
   "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
   "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  # #16654 fixture re-seeds a Building index with the open document's accepted
+  # nonzero generation so the partial-index deadline path is production-reachable.
+  "crates/perl-lsp-rs/src/runtime/language/references.rs",
   "crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs",
   "crates/perl-lsp-rs/src/runtime/language/rename.rs",
   "crates/perl-lsp-rs/src/runtime/test_api.rs",
@@ -141,10 +222,12 @@ caller_paths = [
   "crates/perl-parser/tests/workspace_index_tests.rs",
   "crates/perl-semantic-analyzer/src/analysis/index.rs",
   "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",
+  "crates/perl-workspace/benches/support/index_real_corpus.rs",
   "crates/perl-workspace/benches/workspace_index_benchmark.rs",
   "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
   "crates/perl-workspace/src/workspace/workspace_index.rs",
   "crates/perl-workspace/src/workspace_index_utf16_test.rs",
+  "crates/perl-workspace/tests/canonical_import_fact_adapter.rs",
   "crates/perl-workspace/tests/common/mod.rs",
   "crates/perl-workspace/tests/comprehensive_unit_tests.rs",
   "crates/perl-workspace/tests/cross_file_reference_query_tests.rs",
@@ -159,6 +242,7 @@ caller_paths = [
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/package_scope_references.rs",
   "crates/perl-workspace/tests/quickorm_generated_member.rs",
   "crates/perl-workspace/tests/quickorm_workspace_receipt.rs",
   "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",

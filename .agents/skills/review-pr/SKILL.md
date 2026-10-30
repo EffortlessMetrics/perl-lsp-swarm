@@ -95,7 +95,27 @@ through `$address-review-comments`; read-only reviewers do not mutate.
 3. **Challenge proof discrimination and evidence integrity.** Identify realistic wrong
    implementations the proof rejects; check negative/opposite directions, stale/failure
    behavior, independent oracles, schema/validator agreement, identity binding, and
-   whether hosted proof exercised the claim.
+   whether hosted proof exercised the claim. Classify each named proof obligation
+   before treating cargo-not-run as blocking:
+
+   ```text
+   run-and-pass  named local or hosted proof passed on the named subject
+   hosted-only   author marked Hosted-only; Hosted proof names the checks and commit;
+                 local toolchain was unavailable — wait on those checks, do not file
+                 cargo fmt/clippy/test as BLOCKING solely because local proof was not run
+   missing       no local result and no named hosted check for the claim — NOT_PROVEN
+                 until a named instrument exists; missing proof is not broken proof
+   broken        a named local or hosted check failed with a candidate-attributable
+                 result — keep as a finding until the named seam changes
+   cancelled     the named check was cancelled or never completed — no verdict; wait
+                 for a current run. Cancelled is not broken
+   NOT_PROVEN    instrument-failed or otherwise unreliable — request a reliable rerun;
+                 not a code defect
+   ```
+
+   "Local Rust proof NOT RUN" is hosted-only only when the author marked Hosted-only
+   and **Hosted proof** names the checks and commit. Unmarked cargo-not-run with no
+   named hosted check is missing. It is never by itself broken proof.
 4. **Challenge external and semantic truth.** Verify user-visible, language, protocol,
    platform, dependency, and release claims against competent authority and confirm the
    correct semantic owner.

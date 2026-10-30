@@ -477,6 +477,8 @@ fn for_each_child_mut_visits_method_with_signature() {
 fn for_each_child_mut_visits_optional_parameter() {
     let mut node = Node::new(
         NodeKind::OptionalParameter {
+            default_operator: "=".into(),
+            default_operator_span: Default::default(),
             variable: Box::new(var_node("$", "x")),
             default_value: Box::new(num_node("0")),
         },
@@ -510,6 +512,7 @@ fn for_each_child_mut_visits_slurpy_and_named_parameter() {
 
     let mut named = Node::new(
         NodeKind::NamedParameter {
+            default_operator_span: None,
             variable: Box::new(var_node("$", "k")),
             external_name: String::new(),
             default_operator: None,

@@ -499,6 +499,8 @@ fn signature_parameters_are_not_emitted_as_refs() -> Result<()> {
     );
     let optional = Node::new(
         NodeKind::OptionalParameter {
+            default_operator: "=".into(),
+            default_operator_span: Default::default(),
             variable: Box::new(param_y),
             default_value: Box::new(default_var),
         },

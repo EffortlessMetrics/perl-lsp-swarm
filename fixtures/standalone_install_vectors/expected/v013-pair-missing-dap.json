@@ -1,0 +1,115 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v013-pair-missing-dap",
+  "contract_generation": 1,
+  "route": "first_party_posix",
+  "mode": "release_archive",
+  "requested_product_unit": "server_dap_pair",
+  "effective_product_unit": "server_dap_pair",
+  "effective_path_policy": "persist",
+  "resolved_subject_digest": "sha256:dbf2ca92131c042c4dfa5c1c3b753bc99943a53dbd3f62b2b1e6103863083c70",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "failed",
+      "reason_family": "pair_incomplete"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:dbf2ca92131c042c4dfa5c1c3b753bc99943a53dbd3f62b2b1e6103863083c70",
+      "terminal_result": "failed",
+      "reason_family": "pair_incomplete"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:9b27f3bfc77c93277e09b3e90a0d11b17f049a1f6b514bc4f744c4c197d25a93",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:d7f19765bceba6aac44a29eeb956ade4ee4075b9a761dcb8ca8f32caa344c349",
+      "predecessor_digests": [
+        "sha256:9b27f3bfc77c93277e09b3e90a0d11b17f049a1f6b514bc4f744c4c197d25a93"
+      ],
+      "artifacts": [
+        "artifact-archive-v013"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "checksum_integrity",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:f75f736795529ac559a43548ddaf9ea1011dca11894e2990d080516e8e935fec",
+      "predecessor_digests": [
+        "sha256:d7f19765bceba6aac44a29eeb956ade4ee4075b9a761dcb8ca8f32caa344c349"
+      ],
+      "evidence": [
+        "evidence-checksum-v013"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "archive_manifest_and_staging",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:b1eb38c026a2a695da351677e11b9967716cb7fd611e0a09cb82a4a99590cc18",
+      "predecessor_digests": [
+        "sha256:f75f736795529ac559a43548ddaf9ea1011dca11894e2990d080516e8e935fec"
+      ]
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "executable_observation",
+      "result": "failed",
+      "reason_family": "pair_incomplete",
+      "receipt_digest": "sha256:3fe3ffd9955deffaba22282d7da67ea45e2ae0c27f126ac44301e9cec183438f",
+      "predecessor_digests": []
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [
+    {
+      "level": "transport_artifacts",
+      "kind": "transport_artifacts"
+    },
+    {
+      "level": "staged",
+      "kind": "staged_archive"
+    }
+  ],
+  "side_effect_ceiling": "staged",
+  "claim_ceiling": "none",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "failed",
+    "stage_id": "executable_observation",
+    "reason_family": "pair_incomplete",
+    "action_class": "abort_install"
+  },
+  "redaction_disposition": "roles_only"
+}

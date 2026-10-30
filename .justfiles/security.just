@@ -1,60 +1,65 @@
 # ============================================================================
-# Security Scanning Commands (Issue #282)
+# Security Scanning Commands (Issues #282, #15366)
 # ============================================================================
-# These commands integrate Trivy, cargo-audit, and cargo-deny for comprehensive
-# security vulnerability scanning.
+# Typed, fail-closed local security surface. Every command records a per-tool
+# outcome (clean | findings | instrument_failed | unavailable | not_run) into a
+# receipt, never renders a missing instrument or skipped tool as success, and
+# exits non-zero for any non-clean aggregate:
+#
+#   0 clean | 1 findings | 2 instrument_failed | 3 incomplete
 #
 # Quick start:
-#   just security-scan      # Run all security checks
-#   just security-quick     # Fast pre-commit check
-#   just security-report    # Generate detailed report
+#   just security-scan      # Run all security checks (independent execution)
+#   just security-quick     # Fast pre-commit check (cargo-audit denominator)
+#   just security-report    # Full run + Markdown report in a fresh run directory
+#   just security-verify target/security-reports/run-.../receipt.json
 #
-# Documentation: docs/SECURITY_SCANNING.md
+# Command contract: docs/SECURITY_SCANNING.md
 # ============================================================================
 
-# Comprehensive security scan (all tools)
-security-scan:
-    @echo "=============================================="
-    @echo "  COMPREHENSIVE SECURITY SCAN"
-    @echo "=============================================="
-    @START=$$(date +%s); \
-    just _timed "cargo-audit" "just security-audit-strict" && \
-    just _timed "cargo-deny" "just security-deny" && \
-    just _timed "trivy-scan" "just security-trivy"; \
-    RC=$$?; \
-    END=$$(date +%s); \
-    echo ""; \
-    echo "=============================================="
-    @if [ $$RC -eq 0 ]; then \
-        echo "  Security scan PASSED (total: $$((END - START))s)"; \
-    else \
-        echo "  Security scan FAILED (total: $$((END - START))s)"; \
-    fi
-    @echo "=============================================="
-    @exit $$RC
+repo_root := justfile_directory() / ".."
+security_scan_script := repo_root / "scripts/security_scan.sh"
 
-# Cargo audit (strict mode - fail on warnings)
+# Comprehensive security scan: every requested scanner runs independently even
+# when an earlier one fails; missing tools are `unavailable`, not pass.
+security-scan:
+    @cd "{{repo_root}}" && bash "{{security_scan_script}}" scan
+
+# Quick pre-commit check: cargo-audit only. Its narrower denominator is stated
+# in the receipt; an unavailable scanner is not-proven, never success.
+security-quick:
+    @cd "{{repo_root}}" && bash "{{security_scan_script}}" quick
+
+# Full scan plus Markdown report rendered from this run's typed receipt into a
+# fresh private run directory (old artifacts can never satisfy a current run).
+security-report:
+    @cd "{{repo_root}}" && bash "{{security_scan_script}}" report
+
+# Re-verify a prior receipt against its artifacts (existence, size, sha256).
+security-verify receipt:
+    @cd "{{repo_root}}" && bash "{{security_scan_script}}" verify "{{receipt}}"
+
+# Cargo audit (strict mode; unavailable tool fails closed)
 security-audit-strict:
     @echo "Running cargo-audit (strict mode)..."
     @if command -v cargo-audit >/dev/null 2>&1; then \
         cargo audit --deny warnings; \
     else \
-        echo "Installing cargo-audit..."; \
-        cargo install cargo-audit --locked && cargo audit --deny warnings; \
+        echo "UNAVAILABLE: cargo-audit not installed (fail-closed; install: cargo install cargo-audit --locked)"; \
+        exit 3; \
     fi
 
-# Cargo deny (policy enforcement)
+# Cargo deny (policy enforcement; unavailable tool fails closed)
 security-deny:
     @echo "Running cargo-deny policy checks..."
     @if command -v cargo-deny >/dev/null 2>&1; then \
         cargo deny --locked check advisories licenses bans sources; \
     else \
-        echo "Installing cargo-deny..."; \
-        cargo install cargo-deny --locked && \
-        cargo deny --locked check advisories licenses bans sources; \
+        echo "UNAVAILABLE: cargo-deny not installed (fail-closed; install: cargo install cargo-deny --locked)"; \
+        exit 3; \
     fi
 
-# Trivy vulnerability scanner
+# Trivy vulnerability scanner (unavailable tool fails closed)
 security-trivy:
     @echo "Running Trivy vulnerability scanner..."
     @if command -v trivy >/dev/null 2>&1; then \
@@ -62,13 +67,14 @@ security-trivy:
             --scanners vuln,config,secret \
             --skip-dirs target,archive,.runs,.git \
             --ignore-unfixed \
+            --exit-code 1 \
             .; \
     else \
-        echo "SKIP: trivy not installed"; \
-        echo "Install: https://aquasecurity.github.io/trivy/latest/getting-started/installation/"; \
+        echo "UNAVAILABLE: trivy not installed (fail-closed; install: https://aquasecurity.github.io/trivy/latest/getting-started/installation/)"; \
+        exit 3; \
     fi
 
-# Trivy with SARIF output
+# Trivy with SARIF output (unavailable tool fails closed)
 security-trivy-sarif:
     @echo "Running Trivy with SARIF output..."
     @if command -v trivy >/dev/null 2>&1; then \
@@ -81,10 +87,11 @@ security-trivy-sarif:
             .; \
         echo "SARIF report saved to: trivy-results.sarif"; \
     else \
-        echo "SKIP: trivy not installed"; \
+        echo "UNAVAILABLE: trivy not installed (fail-closed; no SARIF produced)"; \
+        exit 3; \
     fi
 
-# Trivy Docker image scan
+# Trivy Docker image scan (unavailable tool fails closed)
 security-trivy-docker image='perl-lsp:dev':
     @echo "Running Trivy Docker image scan..."
     @if command -v trivy >/dev/null 2>&1; then \
@@ -92,46 +99,6 @@ security-trivy-docker image='perl-lsp:dev':
             --ignore-unfixed \
             {{image}}; \
     else \
-        echo "SKIP: trivy not installed"; \
-    fi
-
-# Generate comprehensive security report
-security-report:
-    @echo "Generating comprehensive security report..."
-    @mkdir -p target/security-reports
-    @echo "# Security Scan Report" > target/security-reports/report.md
-    @echo "" >> target/security-reports/report.md
-    @echo "**Date:** $$(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)" >> target/security-reports/report.md
-    @echo "**Commit:** $$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> target/security-reports/report.md
-    @echo "" >> target/security-reports/report.md
-    @echo "## Cargo Audit" >> target/security-reports/report.md
-    @if command -v cargo-audit >/dev/null 2>&1; then \
-        cargo audit --json > target/security-reports/audit.json 2>&1 || true; \
-        echo "See: target/security-reports/audit.json" >> target/security-reports/report.md; \
-    else \
-        echo "⚠️ cargo-audit not installed" >> target/security-reports/report.md; \
-    fi
-    @echo "" >> target/security-reports/report.md
-    @echo "## Trivy Scan" >> target/security-reports/report.md
-    @if command -v trivy >/dev/null 2>&1; then \
-        trivy fs --format json --output target/security-reports/trivy.json \
-            --severity CRITICAL,HIGH,MEDIUM \
-            --skip-dirs target,archive,.runs,.git \
-            --ignore-unfixed \
-            . 2>&1 || true; \
-        echo "See: target/security-reports/trivy.json" >> target/security-reports/report.md; \
-    else \
-        echo "⚠️ trivy not installed" >> target/security-reports/report.md; \
-    fi
-    @echo "" >> target/security-reports/report.md
-    @echo "Report generated at: target/security-reports/report.md"
-    @cat target/security-reports/report.md
-
-# Quick security check (fast, for pre-commit)
-security-quick:
-    @echo "Running quick security check..."
-    @if command -v cargo-audit >/dev/null 2>&1; then \
-        cargo audit --deny warnings; \
-    else \
-        echo "SKIP: cargo-audit not installed"; \
+        echo "UNAVAILABLE: trivy not installed (fail-closed)"; \
+        exit 3; \
     fi

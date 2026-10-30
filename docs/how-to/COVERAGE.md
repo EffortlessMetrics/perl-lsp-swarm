@@ -1,6 +1,9 @@
 # Code Coverage
 
-This document describes the code coverage infrastructure for perl-lsp.
+This document describes the **Rust** code coverage infrastructure for perl-lsp
+(`cargo-llvm-cov` and Codecov). Perl `Devel::Cover` is a separate explicit
+optional testing instrument; it is not this pipeline and is not required for
+native testing. See [`docs/reference/EXTERNAL_TOOL_ROLES.md`](../reference/EXTERNAL_TOOL_ROLES.md).
 
 ## Overview
 

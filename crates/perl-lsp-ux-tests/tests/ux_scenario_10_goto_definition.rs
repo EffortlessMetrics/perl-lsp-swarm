@@ -4,7 +4,7 @@
 //! This suite uses a compact BDD-style helper so each test describes intent in
 //! Given/When/Then language and avoids duplicated harness boilerplate.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use serde_json::Value;
@@ -99,12 +99,12 @@ fn entry_start_line(entry: &Value) -> Option<u64> {
 ///
 /// Derived from the fixture rather than hard-coded so the expectation cannot
 /// drift away from the source it describes.
-fn expected_increment_decl_line() -> u64 {
+fn expected_increment_decl_line() -> Result<u64> {
     CROSS_FILE_MODULE
         .lines()
         .position(|line| line.trim_start().starts_with("sub increment"))
         .map(|line| line as u64)
-        .expect("CROSS_FILE_MODULE fixture must declare `sub increment`")
+        .ok_or_else(|| anyhow!("CROSS_FILE_MODULE fixture must declare `sub increment`"))
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
     // in Counter.pm. Resolving `Counter->increment` to the top of the module is
     // module resolution wearing method resolution's clothes: it satisfies a
     // file-only assertion while giving the user the wrong destination.
-    let decl_line = expected_increment_decl_line();
+    let decl_line = expected_increment_decl_line()?;
     let points_to_declaration = definitions.iter().any(|entry| {
         entry_uri(entry).map(|uri| uri.ends_with("Counter.pm")).unwrap_or(false)
             && entry_start_line(entry) == Some(decl_line)

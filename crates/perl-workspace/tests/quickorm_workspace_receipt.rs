@@ -498,7 +498,7 @@ fn workspace_index_blocks_competing_quote_like_imports() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn workspace_index_invalidates_stale_qorm_table_after_dynamic_reconfiguration()
+fn workspace_index_invalidates_stale_qorm_table_after_non_direct_second_build()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
     let uri = Url::parse("file:///lib/MyApp/Schema/Reconfigured.pm")?;
@@ -506,25 +506,24 @@ fn workspace_index_invalidates_stale_qorm_table_after_dynamic_reconfiguration()
 package MyApp::Schema::Reconfigured;
 use DBIx::QuickORM type => 'table';
 table first => sub {};
-use DBIx::QuickORM type => table();
-table second => sub {};
+use DBIx::QuickORM type => 'table';
+table second => make_builder(sub {});
 1;
 "#;
 
     index.index_initial_file(uri.clone(), source.to_string())?;
     let shard =
         index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
-    assert!(
-        shard
-            .entities
-            .iter()
-            .all(|entity| entity.canonical_name != "MyApp::Schema::Reconfigured::qorm_table"),
-        "dynamic QuickORM reconfiguration followed by a non-direct second build must invalidate the prior generated fact"
-    );
-    assert!(
-        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
-        "a non-direct second build under re-established authority must invalidate the prior workspace symbol"
-    );
+    if !shard
+        .entities
+        .iter()
+        .all(|entity| entity.canonical_name != "MyApp::Schema::Reconfigured::qorm_table")
+    {
+        return Err("a non-direct second build under re-established authority must invalidate the prior generated fact".into());
+    }
+    if !index.search_generated_workspace_symbols("qorm_table", None).is_empty() {
+        return Err("a non-direct second build under re-established authority must invalidate the prior workspace symbol".into());
+    }
     Ok(())
 }
 

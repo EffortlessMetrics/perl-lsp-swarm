@@ -436,11 +436,7 @@ fn test_apply_edit_with_version() -> TestResult {
         json!({
             "textDocument": { "uri": uri, "version": 2 },
             "contentChanges": [{
-                "range": {
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 0 }
-                },
-                "text": "use strict;\n"
+                "text": "use strict;\nsay 1;\n"
             }]
         }),
     );

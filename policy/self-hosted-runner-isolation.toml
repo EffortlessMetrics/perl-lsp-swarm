@@ -70,22 +70,8 @@ updated = "2026-09-15"
 
 [[profile]]
 workflow = ".github/workflows/ripr.yml"
-job = "ripr-cx53"
-runner = "self_hosted_cx53"
-lifecycle = "persistent"
-candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
-per_run_namespaced = [
-  "$GITHUB_WORKSPACE",
-  "/mnt/ci-scratch/perl-lsp-swarm/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
-  "/mnt/ci-scratch/tmp/ripr-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT",
-]
-runtime_proof = "#7414"
-review_after = "2027-03-07"
-
-[[profile]]
-workflow = ".github/workflows/ripr.yml"
-job = "ripr-cx43"
-runner = "self_hosted_cx43"
+job = "ripr-selfhosted"
+runner = "self_hosted_rust_standard"
 lifecycle = "persistent"
 candidate_writable = ["/mnt/ci-cache/cargo-home", "/mnt/ci-cache/sccache"]
 per_run_namespaced = [

@@ -41,39 +41,20 @@ fn lsp_feature_snapshot_path() -> PathBuf {
     )
 }
 
-/// Crate-local vendored catalog projections generated from the root authority
-/// (#7029).
-pub const VENDORED_PROJECTIONS: &[&str] = &[
-    "crates/perl-lsp-rs/features_sot.toml",
-    "crates/perl-lsp-rs-core/features_sot.toml",
-    "crates/perl-parser/features_sot.toml",
-    "crates/perl-dap/features_sot.toml",
-];
-
 /// Regenerate every crate-local `features_sot.toml` as a byte projection of
-/// the root authority (#7029). The copies are deterministic: the same root
-/// file always produces the same bytes.
+/// the root authority (#7029 / #9198). The copies are deterministic: the same
+/// root file always produces the same bytes.
 pub fn regen_vendored() -> Result<()> {
     println!("♻️  Regenerating vendored feature-catalog projections from features.toml...");
 
-    let authority = fs::read("features.toml").context("reading root features.toml")?;
-    for relative in VENDORED_PROJECTIONS {
-        let path = repo_relative_path(relative);
-        let previous = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            // A missing projection simply needs generating; any other read
-            // failure must not silently masquerade as drift (#7029).
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => {
-                return Err(error).context(format!("reading current projection {relative}"));
-            }
-        };
-        if previous != authority {
-            fs::write(&path, &authority)
-                .with_context(|| format!("writing projection {relative}"))?;
-            println!("  updated {relative}");
+    let root = crate::utils::project_root().context("resolving workspace root")?;
+    let report = xtask::vendored_catalog::regenerate(&root)
+        .map_err(|error| eyre!("regenerating vendored projections: {error}"))?;
+    for file in &report.files {
+        if file.updated {
+            println!("  updated {}", file.relative_path);
         } else {
-            println!("  up-to-date {relative}");
+            println!("  up-to-date {}", file.relative_path);
         }
     }
     println!("✅ Vendored projections regenerated.");
@@ -84,20 +65,16 @@ pub fn regen_vendored() -> Result<()> {
 /// Runs as part of `features invariants` so CI catches drift without a test
 /// harness.
 fn check_vendored_projection_drift(violations: &mut Vec<String>) {
-    let Ok(authority) = fs::read("features.toml") else {
-        violations.push("DRIFT_READ: cannot read root features.toml".to_string());
-        return;
-    };
-    for relative in VENDORED_PROJECTIONS {
-        match fs::read(repo_relative_path(relative)) {
-            Ok(bytes) if bytes == authority => {}
-            Ok(_) => violations.push(format!(
-                "VENDORED_DRIFT: {relative} differs from root features.toml (#7029); \
-                 run `cargo xtask features regen-vendored`"
-            )),
-            Err(error) => violations.push(format!("DRIFT_READ: cannot read {relative}: {error}")),
+    let root = match crate::utils::project_root() {
+        Ok(root) => root,
+        Err(error) => {
+            violations.push(format!("DRIFT_READ: cannot resolve project root: {error}"));
+            return;
         }
-    }
+    };
+    violations.extend(
+        xtask::vendored_catalog::check(&root).into_iter().map(|violation| violation.display_line()),
+    );
 }
 
 fn snapshot_comparable_feature_ids() -> BTreeSet<String> {

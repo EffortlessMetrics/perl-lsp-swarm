@@ -852,11 +852,7 @@ fn test_user_story_real_time_collaboration() -> Result<(), Box<dyn std::error::E
                 "version": 5
             },
             "contentChanges": [{
-                "range": {
-                    "start": {"line": 10, "character": 0},
-                    "end": {"line": 10, "character": 0}
-                },
-                "text": "# Added by collaborator\n"
+                "text": "# Added by collaborator\npackage SharedModule;\n1;\n"
             }],
             "collaborativeEdit": {
                 "userId": "user2",

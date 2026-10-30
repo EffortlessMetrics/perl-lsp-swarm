@@ -14,6 +14,7 @@
 mod boundary;
 mod import;
 mod import_match;
+mod module_move;
 mod name;
 mod path;
 mod provenance;

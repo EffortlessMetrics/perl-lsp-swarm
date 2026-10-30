@@ -128,12 +128,20 @@ requires:
     );
     assert_eq!(
         extract_dist_ini_requirements(dist_ini),
-        vec![DeclaredDependency::new(
-            "Valid::Module",
-            Some("2.0"),
-            "Prereqs",
-            DeclaredDependencySource::DistIni,
-        )],
+        vec![
+            DeclaredDependency::new(
+                "Valid::Module",
+                Some("2.0"),
+                "Prereqs",
+                DeclaredDependencySource::DistIni,
+            ),
+            DeclaredDependency::new(
+                "Valid::Module",
+                Some("3.0"),
+                "Prereqs",
+                DeclaredDependencySource::DistIni,
+            ),
+        ],
     );
     assert_eq!(
         extract_meta_yml_requirements(meta_yml),
@@ -356,15 +364,46 @@ prereqs:
     assert!(deps.contains(&DeclaredDependency::new(
         "JSON::PP",
         Some("4.0"),
-        "requires",
+        "runtime.requires",
         DeclaredDependencySource::MetaYml,
     )));
     assert!(deps.contains(&DeclaredDependency::new(
         "Test::More",
         Some("1.00"),
-        "requires",
+        "test.requires",
         DeclaredDependencySource::MetaYml,
     )));
+}
+
+#[test]
+fn meta_yml_preserves_same_module_across_phases() {
+    let meta_yml = r#"
+prereqs:
+  runtime:
+    requires:
+      Shared::Module: 1.0
+  test:
+    requires:
+      Shared::Module: 1.0
+"#;
+
+    assert_eq!(
+        extract_meta_yml_requirements(meta_yml),
+        vec![
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("1.0"),
+                "runtime.requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("1.0"),
+                "test.requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+        ],
+    );
 }
 
 #[test]
@@ -431,19 +470,62 @@ fn detects_declared_dependencies_from_workspace_metadata_files() -> TestResult {
 #[test]
 fn workspace_config_refreshes_declared_dependency_cache() -> TestResult {
     let temp = TempDir::new()?;
-    fs::write(temp.path().join("cpanfile"), "requires 'JSON::PP', '4.0';\n")?;
+    fs::write(
+        temp.path().join("cpanfile"),
+        "requires 'Shared::Module', '1.0';\nrequires 'Shared::Module', '1.0';\ntest_requires 'Shared::Module', '1.0';\n",
+    )?;
+    fs::write(
+        temp.path().join("META.json"),
+        r#"{"prereqs":{"runtime":{"requires":{"Shared::Module":"1.0"}},"test":{"requires":{"Shared::Module":"2.0"}}}}"#,
+    )?;
+    fs::write(
+        temp.path().join("META.yml"),
+        "prereqs:\n  runtime:\n    requires:\n      Shared::Module: 1.0\n  test:\n    requires:\n      Shared::Module: 1.0\n",
+    )?;
 
     let mut config = WorkspaceConfig::default();
     config.refresh_declared_dependencies(temp.path());
 
     assert_eq!(
         config.declared_dependencies,
-        vec![DeclaredDependency::new(
-            "JSON::PP",
-            Some("4.0"),
-            "requires",
-            DeclaredDependencySource::Cpanfile,
-        )],
+        vec![
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("1.0"),
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("1.0"),
+                "test_requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("1.0"),
+                "runtime.requires",
+                DeclaredDependencySource::MetaJson,
+            ),
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("2.0"),
+                "test.requires",
+                DeclaredDependencySource::MetaJson,
+            ),
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("1.0"),
+                "runtime.requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+            DeclaredDependency::new(
+                "Shared::Module",
+                Some("1.0"),
+                "test.requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+        ],
     );
     Ok(())
 }

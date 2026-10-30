@@ -1,7 +1,7 @@
 //! `cargo xtask metrics sweep-stats` — summarize a parser corpus sweep receipt.
 //!
 //! Reads the JSON produced by `cargo xtask parser-corpus-sweep --receipt`
-//! (schema 1.3.0 or older — older receipts simply miss the phase-timings
+//! (integer envelope version — receipts may simply omit the phase-timings
 //! and slowest-file sections) and prints the same human-readable report
 //! that the sweep itself emits at the end of a live run.
 //!
@@ -9,7 +9,9 @@
 //! commits, or inspecting slowest-file and median-error-density data
 //! without re-running the full sweep.
 
-use crate::tasks::parser_corpus_sweep::{SweepReport, print_summary};
+use crate::tasks::parser_corpus_sweep::{
+    SCHEMA_VERSION, SweepReport, print_summary, validate_schema_version,
+};
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use std::fs;
@@ -18,33 +20,24 @@ use std::path::PathBuf;
 /// Default receipt path for the system-Perl corpus sweep.
 const DEFAULT_RECEIPT: &str = "target/receipts/system-corpus-sweep.json";
 
-/// `SweepReport` schema versions this consumer is willing to deserialize.
+/// Reject `SweepReport` envelopes whose `schema_version` is not the shared
+/// integer envelope version.
 ///
-/// The producer at `xtask/src/tasks/parser_corpus_sweep.rs` currently emits
-/// `"1.3.0"`. Older receipts that pre-date the `phase_timings` /
-/// `slowest_files` additions are tolerated (`1.2.0`, `1.0.0`) so historical
-/// baselines remain inspectable. Any other version — including future bumps
-/// the consumer has not been audited against — is rejected up front so a
-/// silently-evolved producer cannot poison downstream summaries.
-const SUPPORTED_SWEEP_VERSIONS: &[&str] = &["1.3.0", "1.2.0", "1.0.0"];
-
-/// Reject `SweepReport` envelopes whose `schema_version` is not on the
-/// allowlist. Returns Ok(()) on a supported version, otherwise bails with an
-/// actionable error that names the offending version and the supported set.
+/// Ruling on #15990: the envelope version is a plain integer, so legacy
+/// string versions (`"1.3.0"` and older) no longer deserialize at all —
+/// they are refused by the typed envelope before this check runs. Any
+/// future integer bump must be audited before this consumer accepts it.
 fn assert_supported_sweep_version(report: &SweepReport) -> Result<()> {
-    if SUPPORTED_SWEEP_VERSIONS.contains(&report.schema_version.as_str()) {
-        Ok(())
-    } else {
-        bail!(
-            "unsupported sweep-report schema_version: {} (supported: {}). \
-             Re-run `cargo xtask parser-corpus-sweep --receipt` to produce a \
-             compatible receipt, or extend SUPPORTED_SWEEP_VERSIONS in \
-             xtask/src/tasks/metrics/sweep_stats.rs after auditing the new \
-             producer shape.",
-            report.schema_version,
-            SUPPORTED_SWEEP_VERSIONS.join(", "),
-        )
+    if validate_schema_version(report.schema_version).is_ok() {
+        return Ok(());
     }
+    bail!(
+        "unsupported sweep-report schema_version: expected {SCHEMA_VERSION}, found {}. \
+         Re-run `cargo xtask parser-corpus-sweep --receipt` to produce a compatible \
+         receipt, or audit the new producer shape in \
+         xtask/src/tasks/parser_corpus_sweep.rs before accepting it here.",
+        report.schema_version,
+    )
 }
 
 /// Entry point for `cargo xtask metrics sweep-stats`.
@@ -75,16 +68,16 @@ pub fn run(input: Option<PathBuf>) -> Result<()> {
 
     print_summary(&report);
 
-    // Schema-compatibility note: older receipts deserialize with None
-    // phase timings and empty slowest_files. Tell the user explicitly so
-    // they know the missing sections are expected, not a bug.
+    // Schema-compatibility note: receipts without the phase-timings section
+    // deserialize with None phase timings and empty slowest_files. Tell the
+    // user explicitly so they know the missing sections are expected, not a
+    // bug.
     if report.phase_timings.is_none() {
         println!(
-            "\n(Note: receipt schema {} predates 1.3.0 — phase timings and \
+            "\n(Note: receipt predates the phase-timings section — phase timings and \
              slowest-file list are not available. Re-run \
              `cargo xtask parser-corpus-sweep --receipt` to produce a \
-             1.3.0 receipt.)",
-            report.schema_version,
+             current-schema receipt.)",
         );
     }
 
@@ -110,9 +103,9 @@ mod tests {
 
     #[test]
     fn test_run_reads_and_parses_receipt() -> Result<()> {
-        // Minimal but valid 1.3.0 schema receipt.
+        // Minimal but valid current-schema receipt.
         let json = r#"{
-            "schema_version": "1.3.0",
+            "schema_version": 1,
             "commit": "abcdef1",
             "timestamp": "2026-04-15T00:00:00Z",
             "corpus_profile": "system",
@@ -147,10 +140,11 @@ mod tests {
     }
 
     #[test]
-    fn test_run_tolerates_old_schema() -> Result<()> {
-        // Schema 1.2.0 receipt: no phase_timings / slowest_files / density.
+    fn test_run_tolerates_receipt_without_optional_sections() -> Result<()> {
+        // Current-schema receipt: no phase_timings / slowest_files / density.
+        // The optional sections deserialize as None / empty defaults.
         let json = r#"{
-            "schema_version": "1.2.0",
+            "schema_version": 1,
             "commit": "old",
             "timestamp": "2026-04-01T00:00:00Z",
             "corpus_profile": "system",
@@ -173,12 +167,10 @@ mod tests {
     }
 
     #[test]
-    fn test_run_tolerates_legacy_1_0_0_schema() -> Result<()> {
-        // Schema 1.0.0 receipt: pre-dates corpus_profile / resolved_roots_count /
-        // phase_timings / slowest_files. Allowed by the version allowlist so
-        // historical baselines remain inspectable. `files_unreadable` was part
-        // of the original 1.0.0 envelope and is required by the strict struct
-        // (no #[serde(default)]), so it must be present.
+    fn test_run_refuses_legacy_string_schema_version() {
+        // Legacy string envelope ("1.0.0"): must not deserialize into the
+        // integer envelope version — the consumer fails closed (#15361)
+        // instead of silently summarizing a pre-ruling receipt.
         let json = r#"{
             "schema_version": "1.0.0",
             "commit": "ancient",
@@ -194,18 +186,24 @@ mod tests {
         }"#;
         let tmp = TempDir::new().expect("tempdir");
         let receipt = tmp.path().join("legacy.json");
-        fs::write(&receipt, json)?;
-        run(Some(receipt))?;
-        Ok(())
+        fs::write(&receipt, json).expect("write legacy receipt");
+
+        let err = run(Some(receipt)).expect_err("legacy string version must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parsing sweep receipt"),
+            "legacy string envelope must fail at envelope parsing, got: {msg}"
+        );
     }
 
     #[test]
     fn test_run_rejects_unsupported_schema_version() {
-        // Schema 9.9.9 receipt: structurally valid SweepReport, but the version
-        // is not on the allowlist. The consumer must bail before print_summary
-        // rather than silently summarize a future-evolved envelope.
+        // Version 9 receipt: structurally valid SweepReport, but the integer
+        // version is not the audited envelope version. The consumer must bail
+        // before print_summary rather than silently summarize a future-evolved
+        // envelope.
         let json = r#"{
-            "schema_version": "9.9.9",
+            "schema_version": 9,
             "commit": "future",
             "timestamp": "2030-01-01T00:00:00Z",
             "corpus_profile": "system",
@@ -231,12 +229,9 @@ mod tests {
             "error must call out the unsupported version, got: {msg}"
         );
         assert!(
-            msg.contains("9.9.9"),
-            "error must include the offending version string, got: {msg}"
+            msg.contains("expected 1"),
+            "error must name the expected version so the user knows what to do, got: {msg}"
         );
-        assert!(
-            msg.contains("1.3.0"),
-            "error must name at least one supported version so the user knows what to do, got: {msg}"
-        );
+        assert!(msg.contains("found 9"), "error must include the offending version, got: {msg}");
     }
 }
