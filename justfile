@@ -992,6 +992,7 @@ ci-gate:
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
     just ci-must-context && \
+    just ci-change-scope && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -1166,6 +1167,12 @@ ci-must-context:
     @echo "🧾 Checking must* migrations preserve assertion context..."
     @cargo xtask ci-hygiene check-must-context
     @echo "✅ No assertion context dropped by a must* migration"
+
+# Scope gate: the change must touch only files inside its declared .agents/change-scope (#17429)
+ci-change-scope:
+    @echo "🧾 Checking the change stays inside its declared scope..."
+    @cargo xtask ci-hygiene check-change-scope
+    @echo "✅ Change is inside its declared scope (or declares none)"
 
 # Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
 ci-print-in-lib-ratchet:

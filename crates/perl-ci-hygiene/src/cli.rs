@@ -146,6 +146,14 @@ pub(crate) enum CliCommand {
         #[arg(long, value_name = "REF")]
         base: Option<String>,
     },
+    /// Enforce that the change touches only files inside its declared
+    /// `.agents/change-scope` (T6 post-hoc scope gate, #17429).
+    CheckChangeScope {
+        /// Base ref to diff `HEAD` against. Defaults to `$CI_SCOPE_BASE`,
+        /// `$GITHUB_BASE_REF`, `origin/main`, `main`, then `HEAD~1`.
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+    },
     /// Enforce `#[serial]`-style serialization on parallel-unsafe tests against `ci/serial_test_identities.json` (#1269).
     CheckSerialTest {
         /// Emit the parallel-unsafe test identity inventory without applying the registry gate.
@@ -242,6 +250,30 @@ mod tests {
         ])?;
         let CliCommand::CheckMustContext { base } = explicit_cli.command else {
             return Err(eyre!("expected check-must-context command"));
+        };
+        assert_eq!(base.as_deref(), Some("origin/main"));
+        Ok(())
+    }
+
+    #[test]
+    fn change_scope_parses_optional_base() -> Result<()> {
+        let default_cli = Cli::try_parse_from(["perl-ci-hygiene", "check-change-scope"])?;
+        let CliCommand::CheckChangeScope { base } = default_cli.command else {
+            return Err(eyre!("expected check-change-scope command"));
+        };
+        assert_eq!(
+            base, None,
+            "omitted --base must stay None so the resolver tries its candidates"
+        );
+
+        let explicit_cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-change-scope",
+            "--base",
+            "origin/main",
+        ])?;
+        let CliCommand::CheckChangeScope { base } = explicit_cli.command else {
+            return Err(eyre!("expected check-change-scope command"));
         };
         assert_eq!(base.as_deref(), Some("origin/main"));
         Ok(())

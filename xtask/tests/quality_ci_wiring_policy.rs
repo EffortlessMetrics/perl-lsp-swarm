@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
-use perl_tdd_support::{must, must_some};
+use perl_tdd_support::{must, must_some, must_with};
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
 
@@ -1548,6 +1548,75 @@ fn agent_ledgers_validator_wired_into_hosted_policy_shard() {
 }
 
 #[test]
+fn change_scope_guard_wired_into_hosted_policy_shard() {
+    // #17429 (T6 Option 2 hosted closure proof): the merge surface is not
+    // `just ci-gate` but ci.yml -> merge-gate-shards ->
+    // scripts/ci/run_gate_shard.py -> .ci/gate-policy.yaml. Every leg below
+    // is asserted independently so removing the gate from any one of them
+    // fails this test with the exact missing leg named.
+    let root = repo_root();
+
+    // Leg 1: the gate-policy defines a required merge_gate entry that runs
+    // the scope guard CLI.
+    let policy = must(fs::read_to_string(root.join(".ci/gate-policy.yaml")));
+    let gate_start = must_some(policy.find("  - name: change_scope_check"));
+    let gate_tail = &policy[gate_start..];
+    let gate_end = gate_tail.find("\n  - name:").unwrap_or(gate_tail.len());
+    let gate = &gate_tail[..gate_end];
+    for required in [
+        "tier: merge_gate",
+        "required: true",
+        "command: cargo xtask ci-hygiene check-change-scope",
+        "quarantine: false",
+    ] {
+        assert!(
+            gate.contains(required),
+            "change_scope_check gate entry must contain `{required}`, got: {gate}"
+        );
+    }
+
+    // Leg 2: the hosted `policy` shard executes the gate by name. The shard
+    // runner resolves names through `cargo xtask gates --gate`, so a name
+    // present here but absent from the policy is a loud runtime failure, not
+    // a silent skip — and a policy entry absent here never runs on merge.
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci.yml")));
+    let policy_shard = must_some(workflow.find("- name: policy"));
+    let gates_key = must_some(workflow[policy_shard..].find("gates:"));
+    let gates_line_start = policy_shard + gates_key;
+    let gates_line_end_rel = must_some(workflow[gates_line_start..].find('\n'));
+    let gates_line = &workflow[gates_line_start..gates_line_start + gates_line_end_rel];
+    assert!(
+        gates_line.contains("change_scope_check"),
+        "ci.yml policy shard gates line must execute change_scope_check, got: {gates_line}"
+    );
+
+    // Leg 3: policy/workflow agreement — the workflow_integration job mapping
+    // must claim the same gate, or policy and execution disagree about what
+    // the merge surface owns.
+    let mapping_start = must_some(policy.find("job_mapping:"));
+    let mapping = &policy[mapping_start..];
+    assert!(
+        mapping.contains("change_scope_check"),
+        "workflow_integration.job_mapping.ci-gate.gates must list change_scope_check"
+    );
+
+    // Leg 4: the shard execution policy knows the gate (dependency row), and
+    // the lane/economics map accounts for it — otherwise the
+    // gate-enforcement and lane-mapping validators report the addition as
+    // unmapped the moment both files meet.
+    let execution = must(fs::read_to_string(root.join(".ci/gate-shard-execution.json")));
+    assert!(
+        execution.contains("\"change_scope_check\""),
+        "gate-shard-execution.json must carry a change_scope_check dependency row"
+    );
+    let lane_map = must(fs::read_to_string(root.join("scripts/ci/validate_gate_lane_mapping.py")));
+    assert!(
+        lane_map.contains("\"change_scope_check\""),
+        "GATE_TO_LANE_MAP must account for change_scope_check"
+    );
+}
+
+#[test]
 fn agent_ledgers_validator_runs_clean_against_committed_files() {
     // #15380 (Lane A): once the validator is wired into merge-gate it must pass
     // against the current committed ledger files. A future drift that breaks a
@@ -1560,11 +1629,13 @@ fn agent_ledgers_validator_runs_clean_against_committed_files() {
         "committed docs/agents/ledgers/ directory must exist for the wiring to have something to check"
     );
 
-    let output = cargo_bin_cmd!("xtask")
-        .args(["agent", "ledgers", "validate", "--format", "json"])
-        .current_dir(&root)
-        .output()
-        .expect("spawn cargo xtask agent ledgers validate");
+    let output = must_with(
+        cargo_bin_cmd!("xtask")
+            .args(["agent", "ledgers", "validate", "--format", "json"])
+            .current_dir(&root)
+            .output(),
+        "spawn cargo xtask agent ledgers validate",
+    );
     assert!(
         output.status.success(),
         "agent ledgers validate must pass against the committed files (issue #15380 wired the CLI into CI); \
