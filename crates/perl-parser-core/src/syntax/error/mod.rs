@@ -720,6 +720,22 @@ pub enum ParseError {
         range: perl_ast::SourceLocation,
     },
 
+    /// A `catch` variable head that redeclares the automatically declared
+    /// catch variable with an explicit declarator: `catch (my $e)`.
+    ///
+    /// Perl has never accepted this form; Perl 5.44 names it with the
+    /// fatal diagnostic `Can't redeclare catch variable as "%s"`. The
+    /// catch binding itself is retained (the variable after the keyword
+    /// still binds), so this error is recorded alongside the parse rather
+    /// than failing it outright (#13333).
+    #[error("Can't redeclare catch variable as \"{keyword}\" at {range:?}")]
+    CatchVariableRedeclaration {
+        /// The offending declarator keyword (`my`, `our`, or `state`).
+        keyword: String,
+        /// The keyword's half-open byte range.
+        range: perl_ast::SourceLocation,
+    },
+
     /// A block follows a do-while condition: `do { ... } while (cond) { ... }`
     ///
     /// Real Perl rejects this construct outright (`syntax error near ") {"`),
@@ -925,6 +941,7 @@ impl ErrorClass for ParseError {
             | Self::SyntaxError { .. }
             | Self::InvalidSignatureParameter { .. }
             | Self::InvalidSignatureOrdering { .. }
+            | Self::CatchVariableRedeclaration { .. }
             | Self::DoWhileTrailingBlock { .. }
             | Self::CStyleForContinueBlock { .. }
             | Self::QualifiedLoopControlLabel { .. }
@@ -1655,7 +1672,8 @@ impl ParseError {
             ParseError::UnexpectedToken { location, .. } => Some(*location),
             ParseError::SyntaxError { location, .. } => Some(*location),
             ParseError::InvalidSignatureParameter { range, .. }
-            | ParseError::InvalidSignatureOrdering { range, .. } => Some(range.start),
+            | ParseError::InvalidSignatureOrdering { range, .. }
+            | ParseError::CatchVariableRedeclaration { range, .. } => Some(range.start),
             ParseError::Advisory { location, .. } => Some(*location),
             ParseError::Recovered { location, .. } => Some(*location),
             // Anchored at the declaration whose collection was refused, so
@@ -1745,7 +1763,8 @@ impl ParseError {
         match self {
             Self::UnexpectedEof => ParseDiagnosticAnchor::EndOfInput,
             Self::InvalidSignatureParameter { range, .. }
-            | Self::InvalidSignatureOrdering { range, .. } => {
+            | Self::InvalidSignatureOrdering { range, .. }
+            | Self::CatchVariableRedeclaration { range, .. } => {
                 ParseDiagnosticAnchor::Exact(range.start)
             }
             Self::UnexpectedToken { location, .. }

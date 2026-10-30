@@ -529,6 +529,16 @@ impl<'a> PerlLexer<'a> {
             }
 
             if let Some(token) = self.try_variable() {
+                // A sigil-named token inside the post-`sub` window is a
+                // signature parameter, so later quote-like words in the
+                // window are expression operators (#13919).
+                if self.in_prototype
+                    && token.text.len() > 1
+                    && matches!(token.text.as_bytes()[0], b'$' | b'@' | b'%')
+                    && token.text[1..].chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                {
+                    self.prototype_signature_seen = true;
+                }
                 return Some(token);
             }
 
@@ -561,6 +571,11 @@ impl<'a> PerlLexer<'a> {
             }
 
             if let Some(token) = self.try_operator() {
+                // A default assignment inside the window is signature
+                // evidence: prototypes never contain one (#13919).
+                if self.in_prototype && matches!(token.text.as_ref(), "=" | "//=" | "||=") {
+                    self.prototype_signature_seen = true;
+                }
                 return Some(token);
             }
 
@@ -666,6 +681,7 @@ impl<'a> PerlLexer<'a> {
         let saved_delimiter_stack = self.delimiter_stack.clone();
         let saved_prototype = self.in_prototype;
         let saved_depth = self.prototype_depth;
+        let saved_signature_seen = self.prototype_signature_seen;
         let saved_after_sub = self.after_sub;
         let saved_after_arrow = self.after_arrow;
         let saved_hash_brace_depth = self.hash_brace_depth;
@@ -685,6 +701,7 @@ impl<'a> PerlLexer<'a> {
         self.delimiter_stack = saved_delimiter_stack;
         self.in_prototype = saved_prototype;
         self.prototype_depth = saved_depth;
+        self.prototype_signature_seen = saved_signature_seen;
         self.after_sub = saved_after_sub;
         self.after_arrow = saved_after_arrow;
         self.hash_brace_depth = saved_hash_brace_depth;
@@ -725,6 +742,7 @@ impl<'a> PerlLexer<'a> {
         self.delimiter_stack.clear();
         self.in_prototype = false;
         self.prototype_depth = 0;
+        self.prototype_signature_seen = false;
         self.after_sub = false;
         self.after_arrow = false;
         self.hash_brace_depth = 0;
@@ -1106,7 +1124,7 @@ impl<'a> PerlLexer<'a> {
         // runs the unterminated-quote recovery, which consumes through
         // end-of-line: it errors when a newline follows (#12363) and silently
         // swallows the rest of the line otherwise. A multiplication such as
-        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        // `$a * ";"` is excluded using the lexer mode and existing operand exclusions.
         if matches!(quote, '"' | '\'' | '`')
             && self.peek_char(1) == Some(';')
             && self.glob_sigil_precedes()
@@ -1133,6 +1151,11 @@ impl<'a> PerlLexer<'a> {
     /// position (preceded by an operator or the start of input, not by an
     /// operand — `$a * x` is multiplication, `= *x` is a glob).
     fn glob_sigil_precedes(&self) -> bool {
+        // A multiplication operator expects its right operand; a glob term
+        // expects an operator. Reuse that Unicode-aware token classification.
+        if self.mode != LexerMode::ExpectOperator {
+            return false;
+        }
         let bytes = self.input.as_bytes();
         let mut index = self.position;
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
@@ -1145,15 +1168,16 @@ impl<'a> PerlLexer<'a> {
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
             index -= 1;
         }
-        if index == 0 {
-            return true;
-        }
-        let before = bytes[index - 1] as char;
-        !(before.is_ascii_alphanumeric()
-            || matches!(
-                before,
-                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
-            ))
+        // The ASCII star/whitespace scan leaves `index` on a scalar boundary.
+        // Keep the historical ASCII exclusions: widening this predicate to
+        // Unicode identifiers would mistake preceding comment text for operands.
+        !self.input[..index].chars().next_back().is_some_and(|before| {
+            before.is_ascii_alphanumeric()
+                || matches!(
+                    before,
+                    '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+                )
+        })
     }
 
     #[inline]
@@ -2045,6 +2069,20 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth > 0 && matches!(next, ',' | '}' | ';')
     }
 
+    /// While the post-`sub` parenthesised window is open, a quote-like word
+    /// whose would-be delimiter is a prototype payload character or a window
+    /// terminator is prototype text, not an operator (#13919). A genuine
+    /// quote delimiter (`{`, `/`, `'`, ...) still opens the operator, which
+    /// keeps signature default expressions (`sub f($x = q{hello})`) intact:
+    /// payload words are only ever followed by payload or terminator
+    /// characters, never by a quote delimiter.
+    #[inline]
+    fn prototype_payload_candidate(&self, candidate: char) -> bool {
+        self.in_prototype
+            && !self.prototype_signature_seen
+            && matches!(candidate, ')' | ';' | ',' | '$' | '@' | '%' | '&' | '*' | '\\' | '+' | '_')
+    }
+
     /// q-family quote words still open inside subscripts (`@h{qw/a b/}`).
     /// `m` opens only when the next char is a real delimiter, not a key
     /// boundary (`$h{m}` vs `$h->{scalar m/foo/}`). `s`/`tr`/`y` use the
@@ -2179,6 +2217,7 @@ impl<'a> PerlLexer<'a> {
                         && !is_fat_arrow
                         && !is_filetest_s
                         && !self.hash_subscript_bare_key_boundary(next)
+                        && !self.prototype_payload_candidate(next)
                         && !substitution_disallows_whitespace
                         && (!has_gap
                             || is_paired_delim
@@ -2205,6 +2244,9 @@ impl<'a> PerlLexer<'a> {
                 }
             }
 
+            // Quote-like spellings inside a prototype are payload text:
+            // they must surface as identifiers so the parser classifies the
+            // parenthesised text as a prototype, not a signature (#13919).
             let token_type = if is_keyword_fast(text) {
                 // Check for special keywords that affect lexer mode
                 match text {
@@ -2280,6 +2322,7 @@ impl<'a> PerlLexer<'a> {
                                 && !is_fat_arrow
                                 && !is_filetest_s
                                 && !is_hash_subscript_bare_key_boundary
+                                && !self.prototype_payload_candidate(next)
                                     && (!has_gap
                                         || is_paired_delim
                                         || is_quote_char
@@ -2725,6 +2768,7 @@ impl<'a> PerlLexer<'a> {
                     self.in_prototype = true;
                     self.after_sub = false;
                     self.prototype_depth = 1;
+                    self.prototype_signature_seen = false;
                 } else if self.in_prototype {
                     self.prototype_depth += 1;
                 }
@@ -2748,6 +2792,7 @@ impl<'a> PerlLexer<'a> {
                     self.prototype_depth -= 1;
                     if self.prototype_depth == 0 {
                         self.in_prototype = false;
+                        self.prototype_signature_seen = false;
                     }
                 }
                 self.after_arrow = false;

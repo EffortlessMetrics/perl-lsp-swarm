@@ -168,7 +168,22 @@ outcome_owner = "#10230"
 # now require both current and latest snapshots absent. All 42 scan files,
 # 59 producers, routes, finalizer seams, classifications and migration owners
 # retain their prior ceilings. Digest recomputed over the merged tree.
-source_digest = "sha256:a52d47c2d84d95d82b497631fc72003fc23f531a4c0b04780b82da19e885a52d"
+# Re-audit 2026-10-22 (#18114, including the useful #18107 proof): #18265
+# changed suffix ranges in twelve scanned files after #18261's valid anchor.
+# Those edits change range bounds/context plumbing, not append channels,
+# producer identities, entry routes, delegations, or finalization. This feature
+# extends the four package ranges and qualifies the existing core-member
+# insertion. The indexed and external/cache use-module item ranges also use
+# the segment suffix; their scan, containment and cancellation rules are unchanged.
+# Its function-specific context adapter consumes paired namespace
+# suffixes only on the two existing function routes; it returns a context, not
+# candidates. The shared segment scanner still stops at ::. Tests are excluded
+# by the existing test-surface rule. The same 42 files and 59 producer rows keep
+# their existing identity/evidence/completeness ceilings and migration owners.
+# Digest re-anchored 2026-10-29 over the tree merged with main: main's #16853
+# reopened-class-model edits in `completion/workspace.rs` and the #18338 policy
+# convergence share the scanned surface; producer rows are unchanged.
+source_digest = "sha256:304dc23f61fe767d03f48a9a9cd24f9db828f86f741263e2c9d2ca64a2c36e13"
 
 [[delegations]]
 module = "dancer2"
@@ -475,7 +490,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11002"
 limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
-note = "Subroutines declared in the current document."
+note = "Subroutines and constants declared in the current document; the two function dispatch routes replace qualified suffixes when inserting a complete bare local name."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::keywords::add_keyword_completions"
@@ -526,7 +541,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11015"
 limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
-note = "Core module name catalogue."
+note = "Core module member catalogue; fully qualified insertion matches the qualified prefix range, with a segment-bounded suffix."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::packages::add_local_package_completions"
@@ -543,7 +558,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11002"
 limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
-note = "Packages declared in the current document."
+note = "Source-backed package members in the current document; fully qualified insertion replaces through the current segment suffix and preserves a following namespace segment."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::packages::add_package_completions"
@@ -560,7 +575,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11015"
 limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
-note = "Package member candidates for a qualified prefix."
+note = "Package member and nested-package candidates for a qualified prefix; suffix ranges preserve a following namespace separator."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_completions"
@@ -935,7 +950,7 @@ reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#11015"
 limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
-note = "Module name candidates in a `use`/`require` context, served from the scan cache."
+note = "Module name candidates in a `use`/`require` context, indexed or external/cached; current segment suffix ranges preserve subsequent namespace segments and whitespace-separated arguments."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_use_qw_import_completions"

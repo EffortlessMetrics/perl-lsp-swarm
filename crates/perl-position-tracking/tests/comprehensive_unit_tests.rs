@@ -9,7 +9,7 @@ use perl_position_tracking::{
     ByteSpan, LineEnding, LineIndex, LineStartsCache, PositionMapper, SourceLocation, WireLocation,
     WirePosition, WireRange,
 };
-use perl_tdd_support::must_some;
+use perl_test_must::must_some;
 
 // ─── ByteSpan ────────────────────────────────────────────────────────────────
 

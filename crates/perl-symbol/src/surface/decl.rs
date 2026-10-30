@@ -209,7 +209,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
         }
 
         // ── Method (Perl 5.38+ `use feature 'class'`) ─────────────────────
-        NodeKind::Method { name: method_name, body, .. } => {
+        NodeKind::Method { name: method_name, name_span, body, .. } => {
             let container = ctx.current_package.clone();
             let qualified_name = ctx.qualify(method_name);
             out.push(SymbolDecl {
@@ -217,7 +217,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 name: method_name.clone(),
                 qualified_name,
                 full_span: (node.location.start, node.location.end),
-                anchor_span: None, // Method has no name_span in current AST
+                anchor_span: name_span.as_ref().map(|span| (span.start, span.end)),
                 container,
                 declarator: None,
             });

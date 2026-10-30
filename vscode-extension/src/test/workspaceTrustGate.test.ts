@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientStart = jest.fn(() => new Promise<void>(() => undefined));
 const mockLanguageClientStop = jest.fn(async () => undefined);
@@ -140,7 +141,7 @@ describe('workspace trust activation gate (#4631)', () => {
         extensionRoot,
         process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
       );
-      fs.writeFileSync(serverPath, '');
+      writeFakeTool(serverPath);
       mockConfig(serverPath);
 
       await activate(makeContext(extensionRoot));
@@ -164,7 +165,7 @@ describe('workspace trust activation gate (#4631)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -196,7 +197,7 @@ describe('workspace trust activation gate (#4631)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -228,7 +229,7 @@ describe('workspace trust activation gate (#4631)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -250,7 +251,7 @@ describe('workspace trust activation gate (#4631)', () => {
         extensionRoot,
         process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
       );
-      fs.writeFileSync(serverPath, '');
+      writeFakeTool(serverPath);
       mockConfig(serverPath);
 
       const activation = activate(makeContext(extensionRoot));
