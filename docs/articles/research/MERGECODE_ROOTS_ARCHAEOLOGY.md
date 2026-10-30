@@ -22,12 +22,12 @@ not this repository's vocabulary.
 
 Examples from committed files:
 
-- [`.claude/agents3/generative/spec-creator.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/generative/spec-creator.md)
+- [`.claude/agents3/generative/spec-creator.md`](../../reference/archive/agents-history/agents3/generative/spec-creator.md)
   says it transforms "MergeCode feature requirements"
 - the same file targets the semantic-analysis pipeline
   `Parse -> Analyze -> Graph -> Output`
 - the same file names `mergecode-core`, `mergecode-cli`, and `code-graph`
-- [`.claude/agents3/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/pr-to-merge.md)
+- [`.claude/agents3/pr-to-merge.md`](../../reference/archive/agents-history/agents3/pr-to-merge.md)
   refers to "MergeCode quality compliance"
 
 That is stronger than a vague resemblance. It is donor-repo language embedded
@@ -41,7 +41,7 @@ The donor pack is historically important because it already contains operating
 ideas that later become native, more explicit, and more durable elsewhere in
 the repo.
 
-[`.claude/agents3/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/issue-to-draft.md)
+[`.claude/agents3/issue-to-draft.md`](../../reference/archive/agents-history/agents3/issue-to-draft.md)
 is the clearest evidence:
 
 - work in `worktree-serial mode`
@@ -52,9 +52,9 @@ is the clearest evidence:
 
 The same structure appears in:
 
-- [`.claude/agents3/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/draft-to-pr.md)
-- [`.claude/agents3/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/pr-to-merge.md)
-- [`.claude/agents3/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/agent-customizer-generative.md)
+- [`.claude/agents3/draft-to-pr.md`](../../reference/archive/agents-history/agents3/draft-to-pr.md)
+- [`.claude/agents3/pr-to-merge.md`](../../reference/archive/agents-history/agents3/pr-to-merge.md)
+- [`.claude/agents3/agent-customizer-generative.md`](../../reference/archive/agents-history/agents3/agent-customizer-generative.md)
 
 So the repo's later emphasis on worktree discipline, GitHub-native receipts,
 and single-source flow state did not appear from nowhere in March 2026. Those
@@ -87,7 +87,7 @@ reality:
 - perl-lsp GitHub-native Issue to PR workflow language
 
 This is especially clear in
-[`.claude/agents4/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/agent-customizer-generative.md),
+[`.claude/agents4/agent-customizer-generative.md`](../../reference/archive/agents-history/agents4/agent-customizer-generative.md),
 which explicitly describes adapting generic agents to "Perl LSP's
 GitHub-native Issue→PR Ledger workflow."
 
@@ -103,7 +103,7 @@ The historical reading is straightforward:
 The repo was already experimenting with orchestration before the donor layer
 landed.
 
-[`.claude/ORCHESTRATION_GUIDE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/ORCHESTRATION_GUIDE.md),
+[`.claude/ORCHESTRATION_GUIDE.md`](../../reference/archive/cycle-5-research/ORCHESTRATION_GUIDE.md),
 added in commit `3341bebdb` on `2025-08-28`, already contains:
 
 - orchestration guidance
@@ -198,13 +198,13 @@ committed repo.
 
 ## Evidence Pointers
 
-- [`.claude/ORCHESTRATION_GUIDE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/ORCHESTRATION_GUIDE.md)
-- [`.claude/agents3/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/issue-to-draft.md)
-- [`.claude/agents3/draft-to-pr.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/draft-to-pr.md)
-- [`.claude/agents3/pr-to-merge.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/pr-to-merge.md)
-- [`.claude/agents3/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/agent-customizer-generative.md)
-- [`.claude/agents3/generative/spec-creator.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents3/generative/spec-creator.md)
-- [`.claude/agents4/issue-to-draft.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/issue-to-draft.md)
-- [`.claude/agents4/agent-customizer-generative.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/agents4/agent-customizer-generative.md)
+- [`.claude/ORCHESTRATION_GUIDE.md`](../../reference/archive/cycle-5-research/ORCHESTRATION_GUIDE.md)
+- [`.claude/agents3/issue-to-draft.md`](../../reference/archive/agents-history/agents3/issue-to-draft.md)
+- [`.claude/agents3/draft-to-pr.md`](../../reference/archive/agents-history/agents3/draft-to-pr.md)
+- [`.claude/agents3/pr-to-merge.md`](../../reference/archive/agents-history/agents3/pr-to-merge.md)
+- [`.claude/agents3/agent-customizer-generative.md`](../../reference/archive/agents-history/agents3/agent-customizer-generative.md)
+- [`.claude/agents3/generative/spec-creator.md`](../../reference/archive/agents-history/agents3/generative/spec-creator.md)
+- [`.claude/agents4/issue-to-draft.md`](../../reference/archive/agents-history/agents4/issue-to-draft.md)
+- [`.claude/agents4/agent-customizer-generative.md`](../../reference/archive/agents-history/agents4/agent-customizer-generative.md)
 - commits `3341bebdb`, `104bdc17e`, `e62fe5700`, `0d7f3d757`, `6e3bbcdf3`,
   `2e5a58bfa`

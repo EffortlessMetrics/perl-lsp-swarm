@@ -28,7 +28,7 @@ Published to crates.io (`publish = true`); public API surface by design.
   type whose only constructor is fallible, so holding one *is* the proof that
   the canonical root-relative form holds. `LogicalSourceId::from_root_and_logical_path`
   takes it; `from_root_and_path` remains the unchecked primitive over material
-  a caller has already proven canonical (#15555).
+  a caller has already proven canonical.
 
 ## Does not own
 
@@ -45,8 +45,8 @@ It **validates** logical paths but still never **normalizes** them: no separator
 folding, no traversal resolution, no case folding, no Unicode normalization, no
 I/O, no CWD, no symlink resolution. Deciding which physical path a logical source
 resolves to, and under whose authority, belongs to the path-mechanics owners
-above this crate (#7621, #8185, #8198) and to the remaining authority-bound
-constructors in #7655. Percent-encoded material is well-formed here and passes;
+above this crate and to the remaining authority-bound
+path constructors. Percent-encoded material is well-formed here and passes;
 decoding is the caller's job.
 
 ## Invariants

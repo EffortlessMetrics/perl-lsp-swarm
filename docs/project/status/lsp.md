@@ -12,8 +12,8 @@
 ## Computed Metrics
 
 <!-- BEGIN: LSP_METRICS_BULLETS -->
-- **Proven rows**: 16 of 60 catalog-tracked advertised rows carry the `proven` earned-claim label (navigation count from `features.toml`; #7029)
-- **Protocol surface labels**: 18 of 125 declared rows carry implemented-or-preview labels (navigation only; #7029)
+- **Proven rows**: 16 of 57 catalog-tracked advertised rows carry the `proven` earned-claim label (navigation count from `features.toml`; #7029)
+- **Protocol surface labels**: 18 of 129 declared rows carry implemented-or-preview labels (navigation only; #7029)
 - **Evidence state**: not_proven — cells without an exact current behavior-evidence owner render `not_proven`, never inherited green
 
 **Target**: every promoted cell names exact current behavior and subject evidence (#6731)
@@ -25,12 +25,12 @@
 | Area | Declared proven/preview rows | Total rows |
 |------|---------------------------|------------|
 | debug | 0 | 24 |
-| notebook | 2 | 2 |
+| notebook | 2 | 3 |
 | protocol | 0 | 9 |
-| text_document | 15 | 53 |
+| text_document | 15 | 54 |
 | window | 0 | 9 |
-| workspace | 1 | 28 |
-| **Overall** | **18** | **125** |
+| workspace | 1 | 30 |
+| **Overall** | **18** | **129** |
 
 Counts are navigation only (#6731): maturity labels are declarations without per-row behavior-evidence ownership.
 <!-- END: COMPLIANCE_TABLE -->

@@ -73,20 +73,6 @@ mod operation;
 use operation::{NestedCoreUsage, ParserOperationContext};
 pub use operation::{ParserConfigIdentity, ParserOperationId};
 
-/// Strip Perl-style line comments from `qw()` content.
-///
-/// In Perl, `#` inside `qw()` begins a comment that extends to the end of the
-/// line (see perlop: "A # character within the list is treated as a comment
-/// character"). This function removes those comment segments so that
-/// `split_whitespace()` sees only the actual list elements.
-fn strip_qw_comments(content: &str) -> String {
-    content
-        .lines()
-        .map(|line| if let Some(pos) = line.find('#') { &line[..pos] } else { line })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Upper bound on retained test-only decision events, so a large source cannot
 /// grow the trace without bound.
 #[cfg(test)]
@@ -131,6 +117,11 @@ pub struct Parser<'a> {
     last_end_position: usize,
     /// Context flag for disambiguating for-loop initialization syntax
     in_for_loop_init: bool,
+    /// Context flag marking a `foreach`-style iterator target. Iterator
+    /// targets are not assignment expressions, so declaration tails that
+    /// form assignments (like contextual `x=`) stay disabled here while
+    /// C-style `for` initializers remain assignment-capable (#13486).
+    in_foreach_iterator: bool,
     /// Context flag for do-while condition parsing. While set, a `{` following
     /// the parsed condition expression must not be absorbed as a hash
     /// subscript: in `do { ... } while (cond) { ... }` the trailing block is a
@@ -157,6 +148,10 @@ pub struct Parser<'a> {
     class_grammar: ClassGrammarContext,
     /// Statement boundary tracking for indirect object syntax detection
     at_stmt_start: bool,
+    /// While parsing a `sort` comparator slot, a bareword must not be
+    /// promoted to a call by `looks_like_bare_call`: `sort mycmp LIST`
+    /// names its comparator, it does not call it with the list as args.
+    in_sort_comparator: bool,
     /// FIFO queue of pending heredoc declarations awaiting content collection
     pending_heredocs: VecDeque<PendingHeredoc>,
     /// Custom attributes registered by Attribute::Handlers declarations in this file.
@@ -246,11 +241,13 @@ impl<'a> Parser<'a> {
             block_depth: 0,
             last_end_position: 0,
             in_for_loop_init: false,
+            in_foreach_iterator: false,
             in_do_while_condition: false,
             do_while_paren_reject: false,
             do_while_paren_depth: 0,
             class_grammar: ClassGrammarContext::default(),
             at_stmt_start: true,
+            in_sort_comparator: false,
             pending_heredocs: VecDeque::new(),
             custom_attribute_handlers: HashSet::new(),
             attribute_handlers_enabled: false,
@@ -710,6 +707,8 @@ mod indirect_object_tests;
 #[cfg(test)]
 mod loop_control_tests;
 #[cfg(test)]
+mod proven_arm_shape_tests;
+#[cfg(test)]
 mod qualified_variable_subscript_tests;
 #[cfg(test)]
 mod regex_delimiter_tests;
@@ -731,17 +730,6 @@ mod unclosed_block_recovery_tests;
 mod use_overload_tests;
 #[cfg(test)]
 mod x_repetition_tests;
-
-#[cfg(test)]
-mod strip_qw_comments_unit_tests {
-    use super::strip_qw_comments;
-
-    #[test]
-    fn test_strip_basic() {
-        let result = strip_qw_comments("foo # comment\n bar");
-        assert_eq!(result.split_whitespace().collect::<Vec<_>>(), vec!["foo", "bar"]);
-    }
-}
 
 #[cfg(test)]
 mod operation_context_unit_tests {

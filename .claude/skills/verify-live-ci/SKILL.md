@@ -6,6 +6,14 @@ user-invocable: false
 
 # Verify live CI
 
+Request expensive qualification explicitly only after substantive review is current;
+follow the desired/staged/live request boundary in
+`docs/agents/DEVELOPMENT_METHOD.md`. Pushes and readiness changes are not qualification
+requests. Preserve mandatory selected tests and required producer/app identity. Budget
+the full qualifying route toward 20 minutes; report unmet timing or policy constraints
+without dropping proof. Recheck vision/current-repository fit and live protections
+before protected integration. UB Review remains paused; no Tower deployment is implied.
+
 This is Claude's live-integration fact and status-production skill. It does not perform,
 infer, or replace the substantive review owned by `review-pr`.
 
@@ -13,7 +21,8 @@ Read one current GitHub snapshot for the selected PR:
 
 - cumulative substantive review result;
 - draft/ready state and any still-valid draft purpose;
-- required checks discovered from live policy and relevant advisory checks;
+- required checks from the union of applicable branch rulesets AND classic branch
+  protection, including producer/app identity, plus selected advisory checks;
 - unresolved review threads and current `CHANGES_REQUESTED` reviews;
 - deliberately requested reviewers still pending;
 - mergeability, conflicts, queue/ruleset state, and explicit prerequisites;
@@ -96,7 +105,7 @@ NOT_PROVEN
 - `INTEGRATION_READY` means current protection/integration facts permit the irreversible
   transition.
 - `PR_IN_FLIGHT` means GitHub owns a named pending transition such as required checks,
-  requested review, queue state, or armed auto-merge.
+  requested review or an accepted qualification run; no routine queue/auto-merge.
 - `MERGE_BLOCKED` means a concrete conflict, failed required check, unresolved
   review thread of any author, current change request, ruleset failure, or
   prerequisite blocks merge.
@@ -108,10 +117,9 @@ Read the unresolved thread count with `scripts/reviews/threads <pr> --unresolved
 --json` and require `unresolved_count` of 0 before `INTEGRATION_READY`. The `main`
 ruleset sets `required_review_thread_resolution`, so a bot thread (Devin, Gemini,
 Codex, CodeRabbit, cubic), an outdated thread, or an editorial thread blocks the merge
-exactly like a substantive one, and an armed auto-merge with one open thread never
-fires and reports no failure. An unresolved review thread of any author is
+exactly like a substantive one. An unresolved review thread of any author is
 `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`; zero
-unresolved review threads is a precondition of arming auto-merge.
+unresolved review threads is a precondition of protected integration.
 
 A `ci-failure-triage` field such as
 `status_production_gap=fresh_integration_subject` is not terminal `NOT_PROVEN`; it is an
@@ -145,12 +153,10 @@ the established candidate writer alone performs it.
 5. **Material base movement changed a merge-tree subject and the old attempt cannot
    answer it.** Prefer an admissible exact-subject dispatch that can satisfy the missing
    required context, with the same read-back as action 3.
-6. **No admissible exact-subject route can evaluate the required changed merge tree and
-   the currentness contract's narrow fresh-trigger exception applies.** Authorize one
-   verified-clean empty commit through the established candidate writer. The writer
-   proves no file or mode change, pushes the expected branch, and returns the new head.
-   Re-read the PR head before waiting for the resulting required run. This is not a
-   retry-to-green mechanism and this skill does not mutate the branch directly.
+6. **No admissible exact-subject route can evaluate the required changed merge tree.**
+   Return terminal `NOT_PROVEN` with the missing producer, subject, capability or
+   reporting identity. Do not create an empty commit or push to summon qualification.
+   Ordinary pushes communicate development; they are not a qualification button.
 7. **No action can be proven admissible or persisted.** Return terminal `NOT_PROVEN`
    with the missing policy, subject, capability, reporting identity, or read-back. Do not
    guess by pushing or call an unobserved action in flight.
@@ -172,6 +178,26 @@ If read-back fails, is contradictory, or names another subject, preserve the act
 failure or return `NOT_PROVEN`. Do not take a second status-production action from the
 same snapshot; re-read only after the named wake event.
 
+## Terminal inspection and ownership
+
+For the selected late qualification, retain one accountable owner through terminal
+run/attempt inspection, then the separate vision/current-repository judgment and
+protected merge decision. Use supported completion events or bounded checks during
+the ordinary wait window. Do not return an ownerless `PR_IN_FLIGHT` merely because a
+worker ended. On a real interruption, name `continuation_owner`, `next_action`, the
+exact request/head/merge subject and run/attempt, pending contexts and `wake_event` in
+the existing handoff packet; require receiver acceptance before transferring ownership.
+Missing ownership is `NOT_PROVEN`, not a successful handoff. Do not add a state registry,
+recurring poller, or repeat unchanged snapshots.
+
+At terminal completion ask: did the selected tests actually execute on the admitted
+subject? Inspect result/log/artifact content, not only the badge. `SKIPPED`, `NEUTRAL`,
+`draft-no-proof`, and "no analysis executed" do not prove tests passed, even if a wrapper
+is green. Preserve not-applicable separately with policy evidence; mandatory selected
+proof still needs actual execution. Carry required union and reporting identity through
+terminal results; do not drop the slow tail. Then return the evidence to
+`merge-reconcile` for its final current-repository/vision and protection judgment.
+
 ## Live evidence classification
 
 Preserve success, failure, pending, not-applicable, cancelled, missing,
@@ -187,17 +213,14 @@ evidence rule:
   integration fact. Request a job rerun where appropriate without mutating the branch.
   Never rebase, push an empty commit, or replay unrelated CI merely to manufacture a
   current status;
-- a rerun of a merge-tree-evaluated check replays its original merge snapshot: after
-  material base movement (release bumps, fmt/clippy sweeps landing on main), a fresh
-  trigger (empty-commit head bump, e.g. `ci: re-request fresh merge-tree checks`)
-  re-evaluates the current tree and is the honest action; the bound is at most one
-  fresh trigger per observed material base movement — never per wait cycle — and the
-  accountable root owns the action. The empty-commit ban covers
-  manufacturing a current status on an unchanged subject, not re-evaluating a changed
-  merge tree (#12174, #12251, #12256, #12258 each unblocked only through the fresh
-  trigger). Advisory CI-Gate shard redness on that fresh tree is then a main-red
-  signal, not noise: query main's own head check-runs before repairing branch-locally
-  (#12357, #12311/#12312, #12374-class).
+- a rerun of a merge-tree-evaluated check replays its original merge snapshot. After
+  material base movement, request an admissible explicit producer for the changed
+  subject. If that producer is unavailable, no admissible exact-subject producer means
+  `NOT_PROVEN`; preserve the named capability blocker. Historical empty-commit
+  workarounds do not authorize push-triggered qualification under the current contract.
+  Query main's own head check-runs when evidence suggests a base-owned failure before
+  repairing branch-locally.
+
 
 Classify failures as candidate-owned, base-owned, integration interaction,
 test/oracle defect, instrument failure, environment/capacity, pending, or

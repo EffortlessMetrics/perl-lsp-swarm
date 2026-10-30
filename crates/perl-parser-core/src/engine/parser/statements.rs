@@ -31,6 +31,10 @@ impl<'a> Parser<'a> {
                     // `DoWhileTrailingBlock` joins them because the trailing
                     // `{` has no recovery that stays honest about source that
                     // real `perl` refuses to compile (#15649).
+                    // `CStyleForContinueBlock` joins them for the same reason
+                    // on C-style `for` (#16296).
+                    // `QualifiedLoopControlLabel` joins them for the same
+                    // reason on package-qualified loop labels (#16296).
                     if matches!(
                         e,
                         ParseError::RecursionLimit
@@ -39,6 +43,8 @@ impl<'a> Parser<'a> {
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                             | ParseError::DoWhileTrailingBlock { .. }
+                            | ParseError::CStyleForContinueBlock { .. }
+                            | ParseError::QualifiedLoopControlLabel { .. }
                     ) {
                         return Err(e);
                     }
@@ -353,6 +359,20 @@ impl<'a> Parser<'a> {
                     Ok(self.parse_word_or_expr(ctrl)?)
                 }
 
+                // `continue` at statement level is the when-block fall-through op
+                // (e.g. `given ($x) { when (1) { ...; continue } }`). It belongs
+                // with the loop-control siblings, but the LeftBrace guard keeps
+                // the post-loop `continue { BLOCK }` form (consumed by the
+                // surrounding while/until/for/foreach parser) from being
+                // misrouted into a labeled loop-control node.
+                TokenKind::Continue
+                    if self.tokens.peek_second().ok().map(|t| t.kind())
+                        != Some(TokenKind::LeftBrace) =>
+                {
+                    let ctrl = self.parse_loop_control()?;
+                    Ok(self.parse_word_or_expr(ctrl)?)
+                }
+
                 // Subroutines and modern OOP
                 TokenKind::Sub => {
                     let sub_node = self.parse_subroutine()?;
@@ -574,9 +594,16 @@ impl<'a> Parser<'a> {
             if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
                 let start = stmt.location.start.min(self.src_bytes.len());
                 let end = stmt.location.end.min(self.src_bytes.len());
-                let first_line_is_tag = std::str::from_utf8(&self.src_bytes[start..end])
-                    .map(|text| text.lines().next().map(str::trim) == Some(tag))
-                    .unwrap_or(false);
+                // A statement span can be inverted (start > end) on
+                // malformed input; clamping each end independently does
+                // not order them, and slicing an inverted range panics.
+                let first_line_is_tag = if start <= end {
+                    std::str::from_utf8(&self.src_bytes[start..end])
+                        .map(|text| text.lines().next().map(str::trim) == Some(tag))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
                 if first_line_is_tag {
                     self.heredoc_recovery_tag = None;
                 }
@@ -680,7 +707,13 @@ impl<'a> Parser<'a> {
         if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
             let start = stmt.location.start.min(self.src_bytes.len());
             let end = stmt.location.end.min(self.src_bytes.len());
-            let source = std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("");
+            // Same inverted-span guard as the semicolon path above: an
+            // inverted range slices to nothing rather than panicking.
+            let source = if start <= end {
+                std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("")
+            } else {
+                ""
+            };
             if source.trim() == tag {
                 // Pure delimiter line: the body ends here; skip it.
                 self.heredoc_recovery_tag = None;
@@ -696,15 +729,13 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // A contextual repetition `x` after an expression is a potential infix
-        // continuation, not unexpected residue: `$value x` may still form
-        // repetition, and the repetition tests pin the split-statement
-        // silence for trivia-separated `x =` (`whitespace_does_not_form_`
-        // `repetition_assignment`, #13179). The statement loop resolves the
-        // leftover exactly as before. (The lexer keeps `x` contextual, so it
-        // arrives here as `Identifier("x")`; see `consume_assignment_operator`.)
+        // The contextual infix owner distinguishes an invalid operand from a
+        // continuation it cannot parse. Do not turn its unsupported operand
+        // forms into fabricated syntax errors, or let an invalid operand
+        // masquerade as a second clean statement.
         if self.peek_kind() == Some(TokenKind::Identifier)
             && self.tokens.peek().is_ok_and(|token| token.text.as_ref() == "x")
+            && self.repetition_rhs_disposition()? != RepetitionRhsDisposition::InvalidOperand
         {
             return Ok(());
         }
@@ -1359,6 +1390,7 @@ impl<'a> Parser<'a> {
     ) -> ParseResult<Node> {
         let binary_operator_starts_missing_arg =
             self.peek_kind().is_some_and(Self::is_binary_operator)
+                && !self.peek_is_autoquoted_word_operator()
                 && !(Self::is_optional_arg_builtin(func_name)
                     && self.is_explicit_sub_sigil_argument_start());
         let omit_optional_arg = allow_no_args
@@ -1375,17 +1407,22 @@ impl<'a> Parser<'a> {
         // Identifier tokens, so `is_binary_operator` won't catch them. When a
         // nullary builtin like `ref` is followed by one of these, don't consume
         // the operator as an argument -- let it become a binary operator instead.
-        let next_is_str_cmp_op = self.peek_kind() == Some(TokenKind::Identifier)
-            && self
-                .tokens
-                .peek()
-                .is_ok_and(|t| matches!(t.text.as_ref(), "eq" | "ne" | "lt" | "le" | "gt" | "ge"));
+        // Before `=>` they are autoquoted arguments (`ref eq => 1`, #16691).
+        let next_is_str_cmp_op =
+            self.peek_is_identifier_string_comparison() && !self.is_keyword_before_fat_arrow();
 
-        let args = if self.is_at_statement_end() || omit_optional_arg || next_is_str_cmp_op {
+        let mut args = if self.is_at_statement_end() || omit_optional_arg || next_is_str_cmp_op {
             vec![]
         } else {
             vec![self.parse_shift()?]
         };
+        // `ref cmp => 1` is `(ref('cmp'), 1)`: autoquote the unary argument and
+        // leave `=>` as the surrounding comma (#16691).
+        if self.peek_kind() == Some(TokenKind::FatArrow)
+            && let Some(arg) = args.last_mut()
+        {
+            self.auto_quote_bareword_before_fat_comma(arg)?;
+        }
 
         if args.is_empty() && !allow_no_args && !next_is_str_cmp_op {
             return Err(ParseError::unexpected(
@@ -1434,9 +1471,10 @@ impl<'a> Parser<'a> {
     /// Parse simple statement (print, die, next, last, etc. with their arguments)
     fn parse_simple_statement(&mut self) -> ParseResult<Node> {
         // In Perl, any bareword before `=>` is autoquoted as a hash key.
-        // When a builtin name (e.g. `log`, `abs`, `die`) appears before `=>`,
-        // skip the builtin dispatch and fall through to expression parsing.
-        // This handles patterns like `has log => sub { ... }`.
+        // When a builtin name (e.g. `log`, `abs`, `die`) is itself followed by
+        // `=>` at statement start, skip builtin dispatch so `log => 1`
+        // autoquotes. Nested `has log => ...` is admitted by
+        // `looks_like_bare_call`, not this statement-start guard.
         if self.is_keyword_before_fat_arrow() {
             return self.parse_expression();
         }
@@ -1689,6 +1727,14 @@ impl<'a> Parser<'a> {
                                     self.parse_args()?
                                 };
                                 args.extend(paren_args);
+                            } else if func_name.as_ref() == "sort" {
+                                // `sort mycmp LIST`: the first slot names the
+                                // comparator sub, so bare-call promotion is
+                                // suppressed while it is parsed.
+                                self.in_sort_comparator = true;
+                                let first = self.parse_assignment_or_declaration();
+                                self.in_sort_comparator = false;
+                                args.push(first?);
                             } else {
                                 // For builtins, use parse_assignment_or_declaration to handle
                                 // my/our/local/state declarations inside argument lists
@@ -1907,7 +1953,10 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649). `CStyleForContinueBlock` joins them
+                        // for the same reason on C-style `for`, and
+                        // `QualifiedLoopControlLabel` on qualified labels
+                        // (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -1915,6 +1964,8 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::CStyleForContinueBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }
@@ -2084,6 +2135,9 @@ impl<'a> Parser<'a> {
         // Check for optional label.
         // Labels may be ordinary identifiers, and phase keywords are also
         // valid labels when used in labeled-loop control (`last CHECK`).
+        // `continue` never takes a label in real Perl (`continue OUTER` is a
+        // syntax error), so an identifier after it is rejected rather than
+        // attached (#16285).
         let label = if matches!(
             self.peek_kind(),
             Some(TokenKind::Identifier)
@@ -2093,11 +2147,43 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Init)
                 | Some(TokenKind::Unitcheck)
         ) {
+            let label_pos = self.current_position();
             let label_token = self.consume_token()?;
+            // Labels are plain identifiers: a package-qualified name is a
+            // syntax error in real Perl. Fail outright rather than
+            // attaching it — the name would otherwise re-parse as a
+            // package call and silently accept what `perl` refuses (#16296).
+            if label_token.text.contains("::") {
+                return Err(ParseError::QualifiedLoopControlLabel { location: label_pos });
+            }
+            if op == "continue" {
+                return Err(ParseError::syntax("`continue` does not take a label", label_pos));
+            }
             Some(label_token.text.to_string())
         } else {
             None
         };
+
+        // An empty parenthesized invocation (`next()`, `continue()`) is one
+        // loop-control node in real Perl; anything else in the parens
+        // (`continue(1)`) or parens after a label (`last OUTER()`) is a
+        // syntax error (#16285).
+        if label.is_none() && self.peek_kind() == Some(TokenKind::LeftParen) {
+            self.consume_token()?;
+            if self.peek_kind() == Some(TokenKind::RightParen) {
+                self.consume_token()?;
+            } else {
+                return Err(ParseError::syntax(
+                    "loop-control operators take no arguments",
+                    self.current_position(),
+                ));
+            }
+        } else if self.peek_kind() == Some(TokenKind::LeftParen) {
+            return Err(ParseError::syntax(
+                "loop-control labels take no argument list",
+                self.current_position(),
+            ));
+        }
 
         let end = self.previous_position();
         self.charge_node(NodeKind::LoopControl { op, label }, SourceLocation { start, end })

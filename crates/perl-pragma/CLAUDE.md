@@ -8,7 +8,7 @@ This file provides guidance to Claude Code when working with code in this crate.
 
 **Purpose**: Walk an AST to build a range-indexed map of effective pragma state (strict/warnings, utf8/encoding/locale, feature flags, builtin imports, and version-implied semantics), enabling scope-aware queries at any byte offset.
 
-**Version**: workspace (currently 0.12.4)
+**Version**: tracks the workspace version.
 
 ## Commands
 

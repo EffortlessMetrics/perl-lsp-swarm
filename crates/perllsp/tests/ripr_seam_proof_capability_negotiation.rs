@@ -11,6 +11,11 @@
 mod real_process;
 
 use anyhow::{Result, ensure};
+use perl_lsp::features::policy::FeatureProfile;
+use perl_lsp::protocol::capabilities::{BuildFlags, capabilities_json};
+use perl_lsp::protocol::effective_surface::{
+    CapabilityFamily, EffectiveLspSurface, FamilyOutcome, SuppressionReason, SurfaceInputs,
+};
 use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -94,20 +99,32 @@ fn initialize_once(
 }
 
 #[test]
-fn workspace_folder_support_requires_boolean_true() -> Result<()> {
+fn workspace_folder_server_support_is_client_independent() -> Result<()> {
+    // #8161: `workspaceFolders.supported` describes whether the server
+    // implements workspace-folder semantics, so the exact process must
+    // advertise `true` for every client shape. The client's own bit (absent,
+    // explicit false, malformed, or supported) is a client limitation and
+    // never rewrites server truth.
     let cases = [
-        (json!({}), false, "absent"),
-        (json!({ "workspace": { "workspaceFolders": false } }), false, "explicit false"),
-        (json!({ "workspace": { "workspaceFolders": "true" } }), false, "malformed string"),
-        (json!({ "workspace": { "workspaceFolders": true } }), true, "supported true"),
+        (json!({}), "absent"),
+        (json!({ "workspace": { "workspaceFolders": false } }), "explicit false"),
+        (json!({ "workspace": { "workspaceFolders": "true" } }), "malformed string"),
+        (json!({ "workspace": { "workspaceFolders": true } }), "supported true"),
     ];
 
-    for (capabilities, expected, label) in cases {
+    for (capabilities, label) in cases {
         let response = initialize_once("capability-matrix", capabilities, None)?;
         ensure!(
             response.pointer("/result/capabilities/workspace/workspaceFolders/supported")
-                == Some(&json!(expected)),
-            "workspaceFolders negotiation mismatch for {label}: {response}"
+                == Some(&json!(true)),
+            "server workspaceFolders.supported must stay true for client shape ({label}): \
+             {response}"
+        );
+        ensure!(
+            response.pointer("/result/capabilities/workspace/workspaceFolders/changeNotifications")
+                == Some(&json!(true)),
+            "changeNotifications must agree with the compiled-in dispatch route ({label}): \
+             {response}"
         );
     }
     Ok(())
@@ -291,6 +308,105 @@ fn code_action_documentation_requires_boolean_true() -> Result<()> {
         );
         if let Some(entries) = documentation {
             ensure!(!entries.is_empty(), "advertised documentation must have entries");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_symbol_disabled_parent_withdraws_resolve_advertisement() -> Result<()> {
+    for options in [
+        json!({ "disabledFeatures": ["lsp.workspace_symbol"] }),
+        json!({ "perl-lsp": { "disabledFeatures": ["lsp.workspace_symbol"] } }),
+        json!({ "perl_lsp": { "disabledFeatures": ["lsp.workspace_symbol"] } }),
+    ] {
+        let mut client = RealProcessClient::spawn_exact()?;
+        let response = initialize(&mut client, "capability-matrix", json!({}), Some(options))?;
+        let id = json!("disabled-workspace-symbol");
+        let symbols =
+            client.request(id.clone(), "workspace/symbol", json!({ "query": "" }), timeout())?;
+        ensure!(symbols.get("id") == Some(&id), "workspace-symbol ID mismatch: {symbols}");
+        ensure!(
+            symbols.pointer("/error/code") == Some(&json!(-32601)),
+            "disabled workspace-symbol route must return MethodNotFound: {symbols}"
+        );
+        ensure!(
+            response.pointer("/result/capabilities/workspaceSymbolProvider").is_none(),
+            "disabled workspace-symbol parent remained advertised: {response}"
+        );
+        finish(&mut client)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_symbol_enabled_parent_retains_resolve_advertisement() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    let response = initialize(&mut client, "capability-matrix", json!({}), None)?;
+    ensure!(
+        response.pointer("/result/capabilities/workspaceSymbolProvider/resolveProvider")
+            == Some(&json!(true)),
+        "enabled workspace-symbol parent lost resolve advertisement: {response}"
+    );
+    let id = json!("enabled-workspace-symbol");
+    let symbols =
+        client.request(id.clone(), "workspace/symbol", json!({ "query": "" }), timeout())?;
+    assert_success_response(&symbols, &id, "workspace/symbol")?;
+    ensure!(
+        symbols.get("result").is_some_and(Value::is_array),
+        "enabled workspace-symbol route must return its result array: {symbols}"
+    );
+    finish(&mut client)
+}
+
+#[test]
+fn workspace_symbol_builder_requires_parent_for_every_resolve_flag() {
+    for (parent, resolve, expected) in [
+        (false, false, None),
+        (false, true, None),
+        (true, false, Some(json!(true))),
+        (true, true, Some(json!({ "resolveProvider": true }))),
+    ] {
+        let mut flags = BuildFlags::all();
+        flags.workspace_symbol = parent;
+        flags.workspace_symbol_resolve = resolve;
+        let capabilities = capabilities_json(flags);
+        assert_eq!(
+            capabilities.get("workspaceSymbolProvider"),
+            expected.as_ref(),
+            "workspace-symbol advertisement for parent={parent}, resolve={resolve}"
+        );
+    }
+}
+
+#[test]
+fn workspace_symbol_model_follows_parent_suppression() -> Result<()> {
+    for profile in [FeatureProfile::GaLock, FeatureProfile::Production, FeatureProfile::All] {
+        for disabled in [false, true] {
+            let mut inputs = SurfaceInputs::new_subject(profile);
+            if disabled {
+                inputs.disabled_feature_ids.insert("lsp.workspace_symbol".to_string());
+            }
+            let surface = EffectiveLspSurface::build(&inputs)
+                .map_err(|error| anyhow::anyhow!("model construction refused: {error:?}"))?;
+            let expected = (!disabled).then(|| json!({ "resolveProvider": true }));
+            assert_eq!(
+                surface.server_capabilities.get("workspaceSymbolProvider"),
+                expected.as_ref(),
+                "workspace-symbol model advertisement for {profile:?}, disabled={disabled}"
+            );
+            let expected_family = if disabled {
+                FamilyOutcome::Suppressed(SuppressionReason::DisabledByConfiguration {
+                    feature_id: "lsp.workspace_symbol".to_string(),
+                })
+            } else {
+                FamilyOutcome::Static
+            };
+            assert_eq!(
+                surface.families.get(&CapabilityFamily::WorkspaceSymbol),
+                Some(&expected_family),
+                "workspace-symbol model disposition for {profile:?}, disabled={disabled}"
+            );
         }
     }
     Ok(())

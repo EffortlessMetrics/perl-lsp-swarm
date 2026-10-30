@@ -17,6 +17,11 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+  # #16168: the required `Perl LSP Rust Small Result` context previously reported only
+  # on PR and merge-queue heads and never on a landed commit, so no run ever verified
+  # what actually sits on main. Landed main commits now carry their own baseline run.
+  push:
+    branches: [main, master]
 
 permissions:
   actions: read
@@ -24,8 +29,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# #16168: push runs group per commit SHA. A shared refs/heads/main group with
+# cancel-in-progress: false lets each newly queued main-push run cancel the previously
+# pending one; per-SHA groups give every landed commit its own run. PR synchronize keeps
+# cancel-in-progress (#16141/#16187 cover why that flag stays off elsewhere).
 concurrency:
-  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  group: em-ci-routed-rust-${{ github.repository }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 env:
@@ -536,7 +545,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
@@ -607,7 +616,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
@@ -657,14 +666,16 @@ jobs:
           # --all insertions, reintroduced changed-file narrowing, verbose-header
           # misclassification, or a second unowned hosted formatter producer
           # must fail this required check. Draft-skip stays in the evaluate
-          # step (#10006).
+          # step (#10006), and so does the #16187 supersession discriminator,
+          # owned by scripts/ci/test_rust_small_supersession.py.
           python3 -m unittest \
             scripts/ci/test_rustfmt_check.py \
             scripts/ci/test_rustfmt_required_workflow.py \
             scripts/ci/test_rust_small_route_contract.py \
             scripts/ci/test_hosted_formatter_producers.py \
             scripts/ci/test_rust_small_probe_gate.py \
-            scripts/ci/test_main_red_refusal.py
+            scripts/ci/test_main_red_refusal.py \
+            scripts/ci/test_rust_small_supersession.py
 
       - name: Probe main-red refusal
         if: >-
@@ -681,6 +692,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
           CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
+          # pull_request executes ci.yml from the synthetic merge tree
+          # (github.sha), not the PR head. A base-only ci.yml advancement
+          # on main must remain comparable. merge_group uses the
+          # merge-group head. Never fall back to CANDIDATE_SHA here.
+          EFFECTIVE_WORKFLOW_TREE: ${{ github.event_name == 'pull_request' && github.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
         run: |
           set -u
           probe_dir="$(mktemp -d)"
@@ -761,10 +777,13 @@ jobs:
                 : >"$probe_dir/candidate-workflow-runs.json"
                 api_ok=false
               }
-            CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$CANDIDATE_SHA" candidate)" || {
-              CANDIDATE_WORKFLOW_SHA=""
-              api_ok=false
-            }
+            CANDIDATE_WORKFLOW_SHA=""
+            if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
+              CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {
+                CANDIDATE_WORKFLOW_SHA=""
+                api_ok=false
+              }
+            fi
           else
             echo "::warning::${EVENT_NAME} has no PR/merge-group subject SHA; main-red refusal probe is non-applicable"
             : >"$probe_dir/main-runs.json"
@@ -826,9 +845,12 @@ jobs:
               >"$probe_dir/candidate-workflow-runs.json" 2>"$probe_dir/candidate-workflow-runs.err" || {
                 : >"$probe_dir/candidate-workflow-runs.json"
               }
-            CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$CANDIDATE_SHA" candidate)" || {
-              CANDIDATE_WORKFLOW_SHA=""
-            }
+            CANDIDATE_WORKFLOW_SHA=""
+            if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
+              CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {
+                CANDIDATE_WORKFLOW_SHA=""
+              }
+            fi
             run_refusal
             refusal_status=$?
           done
@@ -841,9 +863,112 @@ jobs:
             exit 1
           fi
 
+      # #16187: on every synchronize push the concurrency group above cancels
+      # this workflow's in-flight lanes, and the aggregate then evaluated the
+      # cancellation as a red required check whose cause could not be stated —
+      # the exact gap #5460 recorded for the routed gates. The discriminator
+      # #16186 landed for ci.yml's advisory aggregate is ported here: resolve
+      # this run's tested head, the pull request's live head, and a demonstrable
+      # replacement run, so the cancelled-lane branch below can say "superseded"
+      # only when the evidence supports it.
+      #
+      # The pull request is resolved by its number, not by branch name:
+      # `github.head_ref` is fork-controlled, which is how a branch called
+      # "main" once made every fork PR look superseded (#5981). Both SHAs come
+      # from the API rather than the event payload, because this job must not
+      # read candidate-controlled pull-request head data (#12911) — the run
+      # object's `head_sha` is the head this run actually tested.
+      #
+      # Fail closed: an unresolved head stays unexported and the gate stays
+      # red, which is the behaviour before this step existed.
+      - name: Resolve the tested head, the live head, and the replacement run
+        if: always() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          # `github.token` rather than `secrets.GITHUB_TOKEN`: the same
+          # installation token, reached without a secret reference in a
+          # PR-triggered workflow, which `workflow_security_ratchet.py` flags
+          # as `pr_secret_reference`. The job's own `permissions:` block is
+          # what bounds the authority, and it is read-only.
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # One read supplies both this run's tested head and its workflow id.
+          # The workflow id keeps the replacement lookup below to *this*
+          # workflow, so a run of some other workflow on the newer head cannot
+          # be mistaken for the replacement.
+          run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" 2>/dev/null || true)"
+          tested="$(printf '%s' "$run_json" | jq -r '.head_sha // empty' 2>/dev/null || true)"
+          workflow_id="$(printf '%s' "$run_json" | jq -r '.workflow_id // empty' 2>/dev/null || true)"
+          created="$(printf '%s' "$run_json" | jq -r '.created_at // empty' 2>/dev/null || true)"
+          latest="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+
+          # A moved head shows the candidate changed; it does not show that
+          # anything is proving the new one, so a replacement run is looked up
+          # on the live head and its id bound. Queried only once the head has
+          # actually moved, so this run can never find itself. The endpoint
+          # constrains workflow and head SHA; event, pull-request association
+          # and chronology it does not. `scripts/ci/replacement_run_filter.jq`
+          # applies those three identities. Read its immutable base revision,
+          # never the candidate checkout, so a PR cannot invent the evidence
+          # that gives its cancellation the narrower superseded diagnostic.
+          replacement=""
+          if [[ "${latest}" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "${tested}" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "${latest}" != "${tested}" ]] \
+            && [[ "${workflow_id}" =~ ^[0-9]+$ ]] \
+            && [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] \
+            && [[ "${created}" =~ ^[0-9T:Z-]+$ ]]; then
+            trusted_filter=""
+            if [[ "${BASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+              && trusted_filter="$(mktemp)" \
+              && gh api \
+                  "repos/${REPOSITORY}/contents/scripts/ci/replacement_run_filter.jq?ref=${BASE_SHA}" \
+                  --jq '.content // empty' 2>/dev/null \
+                  | tr -d '\n' | base64 --decode >"$trusted_filter" \
+              && [ -s "$trusted_filter" ]; then
+              # Arguments are data; only the trusted base supplies the program.
+              replacement="$(gh api \
+                "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${latest}&event=pull_request&per_page=30" \
+                2>/dev/null \
+                | jq -r --argjson pr "${PR_NUMBER}" --arg since "${created}" \
+                    -f "$trusted_filter" 2>/dev/null || true)"
+            else
+              echo "::notice::Trusted base replacement filter unavailable; no replacement is proven."
+            fi
+            if [ -n "$trusted_filter" ]; then rm -f "$trusted_filter"; fi
+          fi
+
+          # Only well-formed values are exported. An unexported variable reads
+          # as unknown — never as "different, therefore newer" — and leaves the
+          # gate red, which is the safe direction for all three.
+          for pair in "RUN_HEAD_SHA=${tested}" "LATEST_HEAD_SHA=${latest}"; do
+            if [[ "${pair#*=}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "$pair" >> "$GITHUB_ENV"
+            else
+              echo "::notice::Unresolved ${pair%%=*}; the gate stays red."
+            fi
+          done
+          if [[ "${replacement}" =~ ^[0-9]+$ ]]; then
+            echo "REPLACEMENT_RUN_ID=${replacement}" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No replacement run for the live head; the gate stays red."
+          fi
+
       - name: Evaluate routed result
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_NAME: Perl LSP Rust Small Result
+          # .ci/policies/required-checks.toml binds this required context to the
+          # GitHub Actions integration; only its check runs are proof for it.
+          REQUIRED_CHECK_APP_ID: "15368"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
           ROUTE_RESULT: ${{ needs.route-rust-small.result }}
           ROUTER_TARGET: ${{ needs.route-rust-small.outputs.target }}
@@ -852,6 +977,8 @@ jobs:
           ROUTER_FALLBACK_ALLOWED: ${{ needs.route-rust-small.outputs.fallback_allowed }}
           CX53_RESULT: ${{ needs.rust-small-cx53.result }}
           CX43_RESULT: ${{ needs.rust-small-cx43.result }}
+          CX53_PREFLIGHT_OK: ${{ needs.rust-small-cx53.outputs.preflight_ok }}
+          CX43_PREFLIGHT_OK: ${{ needs.rust-small-cx43.outputs.preflight_ok }}
           GITHUB_RESULT: ${{ needs.rust-small-github.result }}
           FALLBACK_RESULT: ${{ needs.rust-small-fallback.result }}
         run: |
@@ -864,6 +991,8 @@ jobs:
           echo "router_fallback_allowed=${ROUTER_FALLBACK_ALLOWED:-}"
           echo "cx53_result=${CX53_RESULT:-}"
           echo "cx43_result=${CX43_RESULT:-}"
+          echo "cx53_preflight_ok=${CX53_PREFLIGHT_OK:-}"
+          echo "cx43_preflight_ok=${CX43_PREFLIGHT_OK:-}"
           echo "github_result=${GITHUB_RESULT:-}"
           echo "fallback_result=${FALLBACK_RESULT:-}"
 
@@ -877,14 +1006,184 @@ jobs:
             echo "- router_fallback_allowed: \`${ROUTER_FALLBACK_ALLOWED:-}\`"
             echo "- cx53_result: \`${CX53_RESULT:-}\`"
             echo "- cx43_result: \`${CX43_RESULT:-}\`"
+            echo "- cx53_preflight_ok: \`${CX53_PREFLIGHT_OK:-}\`"
+            echo "- cx43_preflight_ok: \`${CX43_PREFLIGHT_OK:-}\`"
             echo "- github_result: \`${GITHUB_RESULT:-}\`"
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # IS_DRAFT_PR is the webhook's snapshot of the pull request, taken
+          # when this run was created. Marking a pull request ready does not
+          # cancel a run already in flight: the concurrency policy above
+          # cancels only when a new head arrives, deliberately, and
+          # `workflow_trigger_lint` enforces that. So this aggregator can
+          # evaluate a draft snapshot minutes after the pull request stopped
+          # being a draft, and it can land after the aggregator of the run
+          # that actually produced proof.
+          #
+          # Measured on #16094, head c9bf380f4: the run that executed the lane
+          # posted `Perl LSP Rust Small Result` success at 04:55:33; the
+          # superseded draft run posted draft-no-proof at 04:56:05 and left a
+          # head with real, passing proof blocked (#16101).
+          #
+          # So re-read the live draft state before claiming draft-no-proof.
+          # When the pull request is no longer a draft this run has no verdict
+          # of its own to assert — its lane was skipped for a state that no
+          # longer exists — so it mirrors what the run that produces proof for
+          # this head has already published, and otherwise defers to it. Any
+          # read failure keeps the existing fail-closed draft verdict.
+          live_draft_state() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/pulls/${PR_NUMBER:-}" \
+              --jq '.draft'
+          }
+
+          # The newest conclusion another run has already published for this
+          # check on this head. This job's own check run is still in progress,
+          # so the completed filter cannot match it. The check name carries
+          # spaces, so it goes through `-f` rather than into the path.
+          # Mirror only this required context's own authority. Two things the
+          # check name alone does not establish (#16105 review):
+          #
+          #   1. Any installed GitHub App may publish a check run of any name.
+          #      `.ci/policies/required-checks.toml` binds both required
+          #      contexts to GitHub Actions integration 15368, so a same-name
+          #      success from another app is not proof for this context.
+          #   2. Which attempt speaks for the head, when there is more than one.
+          #   3. Whether the response carries every attempt there is.
+          #
+          # This run is excluded from its own denominator: it is the stale
+          # snapshot asking whether it was superseded, and its own check run is
+          # in progress, so leaving it in would always select it and the answer
+          # would always be "no proof".
+          #
+          # The second question has no answer in the Checks REST contract. `id`
+          # is defined there as unique, not as chronological; `started_at` is
+          # absent on a queued attempt, and every coercion of that absent value
+          # is wrong in one direction or the other; `completed_at` lets a slow
+          # older attempt outrank a faster newer one. Ordering on any of them
+          # would rest a required gate on an invariant the API does not promise
+          # (#16105 review).
+          #
+          # So this does not order the attempts. It requires them to agree:
+          # every other attempt must be completed, and every one of them must
+          # be a success. A failure or a cancellation is a contradiction and
+          # prints nothing, which the caller treats as NOT_PROVEN. A false green
+          # is then unreachable without a real success and no contradiction,
+          # which is the property this mirror needs; chronology was only ever a
+          # means to it.
+          #
+          # Refusing to agree never invents a red this head did not already
+          # have: a contradiction means a real failed or cancelled attempt of
+          # this same required context is already published on this SHA, so the
+          # context is red with or without this run, and whatever re-run clears
+          # that attempt publishes a check newer than this one as well.
+          #
+          # The third question is answered by refusing the read. `per_page` caps
+          # at 100 and this request is not paginated, so when `total_count`
+          # exceeds what came back, agreement would be claimed over a population
+          # this job never saw. That reads as `truncated` and withholds proof
+          # rather than agreeing with a partial page (#16105 review).
+          #
+          # `filter` stays at its default of `latest`, deliberately. The REST
+          # contract defines `latest` as the most recent check runs, which drops
+          # an attempt superseded inside one check suite — what a re-run is. The
+          # attempt that was re-run does not contradict the one that replaced it,
+          # and `filter=all` would keep the old failure and hold a re-run-to-green
+          # head red for good. That much is documented rather than measured. What
+          # is measured on this repository is the other half: attempts from
+          # separate workflow runs are separate suites and appear under either
+          # value — two runs of one required context on one head, same two rows
+          # both ways.
+          mirror_read() {
+            gh api -X GET \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY:-}/commits/${HEAD_SHA:-}/check-runs" \
+              -f "check_name=${CHECK_NAME:-}" \
+              -F per_page=100 \
+              --jq 'if (.total_count // 0) > (.check_runs | length) then "truncated"
+                    else [.check_runs[]
+                          | select((.app.id // -1) == (env.REQUIRED_CHECK_APP_ID | tonumber))
+                          | select(((.details_url // "")
+                                    | contains("/actions/runs/" + env.GITHUB_RUN_ID + "/")) | not)]
+                         | if length == 0 then "pending"
+                           elif any(.[]; .status != "completed") then "pending"
+                           elif all(.[]; .conclusion == "success") then "success"
+                           else "contradicted" end
+                    end'
+          }
+
+          # The first read is usually too early to mean anything. The stale
+          # snapshot starts within seconds of the ready flip, and on #16172 its
+          # failure was published three seconds *before* the ready run's checks
+          # existed at all, so the read finds nothing and calls a head with no
+          # evidence yet "no proof" (#16105 review). Polling instead of reading
+          # once removes that window.
+          #
+          # It does not remove the long one, and this does not claim to. The
+          # required lane itself takes tens of minutes, while this aggregator
+          # job is budgeted in single-digit ones — the RIPR gate's own job
+          # allows five — so waiting for that lane is not available here at any
+          # honest budget. The stale red then stands until the real run
+          # publishes a newer check run for this name and supersedes it. That
+          # residual belongs to #16101, whose fix is for a draft-routed run to
+          # publish nothing on a required context rather than a verdict.
+          #
+          # So the budget is the creation gap, not the lane: seconds of margin
+          # over a gap measured in seconds. Its timeout is fail-closed — it
+          # prints nothing and the gate stays red, as an unanswerable read
+          # does — and it stays far inside the smaller of the two jobs.
+          published_conclusion() {
+            local waited=0
+            local poll="${MIRROR_POLL_SECONDS:-5}"
+            # A zero or non-numeric interval would make the loop spin without
+            # ever reaching the budget, so it falls back to the default.
+            [ "$poll" -ge 1 ] 2>/dev/null || poll=5
+            while : ; do
+              case "$(mirror_read || echo unreadable)" in
+                success)
+                  printf 'success'
+                  return 0
+                  ;;
+                pending) ;;
+                *) return 0 ;;
+              esac
+              if [ "$waited" -ge "${MIRROR_WAIT_SECONDS:-60}" ]; then
+                return 0
+              fi
+              sleep "$poll"
+              waited=$(( waited + poll ))
+            done
+          }
 
           # Draft routing saves work but produces no required-check proof.
           # Preserve existing non-draft skipped routing.
           if [ "$ROUTE_RESULT" = "skipped" ]; then
             if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
+              draft_now="$(live_draft_state || true)"
+              if [ "$draft_now" = "false" ]; then
+                # Mirror only an authoritative success. Anything else — a
+                # failure, a cancellation, or nothing published yet — is
+                # missing or contradictory evidence, which AGENTS.md makes
+                # NOT_PROVEN, so it stays non-successful and the run that
+                # produces proof overwrites it. Publishing success on an empty
+                # read would let a stale run leave a green required check on a
+                # head that was never analyzed.
+                published="$(published_conclusion || true)"
+                if [ "$published" = "success" ]; then
+                  echo "RUST_SMALL_GATE_VERDICT=superseded-draft-snapshot"
+                  echo "- verdict: superseded-draft-snapshot (mirroring published success)" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; mirroring the success already published for ${HEAD_SHA:-}."
+                  exit 0
+                fi
+                echo "RUST_SMALL_GATE_VERDICT=superseded-no-proof"
+                echo "- verdict: superseded-no-proof (NOT_PROVEN; published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::This run carries a stale draft snapshot and no passing proof has been published for ${HEAD_SHA:-} (published: ${published:-none}); the run that analyzes this head owns the verdict."
+                exit 1
+              fi
               echo "RUST_SMALL_GATE_VERDICT=draft-no-proof"
               echo "::error::Rust Small draft route skipped: NOT_PROVEN; no analysis was executed."
               echo "- verdict: draft-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"
@@ -907,20 +1206,69 @@ jobs:
           # exits 1 printing nothing but "Process completed with exit code 1",
           # indistinguishable from a real failure without opening the log (#5460).
           #
-          # The cause is deliberately not asserted. The usual one is a newer push
-          # superseding this run via the concurrency group's cancel-in-progress,
-          # but a manual or API cancellation produces an identical `cancelled`
-          # result and no newer run exists in that case. Nothing available here
-          # distinguishes them, so the message names the outcome and offers
-          # supersession as the likely cause rather than directing the reader to
-          # a run that may not exist.
-          for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
+          # The cause IS now classified, on the discriminator #16187 ports from
+          # the advisory aggregate (#16186): the resolve step above binds this
+          # run's tested head, the pull request's live head, and a replacement
+          # run of this workflow for the pull request on the live head. The
+          # cancelled branch splits on that evidence, and every branch here
+          # stays red — #5460's rule that no proof never becomes green is
+          # unchanged, so no forgiven head can carry a green that a later
+          # force-push could resurrect (the #16187 blocking precondition).
+          #
+          # - A failure next to a cancellation takes precedence unless the
+          #   selected primary explicitly failed preflight. That primary ran
+          #   no Rust proof; missing/malformed preflight evidence is unknown.
+          #   Other failures remain failures, without guessing their cause.
+          # - `superseded` requires three facts together: this run's tested head
+          #   and the live head are both well-formed 40-hex object names that
+          #   differ, AND a replacement run id was bound. An unresolved or
+          #   malformed value reads as unknown, never as "different, therefore
+          #   newer". Both outcomes stay red; without all three facts, no
+          #   unsupported replacement claim is made.
+          # - A cancellation with no such evidence is `cancelled-no-verdict` and
+          #   names only what the inputs support: no newer run was identified.
+          any_cancelled=false
+          any_failure=false
+          for lane in CX53 CX43 GITHUB FALLBACK; do
+            result_var="${lane}_RESULT"
+            preflight_var="${lane}_PREFLIGHT_OK"
+            lane_result="${!result_var}"
             if [ "$lane_result" = "cancelled" ]; then
-              echo "::error::Rust Small lane cancelled — no proof produced for this SHA. This is NOT a test failure. Most often a newer push superseded this run; a manual or API cancellation looks the same here. If a newer run exists for this PR, that run is authoritative; otherwise re-run this one."
-              echo "Perl LSP Rust Small Result: cancelled (no proof for this SHA)"
-              exit 1
+              any_cancelled=true
+            elif [ "$lane_result" = "failure" ]; then
+              if [[ "$lane" = CX53 || "$lane" = CX43 ]] \
+                && [ "${ROUTER_TARGET:-}" = "${lane,,}" ] \
+                && [ "${!preflight_var:-}" = "false" ]; then
+                echo "::notice::${lane} preflight failed; Rust proof did not run on that primary."
+              else
+                any_failure=true
+              fi
             fi
           done
+
+          if [ "$any_cancelled" = "true" ]; then
+            if [ "$any_failure" = "true" ]; then
+              echo "::error::Rust Small lane failed and another was cancelled. Inspect the failed lane's log for its cause; the cancelled lane produced no evidence either way."
+              echo "Perl LSP Rust Small Result: failure (a lane failed alongside a cancelled lane)"
+              exit 1
+            fi
+            run_head="${RUN_HEAD_SHA:-}"
+            latest_head="${LATEST_HEAD_SHA:-}"
+            replacement="${REPLACEMENT_RUN_ID:-}"
+            if [[ "$run_head" =~ ^[0-9a-f]{40}$ ]] \
+              && [[ "$latest_head" =~ ^[0-9a-f]{40}$ ]] \
+              && [ "$run_head" != "$latest_head" ] \
+              && [[ "$replacement" =~ ^[0-9]+$ ]]; then
+              echo "RUST_SMALL_GATE_VERDICT=superseded"
+              echo "::error::Rust Small lane cancelled — no proof was produced for ${run_head}. The pull request has moved to ${latest_head}, and run ${replacement} is this workflow's pull_request run for that head, so that run owns the verdict. This is NOT a test failure."
+              echo "Perl LSP Rust Small Result: cancelled (superseded — run ${replacement} on ${latest_head} owns the verdict)"
+              exit 1
+            fi
+            echo "RUST_SMALL_GATE_VERDICT=cancelled-no-verdict"
+            echo "::error::Rust Small lane cancelled — no proof was produced for this SHA. This is NOT a test failure. A newer push is the usual cause, but no newer run of this workflow was identified for this pull request, and a manual or API cancellation looks the same; re-run this workflow or push again."
+            echo "Perl LSP Rust Small Result: cancelled (no proof for this SHA; no newer run identified)"
+            exit 1
+          fi
 
           case "${ROUTER_TARGET:-}" in
             cx53)

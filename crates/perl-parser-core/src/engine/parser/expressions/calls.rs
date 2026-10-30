@@ -38,8 +38,8 @@ impl<'a> Parser<'a> {
                 }
                 // Form 2: variable filehandle `print $fh $msg` (no comma after $fh)
                 if next_text.as_deref().unwrap_or("").starts_with('$') {
-                    // If next-next starts with a sigil or string, or is a numeric term
-                    // accepted by an output builtin, it is likely `print $fh EXPR`.
+                    // A numeric term or heredoc message is also accepted by output
+                    // builtins: `print $fh 1` and `print $fh <<'END'`.
                     // A comma means it is a regular `print $var, $other` list.
                     if third_kind != Some(TokenKind::Comma)
                         && let Some(ref txt) = third_text
@@ -47,8 +47,10 @@ impl<'a> Parser<'a> {
                             || txt.starts_with('@')
                             || txt.starts_with('%')
                             || third_kind == Some(TokenKind::String)
-                            || (third_kind == Some(TokenKind::Number)
-                                && matches!(name, "print" | "printf" | "say")))
+                            || (matches!(
+                                third_kind,
+                                Some(TokenKind::Number | TokenKind::HeredocStart)
+                            ) && matches!(name, "print" | "printf" | "say")))
                     {
                         return true;
                     }
@@ -83,6 +85,7 @@ impl<'a> Parser<'a> {
             };
             let next_kind = next_token.kind();
             let next_text = next_token.text.to_string();
+            let next_end = next_token.end();
 
             // These tokens *cannot* start an indirect object
             match next_kind {
@@ -140,8 +143,8 @@ impl<'a> Parser<'a> {
                         third.kind(),
                         TokenKind::String       // print $fh "x"
                         | TokenKind::LeftParen    // print $fh ($x)
-                    ) || (third.kind() == TokenKind::Number
-                        && matches!(name, "print" | "printf" | "say")) // print $fh 1
+                    ) || (matches!(third.kind(), TokenKind::Number | TokenKind::HeredocStart)
+                        && matches!(name, "print" | "printf" | "say")) // print $fh 1 / <<'END'
                       || third_text.starts_with('$')    // print $fh $x
                       || third_text.starts_with('@')    // print $fh @array
                       || third_text.starts_with('%'); // print $fh %hash
@@ -165,7 +168,15 @@ impl<'a> Parser<'a> {
                 }
 
                 if next_text.chars().next().is_some_and(|c| c.is_uppercase()) {
-                    return true;
+                    // An adjacent `(` makes this a subroutine argument, even
+                    // for uppercase or qualified names: print Foo::bar(1).
+                    // A separated `(` can still start an explicit handle's
+                    // output list: print STDOUT (1, 2). Scalar and braced
+                    // handles, and other indirect-builtin families, retain
+                    // their existing admission rules (#17078).
+                    return !(matches!(name, "print" | "printf" | "say")
+                        && third.kind() == TokenKind::LeftParen
+                        && next_end == third.start());
                 }
 
                 let third_text = &third.text;
@@ -260,6 +271,7 @@ impl<'a> Parser<'a> {
         argument.kind() == TokenKind::String
             || argument.kind() == TokenKind::LeftParen
             || argument.kind() == TokenKind::Number
+            || argument.kind() == TokenKind::HeredocStart
             || argument.text.starts_with('$')
             || argument.text.starts_with('@')
             || argument.text.starts_with('%')
@@ -656,7 +668,22 @@ impl<'a> Parser<'a> {
             _ => true, // not a declaration node; treat as already complete
         };
 
-        if has_initializer { Ok(decl) } else { self.parse_below_assignment_with(decl) }
+        if has_initializer {
+            return Ok(decl);
+        }
+        // Contextual repetition assignment on a declaration used as a call
+        // argument (`f(my $v x= 3)`): `parse_declaration_arg` only consumes
+        // plain `=`, and the binary chain below never applies assignment
+        // operators, so route the declaration through the shared assignment
+        // seam to form one `x=` assignment over it (#13486). The
+        // `Identifier` gate keeps symbolic operators on their existing path:
+        // the seam consumes nothing unless it recognizes an adjacent `x=`.
+        if self.peek_kind() == Some(TokenKind::Identifier)
+            && let Some((op, op_start)) = self.consume_assignment_operator()?
+        {
+            return self.finish_declaration_repetition_assignment(decl, op, op_start);
+        }
+        self.parse_below_assignment_with(decl)
     }
 
     /// Parse a variable declaration as a function argument.
@@ -725,7 +752,7 @@ impl<'a> Parser<'a> {
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
                 // Declaration-as-argument list forms share per-item attribute
                 // attachment with statement-form `my ($x :shared, $y)`.
-                let var = self.parse_variable_list_item()?;
+                let var = self.parse_variable_list_item(&declarator)?;
                 variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {

@@ -1,0 +1,1 @@
+{"framework": "Test::More", "runner_hints": ["prove"], "expected_oracles": [{"call": "ok", "kind": "smoke_ok", "strength": "weak_smoke"}, {"call": "pass", "kind": "smoke_ok", "strength": "weak_smoke"}, {"call": "fail", "kind": "smoke_ok", "strength": "weak_smoke"}]}

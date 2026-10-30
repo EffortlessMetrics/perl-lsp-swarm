@@ -298,6 +298,8 @@ fn for_each_child_signature_with_params() -> Result<(), Box<dyn std::error::Erro
                 ),
                 Node::new(
                     NodeKind::OptionalParameter {
+                        default_operator: "=".into(),
+                        default_operator_span: Default::default(),
                         variable: Box::new(var("$", "y")),
                         default_value: Box::new(num("0")),
                     },
@@ -337,6 +339,7 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
         ),
         Node::new(
             NodeKind::Regex {
+                form: perl_ast::RegexSurfaceForm::BarePattern,
                 pattern: "abc".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),
@@ -796,6 +799,7 @@ fn sexp_untie() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_regex_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Regex {
+            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "(?{ code })".to_string(),
             replacement: None,
             modifiers: "x".to_string(),
@@ -812,6 +816,7 @@ fn sexp_regex_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_regex_without_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Regex {
+            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "abc".to_string(),
             replacement: None,
             modifiers: "i".to_string(),
@@ -1067,6 +1072,8 @@ fn sexp_signature_with_params() -> Result<(), Box<dyn std::error::Error>> {
         Node::new(NodeKind::MandatoryParameter { variable: Box::new(var("$", "x")) }, loc(0, 2));
     let opt = Node::new(
         NodeKind::OptionalParameter {
+            default_operator: "=".into(),
+            default_operator_span: Default::default(),
             variable: Box::new(var("$", "y")),
             default_value: Box::new(num("0")),
         },
@@ -1076,6 +1083,7 @@ fn sexp_signature_with_params() -> Result<(), Box<dyn std::error::Error>> {
         Node::new(NodeKind::SlurpyParameter { variable: Box::new(var("@", "rest")) }, loc(9, 14));
     let named = Node::new(
         NodeKind::NamedParameter {
+            default_operator_span: None,
             variable: Box::new(var("$", "k")),
             external_name: String::new(),
             default_operator: None,
@@ -1727,6 +1735,7 @@ fn sexp_anonymous_subroutine_with_signature() -> Result<(), Box<dyn std::error::
 fn sexp_regex_with_replacement() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Regex {
+            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "foo".to_string(),
             replacement: Some("bar".to_string()),
             modifiers: "g".to_string(),

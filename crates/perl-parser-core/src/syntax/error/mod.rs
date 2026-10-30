@@ -22,6 +22,30 @@
 use perl_position_tracking::LineIndex;
 use thiserror::Error;
 
+/// Invalid core-Perl signature parameter form, independent of recovery strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSignatureParameterKind {
+    /// The colon marker was attached to an array or hash rather than a scalar.
+    NamedAggregate,
+    /// An array or hash slurpy parameter carried a default expression.
+    SlurpyDefault,
+    /// A default operator had no following expression before the boundary.
+    MissingDefaultExpression,
+}
+
+/// The ordering boundary crossed by a classified signature parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSignatureOrderingKind {
+    /// A required positional scalar follows an optional positional scalar.
+    MandatoryAfterOptional,
+    /// A positional scalar follows the start of the named parameter region.
+    PositionalAfterNamed,
+    /// A required named scalar follows an optional positional scalar.
+    RequiredNamedAfterOptional,
+    /// A classified parameter follows the terminal slurpy parameter.
+    ParameterAfterSlurpy,
+}
+
 #[derive(Debug, Clone)]
 /// Rich error context with source line and fix suggestions
 #[non_exhaustive]
@@ -678,6 +702,40 @@ pub enum ParseError {
         location: usize,
     },
 
+    /// A rejected parameter with an exact, parser-owned half-open source range.
+    #[error("Invalid signature parameter ({kind:?}) at {range:?}")]
+    InvalidSignatureParameter {
+        /// The independently classified parameter-form defect.
+        kind: InvalidSignatureParameterKind,
+        /// Complete parameter range, or known prefix for a missing expression.
+        range: perl_ast::SourceLocation,
+    },
+
+    /// An ordering violation on a retained, classified signature parameter.
+    #[error("Invalid signature ordering ({kind:?}) at {range:?}")]
+    InvalidSignatureOrdering {
+        /// The ordering rule crossed by this parameter.
+        kind: InvalidSignatureOrderingKind,
+        /// The complete offending parameter's half-open byte range.
+        range: perl_ast::SourceLocation,
+    },
+
+    /// A `catch` variable head that redeclares the automatically declared
+    /// catch variable with an explicit declarator: `catch (my $e)`.
+    ///
+    /// Perl has never accepted this form; Perl 5.44 names it with the
+    /// fatal diagnostic `Can't redeclare catch variable as "%s"`. The
+    /// catch binding itself is retained (the variable after the keyword
+    /// still binds), so this error is recorded alongside the parse rather
+    /// than failing it outright (#13333).
+    #[error("Can't redeclare catch variable as \"{keyword}\" at {range:?}")]
+    CatchVariableRedeclaration {
+        /// The offending declarator keyword (`my`, `our`, or `state`).
+        keyword: String,
+        /// The keyword's half-open byte range.
+        range: perl_ast::SourceLocation,
+    },
+
     /// A block follows a do-while condition: `do { ... } while (cond) { ... }`
     ///
     /// Real Perl rejects this construct outright (`syntax error near ") {"`),
@@ -688,6 +746,32 @@ pub enum ParseError {
     #[error("Unexpected block after do-while condition at position {location}")]
     DoWhileTrailingBlock {
         /// Byte position of the unexpected `{`
+        location: usize,
+    },
+
+    /// A `continue` block follows a C-style `for` loop:
+    /// `for (init; cond; update) { ... } continue { ... }`
+    ///
+    /// Real Perl rejects this construct outright (`syntax error near
+    /// "} continue"`): `continue` blocks attach to `while`/`until`/`foreach`
+    /// loops only, never to C-style `for`. Like [`Self::DoWhileTrailingBlock`]
+    /// it has no sensible recovery, so the parse fails outright (#16296).
+    #[error("Unexpected continue block after C-style for loop at position {location}")]
+    CStyleForContinueBlock {
+        /// Byte position of the unexpected `continue`
+        location: usize,
+    },
+
+    /// A package-qualified name used as a loop-control label:
+    /// `last FOO::BAR`.
+    ///
+    /// Real Perl rejects qualified labels outright: labels are plain
+    /// identifiers. Like [`Self::DoWhileTrailingBlock`] it has no sensible
+    /// recovery — leaving the name in place would re-parse as a package
+    /// call — so the parse fails outright (#16296).
+    #[error("Unexpected qualified name as loop-control label at position {location}")]
+    QualifiedLoopControlLabel {
+        /// Byte position of the label
         location: usize,
     },
 
@@ -855,7 +939,12 @@ impl ErrorClass for ParseError {
             Self::UnexpectedEof
             | Self::UnexpectedToken { .. }
             | Self::SyntaxError { .. }
+            | Self::InvalidSignatureParameter { .. }
+            | Self::InvalidSignatureOrdering { .. }
+            | Self::CatchVariableRedeclaration { .. }
             | Self::DoWhileTrailingBlock { .. }
+            | Self::CStyleForContinueBlock { .. }
+            | Self::QualifiedLoopControlLabel { .. }
             | Self::LexerError { .. }
             | Self::InvalidNumber { .. }
             | Self::InvalidString
@@ -1582,13 +1671,18 @@ impl ParseError {
         match self {
             ParseError::UnexpectedToken { location, .. } => Some(*location),
             ParseError::SyntaxError { location, .. } => Some(*location),
+            ParseError::InvalidSignatureParameter { range, .. }
+            | ParseError::InvalidSignatureOrdering { range, .. }
+            | ParseError::CatchVariableRedeclaration { range, .. } => Some(range.start),
             ParseError::Advisory { location, .. } => Some(*location),
             ParseError::Recovered { location, .. } => Some(*location),
             // Anchored at the declaration whose collection was refused, so
             // `get_error_contexts` reports that line rather than falling back
             // to EOF. Must stay consistent with `diagnostic_anchor`.
             ParseError::HeredocBudgetExhausted { location, .. }
-            | ParseError::DoWhileTrailingBlock { location } => Some(*location),
+            | ParseError::DoWhileTrailingBlock { location }
+            | ParseError::CStyleForContinueBlock { location }
+            | ParseError::QualifiedLoopControlLabel { location } => Some(*location),
             _ => None,
         }
     }
@@ -1668,9 +1762,16 @@ impl ParseError {
         // choose its diagnostic-anchor before the crate can compile.
         match self {
             Self::UnexpectedEof => ParseDiagnosticAnchor::EndOfInput,
+            Self::InvalidSignatureParameter { range, .. }
+            | Self::InvalidSignatureOrdering { range, .. }
+            | Self::CatchVariableRedeclaration { range, .. } => {
+                ParseDiagnosticAnchor::Exact(range.start)
+            }
             Self::UnexpectedToken { location, .. }
             | Self::SyntaxError { location, .. }
             | Self::DoWhileTrailingBlock { location }
+            | Self::CStyleForContinueBlock { location }
+            | Self::QualifiedLoopControlLabel { location }
             | Self::Advisory { location, .. }
             | Self::HeredocBudgetExhausted { location, .. }
             | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
