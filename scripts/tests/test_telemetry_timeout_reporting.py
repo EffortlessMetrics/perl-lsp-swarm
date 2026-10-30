@@ -92,6 +92,18 @@ perl() { timeout "$@"; }
         output = "test result: ok. 3 passed; 0 failed; 2 ignored\n"
         self.assertEqual(self.run_probe(0, output), "pass|3|0|2")
 
+    def test_multi_digit_counts_are_retained_exactly(self):
+        output = "test result: ok. 123 passed; 0 failed; 45 ignored\n"
+        self.assertEqual(self.run_probe(0, output), "pass|123|0|45")
+
+    def test_multi_digit_failure_count_fails_even_with_zero_exit(self):
+        output = "test result: FAILED. 123 passed; 10 failed; 45 ignored\n"
+        self.assertEqual(self.run_probe(0, output), "fail|123|10|45")
+
+    def test_timeout_retains_multi_digit_partial_counts(self):
+        partial = "test result: ok. 123 passed; 10 failed; 45 ignored\n"
+        self.assertEqual(self.run_probe(124, partial), "fail|123|10|45")
+
     def test_reported_test_failure_still_fails_even_with_zero_exit(self):
         output = "test result: FAILED. 3 passed; 1 failed; 2 ignored\n"
         self.assertEqual(self.run_probe(0, output), "fail|3|1|2")

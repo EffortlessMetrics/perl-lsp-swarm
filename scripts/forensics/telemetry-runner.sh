@@ -496,8 +496,9 @@ run_tests() {
     local passed=0 failed=0 ignored=0
     local status="pass"
 
+    local result_re='test result:[^0-9]*([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored'
     while IFS= read -r line; do
-        if [[ "$line" =~ test\ result:.*([0-9]+)\ passed.*([0-9]+)\ failed.*([0-9]+)\ ignored ]]; then
+        if [[ "$line" =~ $result_re ]]; then
             passed=$((passed + ${BASH_REMATCH[1]}))
             failed=$((failed + ${BASH_REMATCH[2]}))
             ignored=$((ignored + ${BASH_REMATCH[3]}))
