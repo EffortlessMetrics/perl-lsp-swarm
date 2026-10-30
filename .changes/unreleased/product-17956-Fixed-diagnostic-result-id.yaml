@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Reject malformed pull-diagnostic cache IDs with actionable parameter errors while preserving valid cached reports and same-session recovery."
+time: 2026-10-15T01:59:12Z
+custom:
+  PR: "17956"
+  Slug: diagnostic-result-id-validation
+  Breaking: "no"

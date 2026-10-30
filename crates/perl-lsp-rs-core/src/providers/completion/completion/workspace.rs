@@ -141,7 +141,7 @@ pub fn add_workspace_symbol_completions(
                     detail: Some(Cow::Owned(detail)),
                     documentation: symbol.documentation.clone().map(Cow::Owned),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -180,7 +180,7 @@ pub fn add_workspace_symbol_completions(
                     sort_text: Some(Cow::Owned(format!("4_{name}"))),
                     filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: Some(vec![":".to_string(), ";".to_string()]),
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -210,7 +210,7 @@ pub fn add_workspace_symbol_completions(
                     sort_text: Some(Cow::Owned(format!("4_{name}"))),
                     filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -237,7 +237,7 @@ pub fn add_workspace_symbol_completions(
                     sort_text: Some(Cow::Owned(format!("2_{name}"))), // Prioritize exports
                     filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: None,
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -329,7 +329,7 @@ pub fn add_visible_symbol_completions(
             sort_text: Some(Cow::Owned(format!("2z_visible_{label}"))),
             filter_text: Some(Cow::Owned(label)),
             additional_edits: vec![],
-            text_edit_range: Some((context.prefix_start, context.position)),
+            text_edit_range: Some((context.prefix_start, context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -802,7 +802,7 @@ pub fn add_use_module_completions_with_cache(
                 sort_text: Some(Cow::Owned(format!("1{}_{name}", module_sort_tier(name)))),
                 filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.prefix_start, context.position)),
+                text_edit_range: Some((context.prefix_start, context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -878,7 +878,7 @@ pub fn add_use_module_completions_with_cache(
                     sort_text: Some(Cow::Owned(format!("2{}_{name}", module_sort_tier(&name)))),
                     filter_text: Some(Cow::Owned(name)),
                     additional_edits: vec![],
-                    text_edit_range: Some((context.prefix_start, context.position)),
+                    text_edit_range: Some((context.prefix_start, context.suffix_end)),
                     commit_characters: Some(vec![":".to_string(), ";".to_string()]),
                     insert_text_format: InsertTextFormat::PlainText,
                     label_details: None,
@@ -1895,7 +1895,7 @@ pub fn add_workspace_method_completions(
             completions.iter().map(|item| item.label.as_ref()).collect();
         workspace_method_symbols(&members, &existing_labels, method_prefix)
     };
-    let method_text_edit_range = (context.method_text_edit_start(source), context.position);
+    let method_text_edit_range = (context.method_text_edit_start(source), context.suffix_end);
 
     if add_semantic_method_completions(
         completions,
@@ -1945,7 +1945,7 @@ pub fn add_workspace_method_completions(
             sort_text: Some(Cow::Owned(format!("{method_tier}_{}", symbol.name))), // tier 2=own, 3=inherited, after local (tier 1)
             filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits: vec![],
-            text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+            text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
             commit_characters: None,
             insert_text_format: InsertTextFormat::PlainText,
             label_details: None,
@@ -2061,7 +2061,7 @@ fn add_union_receiver_method_completions(
                 sort_text: Some(Cow::Owned(format!("{sort_tier}_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -2145,7 +2145,7 @@ fn add_unknown_receiver_fallback(
                 sort_text: Some(Cow::Owned(format!("6_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: vec![],
-                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                text_edit_range: Some((context.method_text_edit_start(source), context.suffix_end)),
                 commit_characters: None,
                 insert_text_format: InsertTextFormat::PlainText,
                 label_details: None,
@@ -2791,7 +2791,11 @@ fn collect_all_package_members_with_source(
         // authoritative facts for this package, persisted explicit members
         // anchored to the edited document itself are an older generation and
         // must not resurrect deleted or renamed bindings (#17084).
-        let mut persisted_members = index.get_package_members(pkg);
+        // Direct members only: the MRO walk reaches ancestors via explicit
+        // `@ISA`/parent/role edges, so a nested-namespace descendant must not
+        // ride along as an own-package member — a shared namespace root is not
+        // an inheritance edge (#17160).
+        let mut persisted_members = index.get_direct_package_members(pkg);
         if facts.from_current_document && !current_document_uri.is_empty() {
             persisted_members.retain(|symbol| symbol.uri != current_document_uri);
         }
@@ -2876,6 +2880,9 @@ fn push_index_method_symbols(
             WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
             _ => continue,
         }
+        if symbol.is_lexical {
+            continue;
+        }
         if seen_names.insert(symbol.name.clone()) {
             result.push(symbol);
         }
@@ -2895,11 +2902,15 @@ fn current_document_package_facts(
     let Ok(ast) = parser.parse() else {
         return (HashMap::new(), HashMap::new());
     };
-    let models = perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-        .build(&ast)
-        .into_iter()
-        .map(|model| (model.name.clone(), model))
-        .collect();
+    // One model per package name across every `package` segment in the buffer:
+    // a later silent reopen must not hide the roles an earlier segment composed.
+    // The merge rules stay single-owned by the semantic analyzer.
+    let models = perl_semantic_analyzer::class_model::merge_reopened_class_models(
+        &perl_semantic_analyzer::class_model::ClassModelBuilder::new().build(&ast),
+    )
+    .into_iter()
+    .map(|model| (model.name.clone(), model))
+    .collect();
     (models, current_document_methods_from_ast(&ast, source))
 }
 
@@ -3089,8 +3100,12 @@ fn indexed_package_model_at(
     let Ok(ast) = parser.parse() else {
         return None;
     };
-    perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-        .build(&ast)
+    // A persisted document may reopen the package: select from the merged
+    // ancestry-and-method view so later segments' role edges survive, matching
+    // the current-document seam (#16853). A first-raw-segment selection drops a
+    // reopened role's later compositions from cross-file completion.
+    let models = perl_semantic_analyzer::class_model::ClassModelBuilder::new().build(&ast);
+    perl_semantic_analyzer::class_model::merge_reopened_class_models(&models)
         .into_iter()
         .find(|model| model.name == pkg)
 }
@@ -3293,6 +3308,48 @@ sub own_method { 1 }
         );
     }
 
+    /// Regression (#17636): lexical `my`/`state` subs indexed from a file
+    /// must not surface as `$obj->` methods; only package subs may.
+    #[test]
+    fn indexed_lexical_subs_do_not_surface_as_methods() {
+        let source = r#"package User;
+use Moo;
+my sub lexical_helper { 1 }
+state sub state_helper { 1 }
+sub real_method { 1 }
+1;
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        must(
+            index.index_initial_file(
+                must(Url::parse("file:///workspace/User.pm")),
+                source.to_string(),
+            ),
+        );
+        let members = collect_all_package_members(index.as_ref(), "User");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"real_method"), "package sub must be offered, got {names:?}");
+        assert!(!names.contains(&"lexical_helper"), "my sub must not be a method, got {names:?}");
+        assert!(!names.contains(&"state_helper"), "state sub must not be a method, got {names:?}");
+    }
+
+    #[test]
+    fn current_source_lexical_subs_do_not_surface_as_methods() {
+        let source = r#"package User;
+use Moo;
+my sub lexical_helper { 1 }
+state sub state_helper { 1 }
+sub real_method { 1 }
+1;
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source, "");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"real_method"), "package sub must be offered, got {names:?}");
+        assert!(!names.contains(&"lexical_helper"), "my sub must not be a method, got {names:?}");
+        assert!(!names.contains(&"state_helper"), "state sub must not be a method, got {names:?}");
+    }
+
     /// G1 regression (#17084): the index holds generation 1 of the edited
     /// document. The open buffer is generation 2 and renames `old_name` to
     /// `new_name`; the stale same-document explicit member must not resurrect,
@@ -3462,6 +3519,180 @@ sub kept { 2 }
     }
 }
 
+/// Collector-level proof that a reopened consumer package keeps only its own
+/// ancestry and roles (#16853).
+#[cfg(test)]
+mod reopened_consumer_source_facts_tests {
+    use super::*;
+
+    const SILENT_REOPEN: &str = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+         \npackage User;\nuse Moo;\nwith 'Printable';\nsub own_method { 1 }\n\
+         \npackage User;\nsub extra_method { 2 }\n";
+
+    const EXPLICIT_REOPEN: &str = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+         \npackage OtherRole;\nuse Moo::Role;\nsub other_method { 1 }\n\
+         \npackage User;\nuse Moo;\nwith 'Printable';\n\
+         \npackage User;\nuse Moo;\nwith 'OtherRole';\n";
+
+    fn collected(source: &str, package: &str) -> Vec<String> {
+        // No document identity in this fixture: an empty index makes the
+        // same-document freshness gate inert either way (#17084 seam shape).
+        collect_all_package_members_with_source(&WorkspaceIndex::new(), package, source, "")
+            .into_iter()
+            .map(|symbol| symbol.name)
+            .collect()
+    }
+
+    /// Index where cross-file `Child` inherits `Base`, plus `Base` itself.
+    fn child_with_base_index() -> WorkspaceIndex {
+        use perl_tdd_support::must;
+
+        let index = WorkspaceIndex::new();
+
+        let base_uri = must(url::Url::parse("file:///workspace/Base.pm"));
+        must(
+            index.index_initial_file(
+                base_uri,
+                "package Base;\nsub base_method { }\n1;\n".to_string(),
+            ),
+        );
+
+        let child_uri = must(url::Url::parse("file:///workspace/Child.pm"));
+        must(index.index_initial_file(
+            child_uri,
+            "package Child;\nuse parent 'Base';\nsub indexed_child_method { }\n1;\n".to_string(),
+        ));
+
+        index
+    }
+
+    #[test]
+    fn silent_reopen_keeps_role_and_both_segments_methods() {
+        let names = collected(SILENT_REOPEN, "User");
+        assert!(
+            names.contains(&"stringify".to_string()),
+            "a reopen that declares no ancestry must keep the composed role; got {names:?}"
+        );
+        assert!(
+            names.contains(&"own_method".to_string())
+                && names.contains(&"extra_method".to_string()),
+            "both reopened segments' own methods must survive; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_role_reopen_unions_cumulative_compositions() {
+        let names = collected(EXPLICIT_REOPEN, "User");
+        assert!(
+            names.contains(&"other_method".to_string()),
+            "the latest explicit role must be offered; got {names:?}"
+        );
+        assert!(
+            names.contains(&"stringify".to_string()),
+            "successive `with` statements compose cumulatively, so the earlier role's \
+             candidates must survive the explicit reopen; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn retained_reopen_ancestry_stays_bound_to_its_own_package() {
+        let source = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+             \npackage User;\nuse Moo;\nwith 'Printable';\n\
+             \npackage User;\nsub extra_method { 2 }\n\
+             \npackage Sibling;\nuse Moo;\nsub sibling_method { 1 }\n";
+        let names = collected(source, "Sibling");
+        assert!(
+            !names.contains(&"stringify".to_string()),
+            "a sibling package must not inherit the reopened consumer's role; got {names:?}"
+        );
+        assert!(
+            names.contains(&"sibling_method".to_string()),
+            "the sibling's own method must still be offered; got {names:?}"
+        );
+    }
+
+    /// A silent segment followed by an explicit `our @ISA = ();` reopen must
+    /// keep the merged model's explicit-ancestry marker, so the cross-file
+    /// indexed parent is not restored over the explicit empty reset (#17084).
+    /// Discriminating: with a dropped marker propagation the restore gate sees
+    /// `parents_stated == false` and resurfaces `base_method`.
+    #[test]
+    fn explicit_empty_isa_reopen_keeps_indexed_parent_suppressed() {
+        let index = child_with_base_index();
+        let source = "package Child;\nuse Moo;\nsub buffered_method { 1 }\n\
+             \npackage Child;\nour @ISA = ();\nsub reset_method { 2 }\n";
+        let names = collect_all_package_members_with_source(
+            &index,
+            "Child",
+            source,
+            "file:///workspace/script.pl",
+        )
+        .into_iter()
+        .map(|symbol| symbol.name)
+        .collect::<Vec<_>>();
+        assert!(
+            !names.contains(&"base_method".to_string()),
+            "an explicit empty @ISA reset must not be refilled from the cross-file indexed \
+             parent; got {names:?}"
+        );
+        assert!(
+            names.contains(&"buffered_method".to_string())
+                && names.contains(&"reset_method".to_string()),
+            "both reopened segments' own methods must still be offered; got {names:?}"
+        );
+    }
+
+    /// Cross-file fallback regression (#16853 review): a role document that
+    /// reopens itself to compose another role must contribute the later
+    /// segment's composition when the consumer's facts are read from the
+    /// index. The edited buffer is empty and indexes nothing it edits, so
+    /// every fact flows through `load_source_package_facts`'s indexed
+    /// fallback, which previously selected the first raw segment model and
+    /// dropped the reopened segment's `with`.
+    #[test]
+    fn indexed_role_reopen_surfaces_later_composition_from_the_fallback() {
+        use perl_tdd_support::must;
+
+        let index = WorkspaceIndex::new();
+
+        let printable_uri = must(url::Url::parse("file:///workspace/Printable.pm"));
+        must(
+            index.index_initial_file(
+                printable_uri,
+                "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n1;\n\
+             \npackage Printable;\nuse Moo::Role;\nwith 'Other';\n1;\n"
+                    .to_string(),
+            ),
+        );
+
+        let other_uri = must(url::Url::parse("file:///workspace/Other.pm"));
+        must(index.index_initial_file(
+            other_uri,
+            "package Other;\nuse Moo::Role;\nsub other_method { 1 }\n1;\n".to_string(),
+        ));
+
+        let consumer_uri = must(url::Url::parse("file:///workspace/User.pm"));
+        must(index.index_initial_file(
+            consumer_uri,
+            "package User;\nuse Moo;\nwith 'Printable';\n1;\n".to_string(),
+        ));
+
+        // Empty source and empty document identity: no current-document facts
+        // exist, so the indexed fallback is the only supplier.
+        let members = collect_all_package_members_with_source(&index, "User", "", "");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"stringify"),
+            "the indexed role's own method must stay offered; got {names:?}"
+        );
+        assert!(
+            names.contains(&"other_method"),
+            "a role reopened to compose another role must keep the later composition's \
+             candidates in indexed completion; got {names:?}"
+        );
+    }
+}
+
 /// Tests for union-receiver method completion (#9500).
 ///
 /// These tests exercise `add_union_receiver_method_completions` directly.
@@ -3508,6 +3739,7 @@ mod union_receiver_method_completion_tests {
             current_package: "main".to_string(),
             prefix: source.to_string(),
             prefix_start: 0,
+            suffix_end: position,
             cursor_scope_id: 0,
         }
     }

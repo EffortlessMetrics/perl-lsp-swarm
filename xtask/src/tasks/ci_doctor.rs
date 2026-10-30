@@ -190,6 +190,32 @@ enum FmtRunOutcome {
     Failed(String),
 }
 
+/// What kind of failure a captured `cargo xtask fmt --check` error represents.
+///
+/// The doctor's advice differs: real drift is fixed by `cargo xtask fmt`,
+/// while an instrument failure (missing rustfmt, spawn-limit planning, cargo
+/// metadata failure) is not drift at all — telling an operator to run
+/// `cargo xtask fmt` there is circular advice that fails identically (#17166).
+#[derive(Debug, Eq, PartialEq)]
+enum FmtFailureKind {
+    Drift,
+    Infrastructure,
+}
+
+/// Classify a captured fmt error without re-parsing prose: fmt's drift report
+/// is self-identifying by construction — every drift report starts with
+/// [`fmt_task::CHECK_DRIFT_REPORT_PREFIX`] (see the
+/// `check_drift_report_prefix_matches_the_drift_header` test in fmt.rs, which
+/// pins the contract between the two modules). Everything else — spawn
+/// failures, planning failures, cargo metadata failures — is infrastructure.
+fn classify_fmt_failure(error: &str) -> FmtFailureKind {
+    if error.starts_with(fmt_task::CHECK_DRIFT_REPORT_PREFIX) {
+        FmtFailureKind::Drift
+    } else {
+        FmtFailureKind::Infrastructure
+    }
+}
+
 fn fmt_result_to_run_outcome(result: Result<()>) -> FmtRunOutcome {
     match result {
         Ok(()) => FmtRunOutcome::Clean,
@@ -225,7 +251,16 @@ where
             FmtDriftOutcome::Clean
         }
         FmtRunOutcome::Failed(error) => {
-            warn("fmt drift detected — fix: cargo xtask fmt");
+            match classify_fmt_failure(&error) {
+                FmtFailureKind::Drift => warn("fmt drift detected — fix: cargo xtask fmt"),
+                FmtFailureKind::Infrastructure => warn(
+                    "fmt --check could not run — formatter/infrastructure failure, not fmt drift",
+                ),
+            }
+            // The captured error is the only place the real cause lives (a
+            // spawn error, a planning bound, named files); it used to be
+            // dropped here, leaving an unexplained drift warning (#17166).
+            warn(&format!("cargo xtask fmt --check reported: {error}"));
             *warnings += 1;
             FmtDriftOutcome::DriftDetected(error)
         }
@@ -362,6 +397,39 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ci_doctor_classifies_drift_report_by_shared_prefix() {
+        let drift = format!(
+            "{} 2 crate(s):\n  - crates/foo/Cargo.toml\n      crates/foo/src/lib.rs",
+            fmt_task::CHECK_DRIFT_REPORT_PREFIX
+        );
+        assert_eq!(classify_fmt_failure(&drift), FmtFailureKind::Drift);
+    }
+
+    #[test]
+    fn ci_doctor_classifies_spawn_and_planning_failures_as_infrastructure() {
+        // A rustfmt spawn failure surfaces through fmt's aggregate report;
+        // it names no files and must not read as drift (#17166).
+        let spawn = format!(
+            "cargo fmt --check failed without naming unformatted files in 1 crate(s) — \
+             this is a formatter failure, not formatting drift:\n  - crates/foo/Cargo.toml \
+             (spawn failed: program not found)"
+        );
+        assert_eq!(classify_fmt_failure(&spawn), FmtFailureKind::Infrastructure);
+        assert_eq!(
+            classify_fmt_failure(
+                "formatter planning failed for crates/foo/Cargo.toml: formatter argv for \
+                 x.rs is 17000 UTF-16 units, over the declared bound of 16384; this is a \
+                 process-spawn limit, not formatting drift"
+            ),
+            FmtFailureKind::Infrastructure
+        );
+        assert_eq!(
+            classify_fmt_failure("Failed to query cargo metadata for workspace formatting"),
+            FmtFailureKind::Infrastructure
+        );
+    }
     use std::fs;
     use std::sync::Mutex;
     use tempfile::tempdir;

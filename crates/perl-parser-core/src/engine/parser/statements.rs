@@ -594,9 +594,16 @@ impl<'a> Parser<'a> {
             if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
                 let start = stmt.location.start.min(self.src_bytes.len());
                 let end = stmt.location.end.min(self.src_bytes.len());
-                let first_line_is_tag = std::str::from_utf8(&self.src_bytes[start..end])
-                    .map(|text| text.lines().next().map(str::trim) == Some(tag))
-                    .unwrap_or(false);
+                // A statement span can be inverted (start > end) on
+                // malformed input; clamping each end independently does
+                // not order them, and slicing an inverted range panics.
+                let first_line_is_tag = if start <= end {
+                    std::str::from_utf8(&self.src_bytes[start..end])
+                        .map(|text| text.lines().next().map(str::trim) == Some(tag))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
                 if first_line_is_tag {
                     self.heredoc_recovery_tag = None;
                 }
@@ -700,7 +707,13 @@ impl<'a> Parser<'a> {
         if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
             let start = stmt.location.start.min(self.src_bytes.len());
             let end = stmt.location.end.min(self.src_bytes.len());
-            let source = std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("");
+            // Same inverted-span guard as the semicolon path above: an
+            // inverted range slices to nothing rather than panicking.
+            let source = if start <= end {
+                std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("")
+            } else {
+                ""
+            };
             if source.trim() == tag {
                 // Pure delimiter line: the body ends here; skip it.
                 self.heredoc_recovery_tag = None;
@@ -1714,6 +1727,14 @@ impl<'a> Parser<'a> {
                                     self.parse_args()?
                                 };
                                 args.extend(paren_args);
+                            } else if func_name.as_ref() == "sort" {
+                                // `sort mycmp LIST`: the first slot names the
+                                // comparator sub, so bare-call promotion is
+                                // suppressed while it is parsed.
+                                self.in_sort_comparator = true;
+                                let first = self.parse_assignment_or_declaration();
+                                self.in_sort_comparator = false;
+                                args.push(first?);
                             } else {
                                 // For builtins, use parse_assignment_or_declaration to handle
                                 // my/our/local/state declarations inside argument lists

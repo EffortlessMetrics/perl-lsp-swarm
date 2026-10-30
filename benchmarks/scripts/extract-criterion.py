@@ -216,11 +216,18 @@ def categorize_benchmark(group: str, bench_name: str) -> str:
     group_lower = group.lower()
     bench_lower = bench_name.lower()
 
-    if "parser" in group_lower or "parse" in bench_lower:
+    if "parser" in group_lower or "parse" in bench_lower or bench_lower == "scope_analysis":
+        # scope_analysis is a direct parser bench whose name carries no parse
+        # marker; without the exact-name rule it falls to the scope branch
+        # while the baseline stores it under parser (#17380 review).
         return "parser"
     elif "lexer" in group_lower or "token" in bench_lower:
         return "lexer"
-    elif "rope" in group_lower or "lsp" in group_lower or "position" in bench_lower:
+    elif "document_insertions" == group_lower or "rope" in group_lower or "rope" in bench_lower or "lsp" in group_lower or "position" in bench_lower:
+        # The document_insertions group holds rope_insertion and
+        # string_insertion siblings, both stored under lsp in the baseline;
+        # matching the group joins both, while a rope-only name match would
+        # leave string_insertion in "other" (#17380 review).
         return "lsp"
     elif "index" in group_lower or "workspace" in group_lower or "symbol" in bench_lower:
         return "index"
@@ -230,6 +237,14 @@ def categorize_benchmark(group: str, bench_name: str) -> str:
         # markers, and matching bench names would risk stealing unrelated
         # benches into this category.
         return "ripr"
+    elif "scope" in group_lower or "scope" in bench_lower:
+        # Scope-analysis benches (scope_benchmark's scope_analysis_many_vars
+        # and scope_analysis_strict_barewords), which otherwise fall into the
+        # baseline-less "other" bucket (#17380). No other current bench name
+        # contains "scope" except parser's scope_analysis and the cpan/pragma
+        # scope-labeled benches, which have no baseline rows and stay dropped
+        # at the row join either way.
+        return "scope"
     else:
         return "other"
 
