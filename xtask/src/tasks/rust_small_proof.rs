@@ -112,6 +112,24 @@ const CARGO_STEPS: &[CargoStep] = &[
             "--nocapture",
         ],
     ),
+    (
+        "references protocol",
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "perl-lsp-rs",
+            "--test",
+            "lsp_references_tests",
+            "--features",
+            "workspace",
+            "--profile",
+            "agent",
+            "--",
+            "--test-threads=1",
+            "--nocapture",
+        ],
+    ),
 ];
 
 /// References scorecard census argv: replaces both old per-route counters with
@@ -252,7 +270,7 @@ pub struct RustSmallProofReceipt {
     pub result: ProofResult,
 }
 
-/// The full ordered step vocabulary: the seven pinned cargo steps, then census,
+/// The full ordered step vocabulary: the eight pinned cargo steps, then census,
 /// replay, and diff hygiene. Built from the same constants the runtime uses, so
 /// a step added to `CARGO_STEPS` without a receipt entry is impossible.
 fn expected_steps() -> Vec<(String, Vec<String>)> {
@@ -1161,7 +1179,7 @@ tests::gamma: test
     fn lane_steps_are_pinned_in_order_and_identity() {
         // Mutation guard: any drift in the semantic proof floor (target names,
         // lock discipline, nocapture/threading identity) must fail here.
-        assert_eq!(CARGO_STEPS.len(), 7);
+        assert_eq!(CARGO_STEPS.len(), 8);
         assert_eq!(CARGO_STEPS[0], ("fetch locked inputs", &["fetch", "--locked"][..]));
         assert_eq!(
             CARGO_STEPS[1],
@@ -1244,6 +1262,27 @@ tests::gamma: test
                     "--test",
                     "postfix_hash_slice_tests",
                     "--",
+                    "--nocapture",
+                ][..]
+            )
+        );
+        assert_eq!(
+            CARGO_STEPS[7],
+            (
+                "references protocol",
+                &[
+                    "test",
+                    "--locked",
+                    "-p",
+                    "perl-lsp-rs",
+                    "--test",
+                    "lsp_references_tests",
+                    "--features",
+                    "workspace",
+                    "--profile",
+                    "agent",
+                    "--",
+                    "--test-threads=1",
                     "--nocapture",
                 ][..]
             )
@@ -1574,7 +1613,7 @@ tests::gamma: test
     #[test]
     fn a_failed_lane_records_the_untouched_remainder_as_not_run() {
         // The receipt of a lane that stopped at step 2 must still carry all
-        // nine steps: omission and non-execution have to stay distinguishable.
+        // selected steps: omission and non-execution have to stay distinguishable.
         let mut recorder = Recorder::new();
         recorder.record(
             "fetch locked inputs",
@@ -1632,7 +1671,7 @@ tests::gamma: test
     #[test]
     fn a_forged_failure_result_over_all_ok_steps_is_refused() {
         // Review #13882: internal consistency was previously checked only for
-        // success, so a failure result over nine ok steps verified.
+        // success, so a failure result over all ok steps verified.
         let mut receipt = success_receipt();
         receipt.result = ProofResult::ProductFailure;
         let text = rejection(&receipt, None);

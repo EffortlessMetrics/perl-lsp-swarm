@@ -2579,6 +2579,59 @@ use warnings;
         Ok(tier == "semantic_source_backed")
     }
 
+    /// The mixed imported-symbol fallback keeps its import spellings, while
+    /// indexed calls coincide with the text tokens instead of adding AST spans.
+    #[test]
+    fn imported_call_references_return_each_fixture_token_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = create_server();
+        open_project(&server, "mojolicious_skeleton")?;
+        let result = server
+            .test_handle_references(Some(json!({
+                "textDocument": {
+                    "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
+                },
+                "position": {"line": 72, "character": 4},
+                "context": {"includeDeclaration": false}
+            })))?
+            .ok_or("imported calls must return locations")?;
+        let mut actual = result.as_array().ok_or("references must be an array")?.clone();
+        actual.sort_by_key(|location| location.to_string());
+        // Literal values audited against all thirteen committed project files;
+        // two imports and four calls are the current low-confidence fallback.
+        let mut expected: Vec<Value> = [
+            ("lib/Mojo/Base.pm", 57, 10, 15),
+            ("lib/Mojolicious.pm", 7, 22, 27),
+            ("lib/Mojolicious.pm", 72, 4, 9),
+            ("lib/Mojolicious/Controller.pm", 6, 21, 26),
+            ("lib/Mojolicious/Controller.pm", 78, 4, 9),
+            ("lib/Mojolicious/Plugins.pm", 26, 38, 43),
+        ]
+        .into_iter()
+        .map(|(file, line, start, end)| {
+            json!({
+                "uri": format!("file:///real_projects/mojolicious_skeleton/{file}"),
+                "range": {
+                    "start": {"line": line, "character": start},
+                    "end": {"line": line, "character": end}
+                }
+            })
+        })
+        .collect();
+        expected.sort_by_key(|location| location.to_string());
+        assert_eq!(
+            actual, expected,
+            "mixed sources must preserve every fallback token exactly once"
+        );
+        let explanation = explain_provider_decision(&server, "references")?;
+        let receipt = explanation.get("request_receipt").ok_or("missing references receipt")?;
+        assert_eq!(receipt["index_state"], json!("full"));
+        assert_eq!(receipt["answering_tier"], json!("workspace_mixed"));
+        assert!(receipt["index_result_count"].as_u64().is_some_and(|count| count > 0));
+        assert!(receipt["text_result_count"].as_u64().is_some_and(|count| count > 0));
+        Ok(())
+    }
+
     /// Representative-workspace replay for #2674 PR-3 (references measurement,
     /// no live provider behavior change). Fires every request in
     /// `REPLAY_MANIFEST` + `EMPTY_POSITION_MANIFEST` against three real,
