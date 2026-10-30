@@ -87,7 +87,11 @@ pub(crate) fn windows_has_expandable_percent_ref(
         };
         let close = open + 1 + rel_close;
         let name = &arg[open + 1..close];
-        if !name.is_empty() && is_defined(name) {
+        // cmd.exe also expands `%NAME:~start,len%` (substring) and
+        // `%NAME:old=new%` (replacement), so the defined-name lookup applies
+        // to the base name before the first `:` as well as the full text.
+        let base = name.split_once(':').map_or(name, |(base, _)| base);
+        if !base.is_empty() && (is_defined(name) || is_defined(base)) {
             return true;
         }
         i = open + 1;
@@ -194,6 +198,10 @@ mod tests {
         // cmd.exe restarts pairing at an undefined pair's closing `%`: the
         // closing `%` of `%undefined%` opens the `TEMP` span, which expands.
         assert!(windows_has_expandable_percent_ref("%undefined%TEMP%", is_defined));
+        // Substring and replacement forms expand the base variable too.
+        assert!(windows_has_expandable_percent_ref("%TEMP:~0,3%", is_defined));
+        assert!(windows_has_expandable_percent_ref("%TEMP:x=y%", is_defined));
+        assert!(!windows_has_expandable_percent_ref("%UNDEFINED_VAR:~0,3%", is_defined));
         // An empty %% pair has no name and is not expandable.
         assert!(!windows_has_expandable_percent_ref("100%%", is_defined));
     }
