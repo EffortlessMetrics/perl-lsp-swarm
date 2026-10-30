@@ -568,6 +568,10 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // binding would sail through every required check green (#15995
         // review).
         || file == ".ci/policies/required-checks.toml"
+        // The #8401 selection guard in lsp_internal_dependency_layers reads
+        // this facade-owned target. With the reverse core dev edge removed,
+        // facade-only edits no longer reach xtask through reverse dependencies.
+        || file == "crates/perl-lsp-rs/tests/core_facade_contract.rs"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -1384,6 +1388,22 @@ mod tests {
     }
 
     // --- xtask policy-guarded inputs (#5036) ---
+
+    #[test]
+    fn core_facade_contract_change_selects_its_crate_and_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-lsp-rs", "crates/perl-lsp-rs"), ("xtask", "xtask")]);
+        let files = vec!["crates/perl-lsp-rs/tests/core_facade_contract.rs".to_string()];
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert_eq!(crates, BTreeSet::from(["perl-lsp-rs".to_string(), "xtask".to_string()]));
+
+        let unrelated = vec!["crates/perl-lsp-rs/tests/unrelated.rs".to_string()];
+        assert_eq!(
+            crates_from_files(&unrelated, &metadata, "/workspace")?,
+            BTreeSet::from(["perl-lsp-rs".to_string()]),
+            "the guard route must stay specific to the source it reads"
+        );
+        Ok(())
+    }
     //
     // `unit_routed_full` is scope-aware, so a guard only runs when its crate is
     // selected. The binstall tests in `release_artifact_check` read
