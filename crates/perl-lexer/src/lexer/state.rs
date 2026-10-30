@@ -35,7 +35,7 @@ pub struct PerlLexer<'a> {
     /// review). The enclosing depth is the `paren_depth` at which the
     /// print opener's `(` was consumed, so a nested `)` pops only the
     /// entry it actually closes.
-    pub(crate) print_list_parens: Vec<(usize, bool)>,
+    pub(crate) print_list_parens: Vec<(usize, bool, bool)>,
     /// Set by the identifier-or-keyword handler when a `print` keyword/identifier
     /// at term position is immediately followed (after horizontal whitespace) by
     /// `(`. Consumed by the `(` handler in `try_delimiter` to record that the

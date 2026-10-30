@@ -966,10 +966,11 @@ impl<'a> PerlLexer<'a> {
         // A nullary authority is different (#16165): `sub foo ()` and `time`
         // complete a term, so `foo <<END` and `time <<END` shift even at
         // statement level (local Perl oracle).
-        let print_filehandle_slot =
-            self.print_list_parens.last().is_some_and(|(enclosing_depth, seen_comma)| {
-                self.paren_depth == enclosing_depth + 1 && !seen_comma
-            });
+        let print_filehandle_slot = self.print_list_parens.last().is_some_and(
+            |(enclosing_depth, seen_comma, slot_live)| {
+                self.paren_depth == enclosing_depth + 1 && !seen_comma && *slot_live
+            },
+        );
         if self.mode == LexerMode::ExpectOperator
             && ((self.paren_depth > 0 && !print_filehandle_slot)
                 || self.preceding_word_is_nullary())
@@ -2417,6 +2418,22 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn try_operator(&mut self) -> Option<Token> {
+        // A binary operator at the print-list depth ends the filehandle
+        // slot (#16365): in `print($x + $y << 'END')` the `<<` follows a
+        // compound expression, so it is the left-shift operator (a Perl
+        // syntax error there), not a heredoc opener. Only the slot whose
+        // term is still the lone first argument stays live.
+        if self.mode == LexerMode::ExpectOperator
+            && !matches!(self.current_char(), Some('-') if self.peek_byte(1) == Some(b'>'))
+            && matches!(
+                self.current_char(),
+                Some('+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '<' | '>' | '=' | '!' | '~' | '?' | ':' | '.')
+            )
+            && let Some((enclosing_depth, _, slot_live)) = self.print_list_parens.last_mut()
+            && self.paren_depth == *enclosing_depth + 1
+        {
+            *slot_live = false;
+        }
         // Skip operator parsing if we're expecting a delimiter for a quote operator
         if matches!(self.mode, LexerMode::ExpectDelimiter) && self.current_quote_op.is_some() {
             return None;
@@ -2667,7 +2684,7 @@ impl<'a> PerlLexer<'a> {
                     // Record the enclosing depth so the matching `)` pops
                     // exactly this opener, never a nested paren (#16163
                     // review).
-                    self.print_list_parens.push((self.paren_depth, false));
+                    self.print_list_parens.push((self.paren_depth, false, true));
                 }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
@@ -2694,7 +2711,7 @@ impl<'a> PerlLexer<'a> {
                 // this paren's depth after the decrement. A nested `)` inside
                 // the print list leaves the opener on the stack (#16163
                 // review).
-                if let Some((enclosing_depth, _)) = self.print_list_parens.last()
+                if let Some((enclosing_depth, _, _)) = self.print_list_parens.last()
                     && self.paren_depth == *enclosing_depth
                 {
                     self.print_list_parens.pop();
@@ -2732,7 +2749,7 @@ impl<'a> PerlLexer<'a> {
                 // A top-level comma inside a `print(...)` list ends the
                 // filehandle slot (#16163 review): later arguments are
                 // ordinary list terms, so a following `<<` is a shift.
-                if let Some((enclosing_depth, seen_comma)) = self.print_list_parens.last_mut()
+                if let Some((enclosing_depth, seen_comma, _)) = self.print_list_parens.last_mut()
                     && self.paren_depth == *enclosing_depth + 1
                 {
                     *seen_comma = true;

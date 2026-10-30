@@ -99,6 +99,20 @@ fn print_list_nested_parens_do_not_disable_later_heredocs() {
 }
 
 #[test]
+fn print_list_binary_operator_ends_the_filehandle_slot() {
+    // #16365: `print($x + $y << 'END')` is a Perl syntax error (left shift),
+    // so a binary operator between the first term and `<<` must end the
+    // filehandle slot; the following lines are not heredoc body.
+    let source = "print($x + $y << 'END');\nbody\nEND\n";
+    let mut lx = PerlLexer::new(source);
+    let tokens = lx.collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "a shift after a compound expression must not open a heredoc: {tokens:?}"
+    );
+}
+
+#[test]
 fn print_list_comma_ends_the_filehandle_slot() {
     // #16163 review: after the top-level comma the filehandle slot is over,
     // so `<<` following a completed term is a left shift, not a heredoc.
