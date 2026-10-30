@@ -1,0 +1,101 @@
+# agentic_task_battery.v1 — Task 6: Run the right hygiene gate for a change
+# Source: recovered usability-battery design, Task 6.
+# Grader supplies change_type (and optionally pkg). The gate table below is the
+# scoring authority for "correct gate set".
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-06-hygiene-gate"
+title = "Run the right hygiene gate for a change"
+goal = "Pick the cheapest correct gates for the grader-named change type from CONTRIBUTING's command table, run them cheapest-first, and report each command + exit code + wall time, plus what proof was deliberately not run."
+starting_state = "Uncommitted or just-committed change of a grader-named type (Rust prod / test-only `must` migration / public API / docs-only / parser)."
+instruction = "Pick the cheapest correct gates for this change type from CONTRIBUTING's command table, run them cheapest-first, and report each command + exit code + wall time, plus what proof you deliberately did not run."
+max_duration = "15 min (excluding first-ever xtask build)"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Running the full workspace clippy/test suite for a one-crate change, or skipping the one change-specific gate (e.g. `check-must-context`) that CI will enforce."
+automation = "partial"
+
+allowed_commands = [
+  "git diff --check",
+  "cargo fmt -p <pkg> -- --check",
+  "cargo clippy -p <pkg> --all-targets --locked -- -D warnings",
+  "cargo test --locked -p <pkg>",
+  "cargo xtask ci-hygiene check-must-context",
+  "cargo xtask ci-hygiene check-unwraps-prod",
+]
+
+[params]
+  "change-type" = "One of: rust-prod | must-migration | public-api | docs-only | parser (default: rust-prod)"
+  pkg = "Focused package for -p flags (default: perl-token)"
+
+# Gate table: change type -> full cheapest-first gate list, per CONTRIBUTING
+# ("Run focused proof first" + "Useful command choices" + "Public API and SemVer").
+# `<pkg>` is the focused package param. `just` recipes run via Git Bash on
+# Windows (CONTRIBUTING: recipes are bash; PowerShell lacks cygpath).
+# Write-side recipes (`status-update`, `public-api-update`) are intentionally
+# NOT in the automated lists: they mutate the tree and are MANUAL steps gated
+# on a human finding drift first.
+[gate_table]
+  rust-prod = [
+    "git diff --check",
+    "cargo fmt -p <pkg> -- --check",
+    "cargo clippy -p <pkg> --all-targets --locked -- -D warnings",
+    "cargo test --locked -p <pkg>",
+  ]
+  must-migration = [
+    "git diff --check",
+    "cargo fmt -p <pkg> -- --check",
+    "cargo clippy -p <pkg> --all-targets --locked -- -D warnings",
+    "cargo test --locked -p <pkg>",
+    "cargo xtask ci-hygiene check-must-context",
+  ]
+  public-api = [
+    "git diff --check",
+    "cargo fmt -p <pkg> -- --check",
+    "cargo clippy -p <pkg> --all-targets --locked -- -D warnings",
+    "cargo test --locked -p <pkg>",
+    "just semver-check-package <pkg>",
+  ]
+  docs-only = ["git diff --check", "just ci-docs-check", "just docs-verify"]
+  parser = [
+    "git diff --check",
+    "cargo fmt -p <pkg> -- --check",
+    "cargo clippy -p <pkg> --all-targets --locked -- -D warnings",
+    "cargo test --locked -p <pkg>",
+    "just status-check",
+  ]
+
+[[rubric]]
+  step_id = "t6-s1"
+  description = "Correct gate set for the type per the spec gate table (e.g. `must` migration includes `check-must-context`)"
+  points = 4
+  mode = "auto"
+  check = "gate_select"
+
+[[rubric]]
+  step_id = "t6-s2"
+  description = "Cheapest-first order (`git diff --check`, fmt, clippy `-p`, focused test, then gate)"
+  points = 2
+  mode = "auto"
+  check = "gate_order"
+
+[[rubric]]
+  step_id = "t6-s3"
+  description = "Every command reported with exit code"
+  points = 2
+  mode = "auto"
+  check = "gate_exits"
+
+[[rubric]]
+  step_id = "t6-s4"
+  description = "Names proof-not-run explicitly (no silent gaps)"
+  points = 1
+  mode = "auto"
+  check = "proof_not_run"
+
+[[rubric]]
+  step_id = "t6-s5"
+  description = "No workspace-wide proof for a one-crate change"
+  points = 1
+  mode = "auto"
+  check = "no_workspace"

@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Open files now refresh their diagnostics after a dependency is saved, created, or renamed into place. Saved-text updates refresh consumers after the new source is indexed, and successive file operations also refresh clients using pull diagnostics. Previously these operations could leave other open files showing stale errors or stale clean state until they were edited."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18120"
+  Slug: save-rename-republish
+  Breaking: "no"

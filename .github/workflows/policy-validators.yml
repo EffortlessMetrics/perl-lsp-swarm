@@ -32,6 +32,8 @@ on:
       - 'scripts/ci/parser_facade_inventory.py'
       - 'scripts/ci/check_parser_facade_authority.py'
       - 'scripts/ci/test_parser_facade_authority.py'
+      - 'scripts/ci/policy_validators_aggregate.py'
+      - 'scripts/ci/test_policy_validators_route_contract.py'
       - 'scripts/ci/validate_risk_packs.py'
       - 'scripts/ci/validate_gate_lane_mapping.py'
       - '.ci/policy-checks-inventory.json'
@@ -91,6 +93,8 @@ on:
       - 'docs/project/status/provider_fact_reads.md'
       - 'xtask/src/tasks/update_status/provider_fact_reads.rs'
       - 'xtask/src/tasks/update_status/mod.rs'
+      - 'scripts/ci/policy_validators_aggregate.py'
+      - 'scripts/ci/test_policy_validators_route_contract.py'
       - '.github/workflows/policy-validators.yml'
   workflow_dispatch: {}
 
@@ -102,14 +106,19 @@ concurrency:
 
 permissions:
   contents: read
+  # No write authority here: the workflow security ratchet forbids write
+  # grants on PR-triggered workflows (#15900). The deadline diagnostics in
+  # validate-diagnostics are advisory only; the scheduled
+  # policy-validators-nano-reaper workflow owns the explicit cancel of a
+  # queued-forever trusted lane.
 
 jobs:
   validate:
     name: Validate CI policy ledgers (self-hosted)
     # Trusted self-hosted capacity stays off forks and bot PRs; those are
     # proven by the hosted lane alone. A queued-forever nano (outage) is
-    # tolerated: the aggregate polls it with a deadline instead of
-    # needs-gating on it.
+    # tolerated: only the diagnostic job polls it with a deadline; the
+    # required verdict depends solely on the identical hosted validation.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -326,10 +335,9 @@ jobs:
 
   validate-result:
     name: Validate CI policy ledgers
-    # Only the always-running fallback is a hard dependency: a queued-forever
-    # trusted lane (runner outage) must not block failover, and job queue
-    # time does not count toward timeout-minutes. The trusted verdict is read
-    # by polling the run's jobs below.
+    # Every pair in the shared decision table passes exactly when hosted
+    # validation succeeds. Nano changes diagnostics only, so neither its
+    # queue nor the bounded diagnostic wait belongs on this required path.
     needs:
       - validate-hosted
     if: always()
@@ -347,11 +355,38 @@ jobs:
           set -euo pipefail
           python3 -m unittest scripts/ci/test_policy_validators_route_contract.py
 
-      # Fail-closed aggregation with a bounded wait for the trusted lane.
-      # Context values arrive via env (never embedded in run source) per the
-      # workflow security ratchet; the API token is the automatic
-      # GITHUB_TOKEN, never a secret reference.
       - name: Evaluate routed result
+        shell: bash
+        env:
+          HOSTED_RESULT: ${{ needs.validate-hosted.result }}
+        run: |
+          set -euo pipefail
+          # Unobserved is honest: no trusted outcome is claimed here.
+          # Full agreement/divergence/failover diagnostics follow separately.
+          python3 scripts/ci/policy_validators_aggregate.py "unobserved" "$HOSTED_RESULT"
+
+  validate-diagnostics:
+    name: Policy Validators lane diagnostics
+    needs:
+      - validate-hosted
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Only this advisory job reads native job conclusions. The required
+      # verdict has no API dependency or additional token permission.
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+
+      # Preserve the bounded trusted-lane observation and outage diagnostics
+      # outside the required verdict. Queue time ignores timeout-minutes.
+      # Context values arrive via env, never embedded in run source.
+      - name: Report lane diagnostics
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -368,40 +403,32 @@ jobs:
           while [ "$SECONDS" -lt "$deadline" ]; do
             nano_conclusion="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
               --jq ".jobs[] | select(.name == \"$NANO_JOB\") | .conclusion // \"pending\"")"
-            case "$nano_conclusion" in
-              success | failure | cancelled | skipped) break ;;
-            esac
+            if [ -n "$nano_conclusion" ] && [ "$nano_conclusion" != "pending" ]; then
+              break
+            fi
             sleep "$POLL_INTERVAL_SECONDS"
           done
+          # A trusted lane that never receives a runner stays queued forever
+          # (queue time ignores timeout-minutes), so the run and its check
+          # never reach a terminal state (#15900). This workflow holds no
+          # write authority (PR-triggered), so it reports actionable
+          # diagnostics and leaves the explicit cancel to the scheduled
+          # policy-validators-nano-reaper workflow. The required verdict
+          # has already used the hosted result without this diagnostic wait.
+          if [ -z "$nano_conclusion" ] || [ "$nano_conclusion" = "pending" ]; then
+            echo "::warning::Trusted lane has no observed conclusion after ${POLL_DEADLINE_SECONDS}s past the hosted lane (runner group em-ci-nano, labels self-hosted/linux/x64/em-ci/trusted-pr/workflow-nano); the scheduled policy-validators-nano-reaper cancels a queued job so this run reaches a terminal state. The required verdict uses the hosted result. See issue #15900."
+            {
+              echo "### Trusted-lane failover diagnostics"
+              echo ""
+              echo "- No trusted conclusion observed within ${POLL_DEADLINE_SECONDS}s past the hosted lane (queue time ignores timeout-minutes)."
+              echo "- Trusted placement: runner group em-ci-nano, labels self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano."
+              echo "- Action: the scheduled policy-validators-nano-reaper cancels a queued job; the required verdict uses the hosted result."
+              echo "- Follow-up: verify em-ci-nano runner registration and connectivity before the next trusted run."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           nano="${nano_conclusion:-pending}"
-          echo "nano=$nano hosted=$HOSTED_RESULT"
-          case "$nano" in
-            success)
-              if [ "$HOSTED_RESULT" = "success" ]; then
-                echo "Policy Validators trusted result: both lanes agree."
-                exit 0
-              fi
-              echo "::error::lane divergence: trusted lane passed but fallback is $HOSTED_RESULT"
-              exit 1
-              ;;
-            failure)
-              echo "::error::Policy Validators trusted lane failed (fallback $HOSTED_RESULT)"
-              exit 1
-              ;;
-            skipped | cancelled)
-              if [ "$HOSTED_RESULT" = "success" ]; then
-                echo "Policy Validators fallback result: trusted lane $nano, hosted passed."
-                exit 0
-              fi
-              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
-              exit 1
-              ;;
-            *)
-              if [ "$HOSTED_RESULT" = "success" ]; then
-                echo "Policy Validators failover result: trusted lane still $nano after deadline, hosted passed."
-                exit 0
-              fi
-              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
-              exit 1
-              ;;
-          esac
+          echo "nano=$nano hosted=$HOSTED_RESULT" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The unchanged table keeps complete agreement, divergence,
+          # failover and failure reporting. pipefail preserves a failed
+          # comparison as a failed diagnostic job, never green test credit.
+          python3 scripts/ci/policy_validators_aggregate.py "$nano" "$HOSTED_RESULT" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -8,6 +8,15 @@
 
 mod config;
 mod document;
+// #10247 stages private primitives; #8286 removes this expectation at cutover.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "policy:allow-10247-staged-document-revision: remove with #8286 lifecycle cutover"
+    )
+)]
+pub(crate) mod document_revision;
 
 pub use config::*;
 pub use document::*;

@@ -321,10 +321,12 @@ fn role_and_statement_package_regions_own_only_their_lexical_members() {
     let outline = nested_outline(source);
 
     let role = must_some_with(find_named_deep(&outline, "My::Role"), "role symbol missing");
-    assert_eq!(role.kind, 8, "Moo::Role must retain the LSP role kind");
+    assert_eq!(role.kind, 11, "Moo::Role must retain the LSP role kind");
+    // #18109: the block-form `Inner` package is inside the role's extent, so
+    // it nests under the role ahead of the role's subtests.
     assert_eq!(
         role.children.iter().map(|child| child.name.as_str()).collect::<Vec<_>>(),
-        vec!["role test", "after inner"]
+        vec!["Inner", "role test", "after inner"]
     );
 
     let inner = must_some_with(find_named_deep(&outline, "Inner"), "block package symbol missing");

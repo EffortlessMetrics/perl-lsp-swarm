@@ -1,6 +1,5 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_cap_snap.rs
-assertion_line: 32
 expression: caps
 ---
 callHierarchyProvider: true
@@ -9,6 +8,8 @@ codeActionProvider:
     - quickfix
     - refactor
     - refactor.extract
+    - refactor.extract.variable
+    - refactor.extract.subroutine
     - refactor.rewrite
     - source.fixAll
     - source.modernize
@@ -154,6 +155,6 @@ workspace:
       - perldoc
   workspaceFolders:
     changeNotifications: true
-    supported: false
+    supported: true
 workspaceSymbolProvider:
   resolveProvider: true

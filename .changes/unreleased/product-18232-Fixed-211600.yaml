@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Snippet plain-text fallbacks for clients without snippet support now preserve literal Perl backslashes: the snippet plaintext renderer only treats backslash as an escape before $, } and backslash in ordinary text (comma, pipe and backslash inside choices), so bodies like the shipped printfh snippet insert \"data\\n\" instead of corrupting it to \"datan\". Snippet-capable clients are unchanged."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18232"
+  Slug: snippet-plaintext-backslash
+  Breaking: "no"

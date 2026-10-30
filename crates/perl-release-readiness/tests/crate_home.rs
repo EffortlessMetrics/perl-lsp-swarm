@@ -47,3 +47,38 @@ fn receipt_kind_and_schema_stay_historical() {
     assert_eq!(receipt.kind, "perl_kwalitee");
     assert_eq!(receipt.schema_version, 1);
 }
+
+/// Receipt fixtures need no parser. Keep focused evaluator tests from compiling
+/// the product stack through an otherwise unused test helper, including aliases
+/// and transitive/build dependencies. Cargo inspection never compiles a target.
+#[test]
+fn focused_tests_do_not_compile_the_parser_stack() -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::process::Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--manifest-path",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+            "-p",
+            "perl-release-readiness",
+            "--edges",
+            "normal,dev,build",
+            "--prefix",
+            "none",
+            "--locked",
+            "--offline",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "dependency graph is unproven: {}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tree = String::from_utf8(output.stdout)?;
+    let names: Vec<_> = tree.lines().filter_map(|line| line.split_whitespace().next()).collect();
+    assert!(names.contains(&"perl-release-readiness"), "missing evaluator root: {tree}");
+    for forbidden in ["perl-parser-core", "perl-lexer"] {
+        assert!(!names.contains(&forbidden), "focused evaluator tests pull {forbidden}:\n{tree}");
+    }
+    Ok(())
+}

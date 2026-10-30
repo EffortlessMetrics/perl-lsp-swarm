@@ -10,15 +10,19 @@
 //!   Reason: perl-diagnostics is a stable kernel of diagnostic codes and types.
 //!   LSP-specific formatting belongs in the LSP provider layer, not here.
 //!
-//! # Dev-dep filter
+//! - `perl-lsp-rs-core` must not reach the facade (`perl-lsp-rs`) or product
+//!   (`perllsp`) through its normal, build, or test dependency closure (#8401).
 //!
-//! Only **normal** (runtime) dependencies are checked. Dev-dependencies (`kind == "dev"`)
-//! and build-dependencies (`kind == "build"`) are permitted to cross layers freely,
-//! so tests and build scripts may pull in higher-layer crates for fixtures and
-//! integration testing without triggering a violation.
+//! # Dependency scope
+//!
+//! The existing leaf rules check direct normal dependencies. Core also checks
+//! every root dependency kind, then normal/build edges of workspace dependencies:
+//! a dependency's own dev-dependencies are not part of core's build. Metadata
+//! retains canonical package names (including renamed dependencies), optional
+//! edges, and target-specific declarations without host/feature filtering.
 
 use color_eyre::eyre::{Result, bail};
-use std::process::Command;
+use std::{collections::BTreeSet, process::Command};
 
 /// A layer constraint: `crate_name` must not depend on any crate matching `forbidden_prefix`.
 struct LayerRule {
@@ -60,6 +64,49 @@ const LAYER_RULES: &[LayerRule] = &[
     },
 ];
 
+/// Walk the workspace declarations supplied by `cargo metadata --no-deps`.
+/// This is a structural rule across all target/feature profiles, not a claim
+/// about the resolved registry dependency graph.
+/// A host-filtered `resolve.nodes` graph can omit a target-conditioned helper
+/// back edge, so declarations remain the authority at every hop.
+fn core_host_paths(packages: &[serde_json::Value]) -> Vec<String> {
+    const CORE: &str = "perl-lsp-rs-core";
+    const HOSTS: &[&str] = &["perl-lsp-rs", "perllsp"];
+    let mut pending = vec![(CORE, CORE.to_string())];
+    let mut visited = BTreeSet::new();
+    let mut violations = Vec::new();
+
+    while let Some((name, path)) = pending.pop() {
+        if !visited.insert(name) {
+            continue;
+        }
+        let Some(package) = packages.iter().find(|package| package["name"].as_str() == Some(name))
+        else {
+            continue;
+        };
+        let Some(dependencies) = package["dependencies"].as_array() else {
+            continue;
+        };
+        for dependency in dependencies {
+            let kind = dependency["kind"].as_str().unwrap_or("normal");
+            if name != CORE && kind == "dev" {
+                continue;
+            }
+            // `name` is the package identity; `rename` is only its import alias.
+            let Some(dependency_name) = dependency["name"].as_str() else {
+                continue;
+            };
+            let next_path = format!("{path} -[{kind}]-> {dependency_name}");
+            if HOSTS.contains(&dependency_name) {
+                violations.push(next_path);
+            } else {
+                pending.push((dependency_name, next_path));
+            }
+        }
+    }
+    violations
+}
+
 /// Entry point used by `cargo xtask layer-check`.
 pub fn run() -> Result<()> {
     run_with_metadata(None)
@@ -89,14 +136,21 @@ pub fn run_with_metadata(metadata: Option<serde_json::Value>) -> Result<()> {
         }
     };
 
-    let mut violations = Vec::new();
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("cargo metadata: expected packages array"))?;
+    let mut violations: Vec<_> = core_host_paths(packages)
+        .into_iter()
+        .map(|path| {
+            format!(
+                "VIOLATION: {path}\n  Core must stay below facade/product composition, \
+                 including test dependencies (#8401). Move cross-layer proof to the host."
+            )
+        })
+        .collect();
 
     for rule in LAYER_RULES {
         // Find the package for this crate in metadata
-        let packages = metadata["packages"]
-            .as_array()
-            .ok_or_else(|| color_eyre::eyre::eyre!("cargo metadata: expected packages array"))?;
-
         for pkg in packages {
             let name = pkg["name"].as_str().unwrap_or("");
             if name != rule.crate_name {
@@ -131,7 +185,7 @@ pub fn run_with_metadata(metadata: Option<serde_json::Value>) -> Result<()> {
     }
 
     if violations.is_empty() {
-        println!("Layer check passed: all {} rule(s) satisfied.", LAYER_RULES.len());
+        println!("Layer check passed: all {} rule(s) satisfied.", LAYER_RULES.len() + 1);
         Ok(())
     } else {
         for v in &violations {
@@ -145,6 +199,126 @@ pub fn run_with_metadata(metadata: Option<serde_json::Value>) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn core_rejects_host_edges_for_every_kind_alias_and_target() {
+        for host in ["perl-lsp-rs", "perllsp"] {
+            for kind in [None, Some("dev"), Some("build")] {
+                for target in [None, Some("cfg(target_os = \"non_host_platform\")")] {
+                    for rename in [None, Some("fixture_alias")] {
+                        let metadata = json!({"packages": [{
+                            "name": "perl-lsp-rs-core",
+                            "dependencies": [{
+                                "name": host, "kind": kind, "target": target,
+                                "rename": rename, "optional": kind != Some("dev")
+                            }]
+                        }]});
+                        assert!(
+                            run_with_metadata(Some(metadata)).is_err(),
+                            "core must reject {host}, kind={kind:?}, target={target:?}, alias={rename:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn core_rejects_indirect_host_paths_through_test_helpers() {
+        for kind in [None, Some("build")] {
+            let packages = json!([
+                {"name": "perl-lsp-rs-core", "dependencies": [
+                    {"name": "test-helper", "kind": "dev", "rename": "fixture"}
+                ]},
+                {"name": "test-helper", "dependencies": [
+                    {"name": "bridge", "kind": kind, "target": "cfg(windows)", "optional": true}
+                ]},
+                {"name": "bridge", "dependencies": [
+                    {"name": "perl-lsp-rs", "kind": null, "rename": "host"}
+                ]}
+            ]);
+            let paths = core_host_paths(packages.as_array().unwrap());
+            assert_eq!(
+                paths,
+                [format!(
+                    "perl-lsp-rs-core -[dev]-> test-helper -[{}]-> bridge -[normal]-> perl-lsp-rs",
+                    kind.unwrap_or("normal")
+                )]
+            );
+            assert!(run_with_metadata(Some(json!({"packages": packages}))).is_err());
+        }
+    }
+
+    #[test]
+    fn core_rejects_declared_transitive_back_edges_absent_from_host_resolution() {
+        for target in ["cfg(unix)", "cfg(windows)"] {
+            for kind in [None, Some("build")] {
+                let mut metadata = json!({
+                    "packages": [
+                        {"name": "perl-lsp-rs-core", "dependencies": [
+                            {"name": "fixture", "kind": "dev"}
+                        ]},
+                        {"name": "fixture", "dependencies": [
+                            {"name": "perl-lsp-rs", "rename": "host_alias",
+                             "kind": kind, "target": target}
+                        ]},
+                        {"name": "unrelated", "dependencies": [
+                            {"name": "perl-lsp-rs", "rename": "other_host_alias",
+                             "kind": kind, "target": target}
+                        ]}
+                    ],
+                    // A host-filtered query can retain core -> fixture while
+                    // hiding fixture -> host on this platform. The declaration
+                    // still violates the cross-platform core boundary.
+                    "resolve": {"nodes": [
+                        {"id": "perl-lsp-rs-core", "deps": [{"pkg": "fixture"}]},
+                        {"id": "fixture", "deps": []}
+                    ]}
+                });
+                assert_eq!(
+                    core_host_paths(metadata["packages"].as_array().unwrap()),
+                    [format!(
+                        "perl-lsp-rs-core -[dev]-> fixture -[{}]-> perl-lsp-rs",
+                        kind.unwrap_or("normal")
+                    )]
+                );
+                assert!(run_with_metadata(Some(metadata.clone())).is_err());
+
+                // Removing only the reachable declaration must restore a pass.
+                // The unrelated workspace member keeps the same target-specific
+                // host edge; scanning all packages without reachability is wrong.
+                metadata["packages"][1]["dependencies"] = json!([]);
+                assert!(core_host_paths(metadata["packages"].as_array().unwrap()).is_empty());
+                assert!(run_with_metadata(Some(metadata)).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn core_allows_lower_dependencies_and_unconsumed_transitive_dev_edges() {
+        let metadata = json!({"packages": [
+            {"name": "perl-lsp-rs-core", "dependencies": [
+                {"name": "helper", "kind": "dev"},
+                // The import alias must not be mistaken for package identity.
+                {"name": "lower", "kind": null, "rename": "perl-lsp-rs"}
+            ]},
+            {"name": "helper", "dependencies": [
+                {"name": "perl-lsp-rs", "kind": "dev"},
+                {"name": "lower", "kind": null}
+            ]},
+            {"name": "lower", "dependencies": [
+                {"name": "helper", "kind": null}
+            ]},
+            {"name": "perl-lsp-rs", "dependencies": [
+                {"name": "perl-lsp-rs-core", "kind": null},
+                {"name": "perl-lsp-rs-core", "kind": "dev"}
+            ]},
+            {"name": "unrelated", "dependencies": [
+                {"name": "perl-lsp-rs", "kind": null}
+            ]}
+        ]});
+        assert!(run_with_metadata(Some(metadata)).is_ok());
+    }
 
     /// Sanity check: running against the real workspace must succeed.
     ///

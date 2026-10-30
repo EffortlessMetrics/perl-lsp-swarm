@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Clear pull diagnostics and their reusable result IDs after rejected text changes until a complete document replacement restores synchronization.
+time: 2026-10-13T02:12:00Z
+custom:
+  PR: "17756"
+  Slug: pull-diagnostics-resync
+  Breaking: "no"

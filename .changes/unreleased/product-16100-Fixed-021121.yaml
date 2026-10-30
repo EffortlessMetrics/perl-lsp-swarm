@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: Authority Transfer Review no longer reports a governed row as `FAIL_REVIEW_MISSING` when no reviewer packets were supplied at all; the workflow has no packet source configured yet, so the verdict now reads `NOT_PROVEN_GITHUB` (evidence could not be established) and the CLI exits 3 instead of 1. Packets supplied but none covering the row still emit `FAIL_REVIEW_MISSING`, preserving the typed-missing semantics for a real review-absence.
+time: 2026-09-20T02:11:21Z
+custom:
+  PR: "16100"
+  Slug: authority-review-no-packets-not-proven
+  Breaking: "no"

@@ -26,6 +26,9 @@ pub(super) const STDIN_DIGEST_MARKER: &str = "__PERL_CI_HYGIENE_STDIN_DIGEST__";
 pub(super) const STDOUT_BEFORE_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_STDOUT_BEFORE_STDIN__";
 pub(super) const STDERR_BEFORE_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_STDERR_BEFORE_STDIN__";
 pub(super) const EARLY_EXIT_MARKER: &str = "__PERL_CI_HYGIENE_EARLY_EXIT__";
+// Referenced only by the Unix arm of `close_stdin_keep_stdout` below: gating
+// keeps Windows test targets free of a dead-code lint without an allow.
+#[cfg(unix)]
 pub(super) const CLOSED_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_CLOSED_STDIN__";
 const ENV_MARKER: &str = "__PERL_CI_HYGIENE_ENV__";
 const CWD_MARKER: &str = "__PERL_CI_HYGIENE_CWD_SENTINEL__";
@@ -511,20 +514,42 @@ fn large_bounded_streams_do_not_deadlock_captured_output() -> TestResult {
     Ok(())
 }
 
+// Sole wait-status encoding in this fixture module, kept in the staged
+// from_raw policy's admitted `from_raw(raw_exit(..))` adapter form so the raw
+// encoding lives in exactly one documented place per platform. Mirrors the
+// `raw_exit`/`mock_status` split in `perl-lsp-rs/src/execute_command/test_support.rs`,
+// which cannot be reused here: it is crate-private and exited-only, while this
+// module must also cover a signal-terminated child.
+#[cfg(unix)]
+fn raw_exit(code: i32) -> i32 {
+    code << 8
+}
+
+#[cfg(windows)]
+fn raw_exit(code: i32) -> u32 {
+    code as u32
+}
+
 #[cfg(unix)]
 #[test]
-fn child_exit_code_maps_signaled_wait_status_to_one() {
+fn child_exit_code_maps_signaled_wait_status_to_one() -> TestResult {
     use std::os::unix::process::ExitStatusExt;
 
-    // wait(2): a process terminated by signal N has wait status N in the low bits.
-    const SIGTERM: i32 = 15;
-    let signaled = ExitStatus::from_raw(SIGTERM);
+    // A real child terminated by SIGTERM, not a synthesized wait status: the
+    // staged from_raw policy forbids direct `ExitStatus::from_raw` outside the
+    // `raw_exit(..)` adapter form, and only a kernel-reported status proves the
+    // shape this mapping exists for. `kill -TERM $$` is the shell's sole act,
+    // so no timing can make the child exit any other way.
+    let mut child = std::process::Command::new("sh").args(["-c", "kill -TERM $$"]).spawn()?;
+    let signaled = child.wait()?;
     assert_eq!(signaled.code(), None, "signal termination must have no numeric exit code");
+    assert_eq!(signaled.signal(), Some(15), "the child must have died to SIGTERM");
     assert_eq!(child_exit_code(signaled), 1);
 
-    let exited = ExitStatus::from_raw(7 << 8);
+    let exited = ExitStatus::from_raw(raw_exit(7));
     assert_eq!(exited.code(), Some(7));
     assert_eq!(child_exit_code(exited), 7);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -532,7 +557,7 @@ fn child_exit_code_maps_signaled_wait_status_to_one() {
 fn child_exit_code_preserves_windows_raw_code() {
     use std::os::windows::process::ExitStatusExt;
 
-    let status = ExitStatus::from_raw(7);
+    let status = ExitStatus::from_raw(raw_exit(7));
     assert_eq!(status.code(), Some(7));
     assert_eq!(child_exit_code(status), 7);
 }

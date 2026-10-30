@@ -1997,7 +1997,7 @@ fn visit_node(
                 );
             }
         }
-        NodeKind::OptionalParameter { variable, default_value } => {
+        NodeKind::OptionalParameter { variable, default_value, .. } => {
             let name = extract_var_name(variable);
             if in_range {
                 declared_in_range.insert(name);

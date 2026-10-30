@@ -1,0 +1,9 @@
+project: vscode
+component: Startup and lifecycle
+kind: Fixed
+body: "A custom perl-lsp.serverPath that points to a directory or a non-executable file is now rejected at startup with a message naming the actual problem, instead of being spawned and failing with a misleading permission error. Paths starting with ~ are expanded to the home directory instead of silently falling back to a different bundled or downloaded binary."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18119"
+  Slug: serverpath-validation
+  Breaking: "no"

@@ -34,7 +34,6 @@ proptest.workspace = true
 perl-parser-core = { workspace = true }
 perl-tdd-support = { workspace = true }
 perl-token = { workspace = true }
-perl-ast-v2 = { workspace = true }
 
 [features]
 default = []

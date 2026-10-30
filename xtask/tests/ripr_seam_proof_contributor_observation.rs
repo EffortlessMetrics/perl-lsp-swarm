@@ -182,7 +182,7 @@ fn proven_observation_cannot_carry_a_limitation() {
 
 fn refresh_digest(projection: &mut Projection) {
     let body = json!({
-        "schema": projection.schema,
+        "schema_version": projection.schema_version,
         "static": projection.static_topology,
         "observation": projection.observation,
         "sources": projection.sources,

@@ -114,8 +114,7 @@ When a milestone is released:
 
 ## Related Documentation
 
-- [ROADMAP.md](ROADMAP.md) - High-level release planning
-- [CURRENT_STATUS.md](CURRENT_STATUS.md) - Computed metrics
-- [issues/corpus/gaps/](issues/corpus/gaps/) - Corpus coverage gaps
+- [ROADMAP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ROADMAP.md) - High-level release planning
+- [CURRENT_STATUS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md) - Computed metrics
 
 <!-- Last Updated: 2026-01-27 -->
