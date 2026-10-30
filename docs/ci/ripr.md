@@ -32,6 +32,39 @@ until the final enforcement slice. The workflow still runs for
 every PR when it is ready for review so docs-only, policy-only, workflow-only,
 and code PRs all carry current proof receipts.
 
+## PR integration comparison identity
+
+With explicit `--pr-head H`, the existing producer interprets `--base A` as
+immutable event provenance and `--head E` as the evaluated integration commit.
+E must be the clean current checkout, have exactly two parents, and have H as its
+second parent. Its first parent P must descend from A. Diff-scoped evidence and
+guidance analyze **P...E**, the effect of integrating the candidate on that base.
+This excludes unrelated A-to-P mainline changes while retaining merge-resolution
+changes present in E, including changes absent from raw H. A candidate change
+neutralized in E is absent from this integration delta; this does not prove H
+separately. Missing or contradictory history refuses qualification.
+
+PR and guidance receipts retain their outer A/H/E provenance and a
+`comparison_subject` with version `ripr-pr-comparison.v1`, event A, raw H,
+comparison P, evaluated E and E's tree. The existing committed-diff receipt names
+P/E. The analyzer receives P as explicit metadata alongside that exact diff,
+and contradictory raw metadata refuses. PR evidence also binds the raw analysis digest; clean and degraded guidance
+can reuse it only after current subject, committed-diff and raw-byte validation.
+Legacy PR receipts cannot satisfy the new contract.
+
+RIPR-consuming quality gates receive independent `--ripr-pr-head H`, recompute
+that identity from Git and require both receipts to agree. Recovery commands
+retain H. PR mode requires the existing repository-wide receipt on E; the
+optional baseline override remains available for ordinary non-PR gates. Coverage-only
+mode continues to ignore RIPR receipts. A refused new gate generation invalidates
+its previous output instead of leaving an old success artifact.
+
+Without explicit PR-head input, existing commit-range semantics remain unchanged,
+including two-parent merge commits. This focused comparison repair does not change
+thresholds, required contexts, analyzer placement, permissions, reporting authority
+or the broader trusted-evaluator rollout under #15294. Installing this source does
+not qualify an older workflow attempt or activate #17903's staged cutover.
+
 ## What ripr does
 
 For each changed Rust function, ripr asks the mutation-testing-shaped question
@@ -56,6 +89,37 @@ When reporting `ripr` findings, use ripr's own classifications:
 | `static_unknown` | analysis bottomed out |
 
 Do **not** translate these into `killed` / `survived`. They mean something different.
+
+---
+
+## Perl fact-packet surface
+
+The sections above describe the Rust-lane gate. The Perl facts the lane can
+consume are produced separately by the `perl-ripr-facts` crate as a
+`ripr-perl-facts-v1` packet:
+
+- `perllsp --ripr-facts [--ripr-schema <ver> --ripr-root <path> --ripr-base
+  <ref> --ripr-head <ref> --ripr-fact-classes <list> --ripr-out <path>
+  --ripr-diff <file>]` — batch export flag; records base/head opaquely and
+  exits without starting the LSP server. Base/head never derive a diff, but
+  `--ripr-diff` accepts caller-supplied diff text for diff-owned `changes[]`
+  (#17152); without it `changes[]` is empty with a `no-diff-supplied`
+  limitation.
+- `perl-ripr-facts ripr-facts --schema <ver> --root <path> [--base <ref>]
+  [--head <ref>] [--fact-classes <list>] [--diff <cwd-relative-diff>] --out
+  <out>` — standalone binary; accepts caller-supplied diff text for
+  diff-owned `changes[]`, like `perllsp --ripr-diff`.
+- `build_ripr_facts_packet(&RiprFactsRequest)` — structured batch API; reads
+  workspace files but performs no output writes and spawns no processes.
+  Library and managed-producer callers can also supply diff text directly via
+  `RiprFactsRequest.diff` (or `run_ripr_facts_with_diff`) without staging a
+  file or spawning the binary.
+
+Contract: [`crates/perl-ripr-facts/README.md`](../../crates/perl-ripr-facts/README.md),
+schema [`schemas/ripr-perl-facts-v1.schema.json`](../../schemas/ripr-perl-facts-v1.schema.json).
+Exit `0` means "a packet was written" (a zero-fact packet reads
+`unavailable`); consumers must read `packet_status` and `limitations[]` —
+never infer success from emptiness.
 
 ---
 

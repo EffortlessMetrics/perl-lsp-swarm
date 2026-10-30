@@ -5,6 +5,7 @@
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use std::{fs, path::PathBuf};
+use xtask::vendored_catalog::{self, DECLARED_PROJECTIONS};
 
 const ARTICLES_DIR: &str = "docs/articles";
 
@@ -182,41 +183,10 @@ struct CoroClaimGuard {
     required: &'static [&'static str],
 }
 
-/// The exact pre-repair literals. `features.toml` is the root catalog
-/// authority; the four crate-local `features_sot.toml` files are byte
-/// projections of it (#7029), so they carry the same guard.
+/// Non-catalog coro/thread surfaces. Catalog authority plus every declared
+/// vendored projection share [`CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS`] via
+/// [`catalog_coro_surfaces`] so the inventory is not copied a fourth time.
 const CORO_CLAIM_GUARDS: &[CoroClaimGuard] = &[
-    CoroClaimGuard {
-        file: "features.toml",
-        forbidden: &[
-            // #9076 negative control: the exact stale description.
-            "Perl is single-threaded so returns one synthetic thread",
-            // #9076 drift check: "Perl is single-threaded" as a universal
-            // product fact must not return anywhere in the catalog.
-            "Perl is single-threaded",
-        ],
-        required: &["at most one synthetic execution context for the active session"],
-    },
-    CoroClaimGuard {
-        file: "crates/perl-dap/features_sot.toml",
-        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["at most one synthetic execution context for the active session"],
-    },
-    CoroClaimGuard {
-        file: "crates/perl-lsp-rs/features_sot.toml",
-        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["at most one synthetic execution context for the active session"],
-    },
-    CoroClaimGuard {
-        file: "crates/perl-lsp-rs-core/features_sot.toml",
-        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["at most one synthetic execution context for the active session"],
-    },
-    CoroClaimGuard {
-        file: "crates/perl-parser/features_sot.toml",
-        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
-        required: &["at most one synthetic execution context for the active session"],
-    },
     CoroClaimGuard {
         file: "docs/project/ISSUE_3539_COROUTINES_SCOPE.md",
         forbidden: &[
@@ -253,6 +223,23 @@ const CORO_CLAIM_GUARDS: &[CoroClaimGuard] = &[
 const CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS: &[&str] =
     &["Perl is single-threaded so returns one synthetic thread", "Perl is single-threaded"];
 
+const CATALOG_CORO_REQUIRED: &[&str] =
+    &["at most one synthetic execution context for the active session"];
+
+fn is_catalog_coro_surface(file: &str) -> bool {
+    file == vendored_catalog::AUTHORITY_RELATIVE
+        || DECLARED_PROJECTIONS.iter().any(|projection| projection.relative_path == file)
+}
+
+fn catalog_coro_surfaces() -> impl Iterator<Item = &'static str> {
+    std::iter::once(vendored_catalog::AUTHORITY_RELATIVE)
+        .chain(DECLARED_PROJECTIONS.iter().map(|projection| projection.relative_path))
+}
+
+fn coro_surface_count() -> usize {
+    catalog_coro_surfaces().count() + CORO_CLAIM_GUARDS.len()
+}
+
 fn check_forbidden_workspace_crate_name(root: &std::path::Path) -> Result<()> {
     for rel in CRATE_NAME_GUARD_FILES {
         if CRATE_NAME_EXCEPTIONS.contains(rel) {
@@ -271,27 +258,29 @@ fn check_forbidden_workspace_crate_name(root: &std::path::Path) -> Result<()> {
 /// Pure form of the coro/thread claim-drift guard so the negative control can
 /// run against synthetic mutated text without touching the tree.
 fn coro_claim_guard_violations(file: &str, text: &str) -> Vec<String> {
-    let Some(guard) = CORO_CLAIM_GUARDS.iter().find(|g| g.file == file) else {
+    let (forbidden, required): (&[&str], &[&str]) = if is_catalog_coro_surface(file) {
+        (CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS, CATALOG_CORO_REQUIRED)
+    } else if let Some(guard) = CORO_CLAIM_GUARDS.iter().find(|guard| guard.file == file) {
+        (guard.forbidden, guard.required)
+    } else {
         return vec![format!(
             "CORO_GUARD_TABLE: {file:?} is not covered by any coro/thread claim guard (#8355/#9076)"
         )];
     };
     let mut violations = Vec::new();
-    for &stale in guard.forbidden {
+    for &stale in forbidden {
         if text.contains(stale) {
             violations.push(format!(
-                "CORO_CLAIM: {} contains {:?} — the undifferentiated coro/thread claim \
-                 repaired by #9076 must not return (#8355)",
-                guard.file, stale
+                "CORO_CLAIM: {file} contains {stale:?} — the undifferentiated coro/thread claim \
+                 repaired by #9076 must not return (#8355)"
             ));
         }
     }
-    for &marker in guard.required {
+    for &marker in required {
         if !text.contains(marker) {
             violations.push(format!(
-                "CORO_MARKER: {} no longer contains {:?} — the exact-strength/live-owner \
-                 wording it must keep (#8355/#9076)",
-                guard.file, marker
+                "CORO_MARKER: {file} no longer contains {marker:?} — the exact-strength/live-owner \
+                 wording it must keep (#8355/#9076)"
             ));
         }
     }
@@ -300,12 +289,15 @@ fn coro_claim_guard_violations(file: &str, text: &str) -> Vec<String> {
 
 fn check_coro_thread_claim_drift(root: &std::path::Path) -> Result<()> {
     let mut violations = Vec::new();
-    for guard in CORO_CLAIM_GUARDS {
-        let path = root.join(guard.file);
+    let catalog_files: Vec<&'static str> = catalog_coro_surfaces().collect();
+    for file in
+        catalog_files.iter().copied().chain(CORO_CLAIM_GUARDS.iter().map(|guard| guard.file))
+    {
+        let path = root.join(file);
         let text = fs::read_to_string(&path).with_context(|| {
             format!("failed to read guarded coro/thread surface {}", path.display())
         })?;
-        violations.extend(coro_claim_guard_violations(guard.file, &text));
+        violations.extend(coro_claim_guard_violations(file, &text));
     }
     if violations.is_empty() {
         return Ok(());
@@ -326,7 +318,7 @@ fn success_message(files_count: usize) -> String {
          new staleness patterns are NOT caught. Coro/thread claim guards additionally cover \
          {m} generated/reference surfaces (#8355/#9076).",
         n = STALE_PATTERNS.len(),
-        m = CORO_CLAIM_GUARDS.len()
+        m = coro_surface_count()
     )
 }
 
@@ -439,7 +431,8 @@ mod tests {
         // The stale description lived in the root authority plus four byte
         // projections (#7029); guarding only one would let the others
         // reintroduce it.
-        let guarded: Vec<&str> = CORO_CLAIM_GUARDS.iter().map(|g| g.file).collect();
+        let mut guarded: Vec<&str> = catalog_coro_surfaces().collect();
+        guarded.extend(CORO_CLAIM_GUARDS.iter().map(|g| g.file));
         for file in [
             "features.toml",
             "crates/perl-dap/features_sot.toml",

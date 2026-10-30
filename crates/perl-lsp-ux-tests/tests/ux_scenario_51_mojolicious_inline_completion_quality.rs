@@ -404,8 +404,14 @@ fn scenario_51_mojolicious_inline_completion_quality_receipt() {
             // fixed sleep: on a cold CI runner the sleep let completion queries outrun
             // the first analysis of the just-opened document and starve the semantic
             // context (#15870 family).
-            let _ = harness.wait_for_diagnostics(MODULE_IMPORT_PROBE_PATH, Duration::from_secs(30));
-            let _ = harness.wait_for_diagnostics(HARD_ZONE_PROBE_PATH, Duration::from_secs(30));
+            perl_lsp_ux_tests::optional_wait_with_subject(
+                MODULE_IMPORT_PROBE_PATH,
+                harness.wait_for_diagnostics(MODULE_IMPORT_PROBE_PATH, Duration::from_secs(30)),
+            )?;
+            perl_lsp_ux_tests::optional_wait_with_subject(
+                HARD_ZONE_PROBE_PATH,
+                harness.wait_for_diagnostics(HARD_ZONE_PROBE_PATH, Duration::from_secs(30)),
+            )?;
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

@@ -12,7 +12,11 @@
 //! Tests are structured to fail initially (TDD red phase) due to missing implementation,
 //! establishing a solid foundation for implementing enhanced cancellation capabilities.
 
-#![allow(unused_imports)] // Some imports may not be used yet in scaffolding
+#![allow(unused_imports)]
+// Some imports may not be used yet in scaffolding
+// Timeout-path diagnostics (exhausted-retry attempt counts) print to stderr
+// for CI troubleshooting; this is not the LSP server's stdio transport.
+#![allow(clippy::print_stderr)]
 
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -157,10 +161,10 @@ fn test_enhanced_cancel_request_with_provider_context_ac1() -> Result<(), Box<dy
     let mut seen_timeouts = 0;
     let response = loop {
         if Instant::now() >= deadline {
-            eprintln!(
+            return Err(format!(
                 "AC1 attempts exhausted: {attempt} attempts, {seen_results} settled non-error, {seen_timeouts} timed out"
-            );
-            break None;
+            )
+            .into());
         }
         let completion_id = fixture.track_request_id(1001 + attempt * 100);
         attempt += 1;

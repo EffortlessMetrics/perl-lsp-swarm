@@ -18,6 +18,18 @@ for required in "$SCRIPT" "$STATE_SCRIPT" "$WRITER_SCRIPT"; do
 done
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 
+# Own every fixture from the first allocation, including setup failures under -e.
+TEST_TMP="$(mktemp -d)"
+cleanup() {
+    local status=$? cleanup_status=0
+    rm -rf "$TEST_TMP" || cleanup_status=$?
+    if [[ "$status" -eq 0 ]]; then
+        status=$cleanup_status
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+
 RUN_EXIT=0
 RUN_STDOUT=""
 STATE_EXIT=0
@@ -92,6 +104,7 @@ expect_case "current-change-request-blocks" 1 \
 expect_case "all-resolved-converges" 0 \
     '.converged == true
      and .formal_review.classification == "NO_SUBMITTED_HUMAN_REVIEW"
+     and .non_dismissed_latest_nonbot_review_count == 0
      and .submitted_human_review_count == 0
      and .review_currentness == "NOT_PROVEN"
      and .semantic_currentness_required == true
@@ -149,7 +162,8 @@ fi
 # Malformed numeric collector facts must also reach callers as structured
 # NOT_PROVEN output. Copy the wrapper beside a fake core so this exercises the
 # production command-substitution boundary rather than source-text assertions.
-TMP_NUMERIC="$(mktemp -d)"
+TMP_NUMERIC="$TEST_TMP/numeric"
+mkdir "$TMP_NUMERIC"
 cp "$SCRIPT" "$TMP_NUMERIC/check-pr-review-convergence"
 cat >"$TMP_NUMERIC/check-pr-review-convergence-core" <<'EOF'
 #!/usr/bin/env bash
@@ -176,7 +190,6 @@ if [[ "$numeric_exit" -eq 2 ]] && jq -e '.formal_review.classification == "NOT_P
 else
     fail "malformed numeric fact should preserve structured verdict — exit=$numeric_exit output=$numeric_output"
 fi
-rm -rf "$TMP_NUMERIC"
 
 # The state helper projects native facts, not FIXED_HEAD/VERIFIED_HEAD stages.
 run_state_case "current-change-request-blocks"
@@ -192,6 +205,7 @@ run_state_case "formal-review-stale"
 if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '
       .state == "NATIVE_FACTS_CONVERGED"
       and .formal_review_classification == "SUBMITTED_REVIEW_PRESENT"
+      and .non_dismissed_latest_nonbot_review_count >= 1
       and .submitted_human_review_count >= 1
       and .review_currentness == "NOT_PROVEN"
       and .semantic_currentness_required == true
@@ -207,6 +221,7 @@ if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '
       .state == "NATIVE_FACTS_CONVERGED"
       and .state != "REVIEWED"
       and .formal_review_classification == "NO_SUBMITTED_HUMAN_REVIEW"
+      and .non_dismissed_latest_nonbot_review_count == 0
       and .submitted_human_review_count == 0
       and .review_currentness == "NOT_PROVEN"
     ' >/dev/null <<<"$STATE_STDOUT"; then
@@ -215,10 +230,59 @@ else
     fail "state helper zero-review projection — exit=$STATE_EXIT output=$STATE_STDOUT"
 fi
 
+# ── #15035: the count must describe its own derivation ─────────────────────
+# The observed GitHub.com mismatch behind #15035 is that a review submitted by
+# the PR author does not surface in `latestReviews`, even though the submission
+# exists in the PR's review history. This fixture models that state: the
+# projection carries only a Bot review, so the non-bot human count is 0 while
+# the projection itself is non-empty.
+#
+# The honest behavior is to report 0 — because that is what the projection
+# contains — and to say so under a name that describes the derivation. The
+# alternatives this assertion rules out are the two wrong repairs:
+#   * counting every projection entry (would report 1 by including the Bot), and
+#   * widening the source to the full `reviews` history to "catch" the author
+#     review (would also report 1, and would change what the count means).
+expect_case "author-review-absent-from-latest-reviews" 0 \
+    '.converged == true
+     and .human_review_count == 0
+     and .non_dismissed_latest_nonbot_review_count == 0
+     and .submitted_human_review_count == 0
+     and .formal_review.classification == "NO_SUBMITTED_HUMAN_REVIEW"
+     and .review_currentness == "NOT_PROVEN"
+     and .semantic_currentness_required == true' \
+    "author-omitted projection reports the count it actually observed"
+
+# The deprecated alias must never disagree with the honest name. They are one
+# value, so any divergence means a consumer reading either key sees something
+# different from the other.
+for alias_case in all-resolved-converges formal-review-current author-review-absent-from-latest-reviews; do
+    run_case "$alias_case"
+    if jq -e \
+        '.non_dismissed_latest_nonbot_review_count == .submitted_human_review_count' \
+        >/dev/null <<<"$(json_blob "$RUN_STDOUT")"; then
+        pass "alias parity holds for $alias_case"
+    else
+        fail "alias parity for $alias_case — output=$RUN_STDOUT"
+    fi
+done
+
+# The state projection must carry the honest name too, and must not lose the
+# value when read through the new key.
+run_state_case "formal-review-current"
+if [[ "$STATE_EXIT" -eq 0 ]] && jq -e \
+    '.non_dismissed_latest_nonbot_review_count >= 1
+     and .non_dismissed_latest_nonbot_review_count == .submitted_human_review_count' \
+    >/dev/null <<<"$STATE_STDOUT"; then
+    pass "state helper publishes the honestly-named count"
+else
+    fail "state helper count naming — exit=$STATE_EXIT output=$STATE_STDOUT"
+fi
+
 # The retired writer must fail before discovering or invoking gh. This catches
 # warm sessions and stale callers, not only current skill text.
-TMP_WRITER="$(mktemp -d)"
-trap 'rm -rf "$TMP_WRITER"' EXIT
+TMP_WRITER="$TEST_TMP/writer"
+mkdir "$TMP_WRITER"
 cat >"$TMP_WRITER/gh" <<'EOF'
 #!/usr/bin/env bash
 echo invoked >>"${GH_SENTINEL:?}"
@@ -266,7 +330,7 @@ fi
 #    tree under a temp root so a copy of the state script resolves its CLOSEOUT
 #    to the fake wrapper, and the fake wrapper resolves its CORE to a fake core
 #    that pretends to be a future version.
-TMP_FUTURE="$(mktemp -d)"
+TMP_FUTURE="$TEST_TMP/future"
 mkdir -p "$TMP_FUTURE/scripts/reviews" "$TMP_FUTURE/scripts/ci"
 cp "$STATE_SCRIPT" "$TMP_FUTURE/scripts/reviews/state"
 cp "$SCRIPT" "$TMP_FUTURE/scripts/ci/check-pr-review-convergence"
@@ -316,7 +380,7 @@ fi
 # 4. A core that omits schema_version entirely should still be accepted but
 #    surface a deprecation warning to stderr. The state helper's projection
 #    stays structured; consumers learn the gap from the warning.
-TMP_LEGACY="$(mktemp -d)"
+TMP_LEGACY="$TEST_TMP/legacy"
 mkdir -p "$TMP_LEGACY/scripts/reviews" "$TMP_LEGACY/scripts/ci"
 cp "$STATE_SCRIPT" "$TMP_LEGACY/scripts/reviews/state"
 cp "$SCRIPT" "$TMP_LEGACY/scripts/ci/check-pr-review-convergence"
@@ -364,7 +428,6 @@ if [[ "$legacy_state_exit" -eq 0 ]] \
 else
     fail "missing schema_version should warn and continue — exit=$legacy_state_exit stderr=$legacy_state_err"
 fi
-rm -rf "$TMP_FUTURE" "$TMP_LEGACY"
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

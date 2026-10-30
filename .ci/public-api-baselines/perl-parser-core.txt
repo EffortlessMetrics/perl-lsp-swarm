@@ -478,6 +478,9 @@ pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::Cancelled
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -1037,6 +1040,9 @@ pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::Strin
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::error::ParseError::Cancelled
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -1412,6 +1418,7 @@ pub fn perl_parser_core::hir::AssignMode::clone(&self) -> perl_parser_core::hir:
 pub fn perl_parser_core::hir::AssignMode::eq(&self, other: &perl_parser_core::hir::AssignMode) -> bool
 pub fn perl_parser_core::hir::AssignMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::hir::BarewordRole
+pub perl_parser_core::hir::BarewordRole::DynamicIndirectObject
 pub perl_parser_core::hir::BarewordRole::Expression
 pub perl_parser_core::hir::BarewordRole::HashKey
 pub perl_parser_core::hir::BarewordRole::IndirectObject
@@ -1433,6 +1440,8 @@ pub fn perl_parser_core::hir::BinaryOp::clone(&self) -> perl_parser_core::hir::B
 pub fn perl_parser_core::hir::BinaryOp::eq(&self, other: &perl_parser_core::hir::BinaryOp) -> bool
 pub fn perl_parser_core::hir::BinaryOp::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::hir::BodyOwnerKind
+pub perl_parser_core::hir::BodyOwnerKind::Class
+pub perl_parser_core::hir::BodyOwnerKind::Class::name: alloc::string::String
 pub perl_parser_core::hir::BodyOwnerKind::Method
 pub perl_parser_core::hir::BodyOwnerKind::Method::name: alloc::string::String
 pub perl_parser_core::hir::BodyOwnerKind::ProgramRoot
@@ -1591,6 +1600,7 @@ pub fn perl_parser_core::hir::DataSectionMarker::eq(&self, other: &perl_parser_c
 pub fn perl_parser_core::hir::DataSectionMarker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::DataSectionMarker::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::hir::DeclStorageClass
+pub perl_parser_core::hir::DeclStorageClass::Field
 pub perl_parser_core::hir::DeclStorageClass::Local
 pub perl_parser_core::hir::DeclStorageClass::My
 pub perl_parser_core::hir::DeclStorageClass::Our
@@ -1645,6 +1655,13 @@ pub fn perl_parser_core::hir::FrameworkAdapterKind::clone(&self) -> perl_parser_
 pub fn perl_parser_core::hir::FrameworkAdapterKind::eq(&self, other: &perl_parser_core::hir::FrameworkAdapterKind) -> bool
 pub fn perl_parser_core::hir::FrameworkAdapterKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::FrameworkAdapterKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::FrameworkExportMechanism
+pub perl_parser_core::hir::FrameworkExportMechanism::Direct
+pub perl_parser_core::hir::FrameworkExportMechanism::GeneratorBacked
+pub fn perl_parser_core::hir::FrameworkExportMechanism::clone(&self) -> perl_parser_core::hir::FrameworkExportMechanism
+pub fn perl_parser_core::hir::FrameworkExportMechanism::eq(&self, other: &perl_parser_core::hir::FrameworkExportMechanism) -> bool
+pub fn perl_parser_core::hir::FrameworkExportMechanism::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::FrameworkExportMechanism::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::FrameworkExportedSymbolKind
 pub perl_parser_core::hir::FrameworkExportedSymbolKind::Default
 pub perl_parser_core::hir::FrameworkExportedSymbolKind::Optional
@@ -1705,6 +1722,7 @@ pub perl_parser_core::hir::HirExpr::Heredoc::command: bool
 pub perl_parser_core::hir::HirExpr::Heredoc::delimiter: alloc::string::String
 pub perl_parser_core::hir::HirExpr::Heredoc::indented: bool
 pub perl_parser_core::hir::HirExpr::Heredoc::interpolated: bool
+pub perl_parser_core::hir::HirExpr::Literal(perl_parser_core::hir::HirLiteral)
 pub perl_parser_core::hir::HirExpr::Loop
 pub perl_parser_core::hir::HirExpr::Loop::body: perl_parser_core::hir::HirBlockId
 pub perl_parser_core::hir::HirExpr::Loop::condition: core::option::Option<perl_parser_core::hir::HirExprId>
@@ -1777,6 +1795,21 @@ pub const perl_parser_core::hir::HirKind::ALL_KIND_NAMES: &[&'static str]
 pub fn perl_parser_core::hir::HirKind::clone(&self) -> perl_parser_core::hir::HirKind
 pub fn perl_parser_core::hir::HirKind::eq(&self, other: &perl_parser_core::hir::HirKind) -> bool
 pub fn perl_parser_core::hir::HirKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_parser_core::hir::HirLiteralKind
+pub perl_parser_core::hir::HirLiteralKind::Number
+pub perl_parser_core::hir::HirLiteralKind::String(perl_parser_core::hir::HirQuoteKind)
+pub perl_parser_core::hir::HirLiteralKind::Undef
+pub fn perl_parser_core::hir::HirLiteralKind::clone(&self) -> perl_parser_core::hir::HirLiteralKind
+pub fn perl_parser_core::hir::HirLiteralKind::eq(&self, other: &perl_parser_core::hir::HirLiteralKind) -> bool
+pub fn perl_parser_core::hir::HirLiteralKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::HirLiteralKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::HirQuoteKind
+pub perl_parser_core::hir::HirQuoteKind::Double
+pub perl_parser_core::hir::HirQuoteKind::Single
+pub fn perl_parser_core::hir::HirQuoteKind::clone(&self) -> perl_parser_core::hir::HirQuoteKind
+pub fn perl_parser_core::hir::HirQuoteKind::eq(&self, other: &perl_parser_core::hir::HirQuoteKind) -> bool
+pub fn perl_parser_core::hir::HirQuoteKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::HirQuoteKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::HirRegexTarget
 pub perl_parser_core::hir::HirRegexTarget::Bound
 pub perl_parser_core::hir::HirRegexTarget::Bound::ast_kind: &'static str
@@ -2079,6 +2112,7 @@ pub perl_parser_core::hir::Binding::scope_id: perl_parser_core::hir::HirScopeId
 pub perl_parser_core::hir::Binding::shadows: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::Binding::sigil: alloc::string::String
 pub perl_parser_core::hir::Binding::storage: perl_parser_core::hir::StorageClass
+pub perl_parser_core::hir::Binding::visible_from: usize
 pub fn perl_parser_core::hir::Binding::clone(&self) -> perl_parser_core::hir::Binding
 pub fn perl_parser_core::hir::Binding::eq(&self, other: &perl_parser_core::hir::Binding) -> bool
 pub fn perl_parser_core::hir::Binding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2244,6 +2278,7 @@ pub fn perl_parser_core::hir::DynamicBoundary::fmt(&self, f: &mut core::fmt::For
 #[non_exhaustive] pub struct perl_parser_core::hir::ExportDeclaration
 pub perl_parser_core::hir::ExportDeclaration::confidence: perl_parser_core::hir::StashConfidence
 pub perl_parser_core::hir::ExportDeclaration::declaration_item: core::option::Option<perl_parser_core::hir::HirId>
+pub perl_parser_core::hir::ExportDeclaration::generator_backed: alloc::vec::Vec<alloc::string::String>
 pub perl_parser_core::hir::ExportDeclaration::kind: perl_parser_core::hir::ExportDeclarationKind
 pub perl_parser_core::hir::ExportDeclaration::package: alloc::string::String
 pub perl_parser_core::hir::ExportDeclaration::provenance: perl_parser_core::hir::StashProvenance
@@ -2279,6 +2314,7 @@ pub perl_parser_core::hir::FrameworkExportedSymbolFact::adapter: perl_parser_cor
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::confidence: perl_semantic_facts::Confidence
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::declaration_item: core::option::Option<perl_parser_core::hir::HirId>
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::kind: perl_parser_core::hir::FrameworkExportedSymbolKind
+pub perl_parser_core::hir::FrameworkExportedSymbolFact::mechanism: perl_parser_core::hir::FrameworkExportMechanism
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::name: alloc::string::String
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::package: alloc::string::String
 pub perl_parser_core::hir::FrameworkExportedSymbolFact::provenance: perl_semantic_facts::Provenance
@@ -2418,6 +2454,13 @@ pub perl_parser_core::hir::HirItem::scope_context: core::option::Option<perl_par
 pub fn perl_parser_core::hir::HirItem::clone(&self) -> perl_parser_core::hir::HirItem
 pub fn perl_parser_core::hir::HirItem::eq(&self, other: &perl_parser_core::hir::HirItem) -> bool
 pub fn perl_parser_core::hir::HirItem::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_parser_core::hir::HirLiteral
+pub perl_parser_core::hir::HirLiteral::kind: perl_parser_core::hir::HirLiteralKind
+pub perl_parser_core::hir::HirLiteral::payload: alloc::string::String
+pub perl_parser_core::hir::HirLiteral::synthesized: bool
+pub fn perl_parser_core::hir::HirLiteral::clone(&self) -> perl_parser_core::hir::HirLiteral
+pub fn perl_parser_core::hir::HirLiteral::eq(&self, other: &perl_parser_core::hir::HirLiteral) -> bool
+pub fn perl_parser_core::hir::HirLiteral::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::hir::HirLoopLabel
 pub perl_parser_core::hir::HirLoopLabel::name: alloc::string::String
 pub perl_parser_core::hir::HirLoopLabel::range: perl_position_tracking::span::SourceLocation
@@ -3242,6 +3285,9 @@ pub perl_parser_core::pir::PirOperation::LexicalWrite
 pub perl_parser_core::pir::PirOperation::LexicalWrite::name: perl_parser_core::pir::LexicalName
 pub perl_parser_core::pir::PirOperation::Literal
 pub perl_parser_core::pir::PirOperation::Literal::kind: perl_parser_core::pir::PirLiteralKind
+pub perl_parser_core::pir::PirOperation::Literal::quote: core::option::Option<perl_parser_core::hir::HirQuoteKind>
+pub perl_parser_core::pir::PirOperation::Literal::synthesized: bool
+pub perl_parser_core::pir::PirOperation::Literal::value: core::option::Option<alloc::string::String>
 pub perl_parser_core::pir::PirOperation::Loop
 pub perl_parser_core::pir::PirOperation::Loop::condition: core::option::Option<perl_parser_core::pir::PirId>
 pub perl_parser_core::pir::PirOperation::Match
@@ -3446,6 +3492,7 @@ pub fn perl_parser_core::pir::FilePirLexicalContributionV1::eq(&self, other: &pe
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 #[non_exhaustive] pub struct perl_parser_core::pir::LexicalBindingFact
+pub perl_parser_core::pir::LexicalBindingFact::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::pir::LexicalBindingFact::body_idx: usize
 pub perl_parser_core::pir::LexicalBindingFact::body_owner: perl_parser_core::hir::BodyOwnerKind
 pub perl_parser_core::pir::LexicalBindingFact::name: perl_parser_core::pir::LexicalName
@@ -3934,6 +3981,9 @@ pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::Cancelled
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -4844,6 +4894,9 @@ pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::ParseError::CStyleForContinueBlock
 pub perl_parser_core::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::ParseError::Cancelled
+pub perl_parser_core::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::ParseError::CoreBudgetExhausted
 pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::ParseError::CoreBudgetExhausted::limit: usize

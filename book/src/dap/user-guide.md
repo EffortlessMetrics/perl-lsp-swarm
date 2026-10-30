@@ -1,8 +1,169 @@
-# DAP User Guide
+# DAP User Guide: Debugging Perl with VS Code
 
-The canonical native debugger guide lives at
-[`docs/tutorials/DAP_USER_GUIDE.md`](../../../docs/tutorials/DAP_USER_GUIDE.md).
+**Status**: Native `perl-dap` CLI for launch, attach, stepping, stack frames,
+variables, evaluate, and breakpoint validation.
 
-It documents the shipped `perl-dap` CLI, local Perl interpreter requirements,
-launch configuration, stdio editor transport, DAP attach, and troubleshooting
-for the native DAP path.
+**Dependency note**: Native `perl-dap` requires a local Perl interpreter for
+debug sessions. Its Rust parser-backed runtime is compiled into the shipped
+binary; users do not install parser crates separately.
+
+This guide covers the native debugger path shipped with `perl-lsp`.
+
+## Prerequisites
+
+Before debugging Perl code, make sure you have:
+
+1. Perl 5.10 or newer available on `PATH`.
+2. VS Code with the Perl LSP extension installed.
+3. The `perl-dap` binary from the Perl LSP release package.
+
+Check the interpreter with:
+
+```bash
+perl --version
+```
+
+## Launch A Script
+
+Create `.vscode/launch.json` in your workspace:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "perl",
+      "request": "launch",
+      "name": "Launch current Perl file",
+      "program": "${file}",
+      "perlPath": "perl",
+      "args": [],
+      "includePaths": ["${workspaceFolder}/lib"],
+      "cwd": "${workspaceFolder}",
+      "env": {}
+    }
+  ]
+}
+```
+
+Set breakpoints in a `.pl`, `.pm`, or `.t` file, choose the configuration, and
+start debugging from VS Code.
+
+## Startup Authority
+
+`perl-dap` debugs only inside an explicitly trusted workspace. VS Code passes
+your open workspace folder as `--trusted-root` automatically; Sublime does the
+same from its project folders. A bare `perl-dap --stdio` started without
+authority refuses every `launch` fail-closed — this is the boundary, not a
+bug. `launch.json` data (`cwd`, `workspaceRoot`) can narrow the trusted root
+for one launch but can never create or widen it: keep the workspace folder
+open rather than pointing `cwd` elsewhere and expecting authority to follow.
+
+## Attach To A Running Process
+
+DAP `attach` is a protocol request to an adapter the editor already launched.
+VS Code and other first-party clients spawn `perl-dap` as a child and speak DAP
+over inherited stdin/stdout. Attach host/port fields in a launch configuration
+select the debuggee/peer, not an editor-facing TCP listener.
+
+Stdio is the sole product editor transport. Native and external-peer `--socket`
+are retired and are not a supported run mode. Authenticated debugger-peer TCP
+remains a backend transport.
+
+## Include Paths
+
+Use `includePaths` to add project library roots to `@INC`:
+
+```json
+"includePaths": [
+  "${workspaceFolder}/lib",
+  "${workspaceFolder}/local/lib/perl5"
+]
+```
+
+## Environment Variables
+
+Use `env` for debug-session environment overrides:
+
+```json
+"env": {
+  "PERL5LIB": "${workspaceFolder}/lib",
+  "APP_ENV": "development"
+}
+```
+
+## Evaluate Expressions Safely
+
+The debugger's safe evaluation mode provides syntactic validation as admission
+control. It is not a sandboxed interpreter boundary and does not provide
+interpreter or operating-system isolation. Timeout enforcement is a separate
+defense, and expressions that need side effects must opt in explicitly with
+the DAP `allowSideEffects` field.
+
+That opt-in is honored **only** in the debug console (the `repl` evaluation
+context). Watch expressions, hovers, and the variables view cannot run
+side-effectful Perl even with the field set — those requests are refused rather
+than downgraded, because the editor issues them on its own (a hover fires from
+mouse movement, watches re-evaluate on every stop) rather than at your
+deliberate request. Evaluating in the debug console still runs with the
+debuggee's full authority; it is confined to that one context, not sandboxed.
+
+## Common Problems
+
+### Perl Interpreter Not Found
+
+If launch fails because Perl cannot be found, set `perlPath` to an absolute
+interpreter path:
+
+```json
+"perlPath": "/usr/bin/perl"
+```
+
+On Windows, this may look like:
+
+```json
+"perlPath": "C:\\Strawberry\\perl\\bin\\perl.exe"
+```
+
+### Program Path Not Found
+
+Make sure `program` points at a real script file. `${file}` is usually the
+right value when debugging the active editor file.
+
+### Breakpoint Not Verified
+
+Breakpoints are validated against source locations. Move the breakpoint to an
+executable Perl statement if it lands on a comment, blank line, POD block, or
+other non-executable region.
+
+## Command Reference
+
+Run native DAP over stdio (the product editor transport):
+
+```bash
+perl-dap --stdio
+```
+
+Print CLI help:
+
+```bash
+perl-dap --help
+```
+
+## Native Stack Policy
+
+The shipped debugger path is native. External Perl debugger backends are not
+required for normal operation. Compatibility and migration notes, when needed,
+belong in reference documentation rather than this first-mile guide.
+
+## External Debugger Peer (optional)
+
+`perl-dap` can also *host* an external Perl debugger engine (e.g.
+`Devel::ptkdb`) instead of driving `perl -d` — your editor keeps speaking DAP
+while the external engine owns the session. This is optional and separate from
+the native path above. Two standalone tools ship today
+(`perl-dap --ptkdb-bootstrap-rc PROGRAM` and `perl-dap --debug-session-plan
+PROGRAM`); the live bridge (`perl-dap --external-peer HOST:PORT`) works against
+any peer that speaks the protocol.
+
+See the [External Debugger Peer Quickstart](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md).

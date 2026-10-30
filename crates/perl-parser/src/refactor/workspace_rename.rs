@@ -47,7 +47,6 @@
 //! # }
 //! ```
 
-use super::refactoring::BackupInfo;
 use super::workspace_refactor::{FileEdit, TextEdit};
 use perl_parser_core::qualified_name::split_qualified_name;
 use perl_workspace::workspace_index::WorkspaceIndex;
@@ -55,6 +54,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// Backup information for a workspace rename rollback.
+///
+/// Previously hosted by the retired unified refactoring engine module
+/// (#5231); the type now lives beside the only operation that creates
+/// backups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupInfo {
+    /// Directory containing backup files
+    pub backup_dir: PathBuf,
+    /// Mapping of original files to backup locations
+    pub file_mappings: HashMap<PathBuf, PathBuf>,
+}
 
 /// Configuration for workspace-wide rename operations
 #[derive(Debug, Clone, Serialize, Deserialize)]

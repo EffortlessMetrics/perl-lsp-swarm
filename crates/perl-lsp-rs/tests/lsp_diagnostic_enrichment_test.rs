@@ -295,6 +295,10 @@ fn test_markup_message_support_populates_standard_message_markup()
         "messageMarkup.value must include the diagnostic code; got: {:?}",
         value
     );
+    assert!(
+        value.contains("Suggestion: Add 'use strict;'"),
+        "markup-capable clients must receive the actionable suggestion: {value:?}"
+    );
 
     let message = &pl100["message"];
     assert!(
@@ -320,6 +324,11 @@ fn test_markup_message_support_populates_standard_message_markup()
         pl100_no_markup["message"].is_string(),
         "Diagnostic.message must remain a string without markupMessageSupport; got: {}",
         pl100_no_markup["message"]
+    );
+    let plain = pl100_no_markup["message"].as_str().ok_or("plain message must be a string")?;
+    assert!(
+        plain.contains("Suggestion: Add 'use strict;'"),
+        "plain clients must receive the same actionable suggestion: {plain:?}"
     );
     assert!(
         pl100_no_markup["data"]["messageMarkup"].is_null(),

@@ -64,6 +64,17 @@ pub fn is_perl_identifier_start(ch: char) -> bool {
     is_emoji
 }
 
+/// Check whether `ch` may start a package segment *after* `::`.
+///
+/// The first segment of a bareword still requires [`is_perl_identifier_start`].
+/// After `::`, Perl admits an ASCII-digit-led segment (`Encode::KR::2022_KR`,
+/// `Foo::1`) in addition to a normal identifier start. Continuation-only
+/// characters — combining marks, non-ASCII digits, apostrophe — do not start
+/// a segment; perl rejects `package Foo::\u{0301}Bar` and `package Foo::١`.
+pub fn is_perl_package_segment_start(ch: char) -> bool {
+    is_perl_identifier_start(ch) || ch.is_ascii_digit()
+}
+
 /// Check if a character can continue a Perl identifier
 pub fn is_perl_identifier_continue(ch: char) -> bool {
     // For continuation, we accept identifier start chars, XID_Continue chars,
@@ -119,7 +130,7 @@ pub fn analyze_unicode_complexity(text: &str) -> (usize, usize, usize) {
 mod tests {
     use super::{
         analyze_unicode_complexity, get_unicode_stats, is_perl_identifier_continue,
-        is_perl_identifier_start,
+        is_perl_identifier_start, is_perl_package_segment_start,
     };
 
     #[test]
@@ -140,6 +151,59 @@ mod tests {
     #[test]
     fn identifier_start_rejects_punctuation() {
         assert!(!is_perl_identifier_start('-'));
+    }
+
+    #[test]
+    fn package_segment_after_colon_colon_admits_ascii_digits_but_not_continue_only() {
+        assert!(is_perl_package_segment_start('1'));
+        assert!(is_perl_package_segment_start('A'));
+        assert!(is_perl_package_segment_start('_'));
+        assert!(!is_perl_package_segment_start('\''));
+        assert!(!is_perl_package_segment_start('\u{0301}'));
+        assert!(!is_perl_package_segment_start('١'));
+        assert!(!is_perl_package_segment_start('-'));
+        assert!(!is_perl_package_segment_start(' '));
+        assert!(!is_perl_identifier_start('1'));
+        assert!(is_perl_identifier_continue('\u{0301}'));
+        assert!(is_perl_identifier_continue('١'));
+    }
+
+    /// RIPR call-presence observer for `is_perl_package_segment_start` (#16640).
+    ///
+    /// The production OR is `is_perl_identifier_start(ch) || ch.is_ascii_digit()`.
+    /// Each assertion names one disjunct so deleting either call flips a
+    /// different observation (letter/emoji vs ASCII digit).
+    #[test]
+    fn is_perl_package_segment_start_call_presence_observer() {
+        // `is_perl_identifier_start(ch)` — letter, underscore, emoji; not digits.
+        assert!(
+            is_perl_identifier_start('K') && is_perl_package_segment_start('K'),
+            "letter start must reach is_perl_identifier_start and admit the segment"
+        );
+        assert!(
+            is_perl_identifier_start('_') && is_perl_package_segment_start('_'),
+            "underscore start must reach is_perl_identifier_start and admit the segment"
+        );
+        assert!(
+            is_perl_identifier_start('🚀') && is_perl_package_segment_start('🚀'),
+            "emoji start must reach is_perl_identifier_start and admit the segment"
+        );
+
+        // `ch.is_ascii_digit()` — ASCII digit is not an identifier start.
+        assert!(
+            '2'.is_ascii_digit()
+                && !is_perl_identifier_start('2')
+                && is_perl_package_segment_start('2'),
+            "ASCII digit must reach is_ascii_digit and admit the segment without ident-start"
+        );
+        assert!(
+            !'١'.is_ascii_digit() && !is_perl_package_segment_start('١'),
+            "non-ASCII digit must miss the is_ascii_digit disjunct"
+        );
+        assert!(
+            !is_perl_identifier_start('\u{0301}') && !is_perl_package_segment_start('\u{0301}'),
+            "combining mark must miss both disjuncts"
+        );
     }
 
     #[test]

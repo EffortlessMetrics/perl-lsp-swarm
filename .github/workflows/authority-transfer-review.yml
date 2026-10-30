@@ -28,13 +28,19 @@
 #   same trusted #11793 invariant set as data, so a denominator-invalidated
 #   candidate input can never publish a valid-looking context.
 #
-# Exit contract: 0 = pass (PASS_NOT_APPLICABLE / PASS_CURRENT_REVIEW),
-# 1 = typed review failure (FAIL_*), 3 = NOT_PROVEN/instrument failure. Every
-# missing/stale/broken evidence state stays non-green; API or instrument failure
-# is never a pass for applicable governed work. A pass means only that the review
-# evidence required by the governed surface is current and internally consistent;
-# merge readiness and live policy remain separate. Advisory / non-required:
-# intentionally absent from required enforcement; promotion belongs to #11796.
+# Exit contract: 0 = pass (PASS_NOT_APPLICABLE / PASS_CURRENT_REVIEW) or the
+# advisory-neutral evidence boundary (NOT_PROVEN_GITHUB / NOT_PROVEN_SUBJECT —
+# the packet channel did not bind the row; #16150 Shape 3; the typed verdict
+# stays in the receipt and step summary), 1 = typed review failure (FAIL_*,
+# including FAIL_CHANGED_INPUT for unreadable/undecodable/truncated changed-file
+# input), 3 = instrument failure. Every FAIL_* ranks above both NOT_PROVEN_*
+# values in SEVERITY_ORDER, so a mixed run surfaces the typed failure and exits
+# 1 — a neutral boundary never masks a review finding. Review findings and
+# input failures stay non-green; API or instrument failure is never a pass for
+# applicable governed work. A pass means only that the review evidence required
+# by the governed surface is current and internally consistent; merge readiness
+# and live policy remain separate. Advisory / non-required: intentionally
+# absent from required enforcement; promotion belongs to #11796.
 # Reviewer packets are supplied by the #11701/#11703 machinery as they land;
 # until then governed rows whose required_evidence is current_head_reviewer_packet
 # report NOT_PROVEN_GITHUB (no packet source configured at this run), not a

@@ -383,6 +383,57 @@ else
     pass "an underscore VERSION never reaches cargo"
 fi
 
+# Exercise main, not just build_from_source: source-latest must remain usable
+# when the unrelated GitHub release API is unavailable. Cargo is a fixture;
+# promotion and the final installed executable/version are real installer paths.
+cat > "$FAKEBIN/curl" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_CURL_LOG:?}"
+exit 22
+SHIM
+chmod +x "$FAKEBIN/curl"
+FAKE_CURL_LOG="$HARNESS_TMP/curl.log"
+
+run_installer_entrypoint() {
+    local source_mode="$1" install_dir="$HARNESS_TMP/entry-$1"
+    : > "$FAKE_CURL_LOG"
+    : > "$FAKE_CARGO_INSTALL_LOG"
+    (
+        export PATH="$FAKEBIN:$PATH"
+        export FAKE_CARGO_LOG FAKE_CARGO_INSTALL_LOG FAKE_CURL_LOG
+        export FAKE_CARGO_RESOLVED=0.99.0 FAKE_CARGO_MODE=ok
+        export BUILD_FROM_SOURCE="$source_mode" VERSION=latest
+        export INSTALL_DIR="$install_dir"
+        export TERMUX_USR_BIN_OVERRIDE="$HARNESS_TMP/no-termux"
+        unset PERL_LSP_INSTALLER_LIBRARY_ONLY TERMUX_VERSION
+        bash "$CANONICAL_INSTALLER"
+    )
+}
+
+entry_status=0
+entry_output="$(run_installer_entrypoint 1 2>&1)" || entry_status=$?
+if [[ "$entry_status" -eq 0 && ! -s "$FAKE_CURL_LOG" && -s "$FAKE_CARGO_INSTALL_LOG" ]] &&
+   [[ "$entry_output" == *"Done. perllsp 0.99.0 installed"* ]] &&
+   [[ "$("$HARNESS_TMP/entry-1/perllsp" --version 2>/dev/null)" == "perllsp 0.99.0" ]] &&
+   ! tr '\0' '\n' < "$FAKE_CARGO_INSTALL_LOG" | grep -Fxq -- '--version'; then
+    pass "source-latest installs and reports registry identity without GitHub API access"
+else
+    fail "source-latest installs and reports registry identity without GitHub API access" \
+        "status=$entry_status output=$entry_output"
+fi
+
+# An overbroad bypass must not turn release-latest into a source install or
+# skip its API failure. Both modes use the same failing curl fixture.
+entry_status=0
+entry_output="$(run_installer_entrypoint 0 2>&1)" || entry_status=$?
+if [[ "$entry_status" -ne 0 && -s "$FAKE_CURL_LOG" && ! -s "$FAKE_CARGO_INSTALL_LOG" ]] &&
+   [[ "$entry_output" == *"failed to query GitHub API"* ]]; then
+    pass "release-latest still fails closed when GitHub API is unavailable"
+else
+    fail "release-latest still fails closed when GitHub API is unavailable" \
+        "status=$entry_status output=$entry_output"
+fi
+
 # ---------------------------------------------------------------------------
 # Negative control: the archive path stays the only release-mode path, and the
 # source build remains behind the non-release branch of INSTALL_MODE.

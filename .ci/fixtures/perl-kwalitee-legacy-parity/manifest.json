@@ -80,11 +80,11 @@
       "profile": "release",
       "strict": false,
       "json": {
-        "path": "expected/release_non_strict.json",
+        "path": "expected/release.json",
         "sha256": "5fc87c9a137554c83a3276b2a1933603ade021a4a9e2b46845af8de0a2b02420"
       },
       "markdown": {
-        "path": "expected/release_non_strict.md",
+        "path": "expected/release.md",
         "sha256": "fb2a1d0387526c64755e3155ae9c80f8d8394dd1ced2f56d690b3a4e95c4b951"
       },
       "report": {
@@ -102,11 +102,11 @@
       "profile": "release",
       "strict": true,
       "json": {
-        "path": "expected/release_strict.json",
+        "path": "expected/release.json",
         "sha256": "5fc87c9a137554c83a3276b2a1933603ade021a4a9e2b46845af8de0a2b02420"
       },
       "markdown": {
-        "path": "expected/release_strict.md",
+        "path": "expected/release.md",
         "sha256": "fb2a1d0387526c64755e3155ae9c80f8d8394dd1ced2f56d690b3a4e95c4b951"
       },
       "report": null,

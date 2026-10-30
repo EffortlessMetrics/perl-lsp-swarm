@@ -142,10 +142,13 @@ This runs a subset of benchmarks with reduced iterations.
 cargo bench -p perl-parser --bench parser_benchmark
 
 # Run LSP rope benchmarks only
-cargo bench -p perl-lsp --bench rope_performance_benchmark
+cargo bench -p perl-lsp-rs --bench rope_performance_benchmark
 
 # Run workspace index benchmarks only
-cargo bench -p perl-workspace-index --bench workspace_index_benchmark
+cargo bench -p perl-workspace --bench workspace_index_benchmark
+
+# Run ripr-facts benchmarks only
+cargo bench -p perl-ripr-facts --bench ripr_facts_benchmark
 ```
 
 ## Comparing Results

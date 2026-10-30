@@ -39,6 +39,19 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+
+GIT_DIFF_TIMEOUT_SECONDS = 30
+
+# Envelope version this consumer understands for `.ci/metrics/ci-lane-history.json`.
+# Same integer the producer stamps (`aggregate_lane_history.SCHEMA_VERSION`).
+# Restated here rather than imported so a producer bump cannot silently advance
+# this reader's field names (`lanes` / `p50` / `static_floor`).
+HISTORY_SCHEMA_VERSION = 1
+
 
 def read_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as f:
@@ -64,7 +77,16 @@ def discover_changed_files(base: str, head: str) -> dict[str, Any]:
     """
     command = ["git", "diff", "--name-only", f"{base}...{head}"]
     try:
-        proc = subprocess.run(command, text=True, capture_output=True)
+        proc = subprocess.run(
+            command, text=True, capture_output=True, timeout=GIT_DIFF_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "unavailable",
+            "code": "git-diff-timeout",
+            "detail": f"git diff timed out after {GIT_DIFF_TIMEOUT_SECONDS} seconds",
+            "command": command,
+        }
     except OSError as exc:
         return {
             "status": "unavailable",
@@ -499,13 +521,47 @@ def lane_lem(lane: dict[str, Any], multipliers: dict[str, float]) -> float:
 
 
 def load_learned_history(path: Path) -> dict[str, Any]:
-    """Read .ci/metrics/ci-lane-history.json if present; tolerant on errors."""
+    """Read `.ci/metrics/ci-lane-history.json` if present.
+
+    Absent or unreadable files stay tolerant (return `{}`) so planning can
+    fall back to static `base_lem` floors. A decoded payload is fail-closed
+    on the envelope: only a JSON object with exact integer
+    `schema_version == HISTORY_SCHEMA_VERSION` is consumed. A v2 (or
+    unenveloped) payload that still carries `lanes` must not be read as v1
+    and substituted into each lane's `base_lem` (#15320).
+
+    Tolerant means "fall back to static floors", not "accept any shape". A
+    payload whose `schema_version` is not the one this planner understands is
+    refused rather than handed to `apply_learned_estimates`, which resolves
+    `p50` and `static_floor` by name: read with the wrong names, a renamed
+    `static_floor` falls out of its `isinstance` guard and the lane is priced
+    at a bare `p50 * 1.15` with the floor protection silently gone (#15286).
+
+    Issue #15320 cites this helper as `load_history_payload`; the current
+    name is `load_learned_history`.
+    """
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    schema_version = payload.get("schema_version") if isinstance(payload, dict) else None
+    # bool is an int subclass and 1.0 == 1: bare `!= 1` would admit JSON
+    # `true` / `1.0` as v1 and rewrite `base_lem` from those records.
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != HISTORY_SCHEMA_VERSION
+    ):
+        version_repr = (
+            payload.get("schema_version")
+            if isinstance(payload, dict)
+            else type(payload).__name__
+        )
+        raise SystemExit(f"unsupported ci-lane-history schema: {version_repr!r}")
+    return payload
 
 
 def apply_learned_estimates(
@@ -564,6 +620,11 @@ EXIT_OVER_CEILING = 2
 EXIT_DISCOVERY_UNAVAILABLE = 3
 
 
+def escape_workflow_command_data(value: str) -> str:
+    """Keep untrusted Git output inside one GitHub workflow command."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def not_proven_plan(
     *,
     base: str,
@@ -581,11 +642,12 @@ def not_proven_plan(
     code = str(changeset.get("code", "unknown"))
     detail = str(changeset.get("detail", "changed-file discovery failed"))
     reproduce = " ".join(changeset.get("command", []))
-    warning = (
-        f"::error::Changed-file discovery failed ({code}): {detail}. Plan is "
+    warning_text = (
+        f"Changed-file discovery failed ({code}): {detail}. Plan is "
         "NOT_PROVEN; no lanes are selected because the changed set is "
         f"unknown. Reproduce: `{reproduce}`"
     )
+    warning = f"::error::{escape_workflow_command_data(warning_text)}"
     return {
         "schema_version": 1,
         "repo": "perl-lsp",

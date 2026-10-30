@@ -1,0 +1,5 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "All three receipts absent; every proof input blocks."
+ground_truth = "unprovable"
+inputs = []

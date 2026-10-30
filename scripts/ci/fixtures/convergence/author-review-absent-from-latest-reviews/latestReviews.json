@@ -1,0 +1,7 @@
+[
+  {
+    "author": {"login": "coderabbitai", "__typename": "Bot"},
+    "state": "COMMENTED",
+    "commit": {"oid": "cccc3333cccc3333cccc3333cccc3333cccc3333"}
+  }
+]
