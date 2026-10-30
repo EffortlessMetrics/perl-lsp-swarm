@@ -829,6 +829,66 @@ fn preinitialize_duplicate_initialize_and_post_shutdown_are_deterministic() -> R
     client.assert_transport_clean()
 }
 
+/// #16655: a post-shutdown request that is still in flight when `exit`
+/// arrives must still deliver its `-32600`. Waiting for that response
+/// *before* sending `exit` cannot discriminate the race.
+#[test]
+fn post_shutdown_request_racing_exit_is_delivered() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!(1))?;
+
+    let shutdown = client.request(json!(2), "shutdown", Value::Null, timeout())?;
+    ensure!(shutdown.get("result").is_some_and(Value::is_null), "shutdown failed: {shutdown}");
+
+    let hover = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///after-shutdown.pl" },
+            "position": { "line": 0, "character": 0 }
+        }
+    });
+    let second_shutdown = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "shutdown",
+        "params": null
+    });
+    let exit = json!({ "jsonrpc": "2.0", "method": "exit", "params": null });
+    let mut burst = RealProcessClient::encode_message(&hover);
+    burst.extend_from_slice(&RealProcessClient::encode_message(&second_shutdown));
+    burst.extend_from_slice(&RealProcessClient::encode_message(&exit));
+    client.send_raw_bytes(&burst)?;
+
+    let hover_response = client.receive_response(&json!(3), timeout())?;
+    assert_response_id(&hover_response, &json!(3))?;
+    ensure!(
+        hover_response.pointer("/error/code") == Some(&json!(-32600)),
+        "post-shutdown hover must return InvalidRequest: {hover_response}"
+    );
+    ensure!(
+        hover_response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("Server has been shutdown")),
+        "post-shutdown hover must name the shutdown gate: {hover_response}"
+    );
+
+    let second = client.receive_response(&json!(4), timeout())?;
+    assert_response_id(&second, &json!(4))?;
+    ensure!(
+        second.pointer("/error/code") == Some(&json!(-32600)),
+        "second shutdown must remain InvalidRequest: {second}"
+    );
+
+    let status = client.wait_for_exit(timeout())?;
+    ensure!(status.success(), "shutdown then exit failed: {status}");
+    client.assert_transport_clean()?;
+    Ok(())
+}
+
 #[test]
 fn synchronous_serving_reports_malformed_json_and_continues() -> Result<()> {
     use std::io::{Cursor, Write};
@@ -1302,4 +1362,75 @@ fn definition_on_callable_retains_exact_location() -> Result<()> {
         "definition must point to the bar declaration on line 1: {response}"
     );
     shutdown_and_exit(&mut client, json!("shutdown-definition-location"))
+}
+
+/// Role document symbols retain Interface while Class and Module keep their kinds.
+#[test]
+fn role_document_symbol_protocol_mapping_over_stdio() -> Result<()> {
+    fn find_namespace(symbols: &[Value]) -> Option<&Value> {
+        for symbol in symbols {
+            if symbol.get("name").and_then(Value::as_str) == Some("age") {
+                return Some(symbol);
+            }
+            if let Some(found) = symbol
+                .get("children")
+                .and_then(Value::as_array)
+                .and_then(|children| find_namespace(children))
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-role-symbols"))?;
+    for (case, (module, kind)) in [
+        ("Moo::Role", 11),
+        ("Moose::Role", 11),
+        ("Role::Tiny", 11),
+        ("Moo", 5),
+        ("Moose", 5),
+        ("Class::Tiny", 5),
+        ("strict", 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let uri = format!("file:///workspace/role-symbol-{case}.pm");
+        let source = format!("package age {{ use {module}; sub helper {{ 1 }} }}");
+        client.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}}),
+        )?;
+        let id = json!(format!("role-document-{case}"));
+        let response = client.request(
+            id.clone(),
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+            timeout(),
+        )?;
+        assert_response_id(&response, &id)?;
+        ensure!(response.get("error").is_none(), "document error for {module}: {response}");
+        let symbols = response
+            .get("result")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("document result for {module}: {response}"))?;
+        let namespace = find_namespace(symbols)
+            .ok_or_else(|| anyhow::anyhow!("missing namespace for {module}: {response}"))?;
+        ensure!(
+            namespace.get("kind") == Some(&json!(kind)),
+            "document kind for {module}: {response}"
+        );
+        ensure!(
+            namespace.pointer("/selectionRange/start") == Some(&json!({"line": 0, "character": 8})),
+            "name start for {module}: {response}"
+        );
+        ensure!(
+            namespace.pointer("/selectionRange/end") == Some(&json!({"line": 0, "character": 11})),
+            "name end for {module}: {response}"
+        );
+    }
+    shutdown_and_exit(&mut client, json!("shutdown-role-symbols"))
 }

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 17689,
-  "reason": "Accept the reviewed #17690 native-only critic.engine enum and descriptions from the exact produced VSIX; no version, default or scope change.",
-  "base_baseline_file_sha256": "833b67c30dfaaf09e39eb9759bbb6ff0c4545ab13ec593156457c89400af94e0",
-  "candidate_baseline_file_sha256": "382c054e80e80e8162de3373399f4401d1f9e4c79342d4447188a386a5eb8cf0",
-  "base_inventory_sha256": "a7ab35ff5bbc699e1b7c1dbdfe0784b1183c844a71db5c5463696adaddcb1573",
-  "candidate_inventory_sha256": "00acc7c6104d69f3a9bb51ef6454b1a251133e7873d24dd7cc0cc1ca6c95d369"
+  "owner_issue": 16585,
+  "reason": "Re-measured from this PR's failing smoke receipt projected_actual (31 files, 1938202 bytes): the PR's extension changes (gate the AI-completion enable journey) shifted the produced package; base is main's current baseline.",
+  "base_baseline_file_sha256": "daa7d4775e6e0aa1aa026b08bf6e2b6f1483004be2da8d8272d211e247ea8d42",
+  "base_inventory_sha256": "4ed08e537a58d83824d48ac7cff1c4aa058516f02d9858333018995ed39c3735",
+  "candidate_baseline_file_sha256": "76ced040e30a4f70d0d55448beceec25475d3c399a06f661c613756ebb8ce4db",
+  "candidate_inventory_sha256": "ba88ea223cd3cee7f5d0ee1d02d246cb805732b19079f4bd99228c257e01e296"
 }

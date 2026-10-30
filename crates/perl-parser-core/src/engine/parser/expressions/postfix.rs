@@ -1417,11 +1417,12 @@ impl<'a> Parser<'a> {
 
                                 let start = expr.location.start;
 
+                                // Flattening retains individual word spans, while
+                                // the call still owns the complete qw delimiter.
                                 let end = args
                                     .last()
-                                    .map(|arg| arg.location.end)
-                                    .or(flattened_qw_end)
-                                    .unwrap_or_else(|| self.previous_position());
+                                    .map_or_else(|| self.previous_position(), |arg| arg.location.end)
+                                    .max(flattened_qw_end.unwrap_or(0));
 
                                 expr = if scalar_filehandle {
                                     let mut message_args = args;

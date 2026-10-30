@@ -1542,7 +1542,7 @@ swarm-summary:
 # Check for machine-specific paths in documentation
 ci-doc-paths:
     @echo "🔍 Checking documentation paths..."
-    @cargo xtask ci-hygiene check-doc-paths docs
+    @cargo run --quiet -p perl-ci-hygiene --bin perl-ci-hygiene --locked -- check-doc-paths docs
     @echo "✅ Documentation paths check passed"
 
 # Verify publication facts against live codebase metrics (informational, non-blocking)
@@ -2941,19 +2941,12 @@ bump-version VERSION:
 release-turnkey VERSION *ARGS="":
     @cargo xtask release-turnkey "{{VERSION}}" {{ARGS}}
 
-# Dispatch publish-to-crates.io workflow for a release version.
+# Legacy dispatch-only helper; not the release transaction or proof of publication (#16799).
 publish-release VERSION *ARGS="":
     @cargo xtask publish-release "{{VERSION}}" {{ARGS}}
 
-# Manually publish the 4 new crates for v0.12.2 one at a time with 10-min gaps.
-# Use when the automated workflow is blocked by crates.io's new-crate rate limit
-# (burst=5, refill=1/10 min — separate from the update limit fixed in #3307).
-# See docs/reference/MANUAL_PUBLISH_NEW_CRATES.md for full context.
-#
-# Dry run (safe, no actual publishing):
-#   DRY_RUN=true just publish-new-crates
-# Live run:
-#   CARGO_REGISTRY_TOKEN=<token> just publish-new-crates
+# Retired ambient publisher: always refuses (#16802).
+# Follow the reviewed release transaction (#13768 / #6055): docs/release/RUNBOOK.md.
 publish-new-crates:
     bash scripts/publish-new-crates-manually.sh
 

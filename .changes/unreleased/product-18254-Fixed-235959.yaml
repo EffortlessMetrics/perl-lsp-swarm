@@ -1,0 +1,9 @@
+project: product
+component: Lexer
+kind: Fixed
+body: "Quote-like spellings used as bare subroutine prototype text (such as sub foo (q) { }) no longer enter quote mode at the closing paren: the prototype payload is preserved as an identifier, so the declaration, its body, and the existing invalid-prototype warning survive instead of being consumed by an unclosed quote error."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18254"
+  Slug: prototype-quote-like-exclusion
+  Breaking: "no"

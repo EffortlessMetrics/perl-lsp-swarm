@@ -63,6 +63,10 @@ impl LspServer {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
         }
 
+        // Forward any client-visible notices recorded while applying
+        // configuration during initialize (#18056).
+        self.flush_client_notices();
+
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
         self.register_file_watchers_if_needed();
@@ -156,11 +160,8 @@ impl LspServer {
         // and give the existing writer a bounded chance to flush frames that
         // were already accepted. A timeout remains unsettled and is reported
         // as such; it must never be treated as successful delivery.
-        let settlement = self.outbound.close_and_wait(OUTBOUND_SETTLEMENT_TIMEOUT);
-        match settlement.as_ref() {
-            Some(outcome) => outcome.report_settlement(),
-            None => tracing::error!("outbound writer did not settle before process exit"),
-        }
+        let settlement = self.outbound.settle_for_exit(OUTBOUND_SETTLEMENT_TIMEOUT);
+        settlement.report();
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
@@ -179,7 +180,7 @@ impl LspServer {
                 exit_code,
                 "LSP server exiting: `exit` notification received without a prior `shutdown`"
             );
-            let settlement_note = match settlement.as_ref() {
+            let settlement_note = match settlement.writer.as_ref() {
                 Some(outcome) if !outcome.is_io_failure() => "outbound settled",
                 Some(_) => "outbound settled with I/O failure",
                 None => "outbound did not settle",
