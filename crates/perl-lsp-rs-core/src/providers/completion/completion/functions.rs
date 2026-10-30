@@ -8,6 +8,23 @@ use super::{context::CompletionContext, items::CompletionItem, items::InsertText
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 use std::borrow::Cow;
 
+/// Function candidates insert a complete bare name, so their replacement
+/// consumes qualified suffix segments. Package producers instead retain the
+/// shared single-segment boundary, and a lone ternary colon is never consumed.
+pub(super) fn context_with_function_suffix(
+    context: &CompletionContext,
+    source: &str,
+) -> CompletionContext {
+    let mut context = context.clone();
+    let mut end = super::word_suffix_end(source, context.position);
+    while source.get(end..).is_some_and(|suffix| suffix.starts_with("::")) {
+        let Some(next_segment) = end.checked_add(2) else { break };
+        end = super::word_suffix_end(source, next_segment);
+    }
+    context.suffix_end = end;
+    context
+}
+
 /// Add function completions with scope-distance ranking.
 ///
 /// User-defined subroutines are ranked by proximity to the cursor's scope,
