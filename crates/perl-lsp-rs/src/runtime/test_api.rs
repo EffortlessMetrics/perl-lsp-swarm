@@ -383,6 +383,16 @@ impl LspServer {
         self.handle_completion(params)
     }
 
+    /// Test-only entrypoint for the cancellable completion handler that
+    /// production dispatch actually routes to (#17775).
+    pub fn test_handle_completion_cancellable(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_completion_cancellable(params, request_id)
+    }
+
     /// Test-only entrypoint for LSP `textDocument/hover`.
     ///
     /// Exercises hover functionality in tests. Returns hover information

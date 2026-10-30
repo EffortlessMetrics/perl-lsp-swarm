@@ -1,8 +1,10 @@
 # Orchestration Roles
 
-> **This is a contract doc.** Agents load it to know their tier, constraints,
-> and required output shape. Keep it tight. For design rationale see
-> [docs/reference/ORCHESTRATION_DOCTRINE.md](../reference/ORCHESTRATION_DOCTRINE.md).
+> **This is a contract doc.** Bounded execution contexts load it to know their
+> constraints and required output shape. Keep it tight. These roles are
+> delegation shapes a root orchestrator may use inside provider-native routes —
+> not permanent personas and not a lifecycle. The current method is
+> [DEVELOPMENT_METHOD.md](DEVELOPMENT_METHOD.md).
 
 ---
 
@@ -16,38 +18,14 @@ opus work. Routing the wrong tier to a task wastes budget and dilutes signal.
 
 ---
 
-## Conveyor Diagram
+## Roles, Not a Conveyor
 
-```
-Issue
-  |
-  v
-[classification]     ← haiku: fast triage, evidence-required
-  |
-  v
-[adversarial        ← haiku: accuracy, research, oppositional, diaboli,
- verification]            architecture, maintainer-issue
-  |
-  v
-[scoped plan]        ← haiku: spec-planner, red-tdd
-  |
-  v
-[builder]            ← sonnet: implement, test, verify, PR
-  |
-  v
-[independent        ← haiku: green-tdd, reviewer, maintainer-pr, refactor-planner
- verification]       ← sonnet: green-refactor, reviewer-deep
-  |
-  v
-[CI proof]           ← haiku: green-ci, pr-responder
-  |
-  v
-[merge / close      ← haiku closer with landing + semantic-completion proof
- / defer]
-  |
-  v
-[cleanup]            ← sonnet: wisdom; haiku: label hygiene
-```
+There is no fixed stage sequence and no named-agent pipeline. The root selects a
+provider-native route (`$deliver-goal`, `$deliver-pr`, `$prepare-issue`,
+`$prepare-proof`, `$build-candidate`, `$finish-pr`), holds the claim frame, and
+delegates bounded programmes. A role below is one such delegation shape: it owns
+a subject for one pass, returns its required output, and ends. No role waits on
+another, tracks a frontier, or owns claim orchestration.
 
 ---
 
@@ -176,12 +154,15 @@ regressions.
 **Required output schema:** verdict + findings list:
 ```json
 {
-  "verdict": "APPROVE | REQUEST_CHANGES",
+  "verdict": "REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN | BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE",
   "findings": [
     {"file": "path", "line": 42, "severity": "bug|style|suggestion", "claim": "..."}
   ]
 }
 ```
+
+GitHub submission is `COMMENT`: this repository does not submit `APPROVE` reviews
+(see the `$review-pr` skill and `scripts/reviews/inline`).
 
 ---
 
@@ -195,7 +176,7 @@ label or stale report. Fix mechanical CI failures.
 **Constraints:**
 - Read-only signal collection; may push fixes for mechanical failures (fmt, clippy)
 - Never declare CI green from a cached label — query the live PR checks
-- One routing decision: `ci-green` OR `needs-ci-fix`
+- One routing decision per pass, carried in the `verdict` field — not in a label
 
 **Required output schema:**
 ```json
@@ -204,8 +185,7 @@ label or stale report. Fix mechanical CI failures.
   "checks_passed": 17,
   "checks_failed": 0,
   "checks_pending": 0,
-  "verdict": "GREEN | FAILING | PENDING",
-  "routing_label": "ci-green | needs-ci-fix"
+  "verdict": "GREEN | FAILING | PENDING"
 }
 ```
 
@@ -246,11 +226,14 @@ analysis requires synthesis
 memory recalibration after a merge batch.
 
 **Model tier:** haiku for label hygiene and worktree pruning; sonnet for wisdom
-consolidation (see [PIPELINE_GATES.md](../reference/PIPELINE_GATES.md) Gate 7
-for the authoritative tier).
+consolidation.
 
 **Constraints:**
-- Read-only for label decisions; may prune stale worktrees and stash entries
+- Read-only for label decisions; may prune stale worktrees. Never run
+  `git stash` — the stash is shared across all worktrees (see
+  [WORKTREE_PROTOCOL.md](../reference/WORKTREE_PROTOCOL.md)); discard work
+  with scoped `git restore`. Preserve work that must survive in a branch-local
+  WIP commit
 - Wisdom consolidation: captures learning into durable artifacts, not inline comments
 - Never delete a worktree with uncommitted work
 

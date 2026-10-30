@@ -344,7 +344,10 @@ fn position_to_offset(source: &str, position: &Value) -> Result<usize> {
 fn run_plain_profile() -> Result<PlainEditReport> {
     let harness = minimal_harness()?;
     harness.open_file(FIXTURE_PATH, FIXTURE_SOURCE)?;
-    let diagnostics = harness.wait_for_latest_diagnostics(FIXTURE_PATH, Duration::from_secs(5));
+    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", FIXTURE_PATH),
+        harness.wait_for_latest_diagnostics(FIXTURE_PATH, Duration::from_secs(5)),
+    )?;
     let actions = request_code_actions(&harness, &diagnostics)?;
     let uri = harness.workspace.uri(FIXTURE_PATH);
     let strict_texts = text_edit_new_texts_for_title(&actions, "Add use strict;", &uri);
@@ -381,7 +384,10 @@ fn run_plain_profile() -> Result<PlainEditReport> {
 fn run_snippet_profile() -> Result<SnippetEditReport> {
     let harness = snippet_harness()?;
     harness.open_file(FIXTURE_PATH, FIXTURE_SOURCE)?;
-    let diagnostics = harness.wait_for_latest_diagnostics(FIXTURE_PATH, Duration::from_secs(5));
+    let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", FIXTURE_PATH),
+        harness.wait_for_latest_diagnostics(FIXTURE_PATH, Duration::from_secs(5)),
+    )?;
     let actions = request_code_actions(&harness, &diagnostics)?;
     let uri = harness.workspace.uri(FIXTURE_PATH);
     let strict_snippet_value = snippet_value_for_title(&actions, "Add use strict;", &uri);

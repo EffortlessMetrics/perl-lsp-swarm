@@ -25,6 +25,7 @@ use perl_lsp_ux_tests::{
     LspEvent, ScenarioConfig, UxHarness, binary_available, document_symbol_names,
 };
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 /// Source with three named subs and a package declaration — rich symbol table.
@@ -193,23 +194,49 @@ fn wait_for_ready_generation_after(
     }
 }
 
-fn require_lsp_range(value: &Value, context: &str) -> Result<(), String> {
+type Position = (u64, u64);
+type SymbolRange = (Position, Position);
+
+fn require_lsp_range(value: &Value, context: &str) -> Result<SymbolRange, String> {
     let range = value.as_object().ok_or_else(|| format!("{context} must be an object"))?;
-    for field in ["start", "end"] {
+    let position = |field| -> Result<Position, String> {
         let pos = range
             .get(field)
             .and_then(Value::as_object)
             .ok_or_else(|| format!("{context}.{field} must be an object"))?;
-        for coord in ["line", "character"] {
-            if pos.get(coord).and_then(Value::as_u64).is_none() {
-                return Err(format!("{context}.{field}.{coord} must be a u64"));
-            }
-        }
+        let coord = |name| {
+            pos.get(name)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("{context}.{field}.{name} must be a u64"))
+        };
+        Ok((coord("line")?, coord("character")?))
+    };
+    let start = position("start")?;
+    let end = position("end")?;
+    if start > end {
+        return Err(format!("{context} end must not precede start"));
     }
-    Ok(())
+    Ok((start, end))
 }
 
 fn assert_symbol_shapes(symbols: &[Value]) {
+    // The LSP result is one array variant, not a row-by-row union. An empty
+    // response has no form to choose; each nonempty result must be coherent.
+    if let Some(first) = symbols.first() {
+        let document_symbols = first.get("range").is_some();
+        assert!(
+            symbols.iter().all(|symbol| symbol.get("range").is_some() == document_symbols),
+            "Document symbols and SymbolInformation must not mix in one result: {symbols:?}"
+        );
+    }
+    let mut seen = HashSet::new();
+    assert_symbol_shapes_with_seen(symbols, &mut seen);
+}
+
+fn assert_symbol_shapes_with_seen(
+    symbols: &[Value],
+    seen: &mut HashSet<(bool, String, u64, Option<String>, SymbolRange)>,
+) {
     for symbol in symbols {
         let name = symbol
             .get("name")
@@ -231,16 +258,15 @@ fn assert_symbol_shapes(symbols: &[Value]) {
         );
 
         if has_range {
-            require_lsp_range(
-                symbol.get("range").expect("range present"),
-                &format!("DocumentSymbol `{name}` range"),
-            )
-            .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
+            assert_document_symbol_row(symbol, &name, kind, seen);
             if let Some(children) = symbol.get("children") {
                 let children = children.as_array().unwrap_or_else(|| {
                     panic!("DocumentSymbol `{name}` children must be an array: {symbol:?}")
                 });
-                assert_symbol_shapes(children);
+                // DocumentSymbol.children is DocumentSymbol[], not a form
+                // union: every child must carry range/selectionRange and is
+                // validated in DocumentSymbol-only mode.
+                assert_document_symbol_children(children, seen);
             }
         } else {
             let location = symbol.get("location").and_then(Value::as_object).unwrap_or_else(|| {
@@ -251,15 +277,80 @@ fn assert_symbol_shapes(symbols: &[Value]) {
                 !uri.trim().is_empty(),
                 "SymbolInformation `{name}` location.uri must be non-empty: {symbol:?}"
             );
-            require_lsp_range(
+            let full = require_lsp_range(
                 location.get("range").unwrap_or(&Value::Null),
                 &format!("SymbolInformation `{name}` location.range"),
             )
             .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
             assert!(
+                seen.insert((false, name.to_owned(), kind, Some(uri.to_owned()), full)),
+                "Duplicate SymbolInformation identity `{name}`: {symbol:?}"
+            );
+            assert!(
                 symbol.get("children").is_none(),
                 "SymbolInformation `{name}` must not carry DocumentSymbol children: {symbol:?}"
             );
+        }
+    }
+}
+
+/// Validate one DocumentSymbol row: range/selectionRange shape, containment,
+/// and duplicate identity. Shared by the top-level and children validators.
+fn assert_document_symbol_row(
+    symbol: &Value,
+    name: &str,
+    kind: u64,
+    seen: &mut HashSet<(bool, String, u64, Option<String>, SymbolRange)>,
+) {
+    let full = require_lsp_range(
+        symbol.get("range").expect("range present"),
+        &format!("DocumentSymbol `{name}` range"),
+    )
+    .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
+    let selection = require_lsp_range(
+        symbol.get("selectionRange").unwrap_or(&Value::Null),
+        &format!("DocumentSymbol `{name}` selectionRange"),
+    )
+    .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
+    assert!(
+        full.0 <= selection.0 && selection.1 <= full.1,
+        "DocumentSymbol `{name}` selectionRange must fit inside range: {symbol:?}"
+    );
+    assert!(
+        seen.insert((true, name.to_owned(), kind, None, full)),
+        "Duplicate DocumentSymbol identity `{name}`: {symbol:?}"
+    );
+}
+
+/// Validate `DocumentSymbol.children`: every row must be a DocumentSymbol;
+/// a `SymbolInformation` child (location-only) is rejected even though the
+/// per-row union validator would admit it at the result's top level.
+fn assert_document_symbol_children(
+    symbols: &[Value],
+    seen: &mut HashSet<(bool, String, u64, Option<String>, SymbolRange)>,
+) {
+    for symbol in symbols {
+        let name = symbol
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| panic!("Each symbol must have a non-empty name: {symbol:?}"));
+        let kind = symbol
+            .get("kind")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| panic!("Symbol `{name}` must include LSP SymbolKind: {symbol:?}"));
+        assert!((1..=26).contains(&kind), "Symbol `{name}` kind must be 1-26: {symbol:?}");
+        assert!(
+            symbol.get("range").is_some() && symbol.get("location").is_none(),
+            "DocumentSymbol child `{name}` must be a DocumentSymbol (range/selectionRange), \
+             not a SymbolInformation: {symbol:?}"
+        );
+        assert_document_symbol_row(symbol, &name, kind, seen);
+        if let Some(children) = symbol.get("children") {
+            let children = children.as_array().unwrap_or_else(|| {
+                panic!("DocumentSymbol `{name}` children must be an array: {symbol:?}")
+            });
+            assert_document_symbol_children(children, seen);
         }
     }
 }
@@ -406,6 +497,7 @@ fn scenario_13_empty_file_returns_empty() -> Result<()> {
     let symbols = harness.document_symbols("empty.pl")?;
 
     assert!(symbols.is_empty(), "file with no symbols must return an empty list: {symbols:?}");
+    assert_symbol_shapes(&symbols);
     harness.assert_no_crash();
     Ok(())
 }
@@ -517,10 +609,142 @@ mod shape_unit_tests {
                 "range": {
                     "start": {"line": 1, "character": 0},
                     "end": {"line": 3, "character": 1}
+                },
+                "selectionRange": {
+                    "start": {"line": 1, "character": 4},
+                    "end": {"line": 1, "character": 9}
                 }
             }]
         })];
         assert_symbol_shapes(&symbols);
+    }
+
+    #[test]
+    fn rejects_symbol_information_child_inside_document_symbol() {
+        let symbols = vec![json!({
+            "name": "Greeter",
+            "kind": 4,
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 7}
+            },
+            "selectionRange": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 7}
+            },
+            "children": [{
+                "name": "greet",
+                "kind": 12,
+                "location": {
+                    "uri": "file:///tmp/Greeter.pm",
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 3, "character": 1}
+                    }
+                }
+            }]
+        })];
+        let result = std::panic::catch_unwind(|| assert_symbol_shapes(&symbols));
+        assert!(result.is_err(), "DocumentSymbol.children must be DocumentSymbol[] only");
+    }
+
+    #[test]
+    fn rejects_deeply_nested_symbol_information_child() {
+        let symbols = vec![json!({
+            "name": "Outer",
+            "kind": 4,
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 9, "character": 0}
+            },
+            "selectionRange": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 5}
+            },
+            "children": [{
+                "name": "Middle",
+                "kind": 4,
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 8, "character": 0}
+                },
+                "selectionRange": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 6}
+                },
+                "children": [{
+                    "name": "leaf",
+                    "kind": 12,
+                    "location": {
+                        "uri": "file:///tmp/Greeter.pm",
+                        "range": {
+                            "start": {"line": 2, "character": 0},
+                            "end": {"line": 2, "character": 1}
+                        }
+                    }
+                }]
+            }]
+        })];
+        let result = std::panic::catch_unwind(|| assert_symbol_shapes(&symbols));
+        assert!(result.is_err(), "a nested SymbolInformation child must fail at any depth");
+    }
+
+    fn valid_document_symbol() -> serde_json::Value {
+        json!({
+            "name": "greet",
+            "kind": 12,
+            "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 3, "character": 1}
+            },
+            "selectionRange": {
+                "start": {"line": 1, "character": 4},
+                "end": {"line": 1, "character": 9}
+            }
+        })
+    }
+
+    #[test]
+    fn rejects_malformed_document_symbol_ranges_and_forms() {
+        let wrong = [
+            ("missing selectionRange", "/selectionRange", None),
+            ("reversed full range", "/range/end/line", Some(json!(0))),
+            ("reversed selection range", "/selectionRange/end/character", Some(json!(3))),
+            ("selection begins before full range", "/selectionRange/start/line", Some(json!(0))),
+            ("selection ends after full range", "/selectionRange/end/line", Some(json!(4))),
+            ("missing coordinate", "/range/start/line", None),
+            ("string coordinate", "/selectionRange/start/character", Some(json!("4"))),
+            ("negative coordinate", "/selectionRange/start/character", Some(json!(-1))),
+            ("null coordinate", "/range/end/character", Some(serde_json::Value::Null)),
+            ("mixed result forms", "/location", Some(json!({}))),
+            ("neither result form", "/range", None),
+        ];
+        for (label, path, replacement) in wrong {
+            let mut symbol = valid_document_symbol();
+            if let Some(replacement) = replacement {
+                if path == "/location" {
+                    symbol
+                        .as_object_mut()
+                        .expect("fixture is an object")
+                        .insert("location".to_owned(), replacement);
+                } else {
+                    *symbol.pointer_mut(path).expect("fixture path exists") = replacement;
+                }
+            } else {
+                if path == "/range/start/line" {
+                    symbol["range"]["start"]
+                        .as_object_mut()
+                        .expect("position is an object")
+                        .remove("line");
+                } else {
+                    symbol.as_object_mut().expect("fixture is an object").remove(&path[1..]);
+                }
+            }
+            assert!(
+                std::panic::catch_unwind(|| assert_symbol_shapes(&[symbol])).is_err(),
+                "{label} must fail"
+            );
+        }
     }
 
     #[test]
@@ -537,6 +761,92 @@ mod shape_unit_tests {
             }
         })];
         assert_symbol_shapes(&symbols);
+    }
+
+    #[test]
+    fn rejects_symbol_information_children_and_invalid_location() {
+        let valid = json!({
+            "name": "greet",
+            "kind": 12,
+            "location": {
+                "uri": "file:///tmp/Greeter.pm",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 3, "character": 1}
+                }
+            }
+        });
+        for (label, path, replacement) in [
+            ("empty URI", "/location/uri", json!("  ")),
+            ("reversed location range", "/location/range/end/line", json!(0)),
+            ("children", "/children", json!([])),
+        ] {
+            let mut symbol = valid.clone();
+            if path == "/children" {
+                symbol
+                    .as_object_mut()
+                    .expect("fixture is an object")
+                    .insert("children".into(), replacement);
+            } else {
+                *symbol.pointer_mut(path).expect("fixture path exists") = replacement;
+            }
+            assert!(
+                std::panic::catch_unwind(|| assert_symbol_shapes(&[symbol])).is_err(),
+                "{label} must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_symbol_identities_across_the_result_tree() {
+        let symbol = valid_document_symbol();
+        assert!(
+            std::panic::catch_unwind(|| assert_symbol_shapes(&[symbol.clone(), symbol.clone()]))
+                .is_err(),
+            "the same top-level identity must fail"
+        );
+        let mut nested = valid_document_symbol();
+        nested["children"] = json!([symbol]);
+        assert!(
+            std::panic::catch_unwind(|| assert_symbol_shapes(&[nested])).is_err(),
+            "the same identity nested under another symbol must fail"
+        );
+    }
+
+    #[test]
+    fn rejects_mixed_result_array_forms() {
+        let document_symbol = valid_document_symbol();
+        let symbol_information = json!({
+            "name": "other",
+            "kind": 12,
+            "location": {
+                "uri": "file:///tmp/Greeter.pm",
+                "range": {
+                    "start": {"line": 5, "character": 0},
+                    "end": {"line": 6, "character": 1}
+                }
+            }
+        });
+        for mixed in [
+            [document_symbol.clone(), symbol_information.clone()],
+            [symbol_information, document_symbol],
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| assert_symbol_shapes(&mixed)).is_err(),
+                "both orders of mixed result forms must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn same_named_symbols_at_distinct_ranges_are_valid() {
+        let first = valid_document_symbol();
+        let mut second = first.clone();
+        second["range"]["start"]["line"] = json!(5);
+        second["range"]["end"]["line"] = json!(7);
+        second["selectionRange"]["start"]["line"] = json!(5);
+        second["selectionRange"]["end"]["line"] = json!(5);
+        assert_symbol_shapes(&[first, second]);
     }
 
     #[test]

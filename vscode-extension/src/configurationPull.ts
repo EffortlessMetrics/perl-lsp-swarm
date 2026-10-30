@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
-import { buildWorkspaceConfigurationPayload } from './languageClientConfiguration';
+import {
+  buildGlobalWorkspaceConfigurationPayload,
+  buildWorkspaceConfigurationPayload,
+} from './languageClientConfiguration';
 
 /**
  * Folder-owned answers for the server's `workspace/configuration` pull (#14447).
@@ -49,6 +52,15 @@ export type ConfigurationParamsLike = {
  * `apply_workspace_config_layer` consumes for a `workspace/configuration`
  * result.
  *
+ * The unscoped item (`scope === undefined`) is applied by the server as a
+ * session-global base layer under every folder, so it is answered from
+ * user/global state only: when the only overrides are workspace/folder-scoped
+ * it is `{}` (#17334). A resource-less `getConfiguration` would otherwise
+ * resolve the single-root workspace==folder value into it and re-create the
+ * session-global leak #14447 removed on the push transport. Folder values
+ * travel exclusively through the folder-scoped items, which use the scoped
+ * payload below.
+ *
  * Deliberately limited to the `workspace` section. The server applies a result
  * item through `WorkspaceConfig::update_from_value_with_context`, which reads
  * only `settings.get("workspace")`; Critic has no field there and is parsed
@@ -60,6 +72,9 @@ export type ConfigurationParamsLike = {
  */
 export function buildPerlSectionValue(scope?: vscode.Uri): Record<string, unknown> {
   const config = vscode.workspace.getConfiguration('perl-lsp', scope);
+  if (scope === undefined) {
+    return buildGlobalWorkspaceConfigurationPayload(config) ?? {};
+  }
   return buildWorkspaceConfigurationPayload(config) ?? {};
 }
 

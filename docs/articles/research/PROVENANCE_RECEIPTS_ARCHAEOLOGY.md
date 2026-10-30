@@ -204,9 +204,9 @@ In other words, the repository did not just become AI-native. It became evidence
 
 ## Evidence Pointers
 
-- [AGENTIC_DEV.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/AGENTIC_DEV.md)
-- [CURRENT_STATUS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CURRENT_STATUS.md)
-- [METRICS_PROVENANCE.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/METRICS_PROVENANCE.md)
-- [FORENSICS_SCHEMA.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/FORENSICS_SCHEMA.md)
-- [XTASK_MIGRATION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/XTASK_MIGRATION.md)
-- [LESSONS.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/LESSONS.md)
+- [AGENTIC_DEV.md](../../project/AGENTIC_DEV.md)
+- [CURRENT_STATUS.md](../../project/CURRENT_STATUS.md)
+- [METRICS_PROVENANCE.md](../../project/METRICS_PROVENANCE.md)
+- [FORENSICS_SCHEMA.md](../../reference/FORENSICS_SCHEMA.md)
+- [XTASK_MIGRATION.md](../../project/XTASK_MIGRATION.md)
+- [LESSONS.md](../../project/LESSONS.md)

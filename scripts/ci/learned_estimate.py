@@ -13,7 +13,10 @@ Estimate model:
 If the history is missing or the lane has too few samples, fall back to the
 static floor and report `learned: false`.
 
-Output is JSON on stdout so the caller can pipe into jq.
+Output is JSON on stdout so the caller can pipe into jq. Every stdout object
+carries `schema_version` (`learned_estimate.v1`) so a later consumer can
+refuse an unfamiliar shape. That token is this producer's field; it is not
+the history file's integer `schema_version`.
 """
 from __future__ import annotations
 
@@ -22,6 +25,57 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+SCHEMA_VERSION = "learned_estimate.v1"
+
+
+def emit_stdout(payload: dict[str, Any]) -> None:
+    """Print one stdout JSON object. Always stamps this producer's schema token.
+
+    A payload key named `schema_version` cannot override the producer field:
+    that name is also used by the history file for a different integer contract.
+    """
+    body = {key: value for key, value in payload.items() if key != "schema_version"}
+    print(json.dumps({"schema_version": SCHEMA_VERSION, **body}))
+
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+# The history file is a versioned wire contract written by
+# `aggregate_lane_history.py`. This gate pins the version *this reader* can
+# parse, not the producer's current `aggregate_lane_history.SCHEMA_VERSION`:
+# importing the producer constant would advance the check automatically when
+# the producer bumps and renames a field, silently accepting a shape the v1
+# field names below cannot read (#15286). Move this constant only together
+# with the parser below. (Named SUPPORTED_*, not SCHEMA_VERSION: that name is
+# this producer's stdout token, a different string contract.)
+SUPPORTED_SCHEMA_VERSION = 1
+
+
+def history_version_refusal(history: Any) -> str | None:
+    """Why this payload cannot be read as a v1 lane history, or `None`.
+
+    The reader below resolves `lanes`, `p50` and `static_floor` by name, so a
+    payload written by any other version is not merely unrecognised -- it is
+    read with the wrong field names. A renamed `static_floor` makes
+    `estimate_for`'s floor guard silently fall through and report a bare
+    `p50 * 1.15`, dropping a static floor that exists to prevent exactly that
+    optimism. Refusing is the only honest answer to a shape this reader does
+    not know.
+    """
+    if not isinstance(history, dict):
+        return f"lane history payload is not a JSON object, got {type(history).__name__}"
+    found = history.get("schema_version")
+    # bool is an int subclass and 1.0 == 1: bare `!=` would admit JSON `true`
+    # and `1.0` as v1 (same pitfall `pr_plan.load_learned_history` guards).
+    # An exact int is required; anything else is an unfamiliar shape.
+    if type(found) is not int or found != SUPPORTED_SCHEMA_VERSION:
+        return (
+            f"lane history schema_version must be {SUPPORTED_SCHEMA_VERSION}, "
+            f"got {found!r}; refusing to read an unfamiliar shape"
+        )
+    return None
 
 
 def estimate_for(lane_id: str, history: dict[str, Any]) -> dict[str, Any]:
@@ -93,26 +147,52 @@ def main() -> int:
     args = p.parse_args()
 
     if not args.history.exists():
-        print(
-            json.dumps(
-                {
-                    "lane": args.lane,
-                    "learned": False,
-                    "estimate": None,
-                    "samples": 0,
-                    "reason": f"history file {args.history} not present",
-                }
-            )
+        emit_stdout(
+            {
+                "lane": args.lane,
+                "learned": False,
+                "estimate": None,
+                "samples": 0,
+                "reason": f"history file {args.history} not present",
+            }
         )
         return 0
 
     try:
         history = json.loads(args.history.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
-        print(json.dumps({"lane": args.lane, "learned": False, "error": str(e)}))
+        emit_stdout({"lane": args.lane, "learned": False, "error": str(e)})
         return 0
 
-    print(json.dumps(estimate_for(args.lane, history)))
+    if not isinstance(history, dict):
+        emit_stdout(
+            {
+                "lane": args.lane,
+                "learned": False,
+                "estimate": None,
+                "samples": 0,
+                "reason": (
+                    "history payload is not a JSON object, "
+                    f"got {type(history).__name__}"
+                ),
+            }
+        )
+        return 0
+
+    refusal = history_version_refusal(history)
+    if refusal is not None:
+        emit_stdout(
+            {
+                "lane": args.lane,
+                "learned": False,
+                "estimate": None,
+                "samples": 0,
+                "reason": refusal,
+            }
+        )
+        return 0
+
+    emit_stdout(estimate_for(args.lane, history))
     return 0
 
 

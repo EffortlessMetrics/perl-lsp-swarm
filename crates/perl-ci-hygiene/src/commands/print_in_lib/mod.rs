@@ -353,6 +353,48 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_compact_test_module_does_not_leak_its_prints_into_the_production_scan() -> Result<()> {
+        // The consequence, not just the boundary: a test module collapsed onto
+        // one physical line was invisible to `first_cfg_test_line_number`, so
+        // `test_start` stayed `usize::MAX` and the scan ran straight through it,
+        // reporting a test-only `println!` as a production offender (#16520).
+        // Asserting the boundary in `test_scope` alone would leave that
+        // unproven, because every production check reads the boundary only
+        // through this seam.
+        let tree = RepoTree::new("compact-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "//! A library root.\n",
+                "pub fn ok() {}\n",
+                "#[cfg(test)] mod tests { fn it() { println!(\"test-only\"); } }\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &[])?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_compact_test_module_still_lets_an_earlier_production_print_through() -> Result<()> {
+        // The paired direction: truncating at the compact module must not eat
+        // the production print above it, or the control above would also pass
+        // on a reader that bounded the file at line 1 unconditionally.
+        let tree = RepoTree::new("compact-test-module-control")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "//! A library root.\n",
+                "pub fn leaked() {\n",
+                "    println!(\"production\");\n",
+                "}\n",
+                "#[cfg(test)] mod tests { fn it() { println!(\"test-only\"); } }\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"production\");"])?;
+        Ok(())
+    }
+
     // ── the scan reports position, not just a count ──────────────────────────
 
     #[test]

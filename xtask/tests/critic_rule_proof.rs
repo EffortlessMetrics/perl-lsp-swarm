@@ -1,6 +1,7 @@
 //! Discriminating tests for the critic rule-proof manifest and checker (#6973).
 
 use perl_lsp_rs_core::tooling::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
+use perl_tdd_support::{must_err_with, must_some_with};
 use serde_json::{Value, json};
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -51,8 +52,8 @@ fn rule_mut<'a>(manifest: &'a mut Value, rule_id: &str) -> Option<&'a mut Value>
 #[test]
 fn committed_manifest_and_live_critic_proof_pass() -> TestResult {
     let manifest = proof::check(&repo_root()).map_err(|error| error.to_string())?;
-    assert_eq!(manifest.rules.len(), 4);
-    assert_eq!(manifest.cases.len(), 20);
+    assert_eq!(manifest.rules.len(), 16);
+    assert_eq!(manifest.cases.len(), 80);
     assert!(
         manifest
             .cases
@@ -98,8 +99,9 @@ fn status_render_is_byte_deterministic() -> TestResult {
 #[test]
 fn duplicate_case_id_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let duplicate = case_mut(&mut manifest, "CRP-STRICT-NEAR-001").expect("near miss").clone();
-    manifest["cases"].as_array_mut().expect("cases").push(duplicate);
+    let duplicate =
+        must_some_with(case_mut(&mut manifest, "CRP-STRICT-NEAR-001"), "near miss").clone();
+    must_some_with(manifest["cases"].as_array_mut(), "cases").push(duplicate);
     expect_violation(&manifest, "duplicate case_id")
 }
 
@@ -107,8 +109,9 @@ fn duplicate_case_id_fails_check() -> TestResult {
 fn duplicate_rule_id_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
     let duplicate =
-        rule_mut(&mut manifest, "native.security.string_eval").expect("string eval").clone();
-    manifest["rules"].as_array_mut().expect("rules").push(duplicate);
+        must_some_with(rule_mut(&mut manifest, "native.security.string_eval"), "string eval")
+            .clone();
+    must_some_with(manifest["rules"].as_array_mut(), "rules").push(duplicate);
     expect_violation(&manifest, "duplicate rule_id")
 }
 
@@ -130,7 +133,7 @@ fn stale_fixture_digest_fails_check() -> TestResult {
 #[test]
 fn unknown_evidence_class_fails_schema() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-NEAR-001").expect("near miss")["evidence_classes"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-NEAR-001"), "near miss")["evidence_classes"] =
         json!(["not_a_real_class"]);
     expect_violation(&manifest, "schema")
 }
@@ -138,8 +141,8 @@ fn unknown_evidence_class_fails_schema() -> TestResult {
 #[test]
 fn suggested_edit_cannot_be_marked_automatic() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let case = case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos");
-    let classes = case["evidence_classes"].as_array_mut().expect("classes");
+    let case = must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-POS-001"), "assign pos");
+    let classes = must_some_with(case["evidence_classes"].as_array_mut(), "classes");
     classes.push(json!("automatic_fix_round_trip"));
     case["fix_round_trip"] = json!({
         "apply": "automatic",
@@ -154,15 +157,15 @@ fn suggested_edit_cannot_be_marked_automatic() -> TestResult {
 #[test]
 fn diagnostic_only_cannot_be_represented_as_automatic_success() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-EVAL-POS-001").expect("eval pos")["expected_findings"][0]["remediation_eligibility"] =
-        json!("automatic_candidate");
+    must_some_with(case_mut(&mut manifest, "CRP-EVAL-POS-001"), "eval pos")["expected_findings"]
+        [0]["remediation_eligibility"] = json!("automatic_candidate");
     expect_violation(&manifest, "cannot be represented as automatic success")
 }
 
 #[test]
 fn deleting_a_required_negative_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let cases = manifest["cases"].as_array_mut().expect("cases");
+    let cases = must_some_with(manifest["cases"].as_array_mut(), "cases");
     cases.retain(|case| case.get("case_id").and_then(Value::as_str) != Some("CRP-STRICT-NEAR-001"));
     expect_violation(&manifest, "missing required evidence class `near_miss_negative`")
 }
@@ -170,7 +173,7 @@ fn deleting_a_required_negative_fails_check() -> TestResult {
 #[test]
 fn suppression_of_a_different_logical_rule_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-SUPP-001").expect("supp")["suppression_selector"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-SUPP-001"), "supp")["suppression_selector"] =
         json!("native.security.string_eval");
     expect_violation(&manifest, "suppression_selector")
 }
@@ -178,7 +181,7 @@ fn suppression_of_a_different_logical_rule_fails_check() -> TestResult {
 #[test]
 fn unknown_rule_id_fails_authority_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict")["rule_id"] =
+    must_some_with(rule_mut(&mut manifest, "native.testing.require_use_strict"), "strict")["rule_id"] =
         json!("native.testing.not_a_rule");
     expect_violation(&manifest, "unknown native rule id")
 }
@@ -186,7 +189,7 @@ fn unknown_rule_id_fails_authority_check() -> TestResult {
 #[test]
 fn canonical_id_must_match_identity_registry() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict")["canonical_id"] =
+    must_some_with(rule_mut(&mut manifest, "native.testing.require_use_strict"), "strict")["canonical_id"] =
         json!("critic.testing.not_canonical");
     expect_violation(&manifest, "canonical_id")
 }
@@ -194,28 +197,32 @@ fn canonical_id_must_match_identity_registry() -> TestResult {
 #[test]
 fn deleting_an_identity_alias_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict")
-        ["identity_aliases"]
-        .as_array_mut()
-        .expect("aliases")
-        .pop();
+    must_some_with(
+        must_some_with(rule_mut(&mut manifest, "native.testing.require_use_strict"), "strict")
+            ["identity_aliases"]
+            .as_array_mut(),
+        "aliases",
+    )
+    .pop();
     expect_violation(&manifest, "identity_aliases do not match")
 }
 
 #[test]
 fn positive_finding_at_the_wrong_range_fails_live_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos")["expected_findings"][0]["start_byte"] =
-        json!(0);
-    case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos")["expected_findings"][0]["end_byte"] =
-        json!(6);
-    case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos")["expected_findings"][0]["excerpt"] =
-        json!("use st");
+    must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-POS-001"), "assign pos")["expected_findings"]
+        [0]["start_byte"] = json!(0);
+    must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-POS-001"), "assign pos")["expected_findings"]
+        [0]["end_byte"] = json!(6);
+    must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-POS-001"), "assign pos")["expected_findings"]
+        [0]["excerpt"] = json!("use st");
     let typed =
         validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
-    let error = proof::execute_manifest(&repo_root(), &typed)
-        .expect_err("wrong range must fail live critic")
-        .to_string();
+    let error = must_err_with(
+        proof::execute_manifest(&repo_root(), &typed),
+        "wrong range must fail live critic",
+    )
+    .to_string();
     assert!(
         error.contains("missing expected finding") || error.contains("unexpected extra finding"),
         "unexpected error: {error}"
@@ -226,7 +233,7 @@ fn positive_finding_at_the_wrong_range_fails_live_check() -> TestResult {
 #[test]
 fn relabeling_a_near_miss_as_a_positive_fails_live_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let case = case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001").expect("near");
+    let case = must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001"), "near");
     case["evidence_classes"] = json!(["near_miss_negative", "positive_finding"]);
     case["expected_findings"] = json!([{
         "rule_id": "native.common.assignment_in_condition",
@@ -238,9 +245,11 @@ fn relabeling_a_near_miss_as_a_positive_fails_live_check() -> TestResult {
     }]);
     let typed =
         validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
-    let error = proof::execute_manifest(&repo_root(), &typed)
-        .expect_err("near miss must not satisfy a positive")
-        .to_string();
+    let error = must_err_with(
+        proof::execute_manifest(&repo_root(), &typed),
+        "near miss must not satisfy a positive",
+    )
+    .to_string();
     assert!(
         error.contains("missing expected finding") || error.contains("unexpected extra finding"),
         "unexpected error: {error}"
@@ -260,14 +269,15 @@ fn unused_fixture_fails_check() -> TestResult {
 #[test]
 fn case_profile_mismatch_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["profile"] = json!("strict");
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["profile"] =
+        json!("strict");
     expect_violation(&manifest, "does not match the governed rule profile")
 }
 
 #[test]
 fn absolute_fixture_path_fails_schema() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fixture"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["fixture"] =
         json!("/etc/passwd");
     expect_violation(&manifest, "schema:")
 }
@@ -275,7 +285,7 @@ fn absolute_fixture_path_fails_schema() -> TestResult {
 #[test]
 fn traversal_fixture_path_fails_schema() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fixture"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["fixture"] =
         json!("../../Cargo.toml");
     expect_violation(&manifest, "schema:")
 }
@@ -319,7 +329,7 @@ fn fixture_paths_may_not_escape_the_fixture_root() -> TestResult {
 #[test]
 fn include_missing_governed_rule_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["include"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["include"] =
         json!(["native.security.string_eval"]);
     expect_violation(&manifest, "include must contain the governed rule")
 }
@@ -327,7 +337,7 @@ fn include_missing_governed_rule_fails_check() -> TestResult {
 #[test]
 fn include_unknown_rule_fails_profile_binding() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["include"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["include"] =
         json!(["native.testing.require_use_strict", "native.typo"]);
     expect_violation(
         &manifest,
@@ -338,7 +348,7 @@ fn include_unknown_rule_fails_profile_binding() -> TestResult {
 #[test]
 fn strict_only_rule_cannot_be_included_in_recommended_case() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["include"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["include"] =
         json!(["native.testing.require_use_strict", "native.regex.capture_without_match"]);
     expect_violation(&manifest, "is not in the `recommended` profile roster")
 }
@@ -350,9 +360,11 @@ fn automatic_edit_identity_is_required() -> TestResult {
         {"start_byte": 0, "end_byte": 0, "new_text": "use warnings;\n"}
     ]);
     let typed = validate_manifest_value(&repo_root(), &manifest)?;
-    let error = proof::execute_manifest(&repo_root(), &typed)
-        .expect_err("wrong automatic edit must fail")
-        .to_string();
+    let error = must_err_with(
+        proof::execute_manifest(&repo_root(), &typed),
+        "wrong automatic edit must fail",
+    )
+    .to_string();
     assert!(error.contains("automatic edit set does not match the manifest exactly"));
     Ok(())
 }
@@ -360,19 +372,20 @@ fn automatic_edit_identity_is_required() -> TestResult {
 #[test]
 fn automatic_edit_set_cannot_be_omitted() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001")
-        .expect("strict pos")
-        .get_mut("fix_round_trip")
-        .and_then(Value::as_object_mut)
-        .expect("round trip")
-        .remove("expected_edits");
+    must_some_with(
+        must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")
+            .get_mut("fix_round_trip")
+            .and_then(Value::as_object_mut),
+        "round trip",
+    )
+    .remove("expected_edits");
     expect_violation(&manifest, "expected_edits")
 }
 
 #[test]
 fn parse_error_boundary_cannot_claim_findings() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-BOUND-001").expect("strict boundary")["parse_expectation"] =
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-BOUND-001"), "strict boundary")["parse_expectation"] =
         json!("error");
     expect_violation(&manifest, "malformed parse boundaries cannot claim expected findings")
 }
@@ -380,7 +393,7 @@ fn parse_error_boundary_cannot_claim_findings() -> TestResult {
 #[test]
 fn automatic_rule_missing_round_trip_class_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let case = case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos");
+    let case = must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos");
     case["evidence_classes"] = json!([
         "positive_finding",
         "canonical_identity",
@@ -393,23 +406,23 @@ fn automatic_rule_missing_round_trip_class_fails_check() -> TestResult {
 #[test]
 fn automatic_success_without_target_removal_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fix_round_trip"]["expect_target_removed"] =
-        json!(false);
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["fix_round_trip"]
+        ["expect_target_removed"] = json!(false);
     expect_violation(&manifest, "target removal")
 }
 
 #[test]
 fn automatic_success_without_no_new_governed_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fix_round_trip"]["expect_no_new_governed"] =
-        json!(false);
+    must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")["fix_round_trip"]
+        ["expect_no_new_governed"] = json!(false);
     expect_violation(&manifest, "no new governed diagnostic")
 }
 
 #[test]
 fn unknown_alias_shape_fails_schema() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict")["identity_aliases"]
+    must_some_with(rule_mut(&mut manifest, "native.testing.require_use_strict"), "strict")["identity_aliases"]
         [0]["shape"] = json!("not_a_shape");
     expect_violation(&manifest, "schema")
 }
@@ -417,17 +430,17 @@ fn unknown_alias_shape_fails_schema() -> TestResult {
 #[test]
 fn near_miss_fixture_that_starts_producing_a_finding_fails_live_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001").expect("near")["fixture"] =
+    must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001"), "near")["fixture"] =
         json!("assignment_in_condition/positive.pl");
-    manifest["fixtures"]
-        .as_object_mut()
-        .expect("fixtures")
+    must_some_with(manifest["fixtures"].as_object_mut(), "fixtures")
         .remove("assignment_in_condition/near_miss.pl");
     let typed =
         validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
-    let error = proof::execute_manifest(&repo_root(), &typed)
-        .expect_err("a near miss must fail when the fixture starts producing the finding")
-        .to_string();
+    let error = must_err_with(
+        proof::execute_manifest(&repo_root(), &typed),
+        "a near miss must fail when the fixture starts producing the finding",
+    )
+    .to_string();
     assert!(
         error.contains("near-miss or negative control produced finding")
             || error.contains("unexpected extra finding"),
@@ -439,7 +452,7 @@ fn near_miss_fixture_that_starts_producing_a_finding_fails_live_check() -> TestR
 #[test]
 fn positive_with_no_recorded_range_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let case = case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos");
+    let case = must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-POS-001"), "assign pos");
     case["expected_findings"] = json!([]);
     expect_violation(&manifest, "requires an expected finding for governed rule")
 }
@@ -447,7 +460,7 @@ fn positive_with_no_recorded_range_fails_check() -> TestResult {
 #[test]
 fn parse_error_cannot_claim_non_boundary_evidence() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let case = case_mut(&mut manifest, "CRP-STRICT-BOUND-001").expect("strict boundary");
+    let case = must_some_with(case_mut(&mut manifest, "CRP-STRICT-BOUND-001"), "strict boundary");
     case["parse_expectation"] = json!("error");
     case["expected_findings"] = json!([]);
     case["evidence_classes"] = json!(["boundary", "positive_finding", "file_level_suppression"]);
@@ -457,7 +470,7 @@ fn parse_error_cannot_claim_non_boundary_evidence() -> TestResult {
 #[test]
 fn positive_class_without_governed_finding_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let case = case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001").expect("near");
+    let case = must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-NEAR-001"), "near");
     case["evidence_classes"] = json!(["near_miss_negative", "positive_finding"]);
     expect_violation(&manifest, "requires an expected finding for governed rule")
 }
@@ -465,7 +478,7 @@ fn positive_class_without_governed_finding_fails_check() -> TestResult {
 #[test]
 fn declared_remediation_must_match_expected_finding() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    rule_mut(&mut manifest, "native.security.string_eval").expect("eval")["declared_remediation"] =
+    must_some_with(rule_mut(&mut manifest, "native.security.string_eval"), "eval")["declared_remediation"] =
         json!("manual");
     expect_violation(&manifest, "does not match declared_remediation")
 }
@@ -490,10 +503,11 @@ fn generated_status_marks_missing_and_not_applicable_classes() -> TestResult {
 fn extra_catalog_rule_outside_pilot_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
     let mut extra =
-        rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict").clone();
-    extra["rule_id"] = json!("native.testing.require_use_warnings");
-    extra["canonical_id"] = json!("critic.testing.require_use_warnings");
-    manifest["rules"].as_array_mut().expect("rules").push(extra);
+        must_some_with(rule_mut(&mut manifest, "native.testing.require_use_strict"), "strict")
+            .clone();
+    extra["rule_id"] = json!("native.common.undef_comparison");
+    extra["canonical_id"] = json!("critic.common.undef_comparison");
+    must_some_with(manifest["rules"].as_array_mut(), "rules").push(extra);
     let error = match validate_manifest_value(&repo_root(), &manifest) {
         Ok(_) => "manifest unexpectedly validated".to_string(),
         Err(error) => error.to_string(),
@@ -525,14 +539,14 @@ fn advisory_lane_covers_execute_live_owners() -> TestResult {
             "ci-lanes critic_rule_proof paths missing execute live owner `{path}`:\n{lanes}"
         );
     }
-    assert_eq!(PILOT_RULES.len(), 4, "closed PILOT_RULES must stay the four-rule #6973 cohort");
+    assert_eq!(PILOT_RULES.len(), 16, "closed PILOT_RULES must stay the sixteen-rule cohort");
     Ok(())
 }
 
 #[test]
 fn ordinary_boundary_without_governed_proposition_fails_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let case = case_mut(&mut manifest, "CRP-ASSIGN-BOUND-001").expect("assign bound");
+    let case = must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-BOUND-001"), "assign bound");
     case["expected_non_findings"] = json!([]);
     expect_violation(
         &manifest,
@@ -543,19 +557,24 @@ fn ordinary_boundary_without_governed_proposition_fails_check() -> TestResult {
 #[test]
 fn omitted_fix_title_does_not_match_live_fix() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    case_mut(&mut manifest, "CRP-STRICT-POS-001")
-        .expect("strict pos")
-        .get_mut("expected_findings")
-        .and_then(Value::as_array_mut)
-        .expect("findings")[0]
-        .as_object_mut()
-        .expect("finding")
-        .remove("fix_title");
+    must_some_with(
+        must_some_with(
+            must_some_with(case_mut(&mut manifest, "CRP-STRICT-POS-001"), "strict pos")
+                .get_mut("expected_findings")
+                .and_then(Value::as_array_mut),
+            "findings",
+        )[0]
+        .as_object_mut(),
+        "finding",
+    )
+    .remove("fix_title");
     let typed =
         validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
-    let error = proof::execute_manifest(&repo_root(), &typed)
-        .expect_err("presence-only fix_title must fail typed metadata match")
-        .to_string();
+    let error = must_err_with(
+        proof::execute_manifest(&repo_root(), &typed),
+        "presence-only fix_title must fail typed metadata match",
+    )
+    .to_string();
     assert!(error.contains("missing expected finding"), "unexpected error: {error}");
     Ok(())
 }
@@ -563,16 +582,16 @@ fn omitted_fix_title_does_not_match_live_fix() -> TestResult {
 #[test]
 fn excerpt_range_past_source_end_fails_live_check() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    let finding = &mut case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos")["expected_findings"]
-        [0];
+    let finding = &mut must_some_with(case_mut(&mut manifest, "CRP-ASSIGN-POS-001"), "assign pos")
+        ["expected_findings"][0];
     finding["start_byte"] = json!(10_000);
     finding["end_byte"] = json!(10_000);
     finding["excerpt"] = json!("");
     let typed =
         validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
-    let error = proof::execute_manifest(&repo_root(), &typed)
-        .expect_err("OOB excerpt must fail")
-        .to_string();
+    let error =
+        must_err_with(proof::execute_manifest(&repo_root(), &typed), "OOB excerpt must fail")
+            .to_string();
     assert!(error.contains("outside source"), "unexpected error: {error}");
     Ok(())
 }

@@ -708,7 +708,8 @@ mod tests {
 
         // Accepted snapshot movement is load-bearing.
         let mut context = baseline_context.clone();
-        let moved_config = ServerConfig { perlcritic_severity: 4, ..ServerConfig::default() };
+        let mut moved_config = ServerConfig::default();
+        moved_config.perlcritic_severity = 4;
         context.accepted_critic_snapshot =
             AcceptedCriticSnapshot::capture(&moved_config, Some(ROOT_A));
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
