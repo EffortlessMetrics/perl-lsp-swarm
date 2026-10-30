@@ -1,6 +1,8 @@
 //! Dead code detection using workspace-wide symbol analysis
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::internal_types::{Diagnostic, DiagnosticTag};
+#[cfg(not(target_arch = "wasm32"))]
 use perl_diagnostics::codes::DiagnosticSeverity;
 
 /// Wire identity of one dead-code symbol kind (#17241).

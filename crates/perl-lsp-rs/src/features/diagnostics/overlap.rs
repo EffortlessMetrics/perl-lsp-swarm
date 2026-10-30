@@ -13,10 +13,11 @@
 use lsp_types::Diagnostic as LspDiagnostic;
 use lsp_types::NumberOrString;
 
-/// Returns `true` if the code string looks like a native-critic code (not a
-/// `PL*` code).
+/// Returns `true` if the code string is a native-critic code (`native.*`).
+/// Other non-`PL*` identities (dead-code rows, codeless rows) are not native
+/// critic rows and must not collapse against a built-in twin.
 pub(crate) fn is_native_critic_code(code: Option<&str>) -> bool {
-    !code.is_some_and(|c| c.starts_with("PL"))
+    code.is_some_and(|c| c.starts_with("native."))
 }
 
 /// Whether one `(PL* code, native rule id)` pair is a reviewed alias whose
@@ -218,6 +219,23 @@ mod tests {
         ];
         collapse_overlapping_lsp_diagnostics(&mut rows);
         assert_eq!(codes(&rows).len(), 2);
+    }
+
+    #[test]
+    fn lsp_collapse_keeps_dead_code_row_beside_hint_builtin() {
+        // A dead-code row is not a native-critic row: at equal (range,
+        // severity) beside a PL* Hint it must survive, not collapse.
+        let range = Range::new(Position::new(3, 0), Position::new(3, 9));
+        let mut rows = vec![
+            row(range, DiagnosticSeverity::HINT, "dead-code-subroutine"),
+            row(range, DiagnosticSeverity::HINT, "PL406"),
+        ];
+        collapse_overlapping_lsp_diagnostics(&mut rows);
+        assert_eq!(codes(&rows).len(), 2, "dead-code and PL rows both survive: {rows:?}");
+        assert!(
+            !codes_collapse_pair(Some("PL406"), None),
+            "a codeless row is not a native-critic twin either"
+        );
     }
 
     #[test]

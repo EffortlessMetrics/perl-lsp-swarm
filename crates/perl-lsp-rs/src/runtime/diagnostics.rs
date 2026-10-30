@@ -786,6 +786,12 @@ impl LspServer {
                         _ => 1,
                     };
                     let code_str = d.code.as_deref().unwrap_or("");
+                    // Match the pull projection's message form: the suggestion
+                    // is part of the published row the code action embeds.
+                    let message = match d.suggestion {
+                        Some(ref s) => format!("{}\nSuggestion: {}", d.message, s),
+                        None => d.message.clone(),
+                    };
                     let mut diag = diagnostic_json(
                         start_line,
                         start_char,
@@ -794,7 +800,7 @@ impl LspServer {
                         severity,
                         code_str,
                         push_diagnostic_source(d.code.as_deref()),
-                        json!(d.message),
+                        json!(message),
                     );
                     if !d.tags.is_empty() {
                         diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
@@ -2195,9 +2201,10 @@ impl LspServer {
                                     );
                                 }
                                 if let Some(ref code_str) = d.code {
-                                    let category = DiagnosticCode::parse_code(code_str)
-                                        .map(|dc| format!("{:?}", dc.category()))
-                                        .unwrap_or_else(|| "Other".to_string());
+                                    let category = wire_code_category(code_str);
+                                    if let Some(url) = wire_code_documentation_url(code_str) {
+                                        diag["codeDescription"] = json!({ "href": url });
+                                    }
                                     let fixable = d.fixable;
                                     let tag_strings: Vec<String> =
                                         d.tags.iter().map(|t| match t {
@@ -2294,9 +2301,10 @@ impl LspServer {
                                 );
                             }
                             if let Some(ref code_str) = d.code {
-                                let category = DiagnosticCode::parse_code(code_str)
-                                    .map(|dc| format!("{:?}", dc.category()))
-                                    .unwrap_or_else(|| "Other".to_string());
+                                let category = wire_code_category(code_str);
+                                if let Some(url) = wire_code_documentation_url(code_str) {
+                                    diag["codeDescription"] = json!({ "href": url });
+                                }
                                 let fixable = d.fixable;
                                 let tag_strings: Vec<String> =
                                     d.tags.iter().map(|t| match t {
@@ -5435,6 +5443,18 @@ system($path);
             }),
             "native critic engine should add native warnings finding to workspace diagnostics: {report}"
         );
+        // Workspace rows resolve category and documentation through the same
+        // owning registries as push/pull (#17241): the native strict row
+        // carries its critic-identity category and its PL100 alias page.
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["code"].as_str() == Some("native.testing.require_use_strict")
+                    && diag["data"]["category"].as_str() == Some("Syntax")
+                    && diag["codeDescription"]["href"].as_str()
+                        == Some("https://docs.perl-lsp.org/errors/PL100")
+            }),
+            "workspace native row must carry wire category and codeDescription: {report}"
+        );
         assert!(
             diagnostics.iter().any(|diag| {
                 diag["code"].as_str() == Some("native.common.assignment_in_condition")
@@ -6634,7 +6654,7 @@ system($path);
     /// associate the fix with the problem it resolves.
     #[test]
     fn native_critic_code_action_diagnostic_matches_the_published_row() {
-        let (server, _buf) = make_server_with_capture();
+        let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_action_parity.pl";
@@ -6699,6 +6719,23 @@ system($path);
         assert!(
             compared > 0,
             "the fixture must produce at least one action row to compare;              actions: {actions}"
+        );
+
+        // The push transport must publish the same normalized row: an embedded
+        // PL100 message (with its appended suggestion) must appear verbatim in
+        // the publishDiagnostics payload, not as the bare producer message.
+        let push_text = capture_until(&buf, |output| output.contains("publishDiagnostics"));
+        let embedded_pl100 = actions
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|action| action["diagnostics"].as_array().cloned().unwrap_or_default())
+            .find(|row| row["code"].as_str() == Some("PL100"))
+            .expect("fixture must embed a PL100 action row");
+        assert!(
+            push_text.contains(&embedded_pl100["message"].to_string()),
+            "push payload must carry the embedded PL100 message verbatim; got: {push_text}"
         );
     }
 

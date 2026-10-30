@@ -21,8 +21,8 @@
 //! let ctx = PullDiagnosticsContext { /* ... */ };
 //! ```
 
-/// Dead code detection
-#[cfg(not(target_arch = "wasm32"))]
+/// Dead code detection (identity registry is target-independent; only the
+/// detector itself is gated, below)
 mod dead_code;
 /// Diagnostic deduplication utilities
 mod dedup;
