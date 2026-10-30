@@ -251,6 +251,9 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
                  surface mapping"
             )
         })?;
+        if !seen_channels.insert(channel) {
+            bail!("release topology names channel {channel:?} more than once");
+        }
         surfaces.insert(
             surface_id.to_string(),
             TopologySurfaceSpec {
@@ -260,7 +263,6 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
                 subjects: vec![channel_subject_denominator(surface_id, &manifest)?],
             },
         );
-        seen_channels.insert(channel);
     }
 
     let secondary_channels =
@@ -293,6 +295,9 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
             )),
             TopologyState::Required => None,
         };
+        if !seen_channels.insert(channel.as_str()) {
+            bail!("release topology names channel {channel:?} more than once");
+        }
         surfaces.insert(
             surface_id.to_string(),
             TopologySurfaceSpec {
@@ -302,7 +307,6 @@ pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
                 subjects: vec![channel_subject_denominator(surface_id, &manifest)?],
             },
         );
-        seen_channels.insert(channel.as_str());
     }
 
     let missing_channels: Vec<&str> = CHANNEL_SURFACE_IDS
@@ -1122,6 +1126,30 @@ mod tests {
             Ok(_) => eyre!("fabricated topology unexpectedly admitted"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    fn rejects_a_channel_named_more_than_once() -> Result<()> {
+        // Within primary_channels: the second entry used to overwrite the
+        // first surface spec silently.
+        let error = topology_rejection_error(|artifact| {
+            artifact["primary_channels"] = serde_json::json!([
+                "github_release",
+                "github_release",
+                "crates_io",
+                "vscode_marketplace",
+                "open_vsx"
+            ]);
+        });
+        assert!(error.to_string().contains("more than once"), "{error}");
+
+        // Across both lists: a required primary channel reappearing as a
+        // deferred secondary used to overwrite its required state.
+        let error = topology_rejection_error(|artifact| {
+            artifact["secondary_channels"] = serde_json::json!({"docker": "required", "homebrew": "deferred", "crates_io": "deferred"});
+        });
+        assert!(error.to_string().contains("more than once"), "{error}");
+        Ok(())
     }
 
     #[test]
