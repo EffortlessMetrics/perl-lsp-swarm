@@ -627,8 +627,14 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                 // drained workers still reach the peer, then
                                 // shut the peer socket down so the reader
                                 // thread cannot stay blocked and hold the dead
-                                // session open.
-                                server.settle_outbound_for_teardown();
+                                // session open. The settle is a bounded
+                                // blocking wait, so it runs on the blocking
+                                // pool rather than occupying a Tokio worker.
+                                let settle_server = Arc::clone(&server);
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    settle_server.settle_outbound_for_teardown();
+                                })
+                                .await;
                                 let _ = peer_shutdown.shutdown(std::net::Shutdown::Both);
                                 failure_task.abort();
                             });
