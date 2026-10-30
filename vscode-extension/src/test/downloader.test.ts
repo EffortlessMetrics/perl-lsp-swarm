@@ -7,6 +7,8 @@
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as http from 'http';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { EventEmitter } from 'events';
@@ -33,6 +35,7 @@ import {
   resolveGitHubAuthDisposition,
   UPDATE_PROMPT_SUPPRESSED_KEY,
   __resetManagedInstallSingleflightForTesting,
+  __resetVersionTagIgnoredWarningForTesting,
 } from '../downloader';
 import {
   legacyManagedBaseDir,
@@ -75,20 +78,20 @@ interface DownloaderPrivateSurface {
     installDirName: string,
     compatibilityKey?: string,
     manifest?: ManagedCandidateManifest | null,
-  ): void;
+  ): boolean;
   collectStaleManagedCandidates(baseDir: string): void;
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
   getLatestRelease(timeoutMs?: number): Promise<unknown>;
   getLocalVersion(binaryPath: string): Promise<string | null>;
-  downloadWithProgress(): Promise<string>;
+  downloadWithProgress(progressTitle?: string): Promise<string>;
   httpGet(...args: never[]): EventEmitter;
 }
 
 interface TestDownloader extends DownloaderPrivateSurface {
   getLocalBinaryPath(): string;
   getLastErrorMessage(): string | undefined;
-  ensureBinary(forceDownload?: boolean): Promise<string | null>;
+  ensureBinary(forceDownload?: boolean, progressTitle?: string): Promise<string | null>;
   checkForUpdateSilent(force?: boolean): Promise<void>;
   downloadFile(url: string, dest: string, timeoutMs?: number): Promise<void>;
 }
@@ -908,6 +911,53 @@ describe('Versioned managed install layout', () => {
     expect(fs.existsSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE))).toBe(false);
   });
 
+  test('pointer rename failure restores the prior managed candidate', () => {
+    const oldName = 'v0.13.3-old';
+    const newName = 'v0.13.4-new';
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+    const newManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    for (const [name, manifest] of [
+      [oldName, oldManifest],
+      [newName, newManifest],
+    ] as const) {
+      const dir = path.join(baseDir, name);
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    }
+    expect(downloader.commitVersionedInstall(oldName, undefined, oldManifest)).toBe(true);
+    const rawFs = require('fs') as typeof fs;
+    const actualRename = rawFs.renameSync;
+    const rename = jest.spyOn(rawFs, 'renameSync').mockImplementation((source, destination) => {
+      if (source === path.join(baseDir, 'current.tmp')) {
+        throw new Error('simulated pointer lock');
+      }
+      return actualRename(source, destination);
+    });
+    try {
+      expect(downloader.commitVersionedInstall(newName, undefined, newManifest)).toBe(false);
+    } finally {
+      rename.mockRestore();
+    }
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
+    expect(readManagedCurrentSelection(baseDir)?.selection_generation).toBe(3);
+    expect(fs.existsSync(path.join(baseDir, 'current.tmp'))).toBe(false);
+  });
+
   test('getLocalBinaryPath resolves the policy-governed current candidate', () => {
     const currentName = 'v0.13.4-stamp';
     const currentDir = path.join(baseDir, currentName);
@@ -1117,7 +1167,7 @@ describe('Versioned managed install layout', () => {
       JSON.stringify(newManifest),
     );
 
-    downloader.commitVersionedInstall(newName, undefined, newManifest);
+    expect(downloader.commitVersionedInstall(newName, undefined, newManifest)).toBe(false);
 
     // The pointer must not claim an activation the policy record refutes,
     // and the unreadable evidence is left exactly as it was found.
@@ -1749,6 +1799,7 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   afterEach(() => {
     restoreProcessHost?.();
     restoreProcessHost = undefined;
+    __resetVersionTagIgnoredWarningForTesting();
     jest.restoreAllMocks();
   });
 
@@ -1960,6 +2011,130 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     });
 
     await expect(seams.getLatestRelease(1000)).rejects.toThrow('No releases found');
+  });
+
+  test('names the configured pin when the tag route answers 404 (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    // A fat-fingered tag is the one wrong setting; the refusal must name it
+    // instead of reporting that the project publishes nothing.
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return 'v0.99.99';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const response = makeResponse(404);
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ message: 'Not Found' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'No release found for the configured tag "v0.99.99"; check the perl-lsp.versionTag setting.',
+    );
+  });
+
+  test('an empty versionTag on the tag channel refuses with the pin remedy, not policy jargon (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        // versionTag falls through to the '' default.
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const httpGetSpy = jest.spyOn(seams, 'httpGet');
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+        'set versionTag (for example v0.12.1) to pin a release.',
+    );
+    // The empty tag short-circuits the fetch; the refusal comes from the
+    // selector's closed policy without a network round trip.
+    expect(httpGetSpy).not.toHaveBeenCalled();
+  });
+
+  test('a versionTag outside the tag channel warns once per session that it is ignored (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'versionTag') {
+          return 'v0.12.1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+    ]);
+    const outputChannel = (downloader as unknown as { outputChannel: { appendLine: jest.Mock } })
+      .outputChannel;
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+    // A second selection in the same session must not repeat the warning.
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+    ]);
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+
+    const pinWarnings = outputChannel.appendLine.mock.calls.filter(
+      ([line]) =>
+        typeof line === 'string' && line.includes('versionTag') && line.includes('ignored'),
+    );
+    expect(pinWarnings).toHaveLength(1);
+    expect(pinWarnings[0]![0]).toContain('v0.12.1');
+    expect(pinWarnings[0]![0]).toContain('tag');
   });
 
   test('rejects release metadata that does not match the expected schema', async () => {
@@ -2895,8 +3070,14 @@ describe('checkForUpdateSilent', () => {
 
     await downloader.checkForUpdateSilent();
 
-    expect(ensureSpy).toHaveBeenCalledWith(true);
-    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    // Suppression only governs the availability prompt: the automatic install
+    // still runs (with its update progress label) and reports the staged
+    // binary through the #16531 reload confirmation, not the offer prompt.
+    expect(ensureSpy).toHaveBeenCalledWith(true, 'Updating Perl Language Server');
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.12.0 downloaded. Reload the window to switch to it.',
+      'Reload Window',
+    );
   });
 
   test('silent failure — logs error but shows no notification on network error', async () => {
@@ -3000,9 +3181,12 @@ describe('checkForUpdateSilent', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
-  test('autoUpdate=true triggers ensureBinary without showing a notification', async () => {
+  test('autoUpdate=true installs, then confirms the staged update with a reload prompt (#16531)', async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
-    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.13.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
       tag_name: 'v0.13.0',
       assets: [],
@@ -3012,14 +3196,59 @@ describe('checkForUpdateSilent', () => {
 
     await downloader.checkForUpdateSilent();
 
-    // No prompt — downloads silently
-    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
-    expect(ensureSpy).toHaveBeenCalledWith(true);
+    // The availability prompt is skipped, but the install is not silent: the
+    // user is told what was staged and how to switch to it.
+    expect(ensureSpy).toHaveBeenCalledWith(true, 'Updating Perl Language Server');
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.13.0 downloaded. Reload the window to switch to it.',
+      'Reload Window',
+    );
   });
 
-  test('"Update" button click triggers ensureBinary', async () => {
-    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+  test('a failed update install does not claim an update was downloaded (#16531)', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue(null);
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    // The failure banner is runEnsureBinary's own error surface; the success
+    // confirmation must not fire for a null install.
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('choosing "Reload Window" reloads the window to switch to the staged binary (#16531)', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.13.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/path/to/perllsp');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue('Reload Window');
+
+    await downloader.checkForUpdateSilent();
+    // Let the message's button handler settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('workbench.action.reloadWindow');
+  });
+
+  test('"Update" button click installs, then confirms the staged update with a reload prompt (#16531)', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.13.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
       tag_name: 'v0.13.0',
       assets: [],
@@ -3030,7 +3259,81 @@ describe('checkForUpdateSilent', () => {
 
     await downloader.checkForUpdateSilent();
 
-    expect(ensureSpy).toHaveBeenCalledWith(true);
+    expect(ensureSpy).toHaveBeenCalledWith(true, 'Updating Perl Language Server');
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.13.0 downloaded. Reload the window to switch to it.',
+      'Reload Window',
+    );
+  });
+
+  test('dismissing an available update leaves selection and reload untouched', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    const ensureSpy = jest.spyOn(downloader, 'ensureBinary');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue('Dismiss');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+      'workbench.action.reloadWindow',
+    );
+  });
+
+  test('confirmation names the installed binary when release metadata changes after the offer', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.14.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/managed/v0.14.0/perllsp');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValueOnce('Update');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.13.0 is available (installed: 0.12.0)',
+      'Update',
+      'Dismiss',
+      "Don't ask again",
+    );
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.14.0 downloaded. Reload the window to switch to it.',
+      'Reload Window',
+    );
+  });
+
+  test('an unreadable installed version cannot produce a versioned reload promise', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue(null);
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/managed/v0.13.0/perllsp');
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('installed version could not be verified'),
+      'View Logs',
+    );
   });
 
   // #16530: the manual command used to reset only the legacy unscoped state
@@ -3184,6 +3487,54 @@ describe('checkForUpdateSilent', () => {
       'Dismiss',
       "Don't ask again",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Update install progress labeling (#16531)
+// ---------------------------------------------------------------------------
+describe('update install progress labeling', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function makeDownloader(): { downloader: TestDownloader; cleanup: () => void } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-progress-'));
+    const downloader = new BinaryDownloader(
+      makeContext(dir),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    return { downloader, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  test('an update install labels the progress as updating, not first-run downloading', async () => {
+    const { downloader, cleanup } = makeDownloader();
+    try {
+      const progressSpy = jest
+        .spyOn(downloader, 'downloadWithProgress')
+        .mockResolvedValue('/path/to/perllsp');
+
+      await downloader.ensureBinary(true, 'Updating Perl Language Server');
+
+      expect(progressSpy).toHaveBeenCalledWith('Updating Perl Language Server');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('a first-run download keeps the established progress label', async () => {
+    const { downloader, cleanup } = makeDownloader();
+    try {
+      const progressSpy = jest
+        .spyOn(downloader, 'downloadWithProgress')
+        .mockResolvedValue('/path/to/perllsp');
+
+      await downloader.ensureBinary(false);
+
+      expect(progressSpy).toHaveBeenCalledWith('Downloading Perl Language Server');
+    } finally {
+      cleanup();
+    }
   });
 });
 
@@ -3811,6 +4162,12 @@ describe('download failure classifiers', () => {
       'unable to verify the first certificate',
       'SELF_SIGNED_CERT_IN_CHAIN',
       'certificate is not yet valid',
+      // TLS-protocol failures such as a handshake answered with non-TLS bytes.
+      'SSL routines::wrong version number',
+      // Proxy dispositions from the managed transport (#7804).
+      'Managed download proxy connect refused: HTTP 407 (proxy credentials or access denied) for http://***@proxy.corp:3128',
+      'Managed download proxy configuration is unsupported: SOCKS proxies are not supported by the managed transport (socks5h://***@gateway:1080)',
+      'Managed download proxy connect failed: connect ECONNREFUSED 127.0.0.1:3128 (http://***@proxy.corp:3128)',
     ];
     for (const message of networkFailures) {
       expect(isNetworkErrorMessage(message)).toBe(true);
@@ -3853,4 +4210,346 @@ describe('download failure classifiers', () => {
       expect(isDownloadCancellationMessage(message)).toBe(false);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Redirect handling through the managed transport (#7804)
+// ---------------------------------------------------------------------------
+describe('BinaryDownloader.downloadFile redirects', () => {
+  type TestRequest = EventEmitter & {
+    destroy: jest.Mock;
+  };
+  type TestResponse = EventEmitter & {
+    statusCode: number;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+    resume: jest.Mock;
+  };
+  type DownloaderSeams = {
+    downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
+    httpGet: (...args: unknown[]) => TestRequest;
+  };
+
+  const PAYLOAD = 'REDIRECT_PAYLOAD_BYTES';
+
+  let downloader: TestDownloader;
+  let seams: DownloaderSeams;
+  let tmpDir: string;
+  let origin: http.Server;
+  let originSockets: Set<net.Socket>;
+  let originPort: number;
+  let payloadRequests: string[];
+
+  function restoreDefaultConfigurationMock(): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation((_section?: string) => ({
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  }
+
+  async function closeServer(server: net.Server, sockets: Set<net.Socket>): Promise<void> {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  }
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-redirect-'));
+    downloader = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    seams = downloader as unknown as DownloaderSeams;
+    payloadRequests = [];
+
+    origin = http.createServer((req, res) => {
+      payloadRequests.push(req.url ?? '');
+      if (req.url === '/redirect-relative') {
+        res.writeHead(302, { location: '/payload.bin' });
+        res.end();
+      } else if (req.url === '/redirect-absolute') {
+        res.writeHead(302, { location: `http://127.0.0.1:${originPort}/payload.bin` });
+        res.end();
+      } else if (req.url === '/loop') {
+        res.writeHead(302, { location: '/loop' });
+        res.end();
+      } else if (req.url === '/payload.bin') {
+        res.writeHead(200, { 'content-length': String(PAYLOAD.length) });
+        res.end(PAYLOAD);
+      } else {
+        res.writeHead(404);
+        res.end('missing');
+      }
+    });
+    originSockets = new Set<net.Socket>();
+    origin.on('connection', (socket) => {
+      originSockets.add(socket);
+      socket.on('close', () => originSockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => {
+      origin.listen(0, '127.0.0.1', () => resolve());
+    });
+    originPort = (origin.address() as net.AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    await closeServer(origin, originSockets);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    jest.restoreAllMocks();
+    restoreDefaultConfigurationMock();
+  });
+
+  test('follows a relative Location header by resolving it against the current URL', async () => {
+    const dest = path.join(tmpDir, 'relative.bin');
+
+    await seams.downloadFile(`http://127.0.0.1:${originPort}/redirect-relative`, dest, 4000);
+
+    expect(fs.readFileSync(dest, 'utf8')).toBe(PAYLOAD);
+    expect(payloadRequests).toEqual(['/redirect-relative', '/payload.bin']);
+  }, 10000);
+
+  test('follows an absolute Location header to another origin path', async () => {
+    const dest = path.join(tmpDir, 'absolute.bin');
+
+    await seams.downloadFile(`http://127.0.0.1:${originPort}/redirect-absolute`, dest, 4000);
+
+    expect(fs.readFileSync(dest, 'utf8')).toBe(PAYLOAD);
+    expect(payloadRequests).toEqual(['/redirect-absolute', '/payload.bin']);
+  }, 10000);
+
+  test('redirect loops remain bounded', async () => {
+    const dest = path.join(tmpDir, 'loop.bin');
+
+    await expect(
+      seams.downloadFile(`http://127.0.0.1:${originPort}/loop`, dest, 4000),
+    ).rejects.toThrow('Too many redirects');
+    // The default budget of 5 redirects plus the initial request.
+    expect(payloadRequests).toHaveLength(6);
+  }, 10000);
+
+  function fakeRedirectResponse(statusCode: number, location: string): void {
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const response = new EventEmitter() as TestResponse;
+    response.statusCode = statusCode;
+    response.headers = { location };
+    response.destroy = jest.fn();
+    response.resume = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+      });
+      return request;
+    });
+  }
+
+  test('rejects an HTTPS-to-HTTP redirect before any request is made', async () => {
+    fakeRedirectResponse(301, 'http://evil.example/payload.bin');
+    const dest = path.join(tmpDir, 'downgrade.bin');
+
+    await expect(
+      seams.downloadFile('https://releases.example/payload.bin', dest, 1000),
+    ).rejects.toThrow('Security violation: Redirect from HTTPS to HTTP prevented');
+    // The refused target was never contacted: the only httpGet call was the
+    // original HTTPS one, and no new request followed the redirect.
+    expect(seams.httpGet).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects redirects to unsupported protocols', async () => {
+    fakeRedirectResponse(302, 'ftp://evil.example/payload.bin');
+    const dest = path.join(tmpDir, 'protocol.bin');
+
+    await expect(
+      seams.downloadFile('https://releases.example/payload.bin', dest, 1000),
+    ).rejects.toThrow('Security violation: Redirect to unsupported protocol: ftp:');
+  });
+
+  test('rejects an unresolvable redirect location as a bounded security failure', async () => {
+    fakeRedirectResponse(302, 'http://[::z/payload.bin');
+    const dest = path.join(tmpDir, 'unresolvable.bin');
+
+    await expect(
+      seams.downloadFile('https://releases.example/payload.bin', dest, 1000),
+    ).rejects.toThrow(/Security violation: Redirect location is not a resolvable URL/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The configured http.proxy now routes managed downloads (#7804)
+// ---------------------------------------------------------------------------
+describe('BinaryDownloader.downloadFile through the configured proxy', () => {
+  const PROXIED_BODY = 'PROXY_FIXTURE_BODY_v1';
+  const PROXY_CREDENTIALS = 'proxyuser:proxypass';
+
+  let downloader: TestDownloader;
+  let seams: { downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void> };
+  let tmpDir: string;
+  let proxy: http.Server;
+  let proxySockets: Set<net.Socket>;
+  let proxyPort: number;
+  let proxiedRequests: string[];
+
+  async function listenOnLoopback(server: net.Server): Promise<number> {
+    server.on('connection', (socket) => {
+      proxySockets.add(socket);
+      socket.on('close', () => proxySockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    return (server.address() as net.AddressInfo).port;
+  }
+
+  async function closedLocalPort(): Promise<number> {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (server.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    return port;
+  }
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-proxy-'));
+    downloader = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    seams = downloader as unknown as {
+      downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
+    };
+    proxiedRequests = [];
+    proxySockets = new Set<net.Socket>();
+
+    // A canned proxy: it answers absolute-form GETs itself and never forwards
+    // (the target origin port is closed, so any success must have traversed
+    // the proxy).
+    proxy = http.createServer((req, res) => {
+      proxiedRequests.push(req.url ?? '');
+      res.writeHead(200, { 'content-length': String(PROXIED_BODY.length) });
+      res.end(PROXIED_BODY);
+    });
+    proxyPort = await listenOnLoopback(proxy);
+  });
+
+  afterEach(async () => {
+    for (const socket of proxySockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => {
+      proxy.close(() => resolve());
+    });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    jest.restoreAllMocks();
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation((_section?: string) => ({
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  });
+
+  test('routes the artifact fetch through http.proxy while the direct path is unavailable', async () => {
+    // A runner-level NO_PROXY entry for the loopback (common on CI) would
+    // otherwise take precedence over the fixture's `http.proxy` and silently
+    // bypass the route under test; clear both spellings for this test only.
+    const savedNoProxy = process.env.NO_PROXY;
+    const savedNoProxyLower = process.env.no_proxy;
+    delete process.env.NO_PROXY;
+    delete process.env.no_proxy;
+    try {
+      const vscode = require('vscode');
+      const deadTargetPort = await closedLocalPort();
+      vscode.workspace.getConfiguration.mockReturnValue({
+        get: jest.fn((key: string, defaultValue?: unknown) => {
+          if (key === 'proxy') {
+            return `http://${PROXY_CREDENTIALS}@127.0.0.1:${proxyPort}`;
+          }
+          return defaultValue;
+        }),
+        has: jest.fn(() => false),
+        inspect: jest.fn(),
+        update: jest.fn(),
+      });
+
+      const dest = path.join(tmpDir, 'proxied.bin');
+      await seams.downloadFile(`http://127.0.0.1:${deadTargetPort}/asset.bin`, dest, 4000);
+
+      expect(fs.readFileSync(dest, 'utf8')).toBe(PROXIED_BODY);
+      expect(proxiedRequests).toEqual([`http://127.0.0.1:${deadTargetPort}/asset.bin`]);
+    } finally {
+      if (savedNoProxy === undefined) {
+        delete process.env.NO_PROXY;
+      } else {
+        process.env.NO_PROXY = savedNoProxy;
+      }
+      if (savedNoProxyLower === undefined) {
+        delete process.env.no_proxy;
+      } else {
+        process.env.no_proxy = savedNoProxyLower;
+      }
+    }
+  }, 10000);
+
+  test('failure messages for a credential-bearing proxy route stay credential-free', async () => {
+    // Same determinism guard as the proxied-route test above: a runner-level
+    // NO_PROXY loopback entry would send this test down the direct route,
+    // where the credential-free assertions pass without exercising the proxy
+    // error path at all.
+    const savedNoProxy = process.env.NO_PROXY;
+    const savedNoProxyLower = process.env.no_proxy;
+    delete process.env.NO_PROXY;
+    delete process.env.no_proxy;
+    try {
+      const vscode = require('vscode');
+      const unreachableProxyPort = await closedLocalPort();
+      vscode.workspace.getConfiguration.mockReturnValue({
+        get: jest.fn((key: string, defaultValue?: unknown) => {
+          if (key === 'proxy') {
+            return `http://${PROXY_CREDENTIALS}@127.0.0.1:${unreachableProxyPort}`;
+          }
+          return defaultValue;
+        }),
+        has: jest.fn(() => false),
+        inspect: jest.fn(),
+        update: jest.fn(),
+      });
+
+      const dest = path.join(tmpDir, 'unreachable.bin');
+      let rejection = '';
+      await seams
+        .downloadFile('http://127.0.0.1:9/asset.bin', dest, 4000)
+        .catch((error: unknown) => {
+          rejection = error instanceof Error ? error.message : String(error);
+        });
+      expect(rejection).toMatch(/ECONNREFUSED/);
+
+      // The rejected error is exactly what lands in the output channel and
+      // failure banners, so its contents bound what any log seam can leak.
+      expect(rejection).not.toContain(PROXY_CREDENTIALS);
+      expect(rejection).not.toContain('proxyuser');
+      expect(rejection).not.toContain('proxypass');
+    } finally {
+      if (savedNoProxy === undefined) {
+        delete process.env.NO_PROXY;
+      } else {
+        process.env.NO_PROXY = savedNoProxy;
+      }
+      if (savedNoProxyLower === undefined) {
+        delete process.env.no_proxy;
+      } else {
+        process.env.no_proxy = savedNoProxyLower;
+      }
+    }
+  }, 10000);
 });

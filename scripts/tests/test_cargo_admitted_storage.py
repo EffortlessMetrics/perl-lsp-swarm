@@ -2,14 +2,17 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/cargo_admitted.py")
 safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
+NATIVE_TREE = safe.ClippyTree
+NATIVE_LAUNCH = safe.call_clippy
 
 
 def git_output(path):
@@ -25,6 +28,13 @@ class AdmissionTests(unittest.TestCase):
         self.paths = {"target": self.slot / "target", "build": self.slot / "build",
                       "cargo_home": self.root / "home", "temp": self.root / "temp"}
         self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
+        # Storage policy fixtures substitute the process seam; actual Linux
+        # ownership is independently exercised by test_cargo_admitted_builtin_tree.
+        self.tree = Mock()
+        self.tree.finish.return_value = {"tree_settled": True, "cancelled": False}
+        self.enterContext(patch.object(safe, "ClippyTree", return_value=self.tree))
+        self.enterContext(patch.object(safe, "call_clippy", side_effect=
+            lambda command, env, lock, tree, **kw: safe.subprocess.call(command, env=env)))
 
     def run_safe(self, args, call=None):
         with patch.dict(os.environ, self.env, clear=True), \
@@ -134,6 +144,53 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.run_safe(["build"]), 75)
         self.assertFalse(self.slot.exists())
 
+    def test_percent_ceiling_names_max_used_pct_not_zero_shortfall(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        # 356 GiB free is far above the 40 GiB floor, but 91.3% used >= 85%.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 3740*gib, 356*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], {})
+        message = str(caught.exception)
+        self.assertIn("MAX_USED_PCT", message)
+        self.assertIn("max_used_pct=85", message)
+        self.assertNotIn("insufficient disk headroom", message)
+        self.assertNotIn("shortfall_bytes=0", message)
+        self.assertNotIn("shortfall_bytes", caught.exception.details)
+        self.assertEqual(caught.exception.details["max_used_pct"], 85.0)
+        self.assertGreater(caught.exception.details["pct_shortfall_bytes"], 0)
+        self.assertEqual(caught.exception.details["additional_free_bytes_needed"],
+                         caught.exception.details["pct_shortfall_bytes"])
+
+    def test_percent_ceiling_exact_boundary_reports_one_byte_remedy(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        # Exactly 85% used: gate denies, and the remedy must be 1 byte, not 0.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib, 150*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], {})
+        self.assertEqual(caught.exception.details["additional_free_bytes_needed"], 1)
+        # Freeing the reported amount makes the same gate pass.
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(1000*gib, 850*gib - 1, 150*gib + 1)):
+            report = safe.check_capacity([self.slot], {})
+        self.assertIn("destinations", report)
+
+    def test_absolute_floor_still_names_headroom_with_positive_shortfall(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        env = {"MIN_FREE_GB": "40", "MAX_USED_PCT": "100"}
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4086*gib, 10*gib)):
+            with self.assertRaises(safe.Denied) as caught:
+                safe.check_capacity([self.slot], env)
+        message = str(caught.exception)
+        self.assertIn("insufficient disk headroom", message)
+        self.assertIn("shortfall_bytes=", message)
+        self.assertNotIn("shortfall_bytes=0", message)
+        self.assertEqual(caught.exception.details["shortfall_bytes"], 30*gib)
+
     def test_byte_budget_is_in_emitted_resource_descriptor(self):
         import contextlib
         import io
@@ -146,7 +203,7 @@ class AdmissionTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4016*gib, 80*gib)), contextlib.redirect_stderr(output):
             self.assertEqual(self.run_safe(["check"]), 0)
-        descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+        descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
         self.assertEqual(descriptor["admission"]["policy"], "byte-budget")
         self.assertEqual(descriptor["admission"]["evidence_reference"], self.env["CARGO_STORAGE_BUDGET_EVIDENCE"])
         self.assertTrue(all(row["headroom_bytes"] == 20*gib for row in descriptor["admission"]["destinations"]))
@@ -194,8 +251,12 @@ class AdmissionTests(unittest.TestCase):
     def test_cancellation_retains_exclusive_resource_lease(self):
         def cancel(*args, **kw):
             raise KeyboardInterrupt()
-        with self.assertRaises(KeyboardInterrupt):
-            self.run_safe(["run"], cancel)
+        self.tree.finish.return_value = {"tree_settled": False}
+        if sys.platform == "linux":
+            self.assertEqual(self.run_safe(["run"], cancel), 75)
+        else:
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_safe(["run"], cancel)
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertEqual(self.run_safe(["test"]), 75)
 
@@ -225,6 +286,7 @@ class AdmissionTests(unittest.TestCase):
     def test_cancel_or_failed_spawn_retains_lease_without_pid_stealing(self):
         def fail(*args, **kw):
             raise OSError("spawn failed")
+        self.tree.finish.return_value = {"tree_settled": False}
         self.assertEqual(self.run_safe(["build"], fail), 75)
         self.assertTrue((self.slot / "cargo-active").exists())
         self.assertEqual(self.run_safe(["build"]), 75)
@@ -238,12 +300,14 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse((self.slot / "cargo-active").exists())
 
     def test_abnormal_child_exit_retains_lease(self):
+        self.tree.finish.return_value = {"tree_settled": False}
         for code in (-9, 3221225786, 9):
             # Fresh fixture slot for each termination status; never clear a
             # retained production lease just to make a retry pass.
             self.slot = self.root / ("terminated-" + str(code))
             self.paths = {name: self.slot / name for name in self.paths}
-            self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code), code)
+            self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code),
+                             75 if sys.platform == "linux" else code)
             self.assertTrue((self.slot / "cargo-active").exists())
             self.assertEqual(self.run_safe(["check"]), 75)
 
@@ -284,7 +348,7 @@ class AdmissionTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.dict(os.environ, env, clear=True), patch.object(safe.subprocess, "call", return_value=0), contextlib.redirect_stderr(output):
                     self.assertEqual(safe.main(["check"]), 0)
-                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
                 self.assertEqual(Path(descriptor["worktree"]), worktree.resolve())
                 self.assertNotEqual(Path(descriptor["worktree"]), nested)
                 descriptors.append(descriptor)
@@ -361,7 +425,12 @@ class AdmissionTests(unittest.TestCase):
             redirected = dict(env, **selectors)
             # Real negative control: Git's view is no longer Cargo's CWD.
             result = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], env=redirected)
-            self.assertEqual(result, git_output(other.resolve()))
+            if os.name == "nt":
+                # Git spells native Windows separators with forward slashes.
+                self.assertTrue(result.endswith(b"\n"))
+                self.assertEqual(Path(os.fsdecode(result[:-1])).resolve(), other.resolve())
+            else:
+                self.assertEqual(result, git_output(other.resolve()))
             for selection in (selectors, *({name: selected} for name, value in selectors.items() for selected in (value, ""))):
                 with patch.dict(os.environ, dict(env, **selection), clear=True), \
                      patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}) as capacity, \
@@ -414,7 +483,8 @@ class AdmissionTests(unittest.TestCase):
 
     def test_legacy_resources_and_common_lease_are_preserved(self):
         worktree, common = str(self.root / "repo"), str(self.root / "repo.git")
-        env = dict(self.env, DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        env = dict(self.env, DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"),
+                   HOME=str(self.root), USERPROFILE=str(self.root))
         with patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]):
             _, slot, paths = safe.resource_plan(env)
         for name in ("target", "build"):
@@ -481,9 +551,16 @@ class AdmissionTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.dict(os.environ, env, clear=True), \
                      patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}), \
+                     patch.object(safe, "ClippyTree", NATIVE_TREE), \
+                     patch.object(safe, "call_clippy", NATIVE_LAUNCH), \
                      contextlib.redirect_stderr(output):
                     self.assertEqual(safe.main(["build", "-p", "identity-app", "--offline", "--locked"]), 0)
-                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1].splitlines()[0])
+                if sys.platform == "linux":
+                    settlement = json.loads(output.getvalue().split("cargo-admitted Cargo settlement: ", 1)[1].splitlines()[0])
+                    self.assertTrue(settlement["tree_settled"])
+                    self.assertTrue(settlement["lease_released"])
+                    self.assertEqual(settlement["proof"], "kernel ECHILD (__WALL)")
                 descriptors.append(descriptor)
                 executable = Path(descriptor["resources"]["target"]) / "debug" / ("identity-app.exe" if os.name == "nt" else "identity-app")
                 # This one test owns the TemporaryDirectory and runs builds

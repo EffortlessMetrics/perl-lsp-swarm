@@ -301,7 +301,45 @@ class PrPlanTests(unittest.TestCase):
         self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
         self.assertIn("list", str(raised.exception))
 
+    def test_load_learned_history_refuses_a_version_it_does_not_understand(self) -> None:
+        # `load_learned_history` read `.ci/metrics/ci-lane-history.json` and
+        # returned whatever parsed, so a version bump that renames
+        # `static_floor` reached `apply_learned_estimates` with the floor
+        # unreadable: the `isinstance(floor, (int, float))` guard fell
+        # through, a 45.0 floor became a 4.6 learned estimate, and the plan
+        # under-priced the lane by ~90%. Refusing the payload is the fail-safe.
+        # On current main the loader is fail-closed (SystemExit) so a v2
+        # payload can never be substituted into `base_lem` (#15286, #15320).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ci-lane-history.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "min_samples_for_learned": 5,
+                        "lane_count": 1,
+                        "lanes": {
+                            "rust_small": {
+                                "samples": 40,
+                                "floor": 45.0,  # v2 spelling of static_floor
+                                "learned": True,
+                                "p50": 4.0,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as raised:
+                pr_plan.load_learned_history(path)
+
+        self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+        self.assertIn("2", str(raised.exception))
+
     def test_load_learned_history_still_tolerates_absent_and_corrupt_files(self) -> None:
+        # The control: an absent file and an unreadable one both still yield
+        # the same tolerant {} the caller already handles. Only the version
+        # gate is new.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.assertEqual({}, pr_plan.load_learned_history(root / "absent.json"))

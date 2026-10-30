@@ -134,6 +134,13 @@ pub struct ServerConfig {
     /// Formatter engine used for LSP formatting requests.
     pub formatting_engine: FormatterMode,
 
+    /// Client-visible notices recorded during configuration application
+    /// (e.g. documented formatting keys the native engine cannot honor).
+    /// The runtime drains these after each apply and forwards them to the
+    /// client; never serialized into config payloads.
+    #[serde(default, skip)]
+    pub(crate) pending_client_notices: Vec<String>,
+
     /// Whether to format on save (willSaveWaitUntil). Default `true` for
     /// backward compatibility. When `false`, manual formatting via
     /// `textDocument/formatting` still works — only the automatic save
@@ -293,12 +300,14 @@ pub struct AiCompletionConfig {
 pub(crate) const DEFAULT_AI_API_KEY_HEADER: &str = "Authorization";
 pub(crate) const DEFAULT_AI_API_KEY_PREFIX: &str = "Bearer";
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn normalize_ai_api_key_header(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty() && trimmed.bytes().all(is_http_header_name_byte))
         .then(|| trimmed.to_string())
 }
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn normalize_ai_api_key_prefix(value: &str) -> Option<Option<String>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -308,10 +317,12 @@ pub(crate) fn normalize_ai_api_key_prefix(value: &str) -> Option<Option<String>>
     is_safe_http_header_value_part(trimmed).then(|| Some(trimmed.to_string()))
 }
 
+#[cfg(feature = "ai-provider")]
 pub(crate) fn is_safe_http_header_value_part(value: &str) -> bool {
     !value.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
 }
 
+#[cfg(feature = "ai-provider")]
 fn is_http_header_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
         || matches!(
@@ -424,11 +435,47 @@ impl Default for ServerConfig {
             perltidy_extra_args: Vec::new(),
             perltidy_timeout_secs: 10,
             ai_completion: AiCompletionConfig::default(),
+            pending_client_notices: Vec::new(),
         }
     }
 }
 
 impl ServerConfig {
+    /// Warn once per apply when explicitly configured formatting options
+    /// have no native-engine equivalent, so a documented key never drops
+    /// silently on the default path (#18023). These options apply only to
+    /// the external legacy formatter.
+    pub(crate) fn warn_unsupported_native_format_options(&mut self, keys: &[&str]) {
+        if keys.is_empty() || self.formatting_engine != FormatterMode::Native {
+            return;
+        }
+        tracing::warn!(
+            target: "perl_lsp::config",
+            settings = %keys.join(", "),
+            "formatting options have no effect with the native formatter and will be ignored; \
+             they apply only to the external legacy formatter",
+        );
+        // Also record a client-visible notice (#18056): most users never
+        // read server logs, and silently-ignored settings were the original
+        // #18023 complaint. The runtime drains and dedups these.
+        self.pending_client_notices.push(format!(
+            "Perl LSP: formatting options have no effect with the native formatter and will be \
+             ignored: {}. They apply only to the external legacy formatter \
+             (set formatting.engine to \"external-legacy\" to use them).",
+            keys.join(", ")
+        ));
+    }
+
+    /// Drain client-visible notices recorded since the last drain.
+    pub fn take_client_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_client_notices)
+    }
+
+    /// Number of client-visible notices currently pending a drain.
+    pub fn pending_client_notices_len(&self) -> usize {
+        self.pending_client_notices.len()
+    }
+
     /// Update configuration from LSP settings
     pub fn update_from_value(&mut self, settings: &serde_json::Value) {
         if let Some(inlay) = settings.get("inlayHints") {
@@ -533,6 +580,14 @@ impl ServerConfig {
             if let Some(timeout) = formatting.get("timeoutSecs").and_then(as_config_u64) {
                 self.perltidy_timeout_secs = timeout;
             }
+            let mut unsupported: Vec<&str> = Vec::new();
+            if formatting.get("verticalAlignment").is_some() {
+                unsupported.push("formatting.verticalAlignment");
+            }
+            if formatting.get("blockCommentIndentation").is_some() {
+                unsupported.push("formatting.blockCommentIndentation");
+            }
+            self.warn_unsupported_native_format_options(&unsupported);
         }
 
         if let Some(ai) = settings.get("aiCompletion") {
@@ -1413,7 +1468,9 @@ pub struct RejectedClientIncludePath {
 /// Why a client-settings `includePaths` / `externalIncludePaths` entry was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RejectedClientIncludePathReason {
-    /// Absolute paths must use `externalIncludePaths` (machine scope) instead.
+    /// Absolute paths are not allowed in workspace-supplied `includePaths`;
+    /// only workspace-relative roots are supported there. External roots
+    /// still await a trusted transport (#4998/#10817).
     Absolute,
     /// Relative entry failed workspace containment validation.
     EscapesWorkspace(String),
@@ -1426,6 +1483,24 @@ pub enum RejectedClientIncludePathReason {
     ExternalUnauthorized(UnauthorizedExternalIncludePathSource),
 }
 
+impl RejectedClientIncludePathReason {
+    /// Stable bounded key naming the reason kind, for use as part of a
+    /// session-warning suppression identity (#17164). Detail payloads (such
+    /// as the workspace-escape detail or the unauthorized source label) are
+    /// deliberately excluded: for the same entry they are one user-facing
+    /// condition, so they must not split suppression identities.
+    #[must_use]
+    pub fn dedup_key(&self) -> &'static str {
+        match self {
+            Self::Absolute => "absolute",
+            Self::EscapesWorkspace(_) => "escapes-workspace",
+            Self::ExternalRelative => "external-relative",
+            Self::ExternalInvalidCharacters => "external-invalid-characters",
+            Self::ExternalUnauthorized(_) => "external-unauthorized",
+        }
+    }
+}
+
 impl RejectedClientIncludePath {
     /// Render a single human-readable line for logs and editor notifications.
     #[must_use]
@@ -1433,8 +1508,9 @@ impl RejectedClientIncludePath {
         match &self.reason {
             RejectedClientIncludePathReason::Absolute => format!(
                 "'{}': absolute paths are not allowed in `perl.workspace.includePaths` \
-                 (workspace-supplied). Move this entry to `perl-lsp.externalIncludePaths` \
-                 in your user settings instead.",
+                 (workspace-supplied). The entry was dropped; external include roots \
+                 are not applied yet, so use workspace-relative paths in \
+                 `includePaths` instead.",
                 self.entry
             ),
             RejectedClientIncludePathReason::EscapesWorkspace(detail) => {
@@ -2330,9 +2406,16 @@ mod system_inc_probe_injection {
 /// Polls `try_wait` every 20 ms. The 20 ms granularity is acceptable for the
 /// startup-`@INC` probe — total overhead at the bound is at most one extra
 /// poll tick.
+///
+/// The child's stdin is the null device. Probe children must never inherit the
+/// server's stdin: it is the LSP JSON-RPC transport, and on Windows a console
+/// child holding that inherited pipe handle blocks inside process
+/// initialization until the probe deadline, silently degrading every probe
+/// that shares this runner (#17305).
 #[cfg(not(target_arch = "wasm32"))]
 fn output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
-    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child =
+        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let start = Instant::now();
     let poll_interval = Duration::from_millis(20);
 
@@ -2628,9 +2711,16 @@ pub fn load_project_config(
     // UTF-8 BOM, which causes toml::from_str to report a syntax error at byte 0.
     let content = content.strip_prefix('\u{FEFF}').unwrap_or(&content);
 
-    toml::from_str::<ProjectConfig>(content)
-        .map(Some)
-        .map_err(|e| format!(".perl-lsp.toml has a syntax error: {}", e))
+    toml::from_str::<ProjectConfig>(content).map(Some).map_err(|e| {
+        // Typed deserialization can reject syntactically valid TOML. Check
+        // syntax only on failure, retaining the original span/type detail.
+        let kind = if toml::de::Deserializer::parse(content).is_ok() {
+            "an invalid value"
+        } else {
+            "a syntax error"
+        };
+        format!(".perl-lsp.toml has {kind}: {e}")
+    })
 }
 
 /// Discover a `.perltidyrc` profile for a workspace following perltidy's
@@ -2728,6 +2818,12 @@ impl ServerConfig {
         if let Some(value) = options.perltidy_add_trailing_commas {
             self.perltidy_add_trailing_commas = Some(value);
         }
+        // #18023: options classified external-only in a discovered
+        // `.perltidyrc` profile have no native equivalent; name them instead
+        // of dropping them silently when the native engine is in force.
+        let external_only: Vec<&str> =
+            options.external_only_options.iter().map(String::as_str).collect();
+        self.warn_unsupported_native_format_options(&external_only);
     }
 }
 
@@ -2843,6 +2939,17 @@ impl ProjectConfig {
         if let Some(timeout) = self.formatting.perltidy_timeout_secs {
             config.perltidy_timeout_secs = timeout;
         }
+        let mut unsupported: Vec<&str> = Vec::new();
+        if self.formatting.perltidy_vertical_alignment.is_some() {
+            unsupported.push("formatting.perltidy_vertical_alignment");
+        }
+        if self.formatting.perltidy_block_comment_indentation.is_some() {
+            unsupported.push("formatting.perltidy_block_comment_indentation");
+        }
+        if !self.formatting.perltidy_extra_args.is_empty() {
+            unsupported.push("formatting.perltidy_extra_args");
+        }
+        config.warn_unsupported_native_format_options(&unsupported);
     }
 
     /// Apply project config to `WorkspaceConfig` as the base layer.
@@ -3838,6 +3945,29 @@ perlcritic_severity = 2
             .err()
             .ok_or("expected invalid TOML to return an error")?;
         assert!(err.contains("syntax error"));
+        assert!(err.contains("line 1, column"), "syntax location must survive: {err}");
+        assert!(!err.contains("invalid value"), "syntax must not be mislabeled: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn load_project_config_distinguishes_invalid_values_from_syntax() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        for (content, expected, line) in [
+            ("[perl]\ninclude_paths = \"lib\"\n", "expected a sequence", 2),
+            ("[features]\ninlay_hints = \"yes\"\n", "expected a boolean", 2),
+            ("[perl]\nversion = 5.38\n", "expected a string", 2),
+        ] {
+            std::fs::write(temp.path().join(".perl-lsp.toml"), content)?;
+            let err = load_project_config(temp.path())
+                .err()
+                .ok_or("invalid values must fail rather than fall back to defaults")?;
+            assert!(err.contains("invalid value"), "wrong classification: {err}");
+            assert!(!err.contains("has a syntax error"), "valid TOML syntax: {err}");
+            assert!(err.contains(expected), "expected-type guidance must survive: {err}");
+            assert!(err.contains(&format!("line {line}, column")), "span must survive: {err}");
+            assert!(err.contains(".perl-lsp.toml"), "name the file to fix: {err}");
+        }
         Ok(())
     }
 
@@ -4727,6 +4857,96 @@ profile = "recommended"
         assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
     }
 
+    /// #18023: keys with no native-engine equivalent must warn instead of
+    /// dropping silently when a client sets them explicitly.
+    #[test]
+    fn json_native_unsupported_format_options_warn() {
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "verticalAlignment": false, "blockCommentIndentation": 2 }
+            }));
+        });
+        assert_warned_contains(
+            &captured,
+            &[
+                "formatting.verticalAlignment",
+                "formatting.blockCommentIndentation",
+                "native formatter",
+            ],
+        );
+    }
+
+    /// #18023: the same keys are live for the external legacy engine, so
+    /// selecting it must not produce the native-only warning.
+    #[test]
+    fn json_external_legacy_unsupported_format_options_do_not_warn() {
+        // The client channel cannot select the external engine (that is a
+        // .perl-lsp.toml decision), so preset it as the TOML layer would.
+        let mut config =
+            ServerConfig { formatting_engine: FormatterMode::ExternalLegacy, ..Default::default() };
+        let captured = capture_warnings(|| {
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "verticalAlignment": false }
+            }));
+        });
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("no effect with the native formatter"),
+            "external legacy selection must not warn; captured:\n{combined}"
+        );
+    }
+
+    /// #18023: the project-file channel warns with TOML key names, and an
+    /// unset project config stays silent.
+    #[test]
+    fn project_native_unsupported_format_options_warn_and_unset_stays_silent() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.formatting.perltidy_vertical_alignment = Some(true);
+        project.formatting.perltidy_extra_args = vec!["--no-check-syntax".to_string()];
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        assert_warned_contains(
+            &captured,
+            &[
+                "formatting.perltidy_vertical_alignment",
+                "formatting.perltidy_extra_args",
+                "native formatter",
+            ],
+        );
+
+        let mut config = ServerConfig::default();
+        let project = ProjectConfig::default();
+        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("no effect with the native formatter"),
+            "unset keys must not warn; captured:\n{combined}"
+        );
+    }
+
+    /// #18023: external-only options in a discovered `.perltidyrc` profile
+    /// warn by name under the native engine and stay silent under external.
+    #[test]
+    fn discovered_profile_external_only_options_warn_native_only() {
+        let suggestion =
+            crate::tooling::native_compat::classify_perltidy_profile("-ci=4\n").suggested_config;
+        assert_eq!(suggestion.external_only_options, vec!["-ci".to_string()]);
+
+        let mut config = ServerConfig::default();
+        let captured = capture_warnings(|| config.apply_perltidy_native_options(&suggestion));
+        assert_warned_contains(&captured, &["-ci", "native formatter"]);
+
+        let mut config =
+            ServerConfig { formatting_engine: FormatterMode::ExternalLegacy, ..Default::default() };
+        let captured = capture_warnings(|| config.apply_perltidy_native_options(&suggestion));
+        let combined = captured.join("\n");
+        assert!(
+            !combined.contains("no effect with the native formatter"),
+            "external legacy must not warn for external-only options; captured:\n{combined}"
+        );
+    }
+
     #[test]
     fn client_invalid_enum_inspection_covers_all_user_visible_engine_settings() {
         let invalid = ServerConfig::invalid_client_setting_values(&serde_json::json!({
@@ -5276,12 +5496,51 @@ profile = "recommended"
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].entry, absolute);
         assert_eq!(rejected[0].reason, RejectedClientIncludePathReason::Absolute);
+        let render = rejected[0].render();
         assert!(
-            rejected[0].render().contains("externalIncludePaths"),
-            "rejection message should name externalIncludePaths: {}",
-            rejected[0].render()
+            !render.contains("externalIncludePaths"),
+            "rejection must not advise the inert `externalIncludePaths` setting (#17164): {render}"
+        );
+        assert!(
+            render.contains("dropped") && render.contains("workspace-relative"),
+            "rejection must say the entry was dropped and name the supported form: {render}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn rejected_include_path_reason_dedup_keys_are_distinct_and_payload_free() {
+        // Distinct reason kinds must not collide in a suppression identity, or
+        // fixing one rejection class would keep the next class silent (#17164).
+        let reasons = [
+            RejectedClientIncludePathReason::Absolute,
+            RejectedClientIncludePathReason::EscapesWorkspace("detail".to_string()),
+            RejectedClientIncludePathReason::ExternalRelative,
+            RejectedClientIncludePathReason::ExternalInvalidCharacters,
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::Unknown,
+            ),
+        ];
+        let keys: std::collections::BTreeSet<&str> =
+            reasons.iter().map(RejectedClientIncludePathReason::dedup_key).collect();
+        assert_eq!(keys.len(), reasons.len(), "each reason kind needs its own dedup key: {keys:?}");
+
+        // Detail payloads and source labels must not leak into the key.
+        assert_eq!(
+            RejectedClientIncludePathReason::EscapesWorkspace("other detail".to_string())
+                .dedup_key(),
+            RejectedClientIncludePathReason::EscapesWorkspace("detail".to_string()).dedup_key()
+        );
+        assert_eq!(
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::DidChangeConfiguration
+            )
+            .dedup_key(),
+            RejectedClientIncludePathReason::ExternalUnauthorized(
+                UnauthorizedExternalIncludePathSource::Unknown
+            )
+            .dedup_key()
+        );
     }
 
     #[test]

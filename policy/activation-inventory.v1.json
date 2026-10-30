@@ -9,8 +9,8 @@
       "rule": "cargo-bench-targets",
       "authority": "crates/*/Cargo.toml",
       "emits": "benchmark",
-      "considered": 16,
-      "emitted": 16,
+      "considered": 17,
+      "emitted": 17,
       "not_seeded_reason": "every [[bench]] target is emitted; nothing is filtered"
     },
     {
@@ -179,6 +179,36 @@
         "authority": "crates/perl-lsp-perltidy/Cargo.toml"
       },
       "owner": "perl-lsp-perltidy",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-lsp-rs/lsp_stdio_roundtrip_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#bench.lsp_stdio_roundtrip_benchmark",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[[bench]] name = \"lsp_stdio_roundtrip_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"
       }

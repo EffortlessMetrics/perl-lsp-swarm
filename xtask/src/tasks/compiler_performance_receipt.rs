@@ -1120,6 +1120,7 @@ fn forbidden_counters(branch: &Value) -> Option<BTreeSet<&str>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use serde_json::json;
 
     const MEASURED: &str = include_str!("../../fixtures/compiler_performance_receipt.v1.json");
@@ -1127,14 +1128,16 @@ mod tests {
         include_str!("../../fixtures/compiler_performance_receipt.v1.uninstrumented.json");
 
     fn schema_value() -> Value {
-        serde_json::from_str(include_str!(
-            "../../../schemas/compiler_performance_receipt.v1.schema.json"
-        ))
-        .expect("the committed schema must be valid JSON")
+        must_with(
+            serde_json::from_str(include_str!(
+                "../../../schemas/compiler_performance_receipt.v1.schema.json"
+            )),
+            "the committed schema must be valid JSON",
+        )
     }
 
     fn validator() -> jsonschema::Validator {
-        jsonschema::validator_for(&schema_value()).expect("the committed schema must compile")
+        must_with(jsonschema::validator_for(&schema_value()), "the committed schema must compile")
     }
 
     /// Run one candidate receipt through the same three surfaces `run()` uses.
@@ -1159,18 +1162,19 @@ mod tests {
     /// asserts that decoding fails — no separate `validate_receipt` call, which
     /// is exactly the call a real consumer would forget.
     fn decode_error(value: Value) -> String {
-        match serde_json::from_value::<CompilerPerformanceReceipt>(value) {
-            Ok(_) => panic!("the typed boundary accepted a receipt it must reject"),
-            Err(error) => error.to_string(),
-        }
+        must_err_with(
+            serde_json::from_value::<CompilerPerformanceReceipt>(value),
+            "the typed boundary accepted a receipt it must reject",
+        )
+        .to_string()
     }
 
     fn measured() -> Value {
-        serde_json::from_str(MEASURED).expect("fixture must be valid JSON")
+        must_with(serde_json::from_str(MEASURED), "fixture must be valid JSON")
     }
 
     fn uninstrumented() -> Value {
-        serde_json::from_str(UNINSTRUMENTED).expect("fixture must be valid JSON")
+        must_with(serde_json::from_str(UNINSTRUMENTED), "fixture must be valid JSON")
     }
 
     /// Discovery must reach a fixture that is not a direct child.
@@ -1180,17 +1184,17 @@ mod tests {
     /// validated rather than silently skipped.
     #[test]
     fn discovery_reaches_nested_fixtures_and_ignores_unrelated_files() {
-        let root = tempfile::tempdir().expect("temp dir");
+        let root = must_with(tempfile::tempdir(), "temp dir");
         let fixtures = root.path().join(FIXTURE_DIR);
         let nested = fixtures.join("nested");
-        fs::create_dir_all(&nested).expect("create nested fixture dir");
+        must_with(fs::create_dir_all(&nested), "create nested fixture dir");
         let top = fixtures.join(format!("{FIXTURE_PREFIX}.json"));
         let deep = nested.join(format!("{FIXTURE_PREFIX}.deep.json"));
-        fs::write(&top, MEASURED).expect("write top-level fixture");
-        fs::write(&deep, MEASURED).expect("write nested fixture");
-        fs::write(fixtures.join("unrelated.json"), "{}").expect("write unrelated file");
+        must_with(fs::write(&top, MEASURED), "write top-level fixture");
+        must_with(fs::write(&deep, MEASURED), "write nested fixture");
+        must_with(fs::write(fixtures.join("unrelated.json"), "{}"), "write unrelated file");
 
-        let found = discover_fixtures(root.path()).expect("discovery must succeed");
+        let found = must_with(discover_fixtures(root.path()), "discovery must succeed");
         assert_eq!(found, vec![top, deep], "nested fixtures are discovered; others are not");
     }
 
@@ -1211,18 +1215,21 @@ mod tests {
             link_name: &str,
             to_dir: bool,
         ) -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
-            let root = tempfile::tempdir().expect("temp dir");
-            let outside = tempfile::tempdir().expect("temp dir");
+            let root = must_with(tempfile::tempdir(), "temp dir");
+            let outside = must_with(tempfile::tempdir(), "temp dir");
             let stray = outside.path().join(format!("{FIXTURE_PREFIX}.stray.json"));
-            fs::write(&stray, MEASURED).expect("write receipt outside the tree");
+            must_with(fs::write(&stray, MEASURED), "write receipt outside the tree");
 
             let fixtures = root.path().join(FIXTURE_DIR);
-            fs::create_dir_all(&fixtures).expect("create fixture dir");
+            must_with(fs::create_dir_all(&fixtures), "create fixture dir");
             let committed = fixtures.join(format!("{FIXTURE_PREFIX}.json"));
-            fs::write(&committed, MEASURED).expect("write committed fixture");
+            must_with(fs::write(&committed, MEASURED), "write committed fixture");
 
             let target = if to_dir { outside.path().to_path_buf() } else { stray };
-            std::os::unix::fs::symlink(&target, fixtures.join(link_name)).expect("create symlink");
+            must_with(
+                std::os::unix::fs::symlink(&target, fixtures.join(link_name)),
+                "create symlink",
+            );
             (root, outside, committed)
         }
 
@@ -1231,7 +1238,7 @@ mod tests {
         let (root, _outside, _committed) = tree(&link_name, false);
         let rendered = format!(
             "{:#}",
-            discover_fixtures(root.path()).err().expect("a receipt-named link must be refused")
+            must_err_with(discover_fixtures(root.path()), "a receipt-named link must be refused")
         );
         assert!(
             rendered.contains("refuses a symlink named like a receipt")
@@ -1243,9 +1250,10 @@ mod tests {
         // followed into whatever it points at.
         for (link_name, to_dir) in [("unrelated-suite.json", false), ("linked", true)] {
             let (root, _outside, committed) = tree(link_name, to_dir);
-            let found = discover_fixtures(root.path()).unwrap_or_else(|error| {
-                panic!("a link named {link_name} must not fail this gate: {error:#}")
-            });
+            let found = must_with(
+                discover_fixtures(root.path()),
+                format!("a link named {link_name} must not fail this gate"),
+            );
             assert_eq!(
                 found,
                 vec![committed],
@@ -1276,30 +1284,31 @@ mod tests {
         let name = std::ffi::OsStr::from_bytes(&raw);
 
         // As a real file it must be discovered, not silently passed over.
-        let root = tempfile::tempdir().expect("temp dir");
+        let root = must_with(tempfile::tempdir(), "temp dir");
         let fixtures = root.path().join(FIXTURE_DIR);
-        fs::create_dir_all(&fixtures).expect("create fixture dir");
+        must_with(fs::create_dir_all(&fixtures), "create fixture dir");
         let receipt = fixtures.join(name);
-        fs::write(&receipt, MEASURED).expect("write receipt with a non-UTF-8 name");
+        must_with(fs::write(&receipt, MEASURED), "write receipt with a non-UTF-8 name");
 
-        let found = discover_fixtures(root.path()).expect("discovery must succeed");
+        let found = must_with(discover_fixtures(root.path()), "discovery must succeed");
         assert_eq!(found, vec![receipt], "a receipt is claimed by its bytes, not by being UTF-8");
 
         // As a symlink it must be refused, exactly like any other receipt-named
         // link — never skipped as though it belonged to another suite.
-        let root = tempfile::tempdir().expect("temp dir");
-        let outside = tempfile::tempdir().expect("temp dir");
+        let root = must_with(tempfile::tempdir(), "temp dir");
+        let outside = must_with(tempfile::tempdir(), "temp dir");
         let stray = outside.path().join(format!("{FIXTURE_PREFIX}.stray.json"));
-        fs::write(&stray, MEASURED).expect("write receipt outside the tree");
+        must_with(fs::write(&stray, MEASURED), "write receipt outside the tree");
         let fixtures = root.path().join(FIXTURE_DIR);
-        fs::create_dir_all(&fixtures).expect("create fixture dir");
-        std::os::unix::fs::symlink(&stray, fixtures.join(name)).expect("create symlink");
+        must_with(fs::create_dir_all(&fixtures), "create fixture dir");
+        must_with(std::os::unix::fs::symlink(&stray, fixtures.join(name)), "create symlink");
 
         let rendered = format!(
             "{:#}",
-            discover_fixtures(root.path())
-                .err()
-                .expect("a receipt-named link must be refused whatever its encoding")
+            must_err_with(
+                discover_fixtures(root.path()),
+                "a receipt-named link must be refused whatever its encoding",
+            )
         );
         assert!(
             rendered.contains("refuses a symlink named like a receipt"),
@@ -1316,16 +1325,16 @@ mod tests {
     /// makes that visible, so it is worth its own controls in both directions.
     #[test]
     fn the_gate_notices_a_control_suite_that_moved_or_was_gutted() {
-        let root = tempfile::tempdir().expect("temp dir");
+        let root = must_with(tempfile::tempdir(), "temp dir");
         let module = root.path().join(CONTROL_SUITE_PATH);
-        let parent = module.parent().expect("module path has a parent");
+        let parent = must_some_with(module.parent(), "module path has a parent");
 
         // Moved away: the gate's cargo filter is keyed on this path, so a read
         // failure here is the only thing standing between a rename and a gate
         // that runs no controls at all.
         let moved = format!(
             "{:#}",
-            validate_control_suite(root.path()).err().expect("a missing module must fail")
+            must_err_with(validate_control_suite(root.path()), "a missing module must fail")
         );
         assert!(
             moved.contains("matches nothing") && moved.contains(CONTROL_SUITE_PATH),
@@ -1333,11 +1342,14 @@ mod tests {
         );
 
         // Gutted: the module is present but the controls are gone.
-        fs::create_dir_all(parent).expect("create module dir");
-        fs::write(&module, "fn main() {}\n#[test]\nfn one() {}\n").expect("write gutted module");
+        must_with(fs::create_dir_all(parent), "create module dir");
+        must_with(
+            fs::write(&module, "fn main() {}\n#[test]\nfn one() {}\n"),
+            "write gutted module",
+        );
         let gutted = format!(
             "{:#}",
-            validate_control_suite(root.path()).err().expect("a gutted suite must fail")
+            must_err_with(validate_control_suite(root.path()), "a gutted suite must fail")
         );
         assert!(
             gutted.contains("1 controls found")
@@ -1347,8 +1359,8 @@ mod tests {
 
         // Populated: a suite at or above the floor passes.
         let populated = "#[test]\n".repeat(CONTROL_SUITE_FLOOR);
-        fs::write(&module, populated).expect("write populated module");
-        validate_control_suite(root.path()).expect("a suite at the floor must pass");
+        must_with(fs::write(&module, populated), "write populated module");
+        must_with(validate_control_suite(root.path()), "a suite at the floor must pass");
     }
 
     /// A required stage cannot be filed as inapplicable.
@@ -1374,8 +1386,10 @@ mod tests {
         // rule narrows one escape hatch, it does not forbid declaring a
         // required stage that was never observed.
         receipt["stages"][0]["applicability"] = json!("required_missing");
-        serde_json::from_value::<CompilerPerformanceReceipt>(receipt)
-            .expect("required_missing remains the way to report an unobserved required stage");
+        must_with(
+            serde_json::from_value::<CompilerPerformanceReceipt>(receipt),
+            "required_missing remains the way to report an unobserved required stage",
+        );
     }
 
     /// The control floor counts controls, not the word `#[test]`.
@@ -1386,9 +1400,12 @@ mod tests {
     /// data can satisfy is not a floor.
     #[test]
     fn the_control_floor_ignores_test_markers_inside_source_text() {
-        let root = tempfile::tempdir().expect("temp dir");
+        let root = must_with(tempfile::tempdir(), "temp dir");
         let module = root.path().join(CONTROL_SUITE_PATH);
-        fs::create_dir_all(module.parent().expect("module parent")).expect("create module dir");
+        must_with(
+            fs::create_dir_all(must_some_with(module.parent(), "module parent")),
+            "create module dir",
+        );
 
         // Far more `#[test]` occurrences than the floor, and not one of them a
         // control: every occurrence is quoted text or a comment.
@@ -1396,13 +1413,14 @@ mod tests {
         for _ in 0..CONTROL_SUITE_FLOOR * 2 {
             decoys.push_str("    let marker = \"#[test]\";\n");
         }
-        fs::write(&module, &decoys).expect("write a module full of decoys");
+        must_with(fs::write(&module, &decoys), "write a module full of decoys");
 
         let rendered = format!(
             "{:#}",
-            validate_control_suite(root.path())
-                .err()
-                .expect("quoted markers must not satisfy the floor")
+            must_err_with(
+                validate_control_suite(root.path()),
+                "quoted markers must not satisfy the floor"
+            )
         );
         assert!(
             rendered.contains("0 controls found"),
@@ -1420,31 +1438,42 @@ mod tests {
     /// point the gate command runs.
     #[test]
     fn validate_itself_refuses_a_gutted_control_suite() {
-        let real = project_root().expect("project root");
-        let root = tempfile::tempdir().expect("temp dir");
+        let real = must_with(project_root(), "project root");
+        let root = must_with(tempfile::tempdir(), "temp dir");
 
         let schema = root.path().join(SCHEMA_PATH);
-        fs::create_dir_all(schema.parent().expect("schema parent")).expect("create schema dir");
-        fs::copy(real.join(SCHEMA_PATH), &schema).expect("copy the committed schema");
+        must_with(
+            fs::create_dir_all(must_some_with(schema.parent(), "schema parent")),
+            "create schema dir",
+        );
+        must_with(fs::copy(real.join(SCHEMA_PATH), &schema), "copy the committed schema");
 
         let fixtures = root.path().join(FIXTURE_DIR);
-        fs::create_dir_all(&fixtures).expect("create fixture dir");
+        must_with(fs::create_dir_all(&fixtures), "create fixture dir");
         for name in
             [format!("{FIXTURE_PREFIX}.json"), format!("{FIXTURE_PREFIX}.uninstrumented.json")]
         {
-            fs::copy(real.join(FIXTURE_DIR).join(&name), fixtures.join(&name))
-                .expect("copy a committed fixture");
+            must_with(
+                fs::copy(real.join(FIXTURE_DIR).join(&name), fixtures.join(&name)),
+                "copy a committed fixture",
+            );
         }
 
         let module = root.path().join(CONTROL_SUITE_PATH);
-        fs::create_dir_all(module.parent().expect("module parent")).expect("create module dir");
+        must_with(
+            fs::create_dir_all(must_some_with(module.parent(), "module parent")),
+            "create module dir",
+        );
 
         // Everything the gate validates is present and conforms; only the
         // controls are gone. Without the floor this root passes.
-        fs::write(&module, "#[test]\n").expect("write a gutted module");
+        must_with(fs::write(&module, "#[test]\n"), "write a gutted module");
         let gutted = format!(
             "{:#}",
-            validate(root.path()).err().expect("validate must refuse a gutted control suite")
+            must_some_with(
+                validate(root.path()).err(),
+                "validate must refuse a gutted control suite"
+            )
         );
         assert!(
             gutted.contains("controls found"),
@@ -1452,9 +1481,11 @@ mod tests {
         );
 
         // With the controls restored, the same root validates.
-        fs::write(&module, "#[test]\n".repeat(CONTROL_SUITE_FLOOR))
-            .expect("write a populated module");
-        validate(root.path()).expect("a populated root must validate");
+        must_with(
+            fs::write(&module, "#[test]\n".repeat(CONTROL_SUITE_FLOOR)),
+            "write a populated module",
+        );
+        must_with(validate(root.path()), "a populated root must validate");
     }
 
     /// The committed suite is above its own floor, and the floor is real.
@@ -1463,9 +1494,13 @@ mod tests {
     /// would learn until a gate run, or below it until it stopped discriminating.
     #[test]
     fn the_committed_control_suite_clears_its_floor() {
-        let root = project_root().expect("project root");
-        validate_control_suite(&root).expect("the committed control suite must clear its floor");
-        let source = fs::read_to_string(root.join(CONTROL_SUITE_PATH)).expect("read this module");
+        let root = must_with(project_root(), "project root");
+        must_with(
+            validate_control_suite(&root),
+            "the committed control suite must clear its floor",
+        );
+        let source =
+            must_with(fs::read_to_string(root.join(CONTROL_SUITE_PATH)), "read this module");
         assert!(
             source.lines().filter(|line| line.trim() == "#[test]").count() >= CONTROL_SUITE_FLOOR,
             "the floor must stay at or below the real control count"
@@ -1476,13 +1511,16 @@ mod tests {
 
     #[test]
     fn schema_document_pins_every_vocabulary() {
-        validate_schema_document(&schema_value()).expect("the committed schema must self-check");
+        must_with(
+            validate_schema_document(&schema_value()),
+            "the committed schema must self-check",
+        );
     }
 
     #[test]
     fn both_fixtures_conform_to_schema_typed_model_and_semantics() {
-        check(&measured()).expect("the measured fixture must conform");
-        check(&uninstrumented()).expect("the uninstrumented fixture must conform");
+        must_with(check(&measured()), "the measured fixture must conform");
+        must_with(check(&uninstrumented()), "the uninstrumented fixture must conform");
     }
 
     /// The uninstrumented fixture is the one that carries the contract's
@@ -1490,12 +1528,11 @@ mod tests {
     #[test]
     fn uninstrumented_fixture_publishes_no_counters_at_all() {
         let receipt: CompilerPerformanceReceipt =
-            serde_json::from_str(UNINSTRUMENTED).expect("must decode");
-        let lex_parse = receipt
-            .stages
-            .iter()
-            .find(|stage| stage.name == StageName::LexParse)
-            .expect("fixture declares lex_parse");
+            must_with(serde_json::from_str(UNINSTRUMENTED), "must decode");
+        let lex_parse = must_some_with(
+            receipt.stages.iter().find(|stage| stage.name == StageName::LexParse),
+            "fixture declares lex_parse",
+        );
         assert_eq!(lex_parse.work.status, EvidenceStatus::NotProven);
         assert_eq!(lex_parse.work.units, None, "an unobserved stage must publish no unit count");
         assert_eq!(lex_parse.work.bytes, None);
@@ -1655,7 +1692,7 @@ mod tests {
         // Drop the required_missing row while leaving module_graph in the
         // declared denominator: the absence must stay visible.
         let stages = receipt["stages"].as_array().map(|rows| rows[..2].to_vec());
-        receipt["stages"] = json!(stages.expect("fixture stages are an array"));
+        receipt["stages"] = json!(must_some_with(stages, "fixture stages are an array"));
         assert!(check(&receipt).is_err(), "an omitted required stage must be rejected");
     }
 
@@ -1698,10 +1735,10 @@ mod tests {
     #[test]
     fn rejects_cache_hit_without_a_key() {
         let mut receipt = measured();
-        receipt["cache"]
-            .as_object_mut()
-            .map(|cache| cache.remove("key"))
-            .expect("cache is an object");
+        must_some_with(
+            receipt["cache"].as_object_mut().map(|cache| cache.remove("key")),
+            "cache is an object",
+        );
         assert!(check(&receipt).is_err(), "a hit must identify the artefact it matched");
     }
 
@@ -1755,7 +1792,7 @@ mod tests {
             Vec::<String>::new(),
             "a miss that claims no reuse is an honest observation"
         );
-        check(&receipt).expect("a measured miss with zero reuse must be accepted");
+        must_with(check(&receipt), "a measured miss with zero reuse must be accepted");
     }
 
     // -- instrumentation cannot contradict evidence --------------------------------
@@ -1794,7 +1831,7 @@ mod tests {
     fn an_uninstrumented_stage_may_still_report_pass() {
         let mut receipt = uninstrumented();
         receipt["stages"][0]["result"] = json!("pass");
-        check(&receipt).expect("success and measurement are separate dimensions");
+        must_with(check(&receipt), "success and measurement are separate dimensions");
     }
 
     // -- typed collection invariants -------------------------------------------------
@@ -1942,10 +1979,12 @@ mod tests {
     #[test]
     fn rejects_a_missing_identity_family() {
         let mut receipt = measured();
-        receipt["subject"]["identities"]
-            .as_object_mut()
-            .map(|identities| identities.remove("world"))
-            .expect("identities is an object");
+        must_some_with(
+            receipt["subject"]["identities"]
+                .as_object_mut()
+                .map(|identities| identities.remove("world")),
+            "identities is an object",
+        );
         assert!(check(&receipt).is_err(), "all seven identity families are load-bearing");
     }
 
@@ -1981,19 +2020,19 @@ mod tests {
     #[test]
     fn serialization_is_deterministic_and_order_independent() {
         let receipt: CompilerPerformanceReceipt =
-            serde_json::from_str(MEASURED).expect("fixture must decode");
-        let first = serde_json::to_string(&receipt).expect("must serialize");
-        let second = serde_json::to_string(&receipt).expect("must serialize");
+            must_with(serde_json::from_str(MEASURED), "fixture must decode");
+        let first = must_with(serde_json::to_string(&receipt), "must serialize");
+        let second = must_with(serde_json::to_string(&receipt), "must serialize");
         assert_eq!(first, second, "serialization must be byte-stable");
 
         // `serde_json::Value`'s map is ordered by insertion, so round-tripping
         // through a re-parsed document gives a differently ordered source with
         // identical meaning.
-        let reordered: Value = serde_json::from_str(&first).expect("must reparse");
+        let reordered: Value = must_with(serde_json::from_str(&first), "must reparse");
         let round_tripped: CompilerPerformanceReceipt =
-            serde_json::from_value(reordered).expect("must decode");
+            must_with(serde_json::from_value(reordered), "must decode");
         assert_eq!(
-            serde_json::to_string(&round_tripped).expect("must serialize"),
+            must_with(serde_json::to_string(&round_tripped), "must serialize"),
             first,
             "decoding must not depend on key order"
         );
@@ -2028,10 +2067,10 @@ mod tests {
     fn rejects_a_deleted_counter_prohibition() {
         for def in ["work", "correctness"] {
             let mut schema = schema_value();
-            schema["$defs"][def]
-                .as_object_mut()
-                .map(|node| node.remove("else"))
-                .expect("the definition is an object");
+            must_some_with(
+                schema["$defs"][def].as_object_mut().map(|node| node.remove("else")),
+                "the definition is an object",
+            );
             assert!(
                 validate_schema_document(&schema).is_err(),
                 "{def}: deleting the else prohibition must fail the pin"
@@ -2058,10 +2097,11 @@ mod tests {
             let stripped: Vec<Value> = branches
                 .into_iter()
                 .map(|mut branch| {
-                    if let Some(object) = branch.as_object_mut() {
-                        if object.contains_key("then") && object.contains_key("else") {
-                            object.remove("else");
-                        }
+                    if let Some(object) = branch.as_object_mut()
+                        && object.contains_key("then")
+                        && object.contains_key("else")
+                    {
+                        object.remove("else");
                     }
                     branch
                 })
@@ -2106,10 +2146,10 @@ mod tests {
     #[test]
     fn rejects_an_unbounded_counter_type() {
         let mut schema = schema_value();
-        schema["$defs"]["count"]
-            .as_object_mut()
-            .map(|count| count.remove("maximum"))
-            .expect("count is an object");
+        must_some_with(
+            schema["$defs"]["count"].as_object_mut().map(|count| count.remove("maximum")),
+            "count is an object",
+        );
         assert!(
             validate_schema_document(&schema).is_err(),
             "an unbounded counter lets the schema accept what the typed model cannot hold"

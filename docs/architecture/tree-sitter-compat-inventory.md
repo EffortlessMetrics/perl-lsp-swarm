@@ -39,7 +39,7 @@ search alone could not establish it.
 | `migration_only_entry_point` | 0 | 27 |
 | `unique_and_required` | 9 | 0 |
 | `unique_but_invalid_or_obsolete` | 1 | 0 |
-| `unused` | 2 | 3 |
+| `unused` | 2 | 4 |
 
 ## Symbols
 
@@ -102,3 +102,4 @@ inventory's own artifacts. An unexplained reference fails the task.
 | `xtask/src/tasks/check_agent_context.rs` | `tooling` | `migration_only_entry_point` | #8890 | The package name is dropped from the tracked-context list when the crate is deleted. | Names the package in an agent-context coverage list. Operates on the package by name; it does not depend on the crate. |
 | `xtask/src/tasks/compat_inventory.rs` | `tooling` | `migration_only_entry_point` | #8890 | Deleted with the crate it inventories, once #8889 and #8890 have consumed the ledger. | The inventory generator and validator itself. It names the package as data, not as a dependency. |
 | `xtask/tests/activation.rs` | `tooling` | `migration_only_entry_point` | #8890 | Two references, needing two different actions. `compatibility_shim_requires_retirement_owner_and_boundary` is deleted with the crate, together with the override ledger row it exercises. `override_toml_authority_fragment_must_resolve` must be RE-POINTED at a surviving crate manifest, not deleted: it proves the fragment resolver rejects `#publish` where the real Cargo key is `package.publish`, and it happens to use this manifest only as a convenient existing path. Deleting the crate without re-pointing it makes the test fail for the wrong reason — the path check short-circuits before the fragment branch is reached, so the assertion on `has no key `publish`` never runs. | Names the package twice, for two unrelated reasons. Once as a surface id, proving the #9204 validator fails closed on a compatibility_shim row with no retirement owner or boundary. Once as a manifest path in a fragment-resolution test that is not about this crate at all. Neither is a dependency; both name the package as test data. |
+| `xtask/tests/activation_check.rs` | `test_fixture` | `unused` | — | — | Synthetic JSON fixture (surface_id crate:fixture-shim) names crates/perl-tree-sitter-compat/Cargo.toml as publication.authority. It describes a hypothetical shim, imports no crate and establishes no product behavior. No migration or removal edit is required. |
