@@ -549,9 +549,7 @@ mod tests {
         let captured = SharedBuffer::default();
         let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
         let server = LspServer::with_output(output);
-        server
-            .handle_initialize(None)
-            .map_err(|error| format!("initialize failed: {error:?}"))?;
+        server.handle_initialize(None).map_err(|error| format!("initialize failed: {error:?}"))?;
         let shutdown = server.handle_request(request(2, "shutdown"));
         if shutdown.as_ref().is_none_or(|response| response.error.is_some()) {
             return Err(format!("first shutdown must succeed: {shutdown:?}").into());
@@ -582,9 +580,7 @@ mod tests {
         let captured = SharedBuffer::default();
         let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
         let server = LspServer::with_output(output);
-        server
-            .handle_initialize(None)
-            .map_err(|error| format!("initialize failed: {error:?}"))?;
+        server.handle_initialize(None).map_err(|error| format!("initialize failed: {error:?}"))?;
         let shutdown = server.handle_request(request(2, "shutdown"));
         if shutdown.as_ref().is_none_or(|response| response.error.is_some()) {
             return Err(format!("first shutdown must succeed: {shutdown:?}").into());
@@ -607,7 +603,10 @@ mod tests {
         // would carry an `error` or `result` member, which neither has.
         let wire = String::from_utf8_lossy(&captured.bytes()[baseline_len..]).into_owned();
         if wire.contains("\"error\"") || wire.contains("\"result\"") {
-            return Err(format!("a post-shutdown notification must not invent a response, got: {wire}").into());
+            return Err(format!(
+                "a post-shutdown notification must not invent a response, got: {wire}"
+            )
+            .into());
         }
         Ok(())
     }
