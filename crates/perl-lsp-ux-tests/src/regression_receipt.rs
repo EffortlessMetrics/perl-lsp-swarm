@@ -506,10 +506,14 @@ fn classification_input(raw: &str) -> String {
     strip_diagnostic_detail(raw)
         .lines()
         .filter(|line| {
-            !matches!(
-                cargo_failure::result_line(line).map(|(_, outcome)| outcome),
-                Some(cargo_failure::TestOutcome::Passed | cargo_failure::TestOutcome::Ignored)
-            )
+            // Cargo's `test result:` trailer is run bookkeeping, not a failing
+            // test's evidence: its wording (`timed out after 60s`) must not
+            // classify the run when no block supplied a verdict (#16205).
+            !line.trim_start().starts_with("test result:")
+                && !matches!(
+                    cargo_failure::result_line(line).map(|(_, outcome)| outcome),
+                    Some(cargo_failure::TestOutcome::Passed | cargo_failure::TestOutcome::Ignored)
+                )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1928,6 +1932,11 @@ test result: FAILED. 0 passed; 1 failed; timed out after 60s";
             UxFailureMode::Unknown,
             "the summary's wording is not this test's evidence"
         );
+        // The trailer is not the run's evidence either: it must not promote
+        // the top-level class to Timeout when no block supplied a verdict.
+        assert_eq!(receipt.failure_class, UxFailureClass::Unknown);
+        assert_eq!(receipt.route, UxRoute::Triage);
+        assert_eq!(receipt.merge_action, "triage");
     }
 
     #[test]
