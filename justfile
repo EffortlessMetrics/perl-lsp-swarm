@@ -41,9 +41,9 @@ agent-test:
 agent-clippy:
     {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
 
-# Legacy cargo-safe compatibility nextest; not host admission. External nextest is not admitted; requires a separately admitted route.
 # Nextest's runner profile and Cargo's build profile are separate selectors.
 # Match agent-test's build profile so switching runners reuses its test binaries.
+# Legacy cargo-safe compatibility nextest; not host admission. External nextest is not admitted; requires a separately admitted route.
 agent-nextest:
     {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent
 
