@@ -761,10 +761,8 @@ fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
-    let cmd = perl_test_must::must(resolve_command_invocation(
-        r"C:\tools\perltidy.exe",
-        &["--version"],
-    ));
+    let cmd =
+        perl_test_must::must(resolve_command_invocation(r"C:\tools\perltidy.exe", &["--version"]));
     assert_eq!(cmd.get_program(), std::ffi::OsStr::new(r"C:\tools\perltidy.exe"));
 }
 
