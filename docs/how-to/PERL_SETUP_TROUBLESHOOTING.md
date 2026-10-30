@@ -52,10 +52,12 @@ If you manage the server binary yourself, set the VS Code extension setting
 `perl-lsp.serverPath` to the `perllsp` binary. The language server accepts no
 interpreter-path setting: `perl.workspace.perlPath` (and the project-config
 equivalent) is refused on every channel and silently ignored. To select Perl
-for the optional startup `@INC` module probe, change the active
-perlbrew or plenv version when one is present; when neither is active, put the
-intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl`
-elsewhere). The separate initialization availability check prefers Strawberry
+for the optional startup `@INC` module probe, set the `PERLBREW_PERL` or
+`PLENV_VERSION` environment variable of the server process to an installed
+version (`plenv local` or `plenv global` alone does not set `PLENV_VERSION`
+outside a plenv-initialised shell); without direct detection, put the
+intended `perl` first on `PATH` (`where.exe perl` on Windows, `which -a perl`
+elsewhere), resolved from the server process working directory. The separate initialization availability check prefers Strawberry
 or ActiveState over MSYS on Windows, regardless of their `PATH` order. The
 debugger is a separate channel: it takes a per-launch `perlPath` in
 `launch.json`, and that one is honored.

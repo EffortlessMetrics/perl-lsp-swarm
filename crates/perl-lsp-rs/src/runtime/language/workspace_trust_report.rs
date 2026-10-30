@@ -67,7 +67,7 @@ fn setup_hints_summary(config: &WorkspaceConfig) -> Value {
             "perl_module_probe_uses_toolchain_resolution",
             "info",
             "No explicit Perl binary is configured. The optional startup `@INC` module probe selects an active perlbrew interpreter, then an active plenv interpreter, then `perl` on `PATH`. This report does not probe Perl.",
-            "For the module probe, change the active perlbrew or plenv version first; when neither is active, put the intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl` elsewhere). The separate startup availability check may select a different Perl: on Windows it prefers Strawberry or ActiveState over MSYS even when MSYS is first on `PATH`. The language server accepts no interpreter-path setting.",
+            "For the module probe, direct perlbrew or plenv selection requires the PERLBREW_PERL or PLENV_VERSION environment variable of the server process to name an installed version; `plenv local` or `plenv global` alone does not set PLENV_VERSION for a server launched outside a plenv-initialised shell. Without direct detection, the first `perl` on `PATH` is used, resolved from the server process working directory: set PLENV_VERSION before starting `perllsp`, or put the intended `perl` first on `PATH` (`where.exe perl` on Windows, `which -a perl` elsewhere). The separate startup availability check may select a different Perl: on Windows it prefers Strawberry or ActiveState over MSYS even when MSYS is first on `PATH`. The language server accepts no interpreter-path setting.",
         ));
     }
 

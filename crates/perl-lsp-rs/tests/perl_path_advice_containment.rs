@@ -77,14 +77,18 @@ const ALLOWED: &[(&str, &str)] = &[
         "asserts the perl.debugFile error never names it (#5376)",
     ),
     (
-        "src/runtime/language/missing_module_lookup.rs",
-        "asserts the startup-INC remediation names no unsettable route",
-    ),
-    (
         "../../docs/project/discovery/cross-session-triage-2026-05-30.md",
         "historical triage record describing the unreachability",
     ),
 ];
+
+/// Exact lines permitted to contain a token, and why. Unlike [`ALLOWED`],
+/// the rest of the named file remains scanned: a second occurrence anywhere
+/// else in it is still an offender.
+const ALLOWED_LINES: &[(&str, &str)] = &[(
+    "src/runtime/language/missing_module_lookup.rs",
+    "            for forbidden in [\"perl_path\", \"perlpath\", \"perl.path\", \"pin\"] {",
+)];
 
 /// Exact refusal headings in the reference. The rest of each page remains
 /// scanned, including any second occurrence of the same token.
@@ -106,10 +110,12 @@ const TROUBLESHOOTING_REFUSAL: &str = concat!(
     "`perl-lsp.serverPath` to the `perllsp` binary. The language server accepts no\n",
     "interpreter-path setting: `perl.workspace.perlPath` (and the project-config\n",
     "equivalent) is refused on every channel and silently ignored. To select Perl\n",
-    "for the optional startup `@INC` module probe, change the active\n",
-    "perlbrew or plenv version when one is present; when neither is active, put the\n",
-    "intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl`\n",
-    "elsewhere). The separate initialization availability check prefers Strawberry\n",
+    "for the optional startup `@INC` module probe, set the `PERLBREW_PERL` or\n",
+    "`PLENV_VERSION` environment variable of the server process to an installed\n",
+    "version (`plenv local` or `plenv global` alone does not set `PLENV_VERSION`\n",
+    "outside a plenv-initialised shell); without direct detection, put the\n",
+    "intended `perl` first on `PATH` (`where.exe perl` on Windows, `which -a perl`\n",
+    "elsewhere), resolved from the server process working directory. The separate initialization availability check prefers Strawberry\n",
     "or ActiveState over MSYS on Windows, regardless of their `PATH` order. The\n",
     "debugger is a separate channel: it takes a per-launch `perlPath` in\n",
     "`launch.json`, and that one is honored."
@@ -132,6 +138,7 @@ fn unexpected_tokens(relative: &Path, text: &str) -> Vec<String> {
     for (index, line) in screened.lines().enumerate() {
         if DOC_ALLOWED_LINES
             .iter()
+            .chain(ALLOWED_LINES.iter())
             .any(|(path, allowed)| relative == Path::new(path) && line == *allowed)
         {
             continue;
@@ -345,6 +352,25 @@ fn refused_setting_explanation_does_not_exempt_bad_advice_on_the_same_page()
     let repeated_refusal = format!("{TROUBLESHOOTING_REFUSAL}\n{TROUBLESHOOTING_REFUSAL}");
     if unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &repeated_refusal).is_empty() {
         return Err("a second guide paragraph inherited the one allowed occurrence".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn assertion_exemption_is_limited_to_the_guard_line() -> Result<(), Box<dyn std::error::Error>> {
+    for (relative, allowed_line) in ALLOWED_LINES {
+        if !unexpected_tokens(Path::new(relative), allowed_line).is_empty() {
+            return Err(format!("guard line in {relative} must be allowed").into());
+        }
+        let with_bad_advice = format!(
+            "{allowed_line}\nSet `perl.workspace.perlPath` to choose the interpreter."
+        );
+        if unexpected_tokens(Path::new(relative), &with_bad_advice).is_empty() {
+            return Err(format!(
+                "a second setting reference in {relative} was hidden by its guard line"
+            )
+            .into());
+        }
     }
     Ok(())
 }

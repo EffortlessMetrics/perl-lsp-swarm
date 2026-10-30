@@ -294,8 +294,13 @@ still stay inside the workspace boundary. These paths are searched by
 
 The optional startup `@INC` module probe resolves `perl` in a fixed order: an
 active perlbrew interpreter, then an active plenv interpreter, then `perl` on
-`PATH`. perlbrew and plenv therefore take precedence over `PATH` — change the
-active version there, or reorder `PATH` when neither is active. Use
+`PATH`. perlbrew and plenv therefore take precedence over `PATH`. Direct
+selection reads the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of
+the server process: `plenv local` or `plenv global` alone does not set
+`PLENV_VERSION` for a server launched outside a plenv-initialised shell, and
+without direct detection the first `perl` on `PATH` is used, resolved from the
+server process working directory. Set `PLENV_VERSION` before starting
+`perllsp`, or reorder `PATH`. Use
 `useSystemInc` to opt in to that system `@INC` lookup. The separate interpreter
 availability check during initialization uses OS-aware discovery; on Windows
 it prefers Strawberry or ActiveState over MSYS even if MSYS is first on `PATH`.
@@ -317,9 +322,12 @@ server executes and with which arguments, so the keys are refused on every
 client-settings channel and `.perl-lsp.toml` has no field for them at all.
 
 To make the startup `@INC` module probe use a specific Perl, control resolution order instead:
-change the active perlbrew or plenv version when one is present. When neither is
-active, put the intended `perl` first on `PATH` (`where perl` on Windows,
-`which -a perl` elsewhere). The read-only workspace trust report does not
+set the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of the server
+process to an installed version (`plenv local` or `plenv global` alone does
+not set `PLENV_VERSION` outside a plenv-initialised shell). Without direct
+detection, put the intended `perl` first on `PATH` (`where.exe perl` on
+Windows, `which -a perl` elsewhere); it is resolved from the server process
+working directory. The read-only workspace trust report does not
 resolve or verify the selected interpreter.
 
 The debugger is a separate channel: `launch.json` accepts a per-launch
