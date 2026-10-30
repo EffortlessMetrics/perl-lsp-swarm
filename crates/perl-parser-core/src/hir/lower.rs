@@ -31,10 +31,10 @@ use super::model::{
     PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect,
     PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource,
     RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind,
-    StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
-    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
-    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
-    glob_pattern_interpolates,
+    SignatureParameterMode, SignatureParameterOccurrence, StashConfidence, StashDynamicBoundary,
+    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
+    UseDecl, VariableBinding, VariableDecl, glob_pattern_interpolates,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -329,7 +329,7 @@ impl Lowerer {
                         signature.location,
                         self.package_context.clone(),
                     );
-                    self.record_signature_bindings(signature, signature_scope);
+                    self.record_signature_bindings(signature, signature_scope, item_id, confidence);
                     true
                 } else {
                     false
@@ -377,7 +377,7 @@ impl Lowerer {
                         signature.location,
                         self.package_context.clone(),
                     );
-                    self.record_signature_bindings(signature, signature_scope);
+                    self.record_signature_bindings(signature, signature_scope, item_id, confidence);
                     true
                 } else {
                     false
@@ -1681,20 +1681,37 @@ impl Lowerer {
         }
     }
 
-    fn record_signature_bindings(&mut self, signature: &Node, scope_id: HirScopeId) {
+    fn record_signature_bindings(
+        &mut self,
+        signature: &Node,
+        scope_id: HirScopeId,
+        callable: HirId,
+        confidence: RecoveryConfidence,
+    ) {
         if let NodeKind::Signature { parameters } = &signature.kind {
-            for parameter in parameters {
-                self.record_signature_parameter(parameter, scope_id);
-            }
-        }
-    }
-
-    fn record_signature_parameter(&mut self, parameter: &Node, scope_id: HirScopeId) {
-        match &parameter.kind {
-            NodeKind::MandatoryParameter { variable, .. }
-            | NodeKind::SlurpyParameter { variable, .. } => {
-                if let Some(binding) = variable_binding(variable) {
-                    self.record_binding(
+            for (position, parameter) in parameters.iter().enumerate() {
+                let (mode, variable, default) = match &parameter.kind {
+                    NodeKind::MandatoryParameter { variable } => {
+                        (SignatureParameterMode::Required, Some(variable.as_ref()), None)
+                    }
+                    NodeKind::SlurpyParameter { variable } => {
+                        (SignatureParameterMode::Slurpy, Some(variable.as_ref()), None)
+                    }
+                    NodeKind::OptionalParameter { variable, default_value, .. } => (
+                        SignatureParameterMode::Optional,
+                        Some(variable.as_ref()),
+                        Some(default_value.as_ref()),
+                    ),
+                    NodeKind::NamedParameter { variable, default_value, .. } => (
+                        SignatureParameterMode::Named,
+                        Some(variable.as_ref()),
+                        default_value.as_deref(),
+                    ),
+                    _ => (SignatureParameterMode::Unknown, None, None),
+                };
+                let binding = variable.and_then(variable_binding).and_then(|binding| {
+                    let has_name = !binding.name.is_empty();
+                    let id = self.record_binding(
                         binding.sigil,
                         binding.name,
                         binding.range,
@@ -1702,37 +1719,21 @@ impl Lowerer {
                         scope_id,
                         None,
                     );
+                    (has_name && confidence == RecoveryConfidence::Parsed).then_some(id)
+                });
+                self.scope_graph.signature_parameters.push(SignatureParameterOccurrence {
+                    callable,
+                    signature_scope: scope_id,
+                    position,
+                    mode,
+                    binding,
+                    range: parameter.location,
+                    recovery_confidence: confidence,
+                });
+                if let Some(default) = default {
+                    self.visit(default, confidence);
                 }
             }
-            NodeKind::NamedParameter { variable, default_value, .. } => {
-                if let Some(binding) = variable_binding(variable) {
-                    self.record_binding(
-                        binding.sigil,
-                        binding.name,
-                        binding.range,
-                        StorageClass::Parameter,
-                        scope_id,
-                        None,
-                    );
-                }
-                if let Some(default_value) = default_value {
-                    self.visit(default_value, RecoveryConfidence::Parsed);
-                }
-            }
-            NodeKind::OptionalParameter { variable, default_value, .. } => {
-                if let Some(binding) = variable_binding(variable) {
-                    self.record_binding(
-                        binding.sigil,
-                        binding.name,
-                        binding.range,
-                        StorageClass::Parameter,
-                        scope_id,
-                        None,
-                    );
-                }
-                self.visit(default_value, RecoveryConfidence::Parsed);
-            }
-            _ => {}
         }
     }
 

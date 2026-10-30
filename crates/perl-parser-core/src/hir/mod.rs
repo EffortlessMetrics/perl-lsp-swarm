@@ -43,8 +43,9 @@ pub use model::{
     ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
     PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter,
     ReadlineSource, RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame,
-    ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind,
-    StashGraph, StashProvenance, StatementModifierKind, StatementModifierShell, StorageClass,
-    SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr, UseDecl, VariableBinding,
-    VariableDecl, arguments_outside_configuration_hashes,
+    ScopeGraph, ScopeKind, SignatureParameterMode, SignatureParameterOccurrence, StashConfidence,
+    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
+    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
+    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    arguments_outside_configuration_hashes,
 };

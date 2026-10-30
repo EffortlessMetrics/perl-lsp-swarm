@@ -971,6 +971,49 @@ pub struct ScopeGraph {
     pub bindings: Vec<Binding>,
     /// Variable references observed while lowering.
     pub references: Vec<BindingReference>,
+    /// Signature parameter occurrences in source order, including entries
+    /// whose binding is unavailable. IDs are local to this lowered file.
+    pub signature_parameters: Vec<SignatureParameterOccurrence>,
+}
+
+/// Parsed parameter form. This is syntax, not a call-binding disposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SignatureParameterMode {
+    /// Required positional parameter.
+    Required,
+    /// Positional parameter with a default.
+    Optional,
+    /// Slurpy positional or named capture.
+    Slurpy,
+    /// Named parameter.
+    Named,
+    /// Unsupported or recovered parameter syntax.
+    Unknown,
+}
+
+/// One source parameter occurrence owned by a callable and signature scope.
+///
+/// These file-local IDs do not establish an exact call target, source
+/// generation, or a complete parse. Consumers must join current source and
+/// diagnostic evidence before using this as semantic binding evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SignatureParameterOccurrence {
+    /// Callable declaration item within this file.
+    pub callable: HirId,
+    /// Scope that owns the parameter binding.
+    pub signature_scope: HirScopeId,
+    /// Zero-based syntax position, including unsupported entries.
+    pub position: usize,
+    /// Observed syntax form.
+    pub mode: SignatureParameterMode,
+    /// Existing local binding identity, if represented and not recovered.
+    pub binding: Option<HirBindingId>,
+    /// Full parameter source range.
+    pub range: SourceLocation,
+    /// Recovery confidence of the owning callable item.
+    pub recovery_confidence: RecoveryConfidence,
 }
 
 impl ScopeGraph {
