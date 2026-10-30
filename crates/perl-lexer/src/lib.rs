@@ -2577,7 +2577,23 @@ impl<'a> PerlLexer<'a> {
             && !matches!(self.current_char(), Some('-') if self.peek_byte(1) == Some(b'>'))
             && matches!(
                 self.current_char(),
-                Some('+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '<' | '>' | '=' | '!' | '~' | '?' | ':' | '.')
+                Some(
+                    '+' | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '<'
+                        | '>'
+                        | '='
+                        | '!'
+                        | '~'
+                        | '?'
+                        | ':'
+                        | '.'
+                )
             )
             && let Some((enclosing_depth, _, slot_live)) = self.print_list_parens.last_mut()
             && self.paren_depth == *enclosing_depth + 1
