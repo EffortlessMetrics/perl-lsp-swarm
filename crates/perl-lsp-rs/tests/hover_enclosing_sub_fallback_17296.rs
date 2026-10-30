@@ -125,6 +125,10 @@ sub run {
             !content.contains("**Subroutine**") && !content.contains("`sub run`"),
             "hover on `my` must not claim the enclosing sub, got: {content}"
         );
+        assert!(
+            content.contains("my VARLIST"),
+            "hover on `my` must render its own builtin card, got: {content}"
+        );
         Ok(())
     }
 
@@ -141,6 +145,35 @@ sub run {
             content.contains("`sub run`"),
             "hover on the sub name must keep the sub card, got: {content}"
         );
+        Ok(())
+    }
+
+    /// A call-site package name that happens to match the enclosing sub's
+    /// name is still a receiver, not the sub's declaration (#17312).
+    #[test]
+    fn same_name_package_receiver_is_not_the_enclosing_sub()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = r#"package WidgetGarden;
+
+sub new { my $c = shift; return bless {}, $c; }
+
+sub WidgetGarden {
+    my $w = WidgetGarden->new();
+    return $w;
+}
+"#;
+        let uri = "file:///hover_same_name_receiver_17312.pm";
+        let server = TestServerBuilder::new().build();
+        server.open_document(uri, code);
+        let (line, character) = pos_of(code, "WidgetGarden->new")?;
+        let response = server.get_hover(uri, line, character);
+        println!("HOVER same-name receiver RESPONSE: {response:#}");
+        if let Some(content) = hover_content(&response) {
+            assert!(
+                !content.contains("**Subroutine**") && !content.contains("`sub WidgetGarden`"),
+                "hover on the receiver must not claim the enclosing sub, got: {content}"
+            );
+        }
         Ok(())
     }
 
@@ -186,6 +219,10 @@ sub caller_method {
         assert!(
             content.contains("greet"),
             "hover on the method name must still describe `greet`, got: {content}"
+        );
+        assert!(
+            content.contains("**Method**") || content.contains("**Subroutine**"),
+            "hover on the method name must render a method card, got: {content}"
         );
         assert!(
             !content.contains("caller_method"),

@@ -1122,9 +1122,9 @@ impl SemanticAnalyzer {
 
         // Check for a POD block ending with =cut at the very end.
         if let Some(pod_text) = trailing_pod_block(before) {
-            // Strip POD inline formatting codes (B<>, I<>, C<>, L<>, E<>, etc.)
-            // so hover displays clean text, not raw POD markup.
-            return Some(perl_pod::strip_pod_formatting(pod_text.trim()));
+            // Render the block (directive lines dropped, inline formatting
+            // codes stripped) so hover displays clean text, not raw POD.
+            return Some(render_pod_block_documentation(pod_text.trim()));
         }
 
         // Check for consecutive comment lines, anchored at end of string.

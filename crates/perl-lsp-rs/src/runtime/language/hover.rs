@@ -791,10 +791,23 @@ impl LspServer {
                 // dedicated card even where the token scanner reads an empty
                 // token (cursor on the pipe of `$|`), so they are checked
                 // before the empty-token keep (#2831).
+                // A token that is an arrow receiver (`WidgetGarden->new`)
+                // is a call-site package name even when a same-named sub
+                // encloses it: the receiver is not the sub's declaration
+                // name, so the enclosing sub's card must not answer (#17312).
+                let token_is_arrow_receiver = {
+                    let token_end = offset
+                        + text[offset..]
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | ':'))
+                            .map(char::len_utf8)
+                            .sum::<usize>();
+                    text[token_end..].trim_start().starts_with("->")
+                };
                 if matches!(
                     sym.kind,
                     crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                ) && token != sym.name
+                ) && (token != sym.name || token_is_arrow_receiver)
                 {
                     let special = Self::extract_special_variable(text, offset)
                         .unwrap_or_else(|| token.clone());
