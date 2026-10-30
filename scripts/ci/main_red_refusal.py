@@ -2,11 +2,13 @@
 """Classify exact-SHA CI shard evidence for the Rust Small result gate.
 
 The caller supplies check-run payloads for the current ``main`` SHA and the
-current PR/merge-group subject SHA. Only a completed, failure-like main shard
-paired with candidate evidence that is not completed green can block. Missing
-or stale main evidence is reported as a warning and is non-blocking; missing
-or non-green candidate evidence must not allow a merge through a recorded main
-red.
+current PR/merge-group subject SHA. Workflow-file comparability uses the
+effective merge/event tree (``GITHUB_SHA`` / PR merge SHA for
+``pull_request``, merge-group head for ``merge_group``), not the PR head.
+Only a completed, failure-like main shard paired with candidate evidence that
+is not completed green can block. Missing or stale main evidence is reported
+as a warning and is non-blocking; missing or non-green candidate evidence
+must not allow a merge through a recorded main red.
 """
 
 from __future__ import annotations
@@ -159,6 +161,48 @@ def _describe_probe_state(run: dict[str, Any]) -> str:
     return f"status={status}, conclusion={conclusion}"
 
 
+def effective_workflow_tree_sha(
+    *,
+    event_name: str,
+    github_sha: str = "",
+    merge_group_head_sha: str = "",
+    pr_head_sha: str = "",
+) -> str:
+    """Return the git SHA whose tree GitHub used to execute ``ci.yml``.
+
+    ``pull_request`` events run from the synthetic merge commit
+    (``github.sha`` / ``GITHUB_SHA``). ``merge_group`` events run from the
+    merge-group head. ``pr_head_sha`` identifies the exact check-run subject
+    and is never a fallback: a base-only ``ci.yml`` advancement on ``main``
+    would otherwise make completed exact-subject shards look non-comparable.
+    """
+    del pr_head_sha
+    if event_name == "pull_request":
+        return github_sha.strip()
+    if event_name == "merge_group":
+        return merge_group_head_sha.strip()
+    return ""
+
+
+def candidate_workflow_comparability_warning(
+    *,
+    main_workflow_sha: str,
+    candidate_workflow_sha: str,
+) -> str | None:
+    """Fail closed when the effective workflow tree is missing or untrusted."""
+    if not candidate_workflow_sha:
+        return (
+            "effective candidate ci.yml could not be read; "
+            "candidate shard evidence is not comparable"
+        )
+    if candidate_workflow_sha != main_workflow_sha:
+        return (
+            "candidate ci.yml differs from canonical main ci.yml; "
+            "candidate shard evidence is not comparable"
+        )
+    return None
+
+
 def evaluate(
     *,
     main_runs: list[dict[str, Any]],
@@ -175,7 +219,12 @@ def evaluate(
     main_workflow_sha: str = "",
     candidate_workflow_sha: str = "",
 ) -> Decision:
-    """Apply the fail-closed refusal policy to already-fetched API data."""
+    """Apply the fail-closed refusal policy to already-fetched API data.
+
+    ``candidate_workflow_sha`` must be the ``ci.yml`` blob from
+    :func:`effective_workflow_tree_sha`, not from the PR head. Check-run
+    selection still uses ``candidate_sha`` as the exact subject.
+    """
     decision = Decision()
     if main_probe_warning:
         decision.warnings.append(main_probe_warning)
@@ -206,10 +255,12 @@ def evaluate(
         return decision
 
     main_by_name = _latest_shards(main_runs, main_sha_before, main_workflow_run_ids)
-    if candidate_workflow_sha != main_workflow_sha:
-        decision.warnings.append(
-            "candidate ci.yml differs from canonical main ci.yml; candidate shard evidence is not comparable"
-        )
+    incomparable = candidate_workflow_comparability_warning(
+        main_workflow_sha=main_workflow_sha,
+        candidate_workflow_sha=candidate_workflow_sha,
+    )
+    if incomparable:
+        decision.warnings.append(incomparable)
         candidate_workflow_run_ids = set()
     candidate_by_name = _latest_shards(
         candidate_runs,

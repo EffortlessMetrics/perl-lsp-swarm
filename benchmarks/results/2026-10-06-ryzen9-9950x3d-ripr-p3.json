@@ -1,0 +1,28 @@
+{
+  "schema": "benchmark-result.v1",
+  "change": {
+    "issue": "#17154",
+    "pr": "#17345",
+    "before_sha": null,
+    "after_sha": "5981b48a4dd4fd68c776df5bba1a8a045f16d7c8"
+  },
+  "command": "RUSTUP_TOOLCHAIN=1.96.0 CARGO_TARGET_DIR=/tmp/pls-p3-target cargo test -p xtask --test classifier_scale --locked -- --nocapture",
+  "machine": {
+    "os": "Ubuntu on WSL2 (Windows 11 host)",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "memory_gib": 196,
+    "architecture": "x86_64-unknown-linux-gnu"
+  },
+  "runtime": {
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "cargo_target_dir": "isolated linux target (/tmp/pls-p3-target)",
+    "relevant_env": ["RUSTUP_TOOLCHAIN=1.96.0 (works around the WSL rustc-1.95 diagnostic-renderer ICE, #17373)"]
+  },
+  "result": {
+    "artifact": "xtask/tests/classifier_scale.rs",
+    "summary": "P3 classifier-scale: 16,773,286-byte / 205,177-line lane log through the real bash classifier 3x: 85.35ms / 61.01ms / 63.41ms, worst=85.35ms vs 2s bound, classification=ripr-failure gap=1 partial=false all runs, MATCH.",
+    "comparison": "new baseline; no prior",
+    "status": "measured"
+  }
+}

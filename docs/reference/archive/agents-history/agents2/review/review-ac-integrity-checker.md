@@ -105,7 +105,7 @@ ROPE-MGMT-007 | Enterprise rope-based document management with UTF-8/UTF-16 mapp
 - Verify enhanced delimiter recognition including single-quote substitution operators (s'pattern'replacement') with proper lexer integration
 - Validate rope-based document management system integration with proper UTF-8/UTF-16 position mapping and enterprise security compliance
 
-Always provide exceptionally detailed, verbose analysis with comprehensive explanations, specific line numbers, absolute file paths from `/home/steven/code/tree-sitter-perl/`, and actionable recommendations using Perl parser ecosystem tooling. Include detailed examples of usage patterns:
+Always provide exceptionally detailed, verbose analysis with comprehensive explanations, specific line numbers, absolute file paths from `$REPO_ROOT/`, and actionable recommendations using Perl parser ecosystem tooling. Include detailed examples of usage patterns:
 
 **Standard Test Execution:**
 - `cargo test` (complete 295+ test suite across 5 crates)

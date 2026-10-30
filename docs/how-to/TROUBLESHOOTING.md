@@ -23,6 +23,11 @@ problem is usually in editor integration, workspace roots, or a stale cache.
    perllsp --stdio
    ```
 
+   Expected: the command blocks silently awaiting framed LSP input — that
+   silence is normal, not a hang. It prints nothing until it receives a
+   `Content-Length`-framed request (see
+   [Verify a Manual Installation](../tutorials/GETTING_STARTED.md#verify-a-manual-installation)).
+
 2. Turn on logging and read stderr:
 
    ```bash

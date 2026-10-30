@@ -62,6 +62,19 @@ pub(super) fn prepare_request(
     let null = Value::Null;
     let params_ref = request.params.as_ref().unwrap_or(&null);
     if let Err(err) = crate::security::validate_request_admission(&request.method, params_ref) {
+        // A text-sync notification refused here is a silent drop: the client
+        // never learns its didChange/didOpen was discarded, and the stored
+        // document keeps its predecessor text as if current — the stale
+        // snapshot a following textDocument/formatting would format (#16659).
+        // Associate a rejected text-bearing sync with its document before
+        // returning: mark it desynchronized (fail-closing user answers) and
+        // tell the client once per episode why the file went quiet. A textless
+        // didSave has no replacement buffer to lose and stays current.
+        server.mark_text_sync_admission_rejected(
+            &request.method,
+            params_ref,
+            !context.should_respond,
+        );
         tracing::debug!(method = %request.method, %err, "Rejected request: structural admission failed");
         if !context.should_respond {
             return PreflightOutcome::NotificationHandled;

@@ -42,6 +42,9 @@ pub(crate) struct PushDiagnosticIdentity {
     pub(crate) normalized_uri: String,
     pub(crate) document_instance: Arc<AtomicU32>,
     pub(crate) generation: u32,
+    /// Early parser-only output must never replace a committed full report
+    /// for this same accepted document ticket.
+    pub(crate) parse_errors_only: bool,
     pub(crate) workspace_generation: u64,
     pub(crate) folder_config_generation: Option<u64>,
     /// Accepted native critic policy the candidate's critic rows were produced
@@ -66,6 +69,7 @@ impl PushDiagnosticIdentity {
             normalized_uri: normalized_uri.to_string(),
             document_instance: Arc::clone(document_instance),
             generation,
+            parse_errors_only: false,
             workspace_generation,
             folder_config_generation: None,
             accepted_critic_snapshot: None,
@@ -127,6 +131,9 @@ pub(crate) enum PushDiagnosticsCommitOutcome {
     /// this candidate reached the boundary (or after an earlier commit in the
     /// ledger).
     RejectedSupersededGeneration,
+    /// A full report already committed for this document ticket; the early
+    /// parser-only candidate would regress the visible diagnostic set.
+    RejectedSupersededPhase,
     /// Document identity and generation are current, but the accepted critic
     /// policy the candidate's rows were produced under is no longer live
     /// configuration (#13304). Publishing would present dead-policy rows as
@@ -165,6 +172,7 @@ pub(crate) struct DiagnosticSubject<'a> {
 struct CommittedPushDiagnostic {
     document_instance: Arc<AtomicU32>,
     generation: u32,
+    parse_errors_only: bool,
     sequence: u64,
 }
 
@@ -392,6 +400,18 @@ impl LspServer {
             return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
         }
 
+        // The producer selects early versus full composition. The sink owns
+        // the atomic ordering decision: generation equality alone cannot stop
+        // a delayed early candidate from replacing a richer full report.
+        if identity.parse_errors_only
+            && let Some(entry) = committed.get(&identity.normalized_uri)
+            && Arc::ptr_eq(&entry.document_instance, &identity.document_instance)
+            && identity.generation == entry.generation
+            && !entry.parse_errors_only
+        {
+            return PushDiagnosticsCommitOutcome::RejectedSupersededPhase;
+        }
+
         let sequence =
             committed.get(&identity.normalized_uri).map(|entry| entry.sequence + 1).unwrap_or(1);
         let previous = committed.insert(
@@ -399,6 +419,7 @@ impl LspServer {
             CommittedPushDiagnostic {
                 document_instance: Arc::clone(&identity.document_instance),
                 generation: identity.generation,
+                parse_errors_only: identity.parse_errors_only,
                 sequence,
             },
         );
@@ -476,6 +497,7 @@ mod tests {
     use super::{
         LspServer, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
     };
+    use crate::state::DocumentState;
     use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
     use serde_json::json;
     use std::io::Write;
@@ -541,6 +563,119 @@ mod tests {
             std::thread::yield_now();
         }
         false
+    }
+
+    #[test]
+    fn late_fast_diagnostics_ordering_preserves_new_tickets_and_full_refresh() {
+        let (server, _buf) = make_server();
+        let uri = "file:///sink_phase_test.pl";
+        let mut identity = open_document(&server, uri, "my $x = 1;\n");
+        server.push_diagnostics_sink.committed.lock().clear();
+        let payload = || json!({"uri": uri, "diagnostics": []});
+        identity.parse_errors_only = true;
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "fast must publish before a full result exists"
+        );
+        identity.parse_errors_only = false;
+        for _ in 0..2 {
+            assert_eq!(
+                server.commit_push_diagnostics(
+                    &identity,
+                    payload(),
+                    PushDiagnosticsDisposition::Clear
+                ),
+                PushDiagnosticsCommitOutcome::SafeClearCommitted,
+                "full reports and same-ticket full refreshes must still publish"
+            );
+        }
+        let full = server.push_diagnostics_sink.last_committed(&identity.normalized_uri);
+        identity.parse_errors_only = true;
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededPhase
+        );
+        assert_eq!(server.push_diagnostics_sink.last_committed(&identity.normalized_uri), full);
+
+        identity.generation += 1;
+        identity.document_instance.store(identity.generation, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "a newer generation must retain early publication"
+        );
+        identity.parse_errors_only = false;
+        assert_eq!(
+            server.commit_push_diagnostics(&identity, payload(), PushDiagnosticsDisposition::Clear),
+            PushDiagnosticsCommitOutcome::SafeClearCommitted
+        );
+        // Reopen at the same numeric generation: the previous full record
+        // must not prohibit the new instance's early publication.
+        let document = DocumentState::new("my $y = 2;\n", 1);
+        document.generation.store(identity.generation, std::sync::atomic::Ordering::SeqCst);
+        identity.document_instance = StdArc::clone(&document.generation);
+        server.documents.lock().insert(identity.normalized_uri.clone(), document);
+        identity.parse_errors_only = true;
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "reopen must retain early publication even at an equal numeric generation"
+        );
+    }
+
+    #[test]
+    fn late_fast_diagnostics_remain_publishable_after_failed_full_enqueue() {
+        let (mut server, _buf) = make_server();
+        let uri = "file:///sink_phase_failure.pl";
+        let mut identity = open_document(&server, uri, "my $x = 1;\n");
+        server.push_diagnostics_sink.committed.lock().clear();
+        let payload = || json!({"uri": uri, "diagnostics": []});
+        identity.parse_errors_only = true;
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent
+        );
+        let early = server.push_diagnostics_sink.last_committed(&identity.normalized_uri);
+        let live_outbound =
+            std::mem::replace(&mut server.outbound, super::super::outbound::closed_sender());
+        identity.parse_errors_only = false;
+        assert_eq!(
+            server.commit_push_diagnostics(&identity, payload(), PushDiagnosticsDisposition::Clear),
+            PushDiagnosticsCommitOutcome::OutboundFailure
+        );
+        assert_eq!(server.push_diagnostics_sink.last_committed(&identity.normalized_uri), early);
+        server.outbound = live_outbound;
+        identity.parse_errors_only = true;
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                payload(),
+                PushDiagnosticsDisposition::Replacement
+            ),
+            PushDiagnosticsCommitOutcome::CommittedCurrent,
+            "an undelivered full report must not suppress early diagnostics"
+        );
     }
 
     #[test]

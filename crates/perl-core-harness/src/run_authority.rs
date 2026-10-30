@@ -784,6 +784,8 @@ mod tests {
         RunnerRecord {
             mechanism: (mode == HarnessMode::Execute)
                 .then_some(perl_core_harness_types::ExecutionMechanism::FixtureReplay),
+            scaffold_stamp: (mode == HarnessMode::Execute)
+                .then(|| perl_core_harness_types::LEGACY_SELECTED_EXECUTE_SCAFFOLD.to_string()),
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: mode.as_str().into(),
             path: "base/ok.t".into(),

@@ -1,0 +1,5 @@
+2026-10-04T00:00:01Z info: analyzing 1480 changed files
+2026-10-04T00:00:02Z quality gate passed; receipt target/receipts/quality/quality-gate.json summary target/receipts/quality/quality-gate.md
+2026-10-04T00:00:03Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.
+2026-10-04T00:00:04Z ##[error]The operation was canceled.
+2026-10-04T00:00:05Z info: trailing progress line to guarantee the byte cap truncates

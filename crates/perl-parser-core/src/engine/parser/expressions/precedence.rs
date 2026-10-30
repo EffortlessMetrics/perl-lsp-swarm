@@ -83,7 +83,7 @@ impl<'a> Parser<'a> {
             let mut right = if self.goto_starts_control_flow() {
                 self.parse_goto()?
             } else {
-                self.parse_word_not_expr()?
+                self.parse_assignment()?
             };
             right = self.collect_comma_fat_arrow_continuation(right)?;
 
@@ -125,23 +125,70 @@ impl<'a> Parser<'a> {
                 .unwrap_or(true)
     }
 
-    /// Parse word not expression - handles 'not' operator
+    /// Parse word `not` through its canonical operand boundary (#13932).
+    /// Bare operands include assignment/comma but stop before and/or/xor;
+    /// explicit parentheses close the operand before following infix operators.
     fn parse_word_not_expr(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
-            if s.peek_kind() == Some(TokenKind::WordNot) {
+            if s.peek_kind() == Some(TokenKind::WordNot) && !s.is_keyword_before_fat_arrow() {
                 let op_token = s.advance_token()?;
                 let start = op_token.start();
-                let operand = if s.goto_starts_control_flow() {
-                    s.parse_goto()?
+                // Simple-group `)` end when the operand took the parenthesized
+                // path below; the group returns the inner location.
+                let mut closer_end = None;
+                let operand = if let Some(missing) = s.recover_missing_infix_rhs(start) {
+                    missing
+                } else if s.peek_kind() == Some(TokenKind::LeftParen) {
+                    let inner = s.parse_primary()?;
+                    // FC-WORD-NOT-SPAN-CLOSER: the group consumes `)` through
+                    // the tracked closer path, so the previous position is the
+                    // closing delimiter end the inner location omits. On the
+                    // inserted-closer recovery path nothing was consumed and
+                    // the max below keeps the inner end.
+                    closer_end = Some(s.previous_position());
+                    inner
                 } else {
-                    s.parse_word_not_expr()?
+                    // A parenthesized inner operand must ride the full
+                    // descent: after it returns, the climb back through the
+                    // additive levels still runs inside this operand
+                    // (`not not ($n) + 1` keeps `+ 1` inside the outer `not`,
+                    // while `not ($n) + 1` does not). A bare inner operand
+                    // already ran every level, so the climb is a no-op.
+                    let inner_is_bare = !matches!(
+                        s.tokens.peek_second().ok().map(|token| token.kind()),
+                        Some(TokenKind::LeftParen)
+                    );
+                    let first = if s.peek_kind() == Some(TokenKind::WordNot)
+                        && !s.is_keyword_before_fat_arrow()
+                        && inner_is_bare
+                    {
+                        // FC-WORD-NOT-NEST-DEPTH: nested bare `not` recurses
+                        // directly — one production-depth frame per operator,
+                        // as before — instead of riding parse_assignment back
+                        // down through the power/unary guards (~3 frames per
+                        // `not`, which tripped the 128-frame budget at ~50
+                        // prefixes that Perl accepts).
+                        s.parse_word_not_expr()?
+                    } else if s.goto_starts_control_flow() {
+                        s.parse_goto()?
+                    } else {
+                        s.parse_assignment()?
+                    };
+                    s.collect_comma_fat_arrow_continuation(first)?
                 };
-                let end = operand.location.end;
+                let end = match closer_end {
+                    Some(closer) => operand.location.end.max(closer),
+                    None => operand.location.end,
+                };
 
-                return s.charge_node(
+                let expr = s.charge_node(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                     SourceLocation { start, end },
-                );
+                )?;
+                // FC-WORD-NOT-POSTFIX-OVERADMIT: only `->` chains may continue
+                // a `not` result (`not($x)->foo`); direct `[]`/`{}`/`++`/`--`
+                // are Perl syntax errors and stay for statement recovery.
+                return s.parse_arrow_chain(expr);
             }
 
             // The right side of a word operator should be a full expression
@@ -194,24 +241,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_assignment_with_ternary_tail(&mut self, collect_else_list: bool) -> ParseResult<Node> {
-        if let Some(kind) = self.peek_kind() {
-            if matches!(
-                kind,
-                TokenKind::WordNot | TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor
-            ) && self.is_keyword_before_fat_arrow()
-            {
-                let token = self.advance_token()?;
-                return self.charge_node(
-                    NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
-                );
-            }
-
-            // Check if we have a 'not' operator first
-            if kind == TokenKind::WordNot {
-                return self.parse_word_not_expr();
-            }
-        }
+        // NOTE (#13932 reconstruction): no early `not` dispatch here.
+        // Word `not` enters through parse_unary so the levels above
+        // still run after `parse_word_not_expr` returns. The
+        // `parse_unary` WordNot arm remains the single entry point.
+        // Word-operator fat-arrow autoquote (`cmp =>`, `or =>`) also enters
+        // through parse_unary so `parse_shift` named-unary arguments see it.
 
         // Handle 'return' as an expression in expression context
         // This allows patterns like: open $fh, $file or return;
@@ -226,8 +261,6 @@ impl<'a> Parser<'a> {
             // The RHS can be a 'not' expression, or missing (recovery)
             let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
                 missing
-            } else if self.peek_kind() == Some(TokenKind::WordNot) {
-                self.parse_word_not_expr()?
             } else {
                 self.parse_assignment_with_ternary_tail(collect_else_list)?
             };
@@ -469,7 +502,7 @@ impl<'a> Parser<'a> {
     ///   `(our $AUTOLOAD =~ /pattern/)` — `=~` after the declaration
     ///   `(my $x || "default")`        — `||` after the declaration
     ///
-    /// The chain applies operators from highest to lowest precedence (multiplicative →
+    /// The chain applies operators from highest to lowest precedence (power → multiplicative →
     /// additive → shift → relational → equality → bitwise-and → bitwise-xor →
     /// bitwise-or → logical-and → logical-or → range → ternary) so that the declaration
     /// node is correctly used as the leftmost operand of whatever operator follows.
@@ -477,6 +510,7 @@ impl<'a> Parser<'a> {
     /// Assignment operators (`=`, `+=`, …) are NOT applied here — they are handled
     /// by `parse_declaration_arg` itself (via the `Some(TokenKind::Assign)` branch).
     fn parse_below_assignment_with(&mut self, expr: Node) -> ParseResult<Node> {
+        let expr = self.parse_power_with(expr)?;
         let expr = self.parse_multiplicative_with(expr)?;
         let expr = self.parse_additive_with(expr)?;
         let expr = self.parse_shift_with(expr)?;
@@ -645,9 +679,17 @@ impl<'a> Parser<'a> {
     /// nesting level re-enters this rung through its own recursive-descent
     /// descent (`parse_or` on the right, the caller's ladder on the left).
     fn parse_range_with(&mut self, mut expr: Node) -> ParseResult<Node> {
-        if self.peek_kind() == Some(TokenKind::Range) {
+        // `...` between operands is the three-dot range operator; the
+        // standalone yada-yada term is handled at primary position, so
+        // admitting `Ellipsis` here only affects infix position (#13906).
+        if matches!(self.peek_kind(), Some(TokenKind::Range | TokenKind::Ellipsis)) {
             let op_token = self.advance_token()?;
-            let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+            // A second `...` where the endpoint belongs is not a yada-yada
+            // operand: Perl rejects it, so record the endpoint as missing
+            // instead of publishing a clean range (#13906).
+            let right = if self.peek_kind() == Some(TokenKind::Ellipsis) {
+                self.record_missing_infix_rhs(op_token.start())
+            } else if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
             } else {
                 self.parse_or()?
@@ -1047,7 +1089,7 @@ impl<'a> Parser<'a> {
     ///
     /// Kept local to this seam: filehandle, block, list, and recovery contexts have
     /// different legal starts. Do not reuse this as a global expression-starter
-    /// predicate. Angle-bracket terms, word `not`, and yada-yada `...` remain
+    /// predicate. Angle-bracket terms and yada-yada `...` remain
     /// outside this supported operand set. Magic constants use Identifier.
     fn ordinary_binary_repetition_rhs(kind: TokenKind, text: &str) -> RepetitionRhsDisposition {
         let supported = match kind {
@@ -1067,6 +1109,7 @@ impl<'a> Parser<'a> {
             // `when` is a bareword/call while this operand is still expected.
             | TokenKind::When
             | TokenKind::Not
+            | TokenKind::WordNot
             | TokenKind::Minus
             | TokenKind::Plus
             | TokenKind::Increment

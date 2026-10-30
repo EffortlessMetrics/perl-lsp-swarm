@@ -97,8 +97,8 @@ That is a useful archaeological signal because it explains why the codebase feel
 
 ## 5. Evidence Pointers
 
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [COPILOT_FLEET_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/COPILOT_FLEET_ARCHAEOLOGY.md)
-- [ERA5_MIXED_TOOL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ERA5_MIXED_TOOL_ARCHAEOLOGY.md)
-- [MERGE_DISCIPLINE_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/MERGE_DISCIPLINE_ARCHAEOLOGY.md)
-- [SWARM_SURFACE_EVOLUTION.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/SWARM_SURFACE_EVOLUTION.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [COPILOT_FLEET_ARCHAEOLOGY.md](COPILOT_FLEET_ARCHAEOLOGY.md)
+- [ERA5_MIXED_TOOL_ARCHAEOLOGY.md](ERA5_MIXED_TOOL_ARCHAEOLOGY.md)
+- [MERGE_DISCIPLINE_ARCHAEOLOGY.md](MERGE_DISCIPLINE_ARCHAEOLOGY.md)
+- [SWARM_SURFACE_EVOLUTION.md](SWARM_SURFACE_EVOLUTION.md)

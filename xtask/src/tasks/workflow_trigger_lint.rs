@@ -722,6 +722,7 @@ fn get_top_level_field<'a>(workflow: &'a Value, field: &str) -> Option<&'a Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
 
     fn load_fixture(name: &str) -> Result<Value> {
         let root = project_root()?;
@@ -976,7 +977,7 @@ mod tests {
     /// above a `remainder` swallows the remainder, which then appears in no
     /// count and no receipt (#16164 review).
     #[test]
-    fn governance_line_accounts_for_every_required_context() {
+    fn governance_line_accounts_for_every_required_context() -> Result<()> {
         // The JSON receipt has always carried `external`; the text line did not,
         // so a reader saw `governed/required` and read the difference as gaps
         // (#16172 review). The three counts must partition the required set, or
@@ -989,18 +990,68 @@ mod tests {
             accepted_exemptions: 2,
             remainders: 1,
         };
-        assert_eq!(
-            summary.governed + summary.external + summary.ungoverned.len(),
-            summary.required_contexts,
-            "the fixture itself must partition the required set"
+        ensure!(
+            summary.governed + summary.external + summary.ungoverned.len()
+                == summary.required_contexts,
+            "the fixture itself must partition the required set: \
+             {} + {} + {} != {}",
+            summary.governed,
+            summary.external,
+            summary.ungoverned.len(),
+            summary.required_contexts
         );
+        // The receipt must also reconcile with what the classifier actually
+        // derives from a required set exercising every class at once: three
+        // governed contexts, one external producer, one repository job that
+        // names no workflow. A count that drifts from the classified outcomes
+        // breaks the same partition the line prints (#16201).
+        let classified = governance_summary(&policy(
+            vec![governance_row("ci.yml", true)],
+            vec![
+                inventory_row("Governed One", Some("ci.yml"), true),
+                inventory_row("Governed Two", Some("ci.yml"), true),
+                inventory_row("Governed Three", Some("ci.yml"), true),
+                inventory_row_produced_by("codecov/patch", Some("external"), Some("codecov"), true),
+                inventory_row_produced_by("Stray Job", Some("repository-job"), None, true),
+            ],
+        ));
+        ensure!(
+            classified.governed == 3,
+            "three repository rows name a governed workflow: got {}",
+            classified.governed
+        );
+        ensure!(
+            classified.external == 1,
+            "one external producer is counted out of scope: got {}",
+            classified.external
+        );
+        ensure!(
+            classified.ungoverned.len() == 1,
+            "one workflow-less job stays ungoverned: got {:?}",
+            classified.ungoverned
+        );
+        ensure!(
+            classified.governed + classified.external + classified.ungoverned.len()
+                == classified.required_contexts,
+            "the classified counts must partition the required set: \
+             {} + {} + {} != {}",
+            classified.governed,
+            classified.external,
+            classified.ungoverned.len(),
+            classified.required_contexts
+        );
+
         let line = summary.summary_line();
-        assert!(line.contains("3/5 ruleset-required contexts governed"), "{line}");
-        assert!(
+        ensure!(
+            line.contains("3/5 ruleset-required contexts governed"),
+            "the governed fraction must lead the line: {line}"
+        );
+        ensure!(
             line.contains("1 produced outside this repository"),
             "the out-of-scope count is the one the text used to drop: {line}"
         );
-        assert!(line.contains("1 ungoverned"), "{line}");
+        ensure!(line.contains("1 ungoverned"), "the gap count must be printed: {line}");
+        Ok(())
     }
 
     #[test]

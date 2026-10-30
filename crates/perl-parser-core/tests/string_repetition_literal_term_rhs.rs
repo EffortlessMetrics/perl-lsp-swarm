@@ -299,10 +299,9 @@ fn division_after_a_string_is_not_binary_repetition() {
 }
 
 #[test]
-fn word_not_and_angle_bracket_terms_remain_outside_this_classifier() {
-    for source in
-        [r#"my $value = "x" x not 1;"#, r#"my $value = "x" x <>;"#, r#"my $value = "x" x <STDIN>;"#]
-    {
+fn angle_bracket_terms_remain_outside_this_classifier() {
+    // Word-not association is supported and protected separately by #13932.
+    for source in [r#"my $value = "x" x <>;"#, r#"my $value = "x" x <STDIN>;"#] {
         assert_not_repetition(source);
     }
 }

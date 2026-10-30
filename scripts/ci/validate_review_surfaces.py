@@ -177,7 +177,6 @@ SELF_CONFLICT_KEY = "authority_review.manifest"
 DETECTOR_FILES = (
     "docs/agents/CLOSE_PROOF_POLICY.md",
     "docs/reference/CONFIGURATION_SCHEMA.md",
-    "docs/agents/pr-ledger.schema.json",
     "docs/policy/REVIEW_SURFACES.md",
     "xtask/src/bin/semantic-close-containment.rs",
     "xtask/src/tasks/ripr_evidence.rs",

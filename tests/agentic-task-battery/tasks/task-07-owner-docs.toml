@@ -1,0 +1,59 @@
+# agentic_task_battery.v1 — Task 7: Find the owning crate docs for a change
+# Source: recovered usability-battery design, Task 7.
+# Grader supplies file_path (default below is a real path on origin/main).
+# Owner docs live at `crates/<crate>/CLAUDE.md` (0× `AGENTS.md` under crates/).
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-07-owner-docs"
+title = "Find the owning crate docs for a change"
+goal = "Identify the owning crate for a grader-supplied file path, locate its package-local owner doc, and cite the facts that govern a change: crate purpose, the commands to build/test/lint it, and one architecture constraint from that doc."
+starting_state = "Grader supplies a file path, e.g. `crates/perl-lsp-rs-core/src/providers/mod.rs`."
+instruction = "Identify the owning crate, locate its package-local owner doc, and cite the facts that govern your change: crate purpose, the commands to build/test/lint it, and one architecture constraint from that doc."
+max_duration = "10 min"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Hunting for `crates/<x>/AGENTS.md` (zero exist; all owner docs are `CLAUDE.md`) and concluding the crate has no owner doc, or answering from root docs alone."
+automation = "partial"
+
+allowed_commands = ["ls crates/<crate>/CLAUDE.md"]
+
+[params]
+  "file-path" = "Repo-relative file path supplied by the grader (default: crates/perl-lsp-rs-core/src/providers/mod.rs)"
+
+[[rubric]]
+  step_id = "t7-s1"
+  description = "Correct owning crate named"
+  points = 2
+  mode = "auto"
+  check = "owning_crate"
+
+[[rubric]]
+  step_id = "t7-s2"
+  description = "Opens `crates/<crate>/CLAUDE.md` (the file that actually exists)"
+  points = 3
+  mode = "auto"
+  check = "owner_doc"
+
+[[rubric]]
+  step_id = "t7-s3"
+  description = "Cites purpose correctly"
+  points = 2
+  mode = "manual"
+  verify = "Open crates/<crate>/CLAUDE.md and quote the Role/Owns section."
+  evidence = "Quoted purpose lines from the owner doc."
+
+[[rubric]]
+  step_id = "t7-s4"
+  description = "Cites the crate's build/test/lint commands"
+  points = 2
+  mode = "manual"
+  verify = "Open crates/<crate>/CLAUDE.md and quote the Focused validation section (else the repo default: `cargo test -p <crate>`, `cargo clippy -p <crate> --all-targets --locked -- -D warnings`)."
+  evidence = "Quoted commands from the owner doc, or the stated repo default with its source."
+
+[[rubric]]
+  step_id = "t7-s5"
+  description = "Cites one architecture/dependency constraint"
+  points = 1
+  mode = "manual"
+  verify = "Open crates/<crate>/CLAUDE.md and quote one constraint (Does-not-own / Neighbors / Review hotspots / Claim boundary)."
+  evidence = "Quoted constraint line from the owner doc."

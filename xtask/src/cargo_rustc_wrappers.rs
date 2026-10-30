@@ -727,6 +727,7 @@ fn local_of(slot: &WrapperSlot) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_some_with, must_with};
     use std::collections::BTreeSet;
     use std::fs;
 
@@ -774,9 +775,9 @@ mod tests {
 
     fn write_config(path: &Path, body: &str) {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create config parent");
+            must_with(fs::create_dir_all(parent), "create config parent");
         }
-        fs::write(path, body).expect("write config");
+        must_with(fs::write(path, body), "write config");
     }
 
     /// Encode a filesystem path as a TOML string value.
@@ -839,11 +840,11 @@ mod tests {
     }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = must_with(tempfile::tempdir(), "tempdir");
         let cargo_home = root.path().join("cargo-home");
         let workspace = root.path().join("workspace");
-        fs::create_dir_all(&cargo_home).expect("cargo home");
-        fs::create_dir_all(workspace.join(".cargo")).expect("workspace cargo dir");
+        must_with(fs::create_dir_all(&cargo_home), "cargo home");
+        must_with(fs::create_dir_all(workspace.join(".cargo")), "workspace cargo dir");
         (root, cargo_home, workspace.clone(), workspace)
     }
 
@@ -955,12 +956,12 @@ mod tests {
 
     #[test]
     fn parent_directory_config_applies_when_workspace_does_not_set_the_key() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = must_with(tempfile::tempdir(), "tempdir");
         let home = root.path().join("cargo-home");
         let parent = root.path().join("parent");
         let ws = parent.join("workspace");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(&home), "create cargo home");
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         write_config(
             &parent.join(".cargo/config.toml"),
             "[build]\nrustc-wrapper = \"from-parent\"\n",
@@ -972,12 +973,12 @@ mod tests {
 
     #[test]
     fn workspace_config_overrides_parent_and_cargo_home() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = must_with(tempfile::tempdir(), "tempdir");
         let home = root.path().join("cargo-home");
         let parent = root.path().join("parent");
         let ws = parent.join("workspace");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(&home), "create cargo home");
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         write_config(&home.join("config.toml"), "[build]\nrustc-wrapper = \"from-home\"\n");
         write_config(
             &parent.join(".cargo/config.toml"),
@@ -1082,7 +1083,7 @@ mod tests {
         assert!(
             resolved.limitations().iter().any(|item| item == CARGO_CONFIG_WRAPPER_NOT_RESOLVED)
         );
-        fs::remove_file(ws.join(".cargo/config.toml")).unwrap();
+        must_with(fs::remove_file(ws.join(".cargo/config.toml")), "remove workspace config");
         let none = resolve_tree(&ws, root.path(), &home);
         assert_ne!(resolved.subject_digest(), none.subject_digest());
     }
@@ -1099,16 +1100,16 @@ mod tests {
         assert!(!resolved.is_complete());
         let readable = resolve_tree(&ws, root.path(), &home);
         assert_ne!(resolved.subject_digest(), readable.subject_digest());
-        fs::remove_file(&path).unwrap();
+        must_with(fs::remove_file(&path), "remove config");
         let none = resolve_tree(&ws, root.path(), &home);
         assert_ne!(resolved.subject_digest(), none.subject_digest());
     }
 
     #[test]
     fn unknown_cargo_home_is_a_named_limitation_unless_env_resolves_both_keys() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = must_with(tempfile::tempdir(), "tempdir");
         let ws = root.path().join("workspace");
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         let env = EnvSnapshot::default();
         let unresolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
         assert!(!unresolved.is_complete());
@@ -1127,11 +1128,11 @@ mod tests {
         let abs = ws.join("tools").join("sccache");
         write_rustc_wrapper(&ws.join(".cargo/config.toml"), &abs);
         let resolved = resolve_tree(&ws, root.path(), &home);
-        let durable = resolved.rustc_wrapper().expect("wrapper");
+        let durable = must_some_with(resolved.rustc_wrapper(), "wrapper");
         assert!(!durable.starts_with('/'), "{durable}");
         assert!(!durable.contains(ws.to_string_lossy().as_ref()), "{durable}");
         assert_eq!(durable, "tools/sccache");
-        let local = resolved.rustc_wrapper_local().expect("local");
+        let local = must_some_with(resolved.rustc_wrapper_local(), "local");
         assert!(local.contains("sccache"));
     }
 
@@ -1157,12 +1158,12 @@ mod tests {
 
     #[test]
     fn parent_relative_wrapper_resolves_from_the_parent_origin_not_the_workspace() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = must_with(tempfile::tempdir(), "tempdir");
         let home = root.path().join("cargo-home");
         let parent = root.path().join("parent");
         let ws = parent.join("workspace");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(&home), "create cargo home");
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         write_config(
             &parent.join(".cargo/config.toml"),
             "[build]\nrustc-wrapper = \"tools/rel-parent\"\n",
@@ -1172,7 +1173,7 @@ mod tests {
             "[build]\nrustc-wrapper = \"tools/rel-parent\"\n",
         );
         let from_parent = {
-            fs::remove_file(ws.join(".cargo/config.toml")).unwrap();
+            must_with(fs::remove_file(ws.join(".cargo/config.toml")), "remove workspace config");
             resolve_tree(&ws, root.path(), &home)
         };
         write_config(
@@ -1182,10 +1183,10 @@ mod tests {
         let from_workspace = resolve_tree(&ws, root.path(), &home);
         assert_ne!(from_parent.subject_digest(), from_workspace.subject_digest());
         assert_eq!(from_workspace.rustc_wrapper(), Some("tools/rel-parent"));
-        let parent_durable = from_parent.rustc_wrapper().expect("parent wrapper");
+        let parent_durable = must_some_with(from_parent.rustc_wrapper(), "parent wrapper");
         assert_ne!(parent_durable, "tools/rel-parent");
         assert!(parent_durable.starts_with("rel-parent@sha256:"), "{parent_durable}");
-        let parent_local = from_parent.rustc_wrapper_local().expect("parent local");
+        let parent_local = must_some_with(from_parent.rustc_wrapper_local(), "parent local");
         assert!(parent_local.ends_with("parent/tools/rel-parent"), "{parent_local}");
         assert!(from_parent.is_complete());
         assert!(from_workspace.is_complete());
@@ -1199,10 +1200,11 @@ mod tests {
             "[build]\nrustc-wrapper = \"home-tools/rel-home\"\n",
         );
         let resolved = resolve_tree(&ws, root.path(), &home);
-        let durable = resolved.rustc_wrapper().expect("wrapper");
+        let durable = must_some_with(resolved.rustc_wrapper(), "wrapper");
         assert!(durable.starts_with("rel-home@sha256:"), "{durable}");
-        let local = resolved.rustc_wrapper_local().expect("local");
-        let expected = home.parent().expect("home parent").join("home-tools").join("rel-home");
+        let local = must_some_with(resolved.rustc_wrapper_local(), "local");
+        let expected =
+            must_some_with(home.parent(), "home parent").join("home-tools").join("rel-home");
         assert_eq!(local, expected.to_string_lossy().replace('\\', "/"));
         assert!(resolved.is_complete());
     }
@@ -1215,7 +1217,7 @@ mod tests {
         env.insert(WORKSPACE_WRAPPER_ENV, "");
         let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
         assert_eq!(resolved.rustc_wrapper(), Some("tools/env-rel"));
-        let local = resolved.rustc_wrapper_local().expect("local");
+        let local = must_some_with(resolved.rustc_wrapper_local(), "local");
         assert_eq!(local, ws.join("tools/env-rel").to_string_lossy().replace('\\', "/"));
         assert!(resolved.is_complete());
     }
@@ -1229,8 +1231,8 @@ mod tests {
         let first = resolve_tree(&ws, root.path(), &home);
         write_rustc_wrapper(&ws.join(".cargo/config.toml"), &second_path);
         let second = resolve_tree(&ws, root.path(), &home);
-        let first_durable = first.rustc_wrapper().expect("first");
-        let second_durable = second.rustc_wrapper().expect("second");
+        let first_durable = must_some_with(first.rustc_wrapper(), "first");
+        let second_durable = must_some_with(second.rustc_wrapper(), "second");
         assert!(first_durable.starts_with("sccache@sha256:"), "{first_durable}");
         assert!(second_durable.starts_with("sccache@sha256:"), "{second_durable}");
         assert_ne!(first_durable, second_durable);
@@ -1291,14 +1293,14 @@ mod tests {
 
     #[test]
     fn relative_workspace_root_still_sees_parent_config() {
-        let cwd = std::env::current_dir().expect("cwd");
-        let root = tempfile::tempdir_in(&cwd).expect("tempdir in cwd");
-        let rel_root = root.path().strip_prefix(&cwd).expect("tempdir under cwd");
+        let cwd = must_with(std::env::current_dir(), "cwd");
+        let root = must_with(tempfile::tempdir_in(&cwd), "tempdir in cwd");
+        let rel_root = must_with(root.path().strip_prefix(&cwd), "tempdir under cwd");
         let home = root.path().join("cargo-home");
         let parent = root.path().join("parent");
         let ws = parent.join("workspace");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(&home), "create cargo home");
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         write_config(
             &parent.join(".cargo/config.toml"),
             "[build]\nrustc-wrapper = \"from-parent\"\n",
@@ -1326,7 +1328,7 @@ mod tests {
         let escaped = ws.join("nested").join("..").join("..").join("outside").join("sccache");
         write_rustc_wrapper(&ws.join(".cargo/config.toml"), &escaped);
         let resolved = resolve_tree(&ws, root.path(), &home);
-        let durable = resolved.rustc_wrapper().expect("wrapper");
+        let durable = must_some_with(resolved.rustc_wrapper(), "wrapper");
         assert!(durable.starts_with("sccache@sha256:"), "{durable}");
         assert!(!durable.contains(".."), "{durable}");
         assert!(!durable.contains(root.path().to_string_lossy().as_ref()), "{durable}");
@@ -1344,7 +1346,9 @@ mod tests {
         env.insert(HOME_ENV, unix_home.to_string_lossy());
         match cargo_home_dir_on(&env, None, false) {
             CargoHome::Path(path) => assert_eq!(path, unix_home.join(".cargo")),
-            CargoHome::Unknown => panic!("HOME should win when windows=false"),
+            CargoHome::Unknown => {
+                must_some_with(Option::<()>::None, "HOME should win when windows=false")
+            }
         }
     }
 
@@ -1357,14 +1361,18 @@ mod tests {
         both.insert(USERPROFILE_ENV, windows_home.to_string_lossy());
         match cargo_home_dir_on(&both, None, true) {
             CargoHome::Path(path) => assert_eq!(path, windows_home.join(".cargo")),
-            CargoHome::Unknown => panic!("USERPROFILE should win when windows=true"),
+            CargoHome::Unknown => {
+                must_some_with(Option::<()>::None, "USERPROFILE should win when windows=true")
+            }
         }
 
         let mut home_only = EnvSnapshot::default();
         home_only.insert(HOME_ENV, unix_home.to_string_lossy());
         match cargo_home_dir_on(&home_only, None, true) {
             CargoHome::Path(path) => assert_eq!(path, unix_home.join(".cargo")),
-            CargoHome::Unknown => panic!("HOME is the Windows fallback"),
+            CargoHome::Unknown => {
+                must_some_with(Option::<()>::None, "HOME is the Windows fallback")
+            }
         }
     }
 
@@ -1380,8 +1388,8 @@ mod tests {
     #[test]
     fn toml_path_value_round_trips_windows_tempdir_shape() {
         let path = Path::new(r"D:\a\_temp\sccache");
-        let parsed = parse_config(&rustc_wrapper_config(path))
-            .unwrap_or_else(|err| panic!("literal path must parse: {err}"));
+        let parsed =
+            must_with(parse_config(&rustc_wrapper_config(path)), "literal path must parse");
         assert_eq!(parsed.rustc_wrapper.as_deref(), Some(r"D:\a\_temp\sccache"));
         assert!(parsed.rustc_workspace_wrapper.is_none());
         assert!(!parsed.include_present);
@@ -1396,8 +1404,10 @@ mod tests {
             encoded.contains("\\\\"),
             "backslashes must be escaped in a basic string: {encoded}"
         );
-        let parsed = parse_config(&format!("[build]\nrustc-wrapper = {encoded}\n"))
-            .unwrap_or_else(|err| panic!("apostrophe path must parse: {err}"));
+        let parsed = must_with(
+            parse_config(&format!("[build]\nrustc-wrapper = {encoded}\n")),
+            "apostrophe path must parse",
+        );
         assert_eq!(parsed.rustc_wrapper.as_deref(), Some(r"D:\Users\O'Brien\sccache"));
     }
 
@@ -1409,7 +1419,10 @@ mod tests {
         if Path::new("/unix/home").is_absolute() {
             match result {
                 CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
-                CargoHome::Unknown => panic!("POSIX absolute HOME should resolve on this host"),
+                CargoHome::Unknown => must_some_with(
+                    Option::<()>::None,
+                    "POSIX absolute HOME should resolve on this host",
+                ),
             }
         } else {
             assert!(
@@ -1421,10 +1434,10 @@ mod tests {
 
     #[test]
     fn empty_cargo_home_falls_through_to_platform_home() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = must_with(tempfile::tempdir(), "tempdir");
         let user_home = root.path().join("user-home");
         let ws = root.path().join("workspace");
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         write_config(
             &user_home.join(".cargo/config.toml"),
             "[build]\nrustc-wrapper = \"from-home\"\n",
@@ -1439,10 +1452,10 @@ mod tests {
 
     #[test]
     fn whitespace_cargo_home_is_a_directory_not_a_fallback() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = must_with(tempfile::tempdir(), "tempdir");
         let user_home = root.path().join("user-home");
         let ws = root.path().join("workspace");
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         write_config(
             &user_home.join(".cargo/config.toml"),
             "[build]\nrustc-wrapper = \"from-home\"\n",
@@ -1457,12 +1470,12 @@ mod tests {
 
     #[test]
     fn relative_cargo_home_is_resolved_from_process_cwd() {
-        let cwd = std::env::current_dir().expect("cwd");
-        let root = tempfile::tempdir_in(&cwd).expect("tempdir in cwd");
-        let rel_root = root.path().strip_prefix(&cwd).expect("under cwd");
+        let cwd = must_with(std::env::current_dir(), "cwd");
+        let root = must_with(tempfile::tempdir_in(&cwd), "tempdir in cwd");
+        let rel_root = must_with(root.path().strip_prefix(&cwd), "under cwd");
         let home = root.path().join("cargo-home");
         let ws = root.path().join("workspace");
-        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        must_with(fs::create_dir_all(ws.join(".cargo")), "create workspace cargo dir");
         write_config(&home.join("config.toml"), "[build]\nrustc-wrapper = \"from-rel-home\"\n");
         let mut env = EnvSnapshot::default();
         env.insert(CARGO_HOME_ENV, rel_root.join("cargo-home").to_string_lossy());
@@ -1478,7 +1491,9 @@ mod tests {
         assert!(matches!(cargo_home_dir_on(&env, None, false), CargoHome::Unknown));
         match cargo_home_dir_on(&env, Some(Path::new("/ws")), false) {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/ws/rel-home")),
-            CargoHome::Unknown => panic!("cwd should resolve relative CARGO_HOME"),
+            CargoHome::Unknown => {
+                must_some_with(Option::<()>::None, "cwd should resolve relative CARGO_HOME")
+            }
         }
 
         let (root, _home, ws, _) = fixture();
@@ -1525,7 +1540,7 @@ mod tests {
         assert!(
             resolved.limitations().iter().any(|item| item == CARGO_CONFIG_WRAPPER_NOT_RESOLVED)
         );
-        fs::remove_file(ws.join(".cargo/config.toml")).unwrap();
+        must_with(fs::remove_file(ws.join(".cargo/config.toml")), "remove workspace config");
         let none = resolve_tree(&ws, root.path(), &home);
         assert_ne!(resolved.subject_digest(), none.subject_digest());
     }
@@ -1540,7 +1555,7 @@ mod tests {
         assert!(
             resolved.limitations().iter().any(|item| item == CARGO_CONFIG_WRAPPER_NOT_RESOLVED)
         );
-        fs::remove_file(ws.join(".cargo/config.toml")).unwrap();
+        must_with(fs::remove_file(ws.join(".cargo/config.toml")), "remove workspace config");
         let none = resolve_tree(&ws, root.path(), &home);
         assert_ne!(resolved.subject_digest(), none.subject_digest());
     }

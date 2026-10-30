@@ -26,13 +26,13 @@ def digest(value: bytes) -> str:
 
 
 class PrebuiltPayloadAdapterTests(unittest.TestCase):
-    def fixture(self, root: Path, target: str = TARGET) -> dict[str, Path | str]:
+    def fixture(self, root: Path, target: str = TARGET, version: str = VERSION, mapped: bool = False) -> dict[str, Path | str]:
         windows = "windows" in target
         suffix = ".exe" if windows else ""
         vscode_target = "win32-x64" if windows else "linux-x64"
         platform = "windows" if windows else "linux"
         libc = None if windows else "gnu"
-        package_name = f"perllsp-{VERSION}-{target}"
+        package_name = f"perllsp-{version}-{target}"
         package = root / "dist" / package_name
         package.mkdir(parents=True)
         archive = root / "dist" / f"{package_name}{'.zip' if windows else '.tar.gz'}"
@@ -49,19 +49,27 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
         else:
             with tarfile.open(archive, "w:gz") as bundle:
                 bundle.add(package, arcname=package_name)
-        topology = {"schema": 1, "release": VERSION, "frozen_product_sha": SOURCE, "prepared_swarm_sha": None, "binary_targets": [{"target": target, "os": platform, "architecture": "x86_64", "libc": libc, "archive_name": archive.name, "required_members": [f"perllsp{suffix}", f"perl-dap{suffix}"]}]}
+        topology = {"schema": 1, "release": version, "frozen_product_sha": SOURCE, "prepared_swarm_sha": None, "binary_targets": [{"target": target, "os": platform, "architecture": "x86_64", "libc": libc, "archive_name": archive.name, "required_members": [f"perllsp{suffix}", f"perl-dap{suffix}"]}]}
+        if mapped:
+            topology["binary_targets"][0]["runner"] = "windows-2022" if windows else "ubuntu-22.04"
+            selected = json.loads((Path(__file__).parents[1] / "fixtures/rc_vsix_binding/valid.topology.v4.json").read_text())
+            schema_path = "schemas/release_topology.v4.schema.json"
+            selected["sources"][schema_path]["sha256"] = digest((Path(__file__).parents[1] / schema_path).read_bytes())
+            selected.update(release=version, workspace_version=version, frozen_product_sha="b" * 40, prepared_swarm_sha=SOURCE, binary_targets=topology["binary_targets"])
+            selected["vsix"].update(candidate_id="candidate-1", publisher="EffortlessMetrics", name="perl-lsp-rs", asset_name=f"perl-lsp-rs-0.19.7-{version}.vsix")
+            topology = selected
         topology_path = root / "topology.json"
         topology_path.write_text(json.dumps(topology), encoding="utf-8")
         topology_sha = digest(topology_path.read_bytes())
-        identity = {"schema_version": "perl_lsp.release_build_identity.v1", "repository": "EffortlessMetrics/perl-lsp-swarm", "source_revision": SOURCE, "source_tree_digest": "b" * 64, "release_version": VERSION, "target": target, "profile": "release", "candidate_identity": "candidate-1", "artifact_role": "archive", "product_identity_contract_digest": "c" * 64, "release_topology_digest": topology_sha, "toolchain_digest": "d" * 64}
+        identity = {"schema_version": "perl_lsp.release_build_identity.v1", "repository": "EffortlessMetrics/perl-lsp-swarm", "source_revision": SOURCE, "source_tree_digest": "b" * 64, "release_version": version, "target": target, "profile": "release", "candidate_identity": "candidate-1", "artifact_role": "archive", "product_identity_contract_digest": "c" * 64, "release_topology_digest": topology_sha, "toolchain_digest": "d" * 64}
         receipt_path = root / "receipt.json"
         binaries = []
         for name, role in (("perllsp", "server"), ("perl-dap", "dap")):
-            packet = {"schema_version": "perl_lsp.binary_identity.v1", "product": {"name": "perl-lsp", "public_repository": "EffortlessMetrics/perl-lsp", "development_repository": "EffortlessMetrics/perl-lsp-swarm"}, "binary": {"executable": name, "cargo_package": name, "role": role, "version": VERSION}, "build": {"source_revision": SOURCE, "source_tree_digest": "b" * 64, "target": target, "profile": "release", "identity_state": "exact"}, "artifact": {"role": "archive", "candidate_identity": "candidate-1"}, "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"}, "limitations": ["artifact_digest_not_externally_bound"]}
+            packet = {"schema_version": "perl_lsp.binary_identity.v1", "product": {"name": "perl-lsp", "public_repository": "EffortlessMetrics/perl-lsp", "development_repository": "EffortlessMetrics/perl-lsp-swarm"}, "binary": {"executable": name, "cargo_package": name, "role": role, "version": version}, "build": {"source_revision": SOURCE, "source_tree_digest": "b" * 64, "target": target, "profile": "release", "identity_state": "exact"}, "artifact": {"role": "archive", "candidate_identity": "candidate-1"}, "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"}, "limitations": ["artifact_digest_not_externally_bound"]}
             binaries.append({"role": role, "executable": name, "path_role": f"target/{target}/release/{name}{suffix}", "file_sha256": digest(b"build-" + name.encode()), "packet_sha256": digest(json.dumps(packet, sort_keys=True, separators=(",", ":")).encode() + b"\n"), "packet": packet})
         receipt = {"schema_version": "perl_lsp.release_build_identity_receipt.v1", "status": "pass", "input_sha256": digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode() + b"\n"), "input": identity, "runner": "cargo", "build_execution": "external_release_workflow", "build_commands": [["cargo", "build", "--locked", "--release", "--target", target, "-p", "perllsp", "--bin", "perllsp"], ["cargo", "build", "--locked", "--release", "--target", target, "-p", "perl-dap", "--bin", "perl-dap"]], "binaries": binaries, "claim_boundary": "test"}
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-        evidence = {"schema_version": "perl_lsp.release_package_evidence.v1", "status": "pass", "source_revision": SOURCE, "release_version": VERSION, "target": target, "archive": {"name": archive.name, "sha256": digest(archive.read_bytes())}, "binaries": [{"executable": name, "member_path": f"{name}{suffix}" if windows else f"{package_name}/{name}", "pre_strip_sha256": row["file_sha256"], "post_strip_sha256": digest(payloads[name])} for name, row in zip(payloads, binaries, strict=True)]}
+        evidence = {"schema_version": "perl_lsp.release_package_evidence.v1", "status": "pass", "source_revision": SOURCE, "release_version": version, "target": target, "archive": {"name": archive.name, "sha256": digest(archive.read_bytes())}, "binaries": [{"executable": name, "member_path": f"{name}{suffix}" if windows else f"{package_name}/{name}", "pre_strip_sha256": row["file_sha256"], "post_strip_sha256": digest(payloads[name])} for name, row in zip(payloads, binaries, strict=True)]}
         evidence_path = root / "evidence.json"
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
         projection_path = root / "projection.json"
@@ -78,7 +86,7 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
             "extension_id": "EffortlessMetrics.perl-lsp-rs",
         }
         values.update(overrides)
-        return ["python", "scripts/prepare_vsix_prebuilt_payload.py", "--receipt", str(paths["receipt"]), "--package-evidence", str(paths["evidence"]), "--archive", str(paths["archive"]), "--topology", str(paths["topology"]), "--projection", str(paths["projection"]), "--output", str(paths["output"]), "--source-sha", values["source_sha"], "--target", values["target"], "--candidate-id", values["candidate_id"], "--release-version", values["release_version"], "--inventory-sha256", values["inventory_sha256"], "--extension-id", values["extension_id"]]
+        return [sys.executable, "scripts/prepare_vsix_prebuilt_payload.py", "--receipt", str(paths["receipt"]), "--package-evidence", str(paths["evidence"]), "--archive", str(paths["archive"]), "--topology", str(paths["topology"]), "--projection", str(paths["projection"]), "--output", str(paths["output"]), "--source-sha", values["source_sha"], "--target", values["target"], "--candidate-id", values["candidate_id"], "--release-version", values["release_version"], "--inventory-sha256", values["inventory_sha256"], "--extension-id", values["extension_id"]]
 
     def namespace(self, paths: dict[str, Path | str]) -> object:
         spec = importlib.util.spec_from_file_location("prepare_payload", Path(__file__).with_name("prepare_vsix_prebuilt_payload.py"))
@@ -121,6 +129,38 @@ class PrebuiltPayloadAdapterTests(unittest.TestCase):
                 str(paths["output"] / "bin" / vscode_target / f"perl-dap{suffix}"), target, vscode_target, suffix,
             ], cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False,
         )
+
+    def test_mapped_raw_topology_rejects_duplicate_schema_and_nested_identity(self) -> None:
+        for nested in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                paths = self.fixture(Path(directory), version="0.18.0-rc.7", mapped=True)
+                raw = paths["topology"].read_text()
+                if nested:
+                    raw = raw.replace('"candidate_id": "candidate-1"', '"candidate_id": "candidate-1", "candidate_id": "candidate-1"')
+                else:
+                    raw = raw.replace('"schema": 4', '"schema": 3, "schema": 4')
+                paths["topology"].write_text(raw)
+                result = subprocess.run(self.command(paths, release_version="0.18.0-rc.7"), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertRegex(result.stderr, "duplicate JSON key|schema must appear once")
+                self.assertNotIn("digest differs", result.stderr)
+
+    def test_mapped_rc_adapter_preserves_numeric_extension_and_native_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.fixture(root, version="0.18.0-rc.7", mapped=True)
+            result = subprocess.run(self.command(paths, release_version="0.18.0-rc.7"), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads((paths["output"] / "vsix-candidate-payload.json").read_text())
+            self.assertEqual(manifest["schema"], "vsix_candidate_payload.v2")
+            self.assertEqual(manifest["extension"]["version"], "0.19.7")
+            self.assertEqual(manifest["candidate"]["release"], "0.18.0-rc.7")
+            self.assertTrue(manifest["preRelease"])
+            self.assertEqual((paths["output"] / "bin/linux-x64/perllsp").read_bytes(), b"server")
+            self.assertEqual((paths["output"] / "bin/linux-x64/perl-dap").read_bytes(), b"dap")
+            for arguments in ({"release_version": "0.18.0-rc.8"}, {"release_version": "0.18.0-rc.7", "extension_id": "another.extension"}):
+                refused = subprocess.run(self.command(paths, **arguments), cwd=Path(__file__).parents[1], capture_output=True, text=True, check=False)
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
 
     def test_real_evidence_pipeline_emits_payload_and_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
