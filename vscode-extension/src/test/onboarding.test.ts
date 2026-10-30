@@ -21,10 +21,10 @@ import {
   resolveUnixShellInvocationFallback,
   toPosixShellCommand,
   classifyStartupFailure,
-  PERL_MISSING_MESSAGE,
   STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE,
 } from '../onboarding';
 import type { HealthCheckResult } from '../onboarding';
+import { registerServerCommandGroup } from '../serverCommandGroup';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -171,48 +171,6 @@ describe('OnboardingManager.checkPerltidyInstalled', () => {
   });
 });
 
-describe('OnboardingManager.checkPerlcriticSetup (tilde expansion)', () => {
-  // Use a unique temp file name to avoid collisions across parallel test runs.
-  // We write inside os.homedir() because resolveUserPath expands `~/` to
-  // os.homedir() and we need fs.existsSync to confirm the expansion is correct.
-  // The file is cleaned up in a `finally` block regardless of test outcome.
-  test('accepts ~/ profile path when file exists in the home directory', async () => {
-    const profileName = `.perlcritic-test-${Date.now()}-${process.pid}.rc`;
-    const profilePath = path.join(os.homedir(), profileName);
-    let profileWritten = false;
-    try {
-      fs.writeFileSync(profilePath, 'severity = 3\n');
-      profileWritten = true;
-
-      (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
-        get: (key: string, defaultValue?: unknown) => {
-          if (key === 'perlcritic') {
-            return {
-              enabled: true,
-              profile: `~/${profileName}`,
-            };
-          }
-          return defaultValue;
-        },
-      }));
-
-      const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
-      mockExecCheck(mgr, () =>
-        Promise.resolve({ stdout: 'Perl::Critic version 1.156', stderr: '' }),
-      );
-
-      const result = await mgr.checkPerlcriticSetup();
-      expect(result.ok).toBe(true);
-      expect(result.status).toBe(HealthCheckStatus.Ok);
-      expect(result.detail).toBe('perlcritic found');
-    } finally {
-      if (profileWritten) {
-        fs.rmSync(profilePath, { force: true });
-      }
-    }
-  });
-});
-
 describe('selectWindowsCommandCandidate', () => {
   test('prefers executable or wrapper paths over extensionless shims', () => {
     const selected = selectWindowsCommandCandidate(
@@ -285,49 +243,109 @@ describe('resolveUnixShellInvocationFallback', () => {
 // ---------------------------------------------------------------------------
 
 describe('OnboardingManager.checkPerlcriticSetup', () => {
-  const originalWorkspaceFolders = vscode.workspace.workspaceFolders;
-
   afterEach(() => {
-    setWorkspaceFolders(originalWorkspaceFolders);
     jest.restoreAllMocks();
+    setWorkspaceFolders(undefined);
   });
 
-  test('resolves relative perlcritic profile paths from workspace root', async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ob-critic-'));
-    const configDir = path.join(workspaceRoot, 'config');
-    const profilePath = path.join(configDir, 'perlcriticrc');
-    fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(profilePath, 'severity = 3\n');
-    setWorkspaceFolders([{ uri: vscode.Uri.file(workspaceRoot), name: 'workspace', index: 0 }]);
+  test.each([
+    ['default', {}],
+    ['native', { 'critic.engine': 'native', 'critic.enabled': true }],
+    ['disabled', { 'critic.enabled': false, perlcritic: { enabled: false } }],
+    ['old enabled alias', { perlcritic: { enabled: true } }],
+    ['legacy engine', { 'critic.engine': 'legacy' }],
+    ['external engine', { 'critic.engine': 'external' }],
+    ['perlcritic engine', { 'critic.engine': 'perlcritic' }],
+    ['existing profile', { perlcritic: { profile: __filename } }],
+    ['absolute profile', { perlcritic: { profile: 'C:/missing/critic.rc' } }],
+    ['relative profile', { perlcritic: { profile: 'config/perlcriticrc' } }],
+    ['tilde profile', { perlcritic: { profile: '~/critic.rc' } }],
+    [
+      'canonical native plus stale alias',
+      {
+        'critic.engine': 'native',
+        'critic.enabled': true,
+        perlcritic: { enabled: true },
+      },
+    ],
+  ])('never executes perlcritic or probes profiles: %s', async (_name, settings) => {
+    const values = settings as Record<string, unknown>;
+    setWorkspaceFolders(undefined);
+    const update = jest.fn();
     jest.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
-      get: jest.fn(() => ({ enabled: true, profile: 'config/perlcriticrc' })),
+      get: jest.fn((key: string, fallback: unknown) => values[key] ?? fallback),
+      update,
     } as unknown as vscode.WorkspaceConfiguration);
-
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
-    mockExecCheck(mgr, () => Promise.resolve({ stdout: 'perlcritic 1.148', stderr: '' }));
+    mockExecCheck(mgr, () => Promise.resolve({ stdout: 'perlcritic available', stderr: '' }));
+    const profileProbe = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'existsSync');
     const result = await mgr.checkPerlcriticSetup();
-
-    expect(result.ok).toBe(true);
-    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    expect(mgr._execCheck).not.toHaveBeenCalled();
+    expect(profileProbe).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(result.detail).toContain('Native Critic does not require an external binary');
+    expect(result.detail).not.toContain('cpanm');
+    expect(result.detail).not.toContain('Perl::Critic is disabled');
+    const old = values.perlcritic as { enabled?: boolean; profile?: string } | undefined;
+    const needsReview =
+      old?.enabled === true ||
+      Boolean(old?.profile) ||
+      ['legacy', 'external', 'perlcritic'].includes(String(values['critic.engine']));
+    expect(result.status).toBe(needsReview ? HealthCheckStatus.Warning : HealthCheckStatus.Ok);
+    expect(result.ok).toBe(!needsReview);
   });
 
-  test('skips profile existence check when workspace is undefined and path is relative', async () => {
-    // When no workspace folder is open, a relative profile path cannot be resolved
-    // to an absolute location.  The health check must skip the fs.existsSync probe
-    // and proceed as if no profile is configured (i.e. not warn "profile not found").
+  test.each([false, true])(
+    'keeps folder observations separate when reversed=%s',
+    async (reversed) => {
+      const folders = ['A', 'B'].map((name, index) => ({
+        name,
+        index,
+        uri: vscode.Uri.file(path.join(os.tmpdir(), name)),
+      }));
+      const rootA = folders[0];
+      if (reversed) folders.reverse();
+      setWorkspaceFolders(folders);
+      const scopes: unknown[] = [];
+      jest.spyOn(vscode.workspace, 'getConfiguration').mockImplementation((_section, scope) => {
+        scopes.push(scope);
+        return {
+          get: (key: string, fallback: unknown) =>
+            scope === rootA?.uri && key === 'critic.engine' ? 'legacy' : fallback,
+        } as vscode.WorkspaceConfiguration;
+      });
+      const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+      mockExecCheck(mgr, () => Promise.reject(new Error('forbidden subprocess')));
+      const result = await mgr.checkPerlcriticSetup();
+      expect(scopes).toEqual([undefined, folders[0]?.uri, folders[1]?.uri]);
+      expect(result.detail).toContain('folder A');
+      expect(result.detail).not.toContain('folder B');
+      expect(result.status).toBe(HealthCheckStatus.Warning);
+      expect(mgr._execCheck).not.toHaveBeenCalled();
+    },
+  );
+
+  test('composite health retains Perl/perltidy/binary checks without perlcritic execution', async () => {
     setWorkspaceFolders(undefined);
     jest.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
-      get: jest.fn(() => ({ enabled: true, profile: 'config/perlcriticrc' })),
+      get: jest.fn((key: string, fallback: unknown) =>
+        key === 'perlcritic' ? { enabled: true, profile: '~/missing.rc' } : fallback,
+      ),
     } as unknown as vscode.WorkspaceConfiguration);
-
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
-    mockExecCheck(mgr, () => Promise.resolve({ stdout: 'perlcritic 1.148', stderr: '' }));
-    const result = await mgr.checkPerlcriticSetup();
-
-    // Must not return a "profile not found" warning — without a workspace root
-    // we cannot verify existence, so we should proceed to check the binary.
-    expect(result.ok).toBe(true);
-    expect(result.status).not.toBe('warning');
+    mockExecCheck(mgr, (command) =>
+      command === 'perlcritic'
+        ? Promise.reject(new Error('forbidden subprocess'))
+        : Promise.resolve({ stdout: 'available', stderr: '' }),
+    );
+    const result = await mgr.runSetupHealthCheck(null);
+    expect(mgr._execCheck).toHaveBeenCalledWith('perl', ['-e', 'print $]']);
+    expect(mgr._execCheck).toHaveBeenCalledWith('perltidy', ['--version']);
+    expect(mgr._execCheck).toHaveBeenCalledTimes(2);
+    expect(result.find((row) => row.label === 'LSP binary')?.status).toBe(HealthCheckStatus.Error);
+    expect(result.find((row) => row.label === 'perlcritic')?.status).toBe(
+      HealthCheckStatus.Warning,
+    );
   });
 });
 
@@ -346,12 +364,71 @@ describe('OnboardingManager.checkBinaryDownloaded', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('returns ok when server path exists', () => {
+  test('returns ok for a regular file without requiring executable permissions', () => {
     const binPath = path.join(tmpDir, 'perl-lsp');
-    fs.writeFileSync(binPath, '#!/bin/sh\necho ok');
+    fs.writeFileSync(binPath, '#!/bin/sh\necho ok', { mode: 0o600 });
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
     const result = mgr.checkBinaryDownloaded(binPath);
     expect(result.ok).toBe(true);
+    expect(result.status).toBe(HealthCheckStatus.Ok);
+    expect(result.detail).toContain(binPath);
+  });
+
+  test('returns error for an existing directory', () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    const result = mgr.checkBinaryDownloaded(tmpDir);
+    expect(result).toEqual({
+      label: 'LSP binary',
+      ok: false,
+      status: HealthCheckStatus.Error,
+      detail: `perl-lsp binary path is not a regular file: ${tmpDir}`,
+    });
+  });
+
+  test('startup diagnostics describe an existing directory accurately', async () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    mockExecCheck(mgr, () => Promise.resolve({ stdout: '5.036000', stderr: '' }));
+    const message = await mgr.runStartupDiagnostics(tmpDir);
+    expect(message).toContain('binary (perllsp) is unavailable.');
+    expect(message).toContain(`path is not a regular file: ${tmpDir}`);
+    expect(message).not.toContain('not found');
+  });
+
+  test('rejects other nonfile filesystem entries', () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    const nonfileStats = fs.statSync(tmpDir);
+    nonfileStats.isFile = () => false;
+    nonfileStats.isDirectory = () => false;
+    const stat = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'statSync');
+    stat.mockReturnValueOnce(nonfileStats);
+    try {
+      expect(mgr.checkBinaryDownloaded(tmpDir)).toEqual({
+        label: 'LSP binary',
+        ok: false,
+        status: HealthCheckStatus.Error,
+        detail: `perl-lsp binary path is not a regular file: ${tmpDir}`,
+      });
+    } finally {
+      stat.mockRestore();
+    }
+  });
+
+  test('reports inspection errors without throwing or accepting the path', () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    const stat = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'statSync');
+    stat.mockImplementationOnce(() => {
+      throw new Error('metadata unavailable');
+    });
+    try {
+      expect(mgr.checkBinaryDownloaded(tmpDir)).toEqual({
+        label: 'LSP binary',
+        ok: false,
+        status: HealthCheckStatus.Error,
+        detail: `Unable to inspect perl-lsp binary path: ${tmpDir}`,
+      });
+    } finally {
+      stat.mockRestore();
+    }
   });
 
   test('returns error when server path is null', () => {
@@ -395,6 +472,55 @@ describe('OnboardingManager.runSetupHealthCheck', () => {
     const results: HealthCheckResult[] = await mgr.runSetupHealthCheck(binPath);
     expect(Array.isArray(results)).toBe(true);
     expect(results.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('directory rejection reaches the registered health command summary', async () => {
+    const output = makeOutputChannel() as vscode.LogOutputChannel;
+    const mgr = new OnboardingManager(makeContext(), output);
+    mockExecCheck(mgr, () => Promise.resolve({ stdout: '5.036000', stderr: '' }));
+    const disposables = registerServerCommandGroup({
+      outputChannel: output,
+      currentServerPath: () => tmpDir,
+      resolveServerPath: async () => tmpDir,
+      reinstallServerBinary: async () => {
+        throw new Error('unexpected reinstall');
+      },
+      restartServer: async () => {
+        throw new Error('unexpected restart');
+      },
+      runHealthCheck: (serverPath) => mgr.runSetupHealthCheck(serverPath),
+      runtimeHealthCheck: () => {
+        throw new Error('unexpected runtime probe');
+      },
+      currentRuntimeSnapshot: () => {
+        throw new Error('unexpected lifecycle probe');
+      },
+    });
+    const showError = jest.spyOn(vscode.window, 'showErrorMessage');
+    try {
+      const result = await vscode.commands.executeCommand('perl-lsp.runHealthCheck', tmpDir);
+      expect(result).toEqual({
+        ok: false,
+        checks: expect.arrayContaining([
+          {
+            label: 'LSP binary',
+            status: 'error',
+            detail: `perl-lsp binary path is not a regular file: ${tmpDir}`,
+          },
+        ]),
+      });
+      expect(output.appendLine).toHaveBeenCalledWith(
+        `[onboarding] [ERROR] LSP binary: perl-lsp binary path is not a regular file: ${tmpDir}`,
+      );
+      expect(output.appendLine).toHaveBeenCalledWith('[health-check] Results:');
+      expect(output.appendLine).toHaveBeenCalledWith(
+        `   LSP binary: perl-lsp binary path is not a regular file: ${tmpDir}`,
+      );
+      expect(showError).toHaveBeenCalledWith('Health check failed: LSP binary', 'Show Output');
+    } finally {
+      showError.mockRestore();
+      disposables.forEach((disposable) => disposable.dispose());
+    }
   });
 
   test('each result has label, ok, status, and detail properties', async () => {
@@ -524,20 +650,16 @@ describe('classifyStartupFailure', () => {
     return { label, ok, status, detail };
   }
 
-  test('returns Perl-missing message when the Perl check explicitly failed', () => {
+  test('does not blame optional Perl when binary evidence is healthy', () => {
     const results: HealthCheckResult[] = [
       makeResult('Perl interpreter', false, HealthCheckStatus.Error, 'perl: command not found'),
       makeResult('perltidy', true, HealthCheckStatus.Ok, 'perltidy found'),
       makeResult('LSP binary', true, HealthCheckStatus.Ok, 'Binary found: /usr/bin/perllsp'),
     ];
     const msg = classifyStartupFailure(results);
-    expect(msg).toBe(PERL_MISSING_MESSAGE);
-    expect(msg).toContain('5.10');
-    expect(msg).toContain('strawberryperl.com');
-    expect(msg).toContain('brew install perl');
-    expect(msg).toContain('package manager');
-    expect(msg).toMatch(/install|Install/);
-    expect(msg).not.toContain('Restart the server');
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toContain('Perl interpreter not found');
+    expect(msg).not.toContain('5.10');
   });
 
   test('returns binary-missing message when binary check failed and Perl is present', () => {
@@ -549,6 +671,37 @@ describe('classifyStartupFailure', () => {
     const msg = classifyStartupFailure(results);
     expect(msg).not.toContain('Install Perl');
     expect(msg).toMatch(/binary|perllsp/i);
+  });
+
+  test('returns binary-missing message when optional Perl check is absent', () => {
+    const msg = classifyStartupFailure([
+      makeResult('LSP binary', false, HealthCheckStatus.Error, 'binary not found'),
+    ]);
+    expect(msg).toContain('perllsp');
+    expect(msg).toContain('reinstall the extension');
+    expect(msg).not.toContain('Perl interpreter not found');
+  });
+
+  test('returns unknown failure when optional Perl result is absent', () => {
+    const msg = classifyStartupFailure([
+      makeResult('LSP binary', true, HealthCheckStatus.Ok, 'Binary found: /usr/bin/perllsp'),
+    ]);
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toBe(STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE);
+    expect(msg).not.toContain('Perl interpreter not found');
+  });
+
+  test.each([
+    [false, HealthCheckStatus.Warning],
+    [true, HealthCheckStatus.Error],
+  ])('does not infer a root cause from malformed binary result (%s, %s)', (ok, status) => {
+    const msg = classifyStartupFailure([
+      makeResult('Perl interpreter', false, HealthCheckStatus.Error, 'perl missing'),
+      makeResult('LSP binary', ok, status, 'ambiguous binary check'),
+    ]);
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toContain('Perl interpreter not found');
+    expect(msg).not.toContain('binary (perllsp) not found');
   });
 
   test('returns generic message when all checks pass (unknown crash)', () => {
@@ -563,7 +716,7 @@ describe('classifyStartupFailure', () => {
     expect(msg).not.toContain('perl-lsp binary not found');
   });
 
-  test('returns unavailable diagnostics when required result rows are absent', () => {
+  test('returns unavailable diagnostics when binary result is absent', () => {
     const msg = classifyStartupFailure([]);
     expect(msg).toBe(STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE);
     expect(msg).not.toContain('Install Perl');
@@ -629,6 +782,20 @@ describe('OnboardingManager.showWelcomeNotification', () => {
 // ---------------------------------------------------------------------------
 
 describe('OnboardingManager.runStartupDiagnostics', () => {
+  test('keeps absent optional Perl as a warning and leaves healthy binary startup unknown', async () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    mockExecCheck(mgr, () => Promise.reject(new Error('perl: command not found')));
+
+    const warning = await mgr.checkPerlInstalled();
+    expect(warning.status).toBe(HealthCheckStatus.Warning);
+    expect(warning.detail).toContain('core language server does not require Perl');
+
+    const msg = await mgr.runStartupDiagnostics(process.execPath);
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toContain('Perl interpreter not found');
+    expect(msg).not.toContain('5.10');
+  });
+
   test('does not blame optional Perl when the explicit binary check failed', async () => {
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
     mockExecCheck(mgr, () => Promise.reject(new Error('command not found')));
@@ -636,6 +803,7 @@ describe('OnboardingManager.runStartupDiagnostics', () => {
     const msg = await mgr.runStartupDiagnostics(null);
 
     expect(msg).toMatch(/binary|perllsp/i);
+    expect(msg).toContain('reinstall the extension');
     expect(msg).not.toContain('Install Perl 5.10');
   });
 
@@ -644,6 +812,7 @@ describe('OnboardingManager.runStartupDiagnostics', () => {
     mockExecCheck(mgr, (_cmd: string) => Promise.resolve({ stdout: '5.036000', stderr: '' }));
     const msg = await mgr.runStartupDiagnostics(null);
     expect(msg).toMatch(/binary|perllsp/i);
+    expect(msg).toContain('reinstall the extension');
     expect(msg).not.toContain('Install Perl 5.10');
   });
 

@@ -229,9 +229,9 @@ It is where parallel discovery gets stored until trusted change can catch up.
 
 ## Evidence Pointers
 
-- [`.claude/swarm-state/README.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/README.md)
-- [`.claude/swarm-state/discovered-issues.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/swarm-state/discovered-issues.md)
-- [`.claude/skills/plan-fix/SKILL.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/.claude/skills/plan-fix/SKILL.md)
-- [QUEUE_BOTTLENECK_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
+- [`.claude/swarm-state/README.md`](../../reference/archive/old-infrastructure/swarm-state/README.md)
+- [`.claude/swarm-state/discovered-issues.md`](../../reference/archive/old-infrastructure/swarm-state/discovered-issues.md)
+- [`.claude/skills/plan-fix/SKILL.md`](../../reference/archive/old-infrastructure/skills/plan-fix/SKILL.md)
+- [QUEUE_BOTTLENECK_ARCHAEOLOGY.md](QUEUE_BOTTLENECK_ARCHAEOLOGY.md)
 - GitHub issue archive snapshot on `2026-03-19`
 - Example issues: `#73`, `#143`, `#210`, `#1556`, `#1667`, `#2030`, `#2116`, `#2193`, `#2218`

@@ -2,29 +2,70 @@ mod support;
 
 use serde_json::{Value, json};
 use std::time::Duration;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
 fn initialize_omits_inline_completion_when_client_does_not_declare_support() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize(Some(json!({
-        "textDocument": {}
-    })))?;
+    let init = harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": {}
+        })),
+    )?;
 
     assert!(init.pointer("/capabilities/inlineCompletionProvider").is_none());
     assert!(init.pointer("/capabilities/experimental/perlInlineCompletionStream").is_none());
     assert_no_inline_completion_registration(harness.drain_server_requests(200));
+    assert_owned_workspace(&mut harness, &workspace)?;
+
+    // A failed fixture setup drops only its owned directory, after its harness.
+    let sibling = TempWorkspace::new()?;
+    sibling.write("sentinel.pl", "# preserve sibling\n")?;
+    let mut failed_root = None;
+    let mut reached_blocked_write = false;
+    let failure = (|| -> Result<(), String> {
+        let failed_workspace = TempWorkspace::new()?;
+        failed_root = Some(failed_workspace.dir.path().to_path_buf());
+        assert_ne!(failed_workspace.root_uri, workspace.root_uri);
+        assert_ne!(failed_workspace.root_uri, sibling.root_uri);
+        assert_ne!(failed_workspace.uri("fixture_first.pl"), workspace.uri("fixture_first.pl"));
+        let mut failed_harness = LspHarness::new();
+        failed_harness.initialize_with_root(&failed_workspace.root_uri, None)?;
+        assert_owned_workspace(&mut failed_harness, &failed_workspace)?;
+        failed_workspace.write("blocked", "owned file")?;
+        assert!(failed_workspace.dir.path().join("blocked").is_file());
+        reached_blocked_write = true;
+        failed_workspace.write("blocked/document.pl", "use strict;\n")?;
+        Ok(())
+    })();
+    assert!(reached_blocked_write, "fixture setup must reach the blocked-path write");
+    assert!(
+        failure.as_ref().is_err_and(|error| error.starts_with("Failed to create dirs:")),
+        "writing below the owned file must fail while creating its parent: {failure:?}"
+    );
+    assert!(!failed_root.ok_or("failed fixture must have been created")?.exists());
+    assert!(workspace.dir.path().is_dir());
+    assert_eq!(
+        std::fs::read_to_string(sibling.dir.path().join("sentinel.pl"))?,
+        "# preserve sibling\n"
+    );
     Ok(())
 }
 
 #[test]
 fn initialize_static_advertises_inline_completion_when_dynamic_registration_false() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": false } }
-    })))?;
+    let init = harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": false } }
+        })),
+    )?;
 
     assert_eq!(init.pointer("/capabilities/inlineCompletionProvider"), Some(&json!({})));
     assert_no_inline_completion_registration(harness.drain_server_requests(200));
@@ -33,10 +74,14 @@ fn initialize_static_advertises_inline_completion_when_dynamic_registration_fals
 
 #[test]
 fn initialize_dynamic_client_does_not_static_advertise_inline_completion() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    let init = harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
     assert!(init.pointer("/capabilities/inlineCompletionProvider").is_none());
     Ok(())
@@ -44,10 +89,14 @@ fn initialize_dynamic_client_does_not_static_advertise_inline_completion() -> Te
 
 #[test]
 fn initialize_never_puts_inline_completion_provider_under_experimental() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    let init = harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
     assert!(init.pointer("/capabilities/experimental/inlineCompletionProvider").is_none());
     Ok(())
@@ -55,10 +104,14 @@ fn initialize_never_puts_inline_completion_provider_under_experimental() -> Test
 
 #[test]
 fn initialize_preserves_perl_inline_completion_stream_experimental_flag() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    let init = harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
     assert_eq!(
         init.pointer("/capabilities/experimental/perlInlineCompletionStream"),
@@ -69,10 +122,14 @@ fn initialize_preserves_perl_inline_completion_stream_experimental_flag() -> Tes
 
 #[test]
 fn initialized_registers_inline_completion_when_dynamic_registration_supported() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
     let (request, registration) =
         find_inline_completion_registration(harness.drain_server_requests(500))
@@ -93,8 +150,10 @@ fn initialized_registers_inline_completion_when_dynamic_registration_supported()
 
 #[test]
 fn disabled_inline_completion_removes_static_and_experimental_capabilities() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize_with_init_options(
+    let init = harness.initialize_with_root_and_init_options(
+        &workspace.root_uri,
         Some(json!({
             "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
         })),
@@ -116,6 +175,7 @@ fn disabled_inline_completion_removes_static_and_experimental_capabilities() -> 
             )
     });
     assert!(!has_inline_registration);
+    assert_owned_workspace(&mut harness, &workspace)?;
 
     Ok(())
 }
@@ -123,15 +183,19 @@ fn disabled_inline_completion_removes_static_and_experimental_capabilities() -> 
 #[test]
 fn lsp4ij_dynamic_inline_completion_with_trigger_context_returns_deterministic_items() -> TestResult
 {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_lsp4ij.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_lsp4ij.pl");
+    harness.open(&uri, "use ")?;
 
-    let result = request_inline_completion(&mut harness, uri, 0, 4)?;
+    let result = request_inline_completion(&mut harness, &uri, 0, 4)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -147,15 +211,19 @@ fn lsp4ij_dynamic_inline_completion_with_trigger_context_returns_deterministic_i
 
 #[test]
 fn inline_completion_automatic_trigger_returns_one_conservative_item() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_automatic_trigger.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_automatic_trigger.pl");
+    harness.open(&uri, "use ")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 4, 2)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 4, 2)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -172,15 +240,19 @@ fn inline_completion_automatic_trigger_returns_one_conservative_item() -> TestRe
 
 #[test]
 fn inline_completion_automatic_trigger_suppresses_multiline_constructor_template() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_automatic_constructor.pl";
-    harness.open(uri, "sub new")?;
+    let uri = workspace.uri("inline_automatic_constructor.pl");
+    harness.open(&uri, "sub new")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 7, 2)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 7, 2)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -192,15 +264,19 @@ fn inline_completion_automatic_trigger_suppresses_multiline_constructor_template
 
 #[test]
 fn inline_completion_automatic_trigger_suppresses_package_template() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_automatic_package.pl";
-    harness.open(uri, "package ")?;
+    let uri = workspace.uri("inline_automatic_package.pl");
+    harness.open(&uri, "package ")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 8, 2)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 8, 2)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -212,15 +288,19 @@ fn inline_completion_automatic_trigger_suppresses_package_template() -> TestResu
 
 #[test]
 fn inline_completion_automatic_trigger_suppresses_generic_method_guess() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_automatic_method_guess.pl";
-    harness.open(uri, "$obj->n")?;
+    let uri = workspace.uri("inline_automatic_method_guess.pl");
+    harness.open(&uri, "$obj->n")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 7, 2)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 7, 2)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -232,15 +312,19 @@ fn inline_completion_automatic_trigger_suppresses_generic_method_guess() -> Test
 
 #[test]
 fn inline_completion_invoked_trigger_returns_deterministic_items() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_invoked.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_invoked.pl");
+    harness.open(&uri, "use ")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 4, 1)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 4, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -259,15 +343,19 @@ fn inline_completion_invoked_trigger_returns_deterministic_items() -> TestResult
 
 #[test]
 fn inline_completion_invoked_trigger_keeps_constructor_template() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_invoked_constructor.pl";
-    harness.open(uri, "sub new")?;
+    let uri = workspace.uri("inline_invoked_constructor.pl");
+    harness.open(&uri, "sub new")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 7, 1)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 7, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -286,15 +374,19 @@ fn inline_completion_invoked_trigger_keeps_constructor_template() -> TestResult 
 
 #[test]
 fn inline_completion_invoked_trigger_keeps_package_template() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_invoked_package.pl";
-    harness.open(uri, "package ")?;
+    let uri = workspace.uri("inline_invoked_package.pl");
+    harness.open(&uri, "package ")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 8, 1)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 8, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -313,7 +405,7 @@ fn inline_completion_invoked_trigger_keeps_package_template() -> TestResult {
 
 #[test]
 fn inline_completion_use_namespace_returns_reachable_workspace_module() -> TestResult {
-    let workspace = support::lsp_harness::TempWorkspace::new()?;
+    let workspace = TempWorkspace::new()?;
     workspace.write("lib/My/App.pm", "package My::App;\n1;\n")?;
     workspace.write("lib/Other/Tool.pm", "package Other::Tool;\n1;\n")?;
 
@@ -348,7 +440,7 @@ fn inline_completion_use_namespace_returns_reachable_workspace_module() -> TestR
 
 #[test]
 fn inline_completion_use_namespace_returns_file_local_use_lib_module() -> TestResult {
-    let workspace = support::lsp_harness::TempWorkspace::new()?;
+    let workspace = TempWorkspace::new()?;
     workspace.write("t/lib/My/FromTestLib.pm", "package My::FromTestLib;\n1;\n")?;
 
     let mut harness = LspHarness::new_raw();
@@ -378,7 +470,7 @@ fn inline_completion_use_namespace_returns_file_local_use_lib_module() -> TestRe
 
 #[test]
 fn inline_completion_use_namespace_returns_indexed_open_workspace_module() -> TestResult {
-    let workspace = support::lsp_harness::TempWorkspace::new()?;
+    let workspace = TempWorkspace::new()?;
 
     let mut harness = LspHarness::new_raw();
     harness.initialize_ready(
@@ -411,7 +503,7 @@ fn inline_completion_use_namespace_returns_indexed_open_workspace_module() -> Te
 
 #[test]
 fn inline_completion_use_namespace_suppresses_indexed_module_after_no_lib() -> TestResult {
-    let workspace = support::lsp_harness::TempWorkspace::new()?;
+    let workspace = TempWorkspace::new()?;
 
     let mut harness = LspHarness::new_raw();
     harness.initialize_ready(
@@ -443,7 +535,7 @@ fn inline_completion_use_namespace_suppresses_indexed_module_after_no_lib() -> T
 
 #[test]
 fn inline_completion_use_namespace_suppresses_indexed_module_outside_inc_roots() -> TestResult {
-    let workspace = support::lsp_harness::TempWorkspace::new()?;
+    let workspace = TempWorkspace::new()?;
 
     let mut harness = LspHarness::new_raw();
     harness.initialize_ready(
@@ -476,15 +568,19 @@ fn inline_completion_use_namespace_suppresses_indexed_module_outside_inc_roots()
 
 #[test]
 fn inline_completion_use_partial_token_returns_replacement_range() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_use_partial_range.pl";
-    harness.open(uri, "use str")?;
+    let uri = workspace.uri("inline_use_partial_range.pl");
+    harness.open(&uri, "use str")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 7, 1)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 7, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -501,15 +597,19 @@ fn inline_completion_use_partial_token_returns_replacement_range() -> TestResult
 
 #[test]
 fn inline_completion_method_arrow_partial_token_returns_replacement_range() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_method_partial_range.pl";
-    harness.open(uri, "$obj->n")?;
+    let uri = workspace.uri("inline_method_partial_range.pl");
+    harness.open(&uri, "$obj->n")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 7, 1)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, 7, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -522,17 +622,21 @@ fn inline_completion_method_arrow_partial_token_returns_replacement_range() -> T
 
 #[test]
 fn inline_completion_partial_token_range_uses_utf16_wire_positions() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_utf16_partial_range.pl";
+    let uri = workspace.uri("inline_utf16_partial_range.pl");
     let source = "my $emoji = \"😀\"; use str";
     let character = u32::try_from(source.encode_utf16().count())?;
-    harness.open(uri, source)?;
+    harness.open(&uri, source)?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, character, 1)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 0, character, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -545,13 +649,17 @@ fn inline_completion_partial_token_range_uses_utf16_wire_positions() -> TestResu
 
 #[test]
 fn inline_completion_selected_completion_info_matching_text_returns_same_range() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_info.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_selected_completion_info.pl");
+    harness.open(&uri, "use ")?;
 
     let selected_range = json!({
         "start": { "line": 0, "character": 4 },
@@ -559,7 +667,7 @@ fn inline_completion_selected_completion_info_matching_text_returns_same_range()
     });
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
@@ -591,13 +699,17 @@ fn inline_completion_selected_completion_info_matching_text_returns_same_range()
 #[test]
 fn inline_completion_selected_completion_info_use_partial_token_returns_replacement_range()
 -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_use_partial_range.pl";
-    harness.open(uri, "use str")?;
+    let uri = workspace.uri("inline_selected_completion_use_partial_range.pl");
+    harness.open(&uri, "use str")?;
 
     let selected_range = json!({
         "start": { "line": 0, "character": 4 },
@@ -605,7 +717,7 @@ fn inline_completion_selected_completion_info_use_partial_token_returns_replacem
     });
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         7,
         json!({
@@ -629,13 +741,17 @@ fn inline_completion_selected_completion_info_use_partial_token_returns_replacem
 #[test]
 fn inline_completion_selected_completion_info_method_partial_token_returns_replacement_range()
 -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_method_partial_range.pl";
-    harness.open(uri, "$obj->n")?;
+    let uri = workspace.uri("inline_selected_completion_method_partial_range.pl");
+    harness.open(&uri, "$obj->n")?;
 
     let selected_range = json!({
         "start": { "line": 0, "character": 6 },
@@ -643,7 +759,7 @@ fn inline_completion_selected_completion_info_method_partial_token_returns_repla
     });
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         7,
         json!({
@@ -666,17 +782,21 @@ fn inline_completion_selected_completion_info_method_partial_token_returns_repla
 
 #[test]
 fn inline_completion_selected_completion_info_text_mismatch_returns_empty() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_text_mismatch.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_selected_completion_text_mismatch.pl");
+    harness.open(&uri, "use ")?;
 
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
@@ -701,17 +821,21 @@ fn inline_completion_selected_completion_info_text_mismatch_returns_empty() -> T
 
 #[test]
 fn inline_completion_selected_completion_info_range_mismatch_returns_empty() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_range_mismatch.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_selected_completion_range_mismatch.pl");
+    harness.open(&uri, "use ")?;
 
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
@@ -736,17 +860,21 @@ fn inline_completion_selected_completion_info_range_mismatch_returns_empty() -> 
 
 #[test]
 fn inline_completion_selected_completion_info_multiline_range_returns_empty() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_multiline_range.pl";
-    harness.open(uri, "use \n")?;
+    let uri = workspace.uri("inline_selected_completion_multiline_range.pl");
+    harness.open(&uri, "use \n")?;
 
     let result = request_inline_completion_with_context(
         &mut harness,
-        uri,
+        &uri,
         0,
         4,
         json!({
@@ -771,17 +899,21 @@ fn inline_completion_selected_completion_info_multiline_range_returns_empty() ->
 
 #[test]
 fn inline_completion_crlf_partial_token_returns_wire_range() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_crlf_partial_range.pl";
+    let uri = workspace.uri("inline_crlf_partial_range.pl");
     let source = "my $value = 1;\r\nuse str";
     let character = u32::try_from("use str".encode_utf16().count())?;
-    harness.open(uri, source)?;
+    harness.open(&uri, source)?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 1, character, 1)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, &uri, 1, character, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -798,13 +930,17 @@ fn inline_completion_crlf_partial_token_returns_wire_range() -> TestResult {
 
 #[test]
 fn inline_completion_selected_completion_info_missing_text_is_rejected() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_missing_text.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_selected_completion_missing_text.pl");
+    harness.open(&uri, "use ")?;
     let response = harness.request_raw(json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -834,13 +970,17 @@ fn inline_completion_selected_completion_info_missing_text_is_rejected() -> Test
 
 #[test]
 fn inline_completion_selected_completion_info_invalid_range_is_rejected() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_selected_completion_invalid_range.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_selected_completion_invalid_range.pl");
+    harness.open(&uri, "use ")?;
     let response = harness.request_raw(json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -868,15 +1008,19 @@ fn inline_completion_selected_completion_info_invalid_range_is_rejected() -> Tes
 
 #[test]
 fn inline_completion_items_do_not_emit_object_form_string_value() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_insert_text_shape.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_insert_text_shape.pl");
+    harness.open(&uri, "use ")?;
 
-    let result = request_inline_completion(&mut harness, uri, 0, 4)?;
+    let result = request_inline_completion(&mut harness, &uri, 0, 4)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -892,15 +1036,19 @@ fn inline_completion_items_do_not_emit_object_form_string_value() -> TestResult 
 
 #[test]
 fn inline_completion_without_context_remains_permissive() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_legacy_no_context.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_legacy_no_context.pl");
+    harness.open(&uri, "use ")?;
 
-    let result = request_inline_completion_without_context(&mut harness, uri, 0, 4)?;
+    let result = request_inline_completion_without_context(&mut harness, &uri, 0, 4)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -917,15 +1065,19 @@ fn inline_completion_without_context_remains_permissive() -> TestResult {
 
 #[test]
 fn static_inline_completion_returns_deterministic_items() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": {}
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": {}
+        })),
+    )?;
 
-    let uri = "file:///inline_static.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_static.pl");
+    harness.open(&uri, "use ")?;
 
-    let result = request_inline_completion(&mut harness, uri, 0, 4)?;
+    let result = request_inline_completion(&mut harness, &uri, 0, 4)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -941,15 +1093,19 @@ fn static_inline_completion_returns_deterministic_items() -> TestResult {
 
 #[test]
 fn inline_completion_unsupported_position_returns_empty_items() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_lsp4ij_neutral.pl";
-    harness.open(uri, "my $name = \"World\";")?;
+    let uri = workspace.uri("inline_lsp4ij_neutral.pl");
+    harness.open(&uri, "my $name = \"World\";")?;
 
-    let result = request_inline_completion(&mut harness, uri, 0, 11)?;
+    let result = request_inline_completion(&mut harness, &uri, 0, 11)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
@@ -961,10 +1117,14 @@ fn inline_completion_unsupported_position_returns_empty_items() -> TestResult {
 
 #[test]
 fn inline_completion_hard_reject_zones_return_empty_items() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
     let trailing_comment_source = "my $value = '#'; # use ";
     let string_source = "my $text = \"use \";";
@@ -1001,7 +1161,7 @@ fn inline_completion_hard_reject_zones_return_empty_items() -> TestResult {
     ];
 
     for (name, source, line, character) in cases {
-        let uri = format!("file:///inline_hard_reject_{name}.pl");
+        let uri = workspace.uri(&format!("inline_hard_reject_{name}.pl"));
         harness.open(&uri, &source)?;
         let result =
             request_inline_completion_with_trigger_kind(&mut harness, &uri, line, character, 2)?;
@@ -1021,13 +1181,17 @@ fn inline_completion_hard_reject_zones_return_empty_items() -> TestResult {
 
 #[test]
 fn inline_completion_invalid_trigger_kind_is_rejected() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(Some(json!({
-        "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
-    })))?;
+    harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
+        })),
+    )?;
 
-    let uri = "file:///inline_invalid_trigger_kind.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_invalid_trigger_kind.pl");
+    harness.open(&uri, "use ")?;
     let response = harness.request_raw(json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -1049,8 +1213,10 @@ fn inline_completion_invalid_trigger_kind_is_rejected() -> TestResult {
 
 #[test]
 fn disabled_inline_completion_rejects_runtime_request() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize_with_init_options(
+    let init = harness.initialize_with_root_and_init_options(
+        &workspace.root_uri,
         Some(json!({
             "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
         })),
@@ -1060,8 +1226,8 @@ fn disabled_inline_completion_rejects_runtime_request() -> TestResult {
     assert!(init.pointer("/capabilities/inlineCompletionProvider").is_none());
     assert!(init.pointer("/capabilities/experimental/perlInlineCompletionStream").is_none());
 
-    let uri = "file:///inline_disabled.pl";
-    harness.open(uri, "use ")?;
+    let uri = workspace.uri("inline_disabled.pl");
+    harness.open(&uri, "use ")?;
     let response = harness.request_raw(json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -1264,5 +1430,31 @@ fn assert_item_range(
     assert_eq!(item.pointer("/range/start/character"), Some(&json!(start_character)));
     assert_eq!(item.pointer("/range/end/line"), Some(&json!(end_line)));
     assert_eq!(item.pointer("/range/end/character"), Some(&json!(end_character)));
+    Ok(())
+}
+
+// Inspect initialized server state rather than inferring the root from timing.
+fn assert_owned_workspace(
+    harness: &mut LspHarness,
+    workspace: &TempWorkspace,
+) -> Result<(), String> {
+    let first_uri = workspace.uri("fixture_first.pl");
+    let second_uri = workspace.uri("fixture_second.pl");
+    assert_ne!(first_uri, second_uri);
+    harness.open(&first_uri, "use ")?;
+    harness.open(&second_uri, "my $value = 1;")?;
+    let report = harness.execute_command("perl.workspaceTrustReport", vec![])?;
+    let reported_root = report
+        .pointer("/workspace/root_path")
+        .and_then(Value::as_str)
+        .ok_or("workspace report must include a root path")?;
+    assert_eq!(
+        std::path::Path::new(reported_root),
+        workspace.dir.path(),
+        "server must initialize against the owned fixture root"
+    );
+    assert_eq!(report.pointer("/workspace/folders/0/uri"), Some(&json!(workspace.root_uri)));
+    assert_eq!(report.pointer("/workspace/workspace_folder_count"), Some(&json!(1)));
+    assert_eq!(report.pointer("/workspace/open_document_count"), Some(&json!(2)));
     Ok(())
 }

@@ -99,14 +99,10 @@ fn open_and_wait_for_diagnostics(
     harness
         .open_file(relative_path, source)
         .with_context(|| format!("didOpen should succeed for {relative_path}"))?;
-    harness
-        .wait_for_diagnostics_after_count(relative_path, already_seen, DIAGNOSTICS_TIMEOUT)
-        .with_context(|| {
-            format!(
-                "no post-open publishDiagnostics notification arrived for {relative_path} \
-                 within {DIAGNOSTICS_TIMEOUT:?}"
-            )
-        })
+    perl_lsp_ux_tests::wait_with_subject(
+        &format!("post-open diagnostics for {relative_path}"),
+        harness.wait_for_diagnostics_after_count(relative_path, already_seen, DIAGNOSTICS_TIMEOUT),
+    )
 }
 
 fn validate_diagnostics(diagnostics: &[Value]) -> Result<()> {

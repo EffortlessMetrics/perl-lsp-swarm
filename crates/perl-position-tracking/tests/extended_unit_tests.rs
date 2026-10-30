@@ -12,7 +12,7 @@ use perl_position_tracking::{
     last_line_column_utf8, newline_count, offset_to_utf16_line_col, position_to_json,
     utf16_line_col_to_offset,
 };
-use perl_tdd_support::must_some;
+use perl_test_must::must_some;
 
 // ─── ByteSpan: construction & basic properties ──────────────────────────────
 

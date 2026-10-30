@@ -132,12 +132,17 @@ final-challenge
 review-pr
 verify-live-ci
 merge-reconcile
+
+# CI and workspace hygiene
+ci-failure-triage
+worktree-manager
 ```
 
 Public flows are natural root entrypoints. Atomic skills may execute directly in the
 root or inside bounded researcher, writer, or reviewer programmes. Adding, renaming, or
 removing a skill is a control-plane change and must update both provider
-implementations and route validation.
+implementations and route validation; a deliberately single-provider skill requires an
+explicit, ratcheted entry in `policy/skill-provider-parity.toml`.
 
 The internal `orchestrate-work` operation is root-facing runtime compilation guidance,
 not a public stage. It decides what stays direct and what becomes a bounded programme,

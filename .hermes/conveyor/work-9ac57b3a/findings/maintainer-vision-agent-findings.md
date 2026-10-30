@@ -1,5 +1,9 @@
 # Maintainer Vision Findings — work-9ac57b3a
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](../../../../docs/agents/AUTHORITY_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](../../../../docs/agents/AUTHORITY_STATUS.md).
+
 ## Alignment Assessment
 **aligned** — The proposed fix (adding 3-token lookahead to `is_label_start()`) aligns with the codebase's trajectory of iterative parser improvement using existing infrastructure. The approach is surgical, uses proven patterns (`peek_third()` is already used in 6+ places), and correctly targets the root cause.
 

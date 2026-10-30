@@ -109,7 +109,48 @@ package main;
 my $user = bless {}, 'User';
 $user->"#;
 
+/// The consuming package is reopened later in the same file with no ancestry
+/// declaration of its own (#16853). Perl has one `User` package, so the silent
+/// reopen must not erase the role the earlier segment composed.
+const REOPENED_ROLE_SOURCE: &str = r#"package Printable;
+use Moo::Role;
+sub stringify { "ok" }
+
+package User;
+use Moo;
+with 'Printable';
+sub own_method { 1 }
+
+package User;
+sub extra_method { 2 }
+
+package main;
+my $user = bless {}, 'User';
+$user->"#;
+
 const UNRELATED_SOURCE: &str = r#"package Other;
+sub other_method { 1 }
+
+package main;
+my $other = bless {}, 'Other';
+$other->"#;
+
+/// #16983: a resolved receiver must not inherit document-resident members of
+/// packages it neither is nor composes. `Other` reaches neither `User` nor the
+/// `Printable` role that only `User` composes, yet both packages live in the
+/// same current document as the completion request.
+const NON_RECEIVER_PACKAGE_SOURCE: &str = r#"package Printable;
+use Moo::Role;
+sub stringify { "ok" }
+
+package User;
+use Moo;
+with 'Printable';
+
+package User;
+sub extra_method { 2 }
+
+package Other;
 sub other_method { 1 }
 
 package main;
@@ -314,6 +355,91 @@ fn unrelated_empty_index_file_does_not_receive_other_package_role_methods() {
     assert!(
         !completions.iter().any(|item| item.label == "stringify"),
         "unrelated empty-index file must not receive another package's role methods; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
+fn empty_index_offers_role_method_after_silent_consumer_reopen() {
+    let completions = completions_for(REOPENED_ROLE_SOURCE, empty_index());
+    assert!(
+        composed_role_item(&completions, "stringify", "Printable").is_some(),
+        "a silent reopen of the consuming package must not erase the composed role; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "extra_method"),
+        "the reopened segment's own method must still be offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "own_method"),
+        "the first segment's own method must survive the reopen; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
+fn resolved_receiver_does_not_offer_non_receiver_package_members() {
+    let completions = completions_for(NON_RECEIVER_PACKAGE_SOURCE, empty_index());
+    assert!(
+        completions.iter().any(|item| item.label == "other_method"),
+        "the resolved receiver's own method must stay offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "stringify"),
+        "a role method of a package the receiver does not compose must not be offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "extra_method"),
+        "another document-resident package's method must not be offered for this receiver; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
+fn reopened_consumer_indexed_result_converges_with_empty_index() {
+    let empty_completions = completions_for(REOPENED_ROLE_SOURCE, empty_index());
+    let indexed_completions =
+        completions_for(REOPENED_ROLE_SOURCE, indexed_source(REOPENED_ROLE_SOURCE));
+
+    let names = ["stringify", "own_method", "extra_method"];
+    assert_eq!(
+        method_order(&empty_completions, &names),
+        method_order(&indexed_completions, &names),
+        "pre-index and post-index candidate identity/order must converge for the reopened consumer"
+    );
+    assert!(
+        composed_role_item(&indexed_completions, "stringify", "Printable").is_some(),
+        "indexed control must keep the composed-role identity after the reopen; got {:?}",
+        labels(&indexed_completions)
+    );
+}
+
+/// #16983 review: a symbol-table entry groups same-name definitions across
+/// packages and kinds (variables are keyed without their sigil), so a callable
+/// in a foreign package must not license a non-callable same-named symbol in
+/// the receiver's package. `Other` cannot call `run`, so the admission
+/// predicate must require one symbol that is simultaneously callable and
+/// receiver-resident.
+const CROSS_PACKAGE_KIND_COLLISION_SOURCE: &str = r#"package User;
+sub run { 1 }
+
+package Other;
+our $run;
+
+package main;
+my $other = bless {}, 'Other';
+$other->"#;
+
+#[test]
+fn callable_definition_must_share_the_receiver_package() {
+    let completions = completions_for(CROSS_PACKAGE_KIND_COLLISION_SOURCE, empty_index());
+    assert!(
+        !completions.iter().any(|item| item.label == "run"),
+        "a callable run in User must not license Other's same-named non-callable $run for receiver Other; got {:?}",
         labels(&completions)
     );
 }

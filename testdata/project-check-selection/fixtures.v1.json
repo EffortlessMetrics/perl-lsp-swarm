@@ -1,0 +1,3242 @@
+{
+  "schema": "project_check_selection_fixtures.v1",
+  "source_commit": "9e83b961ee60b16f299a34b08e2ae07d5c8a4527",
+  "cases": [
+    {
+      "id": "empty",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [],
+      "policy_rows": [
+        "no-input"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [],
+        "scanned": 0,
+        "unscanned_display": [],
+        "exit": 0
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        "."
+      ]
+    },
+    {
+      "id": "extensions",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/input.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.PM",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.PL",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.T",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.pM",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.Pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.cgi",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.fcgi",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.psgi",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.xs",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.i",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.pod",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.ep",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.tt",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.tt2",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.mason",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.pm.bak",
+          "kind": "file"
+        },
+        {
+          "path": "root/input.pmx",
+          "kind": "file"
+        },
+        {
+          "path": "root/script",
+          "kind": "file",
+          "content": "#!/usr/bin/perl\nmy $selection_probe = ;\n"
+        },
+        {
+          "path": "root/.pm",
+          "kind": "file"
+        },
+        {
+          "kind": "directory",
+          "path": "root/directory.pm"
+        }
+      ],
+      "policy_rows": [
+        "extensions"
+      ],
+      "shuffle": true,
+      "current": {
+        "selected_display": [
+          "input.pl",
+          "input.pm",
+          "input.t"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".pm",
+        "directory.pm",
+        "input.PL",
+        "input.PM",
+        "input.Pl",
+        "input.T",
+        "input.cgi",
+        "input.ep",
+        "input.fcgi",
+        "input.i",
+        "input.mason",
+        "input.pM",
+        "input.pl",
+        "input.pm",
+        "input.pm.bak",
+        "input.pmx",
+        "input.pod",
+        "input.psgi",
+        "input.t",
+        "input.tt",
+        "input.tt2",
+        "input.xs",
+        "script"
+      ]
+    },
+    {
+      "id": "exclude-local",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/local/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/local/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/local-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/LOCAL/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/local.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-local",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "LOCAL/case.t",
+          "local-suffix/own.pl",
+          "local.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "LOCAL",
+        "LOCAL/case.t",
+        "deep",
+        "deep/local",
+        "deep/local/deep.pm",
+        "local",
+        "local-suffix",
+        "local-suffix/own.pl",
+        "local.pm",
+        "local/dep.pm"
+      ]
+    },
+    {
+      "id": "explicit-local",
+      "root": "root/local",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/local/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/local/nested/local/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-local",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/local",
+        "nested/local/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "exclude-blib",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/blib/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/blib/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/blib-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/BLIB/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/blib.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-blib",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "BLIB/case.t",
+          "blib-suffix/own.pl",
+          "blib.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "BLIB",
+        "BLIB/case.t",
+        "blib",
+        "blib-suffix",
+        "blib-suffix/own.pl",
+        "blib.pm",
+        "blib/dep.pm",
+        "deep",
+        "deep/blib",
+        "deep/blib/deep.pm"
+      ]
+    },
+    {
+      "id": "explicit-blib",
+      "root": "root/blib",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/blib/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/blib/nested/blib/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-blib",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/blib",
+        "nested/blib/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "exclude-vendor",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/vendor/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/vendor/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/vendor-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/VENDOR/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/vendor.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-vendor",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "VENDOR/case.t",
+          "vendor-suffix/own.pl",
+          "vendor.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "VENDOR",
+        "VENDOR/case.t",
+        "deep",
+        "deep/vendor",
+        "deep/vendor/deep.pm",
+        "vendor",
+        "vendor-suffix",
+        "vendor-suffix/own.pl",
+        "vendor.pm",
+        "vendor/dep.pm"
+      ]
+    },
+    {
+      "id": "explicit-vendor",
+      "root": "root/vendor",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/vendor/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/vendor/nested/vendor/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-vendor",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/vendor",
+        "nested/vendor/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "exclude-node_modules",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/node_modules/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/node_modules/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/node_modules-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/NODE_MODULES/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/node_modules.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-node_modules",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "NODE_MODULES/case.t",
+          "node_modules-suffix/own.pl",
+          "node_modules.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "NODE_MODULES",
+        "NODE_MODULES/case.t",
+        "deep",
+        "deep/node_modules",
+        "deep/node_modules/deep.pm",
+        "node_modules",
+        "node_modules-suffix",
+        "node_modules-suffix/own.pl",
+        "node_modules.pm",
+        "node_modules/dep.pm"
+      ]
+    },
+    {
+      "id": "explicit-node_modules",
+      "root": "root/node_modules",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/node_modules/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/node_modules/nested/node_modules/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-node_modules",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/node_modules",
+        "nested/node_modules/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "exclude-git",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/.git/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/.git/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.git-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/.GIT/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/.git.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-git",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          ".GIT/case.t",
+          ".git-suffix/own.pl",
+          ".git.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".GIT",
+        ".GIT/case.t",
+        ".git",
+        ".git-suffix",
+        ".git-suffix/own.pl",
+        ".git.pm",
+        ".git/dep.pm",
+        "deep",
+        "deep/.git",
+        "deep/.git/deep.pm"
+      ]
+    },
+    {
+      "id": "explicit-git",
+      "root": "root/.git",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/.git/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.git/nested/.git/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-git",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/.git",
+        "nested/.git/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "exclude-target",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/target/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/target/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/target-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/TARGET/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/target.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-target",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "TARGET/case.t",
+          "target-suffix/own.pl",
+          "target.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "TARGET",
+        "TARGET/case.t",
+        "deep",
+        "deep/target",
+        "deep/target/deep.pm",
+        "target",
+        "target-suffix",
+        "target-suffix/own.pl",
+        "target.pm",
+        "target/dep.pm"
+      ]
+    },
+    {
+      "id": "explicit-target",
+      "root": "root/target",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/target/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/target/nested/target/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-target",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/target",
+        "nested/target/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "exclude-build",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/.build/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/.build/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.build-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/.BUILD/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/.build.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-build",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          ".BUILD/case.t",
+          ".build-suffix/own.pl",
+          ".build.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".BUILD",
+        ".BUILD/case.t",
+        ".build",
+        ".build-suffix",
+        ".build-suffix/own.pl",
+        ".build.pm",
+        ".build/dep.pm",
+        "deep",
+        "deep/.build",
+        "deep/.build/deep.pm"
+      ]
+    },
+    {
+      "id": "explicit-build",
+      "root": "root/.build",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/.build/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.build/nested/.build/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-build",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/.build",
+        "nested/.build/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "exclude-auto",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/auto/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/deep/auto/deep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/auto-suffix/own.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/AUTO/case.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/auto.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-auto",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "AUTO/case.t",
+          "auto-suffix/own.pl",
+          "auto.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "AUTO",
+        "AUTO/case.t",
+        "auto",
+        "auto-suffix",
+        "auto-suffix/own.pl",
+        "auto.pm",
+        "auto/dep.pm",
+        "deep",
+        "deep/auto",
+        "deep/auto/deep.pm"
+      ]
+    },
+    {
+      "id": "explicit-auto",
+      "root": "root/auto",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/auto/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/auto/nested/auto/skip.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "exclude-auto",
+        "root-excluded-name"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "nested",
+        "nested/auto",
+        "nested/auto/skip.pl",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "hidden-ignored",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/.hidden.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.hidden/inside.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/ignored.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.gitignore",
+          "kind": "file",
+          "content": "ignored.pm\n"
+        },
+        {
+          "path": "root/.ignore",
+          "kind": "file",
+          "content": ".hidden/\n"
+        },
+        {
+          "path": "root/.perl-lsp/cache.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/.hg/code.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.svn/code.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/.cache/code.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "hidden-ignore"
+      ],
+      "shuffle": true,
+      "current": {
+        "selected_display": [
+          ".cache/code.pm",
+          ".hg/code.pm",
+          ".hidden.pm",
+          ".hidden/inside.pl",
+          ".perl-lsp/cache.t",
+          ".svn/code.pm",
+          "ignored.pm"
+        ],
+        "scanned": 7,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        ".cache",
+        ".cache/code.pm",
+        ".gitignore",
+        ".hg",
+        ".hg/code.pm",
+        ".hidden",
+        ".hidden.pm",
+        ".hidden/inside.pl",
+        ".ignore",
+        ".perl-lsp",
+        ".perl-lsp/cache.t",
+        ".svn",
+        ".svn/code.pm",
+        "ignored.pm"
+      ]
+    },
+    {
+      "id": "links",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/lib/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/vendor/dep.pm",
+          "kind": "file"
+        },
+        {
+          "path": "outside/escape.pl",
+          "kind": "file"
+        },
+        {
+          "path": "outside-dir/escape.t",
+          "kind": "file"
+        },
+        {
+          "path": "root/file-alias.pl",
+          "kind": "symlink",
+          "target": "lib/own.pm"
+        },
+        {
+          "path": "root/ignored.txt",
+          "kind": "symlink",
+          "target": "lib/own.pm"
+        },
+        {
+          "path": "root/dir-alias",
+          "kind": "symlink",
+          "target": "lib"
+        },
+        {
+          "path": "root/escape.pl",
+          "kind": "symlink",
+          "target": "../outside/escape.pl"
+        },
+        {
+          "path": "root/escape-dir",
+          "kind": "symlink",
+          "target": "../outside-dir"
+        },
+        {
+          "path": "root/vendor-shortcut",
+          "kind": "symlink",
+          "target": "vendor"
+        },
+        {
+          "path": "root/loop",
+          "kind": "symlink",
+          "target": "."
+        },
+        {
+          "path": "root/dangling.pm",
+          "kind": "symlink",
+          "target": "absent.pm"
+        }
+      ],
+      "policy_rows": [
+        "symlinks",
+        "outside-loop",
+        "hardlinks"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "dir-alias/own.pm",
+          "escape-dir/escape.t",
+          "escape.pl",
+          "file-alias.pl",
+          "lib/own.pm",
+          "vendor-shortcut/dep.pm"
+        ],
+        "scanned": 6,
+        "unscanned_display": [
+          "dangling.pm",
+          "loop"
+        ],
+        "exit": 1
+      },
+      "stdout_contains": [
+        "symbolic link loop",
+        "Paths not scanned: 2"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "dangling.pm",
+        "dir-alias",
+        "dir-alias/own.pm",
+        "escape-dir",
+        "escape-dir/escape.t",
+        "escape.pl",
+        "file-alias.pl",
+        "ignored.txt",
+        "lib",
+        "lib/own.pm",
+        "loop",
+        "vendor",
+        "vendor-shortcut",
+        "vendor-shortcut/dep.pm",
+        "vendor/dep.pm"
+      ]
+    },
+    {
+      "id": "only-loop",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/loop",
+          "kind": "symlink",
+          "target": "."
+        }
+      ],
+      "policy_rows": [
+        "outside-loop",
+        "no-input"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [],
+        "scanned": 0,
+        "unscanned_display": [
+          "loop"
+        ],
+        "exit": 0
+      },
+      "stdout_contains": [
+        "symbolic link loop",
+        "No Perl files"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "loop"
+      ]
+    },
+    {
+      "id": "explicit-link",
+      "root": "requested",
+      "root_kind": "link",
+      "entries": [
+        {
+          "path": "real/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "requested",
+          "kind": "symlink",
+          "target": "real"
+        }
+      ],
+      "policy_rows": [
+        "root-directory",
+        "symlinks"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "hardlinks",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/original.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/second.pl",
+          "kind": "hardlink",
+          "target": "root/original.pm"
+        }
+      ],
+      "policy_rows": [
+        "hardlinks"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "original.pm",
+          "second.pl"
+        ],
+        "scanned": 2,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "original.pm",
+        "second.pl"
+      ]
+    },
+    {
+      "id": "unreadable-file",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/denied.pm",
+          "kind": "file",
+          "unreadable": true
+        }
+      ],
+      "policy_rows": [
+        "unreadable"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "denied.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [
+        "read error:"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "denied.pm"
+      ]
+    },
+    {
+      "id": "unreadable-subtree",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/own.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/denied/hidden.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/denied",
+          "kind": "directory",
+          "unreadable": true
+        }
+      ],
+      "policy_rows": [
+        "unreadable"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "own.pm"
+        ],
+        "scanned": 1,
+        "unscanned_display": [
+          "denied"
+        ],
+        "exit": 1
+      },
+      "stdout_contains": [
+        "Paths not scanned: 1",
+        "scanned files only"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "denied",
+        "denied/hidden.pm",
+        "own.pm"
+      ]
+    },
+    {
+      "id": "partial-threshold",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/clean.pm",
+          "kind": "file",
+          "content": "1;\n"
+        },
+        {
+          "path": "root/denied/hidden.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/denied",
+          "kind": "directory",
+          "unreadable": true
+        }
+      ],
+      "policy_rows": [
+        "unreadable",
+        "no-input"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [],
+        "scanned": 1,
+        "unscanned_display": [
+          "denied"
+        ],
+        "exit": 0
+      },
+      "stdout_contains": [
+        "Clean parses: 1/1",
+        "Assessment: PASS (100.0% parsable, scanned files only)"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "clean.pm",
+        "denied",
+        "denied/hidden.pm"
+      ]
+    },
+    {
+      "id": "threshold-compensation",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/bad.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/clean0.pl",
+          "kind": "file",
+          "content": "1;\n"
+        },
+        {
+          "path": "root/clean1.pl",
+          "kind": "file",
+          "content": "1;\n"
+        },
+        {
+          "path": "root/clean2.pl",
+          "kind": "file",
+          "content": "1;\n"
+        },
+        {
+          "path": "root/clean3.pl",
+          "kind": "file",
+          "content": "1;\n"
+        }
+      ],
+      "policy_rows": [
+        "no-input"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "bad.pm"
+        ],
+        "scanned": 5,
+        "unscanned_display": [],
+        "exit": 0
+      },
+      "stdout_contains": [
+        "Clean parses: 4/5 (80.0%)",
+        "Assessment: PASS"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "bad.pm",
+        "clean0.pl",
+        "clean1.pl",
+        "clean2.pl",
+        "clean3.pl"
+      ]
+    },
+    {
+      "id": "unicode-bytes",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/été.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/é.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/é.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/raw-one",
+          "kind": "file",
+          "native_name_hex": "6261642dff2e706d"
+        },
+        {
+          "path": "root/raw-two",
+          "kind": "file",
+          "native_name_hex": "6261642dfe2e706d"
+        },
+        {
+          "path": "root/colon:name.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "path-identity"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "bad-�.pm",
+          "colon:name.pl",
+          "é.pm",
+          "é.pm",
+          "été.pm"
+        ],
+        "scanned": 6,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "bad-�.pm",
+        "colon:name.pl",
+        "é.pm",
+        "é.pm",
+        "été.pm"
+      ]
+    },
+    {
+      "id": "colon-space",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/a: b.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/a.pm: b.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/plain.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/locked: subtree",
+          "kind": "directory",
+          "unreadable": true
+        },
+        {
+          "path": "root/locked: subtree/hidden.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "path-identity",
+        "unreadable"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [
+          "a.pm: b.pm",
+          "a: b.pm",
+          "plain.pm"
+        ],
+        "scanned": 3,
+        "unscanned_display": [
+          "locked: subtree"
+        ],
+        "exit": 1
+      },
+      "stdout_contains": [
+        "a: b.pm",
+        "locked: subtree",
+        "Paths not scanned: 1",
+        "scanned files only"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "a.pm: b.pm",
+        "a: b.pm",
+        "locked: subtree",
+        "locked: subtree/hidden.pm",
+        "plain.pm"
+      ]
+    },
+    {
+      "id": "creation-order",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/z.pl",
+          "kind": "file"
+        },
+        {
+          "path": "root/a.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/middle.t",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "ordering"
+      ],
+      "shuffle": true,
+      "current": {
+        "selected_display": [
+          "a.pm",
+          "middle.t",
+          "z.pl"
+        ],
+        "scanned": 3,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "a.pm",
+        "middle.t",
+        "z.pl"
+      ]
+    },
+    {
+      "id": "bounded-large",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/f000.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f001.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f002.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f003.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f004.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f005.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f006.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f007.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f008.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f009.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f010.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f011.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f012.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f013.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f014.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f015.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f016.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f017.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f018.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f019.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f020.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f021.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f022.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f023.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f024.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f025.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f026.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f027.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f028.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f029.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f030.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f031.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f032.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f033.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f034.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f035.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f036.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f037.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f038.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f039.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f040.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f041.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f042.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f043.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f044.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f045.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f046.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f047.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f048.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f049.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f050.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f051.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f052.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f053.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f054.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f055.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f056.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f057.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f058.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f059.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f060.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f061.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f062.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f063.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f064.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f065.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f066.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f067.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f068.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f069.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f070.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f071.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f072.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f073.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f074.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f075.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f076.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f077.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f078.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f079.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f080.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f081.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f082.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f083.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f084.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f085.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f086.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f087.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f088.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f089.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f090.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f091.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f092.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f093.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f094.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f095.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f096.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f097.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f098.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f099.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f100.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f101.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f102.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f103.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f104.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f105.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f106.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f107.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f108.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f109.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f110.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f111.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f112.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f113.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f114.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f115.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f116.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f117.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f118.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f119.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f120.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f121.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f122.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f123.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f124.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f125.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f126.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f127.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f128.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f129.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f130.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f131.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f132.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f133.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f134.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f135.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f136.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f137.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f138.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f139.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f140.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f141.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f142.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f143.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f144.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f145.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f146.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f147.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f148.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f149.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f150.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f151.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f152.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f153.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f154.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f155.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f156.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f157.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f158.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f159.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f160.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f161.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f162.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f163.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f164.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f165.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f166.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f167.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f168.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f169.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f170.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f171.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f172.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f173.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f174.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f175.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f176.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f177.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f178.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f179.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f180.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f181.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f182.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f183.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f184.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f185.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f186.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f187.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f188.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f189.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f190.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f191.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f192.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f193.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f194.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f195.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f196.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f197.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f198.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f199.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f200.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f201.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f202.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f203.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f204.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f205.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f206.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f207.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f208.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f209.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f210.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f211.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f212.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f213.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f214.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f215.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f216.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f217.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f218.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f219.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f220.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f221.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f222.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f223.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f224.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f225.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f226.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f227.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f228.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f229.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f230.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f231.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f232.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f233.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f234.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f235.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f236.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f237.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f238.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f239.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f240.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f241.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f242.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f243.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f244.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f245.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f246.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f247.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f248.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f249.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f250.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f251.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f252.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f253.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f254.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root/f255.pm",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "budget-cancellation"
+      ],
+      "shuffle": true,
+      "current": {
+        "selected_display": [
+          "f000.pm",
+          "f001.pm",
+          "f002.pm",
+          "f003.pm",
+          "f004.pm",
+          "f005.pm",
+          "f006.pm",
+          "f007.pm",
+          "f008.pm",
+          "f009.pm",
+          "f010.pm",
+          "f011.pm",
+          "f012.pm",
+          "f013.pm",
+          "f014.pm",
+          "f015.pm",
+          "f016.pm",
+          "f017.pm",
+          "f018.pm",
+          "f019.pm",
+          "f020.pm",
+          "f021.pm",
+          "f022.pm",
+          "f023.pm",
+          "f024.pm",
+          "f025.pm",
+          "f026.pm",
+          "f027.pm",
+          "f028.pm",
+          "f029.pm",
+          "f030.pm",
+          "f031.pm",
+          "f032.pm",
+          "f033.pm",
+          "f034.pm",
+          "f035.pm",
+          "f036.pm",
+          "f037.pm",
+          "f038.pm",
+          "f039.pm",
+          "f040.pm",
+          "f041.pm",
+          "f042.pm",
+          "f043.pm",
+          "f044.pm",
+          "f045.pm",
+          "f046.pm",
+          "f047.pm",
+          "f048.pm",
+          "f049.pm",
+          "f050.pm",
+          "f051.pm",
+          "f052.pm",
+          "f053.pm",
+          "f054.pm",
+          "f055.pm",
+          "f056.pm",
+          "f057.pm",
+          "f058.pm",
+          "f059.pm",
+          "f060.pm",
+          "f061.pm",
+          "f062.pm",
+          "f063.pm",
+          "f064.pm",
+          "f065.pm",
+          "f066.pm",
+          "f067.pm",
+          "f068.pm",
+          "f069.pm",
+          "f070.pm",
+          "f071.pm",
+          "f072.pm",
+          "f073.pm",
+          "f074.pm",
+          "f075.pm",
+          "f076.pm",
+          "f077.pm",
+          "f078.pm",
+          "f079.pm",
+          "f080.pm",
+          "f081.pm",
+          "f082.pm",
+          "f083.pm",
+          "f084.pm",
+          "f085.pm",
+          "f086.pm",
+          "f087.pm",
+          "f088.pm",
+          "f089.pm",
+          "f090.pm",
+          "f091.pm",
+          "f092.pm",
+          "f093.pm",
+          "f094.pm",
+          "f095.pm",
+          "f096.pm",
+          "f097.pm",
+          "f098.pm",
+          "f099.pm",
+          "f100.pm",
+          "f101.pm",
+          "f102.pm",
+          "f103.pm",
+          "f104.pm",
+          "f105.pm",
+          "f106.pm",
+          "f107.pm",
+          "f108.pm",
+          "f109.pm",
+          "f110.pm",
+          "f111.pm",
+          "f112.pm",
+          "f113.pm",
+          "f114.pm",
+          "f115.pm",
+          "f116.pm",
+          "f117.pm",
+          "f118.pm",
+          "f119.pm",
+          "f120.pm",
+          "f121.pm",
+          "f122.pm",
+          "f123.pm",
+          "f124.pm",
+          "f125.pm",
+          "f126.pm",
+          "f127.pm",
+          "f128.pm",
+          "f129.pm",
+          "f130.pm",
+          "f131.pm",
+          "f132.pm",
+          "f133.pm",
+          "f134.pm",
+          "f135.pm",
+          "f136.pm",
+          "f137.pm",
+          "f138.pm",
+          "f139.pm",
+          "f140.pm",
+          "f141.pm",
+          "f142.pm",
+          "f143.pm",
+          "f144.pm",
+          "f145.pm",
+          "f146.pm",
+          "f147.pm",
+          "f148.pm",
+          "f149.pm",
+          "f150.pm",
+          "f151.pm",
+          "f152.pm",
+          "f153.pm",
+          "f154.pm",
+          "f155.pm",
+          "f156.pm",
+          "f157.pm",
+          "f158.pm",
+          "f159.pm",
+          "f160.pm",
+          "f161.pm",
+          "f162.pm",
+          "f163.pm",
+          "f164.pm",
+          "f165.pm",
+          "f166.pm",
+          "f167.pm",
+          "f168.pm",
+          "f169.pm",
+          "f170.pm",
+          "f171.pm",
+          "f172.pm",
+          "f173.pm",
+          "f174.pm",
+          "f175.pm",
+          "f176.pm",
+          "f177.pm",
+          "f178.pm",
+          "f179.pm",
+          "f180.pm",
+          "f181.pm",
+          "f182.pm",
+          "f183.pm",
+          "f184.pm",
+          "f185.pm",
+          "f186.pm",
+          "f187.pm",
+          "f188.pm",
+          "f189.pm",
+          "f190.pm",
+          "f191.pm",
+          "f192.pm",
+          "f193.pm",
+          "f194.pm",
+          "f195.pm",
+          "f196.pm",
+          "f197.pm",
+          "f198.pm",
+          "f199.pm",
+          "f200.pm",
+          "f201.pm",
+          "f202.pm",
+          "f203.pm",
+          "f204.pm",
+          "f205.pm",
+          "f206.pm",
+          "f207.pm",
+          "f208.pm",
+          "f209.pm",
+          "f210.pm",
+          "f211.pm",
+          "f212.pm",
+          "f213.pm",
+          "f214.pm",
+          "f215.pm",
+          "f216.pm",
+          "f217.pm",
+          "f218.pm",
+          "f219.pm",
+          "f220.pm",
+          "f221.pm",
+          "f222.pm",
+          "f223.pm",
+          "f224.pm",
+          "f225.pm",
+          "f226.pm",
+          "f227.pm",
+          "f228.pm",
+          "f229.pm",
+          "f230.pm",
+          "f231.pm",
+          "f232.pm",
+          "f233.pm",
+          "f234.pm",
+          "f235.pm",
+          "f236.pm",
+          "f237.pm",
+          "f238.pm",
+          "f239.pm",
+          "f240.pm",
+          "f241.pm",
+          "f242.pm",
+          "f243.pm",
+          "f244.pm",
+          "f245.pm",
+          "f246.pm",
+          "f247.pm",
+          "f248.pm",
+          "f249.pm",
+          "f250.pm",
+          "f251.pm",
+          "f252.pm",
+          "f253.pm",
+          "f254.pm",
+          "f255.pm"
+        ],
+        "scanned": 256,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "f000.pm",
+        "f001.pm",
+        "f002.pm",
+        "f003.pm",
+        "f004.pm",
+        "f005.pm",
+        "f006.pm",
+        "f007.pm",
+        "f008.pm",
+        "f009.pm",
+        "f010.pm",
+        "f011.pm",
+        "f012.pm",
+        "f013.pm",
+        "f014.pm",
+        "f015.pm",
+        "f016.pm",
+        "f017.pm",
+        "f018.pm",
+        "f019.pm",
+        "f020.pm",
+        "f021.pm",
+        "f022.pm",
+        "f023.pm",
+        "f024.pm",
+        "f025.pm",
+        "f026.pm",
+        "f027.pm",
+        "f028.pm",
+        "f029.pm",
+        "f030.pm",
+        "f031.pm",
+        "f032.pm",
+        "f033.pm",
+        "f034.pm",
+        "f035.pm",
+        "f036.pm",
+        "f037.pm",
+        "f038.pm",
+        "f039.pm",
+        "f040.pm",
+        "f041.pm",
+        "f042.pm",
+        "f043.pm",
+        "f044.pm",
+        "f045.pm",
+        "f046.pm",
+        "f047.pm",
+        "f048.pm",
+        "f049.pm",
+        "f050.pm",
+        "f051.pm",
+        "f052.pm",
+        "f053.pm",
+        "f054.pm",
+        "f055.pm",
+        "f056.pm",
+        "f057.pm",
+        "f058.pm",
+        "f059.pm",
+        "f060.pm",
+        "f061.pm",
+        "f062.pm",
+        "f063.pm",
+        "f064.pm",
+        "f065.pm",
+        "f066.pm",
+        "f067.pm",
+        "f068.pm",
+        "f069.pm",
+        "f070.pm",
+        "f071.pm",
+        "f072.pm",
+        "f073.pm",
+        "f074.pm",
+        "f075.pm",
+        "f076.pm",
+        "f077.pm",
+        "f078.pm",
+        "f079.pm",
+        "f080.pm",
+        "f081.pm",
+        "f082.pm",
+        "f083.pm",
+        "f084.pm",
+        "f085.pm",
+        "f086.pm",
+        "f087.pm",
+        "f088.pm",
+        "f089.pm",
+        "f090.pm",
+        "f091.pm",
+        "f092.pm",
+        "f093.pm",
+        "f094.pm",
+        "f095.pm",
+        "f096.pm",
+        "f097.pm",
+        "f098.pm",
+        "f099.pm",
+        "f100.pm",
+        "f101.pm",
+        "f102.pm",
+        "f103.pm",
+        "f104.pm",
+        "f105.pm",
+        "f106.pm",
+        "f107.pm",
+        "f108.pm",
+        "f109.pm",
+        "f110.pm",
+        "f111.pm",
+        "f112.pm",
+        "f113.pm",
+        "f114.pm",
+        "f115.pm",
+        "f116.pm",
+        "f117.pm",
+        "f118.pm",
+        "f119.pm",
+        "f120.pm",
+        "f121.pm",
+        "f122.pm",
+        "f123.pm",
+        "f124.pm",
+        "f125.pm",
+        "f126.pm",
+        "f127.pm",
+        "f128.pm",
+        "f129.pm",
+        "f130.pm",
+        "f131.pm",
+        "f132.pm",
+        "f133.pm",
+        "f134.pm",
+        "f135.pm",
+        "f136.pm",
+        "f137.pm",
+        "f138.pm",
+        "f139.pm",
+        "f140.pm",
+        "f141.pm",
+        "f142.pm",
+        "f143.pm",
+        "f144.pm",
+        "f145.pm",
+        "f146.pm",
+        "f147.pm",
+        "f148.pm",
+        "f149.pm",
+        "f150.pm",
+        "f151.pm",
+        "f152.pm",
+        "f153.pm",
+        "f154.pm",
+        "f155.pm",
+        "f156.pm",
+        "f157.pm",
+        "f158.pm",
+        "f159.pm",
+        "f160.pm",
+        "f161.pm",
+        "f162.pm",
+        "f163.pm",
+        "f164.pm",
+        "f165.pm",
+        "f166.pm",
+        "f167.pm",
+        "f168.pm",
+        "f169.pm",
+        "f170.pm",
+        "f171.pm",
+        "f172.pm",
+        "f173.pm",
+        "f174.pm",
+        "f175.pm",
+        "f176.pm",
+        "f177.pm",
+        "f178.pm",
+        "f179.pm",
+        "f180.pm",
+        "f181.pm",
+        "f182.pm",
+        "f183.pm",
+        "f184.pm",
+        "f185.pm",
+        "f186.pm",
+        "f187.pm",
+        "f188.pm",
+        "f189.pm",
+        "f190.pm",
+        "f191.pm",
+        "f192.pm",
+        "f193.pm",
+        "f194.pm",
+        "f195.pm",
+        "f196.pm",
+        "f197.pm",
+        "f198.pm",
+        "f199.pm",
+        "f200.pm",
+        "f201.pm",
+        "f202.pm",
+        "f203.pm",
+        "f204.pm",
+        "f205.pm",
+        "f206.pm",
+        "f207.pm",
+        "f208.pm",
+        "f209.pm",
+        "f210.pm",
+        "f211.pm",
+        "f212.pm",
+        "f213.pm",
+        "f214.pm",
+        "f215.pm",
+        "f216.pm",
+        "f217.pm",
+        "f218.pm",
+        "f219.pm",
+        "f220.pm",
+        "f221.pm",
+        "f222.pm",
+        "f223.pm",
+        "f224.pm",
+        "f225.pm",
+        "f226.pm",
+        "f227.pm",
+        "f228.pm",
+        "f229.pm",
+        "f230.pm",
+        "f231.pm",
+        "f232.pm",
+        "f233.pm",
+        "f234.pm",
+        "f235.pm",
+        "f236.pm",
+        "f237.pm",
+        "f238.pm",
+        "f239.pm",
+        "f240.pm",
+        "f241.pm",
+        "f242.pm",
+        "f243.pm",
+        "f244.pm",
+        "f245.pm",
+        "f246.pm",
+        "f247.pm",
+        "f248.pm",
+        "f249.pm",
+        "f250.pm",
+        "f251.pm",
+        "f252.pm",
+        "f253.pm",
+        "f254.pm",
+        "f255.pm"
+      ]
+    },
+    {
+      "id": "missing-root",
+      "root": "root",
+      "root_kind": "missing",
+      "entries": [],
+      "policy_rows": [
+        "root-directory"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [],
+        "scanned": null,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [
+        "directory not found"
+      ],
+      "report_subjects": [
+        "."
+      ]
+    },
+    {
+      "id": "file-root",
+      "root": "root/file.pl",
+      "root_kind": "file",
+      "entries": [
+        {
+          "path": "root/file.pl",
+          "kind": "file"
+        }
+      ],
+      "policy_rows": [
+        "root-directory"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [],
+        "scanned": null,
+        "unscanned_display": [],
+        "exit": 1
+      },
+      "stdout_contains": [],
+      "stderr_contains": [
+        "not a directory"
+      ],
+      "report_subjects": [
+        "."
+      ]
+    },
+    {
+      "id": "unreadable-root",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/hidden.pm",
+          "kind": "file"
+        },
+        {
+          "path": "root",
+          "kind": "directory",
+          "unreadable": true
+        }
+      ],
+      "policy_rows": [
+        "unreadable",
+        "no-input"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [],
+        "scanned": 0,
+        "unscanned_display": [
+          "."
+        ],
+        "exit": 0
+      },
+      "stdout_contains": [
+        "Paths not scanned: 1",
+        "No Perl files"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "hidden.pm"
+      ]
+    },
+    {
+      "id": "begin-noexecution",
+      "root": "root",
+      "root_kind": "directory",
+      "entries": [
+        {
+          "path": "root/begin.pl",
+          "kind": "file",
+          "content": "BEGIN { open my $fh, \">\", $ENV{SELECTION_EXEC_MARKER}; print $fh \"executed\"; close $fh; }\n1;\n"
+        }
+      ],
+      "policy_rows": [
+        "no-execution"
+      ],
+      "shuffle": false,
+      "current": {
+        "selected_display": [],
+        "scanned": 1,
+        "unscanned_display": [],
+        "exit": 0
+      },
+      "stdout_contains": [
+        "Clean parses: 1/1",
+        "Assessment: PASS"
+      ],
+      "stderr_contains": [],
+      "report_subjects": [
+        ".",
+        "begin.pl"
+      ]
+    }
+  ],
+  "not_proven": [
+    "Native Windows and macOS, drive/UNC/case-folding/normalization behavior.",
+    "Concurrent removal/replacement during traversal/read; no production injection hook is introduced.",
+    "Production cooperative cancellation, depth/entry/selected/time budget enforcement, parser interruption and byte limits.",
+    "Large-tree asymptotic/resource envelope: 256 files are bounded evidence only.",
+    "Exhaustive process/syscall audit or absolute interpreter invocation; PATH traps, BEGIN marker and native source trace are bounded controls.",
+    "Atomic snapshot or undetected read races; non-UTF-8 root CLI argument behavior.",
+    "Installed/release/RC/editor integration and canonical executor transport parity remain separate."
+  ]
+}

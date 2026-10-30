@@ -17,11 +17,16 @@
 //! ## Deadlock analysis
 //!
 //! `try_send` is non-blocking — it never waits on the consumer. Producers take
-//! the short admission-gate lock only to snapshot the shared sender and perform
-//! `try_send`; the writer thread never takes that gate. The writer thread holds
-//! the `output` lock (for `spawn_writer_shared`) only while performing the actual
-//! write, and it reads from the channel via `blocking_recv`/`try_recv` with no
-//! other lock held. Therefore there is no circular lock+channel dependency.
+//! the short admission-gate lock to snapshot the shared sender and perform
+//! `try_send`, and — on a closed gate — record a refused required response
+//! before releasing. Exit settlement acquires the same lock after the writer
+//! wait so that increment is visible. The writer thread never takes that gate.
+//! The writer thread holds the `output` lock (for `spawn_writer_shared`) only
+//! while performing the actual write, and it reads from the channel via the
+//! bounded poll of `recv_bounded` (`try_recv` with a short sleep while empty)
+//! with no other lock held. Therefore there is no circular lock+channel
+//! dependency. The bounded poll also guarantees egress progress even when a
+//! channel wakeup is lost (#17347).
 
 #[cfg(test)]
 use crate::protocol::JsonRpcId;
@@ -32,7 +37,7 @@ use serde_json::{Value, json};
 use std::io::{self, Write};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread;
 use std::time::Duration;
@@ -136,21 +141,58 @@ pub(crate) struct OutboundSender {
     completion: Arc<WriterCompletion>,
 }
 
+/// A background observer may publish a notification while the session lives,
+/// without keeping the outbound writer alive during server shutdown.
+pub(crate) struct WeakOutboundSender {
+    gate: std::sync::Weak<parking_lot::Mutex<Option<tokio::sync::mpsc::Sender<OutboundMessage>>>>,
+}
+
+impl WeakOutboundSender {
+    pub(crate) fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        if let Some(reason) = crate::protocol::method_direction::outbound_rejection(method) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("outbound notification `{method}` {reason}"),
+            ));
+        }
+        let gate = self
+            .gate
+            .upgrade()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        let gate = gate.lock();
+        let tx = gate
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        tx.try_send(OutboundMessage::Notification { method: method.to_string(), params })
+            .map_err(map_try_send_error)
+    }
+}
+
 #[derive(Default)]
 struct WriterCompletion {
     outcome: parking_lot::Mutex<Option<WriterTerminalOutcome>>,
     ready: parking_lot::Condvar,
     failed: AtomicBool,
     failure_notify: tokio::sync::Notify,
+    /// Required responses refused after [`OutboundSender::close_admission`].
+    /// These never entered the writer channel, so they cannot appear on
+    /// [`WriterTerminalOutcome`].
+    rejected_required: AtomicUsize,
 }
 
 impl WriterCompletion {
     fn publish(&self, outcome: WriterTerminalOutcome) {
-        if outcome.is_io_failure() {
+        let io_failure = outcome.is_io_failure();
+        // Publish the outcome before arming the failure wake: the serving
+        // loop snapshots the terminal outcome to log it at teardown (#18349),
+        // so `failed` must never be observable before the outcome it
+        // promises. The `Release` store below and the snapshot's `Acquire`
+        // load give that snapshot its happens-before edge.
+        *self.outcome.lock() = Some(outcome);
+        if io_failure {
             self.failed.store(true, Ordering::Release);
             self.failure_notify.notify_waiters();
         }
-        *self.outcome.lock() = Some(outcome);
         self.ready.notify_all();
     }
 
@@ -173,6 +215,14 @@ impl WriterCompletion {
         }
         outcome.clone()
     }
+
+    fn record_rejected_required(&self) {
+        self.rejected_required.fetch_add(1, Ordering::Release);
+    }
+
+    fn rejected_required(&self) -> usize {
+        self.rejected_required.load(Ordering::Acquire)
+    }
 }
 
 /// Map a [`tokio::sync::mpsc::error::TrySendError`] to an [`io::Error`].
@@ -193,6 +243,9 @@ fn map_try_send_error<T>(e: tokio::sync::mpsc::error::TrySendError<T>) -> io::Er
 }
 
 impl OutboundSender {
+    pub(crate) fn downgrade(&self) -> WeakOutboundSender {
+        WeakOutboundSender { gate: Arc::downgrade(&self.gate) }
+    }
     fn from_parts(
         tx: tokio::sync::mpsc::Sender<OutboundMessage>,
         completion: Arc<WriterCompletion>,
@@ -221,6 +274,26 @@ impl OutboundSender {
         self.completion.wait(timeout)
     }
 
+    /// Close admission, wait for the writer, and join refused required
+    /// responses that lost the race with that close (#16655).
+    ///
+    /// The refused-required snapshot takes the admission gate after the
+    /// writer wait so a producer that already observed the closed gate
+    /// finishes recording that refusal before the load. A producer that
+    /// first enters [`Self::send_response`] after this function returns
+    /// is after settlement; `process::exit` follows.
+    pub(crate) fn settle_for_exit(&self, timeout: Duration) -> ExitSettlement {
+        let writer = self.close_and_wait(timeout);
+        ExitSettlement { writer, rejected_required: self.snapshot_rejected_required() }
+    }
+
+    /// Load refused required responses only after producers that already
+    /// hold the gate have recorded or abandoned that observation.
+    fn snapshot_rejected_required(&self) -> usize {
+        let _gate = self.gate.lock();
+        self.completion.rejected_required()
+    }
+
     /// Stop producers before the scheduler begins its cooperative drain.
     ///
     /// This is intentionally separate from [`Self::close_and_wait`]: a
@@ -236,12 +309,14 @@ impl OutboundSender {
         // required-response send. Otherwise another producer can observe the
         // still-open gate between `try_send` and `gate.take()`.
         let mut gate = self.gate.lock();
-        let result = gate
-            .as_ref()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))
-            .and_then(|tx| {
-                tx.try_send(OutboundMessage::Response(response)).map_err(map_try_send_error)
-            });
+        let Some(tx) = gate.as_ref() else {
+            // Hold the gate across the increment so [`Self::settle_for_exit`]
+            // cannot snapshot a stale zero between this observation and the
+            // counter update (#16655).
+            self.completion.record_rejected_required();
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"));
+        };
+        let result = tx.try_send(OutboundMessage::Response(response)).map_err(map_try_send_error);
         if result.is_err() {
             gate.take();
             drop(gate);
@@ -252,6 +327,20 @@ impl OutboundSender {
 
     pub(crate) async fn response_failure_notified(&self) {
         self.completion.failure_notified().await;
+    }
+
+    /// Snapshot the writer's terminal outcome without waiting (#18349).
+    ///
+    /// `None` means the writer thread has settled no I/O failure yet: serving
+    /// was torn down by an admission-path failure signal (`signal_failure`
+    /// from a refused required response) with no sink I/O failure settled —
+    /// a pending writer write may still settle later, so no writer-health or
+    /// transport-cause attribution may be drawn from `None`. `Some(outcome)`
+    /// is the writer's first causal termination, published before the
+    /// failure wake (see [`WriterCompletion::publish`]), so a failure wake
+    /// never observes `None` from this snapshot.
+    pub(crate) fn terminal_outcome_snapshot(&self) -> Option<WriterTerminalOutcome> {
+        self.completion.outcome.lock().clone()
     }
 
     pub(crate) fn response_delivery_failed(&self) -> bool {
@@ -362,10 +451,15 @@ pub(crate) fn closed_sender() -> OutboundSender {
 /// an explicit shutdown path), which maps to [`WriterTerminalOutcome::NormalClose`]
 /// when no I/O failure occurred. Runtime shutdown ownership (#8388) can layer an
 /// explicit distinction on top without changing this shape.
+///
+/// [`NormalClose`] is the writer's view of *admitted* work only. A required
+/// response refused after [`OutboundSender::close_admission`] never reaches
+/// this enum; join it at exit via [`ExitSettlement`] (#16655).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WriterTerminalOutcome {
-    /// The channel closed and every batch was written and flushed with no I/O
-    /// failure. Non-error settlement.
+    /// The channel closed and every *admitted* batch was written and flushed
+    /// with no I/O failure. This is not proof that every produced response
+    /// was admitted.
     NormalClose,
     /// `write_all` failed. The `batch_messages` accepted messages coalesced
     /// into the failed batch (`batch_bytes` frame bytes) were not confirmed
@@ -386,13 +480,15 @@ impl WriterTerminalOutcome {
         !matches!(self, WriterTerminalOutcome::NormalClose)
     }
 
-    /// Conservative count of accepted messages that may not have been
-    /// delivered, or `None` when the writer closed normally with every batch
-    /// written and flushed. The exact messages coalesced into the failed
-    /// batch plus the still-queued depth are counted; message payloads are
-    /// never retained (bounded context). Messages accepted by producers
-    /// between the queued snapshot and the sink failure are not counted, so
-    /// the result stays a lower bound on accepted-but-unconfirmed work.
+    /// Conservative count of *admitted* messages that may not have been
+    /// delivered, or `None` when the writer closed normally with every
+    /// admitted batch written and flushed. Responses refused after
+    /// admission close are counted on [`ExitSettlement`], not here.
+    /// The exact messages coalesced into the failed batch plus the
+    /// still-queued depth are counted; message payloads are never retained
+    /// (bounded context). Messages accepted by producers between the queued
+    /// snapshot and the sink failure are not counted, so the result stays a
+    /// lower bound on accepted-but-unconfirmed work.
     pub(crate) fn possibly_undelivered_messages(&self) -> Option<usize> {
         match self {
             WriterTerminalOutcome::NormalClose => None,
@@ -434,7 +530,81 @@ impl WriterTerminalOutcome {
     }
 }
 
-/// Blocking receive loop with message batching.
+/// Writer outcome plus required responses refused after admission close.
+///
+/// Used at process exit so a `NormalClose` cannot be reported as full
+/// delivery when a produced response lost the race with `close_admission`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExitSettlement {
+    pub(crate) writer: Option<WriterTerminalOutcome>,
+    pub(crate) rejected_required: usize,
+}
+
+impl ExitSettlement {
+    /// True only when the writer flushed every admitted batch and no
+    /// required response was refused after admission close.
+    pub(crate) fn is_clean_delivery(&self) -> bool {
+        matches!(self.writer, Some(WriterTerminalOutcome::NormalClose))
+            && self.rejected_required == 0
+    }
+
+    pub(crate) fn report(&self) {
+        if self.is_clean_delivery() {
+            tracing::debug!("outbound writer settled: normal channel close, no I/O failure");
+            return;
+        }
+        match self.writer.as_ref() {
+            Some(WriterTerminalOutcome::NormalClose) => {
+                tracing::error!(
+                    rejected_required = self.rejected_required,
+                    "outbound writer settled: channel closed while required responses were refused admission"
+                );
+            }
+            Some(outcome) => outcome.report_settlement(),
+            None => {
+                tracing::error!(
+                    rejected_required = self.rejected_required,
+                    "outbound writer did not settle before process exit"
+                );
+            }
+        }
+    }
+}
+
+/// Idle wait bound for the egress writer loops.
+///
+/// The writer loops must never park indefinitely on the channel's blocking
+/// receive: the parked-thread wakeup of `blocking_recv` was observed to be
+/// lost under heavy thread churn (#17347) — an initialize response was
+/// admitted to the channel and logged as outgoing, yet the bytes only reached
+/// stdout when the next inbound frame's `try_send` released the parked
+/// receiver, hanging every spec-compliant client that waits for
+/// `InitializeResult` before sending anything else. Receiving through a
+/// bounded poll guarantees egress progress regardless of wakeup delivery, at
+/// the cost of at most one poll interval of added latency on the first
+/// message after an idle period (well under any LSP client's timeout).
+const EGRESS_IDLE_POLL: Duration = Duration::from_millis(5);
+
+/// Receive the next outbound message with a bounded idle wait.
+///
+/// Fast path: [`tokio::sync::mpsc::Receiver::try_recv`] picks up whatever is
+/// already queued without parking. When the queue is empty, sleep
+/// [`EGRESS_IDLE_POLL`] and retry instead of parking indefinitely in
+/// `blocking_recv` (#17347). Returns `None` only after the channel is closed
+/// and fully drained, matching `blocking_recv`'s termination semantics.
+fn recv_bounded(rx: &mut tokio::sync::mpsc::Receiver<OutboundMessage>) -> Option<OutboundMessage> {
+    loop {
+        match rx.try_recv() {
+            Ok(msg) => return Some(msg),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                thread::sleep(EGRESS_IDLE_POLL);
+            }
+        }
+    }
+}
+
+/// Receive loop with message batching.
 ///
 /// Drains the channel and writes all immediately-available messages
 /// in a single write+flush cycle, reducing syscalls under burst load.
@@ -446,7 +616,7 @@ fn writer_loop_batched(
     mut output: Box<dyn Write + Send>,
 ) -> WriterTerminalOutcome {
     let mut batch_buf = Vec::with_capacity(4096);
-    while let Some(msg) = rx.blocking_recv() {
+    while let Some(msg) = recv_bounded(&mut rx) {
         let mut batch_messages = 1usize;
         // Serialize first message.
         let bytes = serialize_message(&msg);
@@ -484,7 +654,7 @@ fn writer_loop_batched(
     WriterTerminalOutcome::NormalClose
 }
 
-/// Blocking receive loop with message batching for shared writer.
+/// Receive loop with message batching for shared writer.
 ///
 /// Same coalescing strategy as [`writer_loop_batched`] but acquires the
 /// shared lock once per batch rather than once per message.
@@ -493,7 +663,7 @@ fn writer_loop_batched_shared(
     output: std::sync::Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
 ) -> WriterTerminalOutcome {
     let mut batch_buf = Vec::with_capacity(4096);
-    while let Some(msg) = rx.blocking_recv() {
+    while let Some(msg) = recv_bounded(&mut rx) {
         let mut batch_messages = 1usize;
         // Serialize first message.
         let bytes = serialize_message(&msg);
@@ -729,53 +899,15 @@ pub(crate) mod tests {
 
     #[test]
     fn blocked_writer_wait_is_bounded_and_releases_cleanly() -> Result<(), Box<dyn Error>> {
-        struct GatedSink {
-            entered: Arc<std::sync::atomic::AtomicBool>,
-            release: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
-        }
-
-        impl Write for GatedSink {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.entered.store(true, std::sync::atomic::Ordering::SeqCst);
-                let (lock, cvar) = &*self.release;
-                let mut released = lock.lock();
-                while !*released {
-                    cvar.wait(&mut released);
-                }
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let release = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
-        let (sender, handle) = spawn_writer(Box::new(GatedSink {
-            entered: Arc::clone(&entered),
-            release: Arc::clone(&release),
-        }));
+        let (sink, entered, release) = GatedSink::pair();
+        let (sender, handle) = spawn_writer(Box::new(sink));
         let send_result = sender.send_notification("window/logMessage", json!({"blocked": true}));
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        let reached_gate = loop {
-            if entered.load(std::sync::atomic::Ordering::SeqCst) {
-                break true;
-            }
-            if std::time::Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::yield_now();
-        };
+        let reached_gate = GatedSink::wait_until_entered(&entered, Duration::from_secs(1));
 
         let wait_started = std::time::Instant::now();
         let unsettled = sender.close_and_wait(Duration::from_millis(20));
         let wait_elapsed = wait_started.elapsed();
-        {
-            let (lock, cvar) = &*release;
-            *lock.lock() = true;
-            cvar.notify_all();
-        }
+        GatedSink::release(&release);
         let outcome = handle.join().map_err(|_| "writer thread panicked")?;
         send_result?;
         assert!(reached_gate, "writer did not reach its releasable gate");
@@ -825,6 +957,72 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// #17347: a message accepted while the writer is idle must reach the sink
+    /// within a bounded time even though the writer is sitting in the idle
+    /// poll (the lost-wakeup shape observed under thread churn). The generous
+    /// bound only fails when egress progress is lost entirely, never on
+    /// scheduler jitter.
+    #[test]
+    fn idle_writer_delivers_message_accepted_during_idle_poll() -> Result<(), Box<dyn Error>> {
+        let buffer = SharedBuffer::new();
+        let (sender, handle) = spawn_writer(Box::new(buffer.clone()));
+
+        // Let the writer drain nothing and settle into the idle poll path.
+        thread::sleep(EGRESS_IDLE_POLL * 3);
+
+        let send_started = Instant::now();
+        sender.send_response(JsonRpcResponse::success(
+            Some(JsonRpcId::Integer(17347)),
+            json!({"wakeup": "lost"}),
+        ))?;
+
+        // A lost wakeup would withhold the bytes indefinitely; the bounded
+        // poll must release them within a few poll intervals (generous slack).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let payloads = loop {
+            let parsed = parse_framed_payloads(&buffer.bytes())?;
+            if !parsed.is_empty() {
+                break parsed;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "egress stalled after {:?}: bounded poll failed to deliver an accepted message",
+                send_started.elapsed()
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        let [only] = payloads.as_slice() else {
+            return Err(format!("expected exactly one payload, got {}", payloads.len()).into());
+        };
+        assert_eq!(only["id"], 17347);
+
+        drop(sender);
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
+        Ok(())
+    }
+
+    /// #17347 liveness invariant: the writer loops must receive through the
+    /// bounded idle poll, never through an indefinite `blocking_recv` park —
+    /// that parked wakeup is the shape observed to be lost under load.
+    /// The searched literals are split via `concat!` so this test's own
+    /// source text cannot satisfy them.
+    #[test]
+    fn egress_writer_loops_receive_through_bounded_poll_not_blocking_recv() {
+        let source = include_str!("outbound.rs");
+        let poll_call = concat!("recv_bounded", "(&mut rx)");
+        assert_eq!(
+            source.matches(poll_call).count(),
+            2,
+            "both writer loops must receive through the bounded poll"
+        );
+        let blocking_park = concat!("rx", ".blocking_recv()");
+        assert!(
+            !source.contains(blocking_park),
+            "the egress path must not park indefinitely on blocking_recv (#17347)"
+        );
+    }
+
     /// #8402: normal channel closure must exercise the settlement reporting
     /// path and emit the non-error debug record — and must never emit an
     /// error-level record for a clean close.
@@ -849,6 +1047,180 @@ pub(crate) mod tests {
             !records.contains("transport I/O failure"),
             "normal close must not be reported as a transport I/O failure, got: {records}"
         );
+    }
+
+    /// #16655: a required response produced after `close_admission` never
+    /// enters the channel. Writer `NormalClose` must not be reported as
+    /// full delivery.
+    #[test]
+    fn late_required_response_after_admission_close_is_not_clean_exit_settlement()
+    -> Result<(), Box<dyn Error>> {
+        let (sender, handle) = spawn_writer(Box::new(std::io::sink()));
+        let late = sender.clone();
+        sender.close_admission();
+        let error = late
+            .send_response(JsonRpcResponse::error(
+                Some(JsonRpcId::Integer(3)),
+                crate::protocol::JsonRpcError {
+                    code: -32600,
+                    message: "Server has been shutdown".to_string(),
+                    data: None,
+                },
+            ))
+            .err()
+            .ok_or("late required response must be refused after admission close")?;
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+
+        let settlement = sender.settle_for_exit(Duration::from_secs(1));
+        handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(settlement.writer, Some(WriterTerminalOutcome::NormalClose));
+        assert_eq!(settlement.rejected_required, 1);
+        assert!(
+            !settlement.is_clean_delivery(),
+            "NormalClose plus a refused required response is not clean delivery"
+        );
+
+        let records = capture_tracing_records(|| settlement.report());
+        assert!(
+            records.contains("required responses were refused admission"),
+            "exit settlement must name the refused admission, got: {records}"
+        );
+        assert!(
+            records.contains("ERROR"),
+            "a refused required response must not settle at debug, got: {records}"
+        );
+        assert!(
+            !records.contains("normal channel close, no I/O failure"),
+            "must not claim a fully delivered normal close, got: {records}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clean_exit_settlement_still_reports_normal_close() -> Result<(), Box<dyn Error>> {
+        let (sender, handle) = spawn_writer(Box::new(std::io::sink()));
+        sender.send_response(JsonRpcResponse::success(
+            Some(JsonRpcId::Integer(1)),
+            json!({"ok": true}),
+        ))?;
+        let settlement = sender.settle_for_exit(Duration::from_secs(1));
+        handle.join().map_err(|_| "writer thread panicked")?;
+        assert!(
+            settlement.is_clean_delivery(),
+            "admitted work that flushed must remain a clean exit settlement: {settlement:?}"
+        );
+        assert_eq!(settlement.rejected_required, 0);
+
+        let records = capture_tracing_records(|| settlement.report());
+        assert!(
+            records.contains("outbound writer settled: normal channel close, no I/O failure"),
+            "clean exit settlement must keep the non-error record, got: {records}"
+        );
+        assert!(
+            !records.contains("ERROR"),
+            "clean exit settlement must not emit an error record, got: {records}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exit_settlement_does_not_hide_a_writer_io_failure() -> Result<(), Box<dyn Error>> {
+        let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (sender, handle) = spawn_writer(Box::new(WriteFailsSink {
+            write_kind: io::ErrorKind::ConnectionAborted,
+            attempted_bytes: Arc::clone(&attempted),
+        }));
+        sender.send_notification("window/logMessage", json!({"n": 1}))?;
+        let late = sender.clone();
+        let settlement = sender.settle_for_exit(Duration::from_secs(1));
+        let _ =
+            late.send_response(JsonRpcResponse::success(Some(JsonRpcId::Integer(9)), json!({})));
+        handle.join().map_err(|_| "writer thread panicked")?;
+        assert!(
+            matches!(settlement.writer, Some(WriterTerminalOutcome::WriteFailed { .. })),
+            "writer I/O failure must remain the writer outcome: {settlement:?}"
+        );
+        assert!(!settlement.is_clean_delivery());
+
+        let records = capture_tracing_records(|| settlement.report());
+        assert!(
+            records.contains("transport I/O failure"),
+            "I/O failure must still be reported as I/O failure, got: {records}"
+        );
+        Ok(())
+    }
+
+    /// #16655: a required response refused while `settle_for_exit` is
+    /// still waiting on the writer must appear in the snapshot. The
+    /// process burst cannot coordinate that producer with settlement.
+    #[test]
+    fn settle_for_exit_counts_refusal_that_races_the_writer_wait() -> Result<(), Box<dyn Error>> {
+        let (sink, entered, release) = GatedSink::pair();
+        let (sender, handle) = spawn_writer(Box::new(sink));
+        sender.send_notification("window/logMessage", json!({"blocked": true}))?;
+        assert!(
+            GatedSink::wait_until_entered(&entered, Duration::from_secs(1)),
+            "writer did not reach its releasable gate"
+        );
+
+        let settler = {
+            let sender = sender.clone();
+            thread::spawn(move || sender.settle_for_exit(Duration::from_secs(2)))
+        };
+
+        let late = sender.clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let admission_closed = loop {
+            match late.send_notification("window/logMessage", json!({"probe": true})) {
+                Ok(()) => {
+                    if std::time::Instant::now() >= deadline {
+                        break false;
+                    }
+                    thread::yield_now();
+                }
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break true,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    // Writer is still blocked; the probe may fill the bounded
+                    // channel before settle_for_exit closes admission.
+                    if std::time::Instant::now() >= deadline {
+                        break false;
+                    }
+                    thread::yield_now();
+                }
+                Err(error) => {
+                    return Err(format!("admission probe failed unexpectedly: {error}").into());
+                }
+            }
+        };
+        assert!(
+            admission_closed,
+            "settle_for_exit did not close admission while the writer was blocked"
+        );
+
+        let error = late
+            .send_response(JsonRpcResponse::error(
+                Some(JsonRpcId::Integer(3)),
+                crate::protocol::JsonRpcError {
+                    code: -32600,
+                    message: "Server has been shutdown".to_string(),
+                    data: None,
+                },
+            ))
+            .err()
+            .ok_or("required response must be refused after admission close")?;
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+
+        GatedSink::release(&release);
+
+        let settlement = settler.join().map_err(|_| "settler thread panicked")?;
+        handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(settlement.rejected_required, 1);
+        assert_eq!(settlement.writer, Some(WriterTerminalOutcome::NormalClose));
+        assert!(
+            !settlement.is_clean_delivery(),
+            "a refusal that completed during the writer wait must not report clean delivery"
+        );
+        Ok(())
     }
 
     #[test]
@@ -877,6 +1249,64 @@ pub(crate) mod tests {
         assert_eq!(payloads[1]["method"], "client/registerCapability");
 
         Ok(())
+    }
+
+    /// Writer sink that blocks in `write` until [`GatedSink::release`] fires.
+    /// Shared by the bounded-wait test and the #16655 settlement-race test.
+    struct GatedSink {
+        entered: Arc<std::sync::atomic::AtomicBool>,
+        release: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+    }
+
+    impl GatedSink {
+        fn pair() -> (
+            Self,
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+        ) {
+            let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
+            (
+                Self { entered: Arc::clone(&entered), release: Arc::clone(&release) },
+                entered,
+                release,
+            )
+        }
+
+        fn wait_until_entered(entered: &std::sync::atomic::AtomicBool, timeout: Duration) -> bool {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                if entered.load(std::sync::atomic::Ordering::SeqCst) {
+                    return true;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+        }
+
+        fn release(release: &(parking_lot::Mutex<bool>, parking_lot::Condvar)) {
+            let (lock, cvar) = release;
+            *lock.lock() = true;
+            cvar.notify_all();
+        }
+    }
+
+    impl Write for GatedSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            let (lock, cvar) = &*self.release;
+            let mut released = lock.lock();
+            while !*released {
+                cvar.wait(&mut released);
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     /// Sink whose `write` always fails with a fixed error kind and records how
@@ -997,6 +1427,47 @@ pub(crate) mod tests {
         if !outcome.is_io_failure() || attempted.load(Ordering::SeqCst) == 0 {
             return Err("writer failure wake lacked a causal I/O outcome".into());
         }
+        Ok(())
+    }
+
+    /// #18349: the failure wake must imply a published terminal outcome, so
+    /// the serving loop's snapshot always names the causal failure when the
+    /// writer died on I/O. `publish` therefore stores the outcome before
+    /// arming the wake, and the snapshot reflects the writer's settlement.
+    #[test]
+    fn response_failure_wake_implies_published_terminal_outcome_snapshot()
+    -> Result<(), Box<dyn Error>> {
+        let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (sender, handle) = spawn_writer(Box::new(WriteFailsSink {
+            write_kind: io::ErrorKind::ConnectionAborted,
+            attempted_bytes: Arc::clone(&attempted),
+        }));
+        sender.send_notification("window/logMessage", json!({"wake": true}))?;
+
+        assert!(
+            sender.terminal_outcome_snapshot().is_none(),
+            "an unsettled writer must snapshot as None (admission-path shape)"
+        );
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), sender.response_failure_notified())
+                .await
+                .map_err(|_| "writer failure did not wake the response waiter")
+        })?;
+        let snapshot = sender
+            .terminal_outcome_snapshot()
+            .ok_or("failure wake fired without a published terminal outcome")?;
+        assert!(
+            matches!(
+                snapshot,
+                WriterTerminalOutcome::WriteFailed { kind, .. }
+                    if kind == io::ErrorKind::ConnectionAborted
+            ),
+            "snapshot must carry the first causal I/O outcome, got {snapshot:?}"
+        );
+        let settled = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(snapshot, settled, "snapshot must match the writer's terminal outcome");
         Ok(())
     }
 

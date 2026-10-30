@@ -59,7 +59,7 @@ use crate::tasks::build_timing::SCHEMA_VERSION as BUILD_TIMING_RECEIPT_SCHEMA_VE
 use crate::tasks::ci_metrics::SCHEMA_VERSION_BASELINE as CI_BASELINE_SCHEMA_VERSION;
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result, ensure, eyre};
+use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -535,6 +535,7 @@ fn write_json_output(root: &Path, metrics: &ReleaseHealthMetrics) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
     use tempfile::TempDir;
 
     fn write_ledger(root: &Path, contents: &str) -> Result<()> {

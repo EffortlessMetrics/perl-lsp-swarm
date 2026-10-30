@@ -91,7 +91,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "000000000000000000000000000000000000c423",
               "content_digest": "000000000000000000000000000000000000000000000000000000000007a965",
-              "reference": "cargo xtask pr-close-proof --pr 5021"
+              "reference": "cargo xtask pr-close-proof --pr 5021",
+              "schema_version": "landing_proof.v1"
             }
           },
           "vscode-resource.bypass.closed": {
@@ -100,7 +101,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "000000000000000000000000000000000000c424",
               "content_digest": "000000000000000000000000000000000000000000000000000000000007a96f",
-              "reference": "cargo xtask pr-close-proof --pr 5021"
+              "reference": "cargo xtask pr-close-proof --pr 5021",
+              "schema_version": "landing_proof.v1"
             }
           }
         },

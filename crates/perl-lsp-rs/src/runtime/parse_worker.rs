@@ -159,6 +159,8 @@ struct ParseJob {
     /// text here would silently parse a *different* edit than the one this
     /// job's generation number claims to represent.
     text: Arc<str>,
+    /// Saved-text replacement: refresh consumers only after this job's index commit.
+    refresh_consumers_after_index: bool,
     /// Enqueue time, for the (opt-in) `parse_worker.edit_to_publish` timing
     /// span.
     enqueued_at: Instant,
@@ -187,6 +189,8 @@ pub(crate) struct PublishedParseTicket {
     pub generation: u32,
     pub snapshot: Arc<ParsedSnapshot>,
     pub text: Arc<str>,
+    /// Saved-text replacement, carried with the accepted instance/generation.
+    pub refresh_consumers_after_index: bool,
     /// Whether the pending-parse lifecycle this ticket belongs to already
     /// has its `IndexCoordinator::notify_parse_complete` owned by the async
     /// worker's settle hook (`ParseWorker::spawn_with_pending_count_hooks`'s
@@ -1079,7 +1083,8 @@ impl ParseWorker {
         generation_handle: Arc<AtomicU32>,
         text: Arc<str>,
     ) -> bool {
-        let admitted = self.try_enqueue(uri, normalized_uri, generation, generation_handle, text);
+        let admitted =
+            self.try_enqueue(uri, normalized_uri, generation, generation_handle, text, false);
         assert!(
             admitted.is_ok(),
             "test enqueue refused: the pool must be operational and not shut down here"
@@ -1097,6 +1102,7 @@ impl ParseWorker {
         generation: u32,
         generation_handle: Arc<AtomicU32>,
         text: Arc<str>,
+        refresh_consumers_after_index: bool,
     ) -> Result<bool, ()> {
         if !self.is_operational() {
             return Err(());
@@ -1108,6 +1114,7 @@ impl ParseWorker {
                 generation,
                 generation_handle,
                 text,
+                refresh_consumers_after_index,
                 enqueued_at: Instant::now(),
             })
             .map_err(|_| ())
@@ -1335,6 +1342,7 @@ fn process_job(
         generation: job.generation,
         snapshot,
         text: Arc::clone(&job.text),
+        refresh_consumers_after_index: job.refresh_consumers_after_index,
         // The async worker's settle hook (fired from `finish()`'s terminal
         // branch, back in the caller's loop) owns this lifecycle's
         // `notify_parse_complete` -- see `PublishedParseTicket`'s doc
@@ -2417,6 +2425,7 @@ mod tests {
             1,
             generation_handle,
             Arc::from("my $x = 2;\n"),
+            false,
         );
         assert!(result.is_err(), "shutdown must reject new async work");
     }

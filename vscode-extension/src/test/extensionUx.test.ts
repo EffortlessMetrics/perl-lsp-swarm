@@ -22,8 +22,12 @@ import {
   showWorkspaceTrustReportCommand,
 } from '../diagnosticCommands';
 import {
+  configuredServerPathProblem,
   copyProviderDecisionReceiptCommand,
   diagnoseConfiguredServerPath,
+  expandConfiguredServerPath,
+  rejectConfiguredServerPath,
+  resolveConfiguredServerPath,
   explainDiagnosticCommand,
   explainProviderDecisionCommand,
   presentFormattingProviderError,
@@ -212,6 +216,101 @@ describe('diagnoseConfiguredServerPath (perl-lsp.serverPath validation)', () => 
       diagnoseConfiguredServerPath('', false, channel as unknown as vscode.LogOutputChannel),
     ).toBeNull();
     expect(channel.info).not.toHaveBeenCalled();
+  });
+});
+
+describe('configuredServerPathProblem (perl-lsp.serverPath validation)', () => {
+  function makeTempDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-serverpath-'));
+  }
+
+  test('rejects a directory even though it exists', () => {
+    const dir = makeTempDir();
+    try {
+      expect(configuredServerPathProblem(dir)).toBe('not-a-file');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports a missing path', () => {
+    const missing = path.join(os.tmpdir(), 'perl-lsp-serverpath-definitely-missing');
+    expect(configuredServerPathProblem(missing)).toBe('missing');
+  });
+
+  test('accepts a regular file', () => {
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, process.platform === 'win32' ? 'perllsp.exe' : 'perllsp');
+      fs.writeFileSync(file, '#!/bin/sh\n');
+      if (process.platform !== 'win32') {
+        fs.chmodSync(file, 0o755);
+      }
+      expect(configuredServerPathProblem(file)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a non-executable-extension file on Windows', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, 'perllsp.txt');
+      fs.writeFileSync(file, 'not a binary');
+      expect(configuredServerPathProblem(file)).toBe('not-executable');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves relative paths against the workspace root', () => {
+    const root = path.join(os.tmpdir(), 'ws-root');
+    expect(resolveConfiguredServerPath('bin/perllsp', root)).toBe(
+      path.join(root, 'bin', 'perllsp'),
+    );
+    expect(resolveConfiguredServerPath('~/bin/perllsp', root)).toBe(
+      path.join(os.homedir(), 'bin', 'perllsp'),
+    );
+    expect(resolveConfiguredServerPath('bin/perllsp', undefined)).toBe('bin/perllsp');
+  });
+
+  test('rejects a non-executable regular file off Windows', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, 'perllsp');
+      fs.writeFileSync(file, '#!/bin/sh\n');
+      fs.chmodSync(file, 0o644);
+      expect(configuredServerPathProblem(file)).toBe('not-executable');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('expands a leading tilde to the home directory', () => {
+    expect(expandConfiguredServerPath('~/bin/perllsp')).toBe(
+      path.join(os.homedir(), 'bin', 'perllsp'),
+    );
+    expect(expandConfiguredServerPath('~')).toBe(os.homedir());
+    expect(expandConfiguredServerPath('/opt/perl/bin/perllsp')).toBe('/opt/perl/bin/perllsp');
+  });
+
+  test('rejectConfiguredServerPath logs the specific problem', () => {
+    const channel = { appendLine: jest.fn(), info: jest.fn() };
+    const result = rejectConfiguredServerPath(
+      '/opt/perl',
+      'not-a-file',
+      channel as unknown as vscode.LogOutputChannel,
+    );
+    expect(result).toBe('/opt/perl');
+    expect(channel.info).toHaveBeenCalledTimes(1);
+    expect(channel.info.mock.calls[0][0]).toContain('is not a file');
+    expect(channel.info.mock.calls[0][0]).toContain('/opt/perl');
   });
 });
 
@@ -1538,8 +1637,10 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 // ---------------------------------------------------------------------------
 describe('suggestAiCompletionIfSupported (#1634)', () => {
   function makeWorkspaceState(shown = false) {
+    // #16585 review: the receipt is versioned per corrected gate; the
+    // unversioned key belonged to the obsolete pre-gate prompt.
     const store = new Map<string, unknown>([
-      ['perl-lsp.aiCompletion.firstRunNotificationShown', shown],
+      ['perl-lsp.aiCompletion.firstRunNotificationShown.v2', shown],
     ]);
     return {
       get: jest.fn((key: string, defaultValue?: unknown) =>
@@ -1568,6 +1669,16 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
   const clientWithoutInline: CapabilityClient = {
     initializeResult: { capabilities: { hoverProvider: true } },
   };
+  // Gated on a server that can actually arm the backend, not on
+  // `inlineCompletionProvider`, which every shipped profile advertises (#16585).
+  const clientWithActivation: CapabilityClient = {
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
+  };
 
   afterEach(() => {
     jest.clearAllMocks();
@@ -1580,7 +1691,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     context.workspaceState = makeWorkspaceState(false);
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Enable');
 
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('AI-powered inline completions'),
@@ -1594,7 +1705,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
       vscode.ConfigurationTarget.Global,
     );
     expect(context.workspaceState.update).toHaveBeenCalledWith(
-      'perl-lsp.aiCompletion.firstRunNotificationShown',
+      'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
       true,
     );
   });
@@ -1607,11 +1718,25 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
+  test('stays silent when only inline-completion support is advertised (#16585)', async () => {
+    // The dead end this issue removes: the journey fired for every user and
+    // reported a success the server cannot honour.
+    const update = mountConfig(false);
+    const context = makeContext();
+    context.workspaceState = makeWorkspaceState(false);
+
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(context.workspaceState.update).not.toHaveBeenCalled();
+  });
+
   test('stays silent when AI completion is already enabled', async () => {
     mountConfig(true);
     const context = makeContext();
     context.workspaceState = makeWorkspaceState(false);
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
@@ -1619,7 +1744,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     mountConfig(false);
     const context = makeContext();
     context.workspaceState = makeWorkspaceState(true);
-    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithInline);
+    await suggestAiCompletionIfSupported(asExtensionContext(context), clientWithActivation);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
