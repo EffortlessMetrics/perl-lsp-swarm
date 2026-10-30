@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Folding ranges for #region/#endregion markers now keep exact byte offsets in CRLF files. Previously each CRLF line shifted later folds by one byte, folding the wrong lines and, with multi-byte characters nearby, risking a server panic."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18076"
+  Slug: folding-crlf-offsets
+  Breaking: "no"

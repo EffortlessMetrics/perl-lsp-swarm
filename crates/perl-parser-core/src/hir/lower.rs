@@ -173,6 +173,8 @@ impl Lowerer {
                     } else {
                         ScopeKind::Block
                     };
+                let enclosing_stack_len = self.scope_stack.len();
+                let enclosing_package = self.package_context.clone();
                 let scope_id =
                     self.enter_scope(scope_kind, node.location, self.package_context.clone());
                 self.push_item(
@@ -186,7 +188,26 @@ impl Lowerer {
                 for statement in statements {
                     self.visit(statement, confidence);
                 }
+                // Statement-form packages push a scope frame that outlives
+                // their own visit; it ends with this block. Reap only those
+                // package frames (other visitors pair their own exits) and
+                // restore the enclosing package context, or the package
+                // frame leaks and enclosing exits pop the wrong frames
+                // (#18221).
+                while self.scope_stack.len() > enclosing_stack_len + 1 {
+                    let top = self.current_scope();
+                    let top_is_package = self
+                        .scope_graph
+                        .scopes
+                        .get(top.index() as usize)
+                        .is_some_and(|frame| frame.kind == ScopeKind::Package);
+                    if !top_is_package {
+                        break;
+                    }
+                    self.exit_scope();
+                }
                 self.exit_scope();
+                self.package_context = enclosing_package;
             }
             NodeKind::Package { name, name_span, block } => {
                 let package_scope =
@@ -1304,7 +1325,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::Foreach { variable, continue_block, .. } => {
+            NodeKind::Foreach { variable, list, body, continue_block } => {
                 let label = self.pending_label.take();
                 self.push_item(
                     node,
@@ -1320,7 +1341,40 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
+                // A `foreach my $i` iterator is loop-private in Perl: it
+                // shadows an outer same-spelling lexical for the loop's
+                // extent only (#14173). Record it in a scope opened for the
+                // whole loop (parent of the body block's own scope), so
+                // body and `continue` reads resolve to it while reads after
+                // the loop keep resolving outward. The list is evaluated
+                // outside that scope: visit it with the loop scope popped,
+                // which also keeps HIR items in source order (iterator
+                // declaration first, then the list). Non-lexical iterators
+                // keep the enclosing scope.
+                let lexical_iterator = matches!(
+                    &variable.kind,
+                    NodeKind::VariableDeclaration { declarator, .. }
+                    | NodeKind::VariableListDeclaration { declarator, .. }
+                        if matches!(declarator.as_str(), "my" | "state")
+                );
+                if lexical_iterator {
+                    let loop_scope = self.enter_scope(
+                        ScopeKind::Block,
+                        node.location,
+                        self.package_context.clone(),
+                    );
+                    self.visit(variable, confidence);
+                    self.scope_stack.pop();
+                    self.visit(list, confidence);
+                    self.scope_stack.push(loop_scope);
+                    self.visit(body, confidence);
+                    if let Some(continue_block) = continue_block {
+                        self.visit(continue_block, confidence);
+                    }
+                    self.exit_scope();
+                } else {
+                    self.visit_children(node, confidence);
+                }
             }
             NodeKind::LabeledStatement { label, statement } => {
                 let previous = self.pending_label.replace(label.clone());
@@ -1549,6 +1603,11 @@ impl Lowerer {
         match self.bareword_context {
             BarewordContext::ModuleRequest => BarewordRole::ModuleRequest,
             BarewordContext::MethodReceiver => BarewordRole::MethodReceiver,
+            // A sigil-prefixed indirect receiver (`new $class`) is a dynamic
+            // constructor target, not a static class bareword (#15031).
+            BarewordContext::IndirectObject if is_sigil_prefixed(name) => {
+                BarewordRole::DynamicIndirectObject
+            }
             BarewordContext::IndirectObject => BarewordRole::IndirectObject,
             BarewordContext::HashKey => BarewordRole::HashKey,
             BarewordContext::Expression if name.contains("::") => BarewordRole::QualifiedName,
@@ -2956,9 +3015,9 @@ fn is_sigil_prefixed(value: &str) -> bool {
 /// and an earlier revision that relied on it was wrong: `new $class` is a legal
 /// dynamic indirect constructor whose receiver arrives here as a real
 /// `Identifier { name: "$class" }` spanning the characters the author typed.
-/// Discarding that would drop a source-backed fact. (Whether such a receiver
-/// should be classified as a *bareword* at all is a separate defect, #15031;
-/// this predicate deliberately leaves that behavior unchanged.)
+/// Discarding that would drop a source-backed fact. (Such a receiver is
+/// still recorded; `classify_bareword` gives it the distinct
+/// `DynamicIndirectObject` role rather than the static one, #15031.)
 ///
 /// The sigil test is defence in depth rather than a proven discriminator. A finite
 /// probe over malformed and recovery-path inputs found no zero-width
@@ -3931,11 +3990,30 @@ impl<'a> BodyBuilder2<'a> {
     /// [`HirRegexTarget::DefaultTopic`] so that an implicit topic stays
     /// distinguishable from an explicitly written `$_ =~ /x/`.
     fn lower_regex_target(&mut self, expr: &Node) -> HirRegexTarget {
+        self.lower_regex_target_with_access(expr, false)
+    }
+
+    /// Lower a regex-family target, marking a mutated place target as
+    /// read-modify-write (#14639). A mutating `s///` or `tr///` (no `/r`)
+    /// reads its target, transforms it, and writes it back, which is the
+    /// same occurrence shape as compound assignment; the occurrence must
+    /// say so, or write queries cannot see the reassignment. `/r` forms
+    /// and non-place targets stay plain reads: `/r` provably does not
+    /// write, and a non-place target is not a valid lvalue in Perl.
+    fn lower_regex_target_mutating(&mut self, expr: &Node, mutates: bool) -> HirRegexTarget {
+        self.lower_regex_target_with_access(expr, mutates)
+    }
+
+    fn lower_regex_target_with_access(&mut self, expr: &Node, rmw: bool) -> HirRegexTarget {
         if is_synthesized_default_topic(expr) {
             return HirRegexTarget::DefaultTopic;
         }
         let (kind, ast_kind) = classify_regex_target(expr);
-        let id = self.lower_expr(expr);
+        let id = if rmw && kind == RegexTargetKind::Place {
+            self.lower_expr_as_place(expr, AccessMode::ReadModifyWrite)
+        } else {
+            self.lower_expr(expr)
+        };
         HirRegexTarget::Bound { expr: id, kind, ast_kind }
     }
 
@@ -3974,13 +4052,12 @@ impl<'a> BodyBuilder2<'a> {
     /// `lower_nested_block`), two same-spelling lexicals declared in nested
     /// scopes of one body resolve to their own bindings.
     ///
-    /// The known package-root boundary remains separate from position-aware
-    /// binding lookup (#14173). The walk only ascends. A `package NAME;`
-    /// statement opens a *child* scope, while the program-root body still
-    /// starts at the file scope, so declarations made at package top level
-    /// are not visible to program-root occurrences and resolve to `None`.
-    /// The pre-existing `VariableKind` fallback already mis-reported such a
-    /// `my` as `Package`.
+    /// The walk only ascends. A statement-form `package NAME;` opens a
+    /// *child* scope, so statement sequences re-point `start_scope` at it
+    /// for the rest of the enclosing block (see
+    /// [`switch_to_package_scope`](Self::switch_to_package_scope)), which
+    /// makes declarations at package top level visible to the occurrences
+    /// that follow them (#14173).
     ///
     /// The walk itself is the shared [`resolve_binding_in_scope_graph`], the
     /// same lookup the first pass uses, so the two views cannot answer
@@ -4185,6 +4262,14 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_stmt(HirStmt::Block(block_id), range)
             }
 
+            // A block-form package executes its statements in the package's
+            // lexical block. Keep them reachable through the same structured
+            // block path as a bare block, including nested loops and bindings.
+            NodeKind::Package { block: Some(block), .. } => {
+                let block_id = self.lower_nested_block(block);
+                self.alloc_stmt(HirStmt::Block(block_id), range)
+            }
+
             NodeKind::LoopControl { op, label } => {
                 let verb = loop_control_kind(op);
                 let (resolved_target, resolution) = self.resolve_loop_control(label.as_deref());
@@ -4336,9 +4421,15 @@ impl<'a> BodyBuilder2<'a> {
             // Compound declarations such as `my $x += $x` can put a cloned
             // assignment in `initializer` instead. Its LHS is the declaration
             // place, not a second ordinary occurrence or a second write.
+            // The repetition operator is the exception: `my $value x= 3`
+            // keeps the generic declaration shape (a simple declaration
+            // assignment of the `x=` result) pinned by
+            // repetition_assignment_preserves_hir_declaration_reachability,
+            // so it falls through to the generic initializer branch below.
             (Some(init_node), _)
                 if !is_legacy_call
                     && initializer_is_target_assignment(init_node, binding_node)
+                    && !matches!(&init_node.kind, NodeKind::Assignment { op, .. } if op == "x=")
                     && binding.is_some() =>
             {
                 binding.map(|id| self.lower_assignment_with_declared_place(init_node, id))
@@ -4506,11 +4597,49 @@ impl<'a> BodyBuilder2<'a> {
             self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
             for statement in statements {
                 block.stmts.push(self.lower_statement(statement));
+                self.switch_to_package_scope(statement);
             }
             self.enclosing_label_stack.pop();
             self.start_scope = previous_scope;
         } else {
             block.stmts.push(self.lower_statement(node));
+            self.switch_to_package_scope(node);
+        }
+    }
+
+    /// A statement-form `package NAME;` opens the package scope for the
+    /// rest of the enclosing block in Perl, and the first pass records the
+    /// following declarations in that scope. Point the body's resolution
+    /// scope at it so program-root and block sequences see those
+    /// declarations instead of resolving them as package globals (#14173).
+    /// The caller's sequence owns the previous scope and restores it when
+    /// the block ends (`lower_nested_block`, labelled blocks), so the
+    /// switch never leaks past the block the declaration appears in.
+    /// Block-form packages own their block and switch nothing here.
+    fn switch_to_package_scope(&mut self, node: &Node) {
+        // Labels and expression-statement wrappers are transparent here:
+        // `LABEL: package P;` opens the package scope just the same.
+        let mut node = node;
+        loop {
+            node = match &node.kind {
+                NodeKind::LabeledStatement { statement, .. } => statement.as_ref(),
+                NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                _ => break,
+            };
+        }
+        if !matches!(&node.kind, NodeKind::Package { block: None, .. }) {
+            return;
+        }
+        if let Some(scope) = self
+            .scope_graph
+            .scopes
+            .iter()
+            .find(|frame| {
+                frame.kind == ScopeKind::Package && frame.range.start == node.location.start
+            })
+            .map(|frame| frame.id)
+        {
+            self.start_scope = scope;
         }
     }
 
@@ -4933,7 +5062,7 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::Substitution { expr, modifiers, has_embedded_code, negated, .. } => {
-                let target = self.lower_regex_target(expr);
+                let target = self.lower_regex_target_mutating(expr, !modifiers.contains('r'));
                 self.alloc_expr(
                     HirExpr::Substitution(HirSubstitution {
                         target,
@@ -4953,7 +5082,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::Transliteration { expr, modifiers, negated, .. } => {
                 // tr/// is a character-list operator, not a regex: it carries
                 // no analysis anchor and must never reach pattern analysis.
-                let target = self.lower_regex_target(expr);
+                let target = self.lower_regex_target_mutating(expr, !modifiers.contains('r'));
                 self.alloc_expr(
                     HirExpr::Transliteration(HirTransliteration {
                         target,

@@ -872,7 +872,10 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
         needle: "self.commit_parse_effect_if_current(&ticket",
-        expected_count: 5,
+        // #18120 adds the workspace and no-workspace accepted-save consumer
+        // refresh routes. Both retain the documented compatibility precheck;
+        // neither claims a new atomic sink boundary.
+        expected_count: 7,
         effect_id: "compat.legacy-generic-callback-helper",
     },
     CallSiteLedgerEntry {
@@ -1075,9 +1078,10 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
         needle: "textDocument/publishDiagnostics",
-        // One production publication site and three assertions in the
-        // scoped-configuration regression test below it.
-        expected_count: 4,
+        // One production publication site, three assertions in the
+        // scoped-configuration regression test below it, and one in the
+        // pulled resolver-toggle refresh test (#17444).
+        expected_count: 5,
         effect_id: "diagnostics.parser-outbound-publication",
     },
     // Coordinator module-level lifecycle routes. Comment-stripped counting:

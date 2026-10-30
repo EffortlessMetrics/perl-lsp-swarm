@@ -1,0 +1,9 @@
+project: product
+component: LSP
+kind: Fixed
+body: "The legacy position_to_offset utility now maps CRLF row starts after the complete separator instead of onto the LF byte, and treats a bare CR as ordinary content under the LF-delimited source contract, so inline completion environment positions on CRLF documents land on the intended byte."
+time: 2026-10-20T00:00:00Z
+custom:
+  PR: "18252"
+  Slug: crlf-row-start-offsets
+  Breaking: "no"

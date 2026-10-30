@@ -3,7 +3,7 @@
 //! Verifies that the absorbed feature and capability-map crates are properly
 //! reorganized into perl-lsp-rs-core modules and are accessible via:
 //! - Direct module paths (perl_lsp_rs_core::features::*, perl_lsp_rs_core::capability_map::*)
-//! - Facade re-exports from perl-lsp (perl_lsp::features::*, perl_lsp::capability_map::*)
+//! Facade re-export checks live in perl-lsp-rs/tests/core_facade_contract.rs (#8401).
 //!
 //! The 8 absorbed crates are:
 //! - perl-lsp-feature-ids (module: features::ids)
@@ -140,50 +140,6 @@ fn test_features_module_complete() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Test that facade re-exports are accessible from perl-lsp (the main LSP crate)
-#[test]
-fn test_facade_reexports_from_perl_lsp() -> Result<(), Box<dyn std::error::Error>> {
-    // After Wave F, consumers should be able to import from perl_lsp (the facade)
-    // and get the same types as importing from perl_lsp_rs_core
-    use perl_lsp::features;
-
-    // Verify by accessing a type from each re-exported submodule
-    let _ = std::any::type_name::<features::flags::BuildFlags>();
-    let _ = std::any::type_name::<features::policy::FeatureProfile>();
-
-    // Verify capability_map re-export
-    let _caps = perl_lsp::capability_map::caps_from_feature_ids(&[]);
-
-    Ok(())
-}
-
-/// Test type identity: perl-lsp re-exports resolve to same types as core
-#[test]
-fn test_type_identity_facade_vs_core() -> Result<(), Box<dyn std::error::Error>> {
-    // Verify that types imported via the facade (perl_lsp) are identical to
-    // types imported directly from perl-lsp-rs-core
-    use perl_lsp::features::flags::BuildFlags as FacadeBuildFlags;
-    use perl_lsp_rs_core::features::flags::BuildFlags as CoreBuildFlags;
-
-    // The types should be identical — both are the same type from the same crate.
-    // Verify by checking type names match.
-    let facade_name = std::any::type_name::<FacadeBuildFlags>();
-    let core_name = std::any::type_name::<CoreBuildFlags>();
-    assert_eq!(facade_name, core_name, "facade and core BuildFlags should be the same type");
-
-    Ok(())
-}
-
-/// Test capability_map module re-export from perl-lsp
-#[test]
-fn test_capability_map_reexport_from_perl_lsp() -> Result<(), Box<dyn std::error::Error>> {
-    // perl-lsp should re-export capability_map for downstream consumers
-    // Verify by calling a function from the module
-    let caps = perl_lsp::capability_map::caps_from_feature_ids(&[]);
-    assert!(caps.completion_provider.is_none(), "empty feature list produces empty caps");
-    Ok(())
-}
-
 /// Test that downstream consumer shape for perl-lsp-feature-governance works
 #[test]
 fn test_governance_consumer_shape_integration() -> Result<(), Box<dyn std::error::Error>> {
@@ -266,25 +222,6 @@ fn test_empty_module_access() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!LSP_COMPLETION.is_empty(), "ids module should export LSP_COMPLETION constant");
     let caps = caps_from_feature_ids(&[]);
     assert!(caps.completion_provider.is_none(), "empty input should produce empty caps");
-
-    Ok(())
-}
-
-/// Test that the public API surface doesn't have conflicting re-exports
-#[test]
-fn test_facade_no_conflicting_reexports() -> Result<(), Box<dyn std::error::Error>> {
-    // Verify that perl-lsp (the facade) and perl-lsp-rs-core export compatible types
-    // without duplication or name collision
-    use perl_lsp::features::flags::BuildFlags as FacadeFlags;
-    use perl_lsp::features::policy::FeatureProfile as FacadeProfile;
-
-    // If these compile without error, name resolution is working
-    let _ = std::any::type_name::<FacadeFlags>();
-    let _ = std::any::type_name::<FacadeProfile>();
-
-    // Verify capability_map is accessible from the facade
-    let caps = perl_lsp::capability_map::caps_from_feature_ids(&[]);
-    assert!(caps.completion_provider.is_none());
 
     Ok(())
 }

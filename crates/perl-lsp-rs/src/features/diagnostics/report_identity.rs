@@ -61,7 +61,12 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 // `full` report per document after upgrade, which is what the pin is for.
 const RULE_CATALOG_SCHEMA_VERSION: u32 = 2;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
-const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
+// Bumped to 2 by #17241: the pull projection now collapses native/built-in
+// overlap pairs and attaches critic codeDescription links, so a client holding
+// a pre-change ID must not be told `unchanged` and keep uncollapsed rows. Old
+// IDs degrade safely: they no longer match the composed identity, so the
+// report is resent in full.
+const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 2;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
 
 /// Behavior-bearing negotiated wire-projection state.
@@ -598,6 +603,14 @@ mod tests {
     }
 
     #[test]
+    fn projection_wire_pin_covers_collapse_and_code_description() {
+        // #17241 changed the pull projection (overlap collapse plus critic
+        // codeDescription) without touching the items hash, so the pin is the
+        // only thing that stops a pre-change ID from answering `unchanged`.
+        assert_eq!(PROJECTION_WIRE_SCHEMA_VERSION, 2);
+    }
+
+    #[test]
     fn identical_subjects_compose_identical_ids() {
         let context = context_with(Some(ROOT_A));
         let first = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
@@ -708,7 +721,8 @@ mod tests {
 
         // Accepted snapshot movement is load-bearing.
         let mut context = baseline_context.clone();
-        let moved_config = ServerConfig { perlcritic_severity: 4, ..ServerConfig::default() };
+        let mut moved_config = ServerConfig::default();
+        moved_config.perlcritic_severity = 4;
         context.accepted_critic_snapshot =
             AcceptedCriticSnapshot::capture(&moved_config, Some(ROOT_A));
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());

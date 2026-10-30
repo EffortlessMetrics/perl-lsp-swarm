@@ -38,10 +38,12 @@ Two modes backing the two acceptance arms of issue #11943:
 Measured basis (2026-08-24 receipt artifacts, runs 32697324730 and
 32697144932): the single PR Smoke ``CARGO_TARGET_DIR`` grows to ~83 GiB on a
 cold-cache branch while the hosted runner offers ~83-84 GiB free at start on a
-145 GiB root volume, so unbounded builds fill the disk mid-link. The default
-preflight budget is set below that starting headroom so only genuinely
-degraded runners fail fast; the footprint bound itself lives in the workflow
-(``CARGO_PROFILE_*_DEBUG``), not here.
+145 GiB root volume, so unbounded builds fill the disk mid-link. Run
+37195503421 (2026-10-04) measured 85 GiB after the debuginfo trim (#17231).
+The preflight floor is derived from that declared footprint bound plus a
+reserve, so a runner that cannot hold the tier is rejected before any build
+instead of being accepted into a mid-link ENOSPC; the bound is declared in
+the workflow beside the trim that produces it (``PR_SMOKE_FOOTPRINT_GIB``).
 """
 
 from __future__ import annotations
@@ -55,11 +57,41 @@ from typing import Callable
 
 GIB = 1024**3
 
-# Free-space floor for the preflight guard. Measured worst-case tier growth is
-# ~83 GiB against ~83-84 GiB of starting headroom; after the CI debuginfo trim
-# the realistic need sits well below this floor, so breaching it means the
-# runner itself is degraded and building would end in ENOSPC anyway.
-DEFAULT_MIN_FREE_BYTES = 32 * GIB
+# Declared footprint bound for the PR Smoke tier (#17231): the single
+# CARGO_TARGET_DIR measured 85 GiB in run 37195503421 (2026-10-04 receipt,
+# pr-fast-disk-pressure.log), after the line-tables-only debuginfo trim.
+# The preflight floor is DERIVED from this bound (footprint + reserve), so
+# the two cannot drift apart the way the former fixed 32 GiB floor did:
+# that floor's rejection band was empty and it accepted runners the lane
+# then filled to 100% (ENOSPC -> ld SIGBUS). Update the bound only with a
+# fresh measured receipt; the workflow declares the same number beside the
+# trim that bounds it (PR_SMOKE_FOOTPRINT_GIB in ci.yml).
+MEASURED_FOOTPRINT_BYTES = 85 * GIB
+RESERVE_BYTES = 5 * GIB
+
+
+def effective_min_free_bytes(
+    requested: int | None,
+    footprint_bytes: int = MEASURED_FOOTPRINT_BYTES,
+    reserve_bytes: int = RESERVE_BYTES,
+) -> int:
+    """Floor for preflight: always exceeds the declared footprint.
+
+    An explicit override at or below the footprint is a configuration
+    error, not a smaller floor: it would re-open the empty rejection
+    band #17231 measured. Larger overrides are honoured.
+    """
+    floor = footprint_bytes + reserve_bytes
+    if requested is None:
+        return floor
+    if requested <= footprint_bytes:
+        raise ValueError(
+            f"min-free override {requested} bytes does not exceed the "
+            f"declared PR Smoke footprint {footprint_bytes} bytes; the "
+            "floor must exceed the footprint or it cannot reject any "
+            "runner the lane would exhaust (issue #17231)"
+        )
+    return max(requested, floor)
 
 PRESSURE_LOG_NAME = "pr-fast-disk-pressure.log"
 
@@ -287,7 +319,16 @@ def run_preflight(args: argparse.Namespace) -> int:
     paths = {"workspace": args.workspace_path}
     target_dir = args.target_dir or str(Path(args.workspace_path) / "target")
     paths["cargo-target-dir"] = target_dir
-    breaches = evaluate_preflight(paths, args.min_free_bytes)
+    try:
+        min_free_bytes = effective_min_free_bytes(
+            args.min_free_bytes,
+            footprint_bytes=getattr(args, "footprint_bytes", MEASURED_FOOTPRINT_BYTES),
+            reserve_bytes=getattr(args, "reserve_bytes", RESERVE_BYTES),
+        )
+    except ValueError as error:
+        _emit(f"::error::PR Smoke pre-flight disk guard misconfigured: {error}")
+        return 2
+    breaches = evaluate_preflight(paths, min_free_bytes)
     pressure_log = Path(args.workspace_path) / "target/receipts/logs"
     # Current-run evidence binding (#11943 review): sweep cache-restored logs
     # before anything writes today's records, so the post-run classify step
@@ -312,7 +353,7 @@ def run_preflight(args: argparse.Namespace) -> int:
         header="== PR Smoke pre-flight disk budget accepted the runner ==",
         body_lines=[*removal_note, render_snapshot(paths)],
     )
-    _emit(f"PR Smoke pre-flight disk budget OK (>= {args.min_free_bytes} bytes free)")
+    _emit(f"PR Smoke pre-flight disk budget OK (>= {min_free_bytes} bytes free)")
     return 0
 
 
@@ -400,8 +441,16 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument(
         "--min-free-bytes",
         type=parse_min_free_bytes,
-        default=DEFAULT_MIN_FREE_BYTES,
-        help="free-byte floor per filesystem, bytes or GiB suffix (default 32GiB)",
+        default=None,
+        help="free-byte floor override, bytes or GiB suffix; must exceed "
+        "--footprint-bytes (default: footprint + reserve)",
+    )
+    preflight.add_argument(
+        "--footprint-bytes",
+        type=parse_min_free_bytes,
+        default=MEASURED_FOOTPRINT_BYTES,
+        help="declared tier footprint bound, bytes or GiB suffix "
+        "(default: measured 85GiB, issue #17231)",
     )
     preflight.set_defaults(handler=run_preflight)
 

@@ -150,6 +150,35 @@ remains available from the redirect, but cannot select current work. #9850 is th
 product-Clippy controller; #10008 and #8153 keep their distinct broader Rust-hygiene
 scope.
 
+## Vision and north-star documents
+
+Every tracked `*VISION*.md` document and every document that presents itself as a
+north-star authority is now registered in `authority_status.toml` (#17826). The
+registry schema defines only `current`, `transitional`, `historical`, and
+`superseded`, so aspirational vision records are classified `historical` with notes
+that say they are aspirational; no vision claim is an acceptance predicate.
+
+| Path | Status | Current authority to use instead |
+| --- | --- | --- |
+| `TECHNICAL_VISION.md` | `historical` — aspirational strategic north star (v0.12.0, 2026-03-28) with definitive-platform and GA claims | `docs/project/CURRENT_STATUS.md`; shipped reality is the v0.17.0 public beta in `docs/project/status/release.md` |
+| `docs/project/PERL_LSP_VISION.md` | `historical` — aspirational research vision (2026-03-19) claiming 100 percent LSP coverage as GA | `docs/project/CURRENT_STATUS.md` |
+| `docs/articles/research/MAINTAINER_VISION_ARCHAEOLOGY.md` | `historical` — research article recording vision history, not itself a vision authority | this index |
+| `docs/agents/lenses/vision-alignment.md` | `current` — current review lens only; it is not a product vision document and sets no acceptance predicates | itself, for review-lens scope only |
+| `.hermes/conveyor/work-9ac57b3a/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; "vision" names a reviewer role | this index |
+| `.hermes/conveyor/work-e551d1f1/findings/maintainer-vision-agent-findings.md` | `historical` — conveyor findings; "vision" names a reviewer role | this index |
+| `docs/project/EDITOR_TRUST_WAVE.md` | `historical` — dated wave plan with a North star section; principles survive only where current documents restate them | `docs/project/CURRENT_STATUS.md` |
+| `docs/project/plans/2026-06-convergence-to-release.md` | `historical` — dated narrative plan (umbrella #1209 closed) that itself points readers to live status | `docs/project/CURRENT_STATUS.md` |
+| `.kiro/specs/ux-readiness-system/requirements.md` | `historical` — Kiro-era requirements spec whose north-star sentence defines that system's purpose | `docs/project/CURRENT_STATUS.md` |
+
+Documents that merely mention a north star without presenting themselves as a
+vision or north-star authority are not vision documents: the root provider routes
+and this index quote the phrase to define the reading rule, already-registered
+historical documents carry it in their retention banners, and interview-question
+catalogues ask about north stars. Those paths are classified, where applicable,
+under their own subjects above. Filenames that contain the letters only as part of
+other words — `division` in the ambiguous-slash corpus documents, `revision` in
+`docs/reference/DOCUMENT_REVISION_MIGRATION.md` — are likewise not vision documents.
+
 ## Surviving principles
 
 Supersession does not mean every idea in the old graph was rejected. The current method

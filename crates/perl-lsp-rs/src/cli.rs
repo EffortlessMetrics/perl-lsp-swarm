@@ -26,7 +26,7 @@ use std::env;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::time::{Duration, sleep};
@@ -202,6 +202,7 @@ fn run_perlcritic_compat_report(profile: &str) -> i32 {
 fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
     reader: R,
     tx: tokio::sync::mpsc::Sender<crate::JsonRpcRequest>,
+    server: Weak<LspServer>,
 ) {
     use crate::transport::ContentLengthMessageReader;
     std::thread::spawn(move || {
@@ -215,11 +216,11 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
                     }
                 }
                 Ok(Some(Err(error))) => {
-                    tracing::warn!(
-                        stage = error.stage().as_str(),
-                        payload_bytes = error.payload_bytes(),
-                        "incoming message rejected"
-                    );
+                    // A blocked detached reader must not retain the session.
+                    let Some(server) = server.upgrade() else { break };
+                    if server.reject_incoming_message(&error).is_err() {
+                        break;
+                    }
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -461,7 +462,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                     );
                 }
 
-                spawn_reader_thread(std::io::stdin(), tx);
+                spawn_reader_thread(std::io::stdin(), tx, Arc::downgrade(&server));
 
                 if logging_enabled {
                     let report = startup_timer.finish();
@@ -594,7 +595,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                 conn_timer.checkpoint("server_construction");
 
                                 let (tx, rx) = tokio::sync::mpsc::channel(64);
-                                spawn_reader_thread(reader, tx);
+                                spawn_reader_thread(reader, tx, Arc::downgrade(&server));
 
                                 if logging_enabled {
                                     let report = conn_timer.finish();

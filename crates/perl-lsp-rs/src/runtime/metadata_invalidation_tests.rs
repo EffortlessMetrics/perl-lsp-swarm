@@ -788,6 +788,99 @@ fn editing_an_open_cpanfile_refreshes_without_any_watched_event() {
     );
 }
 
+#[test]
+fn closing_an_unsaved_cpanfile_restores_disk_metadata_without_a_watcher() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'On::Disk';\n");
+    let server = workspace_server(&dir);
+    let uri = file_uri(&dir, "cpanfile");
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri, "languageId": "perl", "version": 1,
+                "text": "requires 'Staged::Only';\n"
+            }
+        })))
+        .expect("didOpen params are valid");
+    assert_eq!(declared_modules(&server), vec!["Staged::Only".to_string()]);
+
+    server
+        .handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))
+        .expect("didClose params are valid");
+    assert_eq!(
+        declared_modules(&server),
+        vec!["On::Disk".to_string()],
+        "closing without a watched event must retire staged dependencies"
+    );
+}
+
+#[test]
+fn save_with_changed_text_refreshes_metadata_without_a_watcher() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'On::Disk';\n");
+    let server = workspace_server(&dir);
+    let uri = file_uri(&dir, "cpanfile");
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri, "languageId": "perl", "version": 1,
+                "text": "requires 'Staged::Only';\n"
+            }
+        })))
+        .expect("didOpen params are valid");
+    assert_eq!(declared_modules(&server), vec!["Staged::Only".to_string()]);
+
+    // Keep disk at On::Disk: this discriminates open-buffer authority from a
+    // wrong disk-only metadata refresh during the save notification.
+    server
+        .handle_did_save(Some(json!({
+            "textDocument": { "uri": uri }, "text": "requires 'Saved::Only';\n"
+        })))
+        .expect("didSave params are valid");
+    assert_eq!(
+        declared_modules(&server),
+        vec!["Saved::Only".to_string()],
+        "accepted saved-text replacement must refresh facts without a watcher"
+    );
+
+    server
+        .handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))
+        .expect("didClose params are valid");
+    assert_eq!(declared_modules(&server), vec!["On::Disk".to_string()]);
+}
+
+#[test]
+fn ordinary_source_save_and_close_do_not_refresh_project_metadata() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'On::Disk';\n");
+    write_file(&dir, "lib/App.pm", "package App;\n1;\n");
+    let server = workspace_server(&dir);
+    let uri = file_uri(&dir, "lib/App.pm");
+    let before = server.dependency_facts_generation();
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri, "languageId": "perl", "version": 1,
+                "text": "package App;\n1;\n"
+            }
+        })))
+        .expect("didOpen params are valid");
+    server
+        .handle_did_save(Some(json!({
+            "textDocument": { "uri": uri }, "text": "package App;\nsub new { 1 }\n1;\n"
+        })))
+        .expect("didSave params are valid");
+    server
+        .handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))
+        .expect("didClose params are valid");
+
+    assert_eq!(server.dependency_facts_generation(), before);
+    assert_eq!(declared_modules(&server), vec!["On::Disk".to_string()]);
+}
+
 /// The text-document route must stay narrow: an ordinary source edit is not
 /// project metadata and must not advance the dependency-fact generation.
 #[test]

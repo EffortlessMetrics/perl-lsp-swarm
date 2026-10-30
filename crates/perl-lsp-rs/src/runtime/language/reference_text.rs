@@ -31,6 +31,31 @@ pub(super) struct TextReferenceQuery<'a> {
     pub needle: &'a str,
     pub sigil: Option<char>,
     pub include_declaration: bool,
+    pub package: Option<&'a str>,
+}
+
+/// A precise name anchor projected from the current, source-matching AST.
+#[derive(Debug, Clone)]
+pub(super) struct CallableDeclaration {
+    pub start: usize,
+    pub end: usize,
+    pub qualified_name: String,
+}
+
+pub(super) fn callable_declarations(ast: &perl_parser::ast::Node) -> Vec<CallableDeclaration> {
+    let mut declarations: Vec<_> = perl_symbol::surface::extract_symbol_decls(ast, Some("main"))
+        .into_iter()
+        .filter(|decl| decl.kind == perl_symbol::types::SymbolKind::Subroutine)
+        .filter_map(|decl| {
+            let (start, end) = decl.anchor_span?;
+            // The projector prefixes its package even for explicitly qualified names.
+            let qualified_name =
+                if decl.name.contains("::") { decl.name } else { decl.qualified_name };
+            Some(CallableDeclaration { start, end, qualified_name })
+        })
+        .collect();
+    declarations.sort_by_key(|decl| decl.start);
+    declarations
 }
 
 /// Kind of a word occurrence in a single source line.
@@ -186,6 +211,7 @@ pub(super) fn should_skip_text_reference_match(
 }
 
 /// Scan documents for word-boundary occurrences of the query, filtered by kind.
+#[cfg(test)]
 pub(super) fn search_document_texts_for_references<'a, I>(
     documents: I,
     query: TextReferenceQuery<'_>,
@@ -193,6 +219,21 @@ pub(super) fn search_document_texts_for_references<'a, I>(
 ) -> Vec<Value>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    search_document_texts_with_declarations(
+        documents.into_iter().map(|(uri, text)| (uri, text, &[][..])),
+        query,
+        cap,
+    )
+}
+
+pub(super) fn search_document_texts_with_declarations<'a, I>(
+    documents: I,
+    query: TextReferenceQuery<'_>,
+    cap: usize,
+) -> Vec<Value>
+where
+    I: IntoIterator<Item = (&'a str, &'a str, &'a [CallableDeclaration])>,
 {
     let (needle, sigil) = normalized_text_query(query.needle, query.sigil);
     if needle.is_empty() || cap == 0 {
@@ -202,14 +243,23 @@ where
     let needle_bytes = needle.as_bytes();
     let mut out = Vec::new();
 
-    'docs: for (doc_uri, doc_text) in documents {
-        for (line_num, line) in doc_text.lines().enumerate() {
+    'docs: for (doc_uri, doc_text, declarations) in documents {
+        let mut line_offset = 0;
+        for (line_num, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+            let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+            let line = line.strip_suffix('\r').unwrap_or(line);
             let line_bytes = line.as_bytes();
             let mut start = 0usize;
             while let Some(idx) = line.get(start..).and_then(|tail| tail.find(needle)) {
                 let byte_pos = start + idx;
                 let match_end = byte_pos + needle_bytes.len();
                 if is_reference_ident_boundary(line_bytes, byte_pos, needle_bytes.len())
+                    && keep_callable_declaration(
+                        declarations,
+                        line_offset + byte_pos,
+                        line_offset + match_end,
+                        query,
+                    )
                     && keep_text_reference_match(
                         line,
                         byte_pos,
@@ -229,10 +279,42 @@ where
                 }
                 start = match_end;
             }
+            line_offset += raw_line.len();
         }
     }
 
     finalize_reference_locations(out, cap)
+}
+
+// Only proven declaration anchors participate. Unknown/parser-error regions keep
+// the existing fallback behavior; index readiness is not parser evidence.
+fn keep_callable_declaration(
+    declarations: &[CallableDeclaration],
+    start: usize,
+    end: usize,
+    query: TextReferenceQuery<'_>,
+) -> bool {
+    let (_, sigil) = normalized_text_query(query.needle, query.sigil);
+    if matches!(sigil, Some('$' | '@' | '%')) {
+        return true;
+    }
+    let i = declarations.partition_point(|decl| decl.start <= start);
+    let Some(decl) = i.checked_sub(1).and_then(|i| declarations.get(i)) else {
+        return true;
+    };
+    if end > decl.end {
+        return true;
+    }
+    if !query.include_declaration {
+        return false;
+    }
+    let Some(package) = query.package else {
+        return true;
+    };
+    let (name, _) = normalized_text_query(query.needle, query.sigil);
+    let qualified =
+        if name.contains("::") { name.to_owned() } else { format!("{package}::{name}") };
+    decl.qualified_name == qualified
 }
 
 /// Collapse occurrence-identity duplicates, then identical ranges, on one
@@ -252,6 +334,19 @@ where
 /// narrowest range per (canonical URI, start) — the name token, never a
 /// distinct occurrence.
 pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
+    // Emit one canonical URI spelling per document (#18112): producers spell
+    // the drive letter differently, and dedup keys on the canonical form but
+    // previously emitted the original strings. The relied-on `uri_key`
+    // behavior is drive-letter canonicalization; the non-file URIs producers
+    // actually emit (untitled:, git:) pass through byte-identical, as pinned
+    // by `finalize_preserves_untitled_and_non_file_uris`.
+    for location in locations.iter_mut() {
+        if let Some(Value::String(uri)) =
+            location.as_object_mut().and_then(|obj| obj.get_mut("uri"))
+        {
+            *uri = perl_uri::uri_key(uri);
+        }
+    }
     locations.sort_by_key(canonical_location_id);
     locations.dedup_by(|left, right| {
         match (canonical_location_id(left), canonical_location_id(right)) {
@@ -273,7 +368,68 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
         seen_start = start_id;
         collapsed.push(location);
     }
-    *locations = collapsed;
+    // Anchored containment (#18112): the index's full call-expression span
+    // for `$self->foo` (7:11-21) starts before the text scan's name token
+    // (7:18-21), so same-start collapse cannot see the pair. Drop a range
+    // only when another range inside it is anchored to it as its own name
+    // token: same canonical URI, same line span, strictly inside, and
+    // sharing the start (plain `foo(...)` wrappers) or the end (bare
+    // `$x->foo` wrappers). Bare containment is not enough: in an
+    // index-only answer (non-open file, deadline path) nested calls are
+    // wrappers all the way down, and a declaration span legitimately
+    // contains its body's calls, so an unanchored contained range is a
+    // distinct occurrence, never a duplicate. The line-span restriction
+    // additionally preserves multi-line ranges that merely enclose a
+    // token (a whole-sub declaration span is a distinct entry, per
+    // `dedupe_collapses_identical_ranges_across_json_key_order`).
+    let ids: Vec<Option<CanonicalLocationId>> =
+        collapsed.iter().map(canonical_location_id).collect();
+    // A containment match must share the canonical URI and the line span,
+    // so compare only within those groups: a symbol with thousands of
+    // references stays near-linear instead of costing a quadratic scan
+    // over unrelated files and lines.
+    let mut groups: std::collections::HashMap<(&str, u64, u64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (index, id) in ids.iter().enumerate() {
+        if let Some(id) = id {
+            groups.entry((id.uri.as_str(), id.start_line, id.end_line)).or_default().push(index);
+        }
+    }
+    let mut dropped = vec![false; collapsed.len()];
+    for members in groups.values() {
+        for &index in members {
+            let Some(outer) = &ids[index] else {
+                continue;
+            };
+            let contains_own_name_token = members.iter().any(|&other_index| {
+                other_index != index
+                    && ids[other_index].as_ref().is_some_and(|inner| {
+                        (outer.start_line, outer.start_character)
+                            <= (inner.start_line, inner.start_character)
+                            && (outer.end_line, outer.end_character)
+                                >= (inner.end_line, inner.end_character)
+                            && ((outer.start_line, outer.start_character)
+                                < (inner.start_line, inner.start_character)
+                                || (outer.end_line, outer.end_character)
+                                    > (inner.end_line, inner.end_character))
+                            && ((inner.start_line, inner.start_character)
+                                == (outer.start_line, outer.start_character)
+                                || (inner.end_line, inner.end_character)
+                                    == (outer.end_line, outer.end_character))
+                    })
+            });
+            if contains_own_name_token {
+                dropped[index] = true;
+            }
+        }
+    }
+    let mut kept: Vec<Value> = Vec::with_capacity(collapsed.len());
+    for (index, location) in collapsed.into_iter().enumerate() {
+        if !dropped[index] {
+            kept.push(location);
+        }
+    }
+    *locations = kept;
 }
 
 /// Deduplicate, then enforce the result cap so duplicates cannot consume it.
@@ -604,9 +760,112 @@ mod tests {
     fn scan(docs: &[(&str, &str)], needle: &str, sigil: Option<char>, cap: usize) -> Vec<Value> {
         search_document_texts_for_references(
             docs.iter().copied(),
-            TextReferenceQuery { needle, sigil, include_declaration: true },
+            TextReferenceQuery { needle, sigil, include_declaration: true, package: None },
             cap,
         )
+    }
+
+    #[test]
+    fn anchored_declarations_filter_before_cap_without_dropping_body_calls()
+    -> Result<(), Box<dyn Error>> {
+        let source = "package Other;\r\nsub mark { mark(); }\r\npackage Wanted;\r\nsub mark {}\r\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        assert_eq!(declarations.len(), 2);
+        let query = TextReferenceQuery {
+            needle: "mark",
+            sigil: None,
+            package: Some("Wanted"),
+            include_declaration: false,
+        };
+        let out = search_document_texts_with_declarations(
+            [("file:///test.pl", source, declarations.as_slice())],
+            query,
+            1,
+        );
+        assert_eq!(out, vec![location_value("file:///test.pl", 1, 11, 15)]);
+        let out = search_document_texts_with_declarations(
+            [("file:///test.pl", source, declarations.as_slice())],
+            TextReferenceQuery { include_declaration: true, ..query },
+            10,
+        );
+        assert_eq!(
+            out,
+            vec![
+                location_value("file:///test.pl", 1, 11, 15),
+                location_value("file:///test.pl", 3, 4, 8)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicitly_qualified_declaration_uses_its_own_package() -> Result<(), Box<dyn Error>> {
+        let source = "package Other;\nsub Wanted::mark {}\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        for (package, include_declaration, count) in
+            [("Other", true, 0), ("Wanted", true, 1), ("Wanted", false, 0)]
+        {
+            let out = search_document_texts_with_declarations(
+                [("file:///test.pl", source, declarations.as_slice())],
+                TextReferenceQuery {
+                    needle: "mark",
+                    sigil: None,
+                    package: Some(package),
+                    include_declaration,
+                },
+                10,
+            );
+            let expected = if count == 1 {
+                vec![location_value("file:///test.pl", 1, 12, 16)]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(out, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_text_declarations_obey_inclusion_before_cap() -> Result<(), Box<dyn Error>> {
+        let source = "sub Wanted::mark {}\r\nsub Other::Wanted::mark {}\r\nWanted::mark();\r\n";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        assert!(parser.errors().is_empty());
+        let declarations = callable_declarations(&ast);
+        // The parser/projector retain the entire explicit name, not only mark.
+        assert_eq!(declarations.len(), 2);
+        assert_eq!((declarations[0].start, declarations[0].end), (4, 16));
+        assert_eq!(declarations[0].qualified_name, "Wanted::mark");
+        assert_eq!(declarations[1].qualified_name, "Other::Wanted::mark");
+        for include_declaration in [false, true] {
+            for cap in [1, 10] {
+                let out = search_document_texts_with_declarations(
+                    [("file:///test.pl", source, declarations.as_slice())],
+                    TextReferenceQuery {
+                        needle: "Wanted::mark",
+                        sigil: None,
+                        package: Some("Wanted"),
+                        include_declaration,
+                    },
+                    cap,
+                );
+                let mut expected = if include_declaration {
+                    vec![location_value("file:///test.pl", 0, 4, 16)]
+                } else {
+                    Vec::new()
+                };
+                expected.push(location_value("file:///test.pl", 2, 0, 12));
+                expected.truncate(cap);
+                assert_eq!(out, expected, "includeDeclaration={include_declaration}, cap={cap}");
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -941,6 +1200,286 @@ mod tests {
         let out = finalize_reference_locations(locations, 10);
         if out.len() != 1 {
             return Err(format!("drive-case spellings are one location, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112: the index stores the full `$self->foo` call-expression span
+    /// under the bare method name while the text scan emits the name token;
+    /// the pair has different starts but one contains the other, so both
+    /// survive exact and same-start dedup. The contained pair must answer
+    /// once, as the name token.
+    #[test]
+    fn contained_call_span_and_name_token_collapse_to_the_name_token() -> Result<(), Box<dyn Error>>
+    {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/a.pl",
+                "range": {
+                    "start": {"line": 7, "character": 11},
+                    "end": {"line": 7, "character": 21},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/a.pl",
+                "range": {
+                    "start": {"line": 7, "character": 18},
+                    "end": {"line": 7, "character": 21},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 1 {
+            return Err(format!("contained pair must answer once, got {out:?}").into());
+        }
+        let start = out[0]["range"]["start"]["character"].as_u64().ok_or("missing start")?;
+        let end = out[0]["range"]["end"]["character"].as_u64().ok_or("missing end")?;
+        if (start, end) != (18, 21) {
+            return Err(format!("the name token must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: an index-only answer (non-open file, deadline path)
+    /// holds call-expression wrappers only. `foo(foo())` then finalizes
+    /// from the two wrappers alone, and bare containment must not eat the
+    /// outer genuine call: neither wrapper is the other's name token.
+    #[test]
+    fn index_only_nested_call_spans_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // foo(foo()) : outer call 0-10, inner call 4-9, no name tokens
+        let locations = vec![mk(0, 10), mk(4, 9)];
+        let out = finalize_reference_locations(locations, 10);
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 10), (4, 9)] {
+            return Err(format!("both index-only nested calls must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: with includeDeclaration, a one-line
+    /// `sub foo { return foo(); }` puts the whole-sub declaration span
+    /// (0-21) around the recursive call span (9-20) on one line. The
+    /// declaration is a distinct entry, not the call's wrapper, so both
+    /// must survive.
+    #[test]
+    fn declaration_span_and_contained_call_both_survive_containment_dedup()
+    -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        let locations = vec![mk(0, 21), mk(9, 20)];
+        let out = finalize_reference_locations(locations, 10);
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 21), (9, 20)] {
+            return Err(format!("declaration and contained call must both survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: a common symbol can finalize thousands of mostly
+    /// unrelated locations (one contained pair per file across many
+    /// files). Every genuine location must survive, each wrapper must
+    /// still collapse to its name token, and the grouped pass must not
+    /// turn the count quadratic in practice.
+    #[test]
+    fn finalize_many_unrelated_locations_all_survive() -> Result<(), Box<dyn Error>> {
+        let mut locations: Vec<Value> = Vec::new();
+        for file in 0..200u64 {
+            for line in 0..25u64 {
+                locations.push(json!({
+                    "uri": format!("file:///mod{file}.pl"),
+                    "range": {
+                        "start": {"line": line, "character": 4},
+                        "end": {"line": line, "character": 7},
+                    },
+                }));
+            }
+            // One contained wrapper pair on line 0 of each file: the
+            // wrapper (2-7) end-anchors to the line-0 name token (4-7).
+            locations.push(json!({
+                "uri": format!("file:///mod{file}.pl"),
+                "range": {
+                    "start": {"line": 0, "character": 2},
+                    "end": {"line": 0, "character": 7},
+                },
+            }));
+        }
+        let out = finalize_reference_locations(locations, 10_000);
+        // 200 files * 25 tokens; each wrapper (2-7) is dropped in favor
+        // of its end-anchored name token already in the set, so the
+        // count stays 5000 rather than growing to 5200.
+        if out.len() != 5000 {
+            return Err(format!("all genuine locations must survive, got {}", out.len()).into());
+        }
+        Ok(())
+    }
+
+    /// #18112: every finalized location in one file must carry the canonical
+    /// URI spelling (lowercase drive letter, path case preserved), even when
+    /// the producers disagreed on drive case.
+    #[test]
+    fn finalize_emits_canonical_uri_for_all_locations_in_a_file() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "file:///F:/Dir/a.pl",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+            json!({
+                "uri": "file:///f:/Dir/a.pl",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 3},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("distinct ranges must both survive, got {out:?}").into());
+        }
+        for loc in &out {
+            let uri = loc["uri"].as_str().ok_or("missing uri")?;
+            if uri != "file:///f:/Dir/a.pl" {
+                return Err(format!("uri must be canonical lowercase-drive: {out:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// #18112 preservation: `uri_key` passes non-file URIs through unchanged,
+    /// so canonical emission must not rewrite them.
+    #[test]
+    fn finalize_preserves_untitled_and_non_file_uris() -> Result<(), Box<dyn Error>> {
+        let locations = vec![
+            json!({
+                "uri": "untitled:Untitled-1",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+            json!({
+                "uri": "git:/Dir/a.pl?ref=HEAD",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }),
+        ];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("distinct URIs must both survive, got {out:?}").into());
+        }
+        let mut uris: Vec<&str> = out.iter().filter_map(|loc| loc["uri"].as_str()).collect();
+        uris.sort_unstable();
+        if uris != vec!["git:/Dir/a.pl?ref=HEAD", "untitled:Untitled-1"] {
+            return Err(format!("non-file URIs must pass through byte-identical: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: `$x->foo->foo()` nests two genuine occurrences. The
+    /// full-expression and inner-call spans contain name tokens, but the
+    /// two name tokens are distinct occurrences and must both survive.
+    #[test]
+    fn chained_method_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // $x->foo->foo() : full 0-14, inner call 0-7, tokens 4-7 and 9-12
+        let locations = vec![mk(0, 14), mk(0, 7), mk(4, 7), mk(9, 12)];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("two chained occurrences must survive, got {out:?}").into());
+        }
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(4, 7), (9, 12)] {
+            return Err(format!("the two name tokens must survive: {out:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #18112 guard: `foo(foo())` nests two genuine occurrences. This
+    /// guards the same-start collapse (each wrapper shares its start with
+    /// its name token); the containment pass itself is discriminated by
+    /// `contained_call_span_and_name_token_collapse_to_the_name_token`,
+    /// `index_only_nested_call_spans_both_survive_containment_dedup`, and
+    /// `declaration_span_and_contained_call_both_survive_containment_dedup`.
+    #[test]
+    fn nested_call_name_tokens_both_survive_containment_dedup() -> Result<(), Box<dyn Error>> {
+        let mk = |start: u64, end: u64| {
+            json!({
+                "uri": "file:///a.pl",
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+            })
+        };
+        // foo(foo()) : outer 0-10, inner 4-9, tokens 0-3 and 4-7
+        let locations = vec![mk(0, 10), mk(4, 9), mk(0, 3), mk(4, 7)];
+        let out = finalize_reference_locations(locations, 10);
+        if out.len() != 2 {
+            return Err(format!("two nested occurrences must survive, got {out:?}").into());
+        }
+        let spans: Vec<(u64, u64)> = out
+            .iter()
+            .map(|loc| -> Result<(u64, u64), &'static str> {
+                Ok((
+                    loc["range"]["start"]["character"].as_u64().ok_or("missing start")?,
+                    loc["range"]["end"]["character"].as_u64().ok_or("missing end")?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        if spans != vec![(0, 3), (4, 7)] {
+            return Err(format!("the two name tokens must survive: {out:?}").into());
         }
         Ok(())
     }

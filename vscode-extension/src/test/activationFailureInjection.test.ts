@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientCtor = jest.fn(() => ({
   initializeResult: { capabilities: {} },
@@ -281,7 +282,7 @@ function makeExtensionRoot(): string {
     extensionRoot,
     process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
   );
-  fs.writeFileSync(serverPath, '');
+  writeFakeTool(serverPath);
   mockConfig(serverPath);
   return extensionRoot;
 }
@@ -293,7 +294,10 @@ async function settle(): Promise<void> {
   }
 }
 
-async function waitUntil(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+// Budget must stay below jest.config's 15s testTimeout: hosted runners add
+// multi-second activation latency, and the poll condition is binary so extra
+// patience never weakens the assertion.
+async function waitUntil(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const startedAt = Date.now();
   while (!condition()) {
     if (Date.now() - startedAt > timeoutMs) {

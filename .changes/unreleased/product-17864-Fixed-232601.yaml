@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Preserve variable sigils in hover fallback so unresolved builtin-name variables receive neutral token cards while actual builtin calls retain their documentation."
+time: "2026-10-13T23:26:01Z"
+custom:
+  PR: "17864"
+  Slug: hover-sigil-builtin
+  Breaking: "no"

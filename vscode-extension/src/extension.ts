@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { execFile } from 'child_process';
 import {
+  CancellationToken,
   CloseAction,
   ErrorAction,
   State as LanguageClientState,
@@ -212,6 +214,9 @@ let currentServerPath: string | null = null;
 // does not exist, so the "not found" error can name the broken setting instead
 // of failing silently.
 let configuredServerPathMissing: string | null = null;
+// Why the configured path was rejected ("does not exist", "is not a file",
+// "is not executable"); paired with configuredServerPathMissing.
+let configuredServerPathProblemDetail: string | null = null;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let healthWidget: HealthWidget | undefined;
 let healthWidgetDataSource: HealthWidgetDataSource | undefined;
@@ -673,6 +678,10 @@ export function _restartServerForTest(context: vscode.ExtensionContext): Promise
   return restartServer(context);
 }
 
+/** Test the settings prompt through its production recovery action. @internal */
+export function _promptForClientRefreshForTest(context: vscode.ExtensionContext): Promise<void> {
+  return promptForClientRefresh(context);
+}
 export async function syncPerlCriticConfiguration(
   activeClient: Pick<LanguageClient, 'sendNotification'> | undefined = client,
   documentUri?: vscode.Uri,
@@ -1481,7 +1490,7 @@ async function runExtensionActivation(
       },
       onReconstructConfigurationChanged: async (event) => {
         if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
-          await refreshTestAdapter(context);
+          await refreshTestAdapter();
         }
 
         if (
@@ -1657,6 +1666,7 @@ function clearActivationProjections(): void {
   client = undefined;
   currentServerPath = null;
   configuredServerPathMissing = null;
+  configuredServerPathProblemDetail = null;
   testAdapter = undefined;
   streamingController = undefined;
   statusBarItem = undefined;
@@ -1954,8 +1964,84 @@ export function diagnoseConfiguredServerPath(
   if (!userPath || pathExists) {
     return null;
   }
+  return rejectConfiguredServerPath(userPath, 'missing', channel);
+}
+
+/// Expand a leading `~` in a configured server path to the home directory.
+/// VS Code does not expand shell-style paths in settings, so without this a
+/// `~/bin/perllsp` setting never matches a real file (#18118).
+export function expandConfiguredServerPath(userPath: string): string {
+  if (userPath === '~') {
+    return os.homedir();
+  }
+  if (userPath.startsWith('~/') || userPath.startsWith('~\\')) {
+    return path.join(os.homedir(), userPath.slice(2));
+  }
+  return userPath;
+}
+
+/// Resolve a configured server path for validation and spawning: expand a
+/// leading `~`, and resolve relative paths against the first workspace
+/// folder (settings authors mean the project root, not the extension
+/// host's working directory). Exported for testing.
+export function resolveConfiguredServerPath(
+  userPath: string,
+  workspaceRoot: string | undefined,
+): string {
+  const expanded = expandConfiguredServerPath(userPath);
+  if (path.isAbsolute(expanded) || !workspaceRoot) {
+    return expanded;
+  }
+  return path.join(workspaceRoot, expanded);
+}
+
+/// Why a configured server path cannot be spawned, or null when it can.
+/// Existence alone is not enough: a directory passes `existsSync` and then
+/// fails at spawn with a misleading permission diagnosis (#18118).
+export type ConfiguredServerPathProblem = 'missing' | 'not-a-file' | 'not-executable';
+
+export function configuredServerPathProblem(userPath: string): ConfiguredServerPathProblem | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(userPath);
+  } catch {
+    return 'missing';
+  }
+  if (!stat.isFile()) {
+    return 'not-a-file';
+  }
+  if (process.platform === 'win32') {
+    // Windows has no executable bit; a spawnable server must carry an
+    // executable extension, otherwise CreateProcess rejects it at spawn.
+    const ext = path.extname(userPath).toLowerCase();
+    if (!['.exe', '.com', '.bat', '.cmd'].includes(ext)) {
+      return 'not-executable';
+    }
+  } else {
+    try {
+      fs.accessSync(userPath, fs.constants.X_OK);
+    } catch {
+      return 'not-executable';
+    }
+  }
+  return null;
+}
+
+const CONFIGURED_PATH_PROBLEM_TEXT: Record<ConfiguredServerPathProblem, string> = {
+  missing: 'does not exist',
+  'not-a-file': 'is not a file',
+  'not-executable': 'is not executable',
+};
+
+/// Log why a configured server path was rejected and return the path so
+/// callers can surface an actionable error. Exported for testing.
+export function rejectConfiguredServerPath(
+  userPath: string,
+  problem: ConfiguredServerPathProblem,
+  channel: vscode.LogOutputChannel,
+): string {
   channel.info(
-    `[startup] perl-lsp.serverPath is configured but does not exist: ${userPath}. ` +
+    `[startup] perl-lsp.serverPath is configured but ${CONFIGURED_PATH_PROBLEM_TEXT[problem]}: ${userPath}. ` +
       `Falling back to PATH/bundled binary (or auto-download).`,
   );
   return userPath;
@@ -1966,20 +2052,28 @@ async function getServerPath(
 ): Promise<{ path: string | null; source: BinaryResolutionSource }> {
   // First check user settings
   const config = vscode.workspace.getConfiguration('perl-lsp');
-  const userPath = config.get<string>('serverPath');
-  const userPathExists = userPath ? fs.existsSync(userPath) : false;
+  const configuredPath = config.get<string>('serverPath');
+  const userPath = configuredPath
+    ? resolveConfiguredServerPath(
+        configuredPath,
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+      )
+    : configuredPath;
+  const problem = userPath ? configuredServerPathProblem(userPath) : null;
 
-  if (userPath && userPathExists) {
+  if (userPath && !problem) {
     outputChannel.info(`Using user-configured Perl LSP binary: ${userPath}`);
     configuredServerPathMissing = null;
+    configuredServerPathProblemDetail = null;
     return { path: userPath, source: 'configured' };
   }
 
-  configuredServerPathMissing = diagnoseConfiguredServerPath(
-    userPath,
-    userPathExists,
-    outputChannel,
-  );
+  configuredServerPathMissing = null;
+  configuredServerPathProblemDetail = null;
+  if (userPath && problem) {
+    configuredServerPathMissing = rejectConfiguredServerPath(userPath, problem, outputChannel);
+    configuredServerPathProblemDetail = CONFIGURED_PATH_PROBLEM_TEXT[problem];
+  }
 
   const platform = process.platform;
   const arch = process.arch;
@@ -2158,6 +2252,11 @@ function createLanguageClientLifecycle(
         // signal, so only it may start the stable-run grace window and reset
         // the automatic-restart budget after a genuinely healthy replacement.
         crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
+        // Check after finalization so a dynamic registration received during
+        // its awaits is not lost between the startup check and running state.
+        void suggestAiCompletionIfSupported(context, client).catch((err: unknown) => {
+          outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
+        });
       }
       // Only `resolving` needs an explicit projection: onStateChange maps it to
       // generic Starting, and every other lifecycle state is already owned by
@@ -2197,7 +2296,7 @@ function clientStateForLifecycle(state: LifecycleState): ClientState {
 }
 
 async function finalizeStartedLanguageClient(
-  context: vscode.ExtensionContext,
+  _context: vscode.ExtensionContext,
   startedClient: LanguageClient,
   generation: number,
 ): Promise<void> {
@@ -2245,14 +2344,7 @@ async function finalizeStartedLanguageClient(
   healthWidget?.setName(serverInfo?.name);
   healthWidget?.setVersion(serverInfo?.version);
 
-  // Offer AI inline completion once if the server advertises support (#1634).
-  // Fire-and-forget; failures must not block lifecycle finalization.
-  suggestAiCompletionIfSupported(context, startedClient).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    outputChannel.error(`[ai-completion] Error suggesting AI completion: ${msg}`);
-  });
-
-  await refreshTestAdapter(context);
+  await refreshTestAdapter();
   assertCurrent();
   refreshStreamingController(startedClient);
   try {
@@ -2324,7 +2416,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
     if (!lifecycle.serverPath) {
       healthWidget?.onStateChange(ClientState.Stopped);
       const notFoundMessage = configuredServerPathMissing
-        ? `Perl Language Server not found: your perl-lsp.serverPath points to "${configuredServerPathMissing}", which does not exist. Fix the path or clear the setting to auto-download.`
+        ? `Perl Language Server not found: your perl-lsp.serverPath points to "${configuredServerPathMissing}", which ${configuredServerPathProblemDetail ?? 'does not exist'}. Fix the path or clear the setting to auto-download.`
         : 'Perl Language Server (perllsp) not found.';
       void vscode.window
         .showErrorMessage(notFoundMessage, 'Install (cargo install perllsp)', 'Open Settings')
@@ -2348,7 +2440,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
     void (async () => {
       // Probe the binary to get an actionable OS-level diagnosis (#3280).
       // If the probe result is Unknown (binary gave no useful output), fall
-      // back to the health check (#3312) which can detect missing Perl etc.
+      // back to the health check (#3312) for binary or diagnostic evidence.
       // lastStartupDiagnosis is updated so that serverNotRunningMessage() in
       // command handlers surfaces the specific root cause rather than a generic prompt.
       const probeResult = await probeStartupFailure(failedServerPath);
@@ -2448,6 +2540,22 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      handleRegisterCapability: async (params, next) => {
+        await next(params, CancellationToken.None);
+        // Recheck only after registration succeeds. Startup finalization covers
+        // registrations received before this client reaches the running state.
+        if (
+          params.registrations.some((entry) => entry.method === 'textDocument/inlineCompletion') &&
+          languageClientLifecycle?.client === lc &&
+          languageClientLifecycle.snapshot.state === 'running' &&
+          extensionContext
+        ) {
+          // A user-facing prompt must not hold the registration response open.
+          void suggestAiCompletionIfSupported(extensionContext, lc).catch((err: unknown) => {
+            outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
+          });
+        }
+      },
       // The server pulls `section: "perl"` once unscoped and once per workspace
       // folder. Without this adapter the language client would resolve those
       // against the `perl.*` namespace, which this extension does not
@@ -3324,7 +3432,7 @@ async function formatDocumentOnSave(document: vscode.TextDocument): Promise<vsco
   return edits ?? [];
 }
 
-async function refreshTestAdapter(context: vscode.ExtensionContext) {
+async function refreshTestAdapter() {
   if (testAdapter) {
     testAdapter.dispose();
     testAdapter = undefined;
@@ -3337,7 +3445,6 @@ async function refreshTestAdapter(context: vscode.ExtensionContext) {
   }
 
   testAdapter = new PerlTestAdapter();
-  context.subscriptions.push(testAdapter);
   outputChannel.info('Perl test integration enabled.');
 }
 
@@ -3909,7 +4016,7 @@ async function promptForClientRefresh(context: vscode.ExtensionContext) {
   );
 
   if (choice === 'Restart Now') {
-    await restartServer(context);
+    await restartServerFromExplicitRecovery(context);
   }
 }
 
