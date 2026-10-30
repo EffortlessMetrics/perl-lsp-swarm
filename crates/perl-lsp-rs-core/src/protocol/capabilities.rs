@@ -52,7 +52,9 @@ pub const WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE: bool = true;
 /// Canonical completion trigger characters advertised to LSP clients.
 ///
 /// LSP requires each trigger to be a single character. Multi-character Perl
-/// operators (`->`, `::`) are supported by advertising their component chars.
+/// operators (`->`, `::`) are supported by advertising their final chars.
+/// `-` is intentionally excluded: it is also subtraction and must not open
+/// suggestions before the user has typed the complete `->` operator.
 #[must_use]
 pub fn completion_trigger_characters() -> Vec<String> {
     vec![
@@ -60,7 +62,6 @@ pub fn completion_trigger_characters() -> Vec<String> {
         "@".to_string(),
         "%".to_string(),
         // Method and package separators.
-        "-".to_string(),
         ">".to_string(),
         ":".to_string(),
         // String concat operator — triggers completion for chained access. (UX_GAP_03)
@@ -474,12 +475,13 @@ mod tests {
         // `.` (string concat, UX_GAP_03) is included deliberately: it was
         // previously guarded only by the insta snapshot, so when the snapshot
         // went stale nothing asserted the trigger still existed.
-        for expected in ["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"] {
+        for expected in ["$", "@", "%", ">", ":", ".", "/", "\\", "\"", "'"] {
             assert!(
                 triggers.iter().any(|trigger| trigger == expected),
                 "missing completion trigger character: {expected}"
             );
         }
+        assert!(!triggers.iter().any(|trigger| trigger == "-"));
     }
 
     #[test]
