@@ -14,6 +14,49 @@ struct CurrentDirGuard {
     previous: PathBuf,
 }
 
+#[test]
+fn test_variable_completion_mid_token_client_edits() -> Result<(), Box<dyn std::error::Error>> {
+    let mut failures = Vec::new();
+    for (before, typed, suffix, after, label) in [
+        ("my $count = 42; print ", "$co", "unt", ";", "$count"),
+        ("my @items = (); print ", "@it", "ems", ";", "@items"),
+        ("my @items = (); print ", "@it", "ems", "[0];", "@items"),
+        ("my $count = 42; print ", "$co", "unté_123", " + $count;", "$count"),
+        ("use utf8; my $count = 42; print ", "$co", "unt\u{301}_123", ";", "$count"),
+        ("my $count = 42; print ", "$co", "unt𐐀_123", ";", "$count"),
+        ("my $count = 42; print \"🦀 ", "$co", "unt", "\";", "$count"),
+        ("my $count = 42; print ", "$co", "", ";", "$count"),
+        ("my @items = (); print ", "@it", "", ";", "@items"),
+        ("my $count = 42; print \"🦀 ", "$co", "", "\";", "$count"),
+    ] {
+        let source = format!("{before}{typed}{suffix}{after}");
+        let position = before.len() + typed.len();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let provider = CompletionProvider::new(&ast);
+        let items = provider.get_completions(&source, position);
+        let item = items
+            .iter()
+            .find(|item| item.label == label)
+            .ok_or_else(|| format!("missing {label} for {source:?}"))?;
+        let (start, end) = item.text_edit_range.ok_or("missing variable edit")?;
+        let replacement = item.insert_text.as_deref().ok_or("missing replacement")?;
+        let mut applied = source.clone();
+        applied.replace_range(start..end, replacement);
+        let expected = format!("{before}{label}{after}");
+        if !suffix.is_empty() {
+            let mut cursor_only = source.clone();
+            cursor_only.replace_range(start..position, replacement);
+            assert_ne!(cursor_only, expected, "oracle must reject a cursor-only edit");
+        }
+        if applied != expected {
+            failures.push(format!("{source:?} at {position}: range={start}..{end}, applied={applied:?}, expected={expected:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "incorrect client applications:\n{}", failures.join("\n"));
+    Ok(())
+}
+
 impl CurrentDirGuard {
     fn change_to(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let previous = std::env::current_dir()?;

@@ -211,10 +211,9 @@ pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
+pub use unicode::is_perl_identifier_continue;
 
-use unicode::{
-    is_perl_identifier_continue, is_perl_identifier_start, is_perl_package_segment_start,
-};
+use unicode::{is_perl_identifier_start, is_perl_package_segment_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{

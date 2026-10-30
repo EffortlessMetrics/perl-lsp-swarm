@@ -41,7 +41,8 @@ pub(super) fn complete_dispatch(
         return CompletionFlow::SortAndReturn;
     }
 
-    if let Some(flow) = complete_sigil_context(provider, completions, context, is_cancelled) {
+    if let Some(flow) = complete_sigil_context(provider, completions, context, source, is_cancelled)
+    {
         // If we were in a string and sigil completion matched, we're done.
         // Otherwise fall through to file-path for string context.
         if context.in_string {
@@ -554,6 +555,7 @@ fn complete_sigil_context(
     provider: &CompletionProvider,
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
+    source: &str,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Option<CompletionFlow> {
     let (sigil, kind) = sigil_kind(context)?;
@@ -570,7 +572,7 @@ fn complete_sigil_context(
         }
     }
 
-    variables::add_variable_completions(completions, context, kind, &provider.symbol_table);
+    variables::add_variable_completions(completions, context, kind, &provider.symbol_table, source);
     if is_cancelled() {
         return Some(CompletionFlow::Cancelled);
     }
@@ -715,7 +717,13 @@ fn complete_general_context(
     // admission (#8941) as the sigil path; the identity merge keeps the
     // better-ranked candidate when both inventories produce one label.
     for kind in [SymbolKind::scalar(), SymbolKind::array(), SymbolKind::hash()] {
-        variables::add_variable_completions(completions, context, kind, &provider.symbol_table);
+        variables::add_variable_completions(
+            completions,
+            context,
+            kind,
+            &provider.symbol_table,
+            source,
+        );
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }
