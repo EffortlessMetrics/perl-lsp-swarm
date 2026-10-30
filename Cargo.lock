@@ -1963,6 +1963,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
  "url",
@@ -2329,6 +2330,7 @@ dependencies = [
  "anyhow",
  "perl-lsp-rs",
  "serde_json",
+ "sha2",
  "tempfile",
  "url",
 ]

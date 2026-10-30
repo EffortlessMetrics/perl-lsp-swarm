@@ -82,11 +82,11 @@ cargo test -p perl-lsp-ux-tests
 ```
 
 The local `just ux-tests` and `just ux-tests-full` recipes build
-`target/debug/perl-lsp` first and set `PERL_LSP_BIN` automatically. Raw
-`cargo test` runs work with a prebuilt binary alone: the harness
+`target/debug/perllsp` first and set `PERL_LSP_BIN` automatically. Raw
+`cargo test` runs work with a matching prebuilt binary: the harness
 auto-discovers the candidate via `resolve_binary()` — explicit
 `PERL_LSP_BIN` override, then a walk from the test executable to
-`target/<profile>/perl-lsp`, then `CARGO_TARGET_DIR`, then a
+`target/<profile>/{perl-lsp,perllsp}`, then `CARGO_TARGET_DIR`, then a
 `CARGO_MANIFEST_DIR` workspace walk, then `PATH`. Scenarios without a
 resolvable binary skip, except the exact-process lifecycle proofs, which
 fail loudly by design; set `PERL_LSP_UX_REQUIRE_BINARY=1` to turn every
@@ -115,3 +115,31 @@ The harness supports these runtime controls:
 5. Assert no crash and validate response quality.
 
 Keep scenarios focused on user workflows and regression intent.
+
+Binary selection verifies the existing `product_identity` packet's server role,
+package, schema, `source_revision`, and `source_tree_digest` against the current
+checkout. Ordinary `perllsp` executable builds embed that source inventory automatically;
+release builds retain their complete explicitly supplied identity pair;
+a lone supplied field is completed only when it agrees
+with the current checkout. A mismatched partial override remains partial and
+cannot count as exact UX evidence. The inventory uses the
+release protocol's Git tree format with raw local file bytes, including tracked
+edits, deletions, and non-ignored additions. Ignored Rust/config inputs under
+`crates` or `.cargo` (including extensionless `.cargo/config`), external symlinks,
+submodules, and newline or leading-quote source paths
+refuse exact local UX evidence. Ordinary product compilation continues with a warning
+and without an automatic stamp when that evidence is unavailable. This is source binding, not authentication of an
+arbitrary executable or an attestation of the compiler/environment.
+
+`UxHarness` retains a private executable copy, verifies that copy, and starts that
+same copy. Rebuild with `cargo build -p perllsp` after changing source or committing
+it. The paired `just ux-tests` recipes already rebuild and require a binary; these
+checks additionally protect direct harness and override use from stale evidence.
+
+Use `ScenarioConfig::default().without_workspace_root()` to initialize a
+single-file session with `rootUri: null` and `workspaceFolders: []`. The explicit
+empty folder array avoids legacy CWD fallback. Combining
+that policy with explicit workspace folders is an error. Scenario05 creates
+project configuration after an initialization response barrier, checks that a
+subsequent `didOpen` discovers `[perl].version`, and opens two files against the
+same malformed config before counting its deduplicated warning.
