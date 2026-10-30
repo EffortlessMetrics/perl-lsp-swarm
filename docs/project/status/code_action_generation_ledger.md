@@ -239,15 +239,18 @@ rather than asserting the tidier claim that the family answers once. When #9189
 resolves the duplication that fixture must fail, forcing this ledger to be
 updated alongside the routing change.
 
-### Three CodeActionKinds are serializable but unreachable
+### Four CodeActionKinds are serializable but unreachable
 
 `handle_code_action` maps `InternalCodeActionKind::Refactor` to `"refactor"`,
-`RefactorInline` to `"refactor.inline"`, and `Source` to `"source"`, but no
-producer anywhere in the workspace constructs any of the three. Refactor and
-RefactorInline were dead mappings from the start; `Source` lost its last
-producer when the #17304 repair removed the `test_generator` generation. All
-three kinds are dead mappings: reachable in the serializer, unreachable in
-practice.
+`RefactorInline` to `"refactor.inline"`, `Source` to `"source"`, and
+`RefactorExtract` to `"refactor.extract"`, but no producer anywhere in the
+workspace constructs any of the four. Refactor and RefactorInline were dead
+mappings from the start; `Source` lost its last producer when the #17304
+repair removed the `test_generator` generation; `RefactorExtract` lost its
+last producer when the #16577 repair moved the extract generations onto the
+typed `refactor.extract.variable` and `refactor.extract.subroutine` kinds.
+All four kinds are dead mappings: reachable in the serializer, unreachable
+in practice.
 
 They are recorded in `unreachable_kinds` rather than left implicit, because the
 drift check requires every kind literal in the handler to be either a
