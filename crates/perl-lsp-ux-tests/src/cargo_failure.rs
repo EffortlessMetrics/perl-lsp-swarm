@@ -31,7 +31,7 @@ use regex::Regex;
 /// `[ \t]` rather than `\s` throughout: `\s` matches a newline, which would let
 /// one match straddle a blank line and adopt the next line's name.
 static RESULT_LINE_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
-    Regex::new(r"(?m)^[ \t]*test[ \t]+(.+?)[ \t]+\.\.\.[ \t]+(ok|FAILED|ignored)\b")
+    Regex::new(r"(?m)^[ \t]*test[ \t]+(.+?)[ \t]+\.\.\.[ \t]+(ok|FAILED|ignored)[ \t\r]*$")
 });
 
 /// Cargo's trailing report prints one `---- <name> stdout ----` block per
@@ -236,6 +236,9 @@ fn parse_location(rest: &str) -> Option<PanicLocation> {
     // `first_failure.site.is_some()`, so a rejected path turns a code regression
     // into `unknown`. Each consumer applies its own rule; see
     // [`is_plausible_path`].
+    if path.is_empty() {
+        return None;
+    }
     let line = line_field.parse::<u64>().ok()?;
     let column = parts.get(line_index).and_then(|field| field.parse::<u64>().ok());
     Some(PanicLocation { path, line, column })
@@ -253,7 +256,7 @@ pub fn is_plausible_path(path: &str) -> bool {
     // (`/...`) forms, so a panic outside the workspace root is still captured.
     let first_ok = matches!(
         path.chars().next(),
-        Some('C'..='Z') | Some('a'..='z') | Some('.') | Some('/') | Some('\\')
+        Some('A'..='Z') | Some('a'..='z') | Some('.') | Some('/') | Some('\\')
     );
     if !first_ok || path.chars().any(|c| c.is_whitespace()) {
         return false;
@@ -306,6 +309,15 @@ mod tests {
         assert_eq!(
             result_line("  test tasks::a::b ... ignored"),
             Some(("tasks::a::b", TestOutcome::Ignored))
+        );
+    }
+
+    #[test]
+    fn a_result_line_with_trailing_prose_is_not_a_result() {
+        assert_eq!(result_line("test tasks::a::b ... FAILED trailing"), None);
+        assert_eq!(
+            result_line("test tasks::a::b ... FAILED\r"),
+            Some(("tasks::a::b", TestOutcome::Failed))
         );
     }
 
@@ -430,7 +442,15 @@ mod tests {
 
     #[test]
     fn plausible_paths_are_accepted_and_junk_is_not() {
-        for path in ["crates/a/b.rs", "src/lib.rs", "/abs/path.rs", "./rel.rs", r"C:\src\a.rs"] {
+        for path in [
+            "crates/a/b.rs",
+            "src/lib.rs",
+            "/abs/path.rs",
+            "./rel.rs",
+            r"A:\src\a.rs",
+            r"B:\src\a.rs",
+            r"C:\src\a.rs",
+        ] {
             assert!(is_plausible_path(path), "{path:?} is a real path shape");
         }
         for path in ["./ something", "9lives/src/lib.rs", "-/weird.rs", "a b.rs"] {
@@ -441,5 +461,10 @@ mod tests {
     #[test]
     fn panic_location_absent_when_the_line_is_not_a_panic() {
         assert_eq!(panic_location("assertion `left == right` failed"), None);
+    }
+
+    #[test]
+    fn panic_location_with_an_empty_path_is_not_a_location() {
+        assert_eq!(panic_location("thread 'main' panicked at :42:8:"), None);
     }
 }

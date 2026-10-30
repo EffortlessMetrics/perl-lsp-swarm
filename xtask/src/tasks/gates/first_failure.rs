@@ -203,7 +203,8 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     /// reader would pass even if one consumer stopped using it.
     #[test]
     fn gate_and_receipt_agree_on_the_same_log() -> anyhow::Result<()> {
-        let log = std::env::temp_dir().join("xtask-first-failure-agreement.log");
+        let directory = tempfile::tempdir()?;
+        let log = directory.path().join("xtask-first-failure-agreement.log");
         std::fs::write(&log, DOCTEST_LOG)?;
 
         let receipt = perl_lsp_ux_tests::regression_receipt::run(
