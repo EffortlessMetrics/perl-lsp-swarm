@@ -54,11 +54,9 @@ fn snapshot(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
     Ok(files)
 }
 
-fn poisoned_child(root: &Path, name: &str, index: &Path) -> Command {
+fn poisoned_child(root: &Path, name: &str, index: &Path) -> Result<Command> {
     let caller = root.join("caller");
-    let mut child = xtask::git_environment::isolate(Command::new(
-        std::env::current_exe().expect("test executable"),
-    ));
+    let mut child = xtask::git_environment::isolate(Command::new(std::env::current_exe()?));
     child
         .args(["--exact", &format!("{PREFIX}{name}"), "--nocapture"])
         .env(ROOT, root)
@@ -73,7 +71,7 @@ fn poisoned_child(root: &Path, name: &str, index: &Path) -> Command {
         // All fetches use repo-local rewrites to owned local remotes.
         .env("GIT_ALLOW_PROTOCOL", "file")
         .env("GIT_TERMINAL_PROMPT", "0");
-    child
+    Ok(child)
 }
 
 fn assert_poison(root: &Path) -> Result<()> {
@@ -167,7 +165,7 @@ fn explicit_queries_ignore_caller_context() -> Result<()> {
             fs::write(root.join("head"), head)?;
         }
     }
-    let mut child = poisoned_child(root, name, &root.join("caller/.git/index"));
+    let mut child = poisoned_child(root, name, &root.join("caller/.git/index"))?;
     completed(root, name, &mut child, true)
 }
 
@@ -322,7 +320,7 @@ fn materializer_fetch_and_objects_stay_in_selected_repository() -> Result<()> {
             })
             .to_string(),
         )?;
-        let mut child = poisoned_child(root, name, &caller.join(".git/index"));
+        let mut child = poisoned_child(root, name, &caller.join(".git/index"))?;
         if let Err(error) = completed(root, name, &mut child, true) {
             failures.push(format!("{mode}: {error:#}"));
         }
@@ -384,7 +382,7 @@ fn staged_tree_preserves_selected_git_directory_and_alternate_index() -> Result<
     fs::write(caller.join("base.txt"), "unstaged\n")?;
     fs::write(caller.join("untracked.txt"), "unique untracked\n")?;
     let default_before = fs::read(caller.join(".git/index"))?;
-    let mut child = poisoned_child(root, name, &alternate);
+    let mut child = poisoned_child(root, name, &alternate)?;
     completed(root, name, &mut child, false)?;
     ensure!(fs::read(caller.join(".git/index"))? == default_before, "default index changed");
     ensure!(fs::read_to_string(caller.join("base.txt"))? == "unstaged\n");
