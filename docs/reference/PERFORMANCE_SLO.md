@@ -181,7 +181,7 @@ For references:
       "workspaceSymbolCap": 200,
       "referencesCap": 500,
       "completionCap": 100,
-      "referenceSearchDeadlineMs": 2000,
+      "referenceSearchDeadlineMs": 2000
     }
   }
 }

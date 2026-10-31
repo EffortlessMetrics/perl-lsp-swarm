@@ -1547,6 +1547,12 @@ ci-doc-paths:
     @cargo run --quiet -p perl-ci-hygiene --bin perl-ci-hygiene --locked -- check-doc-paths docs
     @echo "✅ Documentation paths check passed"
 
+# Reject trailing commas in fenced `json` examples (copy-pasteable config must parse)
+ci-doc-json:
+    @echo "🔍 Checking documentation JSON examples..."
+    @cargo xtask ci-hygiene check-doc-json docs
+    @echo "✅ Documentation JSON examples check passed"
+
 # Verify publication facts against live codebase metrics (informational, non-blocking)
 # Flags WARNING if delta >5%, ERROR if delta >10%. Use --strict to exit 1 on ERROR.
 verify-publication-facts *args='':

@@ -828,7 +828,7 @@ decrease them for resource-constrained environments.
   "perl": {
     "limits": {
       "workspaceSymbolCap": 300,
-      "referencesCap": 1000,
+      "referencesCap": 1000
     }
   }
 }
@@ -1269,7 +1269,7 @@ perllsp --features-json --feature-profile production
     },
     "limits": {
       "workspaceSymbolCap": 300,
-      "referencesCap": 1000,
+      "referencesCap": 1000
     }
   }
 }
