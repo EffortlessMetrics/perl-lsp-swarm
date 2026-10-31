@@ -2571,8 +2571,11 @@ sub add_widgets {
         Ok(())
     }
 
-    /// A `=cutover`-style line is not a POD terminator: a block ending
-    /// with it must not become the following sub's documentation.
+    /// A `=cutover`-style line is not a POD terminator: the block is
+    /// unterminated, so it runs to EOF and the following `sub` stays POD
+    /// text rather than becoming a code symbol with those docs attached.
+    /// This matches the lexer's perl-verified `=cut` word boundary
+    /// (`cutlery_does_not_terminate_a_pod_block` in perl-lexer).
     #[test]
     fn test_pod_block_requires_exact_cut_terminator() -> Result<(), Box<dyn std::error::Error>> {
         let code = "=head2 y\n\nWhy docs.\n\n=cutover\n\nsub y { 1 }\n";
@@ -2580,12 +2583,9 @@ sub add_widgets {
         let ast = parser.parse()?;
         let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
         let subs = analyzer.symbol_table().find_symbol("y", 0, SymbolKind::Subroutine);
-        assert!(!subs.is_empty(), "Should find sub y");
-        let hover = analyzer.hover_at(subs[0].location).ok_or("hover not found")?;
         assert!(
-            hover.documentation.as_deref().is_none_or(|d| !d.contains("Why docs")),
-            "=cutover must not terminate a POD block, got: {:?}",
-            hover.documentation
+            subs.is_empty(),
+            "=cutover must not terminate a POD block, so sub y remains POD text, got: {subs:?}"
         );
         Ok(())
     }
