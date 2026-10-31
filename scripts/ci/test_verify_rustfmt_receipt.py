@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import chdir
 import hashlib
 import json
 import os
@@ -185,6 +186,53 @@ else:
 
     def test_valid_receipt_passes(self) -> None:
         verifier.verify(self._args())
+
+    def _relative_receipt_paths(self) -> tuple[Path, Path, Path]:
+        relative = Path("target/receipts/rustfmt/rustfmt-check.json")
+        # Receipt output is ignored, as it is in the real candidate worktree.
+        (self.root / ".git/info/exclude").write_text("target/\n", encoding="utf-8")
+        intended = self.root / relative
+        foreign = Path(self.temp.name, "foreign")
+        intended.parent.mkdir(parents=True)
+        (foreign / relative).parent.mkdir(parents=True)
+        return relative, intended, foreign
+
+    def test_relative_receipt_selects_root_valid_control_over_foreign_stale(self) -> None:
+        relative, intended, foreign = self._relative_receipt_paths()
+        intended.write_bytes(self.receipt.read_bytes())
+        stale = copy.deepcopy(self.payload)
+        stale["subject"]["repository_sha"] = "f" * 40
+        self._resign(stale)
+        (foreign / relative).write_text(json.dumps(stale), encoding="utf-8")
+        with chdir(foreign):
+            verifier.verify(self._args(receipt=intended))
+            verifier.verify(self._args(receipt=relative))
+        # An absent CWD donor must not change successful root selection either.
+        (foreign / relative).unlink()
+        with chdir(foreign):
+            verifier.verify(self._args(receipt=relative))
+
+    def test_relative_receipt_refuses_stale_root_despite_foreign_valid_control(self) -> None:
+        relative, intended, foreign = self._relative_receipt_paths()
+        (foreign / relative).write_bytes(self.receipt.read_bytes())
+        stale = copy.deepcopy(self.payload)
+        stale["subject"]["repository_sha"] = "f" * 40
+        self._resign(stale)
+        intended.write_text(json.dumps(stale), encoding="utf-8")
+        with chdir(foreign):
+            with self.assertRaisesRegex(verifier.VerificationError, "subject does not match"):
+                verifier.verify(self._args(receipt=relative))
+
+    def test_relative_receipt_symlink_at_root_is_rejected(self) -> None:
+        relative, intended, foreign = self._relative_receipt_paths()
+        (foreign / relative).write_bytes(self.receipt.read_bytes())
+        try:
+            intended.symlink_to(self.receipt)
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        with chdir(foreign):
+            with self.assertRaisesRegex(verifier.VerificationError, "non-symlink"):
+                verifier.verify(self._args(receipt=relative))
 
     def test_non_mapping_receipt_sections_fail_controlled(self) -> None:
         self.receipt.write_text("[]", encoding="utf-8")
