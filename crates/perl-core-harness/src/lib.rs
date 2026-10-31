@@ -3399,14 +3399,18 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     // any direct diagnostic work is planned or executed (#8173). Missing
     // expected rows stay missing; nothing repairs upstream membership here,
     // and terminal admission is classified inside the frozen set (#6884).
+    // The runner JSONL lives under the public evidence directory, so publish a
+    // scrubbed copy after the freeze; in-memory records stay raw (#18152).
+    let records = read_runner_records_or_empty(&context_path)?;
     let observation = UpstreamObservationSet::settle(
         config.runner,
         config.mode,
         config.profile,
         &discovered,
-        &read_runner_records_or_empty(&context_path)?,
+        &records,
         output.status.code(),
     )?;
+    publish_scrubbed_runner_records(&context_path, &records)?;
     let report = build_run_report(BuildRunReportInput {
         config: &config,
         perl_tree: &perl_tree,
@@ -4693,13 +4697,64 @@ fn failure_for_record(path: &str, bucket: &str, record: &RunnerRecord) -> RunFai
         path: path.to_string(),
         phase: record.mode.clone(),
         bucket: bucket.to_string(),
-        first_diagnostic: record
-            .first_diagnostic
-            .clone()
-            .unwrap_or_else(|| "runner reported failure without diagnostic".to_string()),
+        first_diagnostic: normalize_diagnostic(
+            record
+                .first_diagnostic
+                .as_deref()
+                .unwrap_or("runner reported failure without diagnostic"),
+        ),
         workstream: workstream_for_bucket(bucket).to_string(),
         lsp_impact: lsp_impact_for_bucket(bucket).into_iter().map(ToString::to_string).collect(),
     }
+}
+
+/// Rewrite a published runner-record JSONL so `first_diagnostic` cannot carry
+/// host paths into public evidence.
+///
+/// The in-memory records used to settle observation stay raw. Only the file
+/// that lives under the evidence directory is replaced, so private processing
+/// and public receipts stay separate (#18152).
+fn publish_scrubbed_runner_records(path: &Path, records: &[RunnerRecord]) -> Result<()> {
+    if !path.is_file() || records.is_empty() {
+        return Ok(());
+    }
+    let published: Vec<RunnerRecord> =
+        records.iter().map(scrubbed_runner_record_for_publication).collect();
+    let tmp_path = path.with_extension("jsonl.tmp");
+    let write_result = write_runner_records_jsonl(&tmp_path, &published);
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error)
+            .with_context(|| format!("publishing scrubbed runner records {}", path.display()));
+    }
+    Ok(())
+}
+
+fn scrubbed_runner_record_for_publication(record: &RunnerRecord) -> RunnerRecord {
+    let mut published = record.clone();
+    published.first_diagnostic = record.first_diagnostic.as_deref().map(normalize_diagnostic);
+    published
+}
+
+fn write_runner_records_jsonl(path: &Path, records: &[RunnerRecord]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        let context = format!("creating output directory {}", parent.display());
+        fs::create_dir_all(parent).context(context)?;
+    }
+    let file = fs::File::create(path)
+        .with_context(|| format!("creating runner records {}", path.display()))?;
+    let mut writer = std_io::BufWriter::new(file);
+    for record in records {
+        serde_json::to_writer(&mut writer, record).context("serializing runner record")?;
+        writer
+            .write_all(b"\n")
+            .with_context(|| format!("writing runner records {}", path.display()))?;
+    }
+    writer.flush().with_context(|| format!("flushing runner records {}", path.display()))
 }
 
 fn current_commit() -> String {
@@ -5259,6 +5314,137 @@ mod tests {
         assert_eq!(report.semantic_boundaries[0].source_span.start, 12);
         assert_eq!(report.semantic_boundaries[0].owner_workstream, "symbolic_reference_semantics");
         Ok(())
+    }
+
+    #[test]
+    fn published_runner_records_and_run_reports_scrub_host_paths_from_first_diagnostic()
+    -> TestResult {
+        // Production gate: a runner record whose first_diagnostic embeds a
+        // unix-absolute host path must not produce a host-path finding in
+        // either public output (the run-tree JSONL or smoke failures).
+        let temp = tempfile::tempdir()?;
+        let records_path = temp.path().join("perl-lsp-runner-records.jsonl");
+        let smoke_path = temp.path().join("parse.json");
+        let leaked =
+            "failed to read /tmp/perl-core-host/t/io/utf8.t: stream did not contain valid UTF-8";
+        let record = RunnerRecord {
+            mechanism: None,
+            scaffold_stamp: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "t/io/utf8.t".into(),
+            status: RunnerStatus::Fail,
+            assertions_passed: 0,
+            assertions_total: 1,
+            bucket: Some("parse_recovery".into()),
+            first_diagnostic: Some(leaked.into()),
+            semantic_boundaries: Vec::new(),
+        };
+        write_runner_records_jsonl(&records_path, std::slice::from_ref(&record))?;
+
+        let raw_findings = host_path_findings_in_jsonl(
+            "target/perl-lsp-runner-records.jsonl",
+            &fs::read_to_string(&records_path)?,
+        )?;
+        assert_eq!(
+            raw_findings.iter().map(|finding| finding.pointer.as_str()).collect::<Vec<_>>(),
+            vec!["/line/1/first_diagnostic"],
+            "oracle must flag the unsanitized JSONL: {raw_findings:?}"
+        );
+
+        publish_scrubbed_runner_records(&records_path, std::slice::from_ref(&record))?;
+        let published_records = fs::read_to_string(&records_path)?;
+        let jsonl_findings = host_path_findings_in_jsonl(
+            "target/perl-lsp-runner-records.jsonl",
+            &published_records,
+        )?;
+        assert!(
+            jsonl_findings.is_empty(),
+            "published runner records leaked host paths: {jsonl_findings:?}"
+        );
+        assert!(
+            published_records.contains("<host-path>"),
+            "scrubbed JSONL must retain a redacted diagnostic: {published_records}"
+        );
+        assert!(
+            !published_records.contains("/tmp/perl-core-host"),
+            "scrubbed JSONL still contains the host path: {published_records}"
+        );
+
+        let config = RunConfig {
+            perl_tree: PathBuf::from("perl"),
+            host_perl: None,
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Core,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
+        };
+        let discovered = vec![DiscoveredTest { path: "t/io/utf8.t".into(), root: "io".into() }];
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &[record], Some(1))?;
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: Path::new("perl"),
+            run_tree: Path::new("run"),
+            host_perl: Path::new("perl"),
+            observation: &observation,
+        });
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(
+            report.failures[0].first_diagnostic,
+            "failed to read <host-path> stream did not contain valid UTF-8"
+        );
+        write_run_report(&smoke_path, &report)?;
+        let smoke = fs::read_to_string(&smoke_path)?;
+        let smoke_findings = host_path_findings_in_json("smoke/core/parse.json", &smoke)?;
+        assert!(
+            smoke_findings.is_empty(),
+            "published run report leaked host paths: {smoke_findings:?}"
+        );
+        Ok(())
+    }
+
+    fn host_path_findings_in_jsonl(
+        logical_file: &str,
+        raw: &str,
+    ) -> Result<Vec<public_evidence::Finding>> {
+        let mut findings = Vec::new();
+        for (line_index, line) in raw.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = serde_json::from_str(line).with_context(|| {
+                format!("decoding JSONL line {} in {}", line_index + 1, logical_file)
+            })?;
+            public_evidence::scan_public_value(
+                &value,
+                logical_file,
+                &format!("/line/{}", line_index + 1),
+                PublicStringClass::Ordinary,
+                &mut findings,
+            );
+        }
+        Ok(findings)
+    }
+
+    fn host_path_findings_in_json(
+        logical_file: &str,
+        raw: &str,
+    ) -> Result<Vec<public_evidence::Finding>> {
+        let mut findings = Vec::new();
+        let value: serde_json::Value = serde_json::from_str(raw)
+            .with_context(|| format!("decoding public JSON evidence {logical_file}"))?;
+        public_evidence::scan_public_value(
+            &value,
+            logical_file,
+            "",
+            PublicStringClass::Ordinary,
+            &mut findings,
+        );
+        Ok(findings)
     }
 
     #[test]
