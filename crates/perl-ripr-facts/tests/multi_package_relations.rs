@@ -120,3 +120,48 @@ fn pod_package_lines_create_no_package_relations() {
         "POD text must not declare a package: {relations:#?}"
     );
 }
+
+#[test]
+fn version_declaration_followed_by_a_comment_still_links_the_package() {
+    let pm = "package First;\nsub one { 1 }\npackage Second 1.0; # helper\nsub target { 42 }\n1;\n";
+    let t = "use strict;\nuse Test::More;\nuse First;\nis(Second::target(), 42, 'x');\ndone_testing();\n";
+    let relations = relations_for(
+        "target/ripr-multi-package/version-comment",
+        &[("lib/First.pm", pm), ("t/calls.t", t)],
+    );
+    assert_eq!(
+        kinds_for_owner(&relations, "target"),
+        vec!["direct_owner_call".to_string()],
+        "{relations:#?}"
+    );
+}
+
+#[test]
+fn pod_cutover_directive_does_not_end_the_pod_block() {
+    let pm = "package Real;\nsub run { 1 }\n\n=pod\n\n=cutover\n\npackage Decoy;\nsub ghost { 2 }\n\n=cut\n\n1;\n";
+    let t =
+        "use strict;\nuse Test::More;\nuse Real;\nis(Decoy::ghost(), 2, 'x');\ndone_testing();\n";
+    let relations = relations_for(
+        "target/ripr-multi-package/pod-cutover",
+        &[("lib/Real.pm", pm), ("t/real.t", t)],
+    );
+    assert!(
+        !relations.iter().any(|r| r["owner_id"].as_str().is_some_and(|id| id.contains("Decoy"))),
+        "=cutover must not end POD: {relations:#?}"
+    );
+}
+
+#[test]
+fn heredoc_package_text_creates_no_package_relations() {
+    let pm = "package Real;\nsub run { 1 }\nmy $doc = <<'EOT';\npackage Decoy;\nsub ghost { 2 }\nEOT\n1;\n";
+    let t =
+        "use strict;\nuse Test::More;\nuse Real;\nis(Decoy::ghost(), 2, 'x');\ndone_testing();\n";
+    let relations = relations_for(
+        "target/ripr-multi-package/heredoc-decoy",
+        &[("lib/Real.pm", pm), ("t/real.t", t)],
+    );
+    assert!(
+        !relations.iter().any(|r| r["owner_id"].as_str().is_some_and(|id| id.contains("Decoy"))),
+        "heredoc text must not declare a package: {relations:#?}"
+    );
+}
