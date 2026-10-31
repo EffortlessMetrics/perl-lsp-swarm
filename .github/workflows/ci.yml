@@ -539,21 +539,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check]
-    # `preflight-latest-check` is intentionally skipped for drafts, and GitHub
-    # reports a skipped need's outputs as empty strings. `always()` carries the
-    # evaluation past that skipped need while the disjunction routes each event
-    # class:
-    # - draft PR: run_ci is 'false' and the skipped preflight's is_latest is '',
-    #   so the needs branch is false and only the draft branch fires.
-    # - non-draft PR: run_ci='true' and is_latest='true'; the needs branch fires.
-    # - merge_group and push: the draft branch is false (`pull_request.draft` is
-    #   unset), so the needs branch is the only route; it fires because
-    #   is_latest='true' unless a superseded push SHA is skipped.
-    # Dropping either branch silently removes draft or push/merge_group runs;
-    # xtask/tests/draft_pr_feedback_contract.rs asserts both branches.
+    # Failed prerequisites must produce a failing required context, rather than
+    # a skipped job's successful context. Drafts intentionally skip preflight;
+    # retain their exact-head scan and the healthy active/superseded routes.
     if: >-
       always() &&
       (
+        needs.draft-pr-check.result != 'success' ||
+        (needs.draft-pr-check.outputs.run_ci != 'true' && needs.draft-pr-check.outputs.run_ci != 'false') ||
+        (
+          needs.draft-pr-check.outputs.run_ci == 'true' &&
+          (needs.preflight-latest-check.result != 'success' || needs.preflight-latest-check.outputs.is_latest != 'false')
+        ) ||
         (github.event_name == 'pull_request' && github.event.pull_request.draft == true) ||
         (
           needs.draft-pr-check.outputs.run_ci == 'true' &&
@@ -561,19 +558,54 @@ jobs:
         )
       )
     steps:
+      - name: Validate CI prerequisites
+        env:
+          DRAFT_RESULT: ${{ needs.draft-pr-check.result }}
+          RUN_CI: ${{ needs.draft-pr-check.outputs.run_ci }}
+          PREFLIGHT_RESULT: ${{ needs.preflight-latest-check.result }}
+          IS_LATEST: ${{ needs.preflight-latest-check.outputs.is_latest }}
+        run: |
+          # GitHub expression string comparisons ignore case.
+          RUN_CI="${RUN_CI,,}"
+          IS_LATEST="${IS_LATEST,,}"
+          if [ "$DRAFT_RESULT" != 'success' ]; then
+            echo "::error::Draft PR guard did not succeed: $DRAFT_RESULT"
+            exit 1
+          fi
+          case "$RUN_CI" in
+            true|false) ;;
+            *) echo "::error::Draft PR guard did not select a valid route: $RUN_CI"; exit 1 ;;
+          esac
+          if [ "$RUN_CI" = 'true' ]; then
+            if [ "$PREFLIGHT_RESULT" != 'success' ]; then
+              echo "::error::Preflight did not succeed: $PREFLIGHT_RESULT"
+              exit 1
+            fi
+            case "$IS_LATEST" in
+              true|false) ;;
+              *) echo "::error::Preflight did not report a valid freshness result: $IS_LATEST"; exit 1 ;;
+            esac
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
       - name: Check for conflict markers
         run: |
-          matches=$(git ls-files -z | xargs -0 grep -lP '^(<{7} |>{7} |={7}$)' 2>/dev/null || true)
-          if [ -n "$matches" ]; then
+          # Longer Git marker sizes and diff3 base markers are real conflicts;
+          # longer bare '=' lines are also valid Markdown/example separators.
+          if matches=$(git grep -Il -E '^(<{7,} |>{7,} |\|{7,} |={7}$)' -- .); then
             echo "❌ Conflict markers found in committed files:"
             echo "$matches"
             echo ""
-            echo "Run: grep -rn -P '^(<{7} |>{7} |={7}\$)' \$(git ls-files)"
+            echo "Run: git grep -n -I -E '^(<{7,} |>{7,} |\|{7,} |={7}\$)' -- ."
             echo "to locate exact lines, then resolve and re-commit."
             exit 1
+          else
+            status=$?
+            if [ "$status" -ne 1 ]; then
+              echo "::error::Conflict marker scan failed with status $status"
+              exit "$status"
+            fi
           fi
           echo "✅ No conflict markers found"
 
@@ -2174,8 +2206,47 @@ jobs:
     # Same shape as #5425: raise the knob when runners/base outgrow it.
     timeout-minutes: 35
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # Enter on prerequisite failure as well as the healthy active route, then
+    # refuse before checkout/toolchain/build work. Healthy no-op routes still skip.
+    if: >-
+      always() &&
+      (
+        needs.draft-pr-check.result != 'success' ||
+        (needs.draft-pr-check.outputs.run_ci != 'true' && needs.draft-pr-check.outputs.run_ci != 'false') ||
+        (
+          needs.draft-pr-check.outputs.run_ci == 'true' &&
+          (needs.preflight-latest-check.result != 'success' || needs.preflight-latest-check.outputs.is_latest != 'false')
+        )
+      )
     steps:
+      - name: Validate CI prerequisites
+        env:
+          DRAFT_RESULT: ${{ needs.draft-pr-check.result }}
+          RUN_CI: ${{ needs.draft-pr-check.outputs.run_ci }}
+          PREFLIGHT_RESULT: ${{ needs.preflight-latest-check.result }}
+          IS_LATEST: ${{ needs.preflight-latest-check.outputs.is_latest }}
+        run: |
+          # GitHub expression string comparisons ignore case.
+          RUN_CI="${RUN_CI,,}"
+          IS_LATEST="${IS_LATEST,,}"
+          if [ "$DRAFT_RESULT" != 'success' ]; then
+            echo "::error::Draft PR guard did not succeed: $DRAFT_RESULT"
+            exit 1
+          fi
+          case "$RUN_CI" in
+            true|false) ;;
+            *) echo "::error::Draft PR guard did not select a valid route: $RUN_CI"; exit 1 ;;
+          esac
+          if [ "$RUN_CI" = 'true' ]; then
+            if [ "$PREFLIGHT_RESULT" != 'success' ]; then
+              echo "::error::Preflight did not succeed: $PREFLIGHT_RESULT"
+              exit 1
+            fi
+            case "$IS_LATEST" in
+              true|false) ;;
+              *) echo "::error::Preflight did not report a valid freshness result: $IS_LATEST"; exit 1 ;;
+            esac
+          fi
       # INTENTIONAL: no `ref:` override here — see #9594.
       #
       # For a pull_request event the workflow *definition* comes from the base
@@ -2219,6 +2290,17 @@ jobs:
 
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
+
+      - name: Install CI regression test dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/required-ci-regression"
+          "$RUNNER_TEMP/required-ci-regression/bin/python" -m pip install --disable-pip-version-check --quiet 'PyYAML==6.0.3'
+
+      - name: Required CI prerequisite regression contract
+        run: '"$RUNNER_TEMP/required-ci-regression/bin/python" scripts/ci/test_required_ci_prerequisites.py'
+
+      - name: Conflict marker scanner regression contract
+        run: '"$RUNNER_TEMP/required-ci-regression/bin/python" scripts/ci/test_conflict_marker_scanners.py'
 
       # #17349: routed xtask library failures can prevent this integration
       # target from executing. Run its 15 retained tests independently here;
