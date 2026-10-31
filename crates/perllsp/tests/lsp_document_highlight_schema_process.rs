@@ -5,12 +5,12 @@
 #[path = "support/real_process.rs"]
 mod real_process;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use perllsp::protocol::schema::{
     Direction, MessageKind, ProtocolSchemaValidator, ProtocolVersion, ValidationContext,
 };
 use real_process::RealProcessClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use url::Url;
 

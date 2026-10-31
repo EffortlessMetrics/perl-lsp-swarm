@@ -647,7 +647,14 @@ impl DocumentHighlightProvider {
             && node.location.start >= sub_start
             && node.location.end <= sub_end
             && let Some(target_sigil) = &target.sigil
-            && self.scoped_cross_sigil_candidate(sigil, name, target_sigil, &target.name, node, parent)
+            && self.scoped_cross_sigil_candidate(
+                sigil,
+                name,
+                target_sigil,
+                &target.name,
+                node,
+                parent,
+            )
         {
             let cross_match =
                 self.is_cross_sigil_match(sigil, name, target_sigil, &target.name, parent);
