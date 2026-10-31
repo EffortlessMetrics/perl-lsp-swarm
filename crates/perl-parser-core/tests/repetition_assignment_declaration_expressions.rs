@@ -333,8 +333,10 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
         ));
     }
     // Call arguments: a split `x` / `=` cannot form the operator, so the
-    // argument errors at the `)` boundary with exactly two boundary
-    // diagnostics. Pin both so the proof cannot pass on a silent drop.
+    // argument errors at the `)` boundary with exactly one boundary
+    // diagnostic — the synthetic `expected statement` recovery duplicate at
+    // the same position is gone (#16605). Pin it so the proof cannot pass on
+    // a silent drop.
     for source in ["f(my $v x\n= 3);", "f(my $v x # gap\n= 3);"] {
         let output = Parser::new(source).parse_with_recovery();
         if find_assignment(&output.ast, "x=").is_some() {
@@ -345,14 +347,11 @@ fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), Str
         }
         if !matches!(
             output.diagnostics.as_slice(),
-            [
-                ParseError::UnexpectedToken { expected, found, location: 8 },
-                ParseError::UnexpectedToken { expected: expected2, found: found2, location: 8 },
-            ] if expected == "')'" && found == "identifier"
-                && expected2 == "statement" && found2 == "identifier"
+            [ParseError::UnexpectedToken { expected, found, location: 8 }]
+                if expected == "')'" && found == "identifier"
         ) {
             return Err(format!(
-                "expected exactly the two `)`-boundary diagnostics at 8, got {:?}",
+                "expected exactly the `)`-boundary diagnostic at 8, got {:?}",
                 output.diagnostics
             ));
         }
@@ -372,19 +371,16 @@ fn broken_foreach_header_does_not_poison_later_repetition() -> Result<(), String
         ("for my ($x $y); my ($a, $b) x= 3; $w = 1;", 11),
     ] {
         let output = Parser::new(source).parse_with_recovery();
+        // One failed statement records one diagnostic (#16605): the synthetic
+        // `expected statement` duplicate at the same position is gone.
         if !matches!(
             output.diagnostics.as_slice(),
-            [
-                ParseError::SyntaxError { message, location },
-                ParseError::UnexpectedToken { expected, found, location: location2 },
-            ] if message == "Expected comma or closing parenthesis in variable list"
-                && *location == error_at
-                && expected == "statement"
-                && found == "identifier"
-                && *location2 == error_at
+            [ParseError::SyntaxError { message, location }]
+                if message == "Expected comma or closing parenthesis in variable list"
+                    && *location == error_at
         ) {
             return Err(format!(
-                "expected the bad-header diagnostics at {error_at}, got {:?}",
+                "expected the bad-header diagnostic at {error_at}, got {:?}",
                 output.diagnostics
             ));
         }
@@ -418,16 +414,16 @@ fn loop_headers_reject_declaration_repetition_tail() -> Result<(), String> {
     if find_assignment(&output.ast, "x=").is_some() {
         return Err(format!("foreach iterator target grew an x= tail:\n{}", output.ast.to_sexp()));
     }
+    // One failed statement records one diagnostic (#16605): the synthetic
+    // `expected statement` recovery duplicate this pin used to carry alongside
+    // the boundary error is gone.
     if !matches!(
         output.diagnostics.as_slice(),
-        [
-            ParseError::UnexpectedToken { expected, found, location: 20 },
-            ParseError::UnexpectedToken { expected: expected2, found: found2, location: 21 },
-        ] if expected == "'('" && found == "identifier"
-            && expected2 == "statement" && found2 == "'='"
+        [ParseError::UnexpectedToken { expected, found, location: 20 }]
+            if expected == "'('" && found == "identifier"
     ) {
         return Err(format!(
-            "expected exactly the two iterator-boundary diagnostics, got {:?}",
+            "expected exactly the iterator-boundary diagnostic, got {:?}",
             output.diagnostics
         ));
     }

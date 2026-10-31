@@ -3,4 +3,3 @@ source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_errors(\"if ($text =~ /abc) { print 1; }\\nmy $ok = 1;\")"
 ---
 expected expression, found unknown token at position 13
-expected statement, found unknown token at position 13
