@@ -372,5 +372,6 @@ pub(super) fn document_highlight_result(method: &str, value: &Value) -> Result<(
 #[cfg(test)]
 #[path = "../../../tests/support/protocol_schema_did_save.rs"]
 mod did_save_seam_proofs;
+#[cfg(test)]
 #[path = "../../../tests/support/protocol_schema_document_highlight.rs"]
 mod document_highlight_seam_proofs;
