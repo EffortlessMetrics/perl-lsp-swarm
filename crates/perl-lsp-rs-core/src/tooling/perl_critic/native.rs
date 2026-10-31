@@ -2912,7 +2912,6 @@ fn empty_program_node() -> Node {
     Node::new(NodeKind::Program { statements: Vec::new() }, SourceLocation { start: 0, end: 0 })
 }
 
-#[cfg(test)]
 pub const DEFAULT_MAX_BRANCHES: usize = 10;
 
 /// Native rule that reports subroutines with too many branch points.
@@ -3064,6 +3063,7 @@ fn subtree_has_parse_error(node: &Node) -> bool {
         .any(|child| subtree_has_parse_error(child))
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use perl_parser::Parser;
