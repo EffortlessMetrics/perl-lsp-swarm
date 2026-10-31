@@ -843,9 +843,7 @@ fn validate_kind_coverage(ledger: &Ledger, orchestrator_text: &str, violations: 
 /// Non-empty path segment of an LSP `CodeActionKind` (`[A-Za-z0-9_-]`).
 fn kind_segment_valid(segment: &str) -> bool {
     !segment.is_empty()
-        && segment
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        && segment.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
 fn kind_literal_shape_valid(raw: &str) -> bool {
@@ -1833,9 +1831,7 @@ mod tests {
     }
 
     fn handler_slice(source: &str) -> String {
-        let start = source
-            .find(HANDLER_START)
-            .expect("handler start marker");
+        let start = source.find(HANDLER_START).expect("handler start marker");
         let end = source.find(HANDLER_END).expect("handler end marker");
         blank_comments(&source[start..end])
     }
@@ -1872,15 +1868,12 @@ mod tests {
         ledger.unreachable_kinds = Vec::new();
 
         let mut violations = Vec::new();
-        let source = handler(&format!(
-            "let _ = \"refactor.extract_variable\"; THE_CALL\n{NO_AST_MARKER}"
-        ));
+        let source =
+            handler(&format!("let _ = \"refactor.extract_variable\"; THE_CALL\n{NO_AST_MARKER}"));
         validate_kind_coverage(&ledger, &source, &mut violations);
 
         assert!(
-            violations
-                .iter()
-                .any(|violation| violation.contains("refactor.extract_variable")),
+            violations.iter().any(|violation| violation.contains("refactor.extract_variable")),
             "expected unclassified underscore kind violation, got {violations:?}"
         );
     }
