@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Preserve required POD sections around verbatim heredoc examples and refresh native diagnostic reports after the boundary correction."
+time: 2026-10-18T04:24:25Z
+custom:
+  PR: "18136"
+  Slug: pod-verbatim-heredoc-boundaries
+  Breaking: "no"
