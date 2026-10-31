@@ -1,0 +1,59 @@
+>my $escaped = q(a\)b);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^ source.perl variable.other.scalar.perl
+#           ^ source.perl
+#            ^ source.perl keyword.operator.assignment.perl
+#             ^ source.perl
+#              ^ source.perl string.quoted.q.perl keyword.other.perl
+#               ^ source.perl string.quoted.q.perl
+#                ^ source.perl string.quoted.q.perl
+#                 ^^ source.perl string.quoted.q.perl constant.character.escape.perl
+#                   ^ source.perl string.quoted.q.perl
+#                    ^ source.perl string.quoted.q.perl
+#                     ^^ source.perl
+>my @w = qw(a (b) c);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^ source.perl variable.other.array.perl
+#     ^ source.perl
+#      ^ source.perl keyword.operator.assignment.perl
+#       ^ source.perl
+#        ^^ source.perl string.quoted.q.perl keyword.other.perl
+#          ^ source.perl string.quoted.q.perl
+#           ^^ source.perl string.quoted.q.perl
+#             ^ source.perl string.quoted.q.perl
+#              ^ source.perl string.quoted.q.perl
+#               ^ source.perl string.quoted.q.perl
+#                ^^ source.perl string.quoted.q.perl
+#                  ^ source.perl string.quoted.q.perl
+#                   ^^ source.perl
+>my $nested = q{ {x} };
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^ source.perl variable.other.scalar.perl
+#          ^ source.perl
+#           ^ source.perl keyword.operator.assignment.perl
+#            ^ source.perl
+#             ^ source.perl string.quoted.q.perl keyword.other.perl
+#              ^ source.perl string.quoted.q.perl
+#               ^ source.perl string.quoted.q.perl
+#                ^ source.perl string.quoted.q.perl
+#                 ^ source.perl string.quoted.q.perl
+#                  ^ source.perl string.quoted.q.perl
+#                   ^ source.perl string.quoted.q.perl
+#                    ^ source.perl string.quoted.q.perl
+#                     ^^ source.perl
+>my $early = q(a) b);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^ source.perl variable.other.scalar.perl
+#         ^ source.perl
+#          ^ source.perl keyword.operator.assignment.perl
+#           ^ source.perl
+#            ^ source.perl string.quoted.q.perl keyword.other.perl
+#             ^ source.perl string.quoted.q.perl
+#              ^ source.perl string.quoted.q.perl
+#               ^ source.perl string.quoted.q.perl
+#                ^^^^^ source.perl
+>
