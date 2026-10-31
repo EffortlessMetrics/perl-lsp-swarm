@@ -8,10 +8,15 @@ the actual implementation lives elsewhere.
 
 ## Owns
 
-- `src/lib.rs` -- `pub use perl_lsp::*;` re-export of the full public surface.
-- `src/main.rs` -- binary entrypoint; delegates to `perllsp::run_cli(...)`.
-
-Nothing else. This crate intentionally has almost no code of its own.
+- `src/lib.rs` -- `pub use perl_lsp::*;` re-export plus reviewed facade-owned
+  modules (`claude_compat`).
+- `src/main.rs` -- binary entrypoint; delegates to `perllsp::run_cli(...)` after
+  product-level Claude/MCP argv interception.
+- `src/claude.rs` / `src/mcp.rs` -- binary-private Claude lifecycle and reserved
+  MCP command surfaces.
+- `src/claude_compat.rs` -- public plugin/server compatibility contract.
+- `src/claude_host_test.rs` -- binary-private opt-in host-test plan/result/failure
+  contract and CLI admission (#16872). Does not invoke Claude.
 
 ## Does not own
 
