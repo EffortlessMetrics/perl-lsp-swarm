@@ -51,7 +51,6 @@
       "emits": "gate",
       "considered": 97,
       "emitted": 97,
-
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
