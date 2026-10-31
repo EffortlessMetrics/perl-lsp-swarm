@@ -99,6 +99,22 @@ sub run {
 1;
 "#;
 
+const CHILD_WITH_AUTOLOAD: &str = r#"package Child;
+use parent -norequire, 'Base';
+
+sub AUTOLOAD {
+    our $AUTOLOAD;
+    return $AUTOLOAD;
+}
+
+sub run {
+    my $self = shift;
+    $self->ghost;
+}
+
+1;
+"#;
+
 const CALLER: &str = "Child->helper;\n";
 
 fn hover_markdown(result: &Value) -> Option<String> {
@@ -151,12 +167,18 @@ fn open_workspace(
         harness.open(&workspace.uri(relative), source)?;
     }
     harness.barrier();
-    harness.wait_for_symbol(
-        wait_symbol,
-        Some(&workspace.uri(wait_uri_suffix)),
-        Duration::from_secs(5),
-    )?;
+    wait_indexed(harness, &workspace, wait_symbol, wait_uri_suffix)?;
     Ok(workspace)
+}
+
+fn wait_indexed(
+    harness: &mut LspHarness,
+    workspace: &TempWorkspace,
+    symbol: &str,
+    relative: &str,
+) -> TestResult {
+    harness.wait_for_symbol(symbol, Some(&workspace.uri(relative)), Duration::from_secs(5))?;
+    Ok(())
 }
 
 fn line_of(source: &str, needle: &str) -> Result<usize, Box<dyn std::error::Error>> {
@@ -205,6 +227,7 @@ fn inherited_hover_does_not_credit_nested_package_helper_to_child() -> TestResul
         "helper",
         "lib/Base.pm",
     )?;
+    wait_indexed(&mut harness, &workspace, "helper", "lib/Child/Nested.pm")?;
 
     let result = hover_self_call(&mut harness, &workspace, CHILD_WITHOUT_HELPER, "helper")?;
     let value = hover_markdown(&result).ok_or("expected hover content on Child $self->helper")?;
@@ -244,16 +267,46 @@ fn autoload_hover_does_not_credit_nested_package_autoload_to_child() -> TestResu
     )?;
 
     let result = hover_self_call(&mut harness, &workspace, CHILD_MISSING_METHOD, "ghost")?;
-    if let Some(value) = hover_markdown(&result) {
-        assert!(
-            !value.contains("Resolved via `AUTOLOAD` in `Child`"),
-            "Child::Nested::AUTOLOAD must not resolve as Child's AUTOLOAD, got: {value}"
-        );
-        assert!(
-            !value.contains("sub Child::AUTOLOAD"),
-            "Child::Nested::AUTOLOAD must not render as sub Child::AUTOLOAD, got: {value}"
-        );
-    }
+    let value = hover_markdown(&result).unwrap_or_default();
+    assert!(
+        !value.contains("Resolved via `AUTOLOAD` in `Child`"),
+        "Child::Nested::AUTOLOAD must not resolve as Child's AUTOLOAD, got: {value}"
+    );
+    assert!(
+        !value.contains("sub Child::AUTOLOAD"),
+        "Child::Nested::AUTOLOAD must not render as sub Child::AUTOLOAD, got: {value}"
+    );
+    Ok(())
+}
+
+/// A real `Child::AUTOLOAD` still wins when `Child::Nested::AUTOLOAD` also exists.
+#[test]
+fn autoload_hover_keeps_real_child_autoload_when_nested_namesake_exists() -> TestResult {
+    let mut harness = LspHarness::new();
+    let workspace = open_workspace(
+        &mut harness,
+        &[
+            ("lib/Base.pm", BASE),
+            ("lib/Child.pm", CHILD_WITH_AUTOLOAD),
+            ("lib/Child/Nested.pm", NESTED_AUTOLOAD),
+        ],
+        "AUTOLOAD",
+        "lib/Child.pm",
+    )?;
+    wait_indexed(&mut harness, &workspace, "AUTOLOAD", "lib/Child/Nested.pm")?;
+
+    let result = hover_self_call(&mut harness, &workspace, CHILD_WITH_AUTOLOAD, "ghost")?;
+    let value = hover_markdown(&result)
+        .ok_or("expected hover content for a real Child::AUTOLOAD handler")?;
+
+    assert!(
+        value.contains("Resolved via `AUTOLOAD` in `Child`"),
+        "a real Child::AUTOLOAD must still be Child's dynamic boundary, got: {value}"
+    );
+    assert!(
+        value.contains("sub Child::AUTOLOAD"),
+        "a real Child::AUTOLOAD must render as sub Child::AUTOLOAD, got: {value}"
+    );
     Ok(())
 }
 
