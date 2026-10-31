@@ -500,17 +500,32 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
 /// Every heredoc opener queued on one code line, in order, as
 /// `(terminator, indented)` pairs.
 fn heredoc_openers(line: &str) -> Vec<(String, bool)> {
+    let (code, _) = split_trailing_comment(line);
     let mut openers = Vec::new();
-    let mut rest = line;
+    let mut rest = code;
     while let Some((_, after_marker)) = rest.split_once("<<") {
-        let after_space = after_marker.trim_start();
-        let (indented, marker) = match after_space.strip_prefix('~') {
-            Some(stripped) => (true, stripped.trim_start()),
-            None => (false, after_space),
+        let mut tail = after_marker;
+        let indented = if let Some(stripped) = tail.strip_prefix('~') {
+            tail = stripped;
+            true
+        } else {
+            false
         };
-        let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
-        let name: String =
-            marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+
+        let name = if let Some(quoted) = tail.strip_prefix(['\'', '"', '`']) {
+            quoted
+                .chars()
+                .take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric())
+                .collect::<String>()
+        } else if tail.starts_with(|ch: char| ch == '_' || ch.is_ascii_alphabetic()) {
+            // Unquoted bareword delimiters must abut << / <<~; whitespace means bit shift.
+            tail.chars()
+                .take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric())
+                .collect::<String>()
+        } else {
+            String::new()
+        };
+
         if !name.is_empty() {
             openers.push((name, indented));
         }
@@ -1091,6 +1106,9 @@ pub(super) fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
             '`' if !in_single && !in_double => in_backtick = !in_backtick,
             '#' if !in_single && !in_double && !in_backtick => {
                 let code = body[..index].trim_end();
+                if code.ends_with('$') || code.ends_with("${") {
+                    continue;
+                }
                 if code.trim().is_empty() {
                     return (body, None);
                 }
@@ -2618,9 +2636,9 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
 mod tests {
     use super::{
         FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-        byte_span_for_line_range, literal_preserve_region, literal_preserve_region_for_range,
-        range_includes_line, split_line_ending, split_trailing_comment,
-        token_literal_preserve_region_overlapping,
+        byte_span_for_line_range, heredoc_openers, literal_preserve_region,
+        literal_preserve_region_for_range, range_includes_line, split_line_ending,
+        split_trailing_comment, token_literal_preserve_region_overlapping,
     };
 
     #[test]
@@ -2633,6 +2651,28 @@ mod tests {
         let (code, comment) = split_trailing_comment("my$out=`printf '#value'`;");
         assert_eq!(code, "my$out=`printf '#value'`;");
         assert_eq!(comment, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn split_trailing_comment_treats_array_last_index_sigil_as_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (code, comment) = split_trailing_comment("if ($#ARGV >= 0) {");
+        assert_eq!(code, "if ($#ARGV >= 0) {");
+        assert_eq!(comment, None);
+
+        let (code, comment) = split_trailing_comment("my $n = $#{expr};");
+        assert_eq!(code, "my $n = $#{expr};");
+        assert_eq!(comment, None);
+
+        let (code, comment) = split_trailing_comment("my $last = $#$ref;");
+        assert_eq!(code, "my $last = $#$ref;");
+        assert_eq!(comment, None);
+
+        let (code, comment) = split_trailing_comment("my $x = 1; # real");
+        assert_eq!(code, "my $x = 1;");
+        assert_eq!(comment, Some("# real"));
 
         Ok(())
     }
@@ -3023,6 +3063,17 @@ mod tests {
         // We assert the currently-observed value; update if lexer changes.
         assert!(result.is_none() || result == Some("format body"), "unexpected result: {result:?}");
 
+        Ok(())
+    }
+
+    #[test]
+    fn heredoc_openers_skips_bitshift_and_comment_markers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert!(heredoc_openers("my $m = 1 << BITS;").is_empty());
+        assert!(heredoc_openers("my $x = 1; # see <<EOF").is_empty());
+        assert_eq!(heredoc_openers("print <<EOF;"), vec![("EOF".to_string(), false)]);
+        assert_eq!(heredoc_openers("print <<~EOF;"), vec![("EOF".to_string(), true)]);
+        assert_eq!(heredoc_openers("print <<\"EOF\";"), vec![("EOF".to_string(), false)]);
         Ok(())
     }
 }
