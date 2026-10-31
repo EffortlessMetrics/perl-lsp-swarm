@@ -347,18 +347,20 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
             *uri = perl_uri::uri_key(uri);
         }
     }
-    locations.sort_by_key(canonical_location_id);
-    locations.dedup_by(|left, right| {
-        match (canonical_location_id(left), canonical_location_id(right)) {
-            (Some(left_id), Some(right_id)) => left_id == right_id,
-            _ => false,
-        }
+    // Compute occurrence identity once per element (#17540 item 5). The
+    // previous sort/dedup/same-start pass reparsed JSON on every comparison.
+    let mut keyed: Vec<(Option<CanonicalLocationId>, Value)> =
+        locations.drain(..).map(|location| (canonical_location_id(&location), location)).collect();
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    keyed.dedup_by(|left, right| match (&left.0, &right.0) {
+        (Some(left_id), Some(right_id)) => left_id == right_id,
+        _ => false,
     });
-    let mut collapsed: Vec<Value> = Vec::with_capacity(locations.len());
+    let mut pairs: Vec<(Option<CanonicalLocationId>, Value)> = Vec::with_capacity(keyed.len());
     let mut seen_start: Option<OccurrenceStartId> = None;
-    for location in locations.drain(..) {
-        let start_id = canonical_location_id(&location).map(|id| OccurrenceStartId {
-            uri: id.uri,
+    for (id, location) in keyed {
+        let start_id = id.as_ref().map(|id| OccurrenceStartId {
+            uri: id.uri.clone(),
             start_line: id.start_line,
             start_character: id.start_character,
         });
@@ -366,7 +368,7 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
             continue;
         }
         seen_start = start_id;
-        collapsed.push(location);
+        pairs.push((id, location));
     }
     // Anchored containment (#18112): the index's full call-expression span
     // for `$self->foo` (7:11-21) starts before the text scan's name token
@@ -382,8 +384,8 @@ pub(super) fn dedupe_reference_locations(locations: &mut Vec<Value>) {
     // additionally preserves multi-line ranges that merely enclose a
     // token (a whole-sub declaration span is a distinct entry, per
     // `dedupe_collapses_identical_ranges_across_json_key_order`).
-    let ids: Vec<Option<CanonicalLocationId>> =
-        collapsed.iter().map(canonical_location_id).collect();
+    let (ids, collapsed): (Vec<Option<CanonicalLocationId>>, Vec<Value>) =
+        pairs.into_iter().unzip();
     // A containment match must share the canonical URI and the line span,
     // so compare only within those groups: a symbol with thousands of
     // references stays near-linear instead of costing a quadratic scan
@@ -487,37 +489,47 @@ pub(super) fn shrink_declaration_span_to_name_span(
     let Some((_, doc_text)) = docs.iter().find(|(uri, _)| perl_uri::uri_key(uri) == def_key) else {
         return;
     };
-    let Some(decl_line_text) = doc_text
-        .lines()
-        .enumerate()
-        .find(|(index, _)| *index == def.range.start.line as usize)
-        .map(|(_, line)| line)
-    else {
+    // Index `column` is an LSP UTF-16 unit (`LineIndex::range`, copied 1:1
+    // onto the wire). Derive the line-relative *byte* start from `start.byte`
+    // and this line's start offset so a preceding non-ASCII character cannot
+    // land the slice inside a UTF-8 continuation (#17540 item 1).
+    let target_line = def.range.start.line as usize;
+    let mut line_start_byte = 0usize;
+    let mut decl_line_text: Option<&str> = None;
+    for (index, raw_line) in doc_text.split_inclusive('\n').enumerate() {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if index == target_line {
+            decl_line_text = Some(line);
+            break;
+        }
+        line_start_byte += raw_line.len();
+    }
+    let Some(decl_line_text) = decl_line_text else {
+        return;
+    };
+    let Some(mut search_from) = def.range.start.byte.checked_sub(line_start_byte) else {
         return;
     };
     let line_bytes = decl_line_text.as_bytes();
     let needle_bytes = needle.as_bytes();
-    let start_col = def.range.start.column as usize;
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    if start_col > line_bytes.len() {
-        return;
-    }
-    let mut search_from = start_col;
-    while search_from + needle_bytes.len() <= line_bytes.len() {
-        let Some(found) =
-            decl_line_text[search_from..].find(needle).map(|found| search_from + found)
-        else {
+    while let Some(haystack) = decl_line_text.get(search_from..) {
+        if haystack.len() < needle_bytes.len() {
+            return;
+        }
+        let Some(found) = haystack.find(needle).map(|found| search_from + found) else {
             return;
         };
         let end_at = found + needle_bytes.len();
-        let left_ok = found == 0 || !is_ident(line_bytes[found - 1]);
-        let right_ok = end_at >= line_bytes.len() || !is_ident(line_bytes[end_at]);
+        let left_ok = found == 0 || line_bytes.get(found - 1).is_some_and(|byte| !is_ident(*byte));
+        let right_ok = line_bytes.get(end_at).is_none_or(|byte| !is_ident(*byte));
         if left_ok && right_ok {
-            def.range.start.byte += found - start_col;
-            def.range.start.column = found as u32;
+            def.range.start.byte = line_start_byte + found;
+            def.range.start.column = byte_to_utf16_col(decl_line_text, found) as u32;
             def.range.end.line = def.range.start.line;
             def.range.end.byte = def.range.start.byte + needle_bytes.len();
-            def.range.end.column = end_at as u32;
+            def.range.end.column = byte_to_utf16_col(decl_line_text, end_at) as u32;
             return;
         }
         search_from = found + 1;
@@ -1506,6 +1518,43 @@ mod tests {
             || def.range.end.column != 16
         {
             return Err(format!("declaration must narrow to its name token: {def:?}").into());
+        }
+        Ok(())
+    }
+
+    /// #17540 item 1: a same-line declaration after non-ASCII must slice by
+    /// line-relative bytes, not by the index's UTF-16 column. `é` is one
+    /// UTF-16 unit and two UTF-8 bytes, so `sub`'s column (13) is not its
+    /// byte (14). Using the column as a byte index also writes the byte
+    /// offset of `foo` (18) back as an LSP column (should be 17).
+    #[test]
+    fn shrink_declaration_span_after_non_ascii_uses_bytes_not_utf16_columns()
+    -> Result<(), Box<dyn Error>> {
+        let doc_text = "my $x = \"é\"; sub foo {}\n";
+        let mut def = crate::workspace_index::Location {
+            uri: "file:///F:/dir/xlib.pl".to_owned(),
+            range: perl_workspace::position::Range {
+                start: perl_workspace::position::Position { byte: 14, line: 0, column: 13 },
+                end: perl_workspace::position::Position { byte: 24, line: 0, column: 23 },
+            },
+        };
+        shrink_declaration_span_to_name_span(
+            &mut def,
+            &[("file:///f:/dir/xlib.pl", doc_text)],
+            "foo",
+            None,
+        );
+        if def.range.start.line != 0
+            || def.range.start.byte != 18
+            || def.range.start.column != 17
+            || def.range.end.line != 0
+            || def.range.end.byte != 21
+            || def.range.end.column != 20
+        {
+            return Err(format!(
+                "name token after é must be bytes 18..21 and UTF-16 columns 17..20: {def:?}"
+            )
+            .into());
         }
         Ok(())
     }
