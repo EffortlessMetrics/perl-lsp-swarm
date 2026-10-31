@@ -46,7 +46,11 @@ fn is_array_subscript_index(node: &Node, parent: Option<&Node>, array_scalar_nam
         && std::ptr::eq(right.as_ref(), node)
 }
 
-fn replace_array_subscript_with_item(body_text: &str, array_scalar_name: &str, iter_name: &str) -> String {
+fn replace_array_subscript_with_item(
+    body_text: &str,
+    array_scalar_name: &str,
+    iter_name: &str,
+) -> String {
     let pattern = format!("${}[${}]", array_scalar_name, iter_name);
     body_text.replace(&pattern, "$item")
 }
@@ -166,8 +170,11 @@ pub fn try_convert_c_style_loop(
                             }
 
                             let body_text = &source[body.location.start..body.location.end];
-                            let modified_body =
-                                replace_array_subscript_with_item(body_text, array_scalar_name, iter_name);
+                            let modified_body = replace_array_subscript_with_item(
+                                body_text,
+                                array_scalar_name,
+                                iter_name,
+                            );
 
                             return Some(format!("foreach my $item ({}) {}", array, modified_body));
                         }
@@ -191,10 +198,7 @@ mod tests {
         let perl_parser_core::ast::NodeKind::Program { statements } = &ast.kind else {
             panic!("expected program");
         };
-        statements
-            .first()
-            .expect("expected one statement")
-            .clone()
+        statements.first().expect("expected one statement").clone()
     }
 
     fn converted_body(source: &str) -> Option<String> {
@@ -215,14 +219,8 @@ mod tests {
             converted.contains("print $item;"),
             "expected $item without dangling bracket, got: {converted}"
         );
-        assert!(
-            !converted.contains("$item]"),
-            "must not leave dangling bracket: {converted}"
-        );
-        assert_eq!(
-            converted,
-            "foreach my $item (@items) { print $item; }"
-        );
+        assert!(!converted.contains("$item]"), "must not leave dangling bracket: {converted}");
+        assert_eq!(converted, "foreach my $item (@items) { print $item; }");
 
         let mut parser = Parser::new(&converted);
         parser.parse().expect("converted Perl must reparse cleanly");
