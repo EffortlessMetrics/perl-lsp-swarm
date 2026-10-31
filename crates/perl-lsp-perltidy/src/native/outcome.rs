@@ -355,6 +355,24 @@ fn classify_native_result(
         result.edits.clear();
         result.changed = false;
     }
+    // Typed range admission is aligned with the enclosing block context
+    // (#17728): the engine's range walk reindents selected lines relative to
+    // their enclosing hand-written block (#17664), but a selection that would
+    // move a line at the wrong depth is not admitted — selection format must
+    // not reindent a line relative to hand-written surroundings. The same
+    // walk that adjudicates no-change targets
+    // (`target_has_only_supported_lines`) decides: a changed range result
+    // whose target it refuses is normalized back to unchanged so the
+    // classifier below reports `Refused`/`UnsupportedSyntax` instead of
+    // `Applied`. Document targets keep the full-document reindent contract.
+    if result.changed
+        && matches!(target, FormatRequestTarget::Range { .. })
+        && !target_has_only_supported_lines(source, config, target)
+    {
+        result.formatted = source.to_string();
+        result.edits.clear();
+        result.changed = false;
+    }
     let classification = classify(source, config, target, &result);
     let actual_engine = if matches!(config.mode, FormatterMode::Off) {
         FormatEngine::Disabled
@@ -616,10 +634,12 @@ fn utf16_len(source: &str) -> u32 {
 ///
 /// A range target is judged with its enclosing block context (#17713): the
 /// walk covers the whole document with an opener stack like the document
-/// formatter's `format_safe_subset` walk — the range formatter's
-/// `format_safe_subset_range` keeps no opener stack and only rewrites
-/// selected lines with `format_simple_line` — so blocks opened before the
-/// range seed the stack and blocks closed after it balance it. Only lines
+/// formatter's `format_safe_subset` walk, so blocks opened before the
+/// range seed the stack and blocks closed after it balance it. The engine's
+/// range walk may reindent selected lines relative to that stack (#17664),
+/// but the typed admission refuses a changed range result when this walk
+/// refuses its target (#17728): selection format must not reindent a line
+/// relative to a hand-written enclosing block. Only lines
 /// inside the range are adjudicated: an out-of-range line can neither
 /// refuse the range nor be excused by it, it only moves the stack. Before
 /// this, a range was judged on its selected lines alone, so a no-change
