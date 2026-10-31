@@ -365,7 +365,6 @@ pub(super) fn document_highlight_result(method: &str, value: &Value) -> Result<(
                 ));
             }
         }
-
     }
     Ok(())
 }
@@ -375,4 +374,3 @@ pub(super) fn document_highlight_result(method: &str, value: &Value) -> Result<(
 mod did_save_seam_proofs;
 #[path = "../../../tests/support/protocol_schema_document_highlight.rs"]
 mod document_highlight_seam_proofs;
-

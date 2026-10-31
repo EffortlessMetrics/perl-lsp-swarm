@@ -31,7 +31,6 @@ pub const UPSTREAM_PROTOCOL_COMMIT: &str = "8d5153933153aed3a488b9b8f46b22ed0f90
 pub const SCHEMA_SOURCE_MANIFEST_SHA256: &str =
     "bc804d11ce4c3856922607ab3b811d0bc203d3695b1e2a294041a960c4761920";
 
-
 /// Direction of a protocol message on the LSP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {

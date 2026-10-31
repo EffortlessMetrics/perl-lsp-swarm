@@ -66,7 +66,6 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         document_highlight_params,
         document_highlight_result
     ),
-
     // The base protocol lets either party cancel a request it previously sent.
     notification!("$/cancelRequest", ServerToClient, Lsp317, cancel_params),
     notification!("window/logMessage", ServerToClient, Lsp317, window_message_params),
