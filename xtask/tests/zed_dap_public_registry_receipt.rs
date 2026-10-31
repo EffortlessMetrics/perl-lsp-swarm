@@ -145,6 +145,18 @@ fn write_temp(target: &Path, text: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Unique per-test scratch directory under `target/`.
+///
+/// libtest runs these tests in parallel, so a shared
+/// `target/zed-dap-public-receipt-tests` lets one test truncate another's
+/// receipts mid-read (#17235). `TempDir` unique-names the directory and
+/// removes it when the test returns.
+fn isolated_scratch(root: &Path) -> Result<tempfile::TempDir, Box<dyn Error>> {
+    let parent = root.join("target");
+    fs::create_dir_all(&parent)?;
+    Ok(tempfile::Builder::new().prefix("zed-dap-public-receipt-tests-").tempdir_in(&parent)?)
+}
+
 /// A synthetic passing journey built on the exact committed bindings: the
 /// #9516 contract and aggregate receipt digests are quoted from the committed
 /// blocked receipt (so they match the real bytes), the registry identities
@@ -334,8 +346,8 @@ fn committed_receipt_is_an_honest_blocked_external_observation() -> Result<(), B
 #[test]
 fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/zed-dap-public-receipt-tests");
-    fs::create_dir_all(&target)?;
+    let scratch = isolated_scratch(&root)?;
+    let target = scratch.path();
     let committed = load_json(&root.join(COMMITTED_RECEIPT))?;
     let real_manifest = root.join(REGISTRY_MANIFEST);
     let published = target.join("manifest-published.toml");
@@ -448,8 +460,8 @@ fn blocked_gates_are_live_bound_to_the_current_surfaces() -> Result<(), Box<dyn 
 #[test]
 fn pass_journey_requires_an_accepted_registry_subject() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/zed-dap-public-receipt-tests");
-    fs::create_dir_all(&target)?;
+    let scratch = isolated_scratch(&root)?;
+    let target = scratch.path();
     let committed = load_json(&root.join(COMMITTED_RECEIPT))?;
     let control = pass_control(&committed)?;
     let published = target.join("manifest-published.toml");
@@ -524,8 +536,8 @@ fn pass_journey_requires_an_accepted_registry_subject() -> Result<(), Box<dyn Er
 #[test]
 fn pass_mutations_fail_closed_naming_the_exact_defect() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let target = root.join("target/zed-dap-public-receipt-tests");
-    fs::create_dir_all(&target)?;
+    let scratch = isolated_scratch(&root)?;
+    let target = scratch.path();
     let committed = load_json(&root.join(COMMITTED_RECEIPT))?;
     let control = pass_control(&committed)?;
     let published = target.join("manifest-published.toml");
