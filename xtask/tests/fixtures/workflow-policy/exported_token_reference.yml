@@ -1,0 +1,14 @@
+name: Exported token reference
+on: push
+permissions:
+  contents: read
+jobs:
+  freshness:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe ref
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/org/repo.git" refs/heads/main | awk '{print $1}')
+          echo "latest=$LATEST"
