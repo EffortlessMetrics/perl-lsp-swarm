@@ -21,7 +21,7 @@
 //! This is the producer side of the `oracle_matcher_grading` capability that
 //! ripr's RIPR-SPEC-0235 rule 16 reads.
 
-use perl_parser_core::{Node, NodeKind};
+use perl_parser_core::{Node, NodeKind, RegexSurfaceForm};
 
 /// The graded reading of one call node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,19 @@ pub(crate) struct GradedCall {
 pub(crate) fn grade_matchers(ast: &Node) -> Vec<GradedCall> {
     let mut out = Vec::new();
     walk(ast, &mut out);
+    // A file that defines its own `throws_ok` or `like` is not calling the
+    // library assertion, so its call sites are not graded.
+    let mut shadowed = Vec::new();
+    find_defined_subs(ast, &mut shadowed);
+    out.retain(|call| !shadowed.iter().any(|name| name == call.name));
     out
+}
+
+fn find_defined_subs(node: &Node, out: &mut Vec<String>) {
+    if let NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
+        out.push(name.rsplit("::").next().unwrap_or(name).to_owned());
+    }
+    node.for_each_child(|child| find_defined_subs(child, out));
 }
 
 fn walk(node: &Node, out: &mut Vec<GradedCall>) {
@@ -105,14 +117,31 @@ fn literal_pins(value: &str) -> bool {
         ['\'', '"'].iter().find_map(|quote| value.strip_prefix(*quote)?.strip_suffix(*quote));
     let Some(body) = quoted else { return false };
     let body = body.trim();
-    !body.is_empty() && !body.starts_with('$') && !body.starts_with('@')
+    // Interpolation makes the matched text a runtime value; do not guess.
+    !body.is_empty() && !body.contains('$') && !body.contains('@') && pattern_pins(body)
+}
+
+/// Whether a regex body can reject some error text. Empty, a bare variable,
+/// and catch-alls (`.*`, `.`, `^`, `$`) match every message.
+fn pattern_pins(body: &str) -> bool {
+    let body = body.trim();
+    let core = body.trim_start_matches('^').trim_end_matches('$').trim();
+    let catch_all = ["", ".", ".*", ".+", ".*?", ".+?", "(?s).*", "[\\s\\S]*"];
+    if catch_all.contains(&core) {
+        return false;
+    }
+    // A pattern that is one interpolated variable (`$re`, `${re}`, `@x`).
+    !(body.starts_with('$') || body.starts_with('@'))
+        || body.chars().skip(1).any(|c| !(c.is_alphanumeric() || c == '_' || c == '{' || c == '}'))
 }
 
 fn grade_matcher(matcher: Option<&Node>) -> MatcherGrade {
     let Some(matcher) = matcher else { return MatcherGrade::Broad };
     let pins = match &matcher.kind {
-        NodeKind::Regex { pattern, replacement: None, .. } => {
-            !regex_body(pattern).trim().is_empty()
+        // Only `qr//` builds a matcher. `m//` and `/.../` match `$_` and yield
+        // a boolean, which pins nothing.
+        NodeKind::Regex { form: RegexSurfaceForm::Qr, pattern, replacement: None, .. } => {
+            pattern_pins(regex_body(pattern))
         }
         NodeKind::String { value, .. } => literal_pins(value),
         _ => false,
@@ -175,6 +204,29 @@ mod tests {
             grades("like(dies { die 1 }, $re, 'n');"),
             [("like", MatcherGrade::Broad, true)]
         );
+    }
+
+    #[test]
+    fn matchers_that_pin_nothing_stay_broad() {
+        for src in [
+            "throws_ok { die 1 } qr/.*/, 'n';",
+            "throws_ok { die 1 } qr/^.*$/, 'n';",
+            "throws_ok { die 1 } qr/$re/, 'n';",
+            "throws_ok { die 1 } m/boom/, 'n';",
+            "throws_ok { die 1 } \"x$y\", 'n';",
+        ] {
+            assert_eq!(grades(src), [("throws_ok", MatcherGrade::Broad, false)], "src: {src}");
+        }
+        assert_eq!(
+            grades("like(dies { die 1 }, '.', 'n');"),
+            [("like", MatcherGrade::Broad, true)]
+        );
+    }
+
+    #[test]
+    fn user_defined_assertion_subs_are_not_graded() {
+        assert!(grades("sub throws_ok { 1 }\nthrows_ok { die 1 } 'X';").is_empty());
+        assert!(grades("sub like { 1 }\nlike(dies { die 1 }, qr/boom/);").is_empty());
     }
 
     #[test]
