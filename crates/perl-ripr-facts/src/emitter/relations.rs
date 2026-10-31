@@ -221,7 +221,8 @@ fn extract_package_names(content: &str) -> Vec<String> {
             continue;
         }
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("package ")
+        if let Some(rest) =
+            trimmed.strip_prefix("package").filter(|rest| rest.starts_with(char::is_whitespace))
             && let Some(name) = package_name_from_declaration(rest)
             && !names.contains(&name)
         {
@@ -237,7 +238,7 @@ fn is_pod_cut(line: &str) -> bool {
         .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
 }
 
-/// The package name from the text after `package `, when it is followed by a
+/// The package name from the text after `package` and its whitespace, when it is followed by a
 /// statement end (`;`), a block open (`{`), or a version then either.
 fn package_name_from_declaration(rest: &str) -> Option<String> {
     let rest = rest.trim_start();
@@ -556,6 +557,9 @@ mod tests {
             ("package First;\npackage Second 1.0; sub target { 42 }\n", &["First", "Second"]),
             ("package First;\npackage Second v1.2.3;sub t { 1 }\n", &["First", "Second"]),
             ("package First;\npackage Second 1.0{\n}\n", &["First", "Second"]),
+            ("package First;\npackage\tSecond;\n", &["First", "Second"]),
+            ("package First;\n\tpackage  \tSecond {\n}\n", &["First", "Second"]),
+            ("package First;\npackageSecond;\n", &["First"]),
         ];
         for (src, want) in cases {
             let want: Vec<String> = want.iter().map(|n| (*n).to_string()).collect();
