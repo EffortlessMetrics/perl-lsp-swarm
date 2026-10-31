@@ -127,9 +127,11 @@ impl LspServer {
 
                     // Try to get signature from user-defined functions first (if AST exists)
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
-                        && let Some(signature) =
+                        && let Some((signature, positional_slurpy)) =
                             self.get_user_function_signature(ast, &function_name, &doc.text)
                     {
+                        let active_param =
+                            positional_slurpy.map_or(active_param, |tail| active_param.min(tail));
                         return Ok(Some(json!({
                             "signatures": [signature],
                             "activeSignature": active_signature,
@@ -407,13 +409,14 @@ impl LspServer {
     ///
     /// # Returns
     ///
-    /// LSP SignatureInformation JSON or None if function not found
+    /// LSP SignatureInformation JSON and an optional caller-visible positional
+    /// slurpy index, or None if the function is not found.
     pub(crate) fn get_user_function_signature(
         &self,
         ast: &Node,
         function_name: &str,
         source: &str,
-    ) -> Option<Value> {
+    ) -> Option<(Value, Option<usize>)> {
         // Walk the AST to find the subroutine definition
         let sub_node = self.find_subroutine_definition(ast, function_name)?;
 
@@ -426,6 +429,7 @@ impl LspServer {
             _ => None,
         };
         let mut params = Vec::new();
+        let mut positional_slurpy = None;
         if let Some(sig) = signature {
             if let NodeKind::Signature { parameters } = &sig.kind {
                 // Core methods bind $self implicitly. The parser also accepts
@@ -446,8 +450,25 @@ impl LspServer {
                                     || matches!(&token.token_type, perl_lexer::TokenType::Operator(op) if op.as_ref() == ":")
                             })
                     });
-                for param in parameters.iter().skip(usize::from(explicit_invocant)) {
+                let caller_parameters = &parameters[usize::from(explicit_invocant)..];
+                for param in caller_parameters {
                     self.extract_signature_params(param, &mut params);
+                }
+                // Project only explicit positional signature structure. Named
+                // binding and dynamic call cardinality remain #8944 work; neither
+                // displayed labels nor legacy @_ inference establish this tail.
+                if let Some((last, preceding)) = caller_parameters.split_last()
+                    && matches!(last.kind, NodeKind::SlurpyParameter { .. })
+                    && preceding.iter().all(|param| {
+                        matches!(
+                            param.kind,
+                            NodeKind::MandatoryParameter { .. }
+                                | NodeKind::OptionalParameter { .. }
+                        )
+                    })
+                    && params.len() == caller_parameters.len()
+                {
+                    positional_slurpy = params.len().checked_sub(1);
                 }
             }
         } else if let NodeKind::Subroutine { body, .. } = &sub_node.kind {
@@ -478,11 +499,14 @@ impl LspServer {
             })
             .collect();
 
-        Some(json!({
-            "label": label,
-            "documentation": format!("User-defined {} '{}'", documentation_kind, function_name),
-            "parameters": parameters
-        }))
+        Some((
+            json!({
+                "label": label,
+                "documentation": format!("User-defined {} '{}'", documentation_kind, function_name),
+                "parameters": parameters
+            }),
+            positional_slurpy,
+        ))
     }
 
     /// Find a subroutine definition by name in the AST
@@ -1061,7 +1085,7 @@ impl LspServer {
         let mut parser = crate::Parser::new(&text);
         let ast = parser.parse().ok()?; // LCOV_EXCL_LINE
 
-        self.get_user_function_signature(&ast, method_name, &text)
+        self.get_user_function_signature(&ast, method_name, &text).map(|(signature, _)| signature)
     }
 }
 
@@ -1205,7 +1229,7 @@ mod tests {
                     "use feature 'signatures'; sub f ($value {operator} {expression}) {{ $value }}"
                 );
                 let ast = perl_parser::Parser::new(&source).parse()?;
-                let signature = server
+                let (signature, _) = server
                     .get_user_function_signature(&ast, "f", &source)
                     .ok_or("missing signature")?;
                 let parameter = format!("$value {operator} {displayed}");
