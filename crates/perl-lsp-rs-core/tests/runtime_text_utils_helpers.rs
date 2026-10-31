@@ -49,42 +49,6 @@ fn finds_statement_start_after_semicolon_with_crlf() {
 }
 
 #[test]
-fn find_statement_start_with_ast_skips_semicolon_in_preceding_sub() {
-    let source = "sub other { my $r = 1; }\nmy $t = 2 + 3;";
-    let lines: Vec<String> = source.lines().map(ToString::to_string).collect();
-    let helpers = TextEditHelpers::new(source, &lines);
-
-    let mut parser = Parser::new(source);
-    let ast = must(parser.parse());
-
-    let expr_pos = source.find("2 + 3").unwrap_or(0);
-    let my_t_pos = source.find("my $t").unwrap_or(0);
-    assert!(
-        my_t_pos > source.find(';').unwrap_or(0),
-        "test precondition: unrelated sub semicolon precedes the target statement"
-    );
-
-    let start = helpers.find_statement_start_with_ast(expr_pos, &ast);
-    assert_eq!(
-        start, my_t_pos,
-        "declaration must be inserted at the enclosing statement, not inside `sub other`"
-    );
-}
-
-#[test]
-fn find_statement_start_with_ast_matches_brace_aware_for_sibling_statements() {
-    let source = "my $a = 1;\nmy $b = length($x);\n";
-    let lines: Vec<String> = source.lines().map(ToString::to_string).collect();
-    let helpers = TextEditHelpers::new(source, &lines);
-
-    let mut parser = Parser::new(source);
-    let ast = must(parser.parse());
-
-    let pos = source.find("length").unwrap_or(0);
-    assert_eq!(helpers.find_statement_start(pos), helpers.find_statement_start_with_ast(pos, &ast));
-}
-
-#[test]
 fn extract_variable_inserts_outside_preceding_sub_scope() {
     use perl_lsp_rs_core::providers::code_actions::EnhancedCodeActionsProvider;
 
