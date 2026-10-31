@@ -144,7 +144,7 @@ pub(in crate::runtime::language) fn diagnostic_explanation_payload_from_diagnost
             "provider_action": method,
             "fact_source": "provider_runtime",
             "confidence": "low",
-            "freshness": "fresh",
+            "freshness": "unknown",
             "diagnostic_count": diagnostic_count,
             "diagnostic_explanations": explanations,
             "truncated_diagnostic_explanations": truncated,
@@ -394,4 +394,58 @@ fn diagnostic_explanation_user_message(count: usize, explanations: &[Value]) -> 
     format!(
         "Diagnostics returned {count} item(s). This receipt explains the returned diagnostics without changing suppression or severity."
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_diagnostic_explanation_freshness_unknown(payload: &Value) {
+        assert_eq!(
+            payload.get("freshness").and_then(Value::as_str),
+            Some("unknown"),
+            "diagnostic explanation must not claim fresh without freshness proof: {payload}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_explanation_freshness_unknown_for_empty_diagnostics() {
+        let (payload, user_message, has_dynamic_boundary) =
+            diagnostic_explanation_payload_from_diagnostics("textDocument/diagnostic", &[]);
+        assert_diagnostic_explanation_freshness_unknown(&payload);
+        assert_eq!(payload.get("diagnostic_count").and_then(Value::as_u64), Some(0));
+        assert!(user_message.contains("no findings"));
+        assert!(!has_dynamic_boundary);
+    }
+
+    #[test]
+    fn diagnostic_explanation_freshness_unknown_for_nonempty_diagnostics() {
+        let diagnostics = [json!({
+            "message": "low-confidence visible symbol",
+            "severity": 2,
+        })];
+        let (payload, user_message, has_dynamic_boundary) =
+            diagnostic_explanation_payload_from_diagnostics(
+                "textDocument/diagnostic",
+                &diagnostics,
+            );
+        assert_diagnostic_explanation_freshness_unknown(&payload);
+        assert_eq!(payload.get("diagnostic_count").and_then(Value::as_u64), Some(1));
+        assert!(user_message.contains("1 item(s)"));
+        assert!(!has_dynamic_boundary);
+    }
+
+    #[test]
+    fn diagnostic_explanation_freshness_unknown_for_dynamic_boundary_diagnostic() {
+        let diagnostics = [json!({
+            "message": "blocked by dynamic boundary",
+            "severity": 1,
+        })];
+        let (payload, _, has_dynamic_boundary) = diagnostic_explanation_payload_from_diagnostics(
+            "textDocument/diagnostic",
+            &diagnostics,
+        );
+        assert_diagnostic_explanation_freshness_unknown(&payload);
+        assert!(has_dynamic_boundary);
+    }
 }
