@@ -50,7 +50,7 @@ assert scan in push_hook, 'generated and tracked scanner bytes differ'
 with tempfile.TemporaryDirectory(prefix='scan18467-push-') as d:
  root=pathlib.Path(d)
  for leg in ('range','history'):
-  for kind in ('benign','secret','error'):
+  for kind in ('benign','secret','error','first','filter','count','git-list','git-log-list','git-diff','git-log'):
    name=leg+'-'+kind; repo=root/name; repo.mkdir(); remote=root/(name+'.git')
    def run(*args,env=env): return subprocess.run(args,cwd=repo,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
    def ok(*args):
@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix='scan18467-push-') as d:
    ok('git','init','-q','--bare',str(remote)); ok('git','remote','add','origin',str(remote))
    (repo/'base.txt').write_text('initial\n'); ok('git','add','base.txt'); ok('git','commit','-qm','base'); ok('git','push','-q','origin','main')
    base=ok('git','rev-parse','HEAD')
-   target=repo/'fixture.txt'; target.write_text('ordinary text\n' if kind=='benign' else 'value = '+'ghp_'+'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0000'+'\n')
+   target=repo/'fixture.txt'; target.write_text('ordinary text\n' if kind=='benign' else ('api_key = "'+'1234567890abcdefghij'+'"\n' if kind in ('first','filter','count') else 'value = '+'ghp_'+'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0000'+'\n'))
    ok('git','add','fixture.txt'); ok('git','commit','-qm','add fixture')
    if leg=='history':
     ok('git','rm','-q','fixture.txt'); ok('git','commit','-qm','remove fixture')
@@ -69,14 +69,19 @@ with tempfile.TemporaryDirectory(prefix='scan18467-push-') as d:
    hp=repo/'.git/hooks/pre-push'; hp.write_text(push_hook); hp.chmod(0o755)
    shadow=root/('shadow-'+name); shadow.mkdir()
    # Only the scanner's count grep fails. All unrelated hook greps use real grep.
-   if kind=='error':
-    p=shadow/'grep'; p.write_text('#!/bin/bash\nif [ "$1" = -a ] && [ "$3" = -c ]; then exit 2; fi\nexec "'+real_grep+'" "$@"\n'); p.chmod(0o755)
+   if kind in ('error','first','filter','count'):
+    conditions={'error':'[ "$1" = -a ] && [ "$3" = -c ]','first':'[ "$1" = -a ] && [ "$3" = -- ] && case "$4" in *Aa*) true;; *) false;; esac','filter':'[ "$1" = -a ] && [ "$3" = -v ]','count':'[ "$1" = -a ] && [ "$2" = -c ]'}
+    p=shadow/'grep'; p.write_text('#!/bin/bash\nif '+conditions[kind]+'; then exit 2; fi\nexec "'+real_grep+'" "$@"\n'); p.chmod(0o755)
+   if kind.startswith('git-'):
+    conditions={'git-list':'[ "$1" = -c ] && [ "$3" = diff ]', 'git-log-list':'[ "$1" = -c ] && [ "$3" = log ]', 'git-diff':'[ "$1" = --literal-pathspecs ] && [ "$4" = diff ]', 'git-log':'[ "$1" = --literal-pathspecs ] && [ "$4" = log ]'}
+    p=shadow/'git'; p.write_text('#!/bin/bash\nif '+conditions[kind]+'; then exit 2; fi\nexec "'+shutil.which('git')+'" "$@"\n'); p.chmod(0o755)
+    hp.write_text(push_hook.replace('\n', '\nexport PATH="'+str(shadow)+':$PATH"\n', 1))
    # Fixture-only stub of the post-scan gate; never changes the hook itself.
    p=shadow/'just'; p.write_text('#!/bin/sh\nexit 0\n'); p.chmod(0o755)
    e=env.copy(); e['PATH']=str(shadow)+os.pathsep+env['PATH']
    result=run('git','push','origin','main',env=e)
    remote_sha=ok('git','--git-dir',str(remote),'rev-parse','refs/heads/main')
-   allowed=kind=='benign'; expected_report='could not evaluate' if kind=='error' else 'Secret scan refused this push'
+   allowed=kind=='benign'; expected_report='Secret scan refused this push' if kind=='secret' else 'could not evaluate'
    passed=(result.returncode==0)==allowed and (remote_sha != base)==allowed and (allowed or expected_report in result.stdout)
    print(name,'exit',result.returncode,'remote_advanced',remote_sha!=base,'PASS' if passed else 'FAIL')
    if not passed: failed=True; print(result.stdout)
