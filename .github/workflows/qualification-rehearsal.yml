@@ -47,7 +47,7 @@ jobs:
           python3 -B tests/test_docs_agents_contract_workflows.py 2>&1 | tee rehearsal-diagnostics/docs-agents-contract.txt
       - name: Retain existing diagnostic reports without a qualification claim
         if: always() && steps.subject.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualification-diagnostics-${{ fromJSON(inputs.request).request_key }}-${{ github.run_attempt }}
           path: rehearsal-diagnostics/
@@ -55,7 +55,7 @@ jobs:
           retention-days: 7
       - name: Publish explicit NOT_PROVEN rehearsal metadata
         if: always() && steps.subject.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualification-result-${{ fromJSON(inputs.request).request_key }}-${{ github.run_attempt }}
           path: rehearsal-result/qualification-result.json

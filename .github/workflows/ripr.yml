@@ -585,7 +585,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always() && steps.ripr-freshness-result.outputs.ready == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ripr-pr-evidence
           path: |
@@ -1020,7 +1020,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always() && steps.ripr-freshness-result.outputs.ready == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ripr-pr-evidence
           path: |
@@ -1039,7 +1039,7 @@ jobs:
       - name: Upload xtask build observations
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ripr-xtask-build-observations
           path: ${{ env.RIPR_FRESHNESS_HANDOFF }}/xtask-builds/**
@@ -1359,7 +1359,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always() && steps.ripr-freshness-result.outputs.ready == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ripr-pr-evidence
           path: |
@@ -2193,7 +2193,7 @@ jobs:
         if: failure()
         # New pin uses must carry the reviewed v7.0.1 projection; v7.0.0 is
         # recorded legacy debt and strict mode rejects it on changed lines.
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ripr-gate-classification
           path: ripr-gate-classification.env
