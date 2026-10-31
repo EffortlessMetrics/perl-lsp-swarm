@@ -30,6 +30,7 @@ on:
       - 'scripts/tests/test_cargo_admitted_storage.py'
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/storage-doctor'
+      - 'scripts/storage_observation.py'
       - 'scripts/tests/test_storage_doctor.py'
       - 'justfile'
       - 'CONTRIBUTING.md'
