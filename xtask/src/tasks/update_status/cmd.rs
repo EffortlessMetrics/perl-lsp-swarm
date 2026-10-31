@@ -276,8 +276,13 @@ mod tests {
             Duration::from_secs(10),
         );
         assert!(
-            matches!(&result, Err(tail) if tail.contains("definitely-invalid-update-status-option")),
-            "failed merged output must reach the failure tail, got: {result:?}"
+            matches!(
+                &result,
+                Err(tail)
+                    if tail.contains("Unrecognized option")
+                        && tail.contains("definitely-invalid-update-status-option")
+            ),
+            "failed merged output must reach the rustc diagnostic, not just argv, got: {result:?}"
         );
     }
 

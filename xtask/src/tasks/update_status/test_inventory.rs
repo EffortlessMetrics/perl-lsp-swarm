@@ -214,8 +214,9 @@ mod tests {
             "inventory error must keep the discovery prefix, got: {result:?}"
         );
         assert!(
-            message.contains("definitely-invalid-update-status-option"),
-            "failing-command output must reach the inventory error, got: {result:?}"
+            message.contains("Unrecognized option")
+                && message.contains("definitely-invalid-update-status-option"),
+            "failing-command rustc diagnostic must reach the inventory error, not just argv, got: {result:?}"
         );
     }
 }
