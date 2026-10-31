@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "documentHighlight inside a subroutine now includes scalar element and last-index spellings of local array and hash containers (for example `$items[0]` with `@items`), without matching unrelated same-named scalars used as subscript indices."
+time: 2026-10-31T19:45:00Z
+custom:
+  PR: "18312"
+  Slug: document-highlight-sub-cross-sigil
+  Breaking: "no"
