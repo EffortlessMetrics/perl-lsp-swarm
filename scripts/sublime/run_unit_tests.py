@@ -51,6 +51,7 @@ SCHEDULE_RUNNER_TARGET = os.path.join(
     PACKAGES_DIR_PATH, "UnitTesting", "zzz_run_scheduler.py"
 )
 RX_RESULT = re.compile(r"^(?P<result>OK|FAILED|ERROR)", re.MULTILINE)
+RX_RAN = re.compile(r"^Ran (?P<count>\d+) tests? in\b")
 RX_DONE = re.compile(r"^UnitTesting: Done\.$", re.MULTILINE)
 
 WAIT_TIMEOUT_SECONDS = int(
@@ -241,7 +242,8 @@ def _wait_for_output(path: str, timeout: int) -> None:
 
 
 def _read_output(path: str, idle_timeout: int) -> bool | None:
-    success: bool | None = None
+    terminal: str | None = None
+    ran_count: int | None = None
     done = False
     lines: list[str] = []
     partial = [""]
@@ -275,10 +277,17 @@ def _read_output(path: str, idle_timeout: int) -> bool | None:
         print(line, end="")
         match = RX_RESULT.search(line)
         if match is not None:
-            success = match.group("result") == "OK"
+            terminal = match.group("result")
+        ran_match = RX_RAN.search(line)
+        if ran_match is not None:
+            ran_count = int(ran_match.group("count"))
         if RX_DONE.search(line) is not None:
             done = True
-    return success
+    if terminal in ("FAILED", "ERROR"):
+        return False
+    if terminal == "OK":
+        return ran_count is not None and ran_count > 0
+    return None
 
 
 def _start_sublime_text() -> None:
