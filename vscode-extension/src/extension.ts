@@ -1529,15 +1529,6 @@ async function runExtensionActivation(
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
 
-  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    try {
-      await populateCreatedFiles(event);
-    } catch (e) {
-      outputChannel.error('File creation handler error', e);
-    }
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
-
   // The document feature group receives a scoped facade context: registrations
   // it pushes during activation join the attempt, while lazily created
   // resources (a POD preview webview panel's onDidDispose hook) fall through
