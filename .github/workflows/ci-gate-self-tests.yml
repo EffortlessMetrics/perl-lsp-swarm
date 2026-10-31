@@ -32,6 +32,7 @@ on:
       - 'scripts/storage-doctor'
       - 'scripts/tests/test_storage_doctor.py'
       - 'justfile'
+      - 'CONTRIBUTING.md'
       # Ordinary doctor entrypoint regressions (#8639, landed in #17556).
       - 'scripts/tests/test_just_doctor.py'
       - 'scripts/ci/test_just_doctor_workflow.py'
@@ -147,6 +148,8 @@ on:
       - '.github/workflows/qualification-rehearsal.yml'
       - 'scripts/ci/pr_smoke_disk_guard.py'
       - 'scripts/ci/test_pr_smoke_disk_guard.py'
+      - 'scripts/ci/pr_smoke_artifact_inventory.py'
+      - 'scripts/ci/test_pr_smoke_artifact_inventory.py'
       - 'scripts/ci/test_pr_smoke_workflow_guard.py'
       - '.github/workflows/ci.yml'
       - 'scripts/ci/verify_gate_receipt_freshness.py'
@@ -164,6 +167,7 @@ on:
       # The reporter's own workflow calls into that module for the one decision
       # its inline snapshot step makes, so an edit here must re-prove it.
       - '.github/workflows/ripr-liveness.yml'
+      - 'scripts/ci/test_ripr_liveness_pagination_16153.py'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -505,6 +509,9 @@ jobs:
       - name: Run PR smoke disk-guard oracle tests (#15400/A2)
         run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
 
+      - name: Run PR Smoke artifact inventory tests (#17231)
+        run: python3 -m unittest -v scripts.ci.test_pr_smoke_artifact_inventory
+
       - name: Run PR Smoke workflow/helper compatibility controls (#17835)
         run: python3 -m unittest scripts.ci.test_pr_smoke_workflow_guard
 
@@ -516,6 +523,9 @@ jobs:
 
       - name: Run ripr liveness classifier tests (#16098)
         run: python3 -m unittest scripts.ci.test_ripr_liveness
+
+      - name: Run ripr liveness pagination contract tests (#16153)
+        run: python3 -m unittest scripts.ci.test_ripr_liveness_pagination_16153
 
       - name: Run optional cargo-allow cadence capture tests (#15304)
         run: python3 -m unittest scripts.tests.test_cargo_allow_cadence

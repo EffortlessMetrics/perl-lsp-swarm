@@ -339,6 +339,7 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
         ),
         Node::new(
             NodeKind::Regex {
+                form: perl_ast::RegexSurfaceForm::BarePattern,
                 pattern: "abc".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),
@@ -798,6 +799,7 @@ fn sexp_untie() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_regex_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Regex {
+            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "(?{ code })".to_string(),
             replacement: None,
             modifiers: "x".to_string(),
@@ -814,6 +816,7 @@ fn sexp_regex_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_regex_without_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Regex {
+            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "abc".to_string(),
             replacement: None,
             modifiers: "i".to_string(),
@@ -1732,6 +1735,7 @@ fn sexp_anonymous_subroutine_with_signature() -> Result<(), Box<dyn std::error::
 fn sexp_regex_with_replacement() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Regex {
+            form: perl_ast::RegexSurfaceForm::BarePattern,
             pattern: "foo".to_string(),
             replacement: Some("bar".to_string()),
             modifiers: "g".to_string(),

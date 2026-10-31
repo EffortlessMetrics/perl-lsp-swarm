@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "The perl.runCritic command reports a bounded error when external perlcritic exits non-zero without producing violations (most commonly an unparsable .perlcriticrc) instead of reporting the file clean, labels the built-in fallback analyzer as \"builtin\" instead of \"native\", and warns once per session when the configured external perlcritic binary is unavailable."
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16634"
+  Slug: critic-exit-status-analyzer-label-16550
+  Breaking: "no"

@@ -347,7 +347,7 @@ jobs:
               # semantic steps for every route so the aggregate required check
               # means one proof. scripts/ci/test_rust_small_route_contract.py
               # pins this exact invocation in each lane.
-              cargo run -p xtask --locked -- rust-small-proof
+              cargo run -p xtask --profile agent --locked -- rust-small-proof
               sccache --show-stats || true
             '
 
@@ -510,7 +510,7 @@ jobs:
               # semantic steps for every route so the aggregate required check
               # means one proof. scripts/ci/test_rust_small_route_contract.py
               # pins this exact invocation in each lane.
-              cargo run -p xtask --locked -- rust-small-proof
+              cargo run -p xtask --profile agent --locked -- rust-small-proof
               sccache --show-stats || true
             '
 
@@ -566,7 +566,7 @@ jobs:
           # semantic steps for every route so the aggregate required check
           # means one proof. scripts/ci/test_rust_small_route_contract.py
           # pins this exact invocation in each lane.
-          cargo run -p xtask --locked -- rust-small-proof
+          cargo run -p xtask --profile agent --locked -- rust-small-proof
 
   # ── Disk-full failover ──────────────────────────────────────────────────────
   # Defense-in-depth: if the primary self-hosted runner's preflight disk-guard
@@ -637,7 +637,7 @@ jobs:
           # semantic steps for every route so the aggregate required check
           # means one proof. scripts/ci/test_rust_small_route_contract.py
           # pins this exact invocation in each lane.
-          cargo run -p xtask --locked -- rust-small-proof
+          cargo run -p xtask --profile agent --locked -- rust-small-proof
 
   rust-small-result:
     name: Perl LSP Rust Small Result
