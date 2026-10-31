@@ -3123,6 +3123,47 @@ describe('checkForUpdateSilent', () => {
     );
   });
 
+  test('a manual check disabled mid-flight still offers the update (#16803)', async () => {
+    // The decision ran with autoUpdate on, then the user disabled it while
+    // the version reads were in flight. The re-read must not demote this
+    // manual check to a log-only suppression: a manual check owes the user
+    // an offer even when prompts are suppressed.
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, true);
+    const vscode = require('vscode');
+    let autoUpdateReads = 0;
+    vscode.workspace.getConfiguration.mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'autoUpdate') {
+          autoUpdateReads += 1;
+          return autoUpdateReads === 1;
+        }
+        const overrides: Record<string, unknown> = {
+          channel: 'latest',
+          serverPath: '',
+          updateCheckInterval: 24,
+        };
+        if (key in overrides) return overrides[key];
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    }));
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    vscode.window.showInformationMessage.mockResolvedValue('Dismiss');
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('0.13.0 is available'),
+      'Update',
+      'Dismiss',
+      "Don't ask again",
+    );
+  });
+
   test('silent failure — logs error but shows no notification on network error', async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');

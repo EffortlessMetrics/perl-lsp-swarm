@@ -256,7 +256,12 @@ export function decideManagedUpdateCheck(
     };
   }
 
-  const channel = trimmed(facts.channel) as ManagedUpdateCheckChannel;
+  // The channel is compared raw, exactly as getLatestRelease compares the
+  // raw `channel` setting: a padded value ('latest ') is invalid
+  // configuration, not a nearby valid channel. Trimming here would admit a
+  // check the release selector then throws on, turning admission's typed
+  // `invalid` into a post-transport failure.
+  const channel = facts.channel as ManagedUpdateCheckChannel;
   if (channel === 'tag') {
     return {
       kind: 'skip',
@@ -315,7 +320,9 @@ function invalidConfiguration(
   facts: ManagedUpdateCheckFacts,
   visibility: ManagedUpdateCheckVisibility,
 ): InvalidManagedUpdateCheck | null {
-  const channel = trimmed(facts.channel);
+  // Raw comparison, matching getLatestRelease: padding is a defect the user
+  // can repair, so it is `invalid`, never a silent pass-through.
+  const channel = facts.channel;
   const versionTag = trimmed(facts.versionTag);
 
   if (!CHANNELS.has(channel)) {

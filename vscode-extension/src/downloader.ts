@@ -2409,14 +2409,20 @@ export class BinaryDownloader {
 
       // The decision was taken before the version reads above; autoUpdate
       // may have been disabled while they were in flight. Re-read it so a
-      // disabled auto-update never installs on a stale admission.
-      const action = decision.action === 'auto_update'
-        ? vscode.workspace.getConfiguration('perl-lsp').get<boolean>('autoUpdate', false)
-          ? 'auto_update'
-          : promptSuppressed
-            ? 'prompt_suppressed'
-            : 'prompt'
-        : decision.action;
+      // disabled auto-update never installs on a stale admission. A manual
+      // check still owes the user an offer even when prompts are suppressed,
+      // so the manual rule survives this fallback instead of collapsing
+      // into a log-only suppression.
+      const action =
+        decision.action === 'auto_update'
+          ? vscode.workspace.getConfiguration('perl-lsp').get<boolean>('autoUpdate', false)
+            ? 'auto_update'
+            : decision.reason === 'manual_forced'
+              ? 'prompt'
+              : promptSuppressed
+                ? 'prompt_suppressed'
+                : 'prompt'
+          : decision.action;
 
       if (action === 'auto_update') {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);

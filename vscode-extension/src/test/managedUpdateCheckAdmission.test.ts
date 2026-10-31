@@ -209,6 +209,15 @@ describe('managed update-check admission', () => {
       expect(decision).toMatchObject({ kind: 'invalid', reason: 'unknown_channel' });
     });
 
+    test('a padded channel is invalid, matching the raw release-selector comparison', () => {
+      // getLatestRelease compares the raw `channel` setting, so 'latest '
+      // would throw after admission said `run`. Admission must refuse it as
+      // `invalid` instead of trimming it into a passing check.
+      const decision = decideManagedUpdateCheck(facts({ channel: 'latest ' }));
+
+      expect(decision).toMatchObject({ kind: 'invalid', reason: 'unknown_channel' });
+    });
+
     test('a non-numeric interval is invalid rather than silently coerced', () => {
       const decision = decideManagedUpdateCheck(facts({ updateCheckIntervalHours: Number.NaN }));
 
