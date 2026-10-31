@@ -84,8 +84,8 @@ pub use perl_parser::workspace_index
 pub use perl_parser::workspace_rename
 pub fn perl_parser::refactor::workspace_rename::BackupInfo::clone(&self) -> perl_parser::refactor::workspace_rename::BackupInfo
 pub fn perl_parser::refactor::workspace_rename::BackupInfo::clone(&self) -> perl_parser::refactor::workspace_rename::BackupInfo
-pub fn perl_parser::refactor::workspace_rename::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub fn perl_parser::refactor::workspace_rename::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_parser::refactor::workspace_rename::BackupInfo, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_parser::refactor::workspace_rename::BackupInfo, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub fn perl_parser::refactor::workspace_rename::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser::refactor::workspace_rename::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser::refactor::workspace_rename::BackupInfo::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
