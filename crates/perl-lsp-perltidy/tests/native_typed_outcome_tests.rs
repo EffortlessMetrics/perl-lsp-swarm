@@ -67,7 +67,10 @@ fn typed_document_result_does_not_flatten_disabled_mode_to_no_change() {
 }
 
 #[test]
-fn typed_document_result_does_not_flatten_literal_refusal_to_no_change() {
+fn typed_document_preserves_literal_only_document_without_refusing() {
+    // #17708: a document whose only construct is a preserved literal is no
+    // longer refused wholesale. The literal line stays byte-exact and the
+    // outcome reports partial preservation instead of a refusal.
     let formatter = NativeFormatter::new();
     let source = "my $matched = $text =~ /needle/i;\n";
 
@@ -77,12 +80,88 @@ fn typed_document_result_does_not_flatten_literal_refusal_to_no_change() {
         &FormatContext::default(),
     );
 
-    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
-    assert_eq!(typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported,);
-    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Refused,);
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormattedPreservingLiterals);
+    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::PreservedPartially);
     assert_eq!(typed.result.formatted, source);
     assert!(typed.result.edits.is_empty());
-    assert_eq!(typed.result.diagnostics[0].code, "native.format.literal_preserve_region");
+    assert!(typed.result.diagnostics.is_empty());
+}
+
+#[test]
+fn typed_document_formats_around_preserved_heredoc_and_pod() {
+    let formatter = NativeFormatter::new();
+    let source =
+        "my$x=1;\nmy $text = <<'EOF';\n  keep   me\nEOF\n=head1 NAME\n\nDemo\n=cut\nmy$y=2;\n";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AppliedPreservingLiterals);
+    assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::PreservedPartially);
+    assert!(typed.result.formatted.contains("my $x = 1;"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("my $y = 2;"), "got: {}", typed.result.formatted);
+    assert!(
+        typed.result.formatted.contains("  keep   me\n"),
+        "heredoc body must stay byte-exact, got: {}",
+        typed.result.formatted
+    );
+    assert!(
+        typed.result.formatted.contains("=head1 NAME\n\nDemo\n=cut\n"),
+        "POD must stay byte-exact, got: {}",
+        typed.result.formatted
+    );
+    // Formatting the formatted output is a no-op (idempotent).
+    let again = formatter.format_document_typed(
+        &typed.result.formatted,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert_eq!(again.result.formatted, typed.result.formatted);
+}
+
+#[test]
+fn typed_document_preserves_queued_heredoc_bodies() {
+    let formatter = NativeFormatter::new();
+    let source = "my ($a, $b) = (<<'A', <<'B');\nfirst  body\nA\nsecond   body\nB\nmy$x=1;\n";
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert!(typed.result.formatted.contains("first  body\n"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("second   body\n"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("my $x = 1;"), "got: {}", typed.result.formatted);
+}
+
+#[test]
+fn typed_document_preserves_heredoc_body_after_padded_terminator_line() {
+    // A padded delimiter is body text for an ordinary heredoc, not a close.
+    let formatter = NativeFormatter::new();
+    let source = "my $s = <<'EOF';\n EOF\nmy$x=1;\nEOF\nmy$y=2;\n";
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert!(typed.result.formatted.contains(" EOF\nmy$x=1;\n"), "got: {}", typed.result.formatted);
+    assert!(typed.result.formatted.contains("my $y = 2;"), "got: {}", typed.result.formatted);
+}
+
+#[test]
+fn typed_document_comment_heredoc_marker_does_not_suppress_formatting() {
+    let formatter = NativeFormatter::new();
+    let source = "# example: <<'EOF'\nmy$x=1;\n";
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert!(typed.result.formatted.contains("my $x = 1;"), "got: {}", typed.result.formatted);
 }
 
 #[test]
@@ -520,15 +599,20 @@ fn reindents_misindented_sub_and_conditional_blocks() {
 }
 
 #[test]
-fn reindent_leaves_literal_preserve_documents_unchanged() {
-    // The document-level literal-preserve gate still refuses documents
-    // containing heredocs wholesale; relaxing it is a separate claim.
+fn reindent_formats_around_literal_preserve_regions() {
+    // #17708: documents containing heredocs are formatted around the
+    // preserved body instead of being refused wholesale. The heredoc body
+    // stays byte-exact; the surrounding code reindents normally.
     let formatter = NativeFormatter::new();
     let source = "sub foo {\nmy $x = <<'EOF';\n  keep   me\nEOF\nmy $y = 1;\n}\n";
-    let expected = source;
+    let expected = "sub foo {\n    my $x = <<'EOF';\n  keep   me\nEOF\n    my $y = 1;\n}\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
     assert_eq!(result.formatted, expected);
+
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert_eq!(second.formatted, expected, "preserve formatting must be idempotent");
+    assert!(!second.changed);
 }
 
 #[test]
@@ -571,6 +655,237 @@ fn reindent_survives_unsupported_inline_else_tail() {
     assert!(result.formatted.contains("\n    return 3;\n"), "got: {:?}", result.formatted);
 }
 #[test]
+fn typed_range_result_admits_rendered_block_interior_on_a_second_pass() {
+    // #17713: range admission used to judge only the selected lines, so a
+    // no-change range inside an already-formatted block still reported
+    // UnsupportedSyntax whenever the selection cut a block boundary (body
+    // plus tail, header plus body, a lone tail). The classification walk now
+    // accounts for the enclosing block context, so every interior selection
+    // of rendered bytes is NoChange — twice in a row.
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig::default();
+    let rendered = formatter.format_document("sub f{my$x=1;my$y=2;}\n", &config);
+    assert_eq!(rendered.formatted, "sub f {\n    my $x = 1;\n    my $y = 2;\n}\n");
+
+    let selections = [
+        // body only
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(3, 0)),
+        // body plus closing tail (opener outside the range)
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(4, 0)),
+        // header plus body (tail outside the range)
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(3, 0)),
+        // lone closing tail
+        TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0)),
+        // whole block
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(4, 0)),
+    ];
+    for range in selections {
+        for _ in 0..2 {
+            let typed = formatter.format_range_typed(
+                &rendered.formatted,
+                range,
+                &config,
+                &FormatContext::default(),
+            );
+            assert_eq!(
+                typed.outcome.disposition,
+                FormatDisposition::NoChange,
+                "range {range:?} over rendered block must be NoChange, not {:?}/{:?}",
+                typed.outcome.disposition,
+                typed.outcome.reason
+            );
+            assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+            assert!(!typed.result.changed);
+            assert!(typed.result.edits.is_empty());
+            assert_eq!(typed.result.formatted, rendered.formatted);
+        }
+    }
+}
+
+#[test]
+fn typed_range_result_refuses_unsupported_body_with_same_reason_as_document() {
+    // A range over a construct the document path refuses must refuse with
+    // the same typed reason — no silent divergence between targets.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    my %h = (a => 1, b => 2);\n}\n";
+
+    let document = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+    assert_eq!(document.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(document.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+
+    for range in [
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(3, 0)),
+    ] {
+        let typed = formatter.format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+        assert_eq!(typed.outcome.reason, document.outcome.reason);
+        assert!(!typed.result.changed);
+        assert!(typed.result.edits.is_empty());
+    }
+}
+
+#[test]
+fn typed_range_result_refuses_misindented_body_inside_block() {
+    // Enclosing context cuts both ways: a body line at the wrong depth is
+    // not already formatted just because the line alone is supported.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\nmy $x = 1;\n}\n";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+}
+
+#[test]
+fn typed_range_result_formats_admitted_range_inside_block() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    my$x=1;\n    my $y = 2;\n}\n";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::Applied);
+    assert_eq!(typed.result.formatted, "sub f {\n    my $x = 1;\n    my $y = 2;\n}\n");
+    assert!(typed.result.edits.iter().all(|edit| edit.range.start.line == 1));
+}
+
+#[test]
+fn typed_range_result_partial_preserve_overlap_refuses_like_document_gate() {
+    // A range that overlaps a preserve region refuses with the typed
+    // literal-preservation reason; a range that excludes it is admitted.
+    let formatter = NativeFormatter::new();
+    let source = "my $x = 1;\nmy $matched = $text =~ /needle/i;\nmy $y = 2;\n";
+
+    for range in [
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0)),
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(3, 0)),
+    ] {
+        let typed = formatter.format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+        assert_eq!(typed.result.formatted, source);
+        assert!(!typed.result.changed);
+    }
+
+    for range in [
+        TextRange::new(TextPosition::new(0, 0), TextPosition::new(1, 0)),
+        TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0)),
+    ] {
+        let typed = formatter.format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    }
+}
+
+#[test]
+fn typed_range_result_ignores_inline_clause_tail_before_the_range() {
+    // Review PRRT_kwDOSid81M6rq9dA: an unselected inline `} else { ... }`
+    // tail is not a rendered boundary, but it still closes the `if` block.
+    // The admission walk must pop that block for context lines, or a later
+    // correctly indented selection is compared against the stale opener and
+    // refused as UnsupportedSyntax.
+    let formatter = NativeFormatter::new();
+    let source =
+        "sub f {\n    if ($x) {\n        print 2;\n    } else { print 3; }\n    my $y = 2;\n}\n";
+    // Select only `my $y = 2;` (line 4).
+    let range = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert!(typed.result.edits.is_empty());
+    assert!(typed.result.diagnostics.is_empty());
+    assert_eq!(typed.result.formatted, source);
+}
+
+#[test]
+fn typed_range_result_still_refuses_misindented_line_after_inline_clause_tail() {
+    // Negative control for the context-pop fix above: honouring the inline
+    // tail's close must not admit a selection outside the enclosing layout.
+    let formatter = NativeFormatter::new();
+    let source =
+        "sub f {\n    if ($x) {\n        print 2;\n    } else { print 3; }\nmy $y = 2;\n}\n";
+    let range = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+}
+
+#[test]
+fn typed_range_result_ignores_multiline_string_content_before_the_range() {
+    // Review PRRT_kwDOSid81M6rq9dr: physical lines inside a multiline
+    // string are literal bytes, not code. A string-content line shaped like
+    // a block header must not be pushed as an opener for a later range.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    my $s = \"hello\n    if ($x) {\nworld\";\n    my $y = 2;\n}\n";
+    // Select only `my $y = 2;` (line 4).
+    let range = TextRange::new(TextPosition::new(4, 0), TextPosition::new(5, 0));
+
+    let typed = formatter.format_range_typed(
+        source,
+        range,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert!(typed.result.edits.is_empty());
+    assert!(typed.result.diagnostics.is_empty());
+    assert_eq!(typed.result.formatted, source);
+}
+
+#[test]
 fn formats_list_operator_statements_inside_blocks() {
     let formatter = NativeFormatter::new();
     let source = "sub f {\nprint$x;\nprintf \"%d\",  42;\nsay $x, $y;\n}\n";
@@ -582,4 +897,106 @@ fn formats_list_operator_statements_inside_blocks() {
     let second = formatter.format_document(&result.formatted, &FormatConfig::default());
     assert_eq!(second.formatted, expected);
     assert!(!second.changed);
+}
+
+#[test]
+fn range_format_reindents_relative_to_enclosing_block() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\nmy $x = 1;\nmy $y = 2;\n}\n";
+    // Range covering only the two body lines (lines 1..2).
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 10));
+    let result = formatter.format_range(source, range, &FormatConfig::default());
+    assert_eq!(result.formatted, "sub f {\n    my $x = 1;\n    my $y = 2;\n}\n");
+    assert_eq!(result.edits.len(), 2);
+}
+
+#[test]
+fn comment_braces_do_not_open_blocks() {
+    let formatter = NativeFormatter::new();
+    let source = "# note {\nmy$x=1;\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, "# note {\nmy $x = 1;\n");
+
+    let ranged = formatter.format_range(
+        source,
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 7)),
+        &FormatConfig::default(),
+    );
+    assert_eq!(ranged.formatted, "# note {\nmy $x = 1;\n");
+}
+
+#[test]
+fn reindents_comment_lines_inside_blocks() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n# explain\nmy $x = 1;\n}\n# top level\n";
+    let expected = "sub f {\n    # explain\n    my $x = 1;\n}\n# top level\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+}
+
+#[test]
+fn line_directives_are_not_reindented_inside_blocks() {
+    let formatter = NativeFormatter::new();
+    // Perl honors `#line` only at column zero, so moving it would change
+    // __LINE__/__FILE__ and error locations (PR #17704 review).
+    let source = "sub f {\n#line 100 \"generated.pl\"\nmy $x = 1;\n}\n";
+    let expected = "sub f {\n#line 100 \"generated.pl\"\n    my $x = 1;\n}\n";
+    let result = formatter.format_document(source, &FormatConfig::default());
+    assert_eq!(result.formatted, expected);
+    let second = formatter.format_document(&result.formatted, &FormatConfig::default());
+    assert!(!second.changed);
+
+    // The `# line 42 "file"` spelling is the same directive.
+    let spaced = "sub f {\n# line 42 \"other.pl\"\nmy $x = 1;\n}\n";
+    let spaced_expected = "sub f {\n# line 42 \"other.pl\"\n    my $x = 1;\n}\n";
+    assert_eq!(
+        formatter.format_document(spaced, &FormatConfig::default()).formatted,
+        spaced_expected
+    );
+
+    // Range formatting that selects the directive line must not move it,
+    // while still reindenting the selected code line below it.
+    let ranged = formatter.format_range(
+        source,
+        TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 10)),
+        &FormatConfig::default(),
+    );
+    assert_eq!(ranged.formatted, expected);
+
+    // An indented directive-shaped comment is preserved where it sits:
+    // directive-shaped text is never moved by the formatter.
+    let indented = "sub f {\n  #line 7 \"x.pl\"\nmy $x = 1;\n}\n";
+    let indented_expected = "sub f {\n  #line 7 \"x.pl\"\n    my $x = 1;\n}\n";
+    assert_eq!(
+        formatter.format_document(indented, &FormatConfig::default()).formatted,
+        indented_expected
+    );
+
+    // A comment that merely starts with `#line` letters is not a directive
+    // and still follows block layout.
+    let lookalike = "sub f {\n#linear notes\nmy $x = 1;\n}\n";
+    let lookalike_expected = "sub f {\n    #linear notes\n    my $x = 1;\n}\n";
+    assert_eq!(
+        formatter.format_document(lookalike, &FormatConfig::default()).formatted,
+        lookalike_expected
+    );
+}
+
+#[test]
+fn typed_outcome_certifies_preserved_line_directive_as_already_formatted() {
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n#line 100 \"generated.pl\"\n    my $x = 1;\n}\n";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert_eq!(typed.result.formatted, source);
 }

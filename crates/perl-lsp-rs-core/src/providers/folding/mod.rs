@@ -20,7 +20,7 @@ pub struct FoldingRangeExtractor {
 /// with optimal editor experience.
 ///
 /// # Performance Characteristics
-/// - Memory footprint: 24 bytes per range (optimized for large files)
+/// - Memory footprint: 32 bytes per range (optimized for large files)
 /// - Range calculation: <1μs per fold region
 /// - LSP serialization: Direct mapping to protocol types
 #[derive(Debug, Clone)]
@@ -31,6 +31,13 @@ pub struct FoldingRange {
     pub end_offset: usize, // Changed from end_line to end_offset
     /// Type of folding region for editor-specific handling
     pub kind: Option<FoldingRangeKind>,
+    /// Whether `end_offset` lands at the last content byte of a body line
+    /// rather than on a closing-delimiter line (`}` of a block). Closing
+    /// lines stay visible in editors, so the LSP conversion decrements the
+    /// raw end line for delimiter-terminated spans; content-terminated
+    /// spans (heredoc bodies, `#endregion` markers) must keep the line
+    /// containing `end_offset` as the inclusive end line (#17299).
+    pub end_offset_on_content_line: bool,
 }
 
 /// Classification of foldable regions for optimal editor experience.
@@ -93,6 +100,7 @@ impl FoldingRangeExtractor {
                     start_offset: token.start,
                     end_offset: token.end,
                     kind: Some(FoldingRangeKind::Region),
+                    end_offset_on_content_line: false,
                 });
             }
 
@@ -116,7 +124,15 @@ impl FoldingRangeExtractor {
         let mut depth = 0usize;
         let mut current_offset = 0usize;
 
-        for line in text.lines() {
+        // Iterate with the line terminator included so byte accounting
+        // preserves the actual terminator length: CRLF lines lose a byte
+        // per line under a fixed `+ 1` advance, drifting every later
+        // offset and potentially landing inside a multi-byte character
+        // (#18034). `split_inclusive('\n')` yields the same logical lines
+        // as `str::lines()` for LF and CRLF text.
+        for chunk in text.split_inclusive('\n') {
+            let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+            let line = line.strip_suffix('\r').unwrap_or(line);
             let line_start_offset = current_offset;
             let line_end_offset = current_offset + line.len();
             let trimmed = line.trim_start();
@@ -152,14 +168,16 @@ impl FoldingRangeExtractor {
                                 start_offset,
                                 end_offset: line_end_offset,
                                 kind: Some(FoldingRangeKind::Region),
+                                end_offset_on_content_line: true,
                             });
                         }
                     }
                 }
             }
 
-            // Move to next line (account for newline character)
-            current_offset = line_end_offset + 1; // +1 for the newline
+            // Move to the next line by the full source chunk, terminator
+            // included (one byte for LF, two for CRLF).
+            current_offset += chunk.len();
         }
 
         ranges
@@ -314,7 +332,7 @@ impl FoldingRangeExtractor {
                 // Single-line bodies still drop out later via the
                 // multiline-only LSP filter.
                 if let Some(body) = body_span.as_ref() {
-                    self.add_range_from_locations(body, body, Some(FoldingRangeKind::Region));
+                    self.add_range_from_content_span(body, Some(FoldingRangeKind::Region));
                 }
             }
 
@@ -391,7 +409,12 @@ impl FoldingRangeExtractor {
 
         // Only add if it's not trivial
         if end_offset > start_offset.saturating_add(1) {
-            self.ranges.push(FoldingRange { start_offset, end_offset, kind });
+            self.ranges.push(FoldingRange {
+                start_offset,
+                end_offset,
+                kind,
+                end_offset_on_content_line: false,
+            });
         }
     }
 
@@ -406,7 +429,36 @@ impl FoldingRangeExtractor {
         let end_offset = end.end;
 
         if end_offset > start_offset.saturating_add(1) {
-            self.ranges.push(FoldingRange { start_offset, end_offset, kind });
+            self.ranges.push(FoldingRange {
+                start_offset,
+                end_offset,
+                kind,
+                end_offset_on_content_line: false,
+            });
+        }
+    }
+
+    /// Add a folding range from a span whose end offset lands at the last
+    /// content byte of its final line rather than on a closing-delimiter
+    /// line (heredoc bodies). The LSP conversion must keep the line
+    /// containing the end offset as the inclusive end line instead of
+    /// stepping back one line, which would leave the last body line
+    /// unfolded (#17299).
+    fn add_range_from_content_span(
+        &mut self,
+        span: &SourceLocation,
+        kind: Option<FoldingRangeKind>,
+    ) {
+        let start_offset = span.start;
+        let end_offset = span.end;
+
+        if end_offset > start_offset.saturating_add(1) {
+            self.ranges.push(FoldingRange {
+                start_offset,
+                end_offset,
+                kind,
+                end_offset_on_content_line: true,
+            });
         }
     }
 }
@@ -493,6 +545,10 @@ mod tests {
 
         assert!(ranges.iter().any(|range| range.start_offset == 0 && range.end_offset == 27));
         assert!(ranges.iter().any(|range| range.start_offset == 29 && range.end_offset == 56));
+        assert!(
+            ranges.iter().all(|range| !range.end_offset_on_content_line),
+            "node spans end on closing-delimiter lines, not content lines"
+        );
     }
 
     #[test]
@@ -523,6 +579,10 @@ mod tests {
             matches!(ranges[0].kind, Some(FoldingRangeKind::Region)),
             "kind must be Region: {:?}",
             ranges[0].kind
+        );
+        assert!(
+            ranges[0].end_offset_on_content_line,
+            "heredoc body spans end at content, so the LSP conversion must keep the end line (#17299)"
         );
 
         // Without an attached body span (empty/unterminated heredoc) nothing
@@ -702,6 +762,10 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert!(matches!(range.kind.as_ref(), Some(FoldingRangeKind::Region)));
         assert!(body.contains("select 1"));
+        assert!(
+            !range.end_offset_on_content_line,
+            "lexer body tokens end at the terminator-line start, so the fold must not claim a content line"
+        );
         assert!(body.contains("from dual"));
         assert!(!body.contains("<<"));
 
@@ -789,5 +853,54 @@ mod tests {
         let source = "    # region Indented\n    code\n    # endregion\n";
         let ranges = FoldingRangeExtractor::extract_region_markers(source);
         assert_eq!(ranges.len(), 1, "Should support indented region markers");
+    }
+
+    /// CRLF lines carry a two-byte terminator; a fixed one-byte advance
+    /// drifts every later offset (#18034). These fixtures pin exact byte
+    /// offsets, including an end offset that previously landed inside
+    /// the crab's UTF-8 bytes.
+    #[test]
+    fn extract_region_markers_crlf_preserves_byte_offsets() {
+        // "#region" (7) + CRLF (2); "#endregion 🦀" = 10 + 1 + 4 bytes.
+        let source = "#region\r\n#endregion 🦀";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 24));
+        assert!(source.is_char_boundary(ranges[0].end_offset));
+        assert_eq!(&source[ranges[0].start_offset..ranges[0].end_offset], source);
+
+        // A preceding CRLF line shifts the region start by its full width.
+        let source = "# pre\r\n#region\r\n#endregion";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (7, 26));
+
+        // LF control: one-byte terminators keep the historical offsets.
+        let source = "#region\n#endregion 🦀";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 23));
+    }
+
+    #[test]
+    fn extract_region_markers_mixed_endings_and_nesting() {
+        let source = "#region\r\ncode\n#endregion\r\n";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 24));
+
+        let source = "#region\r\n#region\r\n#endregion\r\n#endregion";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 2);
+        // Inner range is pushed first when its closing marker is reached.
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (9, 28));
+        assert_eq!((ranges[1].start_offset, ranges[1].end_offset), (0, 40));
+
+        // Malformed Perl inside matched markers changes nothing: the scan
+        // is text-only and must stay byte-exact through the recovery path.
+        let source = "#region\r\nmy $x = (\r\n#endregion";
+        let ranges = FoldingRangeExtractor::extract_region_markers(source);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].start_offset, ranges[0].end_offset), (0, 30));
     }
 }

@@ -109,6 +109,25 @@ package main;
 my $user = bless {}, 'User';
 $user->"#;
 
+/// The consuming package is reopened later in the same file with no ancestry
+/// declaration of its own (#16853). Perl has one `User` package, so the silent
+/// reopen must not erase the role the earlier segment composed.
+const REOPENED_ROLE_SOURCE: &str = r#"package Printable;
+use Moo::Role;
+sub stringify { "ok" }
+
+package User;
+use Moo;
+with 'Printable';
+sub own_method { 1 }
+
+package User;
+sub extra_method { 2 }
+
+package main;
+my $user = bless {}, 'User';
+$user->"#;
+
 const UNRELATED_SOURCE: &str = r#"package Other;
 sub other_method { 1 }
 
@@ -341,6 +360,26 @@ fn unrelated_empty_index_file_does_not_receive_other_package_role_methods() {
 }
 
 #[test]
+fn empty_index_offers_role_method_after_silent_consumer_reopen() {
+    let completions = completions_for(REOPENED_ROLE_SOURCE, empty_index());
+    assert!(
+        composed_role_item(&completions, "stringify", "Printable").is_some(),
+        "a silent reopen of the consuming package must not erase the composed role; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "extra_method"),
+        "the reopened segment's own method must still be offered; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "own_method"),
+        "the first segment's own method must survive the reopen; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
 fn resolved_receiver_does_not_offer_non_receiver_package_members() {
     let completions = completions_for(NON_RECEIVER_PACKAGE_SOURCE, empty_index());
     assert!(
@@ -357,6 +396,25 @@ fn resolved_receiver_does_not_offer_non_receiver_package_members() {
         !completions.iter().any(|item| item.label == "extra_method"),
         "another document-resident package's method must not be offered for this receiver; got {:?}",
         labels(&completions)
+    );
+}
+
+#[test]
+fn reopened_consumer_indexed_result_converges_with_empty_index() {
+    let empty_completions = completions_for(REOPENED_ROLE_SOURCE, empty_index());
+    let indexed_completions =
+        completions_for(REOPENED_ROLE_SOURCE, indexed_source(REOPENED_ROLE_SOURCE));
+
+    let names = ["stringify", "own_method", "extra_method"];
+    assert_eq!(
+        method_order(&empty_completions, &names),
+        method_order(&indexed_completions, &names),
+        "pre-index and post-index candidate identity/order must converge for the reopened consumer"
+    );
+    assert!(
+        composed_role_item(&indexed_completions, "stringify", "Printable").is_some(),
+        "indexed control must keep the composed-role identity after the reopen; got {:?}",
+        labels(&indexed_completions)
     );
 }
 

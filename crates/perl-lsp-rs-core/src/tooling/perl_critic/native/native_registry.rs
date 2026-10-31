@@ -18,9 +18,10 @@ use super::{
     DuplicateParameterRule, ParameterShadowsGlobalRule, PipeOpenRule, PrintfFormatArityRule,
     ProhibitLeadingZerosRule, QxReadpipeRule, RequirePodSectionsRule, RequireUseStrictRule,
     RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule, StringEvalRule,
-    SystemExecRule, TooManyBranchesRule, TwoArgOpenRule, UncheckedOpenCloseRule,
-    UndeclaredVariableRule, UndefComparisonRule, UninitializedVariableRule, UnquotedBarewordRule,
-    UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
+    SubTooLongRule, SystemExecRule, TooManyBranchesRule, TooManyNestedBlocksRule,
+    TooManyParamsRule, TwoArgOpenRule, UncheckedOpenCloseRule, UndeclaredVariableRule,
+    UndefComparisonRule, UninitializedVariableRule, UnquotedBarewordRule, UnreachableCodeRule,
+    UnusedLexicalVariableRule, UnusedParameterRule,
 };
 
 #[cfg(any(test, feature = "test-instrumentation"))]
@@ -174,7 +175,10 @@ static NATIVE_IDENTITY_DISPOSITIONS: &[NativeCriticIdentityDisposition] = &[
     NativeCriticIdentityDisposition::new("native.syntax.unquoted_bareword", GENERAL),
     NativeCriticIdentityDisposition::new("native.documentation.require_pod_sections", GENERAL),
     NativeCriticIdentityDisposition::new("native.syntax.prohibit_leading_zeros", GENERAL),
+    NativeCriticIdentityDisposition::new("native.maintainability.sub_too_long", GENERAL),
     NativeCriticIdentityDisposition::new("native.maintainability.too_many_branches", GENERAL),
+    NativeCriticIdentityDisposition::new("native.maintainability.too_many_nested_blocks", GENERAL),
+    NativeCriticIdentityDisposition::new("native.maintainability.too_many_params", GENERAL),
 ];
 
 const MAX_REJECTED_PROFILE_CHARS: usize = 80;
@@ -446,7 +450,10 @@ impl NativeCriticRegistry {
             Box::new(UnquotedBarewordRule),
             Box::new(RequirePodSectionsRule),
             Box::new(ProhibitLeadingZerosRule),
+            Box::new(SubTooLongRule),
             Box::new(TooManyBranchesRule),
+            Box::new(TooManyNestedBlocksRule),
+            Box::new(TooManyParamsRule),
         ])
     }
 
@@ -541,10 +548,6 @@ impl NativeCriticRegistry {
                 CriticContext::with_scope(ctx.source, ctx.ast, ctx.config, si, pm)
             }
             _ => CriticContext::new(ctx.source, ctx.ast, ctx.config),
-        };
-        let rich_ctx = match ctx.parse_error_spans {
-            Some(spans) => rich_ctx.with_parse_error_spans(spans),
-            None => rich_ctx,
         };
 
         for rule in &self.rules {

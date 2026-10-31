@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Keep calls inside nested subroutine bodies out of the enclosing caller's outgoing call hierarchy while preserving direct callsite ranges.
+time: 2026-10-22T09:48:31Z
+custom:
+  PR: "18321"
+  Slug: nested-outgoing-calls
+  Breaking: "no"

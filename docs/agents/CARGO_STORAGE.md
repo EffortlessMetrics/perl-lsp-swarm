@@ -13,6 +13,19 @@ Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Pyth
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
+Host profiles for the jobs knob (#17673): the default of two protects
+constrained and shared hosts. On a dedicated host with at least eight logical
+cores and memory headroom for parallel rustc processes, setting
+`CARGO_BUILD_JOBS=4` in the shell environment (never in tracked config,
+#5204) is the supported faster profile. Measured on an 8-core/16-thread,
+80 GiB host (fresh target, shared cargo-home, `check -p perl-parser`,
+one run per setting): cold 80.2s at jobs=2 versus 31.9s at jobs=4; warm and
+single-crate edited checks are under two seconds at either setting, so the
+win is concentrated in cold and multi-crate work. Peak memory at jobs=4
+was not captured, so treat the profile as unqualified on memory-tight
+hosts and on hosted CI runners, which have different core/memory envelopes
+and should keep the default.
+
 One admission/lease slot is keyed by canonical Git common directory, hostname and
 OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
 exclusion domain; independent clones and Windows/WSL do not. Within that slot,
@@ -281,11 +294,21 @@ product failures even when the cohort subsequently settles successfully.
 
 ### Staged native Clippy
 
-The existing owner admits only this finite Linux request (optional `--offline`):
+The existing owner admits these finite Linux requests (optional `--offline`):
 
 ```text
 python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked -- -D warnings
 ```
+
+Select exactly one of `--all-targets` or `--test NAME`. A named test uses one literal
+ASCII name beginning with a letter or digit and containing only letters, digits,
+underscores or hyphens; patterns, paths, joined forms, multiple selectors and other
+target/feature selectors refuse before allocation. Cargo still checks prerequisites
+of that target and reports a missing target as a product failure. The selected name
+remains in the request digest, so its budget cannot transfer to another target or
+all-targets work. A focused result covers only the selected compilation graph; it
+does not replace a required all-targets gate or qualify an unvisited target.
 
 Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
 installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,
@@ -394,6 +417,44 @@ not honor this lease: quiesce those consumers before rollout. This is not a
 system-wide concurrency limit across repositories.
 
 The emitted JSON resource descriptor belongs in the existing root-held frame.
+For bounded read-only inventory, save that single JSON object locally and run
+`bash scripts/storage-doctor --descriptor record.json --json` from its original
+working directory (`--resources-descriptor` is an equivalent spelling). The
+existing repo-local target guard still runs; its failure makes this invocation
+non-success. No-argument `storage-doctor` reports only its repo-local guard and
+marks external resource authority unknown, without guessing a basename devplane.
+
+The descriptor reader uses the existing admission path rules and verifies the
+same native host, common repository, worktree, invocation directory, target/build
+slot and agreeing scope/resource fields. It rejects linked inputs and unknown or
+malformed scope. This is **historical inventory**, not authentication of the
+descriptor's origin or a live lease. It traverses only the four named roots with
+entry, depth, elapsed-time and fingerprint-byte bounds. Missing, unreadable,
+changed or clipped entries keep partial observed counts but cannot yield complete
+totals. Fingerprints under target and separated build roots include custom/agent
+profiles and explicit target triples. Public JSON retains fixed resource roles,
+path/content hashes and selected integer fingerprint hashes, never raw descriptor
+paths, arbitrary metadata or fingerprint environment/flag values.
+
+Apparent bytes measure regular-file content; allocated bytes use POSIX `st_blocks`
+and include directories. Native Windows allocated bytes remain unknown. Combined
+totals deduplicate native device/inode identities across roots, including overlapping
+roots and hardlinks. These are retained snapshots, not reclaimable or exclusive
+ownership. Peak demand, build deltas, open-unlinked bytes, WSL guest free space,
+VHDX allocation and backing-host capacity remain separate unknown fields. No
+`df` minus `du` inference, cleanup or compaction is performed.
+
+`observe-xtask-build.sh` captures the emitted descriptor in a bounded private
+temporary file outside its output directory and emits only this sanitized
+historical inventory after the command. Multiple descriptors or an incomplete
+stderr capture invalidate that inventory. Its outer before/after environment
+snapshots are hashed hints: a descriptor emitted later **cannot retroactively
+bind the before sample**. Neither command exit nor an emitted settlement line
+proves same-lease measurement. The existing command's exact argv and exit status
+remain authoritative even when inventory fails. Full workload qualification and
+same-lease sampling remain with #17623/#17655/#17658/#17668; this instrument never
+changes admission or retires a storage guard.
+
 Every terminal task returns each worktree and external resource as `released`,
 `retained with reason`, or `awaiting owner verification`. A reusable cache is
 normally retained. Unknown/active resources, dirty/untracked/ignored source or

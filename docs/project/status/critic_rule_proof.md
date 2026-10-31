@@ -4,7 +4,7 @@
 
 Pilot issue #6973 (`pilot`). Missing evidence stays missing and is not inherited from aggregate native-critic transport coverage.
 
-This pilot owns the versioned rule-proof schema, typed model, generator/checker, and an eight-rule cohort (#6973 pilot, #17661 cohort 2). It does not migrate the remaining 20 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.
+This pilot owns the versioned rule-proof schema, typed model, generator/checker, and a sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). It does not migrate the remaining 12 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.
 
 ## Pilot rules
 
@@ -18,7 +18,15 @@ This pilot owns the versioned rule-proof schema, typed model, generator/checker,
 | `native.io.two_arg_open` | `critic.io.two_arg_open` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
 | `native.security.string_eval` | `critic.security.string_eval` | `none` | present | present | present | present | present | present | present | n/a | present |
 | `native.regex.capture_without_match` | `critic.regex.capture_without_match` | `none` | present | present | present | present | present | present | present | n/a | present |
+| `native.common.stale_dollar_at` | `critic.common.stale_dollar_at` | `none` | present | present | present | present | present | present | present | n/a | present |
+| `native.common.unreachable_code` | `critic.common.unreachable_code` | `automatic_candidate` | present | present | present | present | present | present | present | present | present |
+| `native.io.bareword_filehandle` | `critic.io.bareword_filehandle` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.io.pipe_open` | `critic.io.pipe_open` | `none` | present | present | present | present | present | present | present | n/a | present |
+| `native.io.unchecked_open_close` | `critic.io.unchecked_open_close` | `none` | present | present | present | present | present | present | present | n/a | present |
+| `native.documentation.require_pod_sections` | `critic.documentation.require_pod_sections` | `none` | present | present | present | present | present | present | present | n/a | present |
+| `native.syntax.prohibit_leading_zeros` | `critic.syntax.prohibit_leading_zeros` | `none` | present | present | present | present | present | present | present | n/a | present |
+| `native.syntax.unquoted_bareword` | `critic.syntax.unquoted_bareword` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
 
 ## Catalog remainder
 
-20 catalog native rules are outside this closed PILOT_RULES cohort. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals. Extra catalog rows are rejected so missing classes stay missing on purpose.
+15 catalog native rules are outside this closed PILOT_RULES cohort. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals. Extra catalog rows are rejected so missing classes stay missing on purpose.

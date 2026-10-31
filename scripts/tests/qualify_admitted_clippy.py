@@ -21,8 +21,40 @@ import subprocess
 import sys
 
 SOURCE = Path(__file__).resolve().parents[1] / 'cargo_admitted.py'
+
+
+def fixture_inputs(request):
+    paths = {'src/lib.rs', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml'}
+    if '--test' in request:
+        paths.update({'tests/' + request[request.index('--test') + 1] + '.rs', 'tests/other.rs'})
+    return paths
+
+
+def bind_inputs(root, destination, request):
+    destination.mkdir()
+    binding = {}
+    for relative in sorted(fixture_inputs(request)):
+        data = (root / relative).read_bytes()
+        retained = destination / relative
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        retained.write_bytes(data)
+        binding[relative] = {'sha256': hashlib.sha256(data).hexdigest(), 'size_bytes': len(data)}
+    return binding
+
+
+def verify_inputs(root, destination, request, binding):
+    if set(binding) != fixture_inputs(request):
+        raise RuntimeError('missing or unexpected fixture input binding')
+    for relative, identity in binding.items():
+        for path in (root / relative, destination / relative):
+            data = path.read_bytes()
+            if identity != {'sha256': hashlib.sha256(data).hexdigest(), 'size_bytes': len(data)}:
+                raise RuntimeError('fixture input binding mismatch: ' + relative)
+
+
 parser = argparse.ArgumentParser(description='Owned, offline native Clippy fail/clean qualification; retains artifacts')
 parser.add_argument('--proof-root', required=True, type=Path)
+parser.add_argument('--named-only', action='store_true', help='Run only the affected named-test pair')
 options = parser.parse_args()
 if not options.proof_root.is_absolute() or not options.proof_root.is_dir():
     parser.error('--proof-root must be an existing absolute owner-approved directory')
@@ -40,6 +72,9 @@ subprocess.run(['git', 'init', '-q', str(ROOT)], check=True)
 name = "consumer"
 version = "0.1.0"
 edition = "2024"
+[features]
+default = ["witness"]
+witness = []
 [profile.agent]
 inherits = "dev"
 debug = "line-tables-only"
@@ -72,9 +107,11 @@ for name in safe.CAPACITY_ENV:
     env.pop(name, None)
 args = ['clippy', '-p', 'consumer', '--all-targets', '--profile', 'agent', '--locked', '--offline', '--', '-D', 'warnings']
 
-def execute(label, source):
+def execute(label, source, request=args):
     (ROOT / 'src/lib.rs').write_text(source)
-    preflight = subprocess.run([sys.executable, str(SOURCE), '--preflight', *args], cwd=ROOT,
+    retained_inputs = BASE / (label + '-inputs')
+    binding = bind_inputs(ROOT, retained_inputs, request)
+    preflight = subprocess.run([sys.executable, str(SOURCE), '--preflight', *request], cwd=ROOT,
                                env=env, capture_output=True, text=True)
     prefix = 'cargo-admitted preflight: '
     row = next(json.loads(line[len(prefix):]) for line in preflight.stderr.splitlines() if line.startswith(prefix))
@@ -86,7 +123,8 @@ def execute(label, source):
     budget_file = BASE / (label + '-budget.json')
     budget_file.write_text(json.dumps(budget))
     output = (BASE / (label + '-stdout.txt')).open('w')
-    process = subprocess.Popen([sys.executable, str(SOURCE), '--budget-file', str(budget_file), *args],
+    verify_inputs(ROOT, retained_inputs, request, binding)
+    process = subprocess.Popen([sys.executable, str(SOURCE), '--budget-file', str(budget_file), *request],
                                cwd=ROOT, env=env, stdout=output, stderr=subprocess.PIPE, text=True)
     lines, lock, identity, marker, pgid = [], None, None, None, None
     for line in process.stderr:
@@ -115,6 +153,8 @@ def execute(label, source):
     settlement = next((json.loads(line.split(': ',1)[1]) for line in lines
                        if line.startswith('cargo-admitted Clippy settlement: ')), None)
     receipt = {'label': label, 'product_exit': status,
+               'requested_argv': request,
+               'retained_inputs': str(retained_inputs), 'input_bindings': binding,
                'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
                'owner_sha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(), 'process_group': pgid,
                'group_absent': group_absent, 'lock_retained_after_exit': lock.exists(),
@@ -129,20 +169,47 @@ def execute(label, source):
     receipt['lease_disposition'] = 'released by original owner after kernel ECHILD proof and matching identity'
     if lock.exists():
         raise RuntimeError('release postcondition failed')
+    verify_inputs(ROOT, retained_inputs, request, binding)
+    receipt['inputs_verified'] = True
     (BASE / (label + '-receipt.json')).write_text(json.dumps(receipt, indent=2))
     print(label, 'product_exit', status, 'group_absent', group_absent, 'lease_verified_released')
     return status, stderr
 
-failed, diagnostic = execute('lint-failure', 'pub fn witness() -> usize { let values = vec![1, 2, 3]; values.len() }\n')
-if failed != 101 or 'clippy::useless_vec' not in diagnostic:
-    raise RuntimeError('Clippy-specific fail control not observed: ' + diagnostic)
-passed, diagnostic = execute('clean', 'pub fn witness() -> usize { let values = [1, 2, 3]; values.len() }\n')
+if not options.named_only:
+    failed, diagnostic = execute('lint-failure', 'pub fn witness() -> usize { let values = vec![1, 2, 3]; values.len() }\n')
+    if failed != 101 or 'clippy::useless_vec' not in diagnostic:
+        raise RuntimeError('Clippy-specific fail control not observed: ' + diagnostic)
+    passed, diagnostic = execute('clean', 'pub fn witness() -> usize { let values = [1, 2, 3]; values.len() }\n')
+    if passed != 0:
+        raise RuntimeError('clean control failed: ' + diagnostic)
+    artifacts = [json.loads(line) for line in (BASE / 'clean-stdout.txt').read_text().splitlines() if line.startswith('{')]
+    compiled = [item for item in artifacts if item.get('reason') == 'compiler-artifact']
+    if len(compiled) != 2 or any(item['target']['name'] != 'consumer' or item['profile']['opt_level'] != '0' for item in compiled):
+        raise RuntimeError('clean library/test compilation work not observed')
+    if {item['profile']['test'] for item in compiled} != {False, True}:
+        raise RuntimeError('both normal and test library targets were not observed')
+    print('REAL ADMITTED CLIPPY FAIL/CLEAN PAIR PASS; FIXTURE ONLY; native Windows NOT_PROVEN')
+
+# A real named target must retain default features and lint policy, while a
+# deliberately invalid unselected target proves Cargo did not expand selection.
+(ROOT / 'tests').mkdir()
+(ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
+named = ROOT / 'tests/named-proof.rs'
+prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'
+request = ['clippy', '-p', 'consumer', '--test', 'named-proof', '--profile', 'agent',
+           '--locked', '--offline', '--', '-D', 'warnings']
+named.write_text(prefix + '#[test]\nfn witness() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+failed, diagnostic = execute('named-lint-failure', 'pub fn witness() -> usize { 3 }\n', request)
+if failed != 101 or 'clippy::useless_vec' not in diagnostic or 'tests/named-proof.rs' not in diagnostic:
+    raise RuntimeError('named-target lint failure not observed: ' + diagnostic)
+named.write_text(prefix + '#[test]\nfn witness() { let values = [1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+passed, diagnostic = execute('named-clean', 'pub fn witness() -> usize { 3 }\n', request)
 if passed != 0:
-    raise RuntimeError('clean control failed: ' + diagnostic)
-artifacts = [json.loads(line) for line in (BASE / 'clean-stdout.txt').read_text().splitlines() if line.startswith('{')]
+    raise RuntimeError('named clean control failed: ' + diagnostic)
+artifacts = [json.loads(line) for line in (BASE / 'named-clean-stdout.txt').read_text().splitlines() if line.startswith('{')]
 compiled = [item for item in artifacts if item.get('reason') == 'compiler-artifact']
-if len(compiled) != 2 or any(item['target']['name'] != 'consumer' or item['profile']['opt_level'] != '0' for item in compiled):
-    raise RuntimeError('clean library/test compilation work not observed')
-if {item['profile']['test'] for item in compiled} != {False, True}:
-    raise RuntimeError('both normal and test library targets were not observed')
-print('REAL ADMITTED CLIPPY FAIL/CLEAN PAIR PASS; FIXTURE ONLY; native Windows NOT_PROVEN')
+if (len(compiled) != 2 or {item['target']['name'] for item in compiled} != {'consumer', 'named-proof'}
+        or any(item['features'] != ['default', 'witness'] or item['profile']['opt_level'] != '0' for item in compiled)
+        or [item['profile']['test'] for item in compiled if item['target']['name'] == 'named-proof'] != [True]):
+    raise RuntimeError('named-target/default-features/agent-profile identity not observed')
+print('REAL NAMED TEST FAIL/CLEAN PAIR PASS; UNSELECTED TARGET EXCLUDED; FIXTURE ONLY')

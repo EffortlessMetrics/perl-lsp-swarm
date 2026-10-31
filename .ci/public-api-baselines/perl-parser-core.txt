@@ -6,6 +6,7 @@ pub use perl_parser_core::MissingKind
 pub use perl_parser_core::Node
 pub use perl_parser_core::NodeKind
 pub use perl_parser_core::PositionMapper
+pub use perl_parser_core::RegexSurfaceForm
 pub use perl_parser_core::SourceLocation
 pub use perl_parser_core::Token
 pub use perl_parser_core::TokenKind
@@ -477,6 +478,9 @@ pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::engine::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::Cancelled
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::engine::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::engine::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -1036,6 +1040,9 @@ pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::Strin
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::error::ParseError::Cancelled
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -1411,6 +1418,7 @@ pub fn perl_parser_core::hir::AssignMode::clone(&self) -> perl_parser_core::hir:
 pub fn perl_parser_core::hir::AssignMode::eq(&self, other: &perl_parser_core::hir::AssignMode) -> bool
 pub fn perl_parser_core::hir::AssignMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::hir::BarewordRole
+pub perl_parser_core::hir::BarewordRole::DynamicIndirectObject
 pub perl_parser_core::hir::BarewordRole::Expression
 pub perl_parser_core::hir::BarewordRole::HashKey
 pub perl_parser_core::hir::BarewordRole::IndirectObject
@@ -2471,6 +2479,7 @@ pub fn perl_parser_core::hir::HirLoopRegionId::hash<__H: core::hash::Hasher>(&se
 #[non_exhaustive] pub struct perl_parser_core::hir::HirRegex
 pub perl_parser_core::hir::HirRegex::analysis: perl_parser_core::hir::RegexAnalysisAnchor
 pub perl_parser_core::hir::HirRegex::embedded_code: bool
+pub perl_parser_core::hir::HirRegex::form: perl_parser_core::RegexSurfaceForm
 pub perl_parser_core::hir::HirRegex::modifiers: alloc::string::String
 pub fn perl_parser_core::hir::HirRegex::clone(&self) -> perl_parser_core::hir::HirRegex
 pub fn perl_parser_core::hir::HirRegex::eq(&self, other: &perl_parser_core::hir::HirRegex) -> bool
@@ -3483,6 +3492,7 @@ pub fn perl_parser_core::pir::FilePirLexicalContributionV1::eq(&self, other: &pe
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::pir::FilePirLexicalContributionV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 #[non_exhaustive] pub struct perl_parser_core::pir::LexicalBindingFact
+pub perl_parser_core::pir::LexicalBindingFact::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::pir::LexicalBindingFact::body_idx: usize
 pub perl_parser_core::pir::LexicalBindingFact::body_owner: perl_parser_core::hir::BodyOwnerKind
 pub perl_parser_core::pir::LexicalBindingFact::name: perl_parser_core::pir::LexicalName
@@ -3971,6 +3981,9 @@ pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::strin
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock
 pub perl_parser_core::syntax::error::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::Cancelled
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::syntax::error::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::syntax::error::ParseError::CoreBudgetExhausted::limit: usize
@@ -4881,6 +4894,9 @@ pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::ParseError::CStyleForContinueBlock
 pub perl_parser_core::ParseError::CStyleForContinueBlock::location: usize
 pub perl_parser_core::ParseError::Cancelled
+pub perl_parser_core::ParseError::CatchVariableRedeclaration
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::keyword: alloc::string::String
+pub perl_parser_core::ParseError::CatchVariableRedeclaration::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::ParseError::CoreBudgetExhausted
 pub perl_parser_core::ParseError::CoreBudgetExhausted::dimension: perl_parser_core::syntax::error::ParseCoreDimension
 pub perl_parser_core::ParseError::CoreBudgetExhausted::limit: usize

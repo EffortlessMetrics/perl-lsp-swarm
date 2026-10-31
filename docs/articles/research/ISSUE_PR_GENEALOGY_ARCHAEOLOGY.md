@@ -251,9 +251,9 @@ That is a much richer historical record than a normal backlog plus merge log.
 
 ## Evidence Pointers
 
-- [ISSUE_ROUTING_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/ISSUE_ROUTING_ARCHAEOLOGY.md)
-- [Q3_SWARM_PR_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/Q3_SWARM_PR_ARCHAEOLOGY.md)
-- [REVIEW_LABEL_ARCHAEOLOGY.md](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/articles/research/REVIEW_LABEL_ARCHAEOLOGY.md)
+- [ISSUE_ROUTING_ARCHAEOLOGY.md](ISSUE_ROUTING_ARCHAEOLOGY.md)
+- [Q3_SWARM_PR_ARCHAEOLOGY.md](Q3_SWARM_PR_ARCHAEOLOGY.md)
+- [REVIEW_LABEL_ARCHAEOLOGY.md](REVIEW_LABEL_ARCHAEOLOGY.md)
 - full PR ledger snapshot from `gh pr list --state all --limit 2000 --json number,title,body,createdAt,mergedAt,url`
 - issue ledger snapshot from `gh issue list --state all --limit 400 --json number,title,body,createdAt,url`
 - representative examples: `#20`, `#16`, `#159`, `#174`, `#209`, `#2039`, `#2190`, `#2191`, `#2195`, `#2229`

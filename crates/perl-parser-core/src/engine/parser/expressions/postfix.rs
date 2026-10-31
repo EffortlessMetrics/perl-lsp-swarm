@@ -1090,8 +1090,13 @@ impl<'a> Parser<'a> {
                                 {
                                     // sort FUNCNAME LIST — `sort by_name @list`
                                     // Parse the comparator function name as the first arg,
-                                    // then collect the list to sort.
-                                    args.push(self.parse_ternary()?);
+                                    // then collect the list to sort. The comparator
+                                    // slot suppresses bare-call promotion so
+                                    // `sort mycmp Foo::Bar, 1` keeps its shape.
+                                    self.in_sort_comparator = true;
+                                    let comparator = self.parse_ternary();
+                                    self.in_sort_comparator = false;
+                                    args.push(comparator?);
 
                                     while !self.is_implicit_arg_terminator()
                                         && !matches!(
@@ -1412,11 +1417,12 @@ impl<'a> Parser<'a> {
 
                                 let start = expr.location.start;
 
+                                // Flattening retains individual word spans, while
+                                // the call still owns the complete qw delimiter.
                                 let end = args
                                     .last()
-                                    .map(|arg| arg.location.end)
-                                    .or(flattened_qw_end)
-                                    .unwrap_or_else(|| self.previous_position());
+                                    .map_or_else(|| self.previous_position(), |arg| arg.location.end)
+                                    .max(flattened_qw_end.unwrap_or(0));
 
                                 expr = if scalar_filehandle {
                                     let mut message_args = args;

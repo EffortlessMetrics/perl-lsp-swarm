@@ -6,6 +6,10 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
+Legacy dispatch-only helper: this does not supply sealed-handoff eligibility inputs
+or verify publication/completion. Follow #13768 / #6055 and docs/release/RUNBOOK.md.
+Exact workflow-run correlation is tracked by #16799.
+
 Usage:
   scripts/publish-release.sh <0.x.y> [--dry-run] [--ref <git-ref>]
 
