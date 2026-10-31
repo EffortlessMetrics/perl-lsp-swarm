@@ -14,7 +14,9 @@
 //! This layer is representation-only: it validates documents and their
 //! referential integrity. It does not decide whether a requested close mode is
 //! semantically satisfied - CP03 (#10382) owns that evaluation - and it does
-//! not inspect live GitHub state, PR bodies, or closing keywords.
+//! not inspect live GitHub state, PR bodies, or closing keywords. The separate
+//! additive [`adoption`] pilot reads fixed selected sources for a mapping report;
+//! it never grants these representations evidence or semantic-close authority.
 //!
 //! The immutable regression corpus under `.ci/close-proof-contract/`
 //! ([`corpus`]) carries bounded offline fixtures with expected dispositions.
@@ -33,6 +35,7 @@
 //! ruling/adoption authority, evidence admission and verdict derivation require
 //! independent owners. Legacy documents are never automatically upgraded.
 
+pub mod adoption;
 pub mod contract;
 pub mod corpus;
 pub mod model;
