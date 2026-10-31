@@ -18,6 +18,8 @@ class ConstrainedAdmissionTests(unittest.TestCase):
     """The byte quantities below are arithmetic fixtures, not host measurements."""
 
     def setUp(self):
+        # These fixtures mock the launch/owner; native discovery is tested separately.
+        self.enterContext(patch.object(safe, "child_discovery_capability", return_value={}))
         import hashlib
         import json
         import socket
@@ -559,6 +561,8 @@ class AdmissionProcessTests(unittest.TestCase):
         import json
         import sys
         import textwrap
+        if sys.platform == "linux" and not (Path("/proc/self/task") / str(os.getpid()) / "children").exists():
+            self.skipTest("default proc-children interface unavailable on this host")
         with tempfile.TemporaryDirectory(prefix="cargo-admission-process-") as temporary:
             root = Path(temporary)
             repo, plane = root / "repo", root / "plane"

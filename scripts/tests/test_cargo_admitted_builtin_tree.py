@@ -93,6 +93,9 @@ os._exit(status)
 @unittest.skipUnless(sys.platform == 'linux', 'Linux ownership only')
 class BuiltinNativeTreeTests(unittest.TestCase):
     def fixture(self, mode='normal', status=0, terminal=False):
+        # Native fixture covers the default profile; absent kernel capability is not a pass.
+        if not (Path('/proc/self/task') / str(os.getpid()) / 'children').exists():
+            self.skipTest('default proc-children interface unavailable on this host')
         with tempfile.TemporaryDirectory(prefix='builtin-tree-control-') as name:
             root=Path(name);(root/'bin').mkdir()
             cargo=root/'bin/cargo'
@@ -226,6 +229,8 @@ class BuiltinAdmissionControls(unittest.TestCase):
         from unittest.mock import Mock
         spec=importlib.util.spec_from_file_location('safe',OWNER)
         self.safe=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.safe)
+        from unittest.mock import patch
+        self.enterContext(patch.object(self.safe, "child_discovery_capability", return_value={}))
         self.temp=tempfile.TemporaryDirectory(prefix='builtin-admission-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.paths={key:self.root/key for key in ('target','build','cargo_home','temp')}

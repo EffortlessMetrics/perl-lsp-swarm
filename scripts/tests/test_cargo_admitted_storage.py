@@ -21,6 +21,10 @@ def git_output(path):
 
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
+        # These fixtures mock the launch/owner; native discovery is tested separately.
+        self.discovery_fixture = patch.object(safe, "child_discovery_capability", return_value={})
+        self.discovery_fixture.start()
+        self.addCleanup(self.discovery_fixture.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="cargo-admitted-proof-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -515,6 +519,8 @@ class AdmissionTests(unittest.TestCase):
         import contextlib
         import io
         import json
+        # This opt-in test launches a real owner, so do not bypass discovery admission.
+        self.discovery_fixture.stop()
         repo, linked = self.root / "repo", self.root / "linked"
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):

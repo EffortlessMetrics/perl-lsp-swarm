@@ -66,6 +66,8 @@ class QualificationBindingTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "linux" and sys.version_info >= (3, 11), "staged Linux Clippy only")
 class ClippyAdmissionTests(unittest.TestCase):
     def setUp(self):
+        # These fixtures mock the launch/owner; native discovery is tested separately.
+        self.enterContext(patch.object(safe, "child_discovery_capability", return_value={}))
         self.temp = tempfile.TemporaryDirectory(prefix="admitted-clippy-controls-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
