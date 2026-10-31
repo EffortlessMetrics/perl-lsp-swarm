@@ -137,7 +137,12 @@ def validate_proof_step(job_id: str, job: dict) -> None:
             continue
         script = other.get("run")
         if isinstance(script, str) and any(
-            "rust-small-proof" in line and not line.lstrip(" \t").startswith("#")
+            "rust-small-proof" in line
+            and (
+                not line.lstrip(" \t").startswith("#")
+                or "$(" in line
+                or "`" in line
+            )
             for line in script.split("\n")
         ):
             raise AssertionError(
@@ -568,6 +573,18 @@ class RustSmallRouteContractTests(unittest.TestCase):
                     changed = body[:position] + extra + body[position:]
                     with self.assertRaisesRegex(AssertionError, job_id):
                         validate_rust_small_route_contract(self.workflow_text.replace(body, changed, 1))
+            with self.subTest(site=job_id, command="quoted-substitution"):
+                extra = (
+                    "      - name: Extra proof\n"
+                    "        shell: bash\n"
+                    "        run: |\n"
+                    '          echo "\n'
+                    "          # $(" + CANONICAL_INVOCATION + ")\n"
+                    '          "\n\n'
+                )
+                changed = body[:position] + extra + body[position:]
+                with self.assertRaisesRegex(AssertionError, job_id):
+                    validate_rust_small_route_contract(self.workflow_text.replace(body, changed, 1))
 
     def test_unrelated_step_metadata_and_standalone_comments_are_allowed(self) -> None:
         for job_id in RUST_SMALL_LANE_JOBS:
