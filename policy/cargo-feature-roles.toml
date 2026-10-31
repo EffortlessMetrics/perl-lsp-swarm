@@ -470,7 +470,9 @@ crate = "perl-parser"
 name = "modernize"
 role = "experimental_opt_in"
 owner = "#8409"
-consumers = ["cfg_gated"]
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared empty with no cfg consumer; the refactoring engine it gated was retired by #5231, merged as #14032."
 
 [[feature]]
 crate = "perl-parser"
@@ -564,10 +566,10 @@ crate = "perl-parser"
 name = "workspace_refactor"
 role = "legacy_alias"
 owner = "#8409"
-consumers = ["cfg_gated", "propagated"]
+consumers = ["propagated"]
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
 name_exception = { roadmap = "Name asserts an in-flight refactor; #8411 owns the rename." }
-note = "Default-on and widely consumed; the migration it named has landed."
+note = "Default-on and propagated to dependents; the refactoring engine that consumed it was retired by #5231."
 
 [[feature]]
 crate = "perl-parser-comparison"
