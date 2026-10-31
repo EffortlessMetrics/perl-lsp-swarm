@@ -37,7 +37,7 @@
 
 use super::types::CodeAction;
 use perl_parser_core::ast::{Node, NodeKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -82,6 +82,7 @@ impl EnhancedCodeActionsProvider {
         // Track (stmt_start, var_name) pairs already emitted to prevent duplicate
         // extract-variable actions when both a parent and child node overlap the range.
         let mut extract_var_seen: HashSet<(usize, String)> = HashSet::new();
+        let mut visible_cache: HashMap<usize, HashSet<String>> = HashMap::new();
 
         // Find all nodes that overlap the range and collect actions.
         // `ast` is the full program AST, so it doubles as the root that the
@@ -92,6 +93,7 @@ impl EnhancedCodeActionsProvider {
             false,
             &mut actions,
             &mut extract_var_seen,
+            &mut visible_cache,
             ast,
         );
 
@@ -220,6 +222,7 @@ impl EnhancedCodeActionsProvider {
         is_control_body: bool,
         actions: &mut Vec<CodeAction>,
         extract_var_seen: &mut HashSet<(usize, String)>,
+        visible_cache: &mut HashMap<usize, HashSet<String>>,
         ast_root: &Node,
     ) {
         // Prune entire subtree when the node is completely outside the range.
@@ -245,6 +248,7 @@ impl EnhancedCodeActionsProvider {
                 &self.source,
                 &helpers,
                 ast_root,
+                visible_cache,
             );
             if let Some(decl) = action.edit.changes.first() {
                 let key = (decl.location.start, decl.new_text.clone());
@@ -293,6 +297,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -305,6 +310,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -316,6 +322,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
             }
@@ -326,6 +333,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 self.collect_actions_for_range(
@@ -334,6 +342,7 @@ impl EnhancedCodeActionsProvider {
                     true, // then-body is a control-flow block
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 for (cond, branch) in elsif_branches {
@@ -343,6 +352,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                     self.collect_actions_for_range(
@@ -351,6 +361,7 @@ impl EnhancedCodeActionsProvider {
                         true,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -361,6 +372,7 @@ impl EnhancedCodeActionsProvider {
                         true,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -373,6 +385,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -384,6 +397,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 self.collect_actions_for_range(
@@ -392,6 +406,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
             }
@@ -402,6 +417,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 self.collect_actions_for_range(
@@ -410,6 +426,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
             }
@@ -420,6 +437,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 if let Some(init) = initializer {
@@ -429,6 +447,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -441,6 +460,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -451,6 +471,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -461,6 +482,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -470,6 +492,7 @@ impl EnhancedCodeActionsProvider {
                     true, // loop body is a control-flow block
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
             }
@@ -480,6 +503,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 self.collect_actions_for_range(
@@ -488,6 +512,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 self.collect_actions_for_range(
@@ -496,6 +521,7 @@ impl EnhancedCodeActionsProvider {
                     true,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 if let Some(cb) = continue_block {
@@ -505,6 +531,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -516,6 +543,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 self.collect_actions_for_range(
@@ -524,6 +552,7 @@ impl EnhancedCodeActionsProvider {
                     true, // loop body is a control-flow block
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
             }
@@ -534,6 +563,7 @@ impl EnhancedCodeActionsProvider {
                     false,
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 for arg in args {
@@ -543,6 +573,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -554,6 +585,7 @@ impl EnhancedCodeActionsProvider {
                     true, // subroutine body block is not a standalone block
                     actions,
                     extract_var_seen,
+                    visible_cache,
                     ast_root,
                 );
                 if let Some(proto) = prototype {
@@ -563,6 +595,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }
@@ -573,6 +606,7 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        visible_cache,
                         ast_root,
                     );
                 }

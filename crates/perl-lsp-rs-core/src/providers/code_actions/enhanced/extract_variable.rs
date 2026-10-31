@@ -18,6 +18,7 @@ pub fn create_extract_variable_action(
     source: &str,
     helpers: &Helpers<'_>,
     ast_root: &Node,
+    visible_cache: &mut std::collections::HashMap<usize, HashSet<String>>,
 ) -> CodeAction {
     let expr_text = &source[node.location.start..node.location.end];
 
@@ -29,8 +30,9 @@ pub fn create_extract_variable_action(
     // the enclosing scope chain would either be redeclared (same scope, which
     // `perl -c` reports as a masking warning) or silently shadowed (outer
     // scope, which changes program behaviour without any diagnostic).
-    let visible = visible_names_at(ast_root, stmt_start);
-    let var_name = unique_variable_name(&suggest_variable_name(node), &visible);
+    let visible =
+        visible_cache.entry(stmt_start).or_insert_with(|| visible_names_at(ast_root, stmt_start));
+    let var_name = unique_variable_name(&suggest_variable_name(node), visible);
 
     CodeAction {
         title: format!("Extract '{}' to variable", helpers.truncate_expr(expr_text, 30)),
