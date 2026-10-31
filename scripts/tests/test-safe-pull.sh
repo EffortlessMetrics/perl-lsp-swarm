@@ -301,10 +301,48 @@ test_nested_invocation_salvages_from_root() {
     "${WORK}/notes.txt" "${ADV}/notes.txt"
 }
 
+test_staged_delete_collision_refuses_without_moving() {
+  setup_repos
+
+  # Staged-delete collision (#17418): path is tracked at HEAD, deletion is
+  # staged (so `git ls-files --error-unmatch` fails open), valuable untracked
+  # content sits at the same path, and the remote modifies it. The guard
+  # must refuse before moving anything.
+  git -C "$WORK" rm -q --cached base.txt
+  printf 'LOCAL-UNTRACKED-AFTER-STAGED-DELETE\n' > "${WORK}/base.txt"
+  cp "${WORK}/base.txt" "${TMPDIR_BASE}/expected-staged-delete.txt"
+  printf 'REMOTE-BASE\n' > "${ADV}/base.txt"
+  git -C "$ADV" add base.txt
+  git -C "$ADV" commit -qm "modify base"
+  git -C "$ADV" push -q origin main
+
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    pass "staged-delete: safe-pull refuses with nonzero exit"
+  else
+    fail "staged-delete: safe-pull refuses with nonzero exit (got 0)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  assert_contains "staged-delete: output refuses salvage" "$out" "Refusing to salvage"
+  assert_contains "staged-delete: output names the staged offender" "$out" "base.txt"
+  assert_contains "staged-delete: output says nothing was moved" "$out" "nothing was moved"
+  assert_byte_identical "staged-delete: untracked content stays in place" \
+    "${WORK}/base.txt" "${TMPDIR_BASE}/expected-staged-delete.txt"
+  if [[ -d "${WORK}/.git/safe-pull-salvage" ]]; then
+    fail "staged-delete: no salvage packet is created on refusal"
+  else
+    pass "staged-delete: no salvage packet is created on refusal"
+  fi
+}
+
 test_colliding_untracked_file_survives_with_content
 test_clean_pull_still_succeeds
 test_tracked_blockage_aborts_without_moving
 test_nested_invocation_salvages_from_root
+test_staged_delete_collision_refuses_without_moving
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -ne 0 ]]; then
