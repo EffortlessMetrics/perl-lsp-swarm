@@ -213,6 +213,7 @@ pub(crate) fn baseline_report_fixture() -> BaselineReport {
             overall_success_rate_percent: 95.5,
             total_unique_failures: 2,
             overall_signal_per_dollar: 1.5,
+            duplicate_runs_folded: 0,
         },
     }
 }
