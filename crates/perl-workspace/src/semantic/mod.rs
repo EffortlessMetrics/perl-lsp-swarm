@@ -41,6 +41,16 @@ pub mod eval_sub_extractor;
 #[path = "generated_member_extractor.rs"]
 mod generated_member_extractor_core;
 
+/// Canonical generated-member publication gate over the historical core.
+///
+/// The core retains permissive DBIx::Class recognition as a comparison oracle;
+/// this wrapper quarantines those rows at the publication boundary so raw
+/// module spelling alone never publishes a production-authoritative DBIC
+/// member (#13974). #13979 owns the core's terminal disposition after the
+/// registered adapter cutover.
+#[path = "generated_member_extractor_admitted.rs"]
+mod generated_member_extractor_admitted;
+
 #[allow(unreachable_pub)]
 #[path = "workspace_import_extractor.rs"]
 mod workspace_import_extractor_core;
@@ -56,14 +66,15 @@ pub mod generated_member_extractor {
 
     /// Extract generated-member facts from the canonical framework producers.
     ///
-    /// QuickORM table members are separator-sensitive: a source-free walk can
-    /// never establish their import authority, so they are extracted only by
-    /// [`extract_generated_member_facts_with_source`].
+    /// Legacy DBIx::Class recognition in the core is quarantined at this
+    /// publication boundary; QuickORM table members are separator-sensitive:
+    /// a source-free walk can never establish their import authority, so they
+    /// are extracted only by [`extract_generated_member_facts_with_source`].
     pub(crate) fn extract_generated_member_facts(
         ast: &Node,
         file_id: FileId,
     ) -> Vec<GeneratedMemberFact> {
-        super::generated_member_extractor_core::extract_generated_member_facts(ast, file_id)
+        super::generated_member_extractor_admitted::extract_generated_member_facts(ast, file_id)
     }
 
     /// Extract generated members with the source text available to adapters
