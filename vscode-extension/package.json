@@ -625,16 +625,16 @@
             "default": false,
             "scope": "machine",
             "order": 10,
-            "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
-            "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+            "description": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the AI completion reference.",
+            "markdownDescription": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
           },
           "perl-lsp.aiCompletion.streaming.enabled": {
             "type": "boolean",
             "default": true,
             "scope": "machine",
             "order": 20,
-            "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
-            "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+            "description": "Client preference for progressive inline-completion display. Requires aiCompletion.enabled. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build.",
+            "markdownDescription": "Client preference for progressive inline-completion display. Requires `aiCompletion.enabled`. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
           }
         }
       },
@@ -1348,8 +1348,8 @@
           },
           {
             "id": "verify-perl",
-            "title": "Verify Your Perl Installation",
-            "description": "Run [Perl: Run Health Check](command:perl-lsp.runHealthCheck) to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
+            "title": "Check Optional Perl Runtime",
+            "description": "The core language server works without Perl. [Run Health Check](command:perl-lsp.runHealthCheck) checks for optional Perl to run tests. Debugging requires Perl 5.10+. Native formatting and critic are built in; perltidy and perlcritic are optional external-compatibility tools.",
             "media": {
               "image": "media/walkthrough/verify-perl.svg",
               "altText": "Verify Perl"
@@ -1454,14 +1454,14 @@
     "bundle-lsp": "node ./scripts/bundle-lsp.js",
     "check:publisher-tools": "node scripts/check-publisher-tools.js",
     "package": "node scripts/package-vsix.js",
-    "publish": "npm exec --offline --no -- @vscode/vsce publish",
+    "publish": "node ./scripts/refuse-local-publication.cjs",
     "verify:marketplace": "npm run bundle-lsp && npm run package",
-    "publish:openvsx": "npm exec --offline --no -- ovsx publish",
+    "publish:openvsx": "node ./scripts/refuse-local-publication.cjs",
     "check:openvsx": "npm exec --offline --no -- ovsx --version"
   },
   "dependencies": {
     "tar": "^7.5.22",
-    "vscode-languageclient": "^10.1.1",
+    "vscode-languageclient": "^10.1.2",
     "yauzl": "^3.4.0"
   },
   "overrides": {
@@ -1496,7 +1496,7 @@
     "jest": "^30.5.2",
     "jszip": "^3.10.2",
     "mocha": "^12.0.3",
-    "ovsx": "1.1.1",
+    "ovsx": "1.2.0",
     "oxfmt": "0.73.0",
     "oxlint": "1.88.0",
     "oxlint-tsgolint": "7.0.2004",
