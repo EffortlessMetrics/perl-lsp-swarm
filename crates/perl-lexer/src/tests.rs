@@ -790,12 +790,21 @@ fn skip_whitespace_consumes_each_known_pod_command_through_cut() {
 }
 
 #[test]
-fn skip_whitespace_does_not_open_pod_at_a_stray_cut() {
-    let source = "1;\n\n=cut\nrest";
-    let mut lexer = lexer_at_equals(source);
+fn skip_whitespace_opens_pod_at_a_stray_cut_with_statement_start_context() {
+    // `perl -c` accepts `1;\n\n=cut\nrest`: a line-initial `=cut` outside POD opens a
+    // POD block that runs to the next `=cut`, or to EOF when there is none.
+    let opens = "1;\n\n=cut\nrest";
+    let mut lexer = lexer_at_equals(opens);
+    lexer.skip_whitespace_and_comments();
+    assert_eq!(lexer.position, opens.len(), "a stray =cut opens POD to EOF");
+
+    // A `=cut` that continues an expression stays code: perl parses `my $x = 1\n=cut`
+    // as an assignment continuation, not as a directive.
+    let continuation = "my $x = 1\n=cut\nrest";
+    let mut lexer = lexer_at_equals(continuation);
     let at = lexer.position;
     lexer.skip_whitespace_and_comments();
-    assert_eq!(lexer.position, at, "a stray =cut stays code");
+    assert_eq!(lexer.position, at, "no blank line or statement end keeps it code");
 }
 
 #[test]

@@ -431,6 +431,7 @@ jobs:
         # silently bit-rot. Unix remains the execution authority for the
         # Bash/chmod smoke.
         run: |
+          set -euo pipefail
           # Execute the public completion target before library smoke so a
           # separate library failure cannot suppress this Windows regression.
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perllsp "* ]]; then
@@ -439,7 +440,13 @@ jobs:
           cargo test $WINDOWS_TEST_CRATES --locked --lib
           cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
-            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
+            python_bin="$(command -v python3 || command -v python)"
+            "$python_bin" scripts/ci/test_check_hygiene_process_tests.py
+            # Cargo also exits zero for --lib or a filter selecting no tests.
+            # Keep the one execution and require its intended pass records.
+            process_log="$RUNNER_TEMP/hygiene-process-tests.log"
+            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests:: -- --format pretty --color never | tee "$process_log"
+            "$python_bin" scripts/ci/check_hygiene_process_tests.py "$process_log"
           fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
@@ -1047,6 +1054,35 @@ jobs:
           cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
           cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
 
+      # #17459: the retained main run spent 21m45s compiling routed targets
+      # after earlier gates consumed most of the 60m runtime watchdog. Prepare
+      # the exact canonical scope first, with independent compile-only evidence.
+      # The 75m job envelope and all runtime assertions remain unchanged.
+      - name: Prepare routed integration-test targets
+        # Preserve the full tier's independent facts even if preparation fails.
+        # Its separate failed receipt remains evidence; runtime gates still own
+        # the verdict, including the required compilation row on their retry.
+        continue-on-error: true
+        # Bound preparation inside the 75m job envelope so a cold routed
+        # build cannot silently consume the runtime watchdog's hour.
+        timeout-minutes: 25
+        run: |
+          set +e
+          "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast \
+            --gate unit_routed_full_build --subject target/receipts/ci-subject.json \
+            --receipt --receipt-path target/receipts/routed-test-build/receipt.json
+          preparation_status=$?
+          # The full tier writes the same gate log again. Keep the original
+          # preparation log beside its independent receipt, including failures,
+          # and point the preparation receipt at the preserved copy.
+          if [ -f target/receipts/logs/unit_routed_full_build.log ]; then
+            mkdir -p target/receipts/routed-test-build/logs || exit 1
+            cp target/receipts/logs/unit_routed_full_build.log \
+              target/receipts/routed-test-build/logs/unit_routed_full_build.log || exit 1
+            python3 -c 'import json, pathlib; p = pathlib.Path("target/receipts/routed-test-build/receipt.json"); d = json.loads(p.read_text()); gates = d.get("gates", d if isinstance(d, list) else []); rows = gates if isinstance(gates, list) else []; [r.__setitem__("log_path", "routed-test-build/logs/unit_routed_full_build.log") for r in rows if isinstance(r, dict) and str(r.get("log_path", "")).endswith("logs/unit_routed_full_build.log")]; p.write_text(json.dumps(d, indent=2) + "\n")' || exit 1
+          fi
+          exit "$preparation_status"
+
       - name: Run PR-fast via shared xtask gate runner
         env:
           PR_SMOKE_NAVIGATION_PROOF: ${{ steps.inline-completion-scope.outputs.warm_inline_completion }}
@@ -1166,6 +1202,8 @@ jobs:
           name: pr-fast-receipt-${{ github.sha }}
           path: |
             target/receipts/receipt.json
+            target/receipts/routed-test-build/receipt.json
+            target/receipts/routed-test-build/logs/*.log
             target/receipts/ci-subject.json
             target/receipts/logs/*.log
           if-no-files-found: warn
@@ -1393,6 +1431,7 @@ jobs:
             scripts/ci/test_run_gate_shard.py
             scripts/ci/test_scope_cache_key.py
             scripts/ci/test_candidate_meta_self_tests.py
+            scripts/ci/test_local_publication_containment.py
           )
           for self_test in "${meta_self_tests[@]}"; do
             if [[ ! -e "$self_test" && ! -L "$self_test" ]]; then
@@ -2199,6 +2238,21 @@ jobs:
             pr_fast_watchdog_accepts_direct_and_heredoc_runners \
             pr_fast_watchdog_rejects_untimed_or_status_losing_runners; do
             grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/pr-fast-watchdog-contract.log"
+          done
+
+      # #17459: workflow/policy-only changes skip RustScoped routed tests.
+      # Execute this governed-surface contract on the protected merge surface.
+      - name: Routed test preparation contract (required merge surface)
+        run: |
+          set -o pipefail
+          cargo test -p xtask --test routed_test_preparation_contract --locked -- \
+            --test-threads=1 --color never | tee "$RUNNER_TEMP/routed-test-preparation-contract.log"
+          grep -Eq '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in ' \
+            "$RUNNER_TEMP/routed-test-preparation-contract.log"
+          for test_name in \
+            preparation_preserves_runtime_command_and_budget \
+            preparation_precedes_watchdog_and_has_separate_evidence; do
+            grep -Fx "test $test_name ... ok" "$RUNNER_TEMP/routed-test-preparation-contract.log"
           done
 
       # The frozen legacy parity authority is a required merge surface. Keep

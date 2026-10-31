@@ -262,7 +262,10 @@ mod tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> TestResult<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         if !output.status.success() {
             return Err(format!("git {:?} failed with status {}", args, output.status).into());
         }

@@ -29,27 +29,29 @@ agent-preflight: storage-doctor
     @echo "storage layout preflight ok; Cargo build capacity was not assessed"
     @echo "For build admission: scripts/cargo-admitted --preflight <exact Cargo command>"
 
-# Agent-safe check: routed target/build dirs, incremental off, bounded sccache, build lock.
+# Legacy cargo-safe compatibility check; not host admission. New agent work: scripts/cargo-admitted after host admission.
 agent-check:
     {{cargo_safe}} check --workspace --all-targets --profile agent --locked
 
+# Legacy cargo-safe compatibility test; not host admission. New agent work: scripts/cargo-admitted after host admission.
 agent-test:
     {{cargo_safe}} test --workspace --all-targets --profile agent --locked
 
+# Legacy cargo-safe compatibility lint; not host admission. See docs/agents/CARGO_STORAGE.md#staged-native-clippy for the separately qualified route.
 agent-clippy:
     {{cargo_safe}} clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs
 
 # Nextest's runner profile and Cargo's build profile are separate selectors.
 # Match agent-test's build profile so switching runners reuses its test binaries.
+# Legacy cargo-safe compatibility nextest; not host admission. External nextest is not admitted; requires a separately admitted route.
 agent-nextest:
     {{cargo_safe}} nextest run --workspace --profile agent --cargo-profile agent
 
+# Legacy cargo-safe compatibility gates; not host admission. The xtask alias is not admitted; requires a separately admitted route.
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
 
-# Run any cargo command with shared multi-worktree build caching (devplane
-# target dir, sccache, build flock, disk gate). Documented default for local
-# multi-worktree development — see docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md.
+# Legacy cargo-safe compatibility cache; not host admission. New agent work: scripts/cargo-admitted after host admission; see docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md.
 cached *args:
     {{cargo_safe}} {{args}}
 
@@ -2941,19 +2943,12 @@ bump-version VERSION:
 release-turnkey VERSION *ARGS="":
     @cargo xtask release-turnkey "{{VERSION}}" {{ARGS}}
 
-# Dispatch publish-to-crates.io workflow for a release version.
+# Legacy dispatch-only helper; not the release transaction or proof of publication (#16799).
 publish-release VERSION *ARGS="":
     @cargo xtask publish-release "{{VERSION}}" {{ARGS}}
 
-# Manually publish the 4 new crates for v0.12.2 one at a time with 10-min gaps.
-# Use when the automated workflow is blocked by crates.io's new-crate rate limit
-# (burst=5, refill=1/10 min — separate from the update limit fixed in #3307).
-# See docs/reference/MANUAL_PUBLISH_NEW_CRATES.md for full context.
-#
-# Dry run (safe, no actual publishing):
-#   DRY_RUN=true just publish-new-crates
-# Live run:
-#   CARGO_REGISTRY_TOKEN=<token> just publish-new-crates
+# Retired ambient publisher: always refuses (#16802).
+# Follow the reviewed release transaction (#13768 / #6055): docs/release/RUNBOOK.md.
 publish-new-crates:
     bash scripts/publish-new-crates-manually.sh
 

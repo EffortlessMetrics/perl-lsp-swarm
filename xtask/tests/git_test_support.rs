@@ -66,6 +66,11 @@ const AMBIENT_GIT_ENV: &[&str] = &[
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
     "GIT_GRAFT_FILE",
     "GIT_NAMESPACE",
     "GIT_TEMPLATE_DIR",
@@ -211,7 +216,7 @@ impl HermeticGit {
 
     /// Runs a Git command and returns its captured output.
     pub fn git_output(&self, repo: &Path, args: &[&str]) -> Result<Output> {
-        let mut cmd = StdCommand::new("git");
+        let mut cmd = xtask::git_environment::isolate(StdCommand::new("git"));
         cmd.args(args).current_dir(repo);
         self.apply_env(&mut cmd);
         cmd.output().with_context(|| {
@@ -295,7 +300,7 @@ pub fn git_cmd_with_ambient(
         format!("[core]\n\tattributesFile = {}\n", config_path_value(&empty_attributes)),
     )
     .context("failed to create pinned Git config")?;
-    let mut cmd = StdCommand::new("git");
+    let mut cmd = xtask::git_environment::isolate(StdCommand::new("git"));
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);

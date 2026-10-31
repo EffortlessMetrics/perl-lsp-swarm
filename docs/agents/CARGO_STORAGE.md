@@ -95,6 +95,83 @@ are refused. Compiler wrappers are not automatically enabled: their additional
 cache volumes need a separately admitted route. Unsupported commands must be
 explicitly admitted by the root, not silently retried as raw Cargo.
 
+### Native Windows setup
+
+Check the actual checkout, common Git directory, current base, hook paths and
+storage destinations before provisioning. A stale coordination checkout must
+not supply an old admission script. Preserve dirty or independently owned
+checkouts; use a current isolated task clone with a linked writer worktree when
+the existing checkout cannot safely be refreshed. The hook installer provisions
+every registered worktree in that clone and changes its repository-local
+`core.hooksPath`; invoking it from a linked tree does not confine those writes to
+that tree.
+
+Select an owned absolute native `$storageRoot` on a volume with capacity, then
+set these variables in the same PowerShell task shell that will run admission:
+
+```powershell
+$env:DEVPLANE = Join-Path $storageRoot 'devplane'
+$env:CARGO_HOME = Join-Path $storageRoot 'cargo-home'
+$env:TMPDIR = Join-Path $storageRoot 'tmp'
+$env:TEMP = $env:TMPDIR
+$env:TMP = $env:TMPDIR
+$env:RUSTUP_AUTO_INSTALL = '0'
+```
+
+Selecting only `DEVPLANE` can still leave Cargo home or temporary files on an
+overfull system volume. Keep existing caches intact. Do not export target/build
+paths or enable compiler wrappers: the admitted route owns both private output
+paths. A copied `.cargo/config.local.toml` is not automatically loaded by Cargo's
+[configuration discovery](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure)
+and cannot configure Python's pre-admission resolver. The adjacent example no
+longer recommends shared output paths or sccache for this route.
+
+For missing hooks, use the existing lightweight installer owner (#17861), from
+the intended worktree with the repository-pinned native toolchain installed:
+
+```powershell
+python scripts/cargo_admitted.py --preflight run -p perl-ci-hygiene --bin perl-ci-hygiene --profile agent --locked -- install-githooks
+python scripts/cargo_admitted.py run -p perl-ci-hygiene --bin perl-ci-hygiene --profile agent --locked -- install-githooks
+python scripts/cargo_admitted.py --preflight run -p perl-ci-hygiene --bin perl-ci-hygiene --profile agent --locked -- check-githooks
+python scripts/cargo_admitted.py run -p perl-ci-hygiene --bin perl-ci-hygiene --profile agent --locked -- check-githooks
+```
+
+Run each operation only after its preceding command succeeds; a preflight refusal
+is not permission to continue. This invokes the authoritative installer without
+the outer product-linked `xtask` bootstrap or a second hook generator. It leaves
+installed commit/push gates unchanged. The PowerShell writer preflight no longer
+creates a legacy target or tells callers to export it. Its `TargetRoot` parameter
+is accepted for older callers but unused; pass the actual clone's canonical and
+worktree roots when overriding its historical layout defaults. It still checks
+checkout safety and installed hook currency, separately from Cargo admission.
+Run the repository writer preflight using native Git Bash
+(`bash scripts/agent-preflight.sh`) before editing; do not
+accidentally select WSL's `bash.exe` for a native Windows checkout. Installation,
+hook currency and writer safety do not qualify later Cargo commands, hook gate
+execution, process-tree settlement on Windows, or a smaller cloud reserve. Keep
+the default reserve and usage threshold; obtain a fresh exact-command admission
+for subsequent work.
+
+### Git context in hook-driven tests
+
+Git hooks export repository-local variables that override both a child's working
+directory and `git -C`. Fixture Git commands must use
+`xtask::git_environment::isolate(Command::new("git"))` before adding their own
+arguments or deliberate fixture overrides. Identity-pinning tests should continue
+using the stronger `HermeticGit` fixture contract in `xtask/tests/git_test_support.rs`.
+The shared Vim checkout verifier also selects its own repository through this
+boundary. See [Git's foreign-repository hook guidance](https://git-scm.com/docs/githooks).
+
+The gate runner isolates only Cargo-test-class child processes, including chained
+setup/test commands recognized by its existing classifier. The parent hook and
+current-repository staged commit checks retain their Git context and index. No
+process-global environment changes, test exclusions or watchdog changes are needed.
+The native inventory, disposable-caller probes and staged-index control guard this
+distinction. This does not qualify a shell command that never reaches its intended
+tests; inspect test-execution evidence as well as its exit status.
+
+### Capacity policy
+
 Before allocating any directory, admission checks the nearest existing ancestor
 of the slot, both target/build resources, Cargo home and temporary storage. The
 default `CARGO_STORAGE_POLICY=percent` preserves 40 GiB minimum free AND less
@@ -417,6 +494,44 @@ not honor this lease: quiesce those consumers before rollout. This is not a
 system-wide concurrency limit across repositories.
 
 The emitted JSON resource descriptor belongs in the existing root-held frame.
+For bounded read-only inventory, save that single JSON object locally and run
+`bash scripts/storage-doctor --descriptor record.json --json` from its original
+working directory (`--resources-descriptor` is an equivalent spelling). The
+existing repo-local target guard still runs; its failure makes this invocation
+non-success. No-argument `storage-doctor` reports only its repo-local guard and
+marks external resource authority unknown, without guessing a basename devplane.
+
+The descriptor reader uses the existing admission path rules and verifies the
+same native host, common repository, worktree, invocation directory, target/build
+slot and agreeing scope/resource fields. It rejects linked inputs and unknown or
+malformed scope. This is **historical inventory**, not authentication of the
+descriptor's origin or a live lease. It traverses only the four named roots with
+entry, depth, elapsed-time and fingerprint-byte bounds. Missing, unreadable,
+changed or clipped entries keep partial observed counts but cannot yield complete
+totals. Fingerprints under target and separated build roots include custom/agent
+profiles and explicit target triples. Public JSON retains fixed resource roles,
+path/content hashes and selected integer fingerprint hashes, never raw descriptor
+paths, arbitrary metadata or fingerprint environment/flag values.
+
+Apparent bytes measure regular-file content; allocated bytes use POSIX `st_blocks`
+and include directories. Native Windows allocated bytes remain unknown. Combined
+totals deduplicate native device/inode identities across roots, including overlapping
+roots and hardlinks. These are retained snapshots, not reclaimable or exclusive
+ownership. Peak demand, build deltas, open-unlinked bytes, WSL guest free space,
+VHDX allocation and backing-host capacity remain separate unknown fields. No
+`df` minus `du` inference, cleanup or compaction is performed.
+
+`observe-xtask-build.sh` captures the emitted descriptor in a bounded private
+temporary file outside its output directory and emits only this sanitized
+historical inventory after the command. Multiple descriptors or an incomplete
+stderr capture invalidate that inventory. Its outer before/after environment
+snapshots are hashed hints: a descriptor emitted later **cannot retroactively
+bind the before sample**. Neither command exit nor an emitted settlement line
+proves same-lease measurement. The existing command's exact argv and exit status
+remain authoritative even when inventory fails. Full workload qualification and
+same-lease sampling remain with #17623/#17655/#17658/#17668; this instrument never
+changes admission or retires a storage guard.
+
 Every terminal task returns each worktree and external resource as `released`,
 `retained with reason`, or `awaiting owner verification`. A reusable cache is
 normally retained. Unknown/active resources, dirty/untracked/ignored source or

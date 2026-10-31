@@ -26,7 +26,7 @@ use tempfile::TempDir;
 // ---------------------------------------------------------------------------
 
 fn git_cmd(args: &[&str], cwd: Option<&Path>) -> Result<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = xtask::git_environment::isolate(Command::new("git"));
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
     // Clear worktree-inherited git env vars so isolated repos are fully self-contained.
     cmd.env_remove("GIT_DIR")
@@ -74,7 +74,7 @@ fn init_standalone_repo() -> Result<TempDir> {
 
 /// Return the HEAD commit Unix timestamp (seconds) for the given repo.
 fn head_commit_time(repo: &Path) -> Result<u64> {
-    let output = Command::new("git")
+    let output = xtask::git_environment::isolate(Command::new("git"))
         .args(["log", "-1", "--format=%ct", "HEAD"])
         .current_dir(repo)
         .output()?;

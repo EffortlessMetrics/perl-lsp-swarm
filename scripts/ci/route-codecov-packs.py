@@ -20,6 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover - CI uses Python 3.11+.
 
 FALLBACK_PACK_ID = "patch-coverage-rust-focused"
 NON_LCOV_SKIP_REASON = "non-LCOV CI policy/routing surface; covered by focused CI gates"
+LCOV_DISABLED_SKIP_REASON = "LCOV measurement disabled for this pack; covered by focused CI gates"
 NON_SOURCE_LCOV_SKIP_REASON = "LCOV coverage pack matched only non-source files; covered by focused CI gates"
 TEST_SUPPORT_CRATE_PREFIXES = (
     "crates/perl-lsp-ux-tests/",
@@ -550,6 +551,21 @@ def selected_packs(packs: list[dict[str, object]], paths: list[str]) -> list[dic
     return []
 
 
+def non_lcov_skip_reason(pack: dict[str, object], paths: list[str]) -> str:
+    if pack_matches_lcov_source(pack, paths):
+        return LCOV_DISABLED_SKIP_REASON
+    return NON_LCOV_SKIP_REASON
+
+
+def routing_classification(packs: list[dict[str, object]], paths: list[str]) -> str:
+    """Use the same classification as the Rust ci-route producer."""
+    if packs:
+        return "routed"
+    if any(is_lcov_source_path(path) for path in paths):
+        return "routing_bug"
+    return "routing_skip"
+
+
 def normalize_pack(
     pack: dict[str, object],
     paths: list[str] | None = None,
@@ -579,7 +595,11 @@ def write_summary(path: Path, receipt: dict[str, object]) -> None:
             for pack in packs:
                 handle.write(f"  - `{pack['id']}`\n")
         else:
-            handle.write("- coverage proof packs: skipped-by-policy\n")
+            classification = receipt["routing_classification"]
+            if classification == "routing_bug":
+                handle.write("- coverage proof packs: routing_bug (LCOV source changed but no LCOV pack selected)\n")
+            else:
+                handle.write("- coverage proof packs: skipped-by-policy\n")
             skipped = receipt.get("skipped_by_policy") or {}
             if skipped:
                 handle.write("- skipped proof packs:\n")
@@ -595,7 +615,8 @@ def main() -> int:
     coverage_packs = [normalize_pack(pack, paths) for pack in selected_packs(packs, paths)]
     coverage_pack_ids = [pack["id"] for pack in coverage_packs]
     skipped_by_policy = {
-        str(pack.get("id", "")): NON_LCOV_SKIP_REASON for pack in non_lcov_matches(packs, paths)
+        str(pack.get("id", "")): non_lcov_skip_reason(pack, paths)
+        for pack in non_lcov_matches(packs, paths)
     }
     skipped_by_policy.update(
         {
@@ -622,6 +643,7 @@ def main() -> int:
         "skipped_by_policy": skipped_by_policy,
         "coverage_pack_selector": coverage_pack_ids,
         "coverage_proof_packs": coverage_packs,
+        "routing_classification": routing_classification(coverage_packs, paths),
         "estimated_lem": 1,
     }
     receipt_path = Path(args.receipt)
