@@ -250,6 +250,15 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             // empty on Windows, but the target still needs Windows compile
             // admission so the platform boundary cannot silently bit-rot.
             || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
+            // #18072: the archive-entry path-containment guard in this file
+            // resolves entry names against the extraction destination with
+            // `Path::join`, whose Windows semantics differ from POSIX: a
+            // rooted-but-prefixless name has a root but no drive prefix, so
+            // an `is_absolute`-only guard admits a name that resolves
+            // against the drive root. The proof for that guard only
+            // discriminates on Windows, so the file is admitted to the
+            // Windows runner rather than leaving the proof POSIX-only.
+            || normalized == "xtask/src/vim_host_toolchain.rs"
     })
 }
 
@@ -568,6 +577,10 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
         // binding would sail through every required check green (#15995
         // review).
         || file == ".ci/policies/required-checks.toml"
+        // The #8401 selection guard in lsp_internal_dependency_layers reads
+        // this facade-owned target. With the reverse core dev edge removed,
+        // facade-only edits no longer reach xtask through reverse dependencies.
+        || file == "crates/perl-lsp-rs/tests/core_facade_contract.rs"
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
         || (file.starts_with("crates/") && file.ends_with("/Cargo.toml"))
@@ -1273,6 +1286,7 @@ mod tests {
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
             "xtask/tests/release_artifact_size_smoke_script.rs",
+            "xtask/src/vim_host_toolchain.rs",
             "crates/perllsp/src/main.rs",
             "crates/perl-lsp-rs/src/cli.rs",
             "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
@@ -1384,6 +1398,22 @@ mod tests {
     }
 
     // --- xtask policy-guarded inputs (#5036) ---
+
+    #[test]
+    fn core_facade_contract_change_selects_its_crate_and_xtask() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-lsp-rs", "crates/perl-lsp-rs"), ("xtask", "xtask")]);
+        let files = vec!["crates/perl-lsp-rs/tests/core_facade_contract.rs".to_string()];
+        let crates = crates_from_files(&files, &metadata, "/workspace")?;
+        assert_eq!(crates, BTreeSet::from(["perl-lsp-rs".to_string(), "xtask".to_string()]));
+
+        let unrelated = vec!["crates/perl-lsp-rs/tests/unrelated.rs".to_string()];
+        assert_eq!(
+            crates_from_files(&unrelated, &metadata, "/workspace")?,
+            BTreeSet::from(["perl-lsp-rs".to_string()]),
+            "the guard route must stay specific to the source it reads"
+        );
+        Ok(())
+    }
     //
     // `unit_routed_full` is scope-aware, so a guard only runs when its crate is
     // selected. The binstall tests in `release_artifact_check` read

@@ -340,6 +340,12 @@ impl CallHierarchyProvider {
         current_package: Option<&str>,
         receiver_packages: &mut HashMap<String, String>,
     ) {
+        // Nested callable bodies own their callsites. The selected callable is
+        // already entered at its body by `outgoing_calls`.
+        if matches!(&node.kind, NodeKind::Subroutine { .. }) {
+            return;
+        }
+
         // `\&foo` creates a code reference; it is not a call site (#17370).
         if is_code_reference_creation(node, &self.source) {
             return;

@@ -734,19 +734,34 @@ impl DebugAdapter {
             .unwrap_or_default()
     }
 
-    /// Ask the live Perl debugger to install one source breakpoint and read
-    /// back the exact perl5db glob slot before accepting the installation.
+    /// Build the framed `p do { … }` probe that reads back one breakpoint's
+    /// perl5db glob slot, resolving the engine's own `_<file` key spelling by
+    /// filesystem object identity when the exact spelling misses (#17246).
+    pub(super) fn engine_breakpoint_probe_command(source_path: &str, line: i64) -> String {
+        let path_hex =
+            source_path.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        format!(
+            "p do {{ my $f = pack(\"H*\", \"{path_hex}\"); my $want = eval {{ require Cwd; \
+             Cwd::realpath($f) }}; my $key = defined $main::{{\"_<$f\"}} ? $f : undef; \
+             if (!defined $key && defined $want) {{ for my $k (grep {{ /^_</ && length $_ > 2 }} \
+             keys %main::) {{ my $c = substr($k, 2); my $r = eval {{ Cwd::realpath($c) }}; \
+             if (defined $r && $r eq $want) {{ $key = $c; last }} }} }} if (defined $key) {{ \
+             DB::break_on_filename_line($key, {line}, 1); my $g = $main::{{\"_<$key\"}}; my $h = \
+             defined($g) ? *{{$g}}{{HASH}} : undef; \"DAP_BP:\" . (defined($h) && \
+             defined($h->{{{line}}}) ? unpack(\"H*\", $h->{{{line}}}) : \"absent\") }} else {{ \
+             \"DAP_BP:absent\" }} }}"
+        )
+    }
+
+    /// Ask the live Perl debugger to acknowledge one source breakpoint by
+    /// probing its exact perl5db glob slot.
     pub(super) fn acknowledge_engine_breakpoint(
         &self,
         source_path: &str,
         line: i64,
         timeout: Duration,
     ) -> Result<(), EngineBreakpointAcknowledgeError> {
-        let path_hex =
-            source_path.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-        let command = format!(
-            "p do {{ my $f = pack(\"H*\", \"{path_hex}\"); DB::break_on_filename_line($f, {line}, 1); my $g = $main::{{\"_<\" . $f}}; my $h = defined($g) ? *{{$g}}{{HASH}} : undef; \"DAP_BP:\" . (defined($h) && defined($h->{{{line}}}) ? unpack(\"H*\", $h->{{{line}}}) : \"absent\") }}"
-        );
+        let command = Self::engine_breakpoint_probe_command(source_path, line);
         let captured_generation = self.current_session_generation();
         let (operation, begin, end, prior_state) = {
             let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
@@ -1399,6 +1414,40 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    /// The engine-ack probe must resolve perl5db's own `_<file` key spelling
+    /// by filesystem identity when the exact client spelling misses, and must
+    /// still answer `absent` for an unresolvable file — before #17246 a
+    /// Windows spelling mismatch probed a glob that can never exist and left
+    /// every breakpoint "pending acknowledgement" (#17246).
+    #[test]
+    fn engine_breakpoint_probe_resolves_engine_key_by_realpath() {
+        let source_path = "F:\\w\\deep.pl";
+        let command = DebugAdapter::engine_breakpoint_probe_command(source_path, 6);
+
+        let expected_hex: String = source_path.bytes().map(|byte| format!("{byte:02x}")).collect();
+        assert!(
+            command.contains(&format!("pack(\"H*\", \"{expected_hex}\")")),
+            "client path must arrive hex-encoded: {command}"
+        );
+        // Object-identity resolution of the engine's own key spelling.
+        assert!(
+            command.contains("Cwd::realpath($f)"),
+            "probe must resolve the requested file: {command}"
+        );
+        assert!(
+            command.contains("Cwd::realpath($c)") && command.contains("$key = $c"),
+            "probe must scan the engine's _< globs for the same file: {command}"
+        );
+        // Installation and read-back both go through the resolved key.
+        assert!(command.contains("DB::break_on_filename_line($key, 6, 1)"), "{command}");
+        assert!(command.contains("$main::{\"_<$key\"}"), "{command}");
+        assert!(command.contains("\"DAP_BP:\""), "{command}");
+        assert!(
+            command.contains("\"absent\""),
+            "unresolvable paths must stay honestly absent: {command}"
+        );
     }
 
     #[test]
@@ -2296,25 +2345,30 @@ print "result: $final\n";
 
     #[test]
     fn test_attach_tcp_valid_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": "localhost",
-            "port": 13603,
+            "host": "127.0.0.1",
+            "port": port,
             "timeout": 5000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
 
         match response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(!success); // Not yet implemented, but validates correctly
+                assert!(success);
                 assert_eq!(command, "attach");
-                assert!(message.is_some());
-                let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("localhost:13603"));
-                assert!(msg.contains("5000ms timeout"));
+                assert!(message.is_none());
             }
             _ => return Err("Expected response".into()),
         }
+        let (_peer, _) = listener.accept()?;
+        assert!(matches!(
+            adapter.handle_request(2, "disconnect", None),
+            DapMessage::Response { success: true, .. }
+        ));
         Ok(())
     }
 
@@ -2339,7 +2393,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_invalid = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
@@ -2354,7 +2408,7 @@ print "result: $final\n";
                     }
                     Ok(())
                 }
-                _ => return Err("Expected response".into()),
+                _ => Err("Expected response".into()),
             }
         };
         let assert_ambiguous = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
@@ -2592,7 +2646,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("Port must be in range"));
+                assert_eq!(msg, "Invalid port: expected an integer in range 1-65535");
             }
             _ => return Err("Expected response".into()),
         }
@@ -2639,27 +2693,6 @@ print "result: $final\n";
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
                 assert!(msg.contains("Timeout cannot exceed"));
-            }
-            _ => return Err("Expected response".into()),
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_attach_default_values() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        // Empty args should use defaults and fail with missing arguments message
-        let args = json!({});
-        let response = adapter.handle_request(1, "attach", Some(args));
-
-        match response {
-            DapMessage::Response { success, command, message, .. } => {
-                assert!(!success);
-                assert_eq!(command, "attach");
-                assert!(message.is_some());
-                // Should use default host/port but still not be implemented
-                let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("localhost:13603"));
             }
             _ => return Err("Expected response".into()),
         }
@@ -2768,8 +2801,9 @@ print "result: $final\n";
                 DapMessage::Response { success, message, .. } => {
                     assert!(!success, "port {port} should be rejected");
                     assert!(
-                        message.as_ref().is_some_and(|m| m.contains("out of range")),
-                        "expected 'out of range' error for port {port}, got: {message:?}"
+                        message.as_deref()
+                            == Some("Invalid port: expected an integer in range 1-65535"),
+                        "expected invalid-port error for port {port}, got: {message:?}"
                     );
                 }
                 _ => return Err(format!("Expected error response for port {port}").into()),
@@ -2788,9 +2822,9 @@ print "result: $final\n";
             let args = json!({ "port": port });
             let response = adapter.handle_request(2, "attach", Some(args));
             if let DapMessage::Response { message, .. } = response {
-                // Should NOT contain "out of range" — it passed validation
+                // Boundary integers must pass the native port validation.
                 assert!(
-                    !message.as_ref().is_some_and(|m| m.contains("out of range")),
+                    !message.as_ref().is_some_and(|m| m.contains("Invalid port")),
                     "port {port} should pass range validation, got: {message:?}"
                 );
             }

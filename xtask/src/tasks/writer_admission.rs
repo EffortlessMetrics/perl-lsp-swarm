@@ -1995,7 +1995,10 @@ mod tests {
     fn detached_spelling_remains_a_real_target_through_live_gathering() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let git = |args: &[&str]| -> Result<String> {
-            let output = Command::new("git").args(args).current_dir(dir.path()).output()?;
+            let output = xtask::git_environment::isolate(Command::new("git"))
+                .args(args)
+                .current_dir(dir.path())
+                .output()?;
             assert!(
                 output.status.success(),
                 "git {args:?}: {}",
@@ -2080,7 +2083,10 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let remote = tempfile::tempdir()?;
         let git = |root: &Path, args: &[&str]| -> Result<String> {
-            let output = Command::new("git").args(args).current_dir(root).output()?;
+            let output = xtask::git_environment::isolate(Command::new("git"))
+                .args(args)
+                .current_dir(root)
+                .output()?;
             assert!(
                 output.status.success(),
                 "git {args:?}: {}",
@@ -2161,7 +2167,13 @@ mod tests {
             vec!["remote", "add", "origin", "."],
             vec!["config", "remote.origin.uploadpack", "sleep 10; git-upload-pack"],
         ] {
-            assert!(Command::new("git").args(args).current_dir(dir.path()).status()?.success());
+            assert!(
+                xtask::git_environment::isolate(Command::new("git"))
+                    .args(args)
+                    .current_dir(dir.path())
+                    .status()?
+                    .success()
+            );
         }
         let started = Instant::now();
         let result = observe_remote_branch(dir.path(), "candidate", Duration::from_millis(100));
@@ -2180,9 +2192,12 @@ mod tests {
     #[test]
     fn gather_remote_branch_info_on_a_nonexistent_branch_is_none_not_an_error() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let init = Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status()?;
+        let init = xtask::git_environment::isolate(Command::new("git"))
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()?;
         assert!(init.success(), "git init must succeed in the temp dir");
-        let remote = Command::new("git")
+        let remote = xtask::git_environment::isolate(Command::new("git"))
             .args(["remote", "add", "origin", "."])
             .current_dir(dir.path())
             .status()?;

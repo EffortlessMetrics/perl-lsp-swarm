@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -264,6 +265,133 @@ cc = "1"
             self.assertEqual(1, result)
             self.assertIn(str(target / "package"), stderr.getvalue())
             extract_mock.assert_not_called()
+
+
+class CorePackageSmokeLifecycleTests(unittest.TestCase):
+    def test_owned_smoke_tree_is_removed_on_success_and_failure(self) -> None:
+        for outcome in (
+            "success",
+            "missing-catalog",
+            "invalid-archive",
+            "traversal",
+            "invalid-manifest",
+            "generate-lockfile",
+            "check",
+        ):
+            with self.subTest(outcome=outcome):
+                self.check_smoke_lifecycle(outcome)
+
+    def test_cleanup_preserves_unowned_symlink_target(self) -> None:
+        self.check_smoke_lifecycle("success", link_unowned=True)
+
+    def check_smoke_lifecycle(self, outcome: str, *, link_unowned: bool = False) -> None:
+        with tempfile.TemporaryDirectory(prefix="package-smoke-lifecycle-") as tmp:
+            root = Path(tmp)
+            # Same-prefix sibling: only the directory allocated by main is owned.
+            unowned = root / "perl-lsp-rs-core-package-smoke-unowned"
+            unowned.mkdir()
+            sentinel = unowned / "keep.txt"
+            sentinel.write_bytes(b"CALLER-OWNED\x00\n")
+            target = root / "private target"
+            archive = target / "package" / "perl-lsp-rs-core-0.1.0.crate"
+            archive.parent.mkdir(parents=True)
+            if outcome == "invalid-archive":
+                archive.write_bytes(b"not a tar archive")
+            else:
+                files = {
+                    "perl-lsp-rs-core-0.1.0/Cargo.toml": (
+                        b"\xff" if outcome == "invalid-manifest" else
+                        b'[package]\nname = "demo"\n[dev-dependencies]\ntempfile = "3"\n'
+                    ),
+                }
+                if outcome != "missing-catalog":
+                    files["perl-lsp-rs-core-0.1.0/build_catalog.rs"] = b"// catalog\n"
+                if outcome == "traversal":
+                    files["../perl-lsp-rs-core-package-smoke-unowned/keep.txt"] = b"OVERWRITTEN"
+                with tarfile.open(archive, "w") as tar:
+                    for name, payload in files.items():
+                        member = tarfile.TarInfo(name)
+                        member.size = len(payload)
+                        tar.addfile(member, io.BytesIO(payload))
+            original_archive = archive.read_bytes()
+            metadata = json.loads(metadata_fixture(root))
+            metadata["target_directory"] = str(target)
+            commands = []
+            child_failure = subprocess.CalledProcessError(37, ["cargo", outcome])
+
+            def run(command: list[str], *, capture: bool = False) -> str:
+                commands.append(command[1])
+                if command[1] == "metadata":
+                    return json.dumps(metadata)
+                if "--list" in command:
+                    return "build_catalog.rs\nCargo.toml\n"
+                if command[1] in ("generate-lockfile", "check"):
+                    # Prove the real archive was extracted and the real manifest
+                    # editor ran before the simulated child result is delivered.
+                    manifest = Path(command[command.index("--manifest-path") + 1])
+                    self.assertEqual(
+                        '[package]\nname = "demo"\n', manifest.read_text(encoding="utf-8")
+                    )
+                    if command[1] == outcome:
+                        raise child_failure
+                return ""
+
+            allocated = []
+            real_mkdtemp = tempfile.mkdtemp
+
+            def allocate(*args, **kwargs) -> str:
+                directory = real_mkdtemp(*args, **kwargs, dir=root)
+                allocated.append(Path(directory))
+                if link_unowned:
+                    try:
+                        (Path(directory) / "unowned-link").symlink_to(unowned, target_is_directory=True)
+                    except (OSError, NotImplementedError) as error:
+                        self.skipTest(f"directory symlink unavailable: {error}")
+                return directory
+
+            errors = {
+                "invalid-archive": tarfile.ReadError,
+                "traversal": SystemExit,
+                "invalid-manifest": UnicodeDecodeError,
+                "generate-lockfile": subprocess.CalledProcessError,
+                "check": subprocess.CalledProcessError,
+            }
+            with (
+                patch.object(core_package, "parse_args", return_value=SimpleNamespace(allow_dirty=False)),
+                patch.object(core_package, "run", side_effect=run),
+                patch.object(core_package.tempfile, "mkdtemp", side_effect=allocate),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                if outcome in errors:
+                    with self.assertRaises(errors[outcome]) as raised:
+                        core_package.main()
+                    if outcome in ("generate-lockfile", "check"):
+                        self.assertIs(raised.exception, child_failure)
+                    if outcome == "traversal":
+                        self.assertIn("refusing to extract path outside destination", str(raised.exception))
+                else:
+                    result = core_package.main()
+                    self.assertEqual(1 if outcome == "missing-catalog" else 0, result)
+                if outcome == "missing-catalog":
+                    self.assertIn("unpacked perl-lsp-rs-core package is missing build_catalog.rs", stderr.getvalue())
+                if outcome == "success":
+                    self.assertIn("perl-lsp-rs-core-0.1.0.crate is self-contained", stdout.getvalue())
+
+            expected_children = {
+                "success": ["generate-lockfile", "check"],
+                "generate-lockfile": ["generate-lockfile"],
+                "check": ["generate-lockfile", "check"],
+            }
+            self.assertEqual(
+                expected_children.get(outcome, []),
+                [command for command in commands if command in ("generate-lockfile", "check")],
+            )
+            self.assertEqual(b"CALLER-OWNED\x00\n", sentinel.read_bytes())
+            self.assertEqual(original_archive, archive.read_bytes())
+            self.assertEqual(1, len(allocated))
+            self.assertFalse(allocated[0].exists(), f"owned smoke tree leaked after {outcome}")
+            self.assertCountEqual([unowned, target], root.iterdir())
 
 
 if __name__ == "__main__":

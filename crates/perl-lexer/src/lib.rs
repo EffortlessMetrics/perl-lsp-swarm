@@ -211,10 +211,9 @@ pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
+pub use unicode::is_perl_identifier_continue;
 
-use unicode::{
-    is_perl_identifier_continue, is_perl_identifier_start, is_perl_package_segment_start,
-};
+use unicode::{is_perl_identifier_start, is_perl_package_segment_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
@@ -687,6 +686,8 @@ impl<'a> PerlLexer<'a> {
         let saved_hash_brace_depth = self.hash_brace_depth;
         let saved_after_var_subscript = self.after_var_subscript;
         let saved_paren_depth = self.paren_depth;
+        let saved_print_list_parens = self.print_list_parens.clone();
+        let saved_pending_print_list_paren = self.pending_print_list_paren;
         let saved_current_pos = self.current_pos;
         let saved_after_newline = self.after_newline;
         let saved_pending_heredocs = self.pending_heredocs.clone();
@@ -707,6 +708,8 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth = saved_hash_brace_depth;
         self.after_var_subscript = saved_after_var_subscript;
         self.paren_depth = saved_paren_depth;
+        self.print_list_parens = saved_print_list_parens;
+        self.pending_print_list_paren = saved_pending_print_list_paren;
         self.current_pos = saved_current_pos;
         self.after_newline = saved_after_newline;
         self.pending_heredocs = saved_pending_heredocs;
@@ -748,6 +751,8 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth = 0;
         self.after_var_subscript = false;
         self.paren_depth = 0;
+        self.print_list_parens.clear();
+        self.pending_print_list_paren = false;
         self.current_pos = Position::start();
         self.after_newline = true;
         self.pending_heredocs.clear();
@@ -867,7 +872,11 @@ impl<'a> PerlLexer<'a> {
                     // where a statement is expected; after a term, `\n=shift;` is an
                     // assignment continuation. Pod::Weaver-style commands follow a blank
                     // line, so a blank line also counts as statement-start context.
-                    // `=cut` only ends an active POD block; a stray one never opens POD.
+                    // A line-initial `=cut` outside POD opens a POD block that runs to the
+                    // NEXT `=cut`, or to EOF when there is none. perl accepts a file whose
+                    // first POD directive is `=cut`, so the block that `=cut` opens must not
+                    // be dropped. It still needs statement-start context: a `=cut` that
+                    // continues an expression is code, not a directive.
                     let known = [
                         &b"=pod"[..],
                         b"=head",
@@ -881,21 +890,28 @@ impl<'a> PerlLexer<'a> {
                     ]
                     .iter()
                     .any(|c| remaining.starts_with(c));
+                    let cut_opens_pod = Self::is_cut_directive(remaining)
+                        && (self.pod_after_blank_line() || self.pod_after_statement_end());
                     let generic_pod = !known
-                        && !remaining.starts_with(b"=cut")
+                        && !Self::is_cut_directive(remaining)
                         && remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
                         && (self.pod_after_blank_line() || self.pod_after_statement_end())
                         && self.pod_has_later_cut();
-                    if known || generic_pod {
-                        // Scan forward for \n=cut (end of POD block)
-                        let search_start = self.position;
-                        let mut found_cut = false;
+                    if known || generic_pod || cut_opens_pod {
                         let bytes = self.input_bytes;
+                        // Scan forward for \n=cut (end of POD block). A `=cut` that OPENED
+                        // the block does not close it: the block runs to the NEXT `=cut`.
+                        let search_start = if cut_opens_pod {
+                            Self::line_start_after(bytes, self.position)
+                        } else {
+                            self.position
+                        };
+                        let mut found_cut = false;
                         let mut i = search_start;
                         while i < bytes.len() {
                             // Look for =cut at the start of a line
                             if (i == 0 || matches!(bytes[i - 1], b'\n' | b'\r'))
-                                && bytes[i..].starts_with(b"=cut")
+                                && Self::is_cut_directive(&bytes[i..])
                             {
                                 i += 4; // Skip "=cut"
                                 // Skip rest of the =cut line
@@ -976,22 +992,35 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn try_heredoc(&mut self) -> Option<Token> {
-        if self.mode == LexerMode::ExpectOperator {
-            // `<<` is the left-shift operator, not a heredoc, when we are
-            // inside a parenthesized expression and have just finished a term.
-            // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and
-            // paren_depth > 0, so `<<index` must be the bitshift operator, not
-            // a heredoc start.
-            //
-            // The paren guard alone must not fire at statement level
-            // (paren_depth == 0) because `print $fh <<END` is valid Perl:
-            // `$fh` sets ExpectOperator but `<<END` is a heredoc. A nullary
-            // authority is different (#16165): `sub foo ()` and `time`
-            // complete a term, so `foo <<END` and `time <<END` shift even at
-            // statement level (local Perl oracle).
-            if self.paren_depth > 0 || self.preceding_word_is_nullary() {
-                return None;
-            }
+        // `<<` is the left-shift operator, not a heredoc, when we are inside
+        // a parenthesized expression and have just finished a term.
+        // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and paren_depth > 0,
+        // so `<<index` must be the bitshift operator, not a heredoc start.
+        //
+        // We must NOT fire the paren guard at statement level (paren_depth == 0)
+        // because `print $fh <<END` is valid Perl: `$fh` sets ExpectOperator but
+        // `<<END` is a heredoc. The depth check distinguishes the two cases.
+        //
+        // Per #16163, the same exception applies inside the parens of a list-
+        // operator `print(...)` call: the filehandle-like preceding term is still
+        // a print argument, not a regular expression operand, so `<<'END'` after
+        // `$fh` is a heredoc opener, not a left shift. `print_list_paren_depth`
+        // is incremented when `print` is invoked as a list operator with parens
+        // (no preceding `->` or `&`) and decremented on the matching `)`.
+        //
+        // A nullary authority is different (#16165): `sub foo ()` and `time`
+        // complete a term, so `foo <<END` and `time <<END` shift even at
+        // statement level (local Perl oracle).
+        let print_filehandle_slot = self.print_list_parens.last().is_some_and(
+            |(enclosing_depth, seen_comma, slot_live)| {
+                self.paren_depth == enclosing_depth + 1 && !seen_comma && *slot_live
+            },
+        );
+        if self.mode == LexerMode::ExpectOperator
+            && ((self.paren_depth > 0 && !print_filehandle_slot)
+                || self.preceding_word_is_nullary())
+        {
+            return None;
         }
 
         // Check for heredoc start
@@ -1124,7 +1153,7 @@ impl<'a> PerlLexer<'a> {
         // runs the unterminated-quote recovery, which consumes through
         // end-of-line: it errors when a newline follows (#12363) and silently
         // swallows the rest of the line otherwise. A multiplication such as
-        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        // `$a * ";"` is excluded using the lexer mode and existing operand exclusions.
         if matches!(quote, '"' | '\'' | '`')
             && self.peek_char(1) == Some(';')
             && self.glob_sigil_precedes()
@@ -1151,6 +1180,11 @@ impl<'a> PerlLexer<'a> {
     /// position (preceded by an operator or the start of input, not by an
     /// operand — `$a * x` is multiplication, `= *x` is a glob).
     fn glob_sigil_precedes(&self) -> bool {
+        // A multiplication operator expects its right operand; a glob term
+        // expects an operator. Reuse that Unicode-aware token classification.
+        if self.mode != LexerMode::ExpectOperator {
+            return false;
+        }
         let bytes = self.input.as_bytes();
         let mut index = self.position;
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
@@ -1163,15 +1197,16 @@ impl<'a> PerlLexer<'a> {
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
             index -= 1;
         }
-        if index == 0 {
-            return true;
-        }
-        let before = bytes[index - 1] as char;
-        !(before.is_ascii_alphanumeric()
-            || matches!(
-                before,
-                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
-            ))
+        // The ASCII star/whitespace scan leaves `index` on a scalar boundary.
+        // Keep the historical ASCII exclusions: widening this predicate to
+        // Unicode identifiers would mistake preceding comment text for operands.
+        !self.input[..index].chars().next_back().is_some_and(|before| {
+            before.is_ascii_alphanumeric()
+                || matches!(
+                    before,
+                    '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+                )
+        })
     }
 
     #[inline]
@@ -2487,10 +2522,30 @@ impl<'a> PerlLexer<'a> {
                 TokenType::Identifier(Arc::from(text))
             };
 
+            // Detect `print(` invoked as a list operator at term position
+            // (no preceding `->` or `&`) for #16163. When the immediately
+            // following non-whitespace byte is `(`, mark the next open paren
+            // as the list-operator opener so `<<` inside the parens is
+            // recognized as a heredoc. Method (`->print`) and function
+            // (`&print`) calls are excluded; the parser sees `<<` as a
+            // left-shift operator there.
+            //
+            // The check runs BEFORE `after_arrow` is cleared below so the
+            // operator state at the start of the identifier still reflects
+            // whether `->` immediately preceded `print`.
+            if text == "print"
+                && !self.after_arrow
+                && self.print_list_paren_follows(start)
+                && !self.preceded_by_ampersand(start)
+            {
+                self.pending_print_list_paren = true;
+            }
+
             self.after_arrow = false;
             // A keyword/identifier is not a variable; `{` after it is a block opener.
             self.after_var_subscript = false;
             // hash_brace_depth is managed by { and } handlers, not cleared per-token
+
             Some(Token { token_type, text: Arc::from(text), start, end: self.position })
         } else {
             None
@@ -2599,6 +2654,38 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn try_operator(&mut self) -> Option<Token> {
+        // A binary operator at the print-list depth ends the filehandle
+        // slot (#16365): in `print($x + $y << 'END')` the `<<` follows a
+        // compound expression, so it is the left-shift operator (a Perl
+        // syntax error there), not a heredoc opener. Only the slot whose
+        // term is still the lone first argument stays live.
+        if self.mode == LexerMode::ExpectOperator
+            && !matches!(self.current_char(), Some('-') if self.peek_byte(1) == Some(b'>'))
+            && matches!(
+                self.current_char(),
+                Some(
+                    '+' | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '<'
+                        | '>'
+                        | '='
+                        | '!'
+                        | '~'
+                        | '?'
+                        | ':'
+                        | '.'
+                )
+            )
+            && let Some((enclosing_depth, _, slot_live)) = self.print_list_parens.last_mut()
+            && self.paren_depth == *enclosing_depth + 1
+        {
+            *slot_live = false;
+        }
         // Skip operator parsing if we're expecting a delimiter for a quote operator
         if matches!(self.mode, LexerMode::ExpectDelimiter) && self.current_quote_op.is_some() {
             return None;
@@ -2841,6 +2928,17 @@ impl<'a> PerlLexer<'a> {
                 } else if self.in_prototype {
                     self.prototype_depth += 1;
                 }
+                // Track `print(...)` list-operator parens for #16163. The flag
+                // is set by the identifier handler when `print` at term position
+                // is followed (after horizontal whitespace) by `(`. The flag is
+                // consumed here even when nested prototypes re-enter the path.
+                if self.pending_print_list_paren {
+                    self.pending_print_list_paren = false;
+                    // Record the enclosing depth so the matching `)` pops
+                    // exactly this opener, never a nested paren (#16163
+                    // review).
+                    self.print_list_parens.push((self.paren_depth, false, true));
+                }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
                 // `->(` is a coderef call, not `->{`. Consume arrow state so a
@@ -2866,6 +2964,16 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.after_arrow = false;
                 self.paren_depth = self.paren_depth.saturating_sub(1);
+                // A closing paren pops the `print(...)` opener it actually
+                // matches: the enclosing depth recorded at the opener equals
+                // this paren's depth after the decrement. A nested `)` inside
+                // the print list leaves the opener on the stack (#16163
+                // review).
+                if let Some((enclosing_depth, _, _)) = self.print_list_parens.last()
+                    && self.paren_depth == *enclosing_depth
+                {
+                    self.print_list_parens.pop();
+                }
                 // A closing paren ends any var-subscript context: `if ($var)` should
                 // NOT leave after_var_subscript set, otherwise the following `{` would
                 // incorrectly increment hash_brace_depth and suppress regex operators
@@ -2896,6 +3004,14 @@ impl<'a> PerlLexer<'a> {
             }
             ',' => {
                 self.advance();
+                // A top-level comma inside a `print(...)` list ends the
+                // filehandle slot (#16163 review): later arguments are
+                // ordinary list terms, so a following `<<` is a shift.
+                if let Some((enclosing_depth, seen_comma, _)) = self.print_list_parens.last_mut()
+                    && self.paren_depth == *enclosing_depth + 1
+                {
+                    *seen_comma = true;
+                }
                 self.after_var_subscript = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
@@ -4654,11 +4770,40 @@ impl<'a> PerlLexer<'a> {
 mod checkpoint_impl;
 
 #[cfg(test)]
+mod pod_cut_tests;
+#[cfg(test)]
 mod test_format_debug;
 #[cfg(test)]
 mod tests;
 
 impl PerlLexer<'_> {
+    /// True when `bytes` starts with a `=cut` POD directive.
+    ///
+    /// The directive word is `cut`, so the byte after it must not be able to continue
+    /// a word: `=cut` and `=cut;` are directives, while `=cutlery` is a different POD
+    /// command that neither opens nor closes a block.
+    fn is_cut_directive(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"=cut")
+            && bytes.get(4).is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_')
+    }
+
+    /// The offset just past the end of the line that contains `position`.
+    fn line_start_after(bytes: &[u8], position: usize) -> usize {
+        let mut index = position;
+        while index < bytes.len() && bytes[index] != b'\n' && bytes[index] != b'\r' {
+            index += 1;
+        }
+        if index < bytes.len() && bytes[index] == b'\r' {
+            index += 1;
+            if index < bytes.len() && bytes[index] == b'\n' {
+                index += 1;
+            }
+        } else if index < bytes.len() && bytes[index] == b'\n' {
+            index += 1;
+        }
+        index
+    }
+
     /// True at the start of input or when the previous physical line is blank
     /// (empty or whitespace-only).
     fn pod_after_blank_line(&self) -> bool {

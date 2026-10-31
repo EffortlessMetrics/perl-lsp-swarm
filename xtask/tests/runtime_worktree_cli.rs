@@ -16,7 +16,7 @@ fn isolated(command: &mut Command) -> &mut Command {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<Output> {
-    let mut command = Command::new("git");
+    let mut command = xtask::git_environment::isolate(Command::new("git"));
     isolated(&mut command)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })

@@ -179,6 +179,45 @@ impl PerlLexer<'_> {
             return chars.next() == Some('}');
         }
     }
+
+    /// Returns true if the bytes following `start` (up to the lexer's current
+    /// position, exclusive of any horizontal whitespace gap) begin with `(`.
+    /// Used by the `print(...)` list-operator detector (#16163): the
+    /// identifier-or-keyword handler needs to know whether the open paren
+    /// belongs to a list-operator call so it can mark the matching `(`.
+    pub(crate) fn print_list_paren_follows(&self, _start: usize) -> bool {
+        let bytes = self.input_bytes;
+        // The identifier consumed by the caller ends at self.position; from the
+        // caller's perspective `_start` is the first byte of `print`. Scan
+        // forward from the lexer's current position across any horizontal
+        // whitespace and report whether `(` is the next significant byte.
+        let mut idx = self.position;
+        while idx < bytes.len() && (bytes[idx] == b' ' || bytes[idx] == b'\t') {
+            idx += 1;
+        }
+        bytes.get(idx) == Some(&b'(')
+    }
+
+    /// Returns true if the byte immediately preceding `start` (after skipping
+    /// horizontal whitespace) is `&`, denoting a function-call prefix. Used
+    /// by the `print(...)` list-operator detector (#16163) to exclude
+    /// `&print(...)`, which is a function call rather than a list operator.
+    pub(crate) fn preceded_by_ampersand(&self, start: usize) -> bool {
+        if start == 0 {
+            return false;
+        }
+        let bytes = self.input_bytes;
+        let mut idx = start;
+        while idx > 0 {
+            idx -= 1;
+            let byte = bytes[idx];
+            if byte == b' ' || byte == b'\t' {
+                continue;
+            }
+            return byte == b'&';
+        }
+        false
+    }
 }
 #[cfg(test)]
 mod tests {
