@@ -56,15 +56,31 @@ const DYNAMIC_BOUNDARY_PATTERNS: &[(&str, &str)] = &[
 /// - a `sub`/`method` keyword immediately before (over whitespace) makes it a
 ///   definition named `eval`, not a call — skipped.
 ///
+/// Also matched (#18541): bare `eval;` / `evalbytes;` (they evaluate `$_`),
+/// `{ eval }` closing a block, `evalbytes` in every spelling, and the
+/// `CORE::eval` spelling of the keyword. `$h{eval}` and `eval =>` are not
+/// calls and stay unmatched.
+///
 /// Known miss, documented: `LABEL: eval $x` (label colon) is excluded by the
 /// `:` rule. Vanishingly rare; the recall gain on the string-eval shape
 /// dwarfs it.
 fn statement_eval_offsets(content: &str, test_file: bool) -> Vec<usize> {
-    const EVAL_LEN: usize = 4;
     let bytes = content.as_bytes();
     let mut offsets = Vec::new();
     for (offset, _) in content.match_indices("eval") {
-        let prev_ok = match offset.checked_sub(1).map(|i| bytes[i]) {
+        // `evalbytes` evaluates a byte string; it has no block form and no
+        // table entry, so every spelling of it is ours (#18541).
+        let is_evalbytes = content[offset..].starts_with("evalbytes");
+        let kw_len = if is_evalbytes { "evalbytes".len() } else { "eval".len() };
+        // `CORE::eval` is the same keyword spelled with its package; the
+        // method/qualified `:` exclusion below must not hide it (#18541).
+        let start = if offset >= 6 && &bytes[offset - 6..offset] == b"CORE::" {
+            offset - 6
+        } else {
+            offset
+        };
+        let prev_byte = start.checked_sub(1).map(|i| bytes[i]);
+        let prev_ok = match prev_byte {
             None => true,
             // Statement chars: everything that can legally precede a keyword
             // call, minus identifier chars, `$@%` sigils, and `>`, `-`, `:`
@@ -74,32 +90,60 @@ fn statement_eval_offsets(content: &str, test_file: bool) -> Vec<usize> {
         if !prev_ok {
             continue;
         }
-        let rest = bytes.get(offset + EVAL_LEN..).unwrap_or_default();
-        let Some(first) = rest.first().copied() else {
+        let rest = bytes.get(offset + kw_len..).unwrap_or_default();
+        // `eval => 1` is a hash key before a fat comma, not a call.
+        if rest.iter().copied().skip_while(u8::is_ascii_whitespace).take(2).eq(*b"=>") {
             continue;
+        }
+        let next_significant = rest.iter().copied().find(|b| !b.is_ascii_whitespace());
+        // Bare `eval;` / `evalbytes;` evaluate `$_`. `{ eval }` ends a block
+        // the same way, but `$h{eval}` is a hash key, so the `}` form needs a
+        // space or statement end before the keyword (#18541).
+        let bare = match (rest.first().copied(), next_significant) {
+            (None, _) => true,
+            (Some(b';'), _) => true,
+            (Some(b'}'), _) => matches!(prev_byte, Some(b' ' | b'\t' | b'\r' | b'\n' | b';')),
+            (Some(first), None) if first.is_ascii_whitespace() => true,
+            (Some(first), Some(b';')) if first.is_ascii_whitespace() => true,
+            (Some(first), Some(b'}')) if first.is_ascii_whitespace() => {
+                matches!(prev_byte, Some(b' ' | b'\t' | b'\r' | b'\n' | b';'))
+            }
+            _ => false,
         };
-        if !first.is_ascii_whitespace() {
-            continue;
-        }
-        // Block `eval { ... }` is lexically scoped static code that only traps
-        // an exception. In a test file the trapped code is what the test
-        // drives, so the block is not a boundary and the oracle on `$@` is
-        // graded instead (#18498). In a source file the same block can hide
-        // the owner's own failure path, so it stays a boundary: the table
-        // owns the exact `"eval {"` spelling, wider gaps are ours.
-        if rest.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{')
-            && (test_file || rest.starts_with(b" {"))
-        {
-            continue;
-        }
-        // Table overlap: `"eval '"` with a single-space gap is the table's
-        // entry — skip it so one occurrence yields one boundary, while
-        // wider-gap forms stay ours (#17283).
-        if rest.starts_with(b" '") {
-            continue;
+        // `evalbytes` has no table entry, so every glued opener is ours:
+        // `evalbytes(`, `evalbytes"..."`, `evalbytes'...'`, `evalbytes$code`.
+        let glued_evalbytes =
+            is_evalbytes && matches!(rest.first(), Some(b'(' | b'"' | b'\'' | b'$'));
+        if !bare && !glued_evalbytes {
+            let Some(first) = rest.first().copied() else {
+                continue;
+            };
+            if !first.is_ascii_whitespace() {
+                continue;
+            }
+            // Block `eval { ... }` is lexically scoped static code that only
+            // traps an exception. In a test file the trapped code is what the
+            // test drives, so the block is not a boundary and the oracle on
+            // `$@` is graded instead (#18498). In a source file the same
+            // block can hide the owner's own failure path, so it stays a
+            // boundary: the table owns the exact `"eval {"` spelling, wider
+            // gaps are ours.
+            if !is_evalbytes
+                && next_significant == Some(b'{')
+                && (test_file || rest.starts_with(b" {"))
+            {
+                continue;
+            }
+            // Table overlap: `"eval '"` with a single-space gap is the
+            // table's entry — skip it so one occurrence yields one boundary,
+            // while wider-gap forms stay ours (#17283). `evalbytes '` is not
+            // a table hit.
+            if !is_evalbytes && rest.starts_with(b" '") {
+                continue;
+            }
         }
         // `sub eval` / `method eval`: a definition, not a call.
-        let before = content[..offset].trim_end();
+        let before = content[..start].trim_end();
         if before.ends_with("sub") || before.ends_with("method") {
             let keyword_len = if before.ends_with("sub") { 3 } else { 6 };
             let boundary_ok = before[..before.len() - keyword_len]
@@ -451,6 +495,115 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn statement_eval_matches_bare_evalbytes_and_core_spellings() {
+        // #18541: runtime string evaluation the first matcher missed.
+        for src in [
+            "eval;",
+            "my $r = eval ;",
+            "sub run { eval }",
+            "sub run {\n    eval\n}",
+            "evalbytes $code;",
+            "my $r = evalbytes \"$code\";",
+            "evalbytes($code);",
+            "evalbytes\"$code\";",
+            "evalbytes'die';",
+            "evalbytes$code;",
+            "evalbytes;",
+            "evalbytes 'die';",
+            "CORE::eval $code;",
+            "my $r = CORE::eval \"$code\";",
+        ] {
+            for test_file in [false, true] {
+                assert_eq!(
+                    statement_eval_offsets(src, test_file).len(),
+                    1,
+                    "`{src}` (test file: {test_file})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn statement_eval_rejects_keys_names_and_qualified_lookalikes() {
+        for src in [
+            "$h{eval}",
+            "my $v = $opts{eval};",
+            "%h = (eval => 1);",
+            "$obj->evalbytes $x;",
+            "$obj->eval;",
+            "Foo::evalbytes $x;",
+            "CORE::GLOBAL::eval $c;",
+            "sub evalbytes { 1 }",
+            "my $evalbytes = 1;",
+            "evaluate $x;",
+            "eval_it;",
+            "retrieval;",
+            "evalbytes_helper($x);",
+        ] {
+            for test_file in [false, true] {
+                assert!(
+                    statement_eval_offsets(src, test_file).is_empty(),
+                    "`{src}` (test file: {test_file})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bare_evalbytes_and_core_eval_fail_closed_in_source_and_test_files() {
+        // #18541 runtime control: exactly one boundary per occurrence, in
+        // both file kinds, and no double-emit against the substring table.
+        for (name, body) in [
+            ("bare", "sub run { eval; }"),
+            ("bare_close", "sub run { eval }"),
+            ("evalbytes_var", "sub run { my $c = shift; evalbytes $c; }"),
+            ("evalbytes_paren", "sub run { my $c = shift; evalbytes($c); }"),
+            ("core_var", "sub run { my $c = shift; CORE::eval $c; }"),
+            ("core_paren", "sub run { my $c = shift; CORE::eval($c); }"),
+            ("core_quote", "sub run { CORE::eval '1 + 1'; }"),
+        ] {
+            let pm = format!("package Probe;\n{body}\n1;");
+            assert_eq!(eval_boundary_count(name, &pm), 1, "source `{body}`");
+            let t = format!("use Test::More;\n{body}\n");
+            assert_eq!(
+                eval_boundary_count_in(&format!("t-{name}"), "t/probe.t", &t),
+                1,
+                "test `{body}`"
+            );
+        }
+    }
+
+    #[test]
+    fn hash_key_eval_and_lookalikes_add_no_boundary() {
+        for (name, body) in [
+            ("key", "sub run { my %o = @_; return $o{eval}; }"),
+            ("fat_comma", "sub run { return (eval => 1); }"),
+            ("method", "sub run { my $o = shift; return $o->eval; }"),
+        ] {
+            let pm = format!("package Probe;\n{body}\n1;");
+            assert_eq!(eval_boundary_count(name, &pm), 0, "source `{body}`");
+        }
+    }
+
+    #[test]
+    fn dynamic_boundaries_in_lines_matches_bare_evalbytes_and_core_eval() {
+        for line in ["eval;", "evalbytes $c;", "CORE::eval $c;", "evalbytes($c);"] {
+            for test_file in [false, true] {
+                let found = dynamic_boundaries_in_lines(&[line.to_string()], test_file);
+                assert!(
+                    found.iter().any(|(_, kind)| *kind == "eval_or_string_code"),
+                    "hunk line `{line}` (test file: {test_file}): {found:?}"
+                );
+            }
+        }
+        let found = dynamic_boundaries_in_lines(&["my $v = $o{eval};".to_string()], false);
+        assert!(
+            found.iter().all(|(_, kind)| *kind != "eval_or_string_code"),
+            "hash key is not a boundary: {found:?}"
+        );
     }
 
     #[test]
