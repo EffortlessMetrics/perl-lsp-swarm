@@ -618,6 +618,12 @@ pub struct CacheObservation {
     /// closed instead of treating zero as "no foreign users" (#14739
     /// review).
     pub foreign_users_observed: Option<u64>,
+    /// Whether the cache reset was confirmed before the baseline snapshot.
+    /// A `ResetThenSnapshot` reset that fails leaves counters that look
+    /// consistent but were never fresh, so the outcome is a raw fact the
+    /// digest covers and re-derivation re-checks — never an inference from
+    /// the attribution label (#14739 review).
+    pub reset_confirmed: bool,
     pub attribution: CacheAttribution,
 }
 
@@ -992,7 +998,9 @@ impl MeasurementRecord {
             && self.environment.host_triple.as_deref().is_some_and(|t| t.contains("windows"))
         {
             reasons.push(NotProvenReason::HostEnvironmentAmbiguous {
-                detail: "a windows triple cannot distinguish Git Bash from native Windows; the                          WslOrGitBash row needs linux-triple (WSL) evidence or an explicit                          bash-environment marker"
+                detail: "a windows triple cannot distinguish Git Bash from native Windows; the \
+                         WslOrGitBash row needs linux-triple (WSL) evidence or an explicit \
+                         bash-environment marker"
                     .to_string(),
             });
         }
@@ -1165,6 +1173,17 @@ impl MeasurementRecord {
         // corrupt, whether or not this model leans on cache evidence
         // (#14739 review).
         if matches!(self.cache.attribution, CacheAttribution::Attributed) {
+            // The reset outcome is a precondition, not an inference: a
+            // failed `ResetThenSnapshot` reset leaves consistent-looking
+            // counters over a stale baseline, so a forged `Attributed`
+            // label over an unconfirmed reset is corrupt even when every
+            // other raw fact checks out.
+            if !self.cache.reset_confirmed {
+                reasons.push(NotProvenReason::CacheEvidenceUnproven {
+                    reason: "attribution label contradicts raw facts: cache reset not confirmed"
+                        .to_string(),
+                });
+            }
             let contradiction = match (self.cache.baseline.as_ref(), self.cache.delta.as_ref()) {
                 (None, _) | (_, None) => Some(
                     "attribution label contradicts raw facts: counter snapshots \

@@ -277,6 +277,7 @@
         "baseline",
         "delta",
         "foreign_users_observed",
+        "reset_confirmed",
         "attribution"
       ],
       "properties": {
@@ -305,6 +306,7 @@
           }
         },
         "foreign_users_observed": { "type": ["integer", "null"], "minimum": 0, "description": "null means the foreign-user instrument was unavailable — isolation unobserved, never zero." },
+        "reset_confirmed": { "type": "boolean", "description": "Whether the cache reset was confirmed before the baseline snapshot; a failed reset leaves consistent-looking counters over a stale baseline." },
         "attribution": {
           "description": "Attribution of the delta to this cell; environment variables such as SCCACHE_BASEDIRS never constitute reuse evidence.",
           "oneOf": [

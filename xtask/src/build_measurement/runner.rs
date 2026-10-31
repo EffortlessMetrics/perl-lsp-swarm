@@ -302,6 +302,7 @@ pub fn raw_facts_digest(record: &MeasurementRecord) -> Result<String> {
         "baseline": record.cache.baseline,
         "delta": record.cache.delta,
         "foreign_users_observed": record.cache.foreign_users_observed,
+        "reset_confirmed": record.cache.reset_confirmed,
     },
     "work": record.work,
     "executed_subject_commit": record.executed_subject_commit,
@@ -416,6 +417,7 @@ fn attribute_cache(
         baseline,
         delta,
         foreign_users_observed,
+        reset_confirmed,
         attribution,
     }
 }

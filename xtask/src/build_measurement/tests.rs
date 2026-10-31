@@ -1125,6 +1125,23 @@ fn attributed_label_over_missing_counters_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// Falsifier: an `Attributed` label over an unconfirmed reset is refused
+/// even when every other raw fact is consistent — a failed reset leaves
+/// consistent-looking counters over a stale baseline, and the reset outcome
+/// is a raw fact the digest covers, not an inference from the label.
+#[test]
+fn attributed_label_over_unconfirmed_reset_is_refused() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    record.cache.attribution = CacheAttribution::Attributed;
+    record.cache.reset_confirmed = false;
+    assert!(reasons_of(&record).iter().any(|reason| matches!(
+        reason,
+        NotProvenReason::CacheEvidenceUnproven { reason }
+            if reason.contains("contradicts raw facts") && reason.contains("reset")
+    )));
+    Ok(())
+}
+
 /// Falsifier: a lock wait exceeding the admission window and total wall time
 /// is physically impossible and never admits.
 #[test]
