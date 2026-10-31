@@ -1,0 +1,34 @@
+{
+  "schema_version": "standalone_path_plan.v1",
+  "plan_id": "path-plan-manual-instruction-only",
+  "transaction_id": "txn-standalone-install-0004",
+  "subject": {
+    "candidate_id": "perllsp-0.18.0-manual-archive",
+    "selection_generation": 2,
+    "confirmation_state": "confirmed_current",
+    "executable_path": "/opt/perl-lsp/versions/0.18.0/bin/perllsp",
+    "executable_sha256": "b100000000000000000000000000000000000000000000000000000000000000",
+    "command_name": "perllsp"
+  },
+  "environment": {
+    "platform": "posix",
+    "shell_family": "fish",
+    "install_root": {
+      "path": "/opt/perl-lsp",
+      "role": "user_install_root"
+    }
+  },
+  "path_policy": {
+    "policy": "manual_instruction_only",
+    "mutation_owner": "user_manual",
+    "scope": "shell_specific",
+    "owned_entry": {
+      "entry_kind": "none"
+    },
+    "new_session_requirement": "new_shell"
+  },
+  "prior_state": {
+    "identity_kind": "unavailable"
+  },
+  "redaction_policy": "bounded_typed_fields_only"
+}

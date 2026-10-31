@@ -1,0 +1,14 @@
+{
+  "schema_version": "standalone_path_persistence.v1",
+  "bound_plan_id": "path-plan-windows-registry-user",
+  "bound_plan_sha256": "25e57f16daf396fd7d4ab19975bdc893a988273e3c46906a89e20669e7a4f740",
+  "result": "instrument_failure",
+  "mutation_performed": false,
+  "entry_state": "unknown",
+  "observed_scope": "user",
+  "current_process_env_mutated": false,
+  "new_session_required": false,
+  "owned_entries_observed": 0,
+  "instrument_complete": false,
+  "redaction_policy": "bounded_typed_fields_only"
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": "standalone_fresh_process.v1",
+  "bound_plan_id": "path-plan-manual-instruction-only",
+  "bound_plan_sha256": "ca5b80210a43cd15aecb5eda4c764c3bcb4a2be98837ee407d2f460c9c33441a",
+  "bound_persistence_result": "manual_action_required",
+  "observed_environment": {
+    "platform": "posix",
+    "shell_family": "fish"
+  },
+  "session": {
+    "origin": "new_login_session",
+    "environment_source": "ambient_session",
+    "path_prepared_by_harness": false
+  },
+  "lookup": {
+    "method": "command_lookup",
+    "resolved": null,
+    "competing_candidates": [],
+    "ambiguous": false
+  },
+  "startup_disposition": "not_observed",
+  "result": "not_found",
+  "instrument_complete": true,
+  "redaction_policy": "bounded_typed_fields_only"
+}
