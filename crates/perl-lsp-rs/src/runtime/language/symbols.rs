@@ -1625,4 +1625,65 @@ mod tests {
         );
         Ok(())
     }
+
+    fn assert_single_imports_fold_bounds(
+        source: &str,
+        expected_end: usize,
+    ) -> Result<(), JsonRpcError> {
+        let ranges = folding_ranges_for_source(source)?;
+        let imports: Vec<&Value> =
+            ranges.iter().filter(|range| range.get("kind") == Some(&json!("imports"))).collect();
+        assert_eq!(imports.len(), 1, "expected exactly one imports range: {ranges:?}");
+        assert_eq!(imports[0].get("startLine"), Some(&json!(0)));
+        assert_eq!(
+            imports[0].get("endLine"),
+            Some(&json!(expected_end)),
+            "imports fold must include its last statement: {ranges:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_two_imports() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds("use Module0;\nuse Module1;\nmy $x = 1;\n", 1)
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_three_imports() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds(
+            "use Module0;\nuse Module1;\nuse Module2;\nmy $x = 1;\n",
+            2,
+        )
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_five_imports() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds(
+            "use Module0;\nuse Module1;\nuse Module2;\nuse Module3;\nuse Module4;\nmy $x = 1;\n",
+            4,
+        )
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_strict_warnings_posix() -> Result<(), JsonRpcError> {
+        assert_single_imports_fold_bounds(
+            "use strict;\nuse warnings;\nuse POSIX qw(floor);\nmy $x = 1;\n",
+            2,
+        )
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_preserves_non_import_brace() -> Result<(), JsonRpcError> {
+        // Ordinary block spans end at a closing brace, which must remain visible.
+        let ranges = folding_ranges_for_source("sub full {\n    my $x = 1;\n    my $y = 2;\n}\n")?;
+        assert_eq!(ranges.len(), 1, "expected one deduplicated block fold: {ranges:?}");
+        assert_ne!(ranges[0].get("kind"), Some(&json!("imports")));
+        assert_eq!(ranges[0].get("startLine"), Some(&json!(0)));
+        assert_eq!(
+            ranges[0].get("endLine"),
+            Some(&json!(2)),
+            "non-import fold must keep its closing brace visible: {ranges:?}"
+        );
+        Ok(())
+    }
 }
