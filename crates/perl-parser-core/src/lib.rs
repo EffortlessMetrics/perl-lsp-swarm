@@ -89,6 +89,8 @@ pub mod engine;
 pub mod hir;
 /// Perl Intermediate Representation (PIR) for static analysis and tooling.
 pub mod pir;
+/// Canonical prototype-shape projection below providers and compiler consumers.
+pub mod prototype_shape;
 /// Syntax-level types absorbed from Wave D satellite crates.
 pub mod syntax;
 /// Token stream and trivia utilities for the parser.
