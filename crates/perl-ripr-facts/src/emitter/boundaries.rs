@@ -499,24 +499,32 @@ mod tests {
     fn statement_eval_skips_comment_string_and_pod_but_keeps_calls() {
         // `#17289`: high-confidence matcher must not fire on non-code spans.
         assert!(
-            statement_eval_offsets("sub safe { # eval $code\n return 1; }").is_empty(),
+            statement_eval_offsets("sub safe { # eval $code\n return 1; }", false).is_empty(),
             "line comment must not count as a statement eval"
         );
         assert!(
-            statement_eval_offsets(r#"my $text = "say eval $code";"#).is_empty(),
+            statement_eval_offsets(r#"my $text = "say eval $code";"#, false).is_empty(),
             "string literal must not count as a statement eval"
         );
         assert!(
-            statement_eval_offsets("=pod\n\neval $code\n\n=cut\nsub f { 1 }\n").is_empty(),
+            statement_eval_offsets("=pod\n\neval $code\n\n=cut\nsub f { 1 }\n", false).is_empty(),
             "POD must not count as a statement eval"
         );
         // Positive controls: real calls still count, including the wide-gap
         // block form the table cannot express, even when a comment also
         // mentions eval.
-        assert_eq!(statement_eval_offsets("eval $code").len(), 1, "code eval $code still counts");
-        assert_eq!(statement_eval_offsets("eval  {").len(), 1, "wide-gap eval still counts");
         assert_eq!(
-            statement_eval_offsets("eval $code; # eval $other\n").len(),
+            statement_eval_offsets("eval $code", false).len(),
+            1,
+            "code eval $code still counts"
+        );
+        assert_eq!(
+            statement_eval_offsets("eval  {", false).len(),
+            1,
+            "wide-gap eval still counts"
+        );
+        assert_eq!(
+            statement_eval_offsets("eval $code; # eval $other\n", false).len(),
             1,
             "code eval still counts beside a comment mention"
         );
@@ -545,7 +553,7 @@ mod tests {
     #[test]
     fn dynamic_boundaries_in_lines_skips_comment_eval() {
         let lines = vec!["sub safe { # eval $code".to_string(), " return 1; }".to_string()];
-        let found = dynamic_boundaries_in_lines(&lines);
+        let found = dynamic_boundaries_in_lines(&lines, false);
         assert!(
             found.iter().all(|(_, kind)| *kind != "eval_or_string_code"),
             "hunk comment eval must not yield a boundary: {found:?}"
