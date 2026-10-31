@@ -36,6 +36,21 @@ half-migrated state left behind by a successful run.
 The published `.pre-commit-hooks.yaml` is an optional external integration and routes
 to the same `cargo xtask precommit` command; it is not a second repository policy.
 
+## Semantic-check coaching
+
+For staged Rust files, `Cargo.toml`/`Cargo.lock`, or `.ci/gate-policy.yaml`, the existing
+`staged_tree_identity` advisory names the relevant paths in `what_remains`. Select the
+cheapest check that can disprove the changed behavior, include a negative control, and
+expand to affected-package checks when needed. Cargo changes need dependency/feature
+coverage; gate-policy changes need selection and receipt coverage. Reuse current evidence
+and admit expensive checks for their actual workload during the coding session.
+
+This advice uses the captured staged tree, ignores unstaged edits, and survives in the
+existing `AgentReceipt.advisories` and the default hook’s human-readable summary.
+Docs-only changes receive no semantic-check coaching.
+The advisory does not infer a test suite from filenames or launch tests or a compiler.
+Pre-push and CI retain their existing proof responsibilities.
+
 ## Changie validation
 
 When a staged Changie input changes, the existing `changie_fragment_staged` commit

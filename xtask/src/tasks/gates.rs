@@ -3396,6 +3396,14 @@ fn output_human(receipt: &Receipt) -> Result<()> {
         }
     }
 
+    if let Some(agent_receipt) = &receipt.agent_receipt {
+        for advisory in &agent_receipt.advisories {
+            writeln!(term)?;
+            writeln!(term, "{} {}: {}", advisory.posture, advisory.lane, advisory.summary)?;
+            writeln!(term, "what remains: {}", advisory.what_remains)?;
+        }
+    }
+
     writeln!(term)?;
     writeln!(term, "{}", "=".repeat(60))?;
 
