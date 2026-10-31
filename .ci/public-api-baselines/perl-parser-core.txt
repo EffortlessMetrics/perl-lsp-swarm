@@ -2902,6 +2902,7 @@ pub fn perl_parser_core::hir::VariableBinding::eq(&self, other: &perl_parser_cor
 pub fn perl_parser_core::hir::VariableBinding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::hir::VariableDecl
 pub perl_parser_core::hir::VariableDecl::attribute_count: usize
+pub perl_parser_core::hir::VariableDecl::compound_operator: core::option::Option<alloc::string::String>
 pub perl_parser_core::hir::VariableDecl::declarator: alloc::string::String
 pub perl_parser_core::hir::VariableDecl::has_initializer: bool
 pub perl_parser_core::hir::VariableDecl::initializer_range: core::option::Option<perl_position_tracking::span::SourceLocation>
@@ -3683,6 +3684,7 @@ pub fn perl_parser_core::pir::lower_hir_bodies(file: &perl_parser_core::hir::Hir
 pub fn perl_parser_core::pir::lower_hir_bodies_with_identity(file: &perl_parser_core::hir::HirFile, source_identity: core::option::Option<alloc::string::String>) -> perl_parser_core::pir::PirGraph
 pub fn perl_parser_core::pir::lower_hir_with_identity(file: &perl_parser_core::hir::HirFile, source_identity: core::option::Option<alloc::string::String>) -> perl_parser_core::pir::PirGraph
 pub fn perl_parser_core::pir::lower_single_body(body: &perl_parser_core::hir::HirBody, body_id: perl_parser_core::hir::HirBodyId, file: &perl_parser_core::hir::HirFile) -> alloc::vec::Vec<perl_parser_core::pir::PirNode>
+pub fn perl_parser_core::pir::lower_single_body_with_unsupported(body: &perl_parser_core::hir::HirBody, body_id: perl_parser_core::hir::HirBodyId, file: &perl_parser_core::hir::HirFile) -> (alloc::vec::Vec<perl_parser_core::pir::PirNode>, u32)
 pub mod perl_parser_core::position
 pub use perl_parser_core::position::LineEnding
 pub use perl_parser_core::position::LineIndex

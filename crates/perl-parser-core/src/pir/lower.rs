@@ -10,10 +10,11 @@ use std::collections::HashMap;
 
 use crate::hir::{
     AccessMode, AssignMode, BranchKeyword, BranchShell, CallForm, ControlTransferKind,
-    DeclStorageClass, DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId,
-    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirLiteralKind, HirRegexTarget, HirScopeId,
-    HirStmt, LiteralExpr, LiteralKind, LoopShell, RegexTargetKind, Sigil, StatementModifierKind,
-    UnaryMode, VariableKind, hir_quote_kind, strip_string_quotes,
+    DeclStorageClass, DeclarationVerdict, DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION,
+    HirBody, HirBodyId, HirExpr, HirExprId, HirFile, HirItem, HirKind, HirLiteralKind,
+    HirRegexTarget, HirScopeId, HirStmt, LiteralExpr, LiteralKind, LoopShell, RegexTargetKind,
+    Sigil, StatementModifierKind, StorageClass, UnaryMode, VariableKind, classify_declaration,
+    declaration_call_unsupported_key, hir_quote_kind, strip_string_quotes,
 };
 
 use super::model::{
@@ -85,7 +86,18 @@ pub fn lower_hir(file: &HirFile) -> PirGraph {
 /// optional caller-supplied source or fixture identity.
 #[must_use]
 pub fn lower_hir_with_identity(file: &HirFile, source_identity: Option<String>) -> PirGraph {
-    let mut lowerer = Lowerer::new(source_identity);
+    // Class-field declaration targets, so flat lowering consumes the same
+    // declaration-versus-call decision as body lowering (#14798). Matched the
+    // same way `binding_declared_at` matches first-pass declarations: sigil,
+    // name, and variable-token range.
+    let class_fields: Vec<(String, String, crate::SourceLocation)> = file
+        .scope_graph
+        .bindings
+        .iter()
+        .filter(|binding| binding.storage == StorageClass::ClassField)
+        .map(|binding| (binding.sigil.clone(), binding.name.clone(), binding.range))
+        .collect();
+    let mut lowerer = Lowerer::new(source_identity, class_fields);
     for item in &file.items {
         lowerer.lower_item(item);
     }
@@ -116,10 +128,17 @@ struct Lowerer {
     pending_regex_boundary_owner: Option<PirId>,
     unsupported: HashMap<&'static str, usize>,
     source_identity: Option<String>,
+    /// Scope-graph class-field declaration targets as
+    /// (sigil, name, variable-token range), so a genuine class `field`
+    /// declaration is never mistaken for a declaration-shaped call.
+    class_fields: Vec<(String, String, crate::SourceLocation)>,
 }
 
 impl Lowerer {
-    fn new(source_identity: Option<String>) -> Self {
+    fn new(
+        source_identity: Option<String>,
+        class_fields: Vec<(String, String, crate::SourceLocation)>,
+    ) -> Self {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -132,6 +151,7 @@ impl Lowerer {
             pending_regex_boundary_owner: None,
             unsupported: HashMap::new(),
             source_identity,
+            class_fields,
         }
     }
 
@@ -270,38 +290,95 @@ impl Lowerer {
     }
 
     fn lower_variable_decl(&mut self, item: &HirItem, decl: &crate::hir::VariableDecl) {
-        // A declaration-shaped legacy call (`field $x = 1`) reaches flat
-        // lowering as a `VariableDecl` too, but it declares nothing. Emitting
-        // the write below would publish a lexical binding the program never
-        // creates — the same false fact body PIR stopped publishing. Flat
-        // lowering carries no scope cursor, so it cannot resolve the argument's
-        // real storage; declaring the omission is honest where guessing is not.
-        let is_legacy_call =
-            DeclStorageClass::from_str(&decl.declarator) == DeclStorageClass::Unknown;
-        if is_legacy_call {
-            *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+        // One shared verdict decides declaration versus call (#14798) — the
+        // same decision body lowering consumes, not a second keyword list. A
+        // genuine class `field` declaration is proven by the scope graph's
+        // class-field bindings, so it is never mistaken for a legacy call.
+        let is_class_field = decl.variables.iter().any(|variable| {
+            self.class_fields.iter().any(|(sigil, name, range)| {
+                *sigil == variable.sigil && *name == variable.name && *range == variable.range
+            })
+        });
+        let verdict = classify_declaration(&decl.declarator, is_class_field);
+        if let DeclarationVerdict::DeclarationShapedCall { declarator } = &verdict {
+            // The call declares nothing: emitting a write would publish a
+            // lexical binding the program never creates. Record the boundary
+            // under the centralized key, then keep only unambiguous effects
+            // below. Flat lowering carries no scope cursor, so unqualified
+            // argument storage stays an explicit gap (#13868 owns visibility).
+            *self.unsupported.entry(declaration_call_unsupported_key(declarator)).or_insert(0) += 1;
         }
         for variable in &decl.variables {
-            if is_legacy_call {
-                continue;
-            }
-            let anchor = PirSourceAnchor::explicit(variable.range, item.id);
-            let operation = if is_stash_declarator(&decl.declarator) {
-                PirOperation::StashWrite {
+            let operation = match &verdict {
+                DeclarationVerdict::DeclarationShapedCall { .. }
+                    if package_from_name(&variable.name).is_some() =>
+                {
+                    // A qualified name is an unambiguous package slot: no
+                    // scope cursor is needed to keep the effect. Compound
+                    // targets keep the read-modify-write the body path
+                    // emits; simple initializers keep the write; bare
+                    // targets keep the read.
+                    if let Some(op) = &decl.compound_operator {
+                        PirOperation::StashModify {
+                            symbol: SymbolName {
+                                sigil: variable.sigil.clone(),
+                                name: variable.name.clone(),
+                                package: package_from_name(&variable.name),
+                            },
+                            op: op.clone(),
+                        }
+                    } else if decl.has_initializer {
+                        PirOperation::StashWrite {
+                            symbol: SymbolName {
+                                sigil: variable.sigil.clone(),
+                                name: variable.name.clone(),
+                                package: package_from_name(&variable.name),
+                            },
+                        }
+                    } else {
+                        PirOperation::StashRead {
+                            symbol: SymbolName {
+                                sigil: variable.sigil.clone(),
+                                name: variable.name.clone(),
+                                package: package_from_name(&variable.name),
+                            },
+                        }
+                    }
+                }
+                DeclarationVerdict::DeclarationShapedCall { .. } => continue,
+                // A class-body `field` writes per-object storage: neither a
+                // lexical pad slot nor a package stash slot. Mirror body
+                // PIR's `FieldWrite`, which needs no scope cursor for the
+                // name and publishes no false lexical binding (#13844).
+                DeclarationVerdict::RealDeclaration(DeclStorageClass::Field) => {
+                    PirOperation::FieldWrite {
+                        name: LexicalName {
+                            sigil: variable.sigil.clone(),
+                            name: variable.name.clone(),
+                        },
+                    }
+                }
+                // `our` binds a package/stash symbol and `local` dynamically
+                // scopes a package/global slot: both are stash writes read
+                // off the same verdict, not a second declarator list.
+                // `my`/`state` are lexical.
+                DeclarationVerdict::RealDeclaration(
+                    DeclStorageClass::Our | DeclStorageClass::Local,
+                ) => PirOperation::StashWrite {
                     symbol: SymbolName {
                         sigil: variable.sigil.clone(),
                         name: variable.name.clone(),
                         package: item.package_context.clone(),
                     },
-                }
-            } else {
-                PirOperation::LexicalWrite {
+                },
+                DeclarationVerdict::RealDeclaration(_) => PirOperation::LexicalWrite {
                     name: LexicalName {
                         sigil: variable.sigil.clone(),
                         name: variable.name.clone(),
                     },
-                }
+                },
             };
+            let anchor = PirSourceAnchor::explicit(variable.range, item.id);
             // The declaration names a write target; `access_for_operation`
             // classifies the write. The flat path cannot prove whether the
             // place is assigned in scalar or list context (`my ($x) = ...`
@@ -809,12 +886,6 @@ fn build_receipt(
     }
 }
 
-fn is_stash_declarator(declarator: &str) -> bool {
-    // `our` binds a package/stash symbol; `local` dynamically scopes a
-    // package/global slot. Both are stash writes. `my`/`state` are lexical.
-    matches!(declarator, "our" | "local")
-}
-
 fn named_callee(name: &str) -> PirCallee {
     match name.rsplit_once("::") {
         Some((package, bare)) if !package.is_empty() && !bare.is_empty() => {
@@ -948,11 +1019,34 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
 /// node IDs) is isolated to the single body. The returned nodes are in lowering order.
 ///
 /// Returns a `Vec` of [`PirNode`], in lowering order. Each node carries its source anchor.
+///
+/// The body's unsupported receipt is dropped; consumers that must observe the
+/// declaration-shaped-call boundary for completeness need
+/// [`lower_single_body_with_unsupported`].
 #[must_use]
 pub fn lower_single_body(body: &HirBody, body_id: HirBodyId, file: &HirFile) -> Vec<PirNode> {
+    lower_single_body_with_unsupported(body, body_id, file).0
+}
+
+/// Lower a single [`HirBody`] to PIR nodes plus the declaration-shaped-call
+/// boundaries the body lowering recorded as unsupported.
+///
+/// Same nodes as [`lower_single_body`], in the same order. The count is the
+/// per-body slice of the body's unsupported receipt that the nodes-only shape
+/// drops: one per declaration-shaped call (`field $x`, or any future form
+/// reaching [`DeclStorageClass::Unknown`]), mirroring the receipt entries
+/// one-for-one. Completeness consumers add it to their unmodeled evidence so
+/// a body holding an unmodelled legacy call can never report `Complete`
+/// facets (#14798, R2).
+#[must_use]
+pub fn lower_single_body_with_unsupported(
+    body: &HirBody,
+    body_id: HirBodyId,
+    file: &HirFile,
+) -> (Vec<PirNode>, u32) {
     let mut lowerer = BodyLowerer::new(None);
     lowerer.lower_body(body, body_id, file);
-    lowerer.nodes
+    (lowerer.nodes, lowerer.declaration_shaped_call_count)
 }
 
 // ── PIR-A: lower from canonical HirFile::bodies ───────────────────────────────
@@ -1034,6 +1128,11 @@ struct BodyLowerer {
     next_id: u32,
     last_in_scope: HashMap<Option<HirScopeId>, PirId>,
     unsupported: HashMap<&'static str, usize>,
+    /// Declaration-shaped-call boundaries lowered in this body. Mirrors the
+    /// receipt entries under the declaration-call keys one-for-one, but as a
+    /// dedicated count so per-body completeness consumers need no receipt-key
+    /// coupling to observe the boundary (#14798, R2).
+    declaration_shaped_call_count: u32,
     source_identity: Option<String>,
 }
 
@@ -1045,6 +1144,7 @@ impl BodyLowerer {
             next_id: 0,
             last_in_scope: HashMap::new(),
             unsupported: HashMap::new(),
+            declaration_shaped_call_count: 0,
             source_identity,
         }
     }
@@ -1086,8 +1186,15 @@ impl BodyLowerer {
                     // call-site reference, which `extract_lexical_facts` only
                     // sees as a `LexicalRead`/`LexicalWrite`.
                     // Keep the call boundary visible to completeness consumers:
-                    // the callee's runtime behavior remains unmodeled.
-                    *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+                    // the callee's runtime behavior remains unmodeled. The
+                    // body arena carries no declarator, so this path renders
+                    // the generic key: a future form reaching `Unknown` can
+                    // never inherit the legacy field label (#14798, R1). The
+                    // flat path, which sees the declarator, keeps the
+                    // specific legacy key.
+                    *self.unsupported.entry("DeclarationShapedCall").or_insert(0) += 1;
+                    self.declaration_shaped_call_count =
+                        self.declaration_shaped_call_count.saturating_add(1);
                     if let Some(arg_id) = init {
                         self.lower_expr(body, *arg_id, file);
                     }
@@ -2288,6 +2395,34 @@ mod tests {
                 }
             }
             assert!(saw_write, "expected a LexicalWrite for `{src}`");
+        }
+    }
+
+    #[test]
+    fn single_body_with_unsupported_carries_nodes_plus_call_boundary() {
+        // The receipt slice mirrors the body receipt one-for-one: a legacy
+        // declaration-shaped call is exactly one boundary, a clean body is
+        // zero — and the nodes are identical to the nodes-only shape (#14798,
+        // R2). The analyzer adds this count to its unmodeled evidence, so a
+        // miscount here (or a dropped bridge) flips a summary facet.
+        use crate::hir::HirBodyId;
+        for (src, expected) in [("field $x = 1;", 1u32), ("field $x;", 1u32), ("my $x = 1;", 0u32)]
+        {
+            let mut parser = Parser::new(src);
+            let output = parser.parse_with_recovery();
+            let file = lower_ast(&output.ast);
+            let mut total = 0u32;
+            for (idx, body) in file.bodies.iter().enumerate() {
+                let id = HirBodyId(idx as u32);
+                let (nodes, calls) = super::lower_single_body_with_unsupported(body, id, &file);
+                assert_eq!(
+                    nodes,
+                    super::lower_single_body(body, id, &file),
+                    "nodes must match the nodes-only shape for `{src}`"
+                );
+                total = total.saturating_add(calls);
+            }
+            assert_eq!(total, expected, "wrong boundary count for `{src}`");
         }
     }
 
