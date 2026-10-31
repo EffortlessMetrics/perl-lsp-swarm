@@ -917,14 +917,40 @@ impl CriticRule for TooManyBranchesRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        collect_too_many_branches_findings(self, ctx.source, ctx.ast, out);
+        collect_too_many_branches_findings(
+            self,
+            ctx.source,
+            ctx.ast,
+            ctx.parse_error_spans.unwrap_or(&[]),
+            out,
+        );
     }
+}
+
+fn body_has_own_parse_error_span(body: &Node, spans: &[std::ops::Range<usize>]) -> bool {
+    fn nested_unit_ranges(node: &Node, out: &mut Vec<(usize, usize)>) {
+        for child in node.children() {
+            if matches!(child.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
+                out.push((child.location.start, child.location.end));
+            } else {
+                nested_unit_ranges(child, out);
+            }
+        }
+    }
+    let mut nested = Vec::new();
+    nested_unit_ranges(body, &mut nested);
+    spans.iter().any(|span| {
+        span.start < body.location.end
+            && body.location.start < span.end
+            && !nested.iter().any(|&(start, end)| start <= span.start && span.end <= end)
+    })
 }
 
 fn collect_too_many_branches_findings(
     rule: &TooManyBranchesRule,
     source: &str,
     node: &Node,
+    parse_error_spans: &[std::ops::Range<usize>],
     out: &mut Vec<CriticFinding>,
 ) {
     let unit = match &node.kind {
@@ -936,6 +962,7 @@ fn collect_too_many_branches_findings(
     };
     if let Some((name, name_span, body)) = unit
         && !subtree_has_parse_error(body)
+        && !body_has_own_parse_error_span(body, parse_error_spans)
     {
         let branch_count = count_branch_points(body);
         if branch_count > DEFAULT_MAX_BRANCHES {
@@ -961,7 +988,7 @@ fn collect_too_many_branches_findings(
     }
 
     for child in node.children() {
-        collect_too_many_branches_findings(rule, source, child, out);
+        collect_too_many_branches_findings(rule, source, child, parse_error_spans, out);
     }
 }
 
@@ -1000,7 +1027,13 @@ fn subtree_has_parse_error(node: &Node) -> bool {
             | NodeKind::MissingIdentifier
             | NodeKind::MissingBlock
             | NodeKind::UnknownRest
-    ) || node.children().iter().any(|child| subtree_has_parse_error(child))
+    ) || node
+        .children()
+        .iter()
+        .filter(|child| {
+            !matches!(child.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. })
+        })
+        .any(|child| subtree_has_parse_error(child))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5990,6 +6023,38 @@ if ($x = 1) { print $x; }
         let ast = parse_source(&source);
         let ctx = CriticContext::new(&source, &ast, &config);
         assert!(registry.check(&ctx).is_empty(), "inner branches must not inflate the outer sub");
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_ignores_parse_errors_inside_nested_subs() {
+        // The outer sub is over the limit on its own branches. A parse
+        // error inside a nested sub must not suppress the outer finding.
+        let mut source =
+            String::from("use strict;\nuse warnings;\nsub outer {\n    my $x = shift;\n");
+        for index in 0..=DEFAULT_MAX_BRANCHES {
+            source.push_str(&format!("    if ($x == {index}) {{ print {index}; }}\n"));
+        }
+        source.push_str("    sub inner { my $y = ; }\n}\n");
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(&source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        let findings = registry.check(&ctx);
+        assert_eq!(findings.len(), 1, "outer must still fire: {findings:?}");
+        assert!(findings[0].message.contains("outer"), "{}", findings[0].message);
+    }
+
+    #[test]
+    fn native_too_many_branches_rule_skips_unit_overlapping_parser_error_span() {
+        let source = branchy_sub_source("branchy", DEFAULT_MAX_BRANCHES + 1);
+        let ast = parse_source(&source);
+        let config = CriticConfig::default();
+        let spans = [0..source.len()];
+        let ctx = CriticContext::new(&source, &ast, &config).with_parse_error_spans(&spans);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(TooManyBranchesRule)]);
+
+        assert!(registry.check(&ctx).is_empty(), "a unit under a parser error span is not trusted");
     }
 
     #[test]

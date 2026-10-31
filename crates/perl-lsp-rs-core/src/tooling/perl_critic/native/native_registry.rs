@@ -542,6 +542,10 @@ impl NativeCriticRegistry {
             }
             _ => CriticContext::new(ctx.source, ctx.ast, ctx.config),
         };
+        let rich_ctx = match ctx.parse_error_spans {
+            Some(spans) => rich_ctx.with_parse_error_spans(spans),
+            None => rich_ctx,
+        };
 
         for rule in &self.rules {
             if !rule_enabled(rule.as_ref(), rich_ctx.config) {
