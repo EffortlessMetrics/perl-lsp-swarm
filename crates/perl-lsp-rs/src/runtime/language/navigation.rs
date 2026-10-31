@@ -281,6 +281,11 @@ use self::xs_bootstrap::{extract_xs_bootstrap_target, xs_bootstrap_location};
 
 // Ungated with `fqn_component_at_cursor`, which is reached from the rename and
 // find-references refusal guards in every build (#14757).
+/// One identifier segment in a `::`-qualified name (#14616).
+const FQN_ID_SEGMENT: &str = r"[\p{XID_Start}_][\p{XID_Continue}]*";
+const FQN_CAPTURE: &str =
+    r"([\p{XID_Start}_][\p{XID_Continue}]*(?:::[\p{XID_Start}_][\p{XID_Continue}]*)*)";
+
 static FQN_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 #[cfg(feature = "workspace")]
@@ -614,23 +619,20 @@ fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecis
 }
 
 pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
-    FQN_RE
-        .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
-        .as_ref()
-        .map_err(|err| {
-            crate::protocol::internal_error(&format!(
-                "Failed to initialize fully-qualified symbol regex: {err}"
-            ))
-        })
+    FQN_RE.get_or_init(|| regex::Regex::new(FQN_CAPTURE)).as_ref().map_err(|err| {
+        crate::protocol::internal_error(&format!(
+            "Failed to initialize fully-qualified symbol regex: {err}"
+        ))
+    })
 }
 
 #[cfg(feature = "workspace")]
 fn get_arrow_method_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     ARROW_METHOD_RE
         .get_or_init(|| {
-            regex::Regex::new(
-                r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)",
-            )
+            regex::Regex::new(&format!(
+                r"({FQN_ID_SEGMENT}(?::{FQN_ID_SEGMENT})*)\s*->\s*({FQN_ID_SEGMENT})"
+            ))
         })
         .as_ref()
         .map_err(|err| {
@@ -644,7 +646,7 @@ fn get_arrow_method_regex() -> Result<&'static regex::Regex, JsonRpcError> {
 fn get_package_arrow_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     PACKAGE_ARROW_RE
         .get_or_init(|| {
-            regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*->")
+            regex::Regex::new(&format!(r"({FQN_ID_SEGMENT}(?::{FQN_ID_SEGMENT})*)\s*->"))
         })
         .as_ref()
         .map_err(|err| {
@@ -661,9 +663,9 @@ fn get_package_arrow_regex() -> Result<&'static regex::Regex, JsonRpcError> {
 fn get_package_method_receiver_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     PACKAGE_METHOD_RECEIVER_RE
         .get_or_init(|| {
-            regex::Regex::new(
-                r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*->\s*[A-Za-z_]",
-            )
+            regex::Regex::new(&format!(
+                r"({FQN_ID_SEGMENT}(?::{FQN_ID_SEGMENT})*)\s*->\s*[\p{{XID_Start}}_]"
+            ))
         })
         .as_ref()
         .map_err(|err| {
@@ -730,7 +732,9 @@ fn get_quoted_framework_module_regex() -> Result<&'static regex::Regex, JsonRpcE
     QUOTED_FRAMEWORK_MODULE_RE
         .get_or_init(|| {
             regex::Regex::new(
-                r#"\b(with|extends|enable)\s+(?:'([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)'|"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)")"#,
+                &format!(
+                    r#"\b(with|extends|enable)\s+(?:'({FQN_ID_SEGMENT}(?::{FQN_ID_SEGMENT})*)'|"({FQN_ID_SEGMENT}(?::{FQN_ID_SEGMENT})*)")"#
+                ),
             )
         })
         .as_ref()
@@ -1445,8 +1449,7 @@ pub(super) fn fqn_component_at_cursor(
 /// are both `false`. `symbol_name` of `None` is `false` for a final component
 /// too -- with nothing to disagree with there is no disagreement to report.
 ///
-/// Inherits `fqn_component_at_cursor`'s ASCII-only bound (#14616); fixing that
-/// now touches one place instead of three.
+/// Uses the same Unicode XID qualified-name grammar as [`get_fqn_regex`] (#14616).
 pub(super) fn cursor_is_off_named_symbol(
     text: &str,
     offset: usize,
@@ -5373,6 +5376,21 @@ mod tests {
             Some(FqnCursorComponent::Final { package: "Foo".to_string(), name: "bar".to_string() })
         );
         assert_eq!(fqn_component_at_cursor(regex, "Foo::bar", 9), None);
+        let unicode_line = "Ñañá::ñ";
+        let prefix_cursor = "Ñañá".find('ñ').ok_or("ñ in prefix")?;
+        assert_eq!(
+            fqn_component_at_cursor(regex, unicode_line, prefix_cursor),
+            Some(FqnCursorComponent::Prefix),
+            "cursor on a non-ASCII prefix component must classify as Prefix (#14616)"
+        );
+        let final_cursor = unicode_line.rfind('ñ').ok_or("final ñ")?;
+        assert_eq!(
+            fqn_component_at_cursor(regex, unicode_line, final_cursor),
+            Some(FqnCursorComponent::Final {
+                package: "Ñañá".to_string(), name: "ñ".to_string()
+            }),
+            "cursor on the non-ASCII final component must classify as Final (#14616)"
+        );
         Ok(())
     }
 
