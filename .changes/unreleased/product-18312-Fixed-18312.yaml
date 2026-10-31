@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "documentHighlight inside a subroutine now includes scalar element and last-index spellings of local array and hash containers (for example `$items[0]` and `$#items` with `@items`, `$h{k}` with `%h`) while excluding same-named subscript index operands and occurrences outside the enclosing sub."
+time: 2026-10-31T19:35:00Z
+custom:
+  PR: "pending"
+  Slug: document-highlight-sub-local-container-spellings
+  Breaking: "no"
