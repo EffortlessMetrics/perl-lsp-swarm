@@ -806,9 +806,18 @@ technical_debt:
         let report = crate::tasks::ci_metrics::baseline_report_fixture();
         let json = serde_json::to_string(&report).context("serialize producer baseline")?;
         let parsed: serde_json::Value = serde_json::from_str(&json)?;
-        for key in
-            ["schema_version", "generated_at", "branch", "days_analyzed", "workflows", "summary"]
-        {
+        for key in [
+            "schema_version",
+            "generated_at",
+            "branch",
+            "days_analyzed",
+            "workflows",
+            "summary",
+            "sample_completeness",
+            "fetched_runs",
+            "oldest_fetched_at",
+            "newest_fetched_at",
+        ] {
             ensure!(
                 parsed.get(key).is_some(),
                 "producer envelope lost `{key}` — envelope fields move in lockstep with consumers (#15369)"
