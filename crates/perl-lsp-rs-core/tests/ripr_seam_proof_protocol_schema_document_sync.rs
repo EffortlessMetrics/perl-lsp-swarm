@@ -27,6 +27,84 @@ const DID_OPEN_METHOD: &str = "textDocument/didOpen";
 const DID_CHANGE_METHOD: &str = "textDocument/didChange";
 const DID_CLOSE_METHOD: &str = "textDocument/didClose";
 
+#[test]
+fn did_save_accepts_optional_text_and_classifies_notification() -> Result<(), SchemaError> {
+    for text in [None, Some(json!("")), Some(json!("my $saved = 1;\n"))] {
+        let mut save = json!({
+            "jsonrpc": "2.0", "method": "textDocument/didSave",
+            "params": {"textDocument": {"uri": "untitled:Untitled-1"}}
+        });
+        if let Some(text) = text {
+            save["params"]["text"] = text;
+        }
+        let validated = validate(&save, Direction::ClientToServer, None)?;
+        assert_eq!(validated.method, "textDocument/didSave");
+        assert_eq!(validated.kind, MessageKind::Notification);
+        assert_eq!(validated.direction, Direction::ClientToServer);
+        assert_eq!(validated.version, ProtocolVersion::Lsp317);
+    }
+    Ok(())
+}
+
+#[test]
+fn did_save_rejects_wrong_known_fields_at_exact_paths() {
+    for (params, path) in [
+        (json!({}), "$.params.textDocument"),
+        (json!({"textDocument": null}), "$.params.textDocument"),
+        (json!({"textDocument": {}}), "$.params.textDocument.uri"),
+        (json!({"textDocument": {"uri": 7}}), "$.params.textDocument.uri"),
+        (json!({"textDocument": {"uri": "no-scheme"}}), "$.params.textDocument.uri"),
+        (json!({"textDocument": {"uri": "file:///saved.pl"}, "text": null}), "$.params.text"),
+        (json!({"textDocument": {"uri": "file:///saved.pl"}, "text": 7}), "$.params.text"),
+        (json!({"textDocument": {"uri": "file:///saved.pl"}, "text": {}}), "$.params.text"),
+    ] {
+        let frame = json!({"jsonrpc": "2.0", "method": "textDocument/didSave", "params": params});
+        let error = validate(&frame, Direction::ClientToServer, None)
+            .expect_err("malformed known didSave field must fail");
+        assert_eq!(error.method.as_deref(), Some("textDocument/didSave"));
+        assert_eq!(error.path, path);
+    }
+}
+
+#[test]
+fn did_save_is_only_a_client_notification() {
+    let notification = json!({
+        "jsonrpc": "2.0", "method": "textDocument/didSave",
+        "params": {"textDocument": {"uri": "file:///saved.pl"}}
+    });
+    let mut request = notification.clone();
+    request["id"] = json!("save-id");
+    for (frame, direction, method) in [
+        (notification, Direction::ServerToClient, None),
+        (request, Direction::ClientToServer, None),
+        (
+            json!({"jsonrpc": "2.0", "id": "save-id", "result": null}),
+            Direction::ServerToClient,
+            Some("textDocument/didSave"),
+        ),
+        (
+            json!({"jsonrpc": "2.0", "id": "save-id", "error": {"code": -32602, "message": "invalid"}}),
+            Direction::ServerToClient,
+            Some("textDocument/didSave"),
+        ),
+    ] {
+        let error = validate(&frame, direction, method)
+            .expect_err("didSave has no reverse direction, request, or response schema");
+        assert_eq!(error.path, "$.method");
+        assert_eq!(error.expected, "registered method/direction schema");
+    }
+}
+
+#[test]
+fn did_save_preserves_forward_compatible_unknown_fields() -> Result<(), SchemaError> {
+    let frame = json!({
+        "jsonrpc": "2.0", "method": "textDocument/didSave",
+        "params": {"textDocument": {"uri": "file:///saved.pl", "_future": true}, "_future": []}
+    });
+    validate(&frame, Direction::ClientToServer, None)?;
+    Ok(())
+}
+
 fn did_open(uri: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
