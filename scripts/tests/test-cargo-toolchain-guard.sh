@@ -219,8 +219,8 @@ if [ "\${1:-}" = "--version" ]; then
   printf 'cargo %s (stub 2023-11-01)\n' "$version"
   exit 0
 fi
-printf 'stale-cargo-stub-ran\n'
-exit 0
+printf 'unexpected cargo invocation: %s\n' "\$*" >&2
+exit 97
 STUB
   chmod +x "${bin_dir}/cargo"
 }
@@ -263,6 +263,25 @@ else
 fi
 assert_contains "guard: missing cargo message names the requirement" \
   "no cargo found on PATH" "${TMPDIR_BASE}/missing.err"
+
+# A configured but off-PATH Cargo must be reported without running it or
+# silently changing which executable the calling entrypoint uses.
+HIDDEN_HOME="${TMPDIR_BASE}/hidden cargo"
+mkdir -p "${HIDDEN_HOME}/bin"
+printf '#!/bin/sh\ntouch "%s"\n' "${TMPDIR_BASE}/hidden-ran" > "${HIDDEN_HOME}/bin/cargo"
+chmod +x "${HIDDEN_HOME}/bin/cargo"
+code=0
+env -i PATH="${TMPDIR_BASE}/empty-path" CARGO_HOME="$HIDDEN_HOME" "$(command -v bash)" \
+  -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/hidden.err" || code=$?
+if [[ "$code" -eq 78 && ! -e "${TMPDIR_BASE}/hidden-ran" ]]; then
+  pass "guard: off-PATH Cargo is reported without execution or implicit selection"
+else
+  fail "guard: off-PATH Cargo changed refusal or was executed"
+fi
+assert_contains "guard: reports configured off-PATH Cargo" \
+  "${HIDDEN_HOME}/bin/cargo, outside PATH (not probed)" "${TMPDIR_BASE}/hidden.err"
+assert_contains "guard: install is conditional" \
+  "install rustup only if no suitable installation exists" "${TMPDIR_BASE}/hidden.err"
 
 # ── full guard with unparseable --version output ──────────────────────────────
 
@@ -456,27 +475,89 @@ if [[ "${OSTYPE:-}" != msys* && "${OSTYPE:-}" != cygwin* && "${OS:-}" != "Window
   mkdir -p "$STANDALONE_DIR"
   cp "${REPO_ROOT}/scripts/install.sh" "${STANDALONE_DIR}/install.sh"
 
+  # No inherited Cargo, Rustup, installation, or temp paths. Every external
+  # network/install entrypoint used by this installer is intercepted.
+  SENTINEL_BIN="${TMPDIR_BASE}/installer-sentinels"
+  mkdir -p "$SENTINEL_BIN" "${TMPDIR_BASE}/installer-home" \
+    "${TMPDIR_BASE}/installer-dest" "${TMPDIR_BASE}/installer-tmp"
+  for cmd in curl wget git rustup; do
+    cat > "${SENTINEL_BIN}/${cmd}" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${0##*/}" >> "$SENTINEL_LOG"
+exit 97
+STUB
+    chmod +x "${SENTINEL_BIN}/${cmd}"
+  done
+  cat > "${SENTINEL_BIN}/cargo" <<'STUB'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then
+  printf 'cargo %s (fixture)\n' "$FIXTURE_CARGO_VERSION"
+  exit 0
+fi
+printf 'cargo %s\n' "${1:-}" >> "$SENTINEL_LOG"
+exit 97
+STUB
+  chmod +x "${SENTINEL_BIN}/cargo"
+
+  run_installer_fixture() {
+    local script="$1" version="$2" log="$3" output="$4"
+    : > "$log"
+    ( cd "$STANDALONE_DIR"
+      env -i PATH="${SENTINEL_BIN}:/usr/bin:/bin" HOME="${TMPDIR_BASE}/installer-home" \
+        CARGO_HOME="${TMPDIR_BASE}/installer-home/cargo" \
+        RUSTUP_HOME="${TMPDIR_BASE}/installer-home/rustup" \
+        TMPDIR="${TMPDIR_BASE}/installer-tmp" INSTALL_DIR="${TMPDIR_BASE}/installer-dest" \
+        VERSION=latest BUILD_FROM_SOURCE=1 FIXTURE_CARGO_VERSION="$version" \
+        SENTINEL_LOG="$log" bash "$script"
+    ) > "${output}.out" 2> "${output}.err"
+  }
+
   code=0
-  (
-    cd "$STANDALONE_DIR"
-    PATH="${STALE_BIN}:$PATH" BUILD_FROM_SOURCE=1 bash ./install.sh
-  ) > "${TMPDIR_BASE}/standalone.out" 2> "${TMPDIR_BASE}/standalone.err" || code=$?
-  if [[ "$code" -ne 0 ]] && grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone.err"; then
-    pass "install.sh standalone: stale cargo refused without the guard library"
+  run_installer_fixture ./install.sh 1.75.0 "${TMPDIR_BASE}/stale-sentinel.log" \
+    "${TMPDIR_BASE}/standalone" || code=$?
+  if [[ "$code" -ne 0 ]] && grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone.err" &&
+    [[ ! -s "${TMPDIR_BASE}/stale-sentinel.log" ]]; then
+    pass "install.sh standalone: stale cargo refused before network or install"
   else
-    fail "install.sh standalone: expected typed refusal with stale cargo, got exit ${code}"
+    fail "install.sh standalone: stale cargo must refuse before network or install"
   fi
 
   code=0
-  (
-    cd "$STANDALONE_DIR"
-    PATH="${NEW_BIN}:$PATH" BUILD_FROM_SOURCE=1 bash ./install.sh
-  ) > "${TMPDIR_BASE}/standalone-new.out" 2> "${TMPDIR_BASE}/standalone-new.err" || code=$?
-  if grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone-new.err"; then
-    fail "install.sh standalone: satisfying cargo must not hit the guard refusal"
+  run_installer_fixture ./install.sh 1.96.1 "${TMPDIR_BASE}/new-sentinel.log" \
+    "${TMPDIR_BASE}/standalone-new" || code=$?
+  if [[ "$code" -ne 0 ]] && ! grep -Fq "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/standalone-new.err" &&
+    [[ "$(cat "${TMPDIR_BASE}/new-sentinel.log")" == 'cargo install' ]] &&
+    [[ -z "$(ls -A "${TMPDIR_BASE}/installer-dest")" ]]; then
+    pass "install.sh standalone: satisfying cargo reaches blocked install without network or destination writes"
   else
-    pass "install.sh standalone: satisfying cargo proceeds past the guard"
+    fail "install.sh standalone: expected only the blocked cargo install boundary"
   fi
+
+  # Inject a network call into a disposable copy. The same sentinel-log
+  # predicate used above must reject it even if installer output is otherwise
+  # indistinguishable from the stale-cargo case.
+  sed 's/^    main "\$@"$/    curl https:\/\/example.invalid; main "\$@"/' \
+    "${STANDALONE_DIR}/install.sh" > "${STANDALONE_DIR}/injected.sh"
+  code=0
+  run_installer_fixture ./injected.sh 1.75.0 "${TMPDIR_BASE}/injected-sentinel.log" \
+    "${TMPDIR_BASE}/standalone-injected" || code=$?
+  if [[ "$code" -ne 0 && "$(cat "${TMPDIR_BASE}/injected-sentinel.log")" == curl ]]; then
+    pass "install.sh standalone: injected network attempt is blocked and detected"
+  else
+    fail "install.sh standalone: injected network attempt escaped detection"
+  fi
+
+  sed 's/^    main "\$@"$/    cargo install unexpected; main "\$@"/' \
+    "${STANDALONE_DIR}/install.sh" > "${STANDALONE_DIR}/injected-install.sh"
+  code=0
+  run_installer_fixture ./injected-install.sh 1.75.0 "${TMPDIR_BASE}/injected-install.log" \
+    "${TMPDIR_BASE}/standalone-injected-install" || code=$?
+  if [[ "$code" -ne 0 && "$(cat "${TMPDIR_BASE}/injected-install.log")" == 'cargo install' ]]; then
+    pass "install.sh standalone: injected install attempt is blocked and detected"
+  else
+    fail "install.sh standalone: injected install attempt escaped detection"
+  fi
+
 else
   pass "install.sh standalone: skipped on Windows (installer supports Linux/macOS only)"
 fi
@@ -486,34 +567,92 @@ fi
 # still runs Cargo in SKIP_INSTALL mode, and the other reaches Cargo only after
 # exhausting its prebuilt xtask ladder.
 
+# Run both entrypoints from a disposable fixture root. Do not consult a real
+# target tree, git repository, Python validators, or caller-owned smoke paths.
+ENTRY_ROOT="${TMPDIR_BASE}/entry-root"
+ENTRY_BIN="${TMPDIR_BASE}/entry-bin"
+mkdir -p "$ENTRY_ROOT/scripts/lib" "$ENTRY_ROOT/target/debug" "$ENTRY_BIN" \
+  "$ENTRY_ROOT/home" "$ENTRY_ROOT/tmp" "$ENTRY_ROOT/smoke-install" "$ENTRY_ROOT/smoke-work" \
+  "${TMPDIR_BASE}/hostile-target/debug"
+cp "${REPO_ROOT}/scripts/post-publish-smoke.sh" "${REPO_ROOT}/scripts/check_release_history.sh" "$ENTRY_ROOT/scripts/"
+cp "$LIB" "$ENTRY_ROOT/scripts/lib/"
+cp "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/rust-toolchain.toml" "$ENTRY_ROOT/"
+: > "$ENTRY_ROOT/RELEASE_HISTORY.md"
+cp "${STALE_BIN}/cargo" "$ENTRY_BIN/cargo"
+for cmd in curl wget rustup; do
+  cat > "$ENTRY_BIN/$cmd" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${0##*/}" >> "$ENTRY_SENTINEL_LOG"
+exit 97
+STUB
+  chmod +x "$ENTRY_BIN/$cmd"
+done
+# Fixed empty fixture input: no real Git metadata or Python validators execute.
+for cmd in git python3; do
+  cat > "$ENTRY_BIN/$cmd" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${0##*/}" >> "$ENTRY_INPUT_LOG"
+exit 0
+STUB
+  chmod +x "$ENTRY_BIN/$cmd"
+done
+cat > "${TMPDIR_BASE}/hostile-target/debug/xtask" <<'STUB'
+#!/bin/sh
+: > "$HOSTILE_EXEC_MARKER"
+exit 0
+STUB
+chmod +x "${TMPDIR_BASE}/hostile-target/debug/xtask"
+# A non-executable fixture sentinel proves the fallback skips fixture prebuilts.
+cp "${TMPDIR_BASE}/hostile-target/debug/xtask" "$ENTRY_ROOT/target/debug/xtask"
+chmod -x "$ENTRY_ROOT/target/debug/xtask"
+: > "${TMPDIR_BASE}/entry-sentinel.log"
+: > "${TMPDIR_BASE}/entry-input.log"
+run_entry_fixture() {
+  local entry="$1"; shift
+  ( cd "$ENTRY_ROOT"
+    env -i PATH="${ENTRY_BIN}:/usr/bin:/bin" HOME="$ENTRY_ROOT/home" \
+      TMPDIR="$ENTRY_ROOT/tmp" CARGO_HOME="$ENTRY_ROOT/home/cargo" \
+      RUSTUP_HOME="$ENTRY_ROOT/home/rustup" \
+      SMOKE_INSTALL_ROOT="$ENTRY_ROOT/smoke-install" SMOKE_WORK_DIR="$ENTRY_ROOT/smoke-work" \
+      ENTRY_SENTINEL_LOG="${TMPDIR_BASE}/entry-sentinel.log" \
+      ENTRY_INPUT_LOG="${TMPDIR_BASE}/entry-input.log" \
+      HOSTILE_EXEC_MARKER="${TMPDIR_BASE}/hostile-executed" \
+      SKIP_INSTALL=1 WSL_DISTRO_NAME=Ubuntu bash "scripts/$entry" "$@"
+  )
+}
+# Simulate hostile caller overrides. env -i inside the runner must remove them.
+export CARGO_TARGET_DIR="${TMPDIR_BASE}/hostile-target"
+export SMOKE_INSTALL_ROOT="${TMPDIR_BASE}/hostile-install"
+export SMOKE_WORK_DIR="${TMPDIR_BASE}/hostile-work"
 code=0
-(
-  cd "$REPO_ROOT"
-  PATH="${STALE_BIN}:$PATH" WSL_DISTRO_NAME=Ubuntu \
-    SKIP_INSTALL=1 bash scripts/post-publish-smoke.sh 0.0.0
-) > "${TMPDIR_BASE}/post-publish-stale.out" \
+run_entry_fixture post-publish-smoke.sh 0.0.0 > "${TMPDIR_BASE}/post-publish-stale.out" \
   2> "${TMPDIR_BASE}/post-publish-stale.err" || code=$?
-if [[ "$code" -eq 78 ]]; then
-  pass "post-publish smoke: SKIP_INSTALL still guards Cargo with exit 78"
+if [[ "$code" -eq 78 ]] && grep -Fq 'cargo-toolchain-guard: REFUSED' "${TMPDIR_BASE}/post-publish-stale.err" &&
+  [[ -d "$ENTRY_ROOT/smoke-install/bin" && -d "$ENTRY_ROOT/smoke-work/cargo-home" &&
+     ! -e "$SMOKE_INSTALL_ROOT" && ! -e "$SMOKE_WORK_DIR" && ! -s "${TMPDIR_BASE}/entry-sentinel.log" ]]; then
+  pass "post-publish smoke: clean fixture refuses stale Cargo and ignores inherited directories"
 else
-  fail "post-publish smoke: stale Cargo must refuse before SKIP_INSTALL work, got ${code}"
+  fail "post-publish smoke: fixture escaped its roots or failed guard"
 fi
-assert_contains "post-publish smoke: refusal banner" \
-  "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/post-publish-stale.err"
-
 code=0
-(
-  cd "$REPO_ROOT"
-  PATH="${STALE_BIN}:$PATH" bash scripts/check_release_history.sh
-) > "${TMPDIR_BASE}/release-history-stale.out" \
+run_entry_fixture check_release_history.sh > "${TMPDIR_BASE}/release-history-stale.out" \
   2> "${TMPDIR_BASE}/release-history-stale.err" || code=$?
-if [[ "$code" -eq 78 ]]; then
-  pass "release history: Cargo fallback refuses stale toolchain with exit 78"
+if [[ "$code" -eq 78 ]] && grep -Fq 'cargo-toolchain-guard: REFUSED' "${TMPDIR_BASE}/release-history-stale.err" &&
+  [[ ! -e "${TMPDIR_BASE}/hostile-executed" && ! -s "${TMPDIR_BASE}/entry-sentinel.log" ]] &&
+  grep -qx git "${TMPDIR_BASE}/entry-input.log" && grep -qx python3 "${TMPDIR_BASE}/entry-input.log"; then
+  pass "release history: clean fixture refuses stale Cargo and ignores inherited prebuilt xtask"
 else
-  fail "release history: stale Cargo must refuse before fallback work, got ${code}"
+  fail "release history: fixture executed a prebuilt or failed guard"
 fi
-assert_contains "release history: refusal banner" \
-  "cargo-toolchain-guard: REFUSED" "${TMPDIR_BASE}/release-history-stale.err"
+# Prove the hostile prebuilt is executable and would create its marker if selected.
+HOSTILE_EXEC_MARKER="${TMPDIR_BASE}/hostile-control" \
+  "${TMPDIR_BASE}/hostile-target/debug/xtask"
+if [[ -f "${TMPDIR_BASE}/hostile-control" ]]; then
+  pass "release history: hostile prebuilt control can create its marker"
+else
+  fail "release history: hostile prebuilt control is inert"
+fi
+unset CARGO_TARGET_DIR SMOKE_INSTALL_ROOT SMOKE_WORK_DIR
 
 # ── entrypoint coverage consistency ───────────────────────────────────────────
 # Every repo bash entrypoint that invokes cargo as a command must source the
