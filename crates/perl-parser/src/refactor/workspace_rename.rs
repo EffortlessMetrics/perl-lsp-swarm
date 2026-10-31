@@ -15,7 +15,9 @@
 //! # Features
 //!
 //! - **Cross-file rename**: Identify and rename symbols across entire workspace
-//! - **Atomic operations**: All-or-nothing changes with automatic rollback
+//! - **Validated writes**: Every document and range is checked against original
+//!   bytes before any target write; write or restoration failures may leave
+//!   modified files (best-effort backup recovery)
 //! - **Scope-aware**: Respects Perl package namespaces and lexical scoping
 //! - **Dual indexing**: Finds both qualified (`Package::sub`) and bare (`sub`) references
 //! - **Progress reporting**: Real-time feedback during large operations
@@ -51,7 +53,7 @@ use super::workspace_refactor::{FileEdit, TextEdit};
 use perl_parser_core::qualified_name::split_qualified_name;
 use perl_workspace::workspace_index::WorkspaceIndex;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -71,7 +73,7 @@ pub struct BackupInfo {
 /// Configuration for workspace-wide rename operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceRenameConfig {
-    /// Enable atomic transaction with rollback (default: true)
+    /// Enable best-effort backup restoration after a write failure (default: true)
     pub atomic_mode: bool,
 
     /// Create backups before modification (default: true)
@@ -202,6 +204,28 @@ pub enum WorkspaceRenameError {
         error: String,
     },
 
+    /// A planned edit is invalid against the original document bytes.
+    ///
+    /// No target file was written for this plan.
+    InvalidEdit {
+        /// File whose planned range is invalid
+        file: PathBuf,
+        /// Planned start offset
+        start: usize,
+        /// Planned end offset
+        end: usize,
+        /// Why the range is invalid
+        reason: InvalidEditReason,
+    },
+
+    /// The same document path appears more than once in a rename plan.
+    ///
+    /// No target file was written for this plan.
+    DuplicateDocument {
+        /// Duplicated path
+        file: PathBuf,
+    },
+
     /// Rollback failed (critical)
     RollbackFailed {
         /// Original error
@@ -254,6 +278,12 @@ impl std::fmt::Display for WorkspaceRenameError {
             WorkspaceRenameError::FileSystemError { operation, file, error } => {
                 write!(f, "File system error during {}: {} - {}", operation, file.display(), error)
             }
+            WorkspaceRenameError::InvalidEdit { file, start, end, reason } => {
+                write!(f, "Invalid rename range {}..{} in {}: {reason}", start, end, file.display())
+            }
+            WorkspaceRenameError::DuplicateDocument { file } => {
+                write!(f, "Duplicate document in rename plan: {}", file.display())
+            }
             WorkspaceRenameError::RollbackFailed { original_error, rollback_error, backup_dir } => {
                 write!(
                     f,
@@ -282,6 +312,33 @@ impl std::fmt::Display for WorkspaceRenameError {
 
 impl std::error::Error for WorkspaceRenameError {}
 
+/// Why a planned byte range cannot be applied to original document text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidEditReason {
+    /// `start` is greater than `end`
+    Reversed,
+    /// Start or end is past the original document length
+    PastEnd,
+    /// Start or end is not a UTF-8 character boundary
+    NonCharBoundary,
+    /// The range overlaps a later (already-checked, higher-offset) range
+    Overlapping,
+    /// Ranges are not in end-to-start order
+    OutOfOrder,
+}
+
+impl std::fmt::Display for InvalidEditReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InvalidEditReason::Reversed => write!(f, "reversed range"),
+            InvalidEditReason::PastEnd => write!(f, "range past end of document"),
+            InvalidEditReason::NonCharBoundary => write!(f, "range is not on a character boundary"),
+            InvalidEditReason::Overlapping => write!(f, "overlapping ranges"),
+            InvalidEditReason::OutOfOrder => write!(f, "ranges are not in end-to-start order"),
+        }
+    }
+}
+
 /// Location of a name conflict
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConflictLocation {
@@ -297,8 +354,9 @@ pub struct ConflictLocation {
 
 /// Workspace rename engine
 ///
-/// Provides comprehensive symbol renaming across entire workspace with atomic
-/// operations, backup support, and progress reporting.
+/// Provides comprehensive symbol renaming across entire workspace with
+/// validated-before-writing application, optional best-effort backup recovery,
+/// and progress reporting.
 pub struct WorkspaceRename {
     /// Workspace index for symbol lookup
     index: WorkspaceIndex,
@@ -708,53 +766,65 @@ impl WorkspaceRename {
         Ok(BackupInfo { backup_dir, file_mappings })
     }
 
-    /// Apply file edits atomically with rollback support
+    /// Validate every document and edit before writing target files.
     ///
-    /// # AC:AC3 - Atomic multi-file changes
+    /// Prepared outputs are applied with optional best-effort backup restoration.
+    /// Write or restoration failures may leave modified files.
     pub fn apply_edits(&self, result: &WorkspaceRenameResult) -> Result<(), WorkspaceRenameError> {
-        let mut written_files = Vec::new();
+        let mut prepared = Vec::with_capacity(result.file_edits.len());
+        let mut paths = BTreeSet::new();
 
+        // Validate the complete plan against original document bytes before any
+        // write. Invalid later inputs must not leave earlier files renamed.
         for file_edit in &result.file_edits {
-            // Read original content
+            if !paths.insert(&file_edit.file_path) {
+                return Err(WorkspaceRenameError::DuplicateDocument {
+                    file: file_edit.file_path.clone(),
+                });
+            }
             let content = std::fs::read_to_string(&file_edit.file_path).map_err(|e| {
-                // Rollback already-written files before returning error
-                if let Some(ref backup) = result.backup_info {
-                    let _ = self.rollback_from_backup(&written_files, backup);
-                }
                 WorkspaceRenameError::FileSystemError {
                     operation: "read".to_string(),
                     file: file_edit.file_path.clone(),
                     error: e.to_string(),
                 }
             })?;
-
-            // Apply edits in reverse order (edits are already sorted end-to-start)
-            let mut new_content = content;
+            let mut previous_start = content.len();
             for edit in &file_edit.edits {
-                if edit.start <= new_content.len() && edit.end <= new_content.len() {
-                    new_content = format!(
-                        "{}{}{}",
-                        &new_content[..edit.start],
-                        edit.new_text,
-                        &new_content[edit.end..],
-                    );
+                if let Err(reason) =
+                    classify_edit_range(&content, edit.start, edit.end, previous_start)
+                {
+                    return Err(WorkspaceRenameError::InvalidEdit {
+                        file: file_edit.file_path.clone(),
+                        start: edit.start,
+                        end: edit.end,
+                        reason,
+                    });
                 }
+                previous_start = edit.start;
             }
 
-            // Write modified content
-            std::fs::write(&file_edit.file_path, &new_content).map_err(|e| {
-                // Rollback already-written files
+            // All ranges refer to the original string and are end-to-start.
+            let mut new_content = content;
+            for edit in &file_edit.edits {
+                new_content.replace_range(edit.start..edit.end, &edit.new_text);
+            }
+            prepared.push((&file_edit.file_path, new_content));
+        }
+
+        let mut written_files = Vec::new();
+        for (file_path, new_content) in prepared {
+            std::fs::write(file_path, &new_content).map_err(|e| {
                 if let Some(ref backup) = result.backup_info {
                     let _ = self.rollback_from_backup(&written_files, backup);
                 }
                 WorkspaceRenameError::FileSystemError {
                     operation: "write".to_string(),
-                    file: file_edit.file_path.clone(),
+                    file: file_path.clone(),
                     error: e.to_string(),
                 }
             })?;
-
-            written_files.push(file_edit.file_path.clone());
+            written_files.push(file_path.clone());
         }
 
         Ok(())
@@ -826,6 +896,32 @@ impl WorkspaceRename {
 
         Ok(())
     }
+}
+
+/// Classify a planned byte range against original document text and the start
+/// of the previously checked (higher-offset) range.
+fn classify_edit_range(
+    content: &str,
+    start: usize,
+    end: usize,
+    previous_start: usize,
+) -> Result<(), InvalidEditReason> {
+    if start > end {
+        return Err(InvalidEditReason::Reversed);
+    }
+    if start > content.len() || end > content.len() {
+        return Err(InvalidEditReason::PastEnd);
+    }
+    if !content.is_char_boundary(start) || !content.is_char_boundary(end) {
+        return Err(InvalidEditReason::NonCharBoundary);
+    }
+    if end > previous_start {
+        if start < previous_start {
+            return Err(InvalidEditReason::Overlapping);
+        }
+        return Err(InvalidEditReason::OutOfOrder);
+    }
+    Ok(())
 }
 
 /// Perl string context at a given byte offset.
