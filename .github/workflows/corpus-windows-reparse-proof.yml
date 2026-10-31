@@ -67,6 +67,27 @@ jobs:
           $resultCount = @($output | Select-String '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9.]+s$').Count
           if ($runningCount -ne 1 -or $resultCount -ne 1) { throw "exact proof did not execute exactly one passing test" }
 
+      - name: Run non-skipping portable asset path proof
+        shell: pwsh
+        run: |
+          $output = cargo test --locked -p perl-corpus --test corpus_asset_path -- --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { $_ }
+          if ($exitCode -ne 0) { exit $exitCode }
+          $requiredTests = @(
+            'literal_backslash_component_is_explicitly_unsupported_on_windows',
+            'windows_names_that_alias_or_address_streams_are_unsupported',
+            'portable_classification_does_not_reinterpret_backslash_components'
+          )
+          foreach ($testName in $requiredTests) {
+            $pattern = '^test ' + [regex]::Escape($testName) + ' \.\.\. ok$'
+            if (@($output | Select-String $pattern).Count -ne 1) {
+              throw "portable path proof did not execute required test: $testName"
+            }
+          }
+          $resultCount = @($output | Select-String '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9.]+s$').Count
+          if ($resultCount -ne 1) { throw "portable path proof must execute its complete nonempty target without skips" }
+
       - name: Run non-skipping xtask reparse proof
         shell: pwsh
         env:

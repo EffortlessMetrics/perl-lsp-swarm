@@ -1,3 +1,4 @@
+mod asset_path;
 pub(crate) mod root;
 mod topology;
 
@@ -38,6 +39,7 @@ pub use crate::tie_interface::{
     TieInterfaceCase, find_tie_case, tie_cases_by_tag, tie_cases_by_tags_all,
     tie_cases_by_tags_any, tie_interface_cases,
 };
+pub use asset_path::{CorpusAssetPath, CorpusAssetPathError};
 pub use root::{CORPUS_ROOT_ENV, CorpusRoot, CorpusRootError, CorpusRootSource};
 pub use topology::{
     AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
