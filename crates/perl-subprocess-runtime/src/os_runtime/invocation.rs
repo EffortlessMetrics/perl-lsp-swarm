@@ -6,6 +6,33 @@ use super::windows::{
 use crate::SubprocessError;
 use std::process::Command;
 
+/// cmd.exe dynamic variables expanded on the `/C` command line even when absent
+/// from the parent environment (command extensions enabled by default; we never
+/// pass `/E:OFF`). See #17437.
+#[cfg(any(windows, test))]
+const CMD_DYNAMIC_VARIABLES: &[&str] = &[
+    "CD",
+    "DATE",
+    "TIME",
+    "RANDOM",
+    "ERRORLEVEL",
+    "CMDEXTVERSION",
+    "CMDCMDLINE",
+    "HIGHESTNUMANODENUMBER",
+];
+
+/// Whether cmd.exe would treat `name` as defined for `%NAME%` command-line expansion.
+///
+/// `env_lookup` mirrors `std::env::var_os(name).is_some()` at the production call
+/// site; dynamic cmd.exe variables are accepted in addition (#17437).
+#[cfg(any(windows, test))]
+fn is_cmd_defined(name: &str, env_lookup: impl Fn(&str) -> bool) -> bool {
+    if env_lookup(name) {
+        return true;
+    }
+    CMD_DYNAMIC_VARIABLES.iter().any(|dynamic| dynamic.eq_ignore_ascii_case(name))
+}
+
 /// Resolve `(program, args)` into a spawnable [`Command`], failing closed on
 /// Windows when the program cannot be resolved to a safe absolute path.
 ///
@@ -60,14 +87,15 @@ pub(crate) fn resolve_command_invocation(
                      name: {resolved_program}"
                 ))
             })?;
-            // cmd.exe expands a `%NAME%` span on the /C line when NAME is a
-            // defined environment variable, and `%` has no command-line escape.
-            // Pass such arguments through and the tool silently receives the
-            // substituted text — fail closed with the offending argument named
-            // instead (#17371).
+            // cmd.exe expands a `%NAME%` span on the /C line when NAME is defined
+            // in the environment or is one of cmd.exe's dynamic variables, and `%`
+            // has no command-line escape. Pass such arguments through and the tool
+            // silently receives the substituted text — fail closed with the
+            // offending argument named instead (#17371, #17437).
             for arg in std::iter::once(resolved_program.as_str()).chain(args.iter().copied()) {
-                if windows_has_expandable_percent_ref(arg, |name| std::env::var_os(name).is_some())
-                {
+                if windows_has_expandable_percent_ref(arg, |name| {
+                    is_cmd_defined(name, |n| std::env::var_os(n).is_some())
+                }) {
                     return Err(SubprocessError::new(format!(
                         "argument contains a %...% reference that cmd.exe would substitute \
                          with an environment variable, and % has no command-line escape: \
@@ -109,5 +137,97 @@ pub(crate) fn resolve_command_invocation(
         let mut cmd = Command::new(program);
         cmd.args(args);
         Ok(cmd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cmd_defined;
+
+    #[test]
+    fn is_cmd_defined_accepts_environment_via_lookup() {
+        let env = ["MY_TOOL", "other"];
+        let lookup = |name: &str| env.iter().any(|e| e.eq_ignore_ascii_case(name));
+        assert!(is_cmd_defined("MY_TOOL", lookup));
+        assert!(is_cmd_defined("my_tool", lookup));
+        assert!(!is_cmd_defined("NOT_SET", lookup));
+    }
+
+    #[test]
+    fn is_cmd_defined_accepts_cmd_dynamic_variables_without_env_entry() {
+        let lookup = |_name: &str| false;
+        for name in [
+            "CD",
+            "cd",
+            "DATE",
+            "TIME",
+            "RANDOM",
+            "ERRORLEVEL",
+            "CMDEXTVERSION",
+            "CMDCMDLINE",
+            "HIGHESTNUMANODENUMBER",
+        ] {
+            assert!(
+                is_cmd_defined(name, lookup),
+                "{name} must be treated as cmd-defined even when absent from the environment"
+            );
+        }
+        assert!(!is_cmd_defined("TEMP", lookup));
+        assert!(!is_cmd_defined("f", lookup));
+    }
+
+    /// `%CD%` is expanded by cmd.exe even when `CD` is absent from the parent
+    /// environment; the resolver must fail closed before spawn (#17437).
+    #[cfg(windows)]
+    #[test]
+    fn resolve_fails_closed_on_dynamic_cd_percent_with_cd_unset() {
+        use super::resolve_command_invocation;
+        use crate::{OsSubprocessRuntime, SubprocessRuntime};
+
+        let saved_cd = std::env::var_os("CD");
+        std::env::remove_var("CD");
+
+        let resolve_result = resolve_command_invocation(r"C:\tools\wrapper.bat", &["--label=%CD%"]);
+        assert!(
+            resolve_result.is_err(),
+            "dynamic %CD% must fail closed at resolve; got: {resolve_result:?}"
+        );
+        let err = resolve_result.expect_err("must be Err");
+        assert!(
+            err.message.contains("--label=%CD%"),
+            "error must name the offending argument; got: {}",
+            err.message
+        );
+
+        let workspace =
+            std::env::temp_dir().join(format!("cmd_dynamic_cd_guard_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).expect("create temp workspace");
+        let probe = workspace.join("noop.bat");
+        std::fs::write(&probe, "@echo off\r\necho ok\r\n").expect("write probe bat");
+
+        let runtime = OsSubprocessRuntime::with_timeout(30);
+        let spawn_result = runtime.run_command(
+            probe.to_str().expect("temp path is UTF-8"),
+            &["--label=%CD%"],
+            None,
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        assert!(
+            spawn_result.is_err(),
+            "dynamic %CD% must fail closed at run_command; got: {spawn_result:?}"
+        );
+        let spawn_err = spawn_result.expect_err("must be Err");
+        assert!(
+            spawn_err.message.contains("--label=%CD%"),
+            "spawn error must name the offending argument; got: {}",
+            spawn_err.message
+        );
+
+        match saved_cd {
+            Some(value) => std::env::set_var("CD", value),
+            None => std::env::remove_var("CD"),
+        }
     }
 }
