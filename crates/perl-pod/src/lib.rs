@@ -311,8 +311,6 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
         return;
     }
 
-    let cleaned = strip_pod_formatting(trimmed);
-
     match section {
         Section::Name => {
             // NAME renders links as plain display text, not markdown — its
@@ -329,9 +327,10 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
             doc.synopsis = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Description => {
-            // Description keeps the markdown renderer (`cleaned`): its
-            // consumer renders LSP markdown — see `extract_pod` (#17984).
-            // Take only the first paragraph
+            // Description is the sole markdown field (#17984). Nested `L<>`
+            // used to explode here via recursive markdown-label escaping
+            // (#18135); do not pre-strip other sections with this renderer.
+            let cleaned = strip_pod_formatting(trimmed);
             let first_para = first_paragraph(&cleaned);
             doc.description = Some(first_para);
         }
@@ -567,8 +566,7 @@ fn escape_markdown_link_text(text: &str) -> String {
 fn extract_link_display(link: &str, depth: usize) -> String {
     // L<text|target> — explicit display text before the pipe
     if let Some(pipe_pos) = link.find('|') {
-        let display =
-            escape_markdown_link_text(&strip_pod_formatting_depth(link[..pipe_pos].trim(), depth));
+        let display = markdown_link_label(link[..pipe_pos].trim(), depth);
         let target = encode_pod_link_target(link[pipe_pos + 1..].trim());
         // `L<|Target>` with an empty display label has no link text to show;
         // emit the bare target as plain text instead of a dead
@@ -583,15 +581,28 @@ fn extract_link_display(link: &str, depth: usize) -> String {
     }
     // L<Module/section> — module + section, display is just the module part
     if let Some(slash_pos) = link.find('/') {
-        let module =
-            escape_markdown_link_text(&strip_pod_formatting_depth(link[..slash_pos].trim(), depth));
+        let module = markdown_link_label(link[..slash_pos].trim(), depth);
         let target = encode_pod_link_target(link.trim());
         return format!("[{module}](perldoc://{target})");
     }
     // L<Module::Name> — simple module reference
-    let display = escape_markdown_link_text(&strip_pod_formatting_depth(link.trim(), depth));
+    let display = markdown_link_label(link.trim(), depth);
     let target = encode_pod_link_target(link.trim());
     format!("[{display}](perldoc://{target})")
+}
+
+/// Label text for a markdown `L<>` wrap.
+///
+/// Inner formatting is stripped as **display text**, not recursively rendered
+/// as markdown links. Re-wrapping an inner `[display](url)` re-escapes every
+/// `[`, `]`, and `\` and doubles the label each nesting level — 32 nested
+/// `L<>` codes OOM the `pod_extraction` nightly (#18135 / #18144 / #18345).
+fn markdown_link_label(text: &str, depth: usize) -> String {
+    escape_markdown_link_text(&strip_pod_formatting_depth_links(
+        text,
+        depth,
+        LinkRendering::DisplayText,
+    ))
 }
 
 /// Display-text-only link rendering for the NAME field (#12824): keeps the
@@ -1063,6 +1074,159 @@ mod tests {
         let text = r"back\slash [label] (target)";
 
         assert_eq!(escape_markdown_link_text(text), r"back\\slash \[label\] (target)");
+    }
+
+    fn nested_l_markup(depth: usize) -> String {
+        let mut nested = String::from("x");
+        for _ in 0..depth {
+            nested = format!("L<{nested}>");
+        }
+        nested
+    }
+
+    /// Nested `L<L<...>>` in markdown rendering used to re-escape inner
+    /// `[display](url)` as the next label, doubling backslashes each level
+    /// (#18135 / #18144 OOM; #18345 timeout). 32 nestings is past the 2 GiB
+    /// nightly threshold on current main and must stay linear in the source.
+    #[test]
+    fn nested_markdown_links_stay_linear_in_source() {
+        const DEPTH: usize = 32;
+        let nested = nested_l_markup(DEPTH);
+        let start = std::time::Instant::now();
+        let rendered = strip_pod_formatting(&nested);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 200,
+            "strip_pod_formatting nested L<{DEPTH}> took {elapsed:?}"
+        );
+        assert!(
+            rendered.len() <= nested.len().saturating_mul(16),
+            "markdown L nesting expanded {}B source to {}B (exponential escaping)",
+            nested.len(),
+            rendered.len()
+        );
+        assert!(rendered.contains('x'), "innermost payload must survive: {rendered}");
+    }
+
+    #[test]
+    fn extract_pod_nested_description_links_stay_bounded() {
+        const DEPTH: usize = 32;
+        let nested = nested_l_markup(DEPTH);
+        let source = format!("=head1 DESCRIPTION\n\n{nested}\n\n=cut\n");
+        let start = std::time::Instant::now();
+        let doc = extract_pod(&source);
+        let elapsed = start.elapsed();
+        let desc = doc.description.as_deref().unwrap_or("");
+
+        assert!(
+            elapsed.as_millis() < 200,
+            "extract_pod nested L<{DEPTH}> in DESCRIPTION took {elapsed:?}"
+        );
+        assert!(
+            desc.len() <= source.len().saturating_mul(16),
+            "DESCRIPTION nested L expanded {}B source to {}B",
+            source.len(),
+            desc.len()
+        );
+        assert!(desc.contains('x'), "innermost payload must survive: {desc}");
+        assert!(
+            desc.contains("perldoc://"),
+            "outer L must still render a markdown link, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn extract_pod_nested_name_links_stay_plain_and_bounded() {
+        // Control: NAME is display-text, not markdown. Nested L must not
+        // wrap or explode even before the Description-path fix.
+        const DEPTH: usize = 32;
+        let nested = nested_l_markup(DEPTH);
+        let source = format!("=head1 NAME\n\n{nested}\n\n=cut\n");
+        let start = std::time::Instant::now();
+        let doc = extract_pod(&source);
+        let elapsed = start.elapsed();
+        let name = doc.name.as_deref().unwrap_or("");
+
+        assert!(
+            elapsed.as_millis() < 200,
+            "extract_pod nested L<{DEPTH}> in NAME took {elapsed:?}"
+        );
+        assert!(
+            name.len() <= nested.len(),
+            "NAME nested L expanded {}B markup to {}B",
+            nested.len(),
+            name.len()
+        );
+        assert_eq!(name, "x");
+        assert!(!name.contains("perldoc://"), "NAME must stay display text: {name}");
+    }
+
+    #[test]
+    fn sequential_description_links_still_render_distinct_markdown() {
+        let doc = extract_pod("=head1 DESCRIPTION\n\nSee L<Foo> and L<Bar>.\n\n=cut\n");
+        let desc = doc.description.as_deref().unwrap_or("");
+        assert_eq!(desc, "See [Foo](perldoc://Foo) and [Bar](perldoc://Bar).");
+    }
+
+    #[test]
+    fn fuzz_wrapper_nested_l_stays_bounded() {
+        // Pass 2 of fuzz/fuzz_targets/pod_extraction.rs embeds the input in
+        // NAME, SYNOPSIS, DESCRIPTION, and a method body.
+        const DEPTH: usize = 32;
+        let input = nested_l_markup(DEPTH);
+        let wrapped = format!(
+            "=pod\n\n=head1 NAME\n\nFuzz::Module - {input}\n\n=head1 SYNOPSIS\n\n  {input}\n\n=head1 DESCRIPTION\n\n{input}\n\n=head2 method_a\n\n{input}\n\n=cut\n"
+        );
+        let start = std::time::Instant::now();
+        let doc = extract_pod(&wrapped);
+        let elapsed = start.elapsed();
+        let desc = doc.description.as_deref().unwrap_or("");
+        let name = doc.name.as_deref().unwrap_or("");
+        let method = doc.methods.get("method_a").map(String::as_str).unwrap_or("");
+
+        assert!(elapsed.as_millis() < 200, "fuzz-wrapper nested L<{DEPTH}> took {elapsed:?}");
+        assert!(
+            desc.len() <= wrapped.len().saturating_mul(16),
+            "DESCRIPTION {}B from {}B wrapper",
+            desc.len(),
+            wrapped.len()
+        );
+        assert!(
+            name.len() <= wrapped.len() && method.len() <= wrapped.len(),
+            "display-text fields must not exceed source"
+        );
+        assert!(desc.contains("perldoc://"), "DESCRIPTION must keep markdown, got: {desc}");
+        assert!(!name.contains("perldoc://") && !method.contains("perldoc://"));
+    }
+
+    #[test]
+    fn unmatched_l_chain_stays_linear_in_source() {
+        // Nightly oom-/timeout- artifacts contain `L<` with no `>` (#18135,
+        // #18345). Fuzz pass 3 concatenates the input twice in one section
+        // body; unmatched codes chain into one markdown strip *before*
+        // `first_paragraph` keeps only the leading list marker.
+        let chained = format!("{}x{}", "L<".repeat(16), "L<".repeat(16));
+        let start = std::time::Instant::now();
+        let rendered = strip_pod_formatting(&chained);
+        let elapsed = start.elapsed();
+
+        assert!(elapsed.as_millis() < 200, "unmatched L< chain took {elapsed:?}");
+        assert!(
+            rendered.len() <= chained.len().saturating_mul(16),
+            "unmatched L< chain expanded {}B source to {}B",
+            chained.len(),
+            rendered.len()
+        );
+        assert!(rendered.contains('x'), "innermost payload must survive: {rendered}");
+
+        let listy =
+            format!("=head1 DESCRIPTION\n\n=over 4\n\n=item *\n\n{chained}\n\n=back\n\n=cut\n");
+        let start = std::time::Instant::now();
+        let doc = extract_pod(&listy);
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_millis() < 200, "extract_pod unmatched L< list body took {elapsed:?}");
+        assert!(doc.description.is_some(), "list body must still produce a description");
     }
 }
 
