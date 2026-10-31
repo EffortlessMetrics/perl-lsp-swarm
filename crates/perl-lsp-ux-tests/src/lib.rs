@@ -2173,6 +2173,7 @@ mod strict_binary_guard_subprocess_tests {
             {
                 Ok(output) => return Ok(output),
                 Err(error) if is_executable_file_busy(&error) && attempt + 1 < MAX_ATTEMPTS => {
+                    // ux-timing: product-retry — Linux ETXTBSY after copy+exec under parallel libtest (#15004)
                     std::thread::sleep(BACKOFF);
                 }
                 Err(error) => return Err(error.into()),
