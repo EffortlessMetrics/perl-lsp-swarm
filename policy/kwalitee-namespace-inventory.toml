@@ -11,7 +11,7 @@
 # exhaustively for the namespace spellings (`perl-kwalitee`, `perl_kwalitee`,
 # `PerlKwalitee`, `PERL_KWALITEE`) and reconciles every occurrence against the
 # rows below. It fails closed on an unclassified new reference, a stale
-# classification whose source line moved or vanished, a duplicate
+# classification whose source line text changed or vanished, a duplicate
 # classification, and any closed-vocabulary violation. It never mutates a
 # caller, a doc, or an alias (#8752 non-goals).
 #
