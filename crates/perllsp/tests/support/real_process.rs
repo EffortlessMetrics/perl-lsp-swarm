@@ -300,6 +300,33 @@ impl RealProcessClient {
         }
     }
 
+    /// Receive a notification from the real server while retaining other messages.
+    pub fn receive_server_notification(
+        &mut self,
+        method: &str,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let matches = |message: &Value| {
+            is_server_notification(message)
+                && message.get("method").and_then(Value::as_str) == Some(method)
+        };
+        if let Some(index) = self.pending.iter().position(matches) {
+            return self
+                .pending
+                .remove(index)
+                .ok_or_else(|| anyhow!("matched pending notification disappeared"));
+        }
+        let deadline = Instant::now() + timeout;
+        let marker = Value::String(method.to_string());
+        loop {
+            let message = self.receive_message_until(deadline, "server notification", &marker)?;
+            if matches(&message) {
+                return Ok(message);
+            }
+            self.push_pending(message)?;
+        }
+    }
+
     pub fn assert_no_response_pending(&self) -> Result<()> {
         let unexpected = self.pending.iter().find(|message| is_response_like(message));
         ensure!(

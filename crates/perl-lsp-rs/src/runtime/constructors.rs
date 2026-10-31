@@ -144,6 +144,8 @@ impl LspServer {
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            #[cfg(all(test, feature = "workspace"))]
+            close_disk_loaded_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
@@ -362,6 +364,8 @@ impl LspServer {
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            #[cfg(all(test, feature = "workspace"))]
+            close_disk_loaded_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
@@ -507,6 +511,8 @@ impl LspServer {
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
+            #[cfg(all(test, feature = "workspace"))]
+            close_disk_loaded_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]

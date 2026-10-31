@@ -530,6 +530,9 @@ pub struct LspServer {
     /// adding production synchronization.
     #[cfg(test)]
     pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// One-shot test interposition after close disk reading, outside all locks.
+    #[cfg(all(test, feature = "workspace"))]
+    pub(crate) close_disk_loaded_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Accepted-ticket document-symbol sink (#11674): per-URI record of the
     /// last committed local symbol ticket + monotonic sequence. The
     /// irreversible `symbol_index` replacement/clear for parser-triggered
