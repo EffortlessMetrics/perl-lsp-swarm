@@ -322,7 +322,7 @@ fn extract_delimited_content_strict(text: &str, open: char, close: char) -> (Str
         }
 
         match ch {
-            '\\' => {
+            '\\' if open != '\\' => {
                 body.push(ch);
                 escaped = true;
             }
@@ -1138,6 +1138,27 @@ pub fn parse_qw_words(s: &str) -> Option<Vec<String>> {
     Some(inner.split_whitespace().map(str::to_string).collect())
 }
 
+/// Parse a complete qw token, including tokens adapted from lexer errors.
+/// Preserve the compatibility word spelling, but require an unescaped, balanced closer.
+pub(crate) fn parse_qw_words_strict(s: &str) -> Option<Vec<String>> {
+    let body = parse_quote_operator_content_strict(s, "qw")?;
+    Some(body.split_whitespace().map(str::to_string).collect())
+}
+
+/// Extract a complete quote token using the canonical escape and nesting scanner.
+pub(crate) fn parse_quote_operator_content_strict(s: &str, operator: &str) -> Option<String> {
+    let (open, content) = quote_operator_open_and_content(s, operator)?;
+    // `content` is the original suffix after the opener; recover that opener's
+    // byte offset so the shared strict scanner owns escape and nesting rules.
+    let start = s.len().checked_sub(content.len())?.checked_sub(open.len_utf8())?;
+    let (body, rest, closed) =
+        extract_delimited_content_strict(s.get(start..)?, open, get_closing_delimiter(open));
+    if !closed || !rest.is_empty() {
+        return None;
+    }
+    Some(body)
+}
+
 // ============================================================================
 // shared_scanner_invariants — pins the contracts the shared quote-scanning
 // helpers must keep, so a future edit to one cannot silently diverge from the
@@ -1146,6 +1167,31 @@ pub fn parse_qw_words(s: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod shared_scanner_invariants {
     use super::*;
+
+    #[test]
+    fn backslash_delimiter_closure_and_remainder() -> Result<(), String> {
+        for (text, expected_body, expected_rest, expected_closed) in [
+            (r"\abc\tail", "abc", "tail", true),
+            (r"\\tail", "", "tail", true),
+            (r"\a\\b\", "a", r"\b\", true),
+            (r"\abc", "abc", "", false),
+        ] {
+            let (body, rest, closed) = extract_delimited_content_strict(text, '\\', '\\');
+            if body != expected_body || rest != expected_rest || closed != expected_closed {
+                return Err(format!("wrong backslash scan: {body:?}, {rest:?}, {closed}"));
+            }
+        }
+        for operator in ["q", "qq", "qw"] {
+            for suffix in [r"\abc\junk", r"\a\\b\", r"\abc"] {
+                if parse_quote_operator_content_strict(&format!("{operator}{suffix}"), operator)
+                    .is_some()
+                {
+                    return Err("strict scanner accepted trailing or missing closure".into());
+                }
+            }
+        }
+        Ok(())
+    }
 
     /// Delimiter/body shapes exercised by the substitution, transliteration and
     /// regex extractors.

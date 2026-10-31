@@ -1,0 +1,7 @@
+# E1 case manifest: ground truth + provenance for the precision/recall oracle.
+kind = "gate"
+description = "Zero counted gaps with excluded seams beside changed prod files; passes."
+ground_truth = "no-seam"
+inputs = ["ripr-plus.json", "repo-exposure.json", "comments.json"]
+mutant_verdict = "dropped-cannot-fail"
+drop_reason = "nonprod exclusion hiding prod cannot fail at the gate: the gate surfaces non_production_excluded but never cross-checks the producer prod/nonprod partition (upstream producer correctness is NOT_PROVEN by design)"

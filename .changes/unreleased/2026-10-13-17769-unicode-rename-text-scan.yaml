@@ -1,0 +1,10 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Prevent a UTF-8 boundary panic when the core rename provider scans Unicode subroutine names with optional comment or string renaming enabled."
+time: 2026-10-13T00:00:00Z
+custom:
+  PR: "17791"
+  Issue: "17769"
+  Slug: unicode-rename-text-scan
+  Breaking: "no"

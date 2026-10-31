@@ -290,6 +290,10 @@ pub struct RunFileResult {
     /// checked-in baselines keep their wire form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mechanism: Option<ExecutionMechanism>,
+    /// Explicit scaffold identity stamp, carried like [`RunFileResult::mechanism`]
+    /// so derivation preserves it instead of silently dropping it (#4773).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scaffold_stamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -531,6 +535,14 @@ impl fmt::Display for ExecutionMechanism {
 /// mechanism here together with the evidence that backs it.
 pub const SUPPORTED_EXECUTION_MECHANISMS: &[ExecutionMechanism] =
     &[ExecutionMechanism::FixtureReplay];
+
+/// Explicit identity of the current file-specific selected-execute scaffold.
+///
+/// The `fixture_replay` mechanism names the evidence class; this stamp names the
+/// bounded six-fixture scaffold that produced it, so receipts stay attributable
+/// even as mechanism vocabulary evolves. Assigned by the execute rail and the
+/// execute failure backstop only; never on parse or compile receipts (#4773).
+pub const LEGACY_SELECTED_EXECUTE_SCAFFOLD: &str = "legacy_selected_execute_scaffold.v1";
 
 /// Why an execution-mechanism claim on a receipt is not admissible.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -779,6 +791,14 @@ pub struct RunnerRecord {
     /// parse and compile artifacts keep their existing wire form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mechanism: Option<ExecutionMechanism>,
+    /// Explicit scaffold identity stamp for execution receipts.
+    ///
+    /// `None` for parse and compile receipts. Set to
+    /// [`LEGACY_SELECTED_EXECUTE_SCAFFOLD`] by the selected-execute rail and
+    /// its failure backstop; skipped when absent so existing artifacts keep
+    /// their wire form (#4773).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scaffold_stamp: Option<String>,
     /// Non-static semantic boundaries observed for this invocation.
     #[serde(default)]
     pub semantic_boundaries: Vec<SemanticBoundaryRecord>,
@@ -1694,6 +1714,7 @@ mod tests {
             bucket: None,
             first_diagnostic: None,
             mechanism: None,
+            scaffold_stamp: None,
             semantic_boundaries: Vec::new(),
         };
 
@@ -1725,6 +1746,7 @@ mod tests {
             bucket: None,
             first_diagnostic: None,
             mechanism,
+            scaffold_stamp: None,
             semantic_boundaries: Vec::new(),
         }
     }
@@ -2160,6 +2182,7 @@ mod tests {
             bucket: None,
             first_diagnostic: None,
             mechanism: None,
+            scaffold_stamp: None,
             semantic_boundaries: Vec::new(),
         };
 
@@ -2167,6 +2190,10 @@ mod tests {
         assert!(
             !encoded.contains("mechanism"),
             "a receipt that executed nothing must not gain a mechanism key: {encoded}"
+        );
+        assert!(
+            !encoded.contains("scaffold_stamp"),
+            "a receipt that executed nothing must not gain a scaffold stamp key: {encoded}"
         );
         Ok(())
     }
@@ -2185,6 +2212,19 @@ mod tests {
             validate_execution_mechanism(&decoded.mode, decoded.mechanism).is_err(),
             "a legacy execute receipt is not current evidence"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_execute_records_without_stamp_still_parse() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Historical execute receipts predate the stamp field. They decode,
+        // so they stay readable; the stamp is simply absent.
+        let decoded: RunnerRecord = serde_json::from_str(
+            r#"{"schema_version":"perl_core_harness.runner_record.v1","mode":"execute","path":"base/if.t","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null,"mechanism":"fixture_replay"}"#,
+        )?;
+
+        assert_eq!(decoded.scaffold_stamp, None);
         Ok(())
     }
 
@@ -2223,6 +2263,7 @@ mod tests {
             assertions_passed: 2,
             assertions_total: 2,
             mechanism: Some(ExecutionMechanism::FixtureReplay),
+            scaffold_stamp: None,
         }];
 
         assert!(validate_file_result_mechanisms(HarnessMode::Execute, &results).is_ok());
@@ -2237,6 +2278,7 @@ mod tests {
             assertions_passed: 2,
             assertions_total: 2,
             mechanism: Some(ExecutionMechanism::FixtureReplay),
+            scaffold_stamp: None,
         };
 
         let decoded: RunFileResult = serde_json::from_str(&serde_json::to_string(&result)?)?;

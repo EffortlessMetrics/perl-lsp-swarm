@@ -1,0 +1,67 @@
+{
+  "vector_id": "v014-health-failure-rollback",
+  "contract_generation": 1,
+  "family": "publication_pending_health_health_failure_rollback",
+  "platform_classification": "platform_neutral",
+  "intent": {
+    "operation_id": "txn-v014",
+    "attempt_id": "attempt-a1",
+    "route": "first_party_powershell",
+    "mode": "release_archive",
+    "selector": { "exact": { "tag": "synthetic-v3.1.0" } },
+    "target": { "platform": "synthetic-platform", "arch": "synthetic-arch", "libc": "synthetic-libc" },
+    "requested_product_unit": "server_only",
+    "fallback_policy": "forbidden",
+    "path_policy": "session_only",
+    "config_digest": "cfg-digest-v014"
+  },
+  "resolved_subject": {
+    "subject_id": "subject-v014",
+    "mode": "release_archive",
+    "release_ref": { "repo": "synthetic/example", "tag": "synthetic-v3.1.0" },
+    "topology": { "topology_id": "topology-syn-v014", "digest": "sha256:topology-syn-v014", "row": "row-syn-v014", "maturity": "current" },
+    "archive": { "name": "perllsp-synthetic-v3.1.0.tar.gz", "format": "tar.gz", "integrity_policy_id": "integrity-syn-v014" },
+    "product_unit": "server_only",
+    "required_executables": ["perllsp"],
+    "destination_role": "install_root",
+    "provenance_required": false
+  },
+  "stage_graph": [
+    { "stage_id": "resolve_subject", "applicability": "required", "predecessors": [], "port_script": "resolve" },
+    { "stage_id": "transport", "applicability": "required", "predecessors": ["resolve_subject"], "port_script": "transport" },
+    { "stage_id": "checksum_integrity", "applicability": "required", "predecessors": ["transport"], "port_script": "checksum" },
+    { "stage_id": "provenance", "applicability": "not_applicable", "predecessors": ["checksum_integrity"], "port_script": "unused-provenance" },
+    { "stage_id": "archive_manifest_and_staging", "applicability": "required", "predecessors": ["checksum_integrity"], "port_script": "staging" },
+    { "stage_id": "executable_observation", "applicability": "required", "predecessors": ["archive_manifest_and_staging"], "port_script": "observe" },
+    { "stage_id": "source_build", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-source-build" },
+    { "stage_id": "promotion", "applicability": "required", "predecessors": ["executable_observation"], "port_script": "promote" },
+    { "stage_id": "path_persistence", "applicability": "required", "predecessors": ["promotion"], "port_script": "path" },
+    { "stage_id": "fresh_process_observation", "applicability": "required", "predecessors": ["path_persistence"], "port_script": "fresh" },
+    { "stage_id": "installed_transition", "applicability": "required", "predecessors": ["fresh_process_observation"], "port_script": "install" }
+  ],
+  "port_scripts": {
+    "resolve": { "calls": [{ "result": "success" }] },
+    "transport": { "calls": [{ "result": "success", "artifacts": ["artifact-archive-v014"], "effects": [{ "level": "transport_artifacts", "kind": "transport_artifacts" }] }] },
+    "checksum": { "calls": [{ "result": "success", "evidence": ["evidence-checksum-v014"] }] },
+    "unused-provenance": { "calls": [{ "result": "success" }] },
+    "staging": { "calls": [{ "result": "success", "effects": [{ "level": "staged", "kind": "staged_archive" }] }] },
+    "observe": { "calls": [{ "result": "success", "executables": { "perllsp": "ok" } }] },
+    "unused-source-build": { "calls": [{ "result": "success" }] },
+    "promote": { "calls": [{ "result": "success", "effects": [{ "level": "promotion_reached", "kind": "promoted" }] }] },
+    "path": { "calls": [{ "result": "success", "effects": [{ "level": "promotion_reached", "kind": "path_session_only" }] }] },
+    "fresh": { "calls": [{ "result": "failure" }] },
+    "install": { "calls": [{ "result": "success", "effects": [{ "level": "installed_claim", "kind": "installed_claim" }] }] }
+  },
+  "expected": {
+    "terminal_result": "failed",
+    "terminal_stage": "fresh_process_observation",
+    "reason_family": "health_check_failed",
+    "action_class": "verify_environment_then_retry",
+    "side_effect_ceiling": "promotion_reached",
+    "claim_ceiling": "current_state_promotion",
+    "pair_claims_satisfied": false,
+    "branch_count": 1,
+    "attempt_count": 1
+  },
+  "redaction": { "forbidden_tokens": [] }
+}

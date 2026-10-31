@@ -172,13 +172,15 @@ pub mod line_index {
 pub use position::{LineEnding, PositionMapper};
 
 /// Core AST types re-exported for convenience.
-pub use ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
+pub use ast::{GotoTargetForm, Node, NodeKind, RegexSurfaceForm, SourceLocation};
 /// Recovery-salvage metrics and classifier for accuracy closeout reporting.
 pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
-    BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseDiagnosticSeverity, ParseError,
-    ParseOutput, ParseResult, ParseStopCause, RecoverySalvageClass, RecoverySalvageProfile,
+    BudgetTracker, ErrorCategory, ErrorClass, InvalidSignatureOrderingKind,
+    InvalidSignatureParameterKind, ParseBudget, ParseCoreDimension, ParseDiagnosticSeverity,
+    ParseError, ParseOutput, ParseResult, ParseStopCause, RecoverySalvageClass,
+    RecoverySalvageProfile,
 };
 
 /// Builtin function signature lookup tables.

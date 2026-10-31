@@ -60,6 +60,12 @@ producer = "cargo xtask queue snapshot"
 required_fields = ["snapshot_id", "captured_at", "repository", "default_branch", "master_sha", "prs", "buckets"]
 
 [[receipt]]
+check = "release-scope-v2"
+schema = "schemas/release_scope.v2.schema.json"
+description = "Represents one exact final v0.18 product freeze without observing, deciding, preparing, or publishing it."
+required_fields = ["release", "track", "phase", "observation_sha", "frozen_product_sha", "prepared_swarm_sha", "observed_pull_requests", "blockers", "product_claims", "topology", "installed_acceptance", "release_integrity", "lineage", "freeze_rules", "invalidation"]
+
+[[receipt]]
 check = "review-projection"
 schema = ".ci/receipts/schemas/review-projection.schema.json"
 description = "Reviewer-emitted current-SHA receipt used by reconciler to project review labels."

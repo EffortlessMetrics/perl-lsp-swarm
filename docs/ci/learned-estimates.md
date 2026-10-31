@@ -18,7 +18,7 @@ valid empty history) and start producing meaningful estimates only after
 | File | Role |
 |---|---|
 | `scripts/ci/aggregate_lane_history.py` | Walks `target/ci/actuals/` for `ci-actuals.json`; computes per-lane `samples`, `p50`, `p90`, `p95`. Emits `.ci/metrics/ci-lane-history.json`. |
-| `scripts/ci/learned_estimate.py` | Reads the history file; given a lane id, returns the learned estimate, p90 warning threshold, and p95 hard-planning threshold. Falls back to the static floor when fewer than `MIN_SAMPLES_FOR_LEARNED` samples exist. |
+| `scripts/ci/learned_estimate.py` | Reads the history file; given a lane id, returns versioned stdout JSON (`schema_version: learned_estimate.v1`) with the learned estimate, p90 warning threshold, and p95 hard-planning threshold. Falls back to the static floor when fewer than `MIN_SAMPLES_FOR_LEARNED` samples exist. |
 | `.ci/metrics/ci-lane-history.json` | Output of the aggregator. Tracked in git so the planner can read it without an extra CI step. |
 
 ---
@@ -87,12 +87,16 @@ window simply drop off without explicit pruning.
 
 ## Consumer output
 
+Stdout is a JSON object. `schema_version` is this producer's field
+(`learned_estimate.v1`), not the history file's integer `schema_version`.
+
 ```bash
 python3 scripts/ci/learned_estimate.py --lane pr_smoke
 ```
 
 ```json
 {
+  "schema_version": "learned_estimate.v1",
   "lane": "pr_smoke",
   "learned": true,
   "estimate": 4.0,
@@ -109,6 +113,7 @@ When history is missing or the lane has too few samples:
 
 ```json
 {
+  "schema_version": "learned_estimate.v1",
   "lane": "mutation",
   "learned": false,
   "estimate": 60.0,

@@ -415,11 +415,28 @@ pub(crate) fn secondary_capability_floor_message(command: &str) -> Option<String
         "cancel" => ("supportsCancelRequest", "#9074 + #8712 + #7568"),
         _ => return None,
     };
+    // The re-enable gate sum stays in this module's docs, not in the popup. Six
+    // issue numbers is a receipt, and a receipt in an editor notification is
+    // unreadable — it tells a user nothing they can act on (#16557). What the
+    // popup keeps is the capability that is off, the `#9581` floor family the
+    // message is asserted against, and the assurance that nothing was touched.
+    //
+    // `tracing` is the crate's diagnostic convention (112 call sites), but be
+    // precise about what that is worth today: perl-dap installs no subscriber
+    // anywhere, so in the shipped binary this line reaches no sink. It is
+    // emitted for a consumer that installs one, and it is NOT where the gate
+    // lives — the module docs above and #16557 are. Do not read this as
+    // "logged" (reviewed: the earlier wording implied exactly that).
+    tracing::info!(
+        command,
+        capability,
+        gate,
+        "secondary-capability floor refusal (#9581); re-enable gate is tracked in the module docs and #16557"
+    );
     Some(format!(
         "`{command}` is unsupported: `{capability}` is false for this adapter \
-         (#9581 secondary-capability floor; exact semantics unproven, \
-         re-enable gate: {gate}). The request was rejected before any debugger \
-         interaction, so no state was read or changed."
+         (#9581 secondary-capability floor). The request was rejected before \
+         any debugger interaction, so no state was read or changed."
     ))
 }
 
@@ -465,11 +482,18 @@ fn value_format_invalid_message(command: &str, field: &str) -> String {
 
 /// The explicit unsupported disposition for a floored `format` option (#9581).
 pub(crate) fn value_format_unsupported_message(command: &str) -> String {
+    // Same copy tiering as `secondary_capability_floor_message` (#16557): the
+    // re-enable gate is a receipt, the actionable half is not. See that comment
+    // for why this is not a claim that the gate is logged.
+    tracing::info!(
+        command,
+        gate = "#9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590",
+        "value-format floor refusal (#9581); re-enable gate is tracked in the module docs and #16557"
+    );
     format!(
         "`{command}` is unsupported: a non-default `format` option was sent while \
          `supportsValueFormattingOptions` is false for this adapter (#9581 \
-         secondary-capability floor; re-enable gate: #9050 + #8364 + #9070 + \
-         #7342/#7345 + #9588 + #9590). The request was rejected before any \
+         secondary-capability floor). The request was rejected before any \
          debugger interaction; resend without `format` for the default \
          presentation."
     )

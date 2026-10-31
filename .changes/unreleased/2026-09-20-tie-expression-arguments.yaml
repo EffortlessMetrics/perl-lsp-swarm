@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Preserve parenthesized tie expressions and their source spans in nested constructor arguments, function calls, and initializers.
+time: 2026-09-20T00:00:00Z
+custom:
+  PR: "16155"
+  Slug: tie-expression-arguments
+  Breaking: "no"
