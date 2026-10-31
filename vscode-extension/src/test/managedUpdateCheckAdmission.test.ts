@@ -23,6 +23,7 @@ function facts(overrides: Partial<ManagedUpdateCheckFacts> = {}): ManagedUpdateC
     intent: 'activation_background',
     channel: 'latest',
     versionTag: '',
+    downloadBaseUrlConfigured: false,
     updateCheckIntervalHours: 24,
     autoUpdate: false,
     promptSuppressed: false,
@@ -184,6 +185,14 @@ describe('managed update-check admission', () => {
         expect(decision.reason).toBe('version_tag_ignored_for_channel');
         expect(decision.remediation).toContain('v0.12.0');
       }
+    });
+
+    test('versionTag under a non-tag channel is honoured when a mirror is configured', () => {
+      const decision = decideManagedUpdateCheck(
+        facts({ channel: 'latest', versionTag: 'v0.12.0', downloadBaseUrlConfigured: true }),
+      );
+
+      expect(decision).toMatchObject({ kind: 'run' });
     });
 
     test('a whitespace-only versionTag is still ignored-on-channel, not a pin', () => {

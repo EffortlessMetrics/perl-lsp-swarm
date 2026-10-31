@@ -81,6 +81,12 @@ export interface ManagedUpdateCheckFacts {
   readonly channel: string;
   /** Raw `perl-lsp.versionTag`. */
   readonly versionTag: string;
+  /**
+   * Whether `perl-lsp.downloadBaseUrl` names an internal mirror. A mirror
+   * release lookup honours `versionTag` under any channel, so the tag is
+   * not ignored configuration in that case.
+   */
+  readonly downloadBaseUrlConfigured: boolean;
   /** Raw `perl-lsp.updateCheckInterval`, in hours. */
   readonly updateCheckIntervalHours: number;
   /** Raw `perl-lsp.autoUpdate` — the action taken *after* an admitted check. */
@@ -331,12 +337,12 @@ function invalidConfiguration(
     };
   }
 
-  if (channel !== 'tag' && versionTag.length > 0) {
+  if (channel !== 'tag' && versionTag.length > 0 && !facts.downloadBaseUrlConfigured) {
     return {
       kind: 'invalid',
       reason: 'version_tag_ignored_for_channel',
       userVisibility: visibility,
-      remediation: `perl-lsp.versionTag is set to ${JSON.stringify(facts.versionTag)} but perl-lsp.channel is ${JSON.stringify(channel)}; versionTag is only honoured when channel is "tag".`,
+      remediation: `perl-lsp.versionTag is set to ${JSON.stringify(facts.versionTag)} but perl-lsp.channel is ${JSON.stringify(channel)}; versionTag is only honoured when channel is "tag" or an internal mirror is configured via perl-lsp.downloadBaseUrl.`,
     };
   }
 

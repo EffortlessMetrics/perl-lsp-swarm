@@ -2176,14 +2176,30 @@ export class BinaryDownloader {
     const legacyCheck = this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
     const scopedCheck =
       scopedStateKey === null ? 0 : this.context.globalState.get<number>(scopedStateKey, 0);
-    // A pre-scope suppression is honoured as a read-only seed so an upgrade
-    // does not resurrect a prompt the user already dismissed, but only the
-    // scoped key is ever written, so the legacy row cannot stay authoritative.
-    const promptSuppressed =
-      scopedPromptKey === null
-        ? this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, false)
-        : this.context.globalState.get<boolean>(scopedPromptKey, false) ||
-          this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, false);
+    // A pre-scope suppression is migrated once into this target's scoped
+    // row and then retired, so an upgrade does not resurrect a prompt the
+    // user already dismissed, but the unscoped legacy row cannot stay
+    // authoritative for every other target sharing this global state.
+    const legacySuppression = this.context.globalState.get<boolean>(
+      UPDATE_PROMPT_SUPPRESSION_STATE_KEY,
+      false,
+    );
+    let promptSuppressed: boolean;
+    if (scopedPromptKey === null) {
+      promptSuppressed = legacySuppression;
+    } else {
+      const scopedSuppression = this.context.globalState.get<boolean | undefined>(
+        scopedPromptKey,
+        undefined,
+      );
+      promptSuppressed = scopedSuppression ?? legacySuppression;
+      if (scopedSuppression === undefined && legacySuppression) {
+        await this.context.globalState.update(scopedPromptKey, true);
+      }
+      if (legacySuppression) {
+        await this.context.globalState.update(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, undefined);
+      }
+    }
 
     const binaryPath = this.getLocalBinaryPath();
     const storagePath = this.context.globalStorageUri.fsPath;
@@ -2192,6 +2208,7 @@ export class BinaryDownloader {
       intent,
       channel: config.get<string>('channel', 'latest'),
       versionTag: config.get<string>('versionTag', ''),
+      downloadBaseUrlConfigured: config.get<string>('downloadBaseUrl', '').trim().length > 0,
       updateCheckIntervalHours: config.get<number>('updateCheckInterval', 24),
       autoUpdate: config.get<boolean>('autoUpdate', false),
       promptSuppressed,
@@ -2254,7 +2271,18 @@ export class BinaryDownloader {
         `[update-check] New version available: ${remoteVersion} (installed: ${localVersion})`,
       );
 
-      if (decision.action === 'auto_update') {
+      // The decision was taken before the version reads above; autoUpdate
+      // may have been disabled while they were in flight. Re-read it so a
+      // disabled auto-update never installs on a stale admission.
+      const action = decision.action === 'auto_update'
+        ? config.get<boolean>('autoUpdate', false)
+          ? 'auto_update'
+          : promptSuppressed
+            ? 'prompt_suppressed'
+            : 'prompt'
+        : decision.action;
+
+      if (action === 'auto_update') {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);
         const installed = await this.ensureBinary(true);
         if (force && installed) {
@@ -2263,7 +2291,7 @@ export class BinaryDownloader {
         return;
       }
 
-      if (decision.action === 'prompt_suppressed') {
+      if (action === 'prompt_suppressed') {
         this.outputChannel.appendLine(
           '[update-check] Update available, but update prompts are suppressed ' +
             '("Don\'t ask again" was chosen earlier). Set perl-lsp.autoUpdate or run ' +
