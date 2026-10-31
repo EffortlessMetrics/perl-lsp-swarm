@@ -8,6 +8,8 @@ on:
         description: Complete, bounded task statement; include controlling issue or PR references and required acceptance evidence.
         required: true
         type: string
+if: github.ref == 'refs/heads/main'
+environment: minimax-coding-agent
 permissions:
   contents: read
   actions: read
@@ -30,6 +32,7 @@ network:
     - rust
     - github
 checkout:
+  ref: refs/heads/main
   fetch-depth: 0
 tools:
   cli-proxy: true
