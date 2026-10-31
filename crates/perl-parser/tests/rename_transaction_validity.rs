@@ -88,6 +88,11 @@ fn start_inside_scalar_refuses_the_whole_plan_before_writing() -> TestResult {
 }
 
 #[test]
+fn zero_length_inside_scalar_refuses_the_whole_plan_before_writing() -> TestResult {
+    refuses_later_range(1, 1, InvalidEditReason::NonCharBoundary)
+}
+
+#[test]
 fn end_inside_scalar_refuses_the_whole_plan_before_writing() -> TestResult {
     refuses_later_range(0, 1, InvalidEditReason::NonCharBoundary)
 }
@@ -102,10 +107,14 @@ fn overlapping_ranges_refuse_the_whole_plan_before_writing() -> TestResult {
     assert!(
         matches!(
             result,
-            Err(WorkspaceRenameError::InvalidEdit { ref file, reason: InvalidEditReason::Overlapping, .. })
-                if file == &second
+            Err(WorkspaceRenameError::InvalidEdit {
+                ref file,
+                start: 3,
+                end: 8,
+                reason: InvalidEditReason::Overlapping,
+            }) if file == &second
         ),
-        "expected overlapping refusal, got {result:?}"
+        "expected overlapping refusal at 3..8, got {result:?}"
     );
     assert_unchanged(&first, &second)
 }
@@ -120,10 +129,14 @@ fn ascending_ranges_refuse_the_whole_plan_before_writing() -> TestResult {
     assert!(
         matches!(
             result,
-            Err(WorkspaceRenameError::InvalidEdit { ref file, reason: InvalidEditReason::OutOfOrder, .. })
-                if file == &second
+            Err(WorkspaceRenameError::InvalidEdit {
+                ref file,
+                start: 7,
+                end: 10,
+                reason: InvalidEditReason::OutOfOrder,
+            }) if file == &second
         ),
-        "expected out-of-order refusal, got {result:?}"
+        "expected out-of-order refusal at 7..10, got {result:?}"
     );
     assert_unchanged(&first, &second)
 }
@@ -221,7 +234,14 @@ fn a_document_shortened_after_planning_refuses_without_changing_other_files() ->
     assert_eq!(result.file_edits.len(), 2, "fixture must plan both documents");
     assert!(result.file_edits.iter().all(|entry| !entry.edits.is_empty()));
     std::fs::write(&second, "")?;
-    assert!(engine.apply_edits(&result).is_err());
+    let apply = engine.apply_edits(&result);
+    assert!(
+        matches!(
+            apply,
+            Err(WorkspaceRenameError::InvalidEdit { reason: InvalidEditReason::PastEnd, .. })
+        ),
+        "expected past-end refusal after shrinkage, got {apply:?}"
+    );
     assert_eq!(std::fs::read_to_string(&first)?, first_source);
     assert_eq!(std::fs::read_to_string(&second)?, "");
     Ok(())
