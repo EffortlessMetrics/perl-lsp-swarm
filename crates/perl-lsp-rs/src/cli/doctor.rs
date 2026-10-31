@@ -4968,6 +4968,38 @@ mod tests {
         Ok(())
     }
 
+    /// Replace `path` by writing a sibling temp file, setting the executable
+    /// bit, then renaming over the original. In-place `write` of a path that
+    /// was just `exec`'d can fail with `ETXTBSY` on Linux (#18195).
+    #[cfg(unix)]
+    fn replace_unix_executable(path: &Path, contents: &str) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "executable path has no parent directory",
+            )
+        })?;
+        let file_name = path.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "executable path has no file name",
+            )
+        })?;
+        let temp_path =
+            dir.join(format!(".{}.new-{}", file_name.to_string_lossy(), std::process::id()));
+        let result = std::fs::write(&temp_path, contents)
+            .and_then(|()| {
+                std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o700))
+            })
+            .and_then(|()| std::fs::rename(&temp_path, path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        result
+    }
+
     #[cfg(unix)]
     #[test]
     fn cargo_probe_failure_can_be_diagnosed_and_retried_after_repair() -> TestResult {
@@ -5012,7 +5044,7 @@ mod tests {
         );
 
         // Repair only the failed provider, then repeat the same command/path.
-        std::fs::write(
+        replace_unix_executable(
             &cargo_path,
             "#!/bin/sh\n[ \"$1\" = '--version' ] || exit 87\nprintf '%s\\n' 'cargo 1.95.0 (repaired fixture)'\n",
         )?;
