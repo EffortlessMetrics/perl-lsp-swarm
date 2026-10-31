@@ -200,7 +200,7 @@ struct DomainView {
 }
 
 /// Evidence joined from one validated, current, complete run.
-struct ValidatedBundle {
+pub(crate) struct ValidatedBundle {
     run_id: String,
     head: String,
     dirty: bool,
@@ -553,7 +553,7 @@ mod tests {
         let value = command_output_or_unknown_with(failing, "UNVERIFIED");
         assert_eq!(value, "UNVERIFIED");
 
-        let mut succeeding = Command::new("git");
+        let mut succeeding = xtask::git_environment::isolate(Command::new("git"));
         succeeding.args(["--version"]);
         let value = command_output_or_unknown_with(succeeding, "UNVERIFIED");
         assert!(value.starts_with("git version"), "{value}");

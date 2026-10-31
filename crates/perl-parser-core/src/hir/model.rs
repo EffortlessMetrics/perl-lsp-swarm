@@ -89,7 +89,10 @@ pub struct AstAnchor {
 pub enum RecoveryConfidence {
     /// Lowered from a normally parsed AST node.
     Parsed,
-    /// Lowered from a parser recovery wrapper with a partial valid tree.
+    /// Lowered from a parser recovery wrapper with a partial valid tree, or
+    /// from a parser-synthesized non-source operand (a fabricated node with
+    /// no source span, such as the zero-width `Number("1")` condition of
+    /// `while ()`), where no normally parsed source node exists to lower.
     Recovered,
     /// Lowered from a partially known or placeholder AST shape.
     Partial,
@@ -113,10 +116,19 @@ pub enum RecoveryConfidence {
 /// previous `Call { args: [Opaque{Block}, …] }` fallback for
 /// `try`/`catch`/`finally` and, unlike that fallback, retain the statements
 /// inside each region.
+/// v7 adds the [`HirExpr::Literal`] first-cohort scalar leaf (#17538), which
+/// replaces the previous `Opaque` fallback for plain decimal numbers,
+/// noninterpolating strings, and `undef`, and retains the exact payload.
+/// v8 retains the `qr//`, `m//`, and bare `/.../` surface form in
+/// [`HirRegex::form`](super::body::HirRegex::form) (#14638). This slice
+/// originally claimed v7; `main` took that number for the Literal leaf
+/// first, so the regex form layout is a further increment rather than a
+/// second meaning for one version.
 ///
 /// [`HirExpr::Try`]: super::body::HirExpr::Try
 /// [`HirCatchHandler`]: super::body::HirCatchHandler
-pub const HIR_BODY_MODEL_VERSION: u32 = 6;
+/// [`HirExpr::Literal`]: super::body::HirExpr::Literal
+pub const HIR_BODY_MODEL_VERSION: u32 = 8;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -277,6 +289,11 @@ pub enum BarewordRole {
     MethodReceiver,
     /// Bareword used as the object in an indirect-object call.
     IndirectObject,
+    /// Sigil-prefixed receiver of a dynamic indirect constructor call, such
+    /// as the `$class` in `new $class`. The receiver is a runtime value, not
+    /// a static class name, so it is distinguishable from the bareword in
+    /// `new Foo` without consumers sniffing the name for a sigil (#15031).
+    DynamicIndirectObject,
     /// Bareword used as an autoquoted hash key.
     HashKey,
 }

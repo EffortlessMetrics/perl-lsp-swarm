@@ -1,0 +1,63 @@
+name: Qualification Adapter Rehearsal
+run-name: qualification:${{ fromJSON(inputs.request).request_key }}
+
+# STAGED / NON-REQUIRED. Explicit metadata-only rehearsal for #17900.
+# Adapter-mediated requests use default-branch control source, not candidate H.
+# Native dispatch can select another ref; this is not a privileged trust boundary.
+# No product execution, protected-result writer or merge call is installed.
+on:
+  workflow_dispatch:
+    inputs:
+      request:
+        description: Exact adapter subject JSON; eligibility is not asserted by this input
+        required: true
+        type: string
+
+concurrency:
+  group: qualification-rehearsal-${{ fromJSON(inputs.request).request_key }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  rehearse:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    name: Qualification Adapter Metadata Rehearsal (non-required)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Checkout immutable control source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reacquire subject and arbitrate duplicate metadata runs
+        id: subject
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/ci/request_qualification.py rehearse-event
+      - name: Rehearse existing source policy and governed diagnostic proof
+        shell: bash
+        run: |
+          mkdir -p rehearsal-diagnostics
+          python3 -B scripts/ci/validate_gate_enforcement_contract.py --root . --receipt rehearsal-diagnostics/gate-enforcement-contract.json
+          python3 -B tests/test_docs_agents_contract_workflows.py 2>&1 | tee rehearsal-diagnostics/docs-agents-contract.txt
+      - name: Retain existing diagnostic reports without a qualification claim
+        if: always() && steps.subject.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: qualification-diagnostics-${{ fromJSON(inputs.request).request_key }}-${{ github.run_attempt }}
+          path: rehearsal-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Publish explicit NOT_PROVEN rehearsal metadata
+        if: always() && steps.subject.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: qualification-result-${{ fromJSON(inputs.request).request_key }}-${{ github.run_attempt }}
+          path: rehearsal-result/qualification-result.json
+          if-no-files-found: error
+          retention-days: 7

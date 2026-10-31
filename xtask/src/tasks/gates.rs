@@ -1162,7 +1162,7 @@ fn plan_pr_fast_gates(
         }
     };
 
-    let non_rust_diff = is_non_rust_diff(&scope);
+    let non_rust_diff = is_unowned_non_rust_diff(&scope);
     let fallback_used = !non_rust_diff && selected_package_names(&scope).is_empty();
     let fallback_reason = if fallback_used {
         Some("ci-scope produced no package scope for a Rust-relevant diff".to_string())
@@ -1238,7 +1238,7 @@ fn build_pr_fast_plan_from_scope_with_targets(
     fallback_reason: Option<String>,
     target_index: Option<&PackageTargetIndex>,
 ) -> Result<GatePlan> {
-    let non_rust_diff = scope.as_ref().is_some_and(is_non_rust_diff);
+    let non_rust_diff = scope.as_ref().is_some_and(is_unowned_non_rust_diff);
     let package_names = scope.as_ref().map(selected_package_names).unwrap_or_default();
     let package_args = package_args_from_names(&package_names);
 
@@ -1284,7 +1284,7 @@ fn build_pr_fast_plan_from_scope_with_targets(
                         selected.push(PlannedGate {
                             role,
                             reason: format!(
-                                "code diff selected packages: {}",
+                                "scope selected packages: {}",
                                 gate_package_names.join(", ")
                             ),
                             gate: render_package_args(gate, &gate_package_args)?,
@@ -1365,9 +1365,18 @@ fn pr_fast_role(gate: &GateDefinition) -> Result<GatePlanningRole> {
     })
 }
 
-fn is_non_rust_diff(scope: &ScopeOutput) -> bool {
-    matches!(scope.diff_class.as_str(), "prose_only" | "docs_as_code" | "ci_config")
+/// Filename class can skip Rust proof only when ci-scope selected no owner.
+/// Policy/fixture inputs can be non-Rust while their contracts belong to Rust packages.
+fn is_unowned_non_rust_diff(scope: &ScopeOutput) -> bool {
+    (matches!(scope.diff_class.as_str(), "prose_only" | "docs_as_code" | "ci_config")
+        || (scope.diff_class == "mixed"
+            && ci_scope::is_known_non_rust_composition(&scope.changed_files)))
+        && selected_package_names(scope).is_empty()
 }
+
+#[cfg(test)]
+#[path = "gates/non_rust_composition_tests.rs"]
+mod non_rust_composition_tests;
 
 fn scope_skip_reason(scope: Option<&ScopeOutput>) -> String {
     let diff_class = scope.map(|scope| scope.diff_class.as_str()).unwrap_or("unknown");
@@ -1480,7 +1489,7 @@ fn package_scoped_reason(gate: &GateDefinition, package_names: &[String]) -> Opt
 }
 
 fn package_scoped_skip_reason(gate: &GateDefinition, scope: Option<&ScopeOutput>) -> String {
-    if scope.is_some_and(is_non_rust_diff) {
+    if scope.is_some_and(is_unowned_non_rust_diff) {
         return scope_skip_reason(scope);
     }
     let packages =
@@ -2732,6 +2741,9 @@ pub(crate) fn run_shell_command_with_timeout_in(
             terminal = (true, 124);
             break;
         }
+        if is_cargo_test_command(command) {
+            process = crate::git_environment::isolate(process);
+        }
         process.current_dir(&cwd);
         let stdout = log_file
             .try_clone()
@@ -3928,12 +3940,344 @@ mod tests {
         plan.skipped.iter().map(|skipped| skipped.name.clone()).collect()
     }
 
+    // Git exports these selectors to hooks. Fixture commands must discover their
+    // own repository, and production functions under test need the same clean
+    // child context. Never change this process's environment: tests run in parallel.
+    const HOOK_GIT_SELECTORS: &[&str] = &[
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_INTERNAL_SUPER_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_QUARANTINE_PATH",
+    ];
+    const GIT_FIXTURE_CHILD: &str = "XTASK_GATES_GIT_FIXTURE_CHILD";
+
+    fn is_git_config_parameter_key(key: &std::ffi::OsStr) -> bool {
+        let key = key.to_string_lossy().to_ascii_uppercase();
+        key.starts_with("GIT_CONFIG_KEY_") || key.starts_with("GIT_CONFIG_VALUE_")
+    }
+
+    fn clear_fixture_git_selectors(command: &mut Command) {
+        for name in HOOK_GIT_SELECTORS {
+            command.env_remove(name);
+        }
+        for (key, _) in std::env::vars_os() {
+            if is_git_config_parameter_key(&key) {
+                command.env_remove(key);
+            }
+        }
+    }
+
+    fn has_fixture_git_selectors() -> bool {
+        HOOK_GIT_SELECTORS.iter().any(|name| std::env::var_os(name).is_some())
+            || std::env::vars_os().any(|(key, _)| is_git_config_parameter_key(&key))
+    }
+
+    fn fixture_git_command(repo: &Path) -> Command {
+        let mut command = Command::new("git");
+        command.current_dir(repo);
+        clear_fixture_git_selectors(&mut command);
+        command
+    }
+
+    fn fixture_child_completed(success: bool, stdout: &str, test_name: &str) -> bool {
+        let completion = format!("GATES_GIT_FIXTURE_COMPLETE:{test_name}");
+        success
+            && stdout.lines().any(|line| line.trim() == "running 1 test")
+            && stdout.contains("test result: ok. 1 passed; 0 failed;")
+            && stdout.lines().any(|line| line.trim() == completion)
+    }
+
+    fn isolated_fixture_test<F>(full_test_name: &str, body: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        // module_path includes the crate name; libtest's exact names do not.
+        let test_name = full_test_name.split_once("::").map_or(full_test_name, |(_, name)| name);
+        if let Some(marker) = std::env::var_os(GIT_FIXTURE_CHILD) {
+            if marker != test_name || has_fixture_git_selectors() {
+                bail!("fixture child has an unexpected marker or inherited Git selectors");
+            }
+            body()?;
+            std::io::Write::write_all(
+                &mut std::io::stdout(),
+                format!("\nGATES_GIT_FIXTURE_COMPLETE:{test_name}\n").as_bytes(),
+            )?;
+            return Ok(());
+        }
+
+        let config = tempdir()?;
+        let mut child = Command::new(std::env::current_exe()?);
+        clear_fixture_git_selectors(&mut child);
+        let output = child
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env(GIT_FIXTURE_CHILD, test_name)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_SYSTEM")
+            .env("GIT_CONFIG_GLOBAL", config.path().join("empty-global-config"))
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !fixture_child_completed(output.status.success(), &stdout, test_name) {
+            bail!(
+                "isolated fixture child {test_name} did not complete exactly one test: {}\n{}\n{}",
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn git_fixture_child_protocol_requires_completed_exact_test() {
+        let complete = "running 1 test\nGATES_GIT_FIXTURE_COMPLETE:fixture\ntest result: ok. 1 passed; 0 failed;";
+        assert!(fixture_child_completed(true, complete, "fixture"));
+        assert!(!fixture_child_completed(false, complete, "fixture"));
+        assert!(!fixture_child_completed(true, complete, "different_fixture"));
+        assert!(!fixture_child_completed(
+            true,
+            "running 0 tests\ntest result: ok. 0 passed; 0 failed;",
+            "fixture"
+        ));
+        assert!(!fixture_child_completed(
+            true,
+            "running 1 test\ntest result: ok. 1 passed; 0 failed;",
+            "fixture"
+        ));
+    }
+
+    #[test]
+    fn fixture_git_selectors_cover_installed_git_contract() -> Result<()> {
+        let repo = tempdir()?;
+        let output =
+            fixture_git_command(repo.path()).args(["rev-parse", "--local-env-vars"]).output()?;
+        assert!(output.status.success(), "Git must expose its hook-local environment contract");
+        let names = String::from_utf8(output.stdout)?;
+        assert!(!names.trim().is_empty(), "an empty selector contract is not proof");
+        for name in names.lines() {
+            assert!(
+                HOOK_GIT_SELECTORS.contains(&name),
+                "unhandled Git hook-local selector: {name}"
+            );
+        }
+        Ok(())
+    }
+
     fn run_git(repo: &Path, args: &[&str]) -> color_eyre::eyre::Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = fixture_git_command(repo).args(args).output()?;
         if !output.status.success() {
             color_eyre::eyre::bail!("git {:?} failed with status {}", args, output.status);
         }
         Ok(String::from_utf8(output.stdout)?)
+    }
+
+    fn fixture_snapshot(root: &Path) -> Result<BTreeMap<std::path::PathBuf, Vec<u8>>> {
+        let mut files = BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                let path = entry.path();
+                if entry.file_type()?.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.insert(path.strip_prefix(root)?.to_path_buf(), fs::read(path)?);
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    const GATE_CONTEXT_ROOT: &str = "XTASK_GATE_CONTEXT_PROBE_ROOT";
+    const GATE_CONTEXT_MODE: &str = "XTASK_GATE_CONTEXT_PROBE_MODE";
+    const GATE_CONTEXT_TEST: &str =
+        "tasks::gates::tests::test_gate_children_isolate_git_and_preserve_staged_context";
+    const GATE_CONTEXT_PROBE: &str = "tasks::gates::tests::gate_context_child_probe";
+
+    // Only the exactly selected fake-Cargo child performs this probe. Its raw
+    // Git commands intentionally do not use the new Git helper: the gate's
+    // process boundary, rather than fixture implementation, must isolate them.
+    #[test]
+    fn gate_context_child_probe() -> Result<()> {
+        use color_eyre::eyre::ensure;
+        let Some(root) = std::env::var_os(GATE_CONTEXT_ROOT) else {
+            return Ok(());
+        };
+        let root = std::path::PathBuf::from(root);
+        let caller = root.join("caller");
+        let mode = std::env::var(GATE_CONTEXT_MODE)?;
+        if mode == "staged" {
+            ensure!(
+                std::env::var_os("GIT_INDEX_FILE").as_deref()
+                    == Some(caller.join(".git/index").as_os_str()),
+                "staged gate lost its caller index"
+            );
+            let output = Command::new("git").args(["write-tree"]).current_dir(&caller).output()?;
+            ensure!(output.status.success());
+            ensure!(
+                String::from_utf8(output.stdout)?.trim()
+                    == fs::read_to_string(root.join("staged-tree"))?,
+                "staged gate selected a different index"
+            );
+        } else {
+            let foreign = root.join("foreign");
+            fs::create_dir(&foreign)?;
+            for args in [vec!["init", "--quiet"], vec!["config", "user.name", "Foreign Fixture"]] {
+                let output = Command::new("git").args(&args).current_dir(&foreign).output()?;
+                ensure!(output.status.success(), "raw fixture Git {args:?} failed");
+            }
+            let output = Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .current_dir(&foreign)
+                .output()?;
+            ensure!(output.status.success());
+            let observed = std::path::PathBuf::from(String::from_utf8(output.stdout)?.trim());
+            ensure!(observed.canonicalize()? == foreign.canonicalize()?, "wrong fixture root");
+            ensure!(std::env::var_os("GIT_INDEX_FILE").is_none(), "test retained hook index");
+        }
+        fs::write(root.join("probe-complete"), mode)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_gate_children_isolate_git_and_preserve_staged_context() -> Result<()> {
+        use color_eyre::eyre::ensure;
+        if let Some(root) = std::env::var_os(GATE_CONTEXT_ROOT) {
+            let root = std::path::PathBuf::from(root);
+            let command = fs::read_to_string(root.join("command"))?;
+            let mode = std::env::var(GATE_CONTEXT_MODE)?;
+            let log_path = root.join("gate.log");
+            let exit = if mode == "baseline" {
+                // Controlled wrong implementation: the same native process
+                // factory without the test-environment boundary.
+                let log = fs::File::create(&log_path)?;
+                let status = super::shell_command_process(&command, 30)
+                    .current_dir(root.join("commands"))
+                    .stdout(std::process::Stdio::from(log.try_clone()?))
+                    .stderr(std::process::Stdio::from(log))
+                    .status()?;
+                status.code().ok_or_else(|| color_eyre::eyre::eyre!("probe exited by signal"))?
+            } else {
+                let execution = super::run_shell_command_with_timeout_in(
+                    &command,
+                    &log_path,
+                    30,
+                    Some(&root.join("commands")),
+                )
+                .map_err(|error| error.report)?;
+                ensure!(!execution.timed_out, "probe timed out");
+                execution.exit_code
+            };
+            fs::write(root.join("exit-code"), exit.to_string())?;
+            fs::write(root.join("driver-complete"), "done")?;
+            return Ok(());
+        }
+
+        for mode in ["baseline", "test", "chained", "staged"] {
+            let temp = tempdir()?;
+            let root = temp.path();
+            let caller = root.join("caller");
+            fs::create_dir(&caller)?;
+            run_git(&caller, &["init", "--quiet"])?;
+            run_git(&caller, &["config", "user.name", "Caller Guardian"])?;
+            run_git(&caller, &["config", "user.email", "caller@example.invalid"])?;
+            run_git(&caller, &["config", "core.hooksPath", ".git/fixture-hooks"])?;
+            fs::write(caller.join("value.txt"), "base\n")?;
+            run_git(&caller, &["add", "."])?;
+            run_git(&caller, &["commit", "--quiet", "-m", "caller"])?;
+            fs::write(caller.join("value.txt"), "staged\n")?;
+            run_git(&caller, &["add", "."])?;
+            fs::write(root.join("staged-tree"), run_git(&caller, &["write-tree"])?.trim())?;
+            fs::write(caller.join("value.txt"), "unstaged\n")?;
+            fs::write(caller.join("untracked.txt"), "unique content\n")?;
+            let before = fixture_snapshot(&caller)?;
+            let commands = root.join("commands");
+            fs::create_dir(&commands)?;
+            let executable = std::env::current_exe()?;
+            #[cfg(windows)]
+            let cargo = {
+                fs::write(
+                    commands.join("cargo.cmd"),
+                    format!(
+                        "@echo off\r\n\"{}\" --exact {GATE_CONTEXT_PROBE} --nocapture\r\nexit /b %ERRORLEVEL%\r\n",
+                        executable.display()
+                    ),
+                )?;
+                ".\\cargo.cmd"
+            };
+            #[cfg(not(windows))]
+            let cargo = {
+                use std::os::unix::fs::PermissionsExt;
+                let path = commands.join("cargo");
+                let quoted = executable.to_string_lossy().replace('\'', "'\\''");
+                fs::write(
+                    &path,
+                    format!(
+                        "#!/bin/sh\nexec '{quoted}' --exact {GATE_CONTEXT_PROBE} --nocapture\n"
+                    ),
+                )?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                "./cargo"
+            };
+            let command = if mode == "staged" {
+                format!("{cargo} xtask commit-check staged_tree_identity")
+            } else if mode == "chained" {
+                #[cfg(windows)]
+                let setup = "cmd /C exit 0";
+                #[cfg(not(windows))]
+                let setup = "true";
+                format!("{setup} && {cargo} test")
+            } else {
+                format!("{cargo} test")
+            };
+            fs::write(root.join("command"), command)?;
+            let mut driver = Command::new(&executable);
+            driver.args(["--exact", GATE_CONTEXT_TEST, "--nocapture"]);
+            driver = crate::git_environment::isolate(driver);
+            driver
+                .env(GATE_CONTEXT_ROOT, root)
+                .env(GATE_CONTEXT_MODE, mode)
+                .env("GIT_DIR", caller.join(".git"))
+                .env("GIT_COMMON_DIR", caller.join(".git"))
+                .env("GIT_WORK_TREE", &caller)
+                .env("GIT_INDEX_FILE", caller.join(".git/index"));
+            let output = driver.output()?;
+            ensure!(
+                output.status.success(),
+                "{mode}: driver failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            ensure!(root.join("driver-complete").is_file(), "{mode}: driver did not execute");
+            let exit = fs::read_to_string(root.join("exit-code"))?;
+            if mode == "baseline" {
+                ensure!(exit != "0", "wrong implementation unexpectedly passed");
+                ensure!(fixture_snapshot(&caller)? != before, "negative control was vacuous");
+                eprintln!("controlled wrong boundary failed and changed disposable caller config");
+            } else {
+                ensure!(
+                    exit == "0",
+                    "{mode}: gate failed: {}",
+                    fs::read_to_string(root.join("gate.log"))?
+                );
+                ensure!(fixture_snapshot(&caller)? == before, "{mode}: caller changed");
+                ensure!(root.join("probe-complete").is_file(), "{mode}: probe did not execute");
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -4694,8 +5038,7 @@ gates:
             vec!["config", "user.name", "Test"],
             vec!["config", "core.fileMode", "false"],
         ] {
-            let status = Command::new("git")
-                .current_dir(root)
+            let status = fixture_git_command(root)
                 .args(&args)
                 .status()
                 .with_context(|| format!("failed to run git {args:?}"))?;
@@ -4711,8 +5054,7 @@ gates:
         std::fs::write(root.join("seed.txt"), "seed\n")
             .context("failed to write seed file in isolated repo")?;
         for args in [vec!["add", "seed.txt"], vec!["commit", "--quiet", "-m", "seed"]] {
-            let status = Command::new("git")
-                .current_dir(root)
+            let status = fixture_git_command(root)
                 .args(&args)
                 .status()
                 .with_context(|| format!("failed to run git {args:?}"))?;
@@ -4727,8 +5069,7 @@ gates:
         // `change_set::resolve_base_ref` only accepts explicit bases that
         // exist (issue #3985: no silent substitution).
         let head = String::from_utf8(
-            Command::new("git")
-                .current_dir(root)
+            fixture_git_command(root)
                 .args(["rev-parse", "HEAD"])
                 .output()
                 .context("failed to run git rev-parse HEAD")?
@@ -4736,8 +5077,7 @@ gates:
         )
         .context("git rev-parse HEAD output was not UTF-8")?;
         let head = head.trim();
-        let status = Command::new("git")
-            .current_dir(root)
+        let status = fixture_git_command(root)
             .args(["update-ref", "refs/remotes/origin/main", head])
             .status()
             .context("failed to run git update-ref for origin/main")?;
@@ -4749,46 +5089,51 @@ gates:
 
     #[test]
     fn plan_gates_threads_staged_tree_oid_into_non_commit_tiers() -> color_eyre::eyre::Result<()> {
-        // Regression for a deep-review P1 on PR #4016: `plan_pr_fast_gates`
-        // always returns `staged_tree_oid: None` on its own (it has no
-        // reason to know about `--staged`), so `--tier merge_gate/nightly
-        // /all --staged` must re-thread the resolved OID after calling it —
-        // otherwise a transitively-selected commit-tier gate (`nightly`/
-        // `all` keep every gate regardless of tier) runs against the exact
-        // staged tree, but the receipt's `staged_tree_oid` silently stays
-        // `None`, losing the very identity `--staged` was supposed to prove.
-        //
-        // Runs against an isolated git repo (issue #15413): the prior
-        // implementation called `git write-tree` against the live project
-        // root, which races against transient `git index.lock` files held
-        // by parallel tests and flakes ~1/8 in clean-main runs. Production
-        // `staged_tree_oid` must keep surfacing a persistent lock as a real
-        // error — the fix lives in the test, not in the production path.
-        let policy = policy_with_gates(vec![
-            pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
-            tier_gate(
-                "staged_tree_identity",
-                "commit",
-                "cargo xtask commit-check staged_tree_identity",
-            ),
-        ]);
-        let config = GateRunnerConfig {
-            tier: GateTier::All,
-            base_ref: Some("origin/main".to_string()),
-            staged: true,
-            ..GateRunnerConfig::default()
-        };
-        let repo = isolated_git_repo_with_origin_main()?;
-        let root = repo.path();
+        isolated_fixture_test(
+            concat!(module_path!(), "::plan_gates_threads_staged_tree_oid_into_non_commit_tiers"),
+            || {
+                // Regression for a deep-review P1 on PR #4016: `plan_pr_fast_gates`
+                // always returns `staged_tree_oid: None` on its own (it has no
+                // reason to know about `--staged`), so `--tier merge_gate/nightly
+                // /all --staged` must re-thread the resolved OID after calling it —
+                // otherwise a transitively-selected commit-tier gate (`nightly`/
+                // `all` keep every gate regardless of tier) runs against the exact
+                // staged tree, but the receipt's `staged_tree_oid` silently stays
+                // `None`, losing the very identity `--staged` was supposed to prove.
+                //
+                // Runs against an isolated git repo (issue #15413): the prior
+                // implementation called `git write-tree` against the live project
+                // root, which races against transient `git index.lock` files held
+                // by parallel tests and flakes ~1/8 in clean-main runs. Production
+                // `staged_tree_oid` must keep surfacing a persistent lock as a real
+                // error — the fix lives in the test, not in the production path.
+                let policy = policy_with_gates(vec![
+                    pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
+                    tier_gate(
+                        "staged_tree_identity",
+                        "commit",
+                        "cargo xtask commit-check staged_tree_identity",
+                    ),
+                ]);
+                let config = GateRunnerConfig {
+                    tier: GateTier::All,
+                    base_ref: Some("origin/main".to_string()),
+                    staged: true,
+                    ..GateRunnerConfig::default()
+                };
+                let repo = isolated_git_repo_with_origin_main()?;
+                let root = repo.path();
 
-        let plan = plan_gates(root, &policy, &config)?;
+                let plan = plan_gates(root, &policy, &config)?;
 
-        assert!(
-            plan.staged_tree_oid.is_some(),
-            "--staged must thread the tree OID into the plan for --tier all, not only \
-             --tier commit"
-        );
-        Ok(())
+                assert!(
+                    plan.staged_tree_oid.is_some(),
+                    "--staged must thread the tree OID into the plan for --tier all, not only \
+                 --tier commit"
+                );
+                Ok(())
+            },
+        )
     }
 
     /// Confirms the isolated-repo helper resolves the exact refs `plan_gates`
@@ -4799,62 +5144,63 @@ gates:
     #[test]
     fn isolated_repo_helper_publishes_origin_main_and_seed_commit() -> color_eyre::eyre::Result<()>
     {
-        let repo = isolated_git_repo_with_origin_main()?;
-        let root = repo.path();
+        isolated_fixture_test(
+            concat!(module_path!(), "::isolated_repo_helper_publishes_origin_main_and_seed_commit"),
+            || {
+                let repo = isolated_git_repo_with_origin_main()?;
+                let root = repo.path();
 
-        let head_exists = Command::new("git")
-            .current_dir(root)
-            .args(["rev-parse", "--verify", "HEAD"])
-            .status()
-            .context("failed to run git rev-parse HEAD")?
-            .success();
-        assert!(head_exists, "isolated repo must have a HEAD commit");
+                let head_exists = fixture_git_command(root)
+                    .args(["rev-parse", "--verify", "HEAD"])
+                    .status()
+                    .context("failed to run git rev-parse HEAD")?
+                    .success();
+                assert!(head_exists, "isolated repo must have a HEAD commit");
 
-        let origin_main_exists = Command::new("git")
-            .current_dir(root)
-            .args(["rev-parse", "--verify", "--quiet", "origin/main"])
-            .status()
-            .context("failed to run git rev-parse origin/main")?
-            .success();
-        assert!(
-            origin_main_exists,
-            "isolated repo must synthesize refs/remotes/origin/main so \
-             change_set::resolve_base_ref accepts the explicit base"
-        );
+                let origin_main_exists = fixture_git_command(root)
+                    .args(["rev-parse", "--verify", "--quiet", "origin/main"])
+                    .status()
+                    .context("failed to run git rev-parse origin/main")?
+                    .success();
+                assert!(
+                    origin_main_exists,
+                    "isolated repo must synthesize refs/remotes/origin/main so \
+                 change_set::resolve_base_ref accepts the explicit base"
+                );
 
-        let head_oid = String::from_utf8(
-            Command::new("git")
-                .current_dir(root)
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .context("failed to run git rev-parse HEAD for OID")?
-                .stdout,
+                let head_oid = String::from_utf8(
+                    fixture_git_command(root)
+                        .args(["rev-parse", "HEAD"])
+                        .output()
+                        .context("failed to run git rev-parse HEAD for OID")?
+                        .stdout,
+                )
+                .context("git rev-parse HEAD output was not UTF-8")?;
+                let origin_main_oid = String::from_utf8(
+                    fixture_git_command(root)
+                        .args(["rev-parse", "--verify", "origin/main"])
+                        .output()
+                        .context("failed to run git rev-parse origin/main for OID")?
+                        .stdout,
+                )
+                .context("git rev-parse origin/main output was not UTF-8")?;
+                assert_eq!(
+                    head_oid.trim(),
+                    origin_main_oid.trim(),
+                    "origin/main must point at the seeded commit"
+                );
+
+                // And the staged-tree OID query itself must succeed against the
+                // isolated repo -- this is the exact call site the original flake
+                // hit via the live project index.
+                let staged_tree = super::super::staged::staged_tree_oid(root)?;
+                assert!(
+                    !staged_tree.is_empty(),
+                    "staged_tree_oid must return a non-empty OID against the isolated repo"
+                );
+                Ok(())
+            },
         )
-        .context("git rev-parse HEAD output was not UTF-8")?;
-        let origin_main_oid = String::from_utf8(
-            Command::new("git")
-                .current_dir(root)
-                .args(["rev-parse", "--verify", "origin/main"])
-                .output()
-                .context("failed to run git rev-parse origin/main for OID")?
-                .stdout,
-        )
-        .context("git rev-parse origin/main output was not UTF-8")?;
-        assert_eq!(
-            head_oid.trim(),
-            origin_main_oid.trim(),
-            "origin/main must point at the seeded commit"
-        );
-
-        // And the staged-tree OID query itself must succeed against the
-        // isolated repo -- this is the exact call site the original flake
-        // hit via the live project index.
-        let staged_tree = super::super::staged::staged_tree_oid(root)?;
-        assert!(
-            !staged_tree.is_empty(),
-            "staged_tree_oid must return a non-empty OID against the isolated repo"
-        );
-        Ok(())
     }
 
     #[test]
@@ -4882,6 +5228,143 @@ gates:
         assert!(!plan.scope_ok);
         assert!(plan.fallback_used);
         assert_eq!(plan.fallback_reason.as_deref(), Some("scope failed"));
+        Ok(())
+    }
+
+    #[test]
+    fn vscode_types_inputs_reach_routed_fence_test() -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gate = policy
+            .gates
+            .iter()
+            .find(|gate| gate.name == "unit_routed_full")
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing routed test gate"))?;
+        let metadata = serde_json::json!({
+            "packages": [{"name": "xtask", "id": "xtask 0.1.0",
+                "manifest_path": "/workspace/xtask/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
+        });
+        for (file, selected) in [
+            ("vscode-extension/package.json", true),
+            (".github/dependabot.yml", true),
+            ("vscode-extension/README.md", false),
+            ("vscode-extension/tsconfig.json", false),
+        ] {
+            let scope = crate::tasks::ci_scope::classify_files(
+                &[file.to_string()],
+                &metadata,
+                "/workspace",
+            )?;
+            let plan = build_pr_fast_plan_from_scope(
+                GateTier::PrFast,
+                "origin/main".to_string(),
+                vec![gate.clone()],
+                Some(scope),
+                true,
+                false,
+                None,
+            )?;
+            assert_eq!(!plan.selected.is_empty(), selected, "wrong routing for {file}");
+            if selected {
+                assert!(
+                    plan.selected[0].gate.command.contains("--tests -p xtask"),
+                    "{file} must run xtask integration tests, including the types fence"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pr_fast_non_rust_owned_inputs_reach_routed_integration_tests() -> color_eyre::eyre::Result<()>
+    {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gate = policy
+            .gates
+            .iter()
+            .find(|gate| gate.name == "unit_routed_full")
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing routed test gate"))?;
+        assert!(gate.required, "the routed integration cohort must remain required in its tier");
+        let metadata = serde_json::json!({
+            "packages": [{"name": "xtask", "id": "xtask 0.1.0",
+                "manifest_path": "/workspace/xtask/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]}
+        });
+        for file in [".ci/gate-policy.yaml", ".ci/policies/required-checks.toml"] {
+            let scope = crate::tasks::ci_scope::classify_files(
+                &[file.to_string()],
+                &metadata,
+                "/workspace",
+            )?;
+            assert_eq!(scope.diff_class, "ci_config", "the input remains non-Rust: {file}");
+            assert_eq!(
+                super::selected_package_names(&scope),
+                vec!["xtask"],
+                "owner missing: {file}"
+            );
+            let plan = super::plan_pr_fast_gates(
+                &root,
+                vec![gate.clone()],
+                "origin/main".to_string(),
+                Some(scope),
+            )?;
+            assert_eq!(selected_gate_names(&plan), vec!["unit_routed_full"], "lost proof: {file}");
+            assert!(
+                plan.selected[0].gate.command.contains("--tests -p xtask"),
+                "{file} must execute its owner's integration contracts"
+            );
+            assert!(!plan.fallback_used, "explicit owner must not select broad fallback: {file}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pr_fast_owned_non_rust_bin_only_input_uses_target_metadata() -> color_eyre::eyre::Result<()>
+    {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let gates: Vec<_> = policy
+            .gates
+            .into_iter()
+            .filter(|gate| matches!(gate.name.as_str(), "unit_scoped" | "unit_routed_full"))
+            .collect();
+        assert_eq!(gates.len(), 2, "both library and integration selectors must be present");
+        let metadata = serde_json::json!({
+            "packages": [{"name": "perl-core-test-runner", "id": "perl-core-test-runner 0.1.0",
+                "manifest_path": "/workspace/crates/perl-core-test-runner/Cargo.toml"}],
+            "resolve": {"nodes": [{"id": "perl-core-test-runner 0.1.0", "deps": []}]}
+        });
+        let scope = crate::tasks::ci_scope::classify_files(
+            &["crates/perl-core-test-runner/tests/fixtures/selector_input.json".to_string()],
+            &metadata,
+            "/workspace",
+        )?;
+        assert_eq!(scope.diff_class, "docs_as_code");
+        assert_eq!(super::selected_package_names(&scope), vec!["perl-core-test-runner"]);
+
+        // A partial repair that honors ownership but omits target indexing
+        // wrongly selects --lib for this package, which has only bin targets.
+        let without_metadata = build_pr_fast_plan_from_scope(
+            GateTier::PrFast,
+            "origin/main".to_string(),
+            gates.clone(),
+            Some(scope.clone()),
+            true,
+            false,
+            None,
+        )?;
+        assert!(selected_gate_names(&without_metadata).contains(&"unit_scoped".to_string()));
+
+        let plan = super::plan_pr_fast_gates(&root, gates, "origin/main".to_string(), Some(scope))?;
+        assert_eq!(selected_gate_names(&plan), vec!["unit_routed_full"]);
+        assert!(plan.selected[0].gate.command.contains("--tests -p perl-core-test-runner"));
+        assert_eq!(skipped_gate_names(&plan), vec!["unit_scoped"]);
+        assert!(plan.skipped[0].reason.contains("no ci-scope selected packages have a lib target"));
+        assert!(!plan.fallback_used);
         Ok(())
     }
 
@@ -6788,30 +7271,35 @@ gates:
 
     #[test]
     fn is_latest_commit_compares_configured_upstream() -> color_eyre::eyre::Result<()> {
-        let temp = tempdir()?;
-        let upstream = temp.path().join("upstream.git");
-        let repo = temp.path().join("repo");
-        let upstream_arg = upstream.to_string_lossy().to_string();
-        run_git(temp.path(), &["init", "--bare", upstream_arg.as_str()])?;
-        fs::create_dir_all(&repo)?;
-        run_git(&repo, &["init"])?;
-        run_git(&repo, &["config", "user.email", "agent@example.invalid"])?;
-        run_git(&repo, &["config", "user.name", "Agent Test"])?;
-        fs::write(repo.join("tracked.txt"), "base\n")?;
-        run_git(&repo, &["add", "tracked.txt"])?;
-        run_git(&repo, &["commit", "-m", "base"])?;
-        run_git(&repo, &["branch", "-M", "main"])?;
-        run_git(&repo, &["remote", "add", "origin", upstream_arg.as_str()])?;
-        run_git(&repo, &["push", "-u", "origin", "main"])?;
+        isolated_fixture_test(
+            concat!(module_path!(), "::is_latest_commit_compares_configured_upstream"),
+            || {
+                let temp = tempdir()?;
+                let upstream = temp.path().join("upstream.git");
+                let repo = temp.path().join("repo");
+                let upstream_arg = upstream.to_string_lossy().to_string();
+                run_git(temp.path(), &["init", "--bare", upstream_arg.as_str()])?;
+                fs::create_dir_all(&repo)?;
+                run_git(&repo, &["init"])?;
+                run_git(&repo, &["config", "user.email", "agent@example.invalid"])?;
+                run_git(&repo, &["config", "user.name", "Agent Test"])?;
+                fs::write(repo.join("tracked.txt"), "base\n")?;
+                run_git(&repo, &["add", "tracked.txt"])?;
+                run_git(&repo, &["commit", "-m", "base"])?;
+                run_git(&repo, &["branch", "-M", "main"])?;
+                run_git(&repo, &["remote", "add", "origin", upstream_arg.as_str()])?;
+                run_git(&repo, &["push", "-u", "origin", "main"])?;
 
-        assert!(is_latest_commit(&repo), "freshly pushed branch should match upstream");
+                assert!(is_latest_commit(&repo), "freshly pushed branch should match upstream");
 
-        fs::write(repo.join("tracked.txt"), "base\nlocal\n")?;
-        run_git(&repo, &["add", "tracked.txt"])?;
-        run_git(&repo, &["commit", "-m", "local"])?;
+                fs::write(repo.join("tracked.txt"), "base\nlocal\n")?;
+                run_git(&repo, &["add", "tracked.txt"])?;
+                run_git(&repo, &["commit", "-m", "local"])?;
 
-        assert!(!is_latest_commit(&repo), "unpushed local commit should be stale");
-        Ok(())
+                assert!(!is_latest_commit(&repo), "unpushed local commit should be stale");
+                Ok(())
+            },
+        )
     }
 
     #[test]
@@ -7208,6 +7696,114 @@ error: aborting due to previous error
             Some(
                 "refactor::refactoring::tests::validation_tests::test_cleanup_respects_retention_count"
             )
+        );
+    }
+
+    /// Fixture: the shape that makes an unassociated read wrong — a first
+    /// failing test that returns `Err` (no panic of its own) followed by a
+    /// second failing test that panics. A scan of the whole log finds
+    /// `test_reads_config`'s name and `test_parses_header`'s panic.
+    const CARGO_TEST_TWO_FAILURES_FIRST_HAS_NO_PANIC: &str = r#"
+running 3 tests
+test config::tests::test_reads_config ... FAILED
+test parse::tests::test_parses_header ... FAILED
+test parse::tests::test_ignores_blank ... ok
+
+failures:
+
+---- config::tests::test_reads_config stdout ----
+Error: config file not found at /etc/perl-lsp/config.toml
+
+---- parse::tests::test_parses_header stdout ----
+thread 'parse::tests::test_parses_header' panicked at crates/perl-parser/src/parse/header.rs:118:9:
+assertion `left == right` failed
+  left: "Foo::Bar"
+ right: "Foo::Baz"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    config::tests::test_reads_config
+    parse::tests::test_parses_header
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+"#;
+
+    /// Fixture: the same two-failure shape, but the *first* failing test is
+    /// the one that panicked. The association is then real and must survive.
+    const CARGO_TEST_TWO_FAILURES_FIRST_PANICS: &str = r#"
+running 3 tests
+test parse::tests::test_parses_header ... FAILED
+test config::tests::test_reads_config ... FAILED
+test parse::tests::test_ignores_blank ... ok
+
+failures:
+
+---- parse::tests::test_parses_header stdout ----
+thread 'parse::tests::test_parses_header' panicked at crates/perl-parser/src/parse/header.rs:118:9:
+assertion `left == right` failed
+  left: "Foo::Bar"
+ right: "Foo::Baz"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- config::tests::test_reads_config stdout ----
+Error: config file not found at /etc/perl-lsp/config.toml
+
+failures:
+    parse::tests::test_parses_header
+    config::tests::test_reads_config
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+"#;
+
+    #[test]
+    fn a_panic_from_another_test_is_not_attached_to_the_recovered_name() {
+        let ff = required_first_failure(
+            CARGO_TEST_TWO_FAILURES_FIRST_HAS_NO_PANIC,
+            101,
+            "two failing tests still yield a first failure",
+        );
+
+        assert_eq!(
+            ff.test.as_deref(),
+            Some("config::tests::test_reads_config"),
+            "the first FAILED line still names the recovered test"
+        );
+        // The panic below belongs to `test_parses_header`. Reporting its
+        // location beside `test_reads_config` would send a reader to a file
+        // the named test never touched — the whole point of this receipt is
+        // to say where to look.
+        assert_eq!(
+            ff.site, None,
+            "a panic outside the recovered test's own block is not that test's site"
+        );
+        assert_eq!(
+            ff.message, None,
+            "a panic outside the recovered test's own block is not that test's message"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_the_recovered_test_block_is_still_reported() {
+        let ff = required_first_failure(
+            CARGO_TEST_TWO_FAILURES_FIRST_PANICS,
+            101,
+            "two failing tests still yield a first failure",
+        );
+
+        assert_eq!(
+            ff.test.as_deref(),
+            Some("parse::tests::test_parses_header"),
+            "the first FAILED line names the recovered test"
+        );
+        assert_eq!(
+            ff.site.as_deref(),
+            Some("crates/perl-parser/src/parse/header.rs:118"),
+            "a panic in the recovered test's own block is that test's site"
+        );
+        assert_eq!(
+            ff.message.as_deref(),
+            Some("assertion `left == right` failed"),
+            "and its message, bounded by the block rather than running into the next"
         );
     }
 

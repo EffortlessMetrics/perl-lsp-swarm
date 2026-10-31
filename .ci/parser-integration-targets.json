@@ -417,6 +417,81 @@
       "reason": "Retain malformed C-style separator recovery and following statements alongside the valid declaration-list distinction.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.program_body_parity",
+      "package": "perl-parser-core",
+      "target": "hir_body_lowerer_parity_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#5813",
+      "reason": "Execute all thirteen original Program-root specimens with canonical body equality and independent shape, operand, access and binding expectations.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.program_body_regex",
+      "package": "perl-parser-core",
+      "target": "hir_regex_lowerer_boundary_test",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#5813",
+      "reason": "Execute public-entry versus canonical regex-family parity with the original retained modifier and family specimens.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.program_body_geometry",
+      "package": "perl-parser-core",
+      "target": "hir_body_slice_test",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#5813",
+      "reason": "Execute the Program-root body slice with exact source ranges, arena edges and canonical declaration identity.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.scalar_literal_payloads",
+      "package": "perl-parser-core",
+      "target": "hir_scalar_literal_payload_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#17538",
+      "reason": "Execute the first-cohort scalar literal payload proof: exact Number, String, and Undef leaves with fabrication markers through canonical body construction, public-entry parity, and the PIR-A handoff join.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.hir.control_flow",
+      "package": "perl-parser-core",
+      "target": "hir_control_flow_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6054",
+      "reason": "Protect HIR branch, loop, transfer, and statement-modifier lowering plus recovered-versus-parsed condition provenance consumed by semantic analysis.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }

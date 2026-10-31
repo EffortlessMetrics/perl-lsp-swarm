@@ -49,6 +49,19 @@ fn open_document(server: &LspServer, uri: &str, content: &str) {
     server.handle_request(notification);
 }
 
+fn fold_set(ranges: &[Value]) -> Vec<(String, u64, u64)> {
+    let mut set: Vec<(String, u64, u64)> = ranges
+        .iter()
+        .filter_map(|range| {
+            let (start, end) = range_lines(range)?;
+            let kind = range.get("kind").and_then(|kind| kind.as_str()).unwrap_or("").to_string();
+            Some((kind, start, end))
+        })
+        .collect();
+    set.sort();
+    set
+}
+
 fn folding_ranges_for(uri: &str, content: &str) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     let server = setup_server();
     open_document(&server, uri, content);
@@ -373,6 +386,39 @@ sub main {
 }
 
 #[test]
+fn test_folding_ranges_imports_end_line_includes_last_import() -> TestResult {
+    let content = "use strict;\nuse warnings;\nuse POSIX qw(floor);\nmy $x = 1;\n";
+    let ranges = folding_ranges_for("file:///imports-endline.pl", content)?;
+
+    let imports: Vec<&Value> = ranges
+        .iter()
+        .filter(|r| r.get("kind").and_then(|k| k.as_str()) == Some("imports"))
+        .collect();
+    assert_eq!(imports.len(), 1, "expected exactly one imports range: {ranges:?}");
+    assert_eq!(
+        range_lines(imports[0]),
+        Some((0, 2)),
+        "imports fold must include the last import line: {ranges:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_folding_ranges_subroutine_brace_line_excluded() -> TestResult {
+    let content = "sub full {\n    my $x = 1;\n}\n";
+    let ranges = folding_ranges_for("file:///sub-brace.pl", content)?;
+    assert!(
+        ranges
+            .iter()
+            .any(|range| range_lines(range).is_some_and(|(start, end)| start == 0 && end == 1)),
+        "subroutine fold must exclude the closing brace line (0,1): {ranges:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_folding_ranges_empty_document() -> TestResult {
     let server = setup_server();
 
@@ -441,6 +487,31 @@ fn test_folding_range_heredoc_boundary_end_line_gt_start_line() -> TestResult {
                 && range_lines(range).is_some_and(|(start, end)| start == 1 && end == 2)
         }),
         "multi-line heredoc body should produce a region fold: {multi_line_ranges:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_folding_range_heredoc_body_length_sweep_covers_last_body_line() -> TestResult {
+    // #17299: heredoc folds must cover every body line. 2-line bodies were
+    // already correct; 3+ line bodies ended one line short because the
+    // inclusive endLine conversion dropped the line containing the body
+    // span's end offset.
+    let three_line_heredoc = "my $x = <<'END';\none\ntwo\nthree\nEND\n";
+    let three_line_ranges = folding_ranges_for("file:///heredoc-three.pl", three_line_heredoc)?;
+    assert_eq!(
+        fold_set(&three_line_ranges),
+        vec![("region".to_string(), 1, 3)],
+        "3-line heredoc body must be exactly one fold as [1..3]: {three_line_ranges:?}"
+    );
+
+    let four_line_heredoc = "my $x = <<'END';\none\ntwo\nthree\nfour\nEND\n";
+    let four_line_ranges = folding_ranges_for("file:///heredoc-four.pl", four_line_heredoc)?;
+    assert_eq!(
+        fold_set(&four_line_ranges),
+        vec![("region".to_string(), 1, 4)],
+        "4-line heredoc body must be exactly one fold as [1..4]: {four_line_ranges:?}"
     );
 
     Ok(())

@@ -3,7 +3,7 @@
 Validate an agent worktree before edit-capable PR work starts.
 
 .DESCRIPTION
-This script enforces the Windows worktree and Cargo target layout used by
+This script enforces the Windows worktree layout used by
 perl-lsp-swarm agents:
 
   H:\Code\Rust3\perl-lsp-swarm
@@ -12,10 +12,11 @@ perl-lsp-swarm agents:
   H:\Code\Rust3\perl-lsp-swarm-worktrees\<issue>-<slug>
     Disposable per-PR worktree.
 
-  H:\Code\Rust3\.cargo-target\perl-lsp-swarm\<issue>-<slug>
-    Disposable per-PR Cargo target directory.
-
 Run this from the task worktree before making edits.
+It does not allocate Cargo output or assess build capacity. Select host storage
+in the task shell and use scripts/cargo_admitted.py --preflight with the exact
+Cargo command. TargetRoot remains accepted for older callers but is unused;
+the admitted route derives private target and build paths for each worktree.
 
 A missing or stale installed pre-push hook fails with exit code 7, as does
 a missing installed pre-commit hook (check 7 parity with
@@ -79,12 +80,28 @@ function Invoke-Git {
         [string[]]$GitArgs
     )
 
-    $output = & git -C $Repository @GitArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # Native stderr is diagnostic data, not porcelain/path output. In Windows
+    # PowerShell, Continue also prevents an exit-zero warning from terminating
+    # the invocation before its actual exit status can be inspected.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& git -C $Repository @GitArgs 2>&1)
+        $gitStatus = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    if ($gitStatus -ne 0) {
         Fail "git $($GitArgs -join ' ') failed in $Repository. Output: $output"
     }
 
-    return @($output)
+    foreach ($record in $output) {
+        if ($record -is [System.Management.Automation.ErrorRecord]) {
+            Write-Warning "$record"
+        } else {
+            Write-Output $record
+        }
+    }
 }
 
 if ($Slug -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $Slug -match '[\\/]') {
@@ -93,9 +110,7 @@ if ($Slug -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $Slug -match '[\\/]') {
 
 $canonical = Get-FullPath $CanonicalRoot
 $worktreeRootFull = Get-FullPath $WorktreeRoot
-$targetRootFull = Get-FullPath $TargetRoot
 $worktreePath = Assert-ChildPath -Child (Join-Path $worktreeRootFull "$Issue-$Slug") -Parent $worktreeRootFull -Description 'Worktree path'
-$targetPath = Assert-ChildPath -Child (Join-Path $targetRootFull "$Issue-$Slug") -Parent $targetRootFull -Description 'Cargo target path'
 
 if (-not (Test-Path -Path $canonical -PathType Container)) {
     Fail "Canonical checkout does not exist: $canonical"
@@ -185,16 +200,11 @@ if (Test-Path -LiteralPath $checkedInHook -PathType Leaf) {
     }
 }
 
-New-Item -ItemType Directory -Force -Path $targetPath | Out-Null
-
 Write-Host 'agent preflight ok'
 Write-Host "canonical=$canonical"
 Write-Host "worktree=$worktreePath"
 Write-Host "branch=$currentBranch"
-Write-Host "cargo_target=$targetPath"
 Write-Host ''
-Write-Host 'Set this for every Cargo command in this task:'
-Write-Host "`$env:CARGO_TARGET_DIR = '$targetPath'"
-Write-Host ''
-Write-Host 'Bash equivalent:'
-Write-Host "export CARGO_TARGET_DIR='$targetPath'"
+Write-Host 'Cargo build capacity was not assessed; no build output was allocated.'
+Write-Host 'Do not export CARGO_TARGET_DIR; the admitted route derives private target and build paths.'
+Write-Host 'For build admission: python scripts/cargo_admitted.py --preflight <exact Cargo command>'

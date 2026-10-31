@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import json
 import os
 import queue
@@ -168,9 +169,14 @@ def main() -> int:
                 if remaining <= 0:
                     raise TimeoutError(f"timed out waiting for response id {req_id}")
                 try:
-                    message = responses.get(timeout=remaining)
-                except queue.Empty as exc:
-                    raise TimeoutError(f"timed out waiting for response id {req_id}") from exc
+                    message = responses.get(timeout=min(remaining, 0.05))
+                except queue.Empty:
+                    if not reader.is_alive():
+                        # EOF on the server's stdout: nothing else can arrive.
+                        raise TimeoutError(
+                            f"server closed stdout before responding to request id {req_id}"
+                        ) from None
+                    continue
                 if message.get("id") == req_id:
                     return message
 
@@ -241,14 +247,76 @@ def main() -> int:
 
             time.sleep(args.settle_seconds)
             sample("settled", args.n_files)
-            shutdown_id = request("shutdown", {})
-            wait_for_response(shutdown_id, timeout=10.0)
-            notify("exit", {})
+            # #18349 review: a successful workload write is not evidence the
+            # server consumed the workload — the OS pipe buffer can absorb
+            # writes a dying or wedged server never reads, and zero-RSS rows
+            # from a dead peer are discarded by the plateau assertion, so an
+            # incomplete workload could pass as a memory plateau. This
+            # in-order barrier request is that evidence: the server can only
+            # answer it after dequeuing every preceding workload message. A
+            # failed barrier write or a barrier timeout is fatal (raised
+            # outside the tolerated teardown region below).
+            barrier_id = request("workspace/symbol", {"query": "value_00000"})
+            wait_for_response(barrier_id, timeout=10.0)
+            teardown_race = None
+            teardown_note = None
+            try:
+                shutdown_id = request("shutdown", {})
+                wait_for_response(shutdown_id, timeout=10.0)
+                notify("exit", {})
+            except BrokenPipeError as exc:
+                teardown_race = exc
+            except TimeoutError as exc:
+                # A server that consumed the barrier-confirmed workload and
+                # then died during the shutdown exchange may close stdout
+                # before answering `shutdown` — on Windows the intervening
+                # write can still succeed into the pipe buffer, so this is
+                # the same dead-peer race as the write-failure shapes and
+                # surfaces here within seconds (the reader EOF fast-fail
+                # above). Without the barrier response this timeout remains
+                # fatal.
+                teardown_race = exc
+            except OSError as exc:
+                # Windows reports the same dead-peer stdin write as EINVAL
+                # rather than EPIPE (observed: `OSError(22, 'Invalid
+                # argument')` on win32); only that exact shape is tolerated.
+                if exc.errno != errno.EINVAL:
+                    raise
+                teardown_race = exc
+            if teardown_race is not None:
+                # #18349: the server's documented delivery-failure policy
+                # closes ingress — over stdio ending the process — when the
+                # teardown burst overflows the outbound channel. Tolerance is
+                # conditional on the post-workload barrier response above
+                # having confirmed the workload was consumed; a server that
+                # died earlier fails the run at the barrier instead. Proceed
+                # with the samples already collected so the plateau assertion
+                # still runs (and still fails on a real memory regression). A
+                # mid-workload server death is NOT tolerated here and still
+                # fails the run, as does a timeout waiting for the shutdown
+                # response.
+                print(
+                    f"teardown race tolerated ({type(teardown_race).__name__}: "
+                    f"{teardown_race}): workload completion was confirmed by "
+                    "the post-workload workspace/symbol barrier response; the "
+                    "server closed stdio during teardown; proceeding to the "
+                    "plateau assertion on the samples already collected",
+                    file=sys.stderr,
+                )
+                teardown_note = {
+                    "stage": "shutdown",
+                    "error": type(teardown_race).__name__,
+                    "errno": getattr(teardown_race, "errno", None),
+                    "workload_confirmed_by": "workspace/symbol barrier response",
+                }
         finally:
             try:
                 if proc.stdin:
                     proc.stdin.close()
-            except BrokenPipeError:
+            except OSError:
+                # Discarding the pipe is best-effort cleanup: a server that
+                # already self-exited (#18349 teardown race) leaves the write
+                # end dead — BrokenPipeError on Linux, EINVAL on Windows.
                 pass
             try:
                 proc.wait(timeout=5)
@@ -268,6 +336,10 @@ def main() -> int:
             "sample_every": args.sample_every,
             "settle_seconds": args.settle_seconds,
             "samples": samples,
+            # #18349: None unless the post-workload shutdown hit the server's
+            # documented delivery-failure self-exit and was tolerated; when
+            # set, the plateau assertion ran on the samples already collected.
+            "teardown_race": teardown_note,
         }
 
         if args.json_out:

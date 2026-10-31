@@ -849,6 +849,7 @@ mod tests {
             assertions_passed: 1,
             assertions_total: 1,
             mechanism,
+            scaffold_stamp: None,
         });
         fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&report)?))?;
         Ok(path)

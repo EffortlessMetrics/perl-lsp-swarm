@@ -99,14 +99,20 @@ RealReceiver constructor/static-package/hash-slot/hashref/generated-no-source-fr
 
 ## Proof Commands
 
+Supported check/test examples below require exact-command
+`cargo-admitted --preflight` and host admission. For constrained capacity use the
+[scoped budget route](../../how-to/CONSTRAINED_CARGO_BUILDS.md).
+Legacy Clippy/xtask examples require separate root admission; they are unsupported
+by `cargo-admitted`. Do not lower capacity thresholds merely to run these checks.
+
 Use these checks for semantic receiver-facts implementation PRs:
 
 ```bash
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe test -p perl-semantic-analyzer --test type_facts --profile agent --locked
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe test -p perl-semantic-analyzer --lib receiver_facts --profile agent --locked -- --nocapture
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe check --all-targets -p perl-semantic-analyzer --profile agent --locked
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe clippy -p perl-semantic-analyzer --profile agent --locked -- -D warnings -A missing_docs
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask fmt
+./scripts/cargo-admitted test -p perl-semantic-analyzer --test type_facts --profile agent --locked
+./scripts/cargo-admitted test -p perl-semantic-analyzer --lib receiver_facts --profile agent --locked -- --nocapture
+./scripts/cargo-admitted check --all-targets -p perl-semantic-analyzer --profile agent --locked
+./scripts/cargo-safe clippy -p perl-semantic-analyzer --profile agent --locked -- -D warnings -A missing_docs
+./scripts/cargo-safe xtask fmt
 git diff --check
 ```
 
@@ -114,5 +120,5 @@ Docs-only status updates may run:
 
 ```bash
 git diff --check
-MIN_FREE_GB=20 MAX_USED_PCT=95 ./scripts/cargo-safe xtask ci-hygiene check-doc-paths docs/project/status
+./scripts/cargo-safe xtask ci-hygiene check-doc-paths docs/project/status
 ```

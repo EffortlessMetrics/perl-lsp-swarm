@@ -1,0 +1,127 @@
+{
+  "schema_version": "0.2",
+  "summary": {
+    "weakly_exposed": 9,
+    "reachable_unrevealed": 0,
+    "no_static_path": 3
+  },
+  "findings": [
+    {
+      "id": "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:call_deletion:3a056c51",
+      "classification": "no_static_path",
+      "probe": {
+        "id": "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:call_deletion:3a056c51",
+        "family": "call_deletion",
+        "delta": "effect",
+        "file": "./crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 66,
+        "expression": "\"perl_path_uses_toolchain_resolution\","
+      },
+      "ripr": {
+        "reach": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No static test path found for the changed owner"
+        },
+        "infect": {
+          "state": "unknown",
+          "confidence": "low",
+          "summary": "No reachable tests were found, so infection cannot be established"
+        },
+        "propagate": {
+          "state": "yes",
+          "confidence": "medium",
+          "summary": "Changed behavior appears to influence call effect: \"perl_path_uses_toolchain_resolution\""
+        },
+        "observe": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No reachable test oracle found"
+        },
+        "discriminate": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No assertion can discriminate the changed behavior without a reachable test"
+        }
+      }
+    },
+    {
+      "id": "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:side_effect:496daab8",
+      "classification": "no_static_path",
+      "probe": {
+        "id": "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:side_effect:496daab8",
+        "family": "side_effect",
+        "delta": "effect",
+        "file": "./crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 66,
+        "expression": "\"perl_path_uses_toolchain_resolution\","
+      },
+      "ripr": {
+        "reach": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No static test path found for the changed owner"
+        },
+        "infect": {
+          "state": "unknown",
+          "confidence": "low",
+          "summary": "No reachable tests were found, so infection cannot be established"
+        },
+        "propagate": {
+          "state": "yes",
+          "confidence": "medium",
+          "summary": "Changed behavior appears to influence call effect: \"perl_path_uses_toolchain_resolution\""
+        },
+        "observe": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No reachable test oracle found"
+        },
+        "discriminate": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No assertion can discriminate the changed behavior without a reachable test"
+        }
+      }
+    },
+    {
+      "id": "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:return_value:1bd4f78c",
+      "classification": "no_static_path",
+      "probe": {
+        "id": "probe:crates_perl-lsp-rs_src_runtime_language_workspace_trust_report.rs:return_value:1bd4f78c",
+        "family": "return_value",
+        "delta": "value",
+        "file": "./crates/perl-lsp-rs/src/runtime/language/workspace_trust_report.rs",
+        "line": 126,
+        "expression": "\"uses_toolchain_resolution_when_needed_not_probed_by_report\""
+      },
+      "ripr": {
+        "reach": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No static test path found for the changed owner"
+        },
+        "infect": {
+          "state": "unknown",
+          "confidence": "low",
+          "summary": "No reachable tests were found, so infection cannot be established"
+        },
+        "propagate": {
+          "state": "yes",
+          "confidence": "medium",
+          "summary": "Changed behavior appears to influence returned value: \"uses_toolchain_resolution_when_needed_not_probed_by_report\""
+        },
+        "observe": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No reachable test oracle found"
+        },
+        "discriminate": {
+          "state": "no",
+          "confidence": "medium",
+          "summary": "No assertion can discriminate the changed behavior without a reachable test"
+        }
+      }
+    }
+  ]
+}
