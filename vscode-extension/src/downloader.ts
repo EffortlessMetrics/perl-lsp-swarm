@@ -2411,7 +2411,7 @@ export class BinaryDownloader {
       // may have been disabled while they were in flight. Re-read it so a
       // disabled auto-update never installs on a stale admission.
       const action = decision.action === 'auto_update'
-        ? config.get<boolean>('autoUpdate', false)
+        ? vscode.workspace.getConfiguration('perl-lsp').get<boolean>('autoUpdate', false)
           ? 'auto_update'
           : promptSuppressed
             ? 'prompt_suppressed'
