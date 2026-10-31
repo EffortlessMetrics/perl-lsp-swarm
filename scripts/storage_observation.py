@@ -101,6 +101,53 @@ def read_file(path, limit, *, descriptor=False, charge_bytes=None):
     return raw
 
 
+def _validate_file_subject(value):
+    if not isinstance(value, dict) or set(value) != {"path", "file_identity", "sha256"}:
+        raise Unknown("descriptor_scope_mismatch")
+    if not isinstance(value["path"], str) or not value["path"] or len(value["path"]) > 4096:
+        raise Unknown("descriptor_scope_mismatch")
+    if any(part in (".", "..") for part in re.split(r"[/\\]", value["path"])):
+        raise Unknown("descriptor_scope_mismatch")
+    identity = value["file_identity"]
+    if (not isinstance(identity, list) or len(identity) != 5
+            or any(type(item) is not int or item < 0 for item in identity)):
+        raise Unknown("descriptor_scope_mismatch")
+    if not isinstance(value["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"]):
+        raise Unknown("descriptor_scope_mismatch")
+
+
+def _validate_clippy_setup(scope):
+    if scope.get("operation") != "clippy":
+        if "clippy_setup" in scope:
+            raise Unknown("descriptor_scope_mismatch")
+        return
+    setup = scope.get("clippy_setup")
+    if not isinstance(setup, dict) or set(setup) != {"toolchain", "configuration", "renderer"}:
+        raise Unknown("descriptor_scope_mismatch")
+    _validate_file_subject(setup["renderer"])
+    toolchain = setup["toolchain"]
+    if not isinstance(toolchain, dict) or set(toolchain) != {"pin", "host", "root", "subjects", "pin_subject"}:
+        raise Unknown("descriptor_scope_mismatch")
+    if not isinstance(toolchain["pin"], str) or not re.fullmatch(r"\d+\.\d+\.\d+", toolchain["pin"]):
+        raise Unknown("descriptor_scope_mismatch")
+    for key in ("host", "root"):
+        if not isinstance(toolchain[key], str) or not toolchain[key] or len(toolchain[key]) > 4096:
+            raise Unknown("descriptor_scope_mismatch")
+    _validate_file_subject(toolchain["pin_subject"])
+    subjects = toolchain["subjects"]
+    if not isinstance(subjects, dict) or not 1 <= len(subjects) <= 64:
+        raise Unknown("descriptor_scope_mismatch")
+    for name, subject in subjects.items():
+        if not isinstance(name, str) or not name or len(name) > 256:
+            raise Unknown("descriptor_scope_mismatch")
+        _validate_file_subject(subject)
+    configuration = setup["configuration"]
+    if not isinstance(configuration, list) or len(configuration) > 64:
+        raise Unknown("descriptor_scope_mismatch")
+    for subject in configuration:
+        _validate_file_subject(subject)
+
+
 def validate_descriptor(data):
     if not isinstance(data, dict):
         raise Unknown("descriptor_not_object")
@@ -108,10 +155,13 @@ def validate_descriptor(data):
     resources = data.get("resources")
     scope_fields = {"hostname", "platform", "working_directory", "worktree", "operation",
                     "cargo_argv_sha256", "resources", "jobs", "build_environment_sha256"}
+    if isinstance(scope, dict) and scope.get("operation") == "clippy":
+        scope_fields = scope_fields | {"clippy_setup"}
     if (not isinstance(scope, dict) or set(scope) != scope_fields
             or not isinstance(resources, dict) or set(resources) != set(RESOURCE_NAMES)
             or scope["resources"] != resources):
         raise Unknown("descriptor_scope_mismatch")
+    _validate_clippy_setup(scope)
     if (scope["hostname"] != socket.gethostname() or scope["platform"] != sys.platform
             or type(scope["jobs"]) is not int or not 1 <= scope["jobs"] <= 4
             or type(data.get("pid")) is not int or data["pid"] <= 0

@@ -226,6 +226,38 @@ class DescriptorInventoryTests(unittest.TestCase):
                     "vhdx_allocated_bytes", "host_backing_free_bytes"):
             self.assertIsNone(result[key])
 
+    def test_clippy_descriptor_scope_accepts_bounded_clippy_setup(self):
+        import copy
+
+        def subject(name):
+            return {"path": f"/toolchains/{name}", "file_identity": [1, 2, 3, 4, 5],
+                    "sha256": "a" * 64}
+
+        clippy = copy.deepcopy(self.data)
+        clippy["scope"]["operation"] = "clippy"
+        clippy["scope"]["clippy_setup"] = {
+            "toolchain": {"pin": "1.95.0", "host": "x86_64-unknown-linux-gnu",
+                          "root": "/toolchains/1.95.0", "subjects": {"cargo": subject("cargo")},
+                          "pin_subject": subject("rust-toolchain.toml")},
+            "configuration": [subject("clippy.toml")],
+            "renderer": subject("cargo_admitted.py"),
+        }
+        result = self.observe(json.dumps(clippy))
+        self.assertTrue(result["descriptor_valid"], result)
+
+        for mutate in (
+                lambda s: s.update(operation="check"),
+                lambda s: s["clippy_setup"].update(extra={}),
+                lambda s: s["clippy_setup"]["toolchain"].update(pin="latest"),
+                lambda s: s["clippy_setup"]["renderer"].update(sha256="not-hex"),
+                lambda s: s["clippy_setup"].pop("configuration"),
+        ):
+            broken = copy.deepcopy(clippy)
+            mutate(broken["scope"])
+            result = self.observe(json.dumps(broken))
+            self.assertFalse(result["descriptor_valid"], result)
+            self.assertIn("descriptor_scope_mismatch", result["reasons"])
+
     def test_hardlinks_are_deduplicated_across_combined_roots(self):
         payload = self.paths["build"] / "payload"
         payload.write_bytes(b"x" * 8192)
