@@ -294,7 +294,7 @@ pub fn build_ripr_facts_packet(
     }
     let has_change_facts = !changes.is_empty();
     let mut relations = bind_relations_to_changes(relations, &changes);
-    annotate_oracles_for_bound_relations(&mut oracles, &mut relations, &changes);
+    annotate_oracles_for_bound_relations(root, &mut oracles, &mut relations, &changes);
     let has_relation_facts = !relations.is_empty();
 
     // Referential integrity: a change's `file_id`/`owner_id` — and an
@@ -644,7 +644,45 @@ fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Va
     bound
 }
 
+/// Per oracle id, the source of the `eval { ... }` block a `like($@, ...)`
+/// oracle observes (#18498). Such an oracle is about the callees inside that
+/// block, which its own call text does not name.
+fn trapped_block_text_by_oracle(root: &str, oracles: &[Value]) -> HashMap<String, String> {
+    let mut by_oracle = HashMap::new();
+    let mut scopes_by_file: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+    for oracle in oracles {
+        let Some(oracle_id) = oracle["oracle_id"].as_str() else { continue };
+        if !oracle["expression"].as_str().is_some_and(|e| e.trim_start().starts_with("like(")) {
+            continue;
+        }
+        // `oracle:{path}:{name}:{start}-{end}`
+        let Some(rest) = oracle_id.strip_prefix("oracle:") else { continue };
+        let mut tail = rest.rsplitn(3, ':');
+        let (Some(span), Some(_name), Some(path)) = (tail.next(), tail.next(), tail.next()) else {
+            continue;
+        };
+        let Some(start) = span.split('-').next().and_then(|s| s.parse::<usize>().ok()) else {
+            continue;
+        };
+        let scopes = scopes_by_file.entry(path.to_owned()).or_insert_with(|| {
+            let Ok(content) = std::fs::read_to_string(std::path::Path::new(root).join(path)) else {
+                return Vec::new();
+            };
+            let mut parser = perl_parser_core::Parser::new(&content);
+            match parser.parse() {
+                Ok(ast) => crate::emitter::trapped_error_scopes(&ast, &content),
+                Err(_) => Vec::new(),
+            }
+        });
+        if let Some((_, text)) = scopes.iter().find(|(like_start, _)| *like_start == start) {
+            by_oracle.insert(oracle_id.to_owned(), text.clone());
+        }
+    }
+    by_oracle
+}
+
 fn annotate_oracles_for_bound_relations(
+    root: &str,
     oracles: &mut [Value],
     relations: &mut [Value],
     changes: &[Value],
@@ -653,6 +691,7 @@ fn annotate_oracles_for_bound_relations(
         .iter()
         .filter_map(|change| change["change_id"].as_str().map(|change_id| (change_id, change)))
         .collect();
+    let trapped = trapped_block_text_by_oracle(root, oracles);
 
     for relation in relations {
         let Some(owner_id) = relation["owner_id"].as_str() else {
@@ -678,7 +717,11 @@ fn annotate_oracles_for_bound_relations(
         let fallback_index = || {
             oracles.iter().position(|oracle| {
                 oracle["test_id"].as_str() == Some(test_id)
-                    && oracle_expression_mentions_callable(oracle, callable_name)
+                    && (oracle_expression_mentions_callable(oracle, callable_name)
+                        || oracle["oracle_id"]
+                            .as_str()
+                            .and_then(|id| trapped.get(id))
+                            .is_some_and(|text| text.contains(callable_name)))
             })
         };
         let Some(oracle_index) = exact_index.or_else(fallback_index) else {
@@ -1453,6 +1496,58 @@ mod tests {
                 "relation.test_id {tid} must resolve to a test fact in the packet"
             );
         }
+    }
+
+    fn trapped_error_relation_oracle(root: &str, test_body: &str) -> serde_json::Value {
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(
+            format!("{root}/lib/Foo.pm"),
+            "package Foo;\nsub run {\n    die \"boom\\n\";\n}\n1;\n",
+        )
+        .expect("write Foo.pm");
+        std::fs::write(format!("{root}/t/Foo.t"), test_body).expect("write t");
+        let diff = "--- a/lib/Foo.pm\n+++ b/lib/Foo.pm\n@@ -2,3 +2,3 @@\n sub run {\n-    die \"bang\\n\";\n+    die \"boom\\n\";\n }\n";
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "tests,oracles,relations,changes",
+            diff: Some(diff),
+        })
+        .expect("packet");
+        let relations = p["relations"].as_array().expect("relations array");
+        let relation = relations
+            .iter()
+            .find(|r| r["owner_id"].as_str().is_some_and(|o| o.contains("Foo::run")))
+            .expect("relation for Foo::run")
+            .clone();
+        let _ = std::fs::remove_dir_all(root);
+        relation["oracle_id"].clone()
+    }
+
+    #[test]
+    fn like_on_the_trapped_error_binds_to_the_callee_in_the_eval_block() {
+        // #18498: `eval { Foo::run() }; like($@, ...)` observes Foo::run.
+        let bound = trapped_error_relation_oracle(
+            "target/ripr-18498-trapped-bound",
+            "use Test::More;\nuse Foo;\neval { Foo::run() };\nlike($@, qr/boom/, 'n');\n",
+        );
+        assert!(
+            bound.as_str().is_some_and(|id| id.contains(":like:")),
+            "the like oracle must bind to the trapped callee: {bound}"
+        );
+    }
+
+    #[test]
+    fn like_on_the_error_does_not_bind_across_an_intervening_statement() {
+        let bound = trapped_error_relation_oracle(
+            "target/ripr-18498-trapped-intervening",
+            "use Test::More;\nuse Foo;\neval { Foo::run() };\nmy $x = 1;\nlike($@, qr/boom/, 'n');\n",
+        );
+        assert!(bound.is_null(), "no adjacent eval, no binding: {bound}");
     }
 
     #[test]
