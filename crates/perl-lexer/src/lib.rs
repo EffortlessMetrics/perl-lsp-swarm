@@ -2127,9 +2127,7 @@ impl<'a> PerlLexer<'a> {
                         {
                             name_start -= 1;
                         }
-                        if name_start >= 1
-                            && matches!(bytes[name_start - 1], b'$' | b'@' | b'%')
-                        {
+                        if name_start >= 1 && matches!(bytes[name_start - 1], b'$' | b'@' | b'%') {
                             return true;
                         }
                         if name_start >= 2 && &bytes[name_start - 2..name_start] == b"->" {
