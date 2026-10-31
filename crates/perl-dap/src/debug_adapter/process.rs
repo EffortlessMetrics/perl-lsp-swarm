@@ -1622,6 +1622,7 @@ impl DebugAdapter {
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
         let event_drain = self.event_drain.clone();
+        let reader_stop_publications = self.reader_stop_publications.clone();
         let session_generation = self.current_session_generation();
         // The reader's session epoch in the broker's own id space. The
         // launch-failure/EOF/read-error settles below are gated on it, so a
@@ -2198,6 +2199,7 @@ impl DebugAdapter {
                                         // configurationDone handler will publish it only after
                                         // correlating the engine installation.
                                         s.state = DebugState::Stopped;
+                                        reader_stop_publications.fetch_add(1, Ordering::Release);
                                         s.last_resume_mode = ResumeMode::Unknown;
                                         continue;
                                     }
@@ -2256,6 +2258,8 @@ impl DebugAdapter {
                                         } else if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
+                                            reader_stop_publications
+                                                .fetch_add(1, Ordering::Release);
                                         } else if breakpoint_outcome.matched {
                                             logpoint_messages = breakpoint_outcome.log_messages;
 
@@ -2339,6 +2343,8 @@ impl DebugAdapter {
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
                                                 s.state = DebugState::Stopped;
+                                                reader_stop_publications
+                                                    .fetch_add(1, Ordering::Release);
                                             } else {
                                                 if let Some(stdin) = s.process.stdin.as_mut() {
                                                     let _ = stdin.write_all(b"c\n");
@@ -2365,6 +2371,8 @@ impl DebugAdapter {
                                             should_auto_continue = true;
                                         } else {
                                             s.state = DebugState::Stopped;
+                                            reader_stop_publications
+                                                .fetch_add(1, Ordering::Release);
                                         }
 
                                         if !should_auto_continue {
@@ -2458,8 +2466,18 @@ impl DebugAdapter {
                                     // already established this suspension's
                                     // generation — a prompt carrying that native
                                     // context must reuse it rather than advance
-                                    // a second time.
-                                    let context_established_suspension = prompt_has_native_context;
+                                    // a second time. A prompt that arrives
+                                    // without its context chunk but with a
+                                    // frame the context branch already admitted
+                                    // for the pending entry stop is the same
+                                    // suspension too: `DB<n>` output can be
+                                    // chunked apart from its context line, and
+                                    // advancing again would mint a second
+                                    // identity for one stop and let the
+                                    // fallback below discard the authoritative
+                                    // frame (#18491).
+                                    let context_established_suspension = prompt_has_native_context
+                                        || (s.entry_stop_pending && !s.stack_frames.is_empty());
                                     let current_frame_id = current_stopped_frame_id(
                                         s,
                                         matches!(s.state, DebugState::Running)
@@ -2503,21 +2521,37 @@ impl DebugAdapter {
                                         // the pending reason so the client is never left
                                         // waiting, and the prompt stop must remain
                                         // `stackTrace`-answerable.
-                                        let frame = StackFrame {
-                                            id: current_frame_id,
-                                            name: "main".to_string(),
-                                            source: Source {
-                                                name: Some("<unknown>".to_string()),
-                                                path: "<unknown>".to_string(),
-                                                source_reference: None,
-                                            },
-                                            line: 1,
-                                            column: 1,
-                                            end_line: None,
-                                            end_column: None,
-                                        };
-                                        s.stack_frames = vec![frame];
-                                        s.stack_frame_arguments.clear();
+                                        //
+                                        // A frame for THIS suspension may already exist: the
+                                        // context branch admitted an authoritative source
+                                        // frame for the entry stop before the prompt arrived,
+                                        // and a bare `DB<n>` chunk carries no context of its
+                                        // own (#18491). Downgrading that same-suspension frame
+                                        // to the `<unknown>` placeholder would trade a real
+                                        // location for a fabricated one, so keep it and admit
+                                        // the fallback only when no frame for this
+                                        // suspension exists yet.
+                                        let same_suspension_frame_present = s
+                                            .stack_frames
+                                            .first()
+                                            .is_some_and(|frame| frame.id == current_frame_id);
+                                        if !same_suspension_frame_present {
+                                            let frame = StackFrame {
+                                                id: current_frame_id,
+                                                name: "main".to_string(),
+                                                source: Source {
+                                                    name: Some("<unknown>".to_string()),
+                                                    path: "<unknown>".to_string(),
+                                                    source_reference: None,
+                                                },
+                                                line: 1,
+                                                column: 1,
+                                                end_line: None,
+                                                end_column: None,
+                                            };
+                                            s.stack_frames = vec![frame];
+                                            s.stack_frame_arguments.clear();
+                                        }
                                     }
                                     if was_running
                                         && matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
@@ -2543,6 +2577,7 @@ impl DebugAdapter {
                                         let entry_stop = s.entry_stop_pending;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
+                                        reader_stop_publications.fetch_add(1, Ordering::Release);
                                         should_emit_stopped = true;
                                         if entry_stop {
                                             stop_reason = "entry".to_string();
