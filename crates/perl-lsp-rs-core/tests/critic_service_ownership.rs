@@ -628,11 +628,17 @@ fn exclusion_requires_positive_gated_declaration_evidence() {
         "a same-prefix different module never gates another stem"
     );
     assert!(
-        !gate_decides_by_declaration("#[cfg(test)]\nmod probe;\n#[cfg(not(test))]\nmod probe;\n", "probe"),
+        !gate_decides_by_declaration(
+            "#[cfg(test)]\nmod probe;\n#[cfg(not(test))]\nmod probe;\n",
+            "probe"
+        ),
         "an ungated sibling declaration decides against the gate"
     );
     assert!(
-        !gate_decides_by_declaration("#[cfg(not(test))]\nmod probe;\n#[cfg(test)]\nmod probe;\n", "probe"),
+        !gate_decides_by_declaration(
+            "#[cfg(not(test))]\nmod probe;\n#[cfg(test)]\nmod probe;\n",
+            "probe"
+        ),
         "an ungated sibling declaration decides against the gate in either order"
     );
     assert!(
