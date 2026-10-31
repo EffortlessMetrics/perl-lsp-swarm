@@ -118,6 +118,13 @@ RIPR's semantic packet-fingerprint recipe) instead of `null`:
   `cmp_ok`, `throws_ok`, `exception`, …), each with the call's real source range,
   a schema `kind`/`strength`, and the call's source text as `expression`. No
   string-scan counting, no placeholder `1:1` ranges.
+  Exception matchers are graded from the call's arguments
+  (`oracle_matcher_grading` in `producer.capabilities`): `throws_ok` with a
+  string-literal class or a regex literal, and `like(dies {...}, MATCHER)` /
+  `like(exception {...}, MATCHER)` with the same, are `strong_exact`; a bare
+  `dies_ok`, a variable matcher, an empty literal, and a value `like` stay
+  `weak_broad`. The exception block nested in a graded `like` is part of that
+  one oracle, never a second one.
 - `changes[]` — one fact per contiguous added-line hunk of a **caller-supplied**
   unified diff (`RiprFactsRequest.diff`), attributed to the smallest enclosing
   `owners[]` fact by line containment. A hunk outside every owner, or in a file

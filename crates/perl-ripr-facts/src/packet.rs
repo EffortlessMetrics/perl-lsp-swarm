@@ -837,6 +837,15 @@ fn producer_capabilities(fact_classes: &[String]) -> Vec<String> {
     if has_test_facts && !capabilities.iter().any(|capability| capability == "test_facts") {
         capabilities.push("test_facts".to_string());
     }
+    // The producer grades `throws_ok` and `like(dies {...}, ...)` by their
+    // literal matcher and reports a nested exception block once
+    // (perl-lsp-swarm#18499). ripr reads this to treat `weak_broad`
+    // exception observers as real gaps and pinned ones as `static_unknown`.
+    if has_test_facts
+        && !capabilities.iter().any(|capability| capability == "oracle_matcher_grading")
+    {
+        capabilities.push("oracle_matcher_grading".to_string());
+    }
     capabilities
 }
 

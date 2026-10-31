@@ -29,6 +29,7 @@ mod boundaries;
 mod changes;
 mod discovery;
 mod ids;
+mod matcher_grading;
 mod oracles;
 mod owners;
 mod relations;
