@@ -72,6 +72,8 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
             "client_to_server:notification:textDocument/didClose:3.17",
             "client_to_server:notification:textDocument/didOpen:3.17",
             "client_to_server:notification:textDocument/didSave:3.17",
+            "client_to_server:request:textDocument/documentHighlight:3.17",
+
             "server_to_client:notification:$/cancelRequest:3.17",
             "server_to_client:notification:window/logMessage:3.17",
             "server_to_client:notification:window/showMessage:3.17",

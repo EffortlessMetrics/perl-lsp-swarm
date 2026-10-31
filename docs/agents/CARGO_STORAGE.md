@@ -13,6 +13,19 @@ Builtin routes require Python 3.10+ and Cargo 1.95+; staged Clippy requires Pyth
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
+Host profiles for the jobs knob (#17673): the default of two protects
+constrained and shared hosts. On a dedicated host with at least eight logical
+cores and memory headroom for parallel rustc processes, setting
+`CARGO_BUILD_JOBS=4` in the shell environment (never in tracked config,
+#5204) is the supported faster profile. Measured on an 8-core/16-thread,
+80 GiB host (fresh target, shared cargo-home, `check -p perl-parser`,
+one run per setting): cold 80.2s at jobs=2 versus 31.9s at jobs=4; warm and
+single-crate edited checks are under two seconds at either setting, so the
+win is concentrated in cold and multi-crate work. Peak memory at jobs=4
+was not captured, so treat the profile as unqualified on memory-tight
+hosts and on hosted CI runners, which have different core/memory envelopes
+and should keep the default.
+
 One admission/lease slot is keyed by canonical Git common directory, hostname and
 OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
 exclusion domain; independent clones and Windows/WSL do not. Within that slot,
@@ -281,11 +294,21 @@ product failures even when the cohort subsequently settles successfully.
 
 ### Staged native Clippy
 
-The existing owner admits only this finite Linux request (optional `--offline`):
+The existing owner admits these finite Linux requests (optional `--offline`):
 
 ```text
 python3 scripts/cargo_admitted.py clippy -p PACKAGE --all-targets --profile agent --locked -- -D warnings
+python3 scripts/cargo_admitted.py clippy -p PACKAGE --test NAME --profile agent --locked -- -D warnings
 ```
+
+Select exactly one of `--all-targets` or `--test NAME`. A named test uses one literal
+ASCII name beginning with a letter or digit and containing only letters, digits,
+underscores or hyphens; patterns, paths, joined forms, multiple selectors and other
+target/feature selectors refuse before allocation. Cargo still checks prerequisites
+of that target and reports a missing target as a product failure. The selected name
+remains in the request digest, so its budget cannot transfer to another target or
+all-targets work. A focused result covers only the selected compilation graph; it
+does not replace a required all-targets gate or qualify an unvisited target.
 
 Python 3.11+ and the already-installed repository pin 1.95.0 are required. No
 installation occurs. The route fingerprints direct Cargo/rustc/rustdoc,

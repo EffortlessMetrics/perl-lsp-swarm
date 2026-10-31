@@ -11,6 +11,7 @@ pub mod artifacts;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
 pub mod critic_oracle;
+mod git;
 #[path = "target_contracts/io.rs"]
 pub mod io;
 #[path = "target_contracts/matrix.rs"]
@@ -190,6 +191,37 @@ pub mod invocation_trace {
     pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
 }
 
+/// Strict ordinary/instrumented `t/TEST` equivalence receipt
+/// (`upstream_trace_equivalence.v1`, #12286): paired exact subjects, per-plane
+/// comparisons, and one bounded transfer relation. Representation only: no
+/// upstream execution, production cutover, or compiler scoring.
+pub mod trace_equivalence {
+    /// Comparator and strict receipt constructor.
+    #[path = "compare.rs"]
+    pub mod compare;
+    /// Receipt, verdict, plane, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed validation re-proving receipt consistency.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use compare::{
+        build_trace_equivalence, check_trace_equivalence, equivalence_payload_digest,
+    };
+    pub use model::{
+        ComparisonPlane, EquivalenceSubjects, EquivalenceVerdict, NON_TRANSFERABLE_PROPOSITIONS,
+        PlaneComparison, TRACE_EQUIVALENCE_CLAIM_BOUNDARY, TRANSFERABLE_PROPOSITION,
+        TraceEquivalenceInput, TraceEquivalencePayload, UPSTREAM_TRACE_EQUIVALENCE_SCHEMA_VERSION,
+        UpstreamTraceEquivalenceV1,
+    };
+    pub use validate::validate_trace_equivalence;
+}
+
 /// Strict pure fan-in join proving one complete observed runner subject
 /// (`observed_runner_subject.v1`, #12287): the observed `t/TEST` membership
 /// (#12281/#12283), its independently reconstructed plan (#7737), and the
@@ -228,6 +260,7 @@ pub mod observed_subject {
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
+use git::command as git_command;
 #[cfg(test)]
 use perl_core_harness_types::{
     BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BoundaryRetirement, CompileBaseline,
@@ -1118,7 +1151,7 @@ fn validate_publication_scope(root: &Path, lineage: &LandedLineage) -> Result<()
     validate_git_commit(root, &lineage.publication_sha)?;
     validate_git_commit(root, &lineage.publication_base_sha)?;
     validate_git_ancestor(root, &lineage.publication_base_sha, &lineage.publication_sha)?;
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-c")
         .arg("core.quotePath=false")
@@ -1207,7 +1240,7 @@ fn validate_git_sha(value: &str, label: &str) -> Result<()> {
 
 fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
     let object = format!("{sha}^{{commit}}");
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
@@ -1221,7 +1254,7 @@ fn validate_git_commit(root: &Path, sha: &str) -> Result<()> {
 }
 
 fn validate_git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<()> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
@@ -1237,7 +1270,7 @@ fn validate_git_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Resul
 fn git_blob_at(root: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
     validate_public_path(path, "Git artifact path")?;
     let object = format!("{commit}:{}", path.replace('\\', "/"));
-    let output = Command::new("git")
+    let output = git_command()
         .arg("--no-replace-objects")
         .arg("-C")
         .arg(root)
@@ -3687,27 +3720,23 @@ fn prepare_inner(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("creating prepare output directory {}", output_dir.display()))?;
     if source_dir.join(".git").is_dir() {
-        run_command(
-            Command::new("git").arg("-C").arg(source_dir).args(["fetch", "--tags", "origin"]),
-        )?;
+        run_command(git_command().arg("-C").arg(source_dir).args(["fetch", "--tags", "origin"]))?;
     } else {
         if let Some(parent) = source_dir.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating source parent {}", parent.display()))?;
         }
         run_command(
-            Command::new("git")
-                .args(["clone", "--filter=blob:none", PERL_SOURCE_URL])
-                .arg(source_dir),
+            git_command().args(["clone", "--filter=blob:none", PERL_SOURCE_URL]).arg(source_dir),
         )?;
     }
-    run_command(Command::new("git").arg("-C").arg(source_dir).args([
+    run_command(git_command().arg("-C").arg(source_dir).args([
         "checkout",
         "--detach",
         &config.perl_ref,
     ]))?;
     let resolved_ref =
-        command_stdout(Command::new("git").arg("-C").arg(source_dir).args(["rev-parse", "HEAD"]))?;
+        command_stdout(git_command().arg("-C").arg(source_dir).args(["rev-parse", "HEAD"]))?;
 
     if prepared_tree.exists() {
         fs::remove_dir_all(prepared_tree)
@@ -4674,7 +4703,7 @@ fn failure_for_record(path: &str, bucket: &str, record: &RunnerRecord) -> RunFai
 }
 
 fn current_commit() -> String {
-    Command::new("git")
+    git_command()
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()
@@ -4686,11 +4715,8 @@ fn current_commit() -> String {
 }
 
 fn perl_tree_ref(perl_tree: &Path) -> String {
-    let Ok(top_level) = Command::new("git")
-        .arg("-C")
-        .arg(perl_tree)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
+    let Ok(top_level) =
+        git_command().arg("-C").arg(perl_tree).args(["rev-parse", "--show-toplevel"]).output()
     else {
         return "unknown".to_string();
     };
@@ -4711,7 +4737,7 @@ fn perl_tree_ref(perl_tree: &Path) -> String {
         return "unknown".to_string();
     }
 
-    Command::new("git")
+    git_command()
         .arg("-C")
         .arg(perl_tree)
         .args(["rev-parse", "HEAD"])
@@ -4764,16 +4790,18 @@ mod tests {
     /// publishable.
     #[test]
     fn declared_path_validation_is_not_weaker_than_structural_classification() {
+        // Construct synthetic negative vectors from components; these are not
+        // filesystem dependencies or machine-specific checkout paths.
         for value in [
             "/etc/passwd",
-            "/home/runner/work/",
+            concat!("/home/", "runner/work/"),
             "///etc/passwd",
             "//etc/hostname",
-            r"C:\Users\runner\repo",
-            "C:/Users/runner/repo",
+            concat!(r"C:\", r"Users\runner\repo"),
+            concat!("C:/", "Users/runner/repo"),
             r"\\server\share\repo",
-            r"\\?\C:\Users\runner",
-            r"\??\C:\Users\runner",
+            concat!(r"\\?\C:\", r"Users\runner"),
+            concat!(r"\??\C:\", r"Users\runner"),
             "file:///tmp/repo/report.json",
         ] {
             assert!(
@@ -4967,7 +4995,9 @@ mod tests {
     /// private path it rejected.
     #[test]
     fn declared_path_rejection_does_not_echo_the_private_value() {
-        let Err(error) = validate_public_path("/home/runner/work/private", "failure path") else {
+        let Err(error) =
+            validate_public_path(concat!("/home/", "runner/work/private"), "failure path")
+        else {
             unreachable!("absolute host path must be rejected")
         };
         let rendered = error.to_string();
@@ -8730,7 +8760,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        let tree_perl = perl_tree.join("perl");
+        let tree_perl = perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX));
         fs::write(&tree_perl, "sentinel built perl\n")?;
 
         let resolved = resolve_scheduler_perl(&perl_tree, None)?;
@@ -8744,7 +8774,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let override_perl = temp.path().join("version-matched-perl");
         fs::write(&override_perl, "sentinel override perl\n")?;
 
@@ -8759,7 +8792,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let override_perl = temp.path().join("version-matched-perl");
         fs::write(&override_perl, "sentinel override perl\n")?;
         let dotted = temp.path().join(".").join("version-matched-perl");
@@ -8809,7 +8845,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let perl_tree = temp.path().join("prepared-perl");
         fs::create_dir_all(&perl_tree)?;
-        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        fs::write(
+            perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX)),
+            "sentinel built perl\n",
+        )?;
         let missing_override = temp.path().join("missing-perl");
 
         let Err(err) = resolve_scheduler_perl(&perl_tree, Some(&missing_override)) else {
@@ -10558,7 +10597,8 @@ exit 1
         set_executable(&runner)?;
         Ok(runner)
     }
-    fn current_authority_fixture() -> TestResult<(tempfile::TempDir, CurrentAuthorityConfig)> {
+    pub(super) fn current_authority_fixture()
+    -> TestResult<(tempfile::TempDir, CurrentAuthorityConfig)> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().to_path_buf();
         fs::create_dir_all(root.join(".ci/perl-core-harness"))?;
@@ -10633,7 +10673,7 @@ exit 1
             }))?,
         )?;
         let run_git = |args: &[&str]| -> TestResult<String> {
-            let output = Command::new("git").arg("-C").arg(&root).args(args).output()?;
+            let output = git_command().arg("-C").arg(&root).args(args).output()?;
             if !output.status.success() {
                 bail!(
                     "fixture git command {:?} failed: {}",
@@ -10726,7 +10766,7 @@ exit 1
 
     fn commit_fixture_authority(root: &Path) -> TestResult<String> {
         let run_git = |args: &[&str]| -> TestResult<String> {
-            let output = Command::new("git").arg("-C").arg(root).args(args).output()?;
+            let output = git_command().arg("-C").arg(root).args(args).output()?;
             if !output.status.success() {
                 bail!(
                     "fixture git command {:?} failed: {}",
@@ -10861,7 +10901,7 @@ exit 1
         config.lineages.push(historical_lineage_path);
         let run_git = |args: &[&str]| -> TestResult<String> {
             let output =
-                Command::new("git").arg("-C").arg(&config.repository_root).args(args).output()?;
+                git_command().arg("-C").arg(&config.repository_root).args(args).output()?;
             if !output.status.success() {
                 bail!(
                     "fixture git command {:?} failed: {}",

@@ -28,7 +28,7 @@ path = "src/lib.rs"
 [dependencies]
 perl-dap = { workspace = true }
 # perl-incremental-parsing absorbed into perl-parser::incremental (Wave 4-Completion)
-perl-parser = { workspace = true, features = ["test-performance"] }
+perl-parser = { workspace = true }
 # (perl-lsp-providers absorbed into perl-lsp-rs-core::providers::lsp_compat — Wave G1b)
 # (perl-lsp-formatting absorbed into perl-lsp-rs-core::providers::formatting — Wave G1b)
 # perl-lsp-uri absorbed into perl-lsp-rs-core::uri (Wave G3 step 3)
@@ -49,7 +49,7 @@ perl-diagnostics = { workspace = true }
 # (perl-lsp-semantic-tokens absorbed into perl-lsp-rs-core::providers::semantic_tokens — Wave G1b)
 # Provider crates absorbed into perl-lsp-rs-core (Wave G1a)
 # perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser (Wave G3 step 7)
-perl-lsp-rs-core = { workspace = true, features = ["lsp-compat", "ai-provider"] }
+perl-lsp-rs-core = { workspace = true, default-features = true, features = ["lsp-compat", "ai-provider"] }
 # perl-lsp-performance absorbed into perl-lsp-rs-core::performance (Wave G3 step 5)
 perl-lsp-perltidy = { workspace = true }
 perl-position-tracking = { workspace = true, features = ["lsp-compat"] }
@@ -122,7 +122,7 @@ utf16-complete = ["perl-parser/utf16-complete"]  # Complete UTF-16 round-trip su
 [dev-dependencies]
 # Test builds only: turns on the core crate's proof-only native-critic rebuild
 # counter (#7286). A production build of `perl-lsp-rs` links core without it.
-perl-lsp-rs-core = { workspace = true, features = ["test-instrumentation"] }
+perl-lsp-rs-core = { workspace = true, default-features = true, features = ["test-instrumentation"] }
 assert_cmd = "2.2.2"
 chrono = "0.4.43"
 unicode-ident = "1.0.22"

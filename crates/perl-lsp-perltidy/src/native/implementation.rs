@@ -60,15 +60,9 @@ impl NativeFormatter {
         source: &str,
         gate_kind: counters::ParseGateKind,
     ) -> Result<(), FormatDiagnostic> {
-        if let Some(kind) = literal_preserve_region(source) {
-            return Err(FormatDiagnostic::new(
-                LITERAL_PRESERVE_CODE,
-                FormatDiagnosticSeverity::Warning,
-                None,
-                format!("native formatting skipped because {kind} preservation is not enabled yet"),
-            ));
-        }
-
+        // Documents are no longer refused wholesale for preserve regions
+        // (#17708): preserve-region lines are emitted byte-exact by
+        // `format_safe_subset`, so only parse cleanliness gates the document.
         Self::validate_parse_only(source, gate_kind)
     }
 
@@ -138,12 +132,15 @@ impl NativeFormatter {
         // Physical lines inside a multiline literal (string, regex, qwâ€¦)
         // are literal bytes, not code: never reindent them and never let
         // their contents move the block stack.
-        let literal_lines = multiline_literal_lines(source);
+        let literal_lines = preserve_region_lines(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
-            if literal_lines.contains(&line_index) {
+            // Line directives are preserved exactly: Perl honors them only
+            // at column zero, so reindenting one inside a block would
+            // change source-location semantics (PR #17704 review).
+            if literal_lines.contains(&line_index) || is_perl_line_directive(body) {
                 formatted.push_str(body);
                 formatted.push_str(line_ending);
                 continue;
@@ -195,6 +192,7 @@ impl NativeFormatter {
                             // cannot change meaning.
                             None if closes
                                 || opens
+                                || body.trim_start().starts_with('#')
                                 || literal_lines.contains(&(line_index + 1)) =>
                             {
                                 candidate
@@ -240,7 +238,7 @@ impl NativeFormatter {
         // relative to its enclosing block; only in-range lines are emitted.
         let mut indent_stack: Vec<String> = Vec::new();
         let unit = indent_unit(config);
-        let literal_lines = multiline_literal_lines(source);
+        let literal_lines = preserve_region_lines(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
@@ -249,7 +247,10 @@ impl NativeFormatter {
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if literal_lines.contains(&line_index) || body.trim().is_empty() {
+            let formatted_body = if literal_lines.contains(&line_index)
+                || is_perl_line_directive(body)
+                || body.trim().is_empty()
+            {
                 None
             } else if is_rendered_block_boundary_line(body, config) {
                 let role = rendered_boundary_role(body);
@@ -290,6 +291,7 @@ impl NativeFormatter {
                                 Some(formatted) => Some(formatted),
                                 None if closes
                                     || opens
+                                    || body.trim_start().starts_with('#')
                                     || literal_lines.contains(&(line_index + 1)) =>
                                 {
                                     Some(candidate)
@@ -362,10 +364,165 @@ impl NativeFormatter {
     }
 }
 
+/// Whether `line` has the shape of a Perl `#line` directive: `#line 100
+/// "generated.pl"`, `# line 100 "generated.pl"`, or `#line 100` (verified
+/// against Perl: the `line` keyword must be a separate word followed by a
+/// decimal line number; `# 100 "file"`, `#line100`, and `#linear` are plain
+/// comments). Perl honors the directive only when `#` sits in column zero,
+/// so reindenting one out of a block would silently change `__LINE__`,
+/// `__FILE__`, and error locations (PR #17704 review). The check is
+/// deliberately fail-closed on the trimmed line: directive-shaped text is
+/// preserved wherever it sits rather than risk moving a real directive.
+pub(super) fn is_perl_line_directive(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('#') else { return false };
+    let Some(rest) = rest.trim_start().strip_prefix("line") else { return false };
+    if !rest.starts_with([' ', '\t']) {
+        return false;
+    }
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let digit_len = rest.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return false;
+    }
+    let rest = &rest[digit_len..];
+    rest.is_empty() || rest.starts_with([' ', '\t'])
+}
+
+/// Line indices (0-based) that belong to a literal-preserve region and must
+/// be emitted byte-exact, excluded from the block stack and from formatting
+/// (#17708). Covers multiline literal continuations, single- and multi-line
+/// regex/substitution/transliteration/quote-like tokens, heredoc bodies
+/// (terminator-tracked), POD blocks, `__DATA__`/`__END__` sections, and
+/// `format` bodies. The heredoc opener line itself is code and stays
+/// formattable; only its body and terminator are preserved.
+pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<usize> {
+    let mut lines = multiline_literal_lines(source);
+    let line_starts: Vec<usize> =
+        std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
+    let line_of = |offset: usize| line_starts.partition_point(|start| *start <= offset) - 1;
+
+    // Token-spanned literals (regex, qw, format bodies, ...).
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        match stream.next() {
+            Ok(token) if token.kind() == perl_parser_core::TokenKind::Eof => break,
+            Ok(token) => {
+                use perl_parser_core::TokenKind;
+                if matches!(
+                    token.kind(),
+                    TokenKind::Regex
+                        | TokenKind::Substitution
+                        | TokenKind::Transliteration
+                        | TokenKind::QuoteSingle
+                        | TokenKind::QuoteDouble
+                        | TokenKind::QuoteWords
+                        | TokenKind::QuoteCommand
+                        | TokenKind::FormatBody
+                        | TokenKind::HeredocBody
+                ) {
+                    let end = token.end().saturating_sub(1).max(token.start());
+                    for line in line_of(token.start())..=line_of(end) {
+                        lines.insert(line);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Line-tracked regions: POD, DATA/END, format bodies, heredoc bodies.
+    // Heredoc bodies queue in opener order; an ordinary heredoc closes only
+    // when the delimiter occupies the whole line, an indented (`<<~`)
+    // heredoc allows leading whitespace on its terminator.
+    let mut in_pod = false;
+    let mut in_data = false;
+    let mut in_format = false;
+    let mut heredoc_queue: std::collections::VecDeque<(String, bool)> =
+        std::collections::VecDeque::new();
+    for (index, raw_line) in source.split_inclusive('\n').enumerate() {
+        let (body, _) = split_line_ending(raw_line);
+        let trimmed = body.trim_start();
+        if in_data {
+            lines.insert(index);
+            continue;
+        }
+        if let Some((terminator, indented)) = heredoc_queue.front().cloned() {
+            lines.insert(index);
+            let closes = if indented {
+                body.trim_start().trim_end() == terminator.as_str()
+            } else {
+                !body.starts_with(char::is_whitespace) && body.trim_end() == terminator.as_str()
+            };
+            if closes {
+                heredoc_queue.pop_front();
+            }
+            continue;
+        }
+        if in_pod {
+            lines.insert(index);
+            if trimmed.trim_end() == "=cut" {
+                in_pod = false;
+            }
+            continue;
+        }
+        if in_format {
+            lines.insert(index);
+            if trimmed.trim_end() == "." {
+                in_format = false;
+            }
+            continue;
+        }
+        if is_pod_start(trimmed) {
+            lines.insert(index);
+            in_pod = trimmed.trim_end() != "=cut";
+            continue;
+        }
+        if matches!(trimmed.trim_end(), "__DATA__" | "__END__") {
+            lines.insert(index);
+            in_data = true;
+            continue;
+        }
+        if is_format_declaration_start(trimmed) {
+            lines.insert(index);
+            in_format = true;
+            continue;
+        }
+        // Full-line comments cannot open a heredoc; markers inside them
+        // must not suppress formatting of later code. Real heredoc bodies
+        // are also covered by HeredocBody tokens above.
+        if !trimmed.starts_with('#') && contains_likely_heredoc_start(body) {
+            heredoc_queue.extend(heredoc_openers(body));
+        }
+    }
+    lines
+}
+
+/// Every heredoc opener queued on one code line, in order, as
+/// `(terminator, indented)` pairs.
+fn heredoc_openers(line: &str) -> Vec<(String, bool)> {
+    let mut openers = Vec::new();
+    let mut rest = line;
+    while let Some((_, after_marker)) = rest.split_once("<<") {
+        let after_space = after_marker.trim_start();
+        let (indented, marker) = match after_space.strip_prefix('~') {
+            Some(stripped) => (true, stripped.trim_start()),
+            None => (false, after_space),
+        };
+        let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
+        let name: String =
+            marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
+        if !name.is_empty() {
+            openers.push((name, indented));
+        }
+        rest = after_marker;
+    }
+    openers
+}
+
 /// Line indices (0-based) covered by a multiline literal token, excluding
 /// the line the token starts on. Those lines are literal bytes: the block
 /// stack must ignore them and formatting must preserve them exactly.
-fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
+pub(super) fn multiline_literal_lines(source: &str) -> std::collections::HashSet<usize> {
     let mut lines = std::collections::HashSet::new();
     let line_starts: Vec<usize> =
         std::iter::once(0).chain(source.match_indices('\n').map(|(index, _)| index + 1)).collect();
@@ -911,7 +1068,7 @@ fn format_simple_statement_line(line: &str, config: &FormatConfig) -> Option<Str
     Some(format!("{indent}{}", append_trailing_comment(formatted, trailing_comment)))
 }
 
-fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
+pub(super) fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
     let mut in_single = false;
     let mut in_double = false;
     let mut in_backtick = false;
@@ -2249,7 +2406,7 @@ fn simple_value_text(token: &perl_parser_core::Token) -> Option<&str> {
         .then_some(token.text.as_ref())
 }
 
-fn literal_preserve_region(source: &str) -> Option<&'static str> {
+pub(super) fn literal_preserve_region(source: &str) -> Option<&'static str> {
     for line in source.lines() {
         let trimmed = line.trim_start();
         if is_pod_start(trimmed) {

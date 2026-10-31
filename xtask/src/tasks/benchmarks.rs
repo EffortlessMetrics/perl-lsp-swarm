@@ -5,7 +5,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::{fs, io};
 use walkdir::WalkDir;
 
@@ -36,12 +36,13 @@ pub fn run_benchmarks(
     run_script(&root, &script, &arg_refs, "benchmarks runner")
 }
 
-pub fn compare_benchmarks(fail_on_regression: bool) -> Result<()> {
+pub fn compare_benchmarks(fail_on_regression: bool) -> Result<i32> {
     let root = project_root()?;
     let script = Path::new("benchmarks").join("scripts").join("compare.sh");
 
     let args = if fail_on_regression { vec!["--fail-on-regression"] } else { Vec::<&str>::new() };
-    run_script(&root, &script, &args, "benchmark comparison")
+    let status = run_script_status(&root, &script, &args, "benchmark comparison")?;
+    Ok(status.code().unwrap_or(1))
 }
 
 pub fn format_benchmarks(receipt: bool, markdown: bool) -> Result<()> {
@@ -624,18 +625,21 @@ fn bash_program() -> PathBuf {
     PathBuf::from("bash")
 }
 
-fn run_script(root: &Path, script: &Path, args: &[&str], label: &str) -> Result<()> {
+fn run_script_status(root: &Path, script: &Path, args: &[&str], label: &str) -> Result<ExitStatus> {
     // The script path stays relative with forward slashes and the child is
     // anchored at the repo root, so no backslash-bearing absolute path
     // reaches the shell; on Windows the shell itself is Git Bash resolved
     // beside git.exe rather than whatever `bash` is first on PATH (#17217).
-    let status = Command::new(bash_program())
+    Command::new(bash_program())
         .arg(bash_script_arg(script))
         .args(args)
         .current_dir(root)
         .status()
-        .with_context(|| format!("failed to execute {}", label))?;
+        .with_context(|| format!("failed to execute {}", label))
+}
 
+fn run_script(root: &Path, script: &Path, args: &[&str], label: &str) -> Result<()> {
+    let status = run_script_status(root, script, args, label)?;
     if status.success() {
         Ok(())
     } else {

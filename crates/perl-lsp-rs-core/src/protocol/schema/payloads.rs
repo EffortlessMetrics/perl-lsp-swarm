@@ -326,6 +326,53 @@ pub(super) fn did_save_params(method: &str, value: &Value) -> Result<(), SchemaE
     Ok(())
 }
 
+/// LSP 3.17 DocumentHighlightParams and its inherited progress-token fields.
+pub(super) fn document_highlight_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    text_document_identifier(method, "$.params.textDocument", object.get("textDocument"))?;
+    position(method, "$.params.position", object.get("position"))?;
+    for field in ["workDoneToken", "partialResultToken"] {
+        if let Some(token) = object.get(field)
+            && !token.is_string()
+        {
+            expect_lsp_integer(Some(method), &format!("$.params.{field}"), Some(token))?;
+        }
+    }
+    Ok(())
+}
+
+/// LSP 3.17 DocumentHighlight[] | null; each item has a range and optional kind.
+pub(super) fn document_highlight_result(method: &str, value: &Value) -> Result<(), SchemaError> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let highlights = value.as_array().ok_or_else(|| {
+        SchemaError::at_value(Some(method), "$.result", "DocumentHighlight array or null", value)
+    })?;
+    for (index, highlight) in highlights.iter().enumerate() {
+        let path = format!("$.result[{index}]");
+        let object = expect_object(Some(method), &path, highlight)?;
+        range(method, &format!("{path}.range"), object.get("range"))?;
+        if let Some(kind) = object.get("kind") {
+            let path = format!("{path}.kind");
+            let kind = expect_lsp_integer(Some(method), &path, Some(kind))?;
+            if !(1..=3).contains(&kind) {
+                return Err(SchemaError::new(
+                    Some(method),
+                    path,
+                    "DocumentHighlightKind 1, 2, or 3",
+                    kind.to_string(),
+                ));
+            }
+        }
+
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "../../../tests/support/protocol_schema_did_save.rs"]
 mod did_save_seam_proofs;
+#[path = "../../../tests/support/protocol_schema_document_highlight.rs"]
+mod document_highlight_seam_proofs;
+

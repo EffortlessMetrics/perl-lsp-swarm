@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/executable_profile.v1.schema.json",
+  "title": "Executable-profile manifest v1",
+  "description": "Versioned executable-profile manifest (#4773, slice S2). Declares the exact Perl subset, capability policy, budgets, and determinism contract admitted for evaluation under PLSP-SPEC-0035 C1. Anything not listed fails closed. This schema defines manifest mechanics only; it states no EIR model and performs no evaluation. Boundary-ID membership validation against the #4770 catalog lands in S4; S2 manifests carry an empty list.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "purpose",
+    "supported_perl_versions",
+    "supported_constructs",
+    "supported_builtins",
+    "supported_regex_subset",
+    "module_policy",
+    "filesystem_policy",
+    "io_policy",
+    "environment_policy",
+    "network_policy",
+    "xs_policy",
+    "source_filter_policy",
+    "dynamic_boundary_behavior",
+    "warnings_behavior",
+    "exceptions_behavior",
+    "tap_behavior",
+    "budgets",
+    "determinism_guarantees",
+    "oracle_agreement_thresholds",
+    "unsupported_boundary_ids",
+    "owner_issue",
+    "change_reason",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "executable_profile.v1"
+    },
+    "profile_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9_]+_v1$"
+    },
+    "profile_version": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^v[0-9A-Za-z._-]+$"
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supported_perl_versions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "supported_constructs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "supported_builtins": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "Builtin names must be unique across entries; JSON Schema uniqueItems cannot express name-projection uniqueness, so the executable-profile validator enforces it as a custom rule and rejects same-name entries with conflicting behaviors.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "behavior"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "behavior": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "supported_regex_subset": {
+      "type": "string",
+      "minLength": 1
+    },
+    "module_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "filesystem_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "io_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "network_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "xs_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_filter_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dynamic_boundary_behavior": {
+      "type": "string",
+      "minLength": 1
+    },
+    "warnings_behavior": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exceptions_behavior": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tap_behavior": {
+      "type": "string",
+      "minLength": 1
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_steps",
+        "max_time_ms",
+        "max_memory_bytes",
+        "max_recursion_depth",
+        "max_output_bytes"
+      ],
+      "properties": {
+        "max_steps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_time_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_memory_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_recursion_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "determinism_guarantees": {
+      "type": "string",
+      "minLength": 1
+    },
+    "oracle_agreement_thresholds": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unsupported_boundary_ids": {
+      "type": "array",
+      "maxItems": 0,
+      "uniqueItems": true,
+      "description": "S2 manifests carry an empty boundary list; the S4 slice relaxes maxItems when the #4770 catalog loader lands.",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_]+$"
+      }
+    },
+    "owner_issue": {
+      "type": "string",
+      "minLength": 1
+    },
+    "predecessor_profile": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "change_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

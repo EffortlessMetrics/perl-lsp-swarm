@@ -66,6 +66,11 @@ For v0.13, this per-folder `.perl-lsp.toml` model is the supported multi-root me
 
 The server silently skips the file if it does not exist. If the file exists but contains invalid TOML, the server emits a `window/showMessage` warning and continues with defaults.
 
+Configuration errors distinguish malformed TOML syntax from invalid setting values.
+For example, `include_paths = "lib"` under `[perl]` is valid TOML but an invalid value:
+`include_paths` requires an array such as `["lib"]`. The warning preserves the
+error's line, column, and expected type so you can correct the file.
+
 Unknown keys and sections are silently ignored for forward compatibility.
 
 ### Discovery strategy
@@ -192,8 +197,8 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 | `perltidy_cuddled_else` | `boolean` | (unset) | Cuddled-else style compatibility option. |
 | `perltidy_space_after_keyword` | `boolean` | (unset) | Space-after-keyword compatibility option. |
 | `perltidy_add_trailing_commas` | `boolean` | (unset) | Trailing-comma compatibility option. |
-| `perltidy_vertical_alignment` | `boolean` | (unset) | Vertical-alignment compatibility option. |
-| `perltidy_block_comment_indentation` | `integer` | (unset) | Block-comment indentation compatibility option. |
+| `perltidy_vertical_alignment` | `boolean` | (unset) | Vertical-alignment compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
+| `perltidy_block_comment_indentation` | `integer` | (unset) | Block-comment indentation compatibility option. External legacy formatter only; the native formatter ignores it and warns when it is set. |
 | `perltidy_extra_args` | `string[]` | `[]` | Extra arguments for the external perltidy adapter. Ignored by the native formatter. |
 | `perltidy_timeout_secs` | `integer` | (unset) | Timeout in seconds for the external perltidy adapter. |
 
@@ -287,30 +292,58 @@ the workspace root. Absolute entries are honored as provided only when they
 still stay inside the workspace boundary. These paths are searched by
 `perl-lsp` and are not appended to Perl's runtime `@INC`.
 
-When `perlPath` is unset, the server will try perlbrew/plenv-managed
-interpreters before falling back to `perl` on `PATH` for the system `@INC`
-probe. Use `useSystemInc` to opt in to that system `@INC` lookup.
+The optional startup `@INC` module probe resolves `perl` in a fixed order: an
+active perlbrew interpreter, then an active plenv interpreter, then `perl` on
+`PATH`. perlbrew and plenv therefore take precedence over `PATH`. Direct
+selection reads the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of
+the server process: `plenv local` or `plenv global` alone does not set
+`PLENV_VERSION` for a server launched outside a plenv-initialised shell, and
+without direct detection the first `perl` on `PATH` is used, resolved from the
+server process working directory. Set `PLENV_VERSION` before starting
+`perllsp`, or reorder `PATH`. Use
+`useSystemInc` to opt in to that system `@INC` lookup. The separate interpreter
+availability check during initialization uses OS-aware discovery; on Windows
+it prefers Strawberry or ActiveState over MSYS even if MSYS is first on `PATH`.
 
-#### `perl.workspace.perlPath`
+#### `perl.workspace.perlPath` — refused, not configurable
 
 | Property | Value |
 |---|---|
 | Type | `string` |
-| Default | auto-detected |
+| Status | **ignored if set** |
 | Key | `perlPath` |
 
-Path to the Perl interpreter used for system `@INC` probing. When set, this
-value overrides auto-detection and `PATH` lookup.
+The language server accepts no interpreter path. Setting this key has no
+effect, produces no warning, and the value is discarded.
 
-#### `perl.workspace.perlArgs`
+That is deliberate. Honouring an interpreter path or argv from workspace or
+editor settings would let a hostile cloned repository choose which program the
+server executes and with which arguments, so the keys are refused on every
+client-settings channel and `.perl-lsp.toml` has no field for them at all.
+
+To make the startup `@INC` module probe use a specific Perl, control resolution order instead:
+set the `PERLBREW_PERL` or `PLENV_VERSION` environment variable of the server
+process to an installed version (`plenv local` or `plenv global` alone does
+not set `PLENV_VERSION` outside a plenv-initialised shell). Without direct
+detection, put the intended `perl` first on `PATH` (`where.exe perl` on
+Windows, `which -a perl` elsewhere); it is resolved from the server process
+working directory. The read-only workspace trust report does not
+resolve or verify the selected interpreter.
+
+The debugger is a separate channel: `launch.json` accepts a per-launch
+`perlPath`, and that one is honored.
+
+#### `perl.workspace.perlArgs` — refused, not configurable
 
 | Property | Value |
 |---|---|
 | Type | `string[]` |
-| Default | `[]` |
+| Status | **ignored if set** |
 | Key | `perlArgs` |
 
-Extra arguments passed to the Perl interpreter when probing startup `@INC`.
+Extra arguments for the Perl interpreter used to probe startup `@INC`. Refused
+for the same reason as `perlPath` above: argv chosen by a workspace must not
+reach a process the server spawns.
 
 ```json
 {

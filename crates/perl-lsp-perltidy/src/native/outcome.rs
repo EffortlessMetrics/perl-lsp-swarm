@@ -4,8 +4,9 @@ use super::implementation::counters::{self, NativePipelineCounters, PipelineColl
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma, format_simple_line, indent_unit, is_rendered_block_boundary_line,
-    range_includes_line, rendered_boundary_role,
+    TextRange, TrailingComma, format_simple_line, indent_unit, is_perl_line_directive,
+    is_rendered_block_boundary_line, literal_preserve_region, preserve_region_lines,
+    range_includes_line, rendered_boundary_role, split_trailing_comment,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,8 +38,14 @@ pub enum FormatDisposition {
 pub enum FormatReasonCode {
     /// Formatting produced safe changes.
     Applied,
+    /// Formatting produced safe changes while literal-preserve regions were
+    /// emitted byte-exact instead of refusing the document (#17708).
+    AppliedPreservingLiterals,
     /// The eligible source was already formatted.
     AlreadyFormatted,
+    /// The eligible source was already formatted and contains
+    /// literal-preserve regions that were emitted byte-exact (#17708).
+    AlreadyFormattedPreservingLiterals,
     /// Formatting is disabled by the effective configuration.
     FormatterDisabled,
     /// The current native formatter does not support the admitted syntax safely.
@@ -79,6 +86,10 @@ pub enum FormatEngine {
 pub enum FormatEvidenceState {
     /// The check completed and established the required property.
     Proven,
+    /// Literal regions were preserved byte-exact while the rest of the
+    /// document was formatted normally (#17708). Distinct from `Proven`,
+    /// which describes a document with no preserve regions in play.
+    PreservedPartially,
     /// The check was not required for this computation.
     NotApplicable,
     /// The check did not run.
@@ -390,10 +401,20 @@ fn classify(
         };
     }
 
+    // Document targets with preserve regions report the preserving reason
+    // codes so callers can distinguish partial preservation from a plain
+    // full-document format (#17708). Range targets keep the scoped refusal.
+    let preserving = matches!(target, FormatRequestTarget::Document)
+        && literal_preserve_region(source).is_some();
+
     if result.changed {
         return Classification {
             disposition: FormatDisposition::Applied,
-            reason: FormatReasonCode::Applied,
+            reason: if preserving {
+                FormatReasonCode::AppliedPreservingLiterals
+            } else {
+                FormatReasonCode::Applied
+            },
         };
     }
 
@@ -401,7 +422,11 @@ fn classify(
         return if target_has_only_supported_lines(source, config, target) {
             Classification {
                 disposition: FormatDisposition::NoChange,
-                reason: FormatReasonCode::AlreadyFormatted,
+                reason: if preserving {
+                    FormatReasonCode::AlreadyFormattedPreservingLiterals
+                } else {
+                    FormatReasonCode::AlreadyFormatted
+                },
             }
         } else {
             Classification {
@@ -496,6 +521,38 @@ fn split_lines_for_range_validation(source: &str) -> Vec<&str> {
 }
 
 #[cfg(test)]
+mod supported_lines_comment_tests {
+    use super::{FormatConfig, FormatRequestTarget, target_has_only_supported_lines};
+
+    fn supported(source: &str) -> bool {
+        target_has_only_supported_lines(
+            source,
+            &FormatConfig::default(),
+            FormatRequestTarget::Document,
+        )
+    }
+
+    #[test]
+    fn comment_layout_inside_blocks_is_part_of_the_support_check() {
+        // A comment left at the enclosing statement indent inside a block is
+        // not in rendered form: the formatter would reindent it, so the
+        // support check must not certify the document as already formatted.
+        assert!(!supported("sub f {\n# explain\n    my $x = 1;\n}\n"));
+        assert!(supported("sub f {\n    # explain\n    my $x = 1;\n}\n"));
+        // Comments outside any block impose no layout constraint.
+        assert!(supported("# top level\nmy $x = 1;\n"));
+    }
+
+    #[test]
+    fn preserved_lines_are_exempt_from_comment_layout() {
+        // Column-zero Perl line directives are preserved byte-for-byte by
+        // the formatter wherever they appear, so they certify as-is.
+        assert!(supported("sub f {\n#line 100 \"generated.pl\"\n    my $x = 1;\n}\n"));
+        assert!(supported("sub f {\n# line 42 \"other.pl\"\n    my $x = 1;\n}\n"));
+    }
+}
+
+#[cfg(test)]
 mod line_geometry_tests {
     use super::split_lines_for_range_validation;
 
@@ -540,13 +597,35 @@ fn utf16_len(source: &str) -> u32 {
 ///   [`indent_unit`] past that block's indent — a body at or above its
 ///   header's indent (`sub f {` / `return 1;` / `}`) is hand-written, not
 ///   rendered;
-/// - the included lines end with every opened block closed. Document targets
-///   always balance (this walk runs only after a clean parse); a range that
-///   stops inside a block has no closing evidence in scope and stays refused,
-///   exactly as before boundary admission existed.
+/// - the walked lines end with every opened block closed. Document targets
+///   always balance (this walk runs only after a clean parse).
 ///
-/// Blank and comment lines impose no indent constraint: they pass the
-/// formatter through unchanged wherever they appear.
+/// Blank lines impose no indent constraint. Comment lines follow the layout
+/// the formatter emits: inside a tracked block a comment must sit at least
+/// one [`indent_unit`] past that block's indent, matching the body-line
+/// evidence below. Comments outside any tracked block, Perl line directives,
+/// and lines inside multiline literals are preserved byte-for-byte by the
+/// formatter, so they impose no constraint.
+///
+/// A range target is judged with its enclosing block context (#17713): the
+/// walk covers the whole document with an opener stack like the document
+/// formatter's `format_safe_subset` walk — the range formatter's
+/// `format_safe_subset_range` keeps no opener stack and only rewrites
+/// selected lines with `format_simple_line` — so blocks opened before the
+/// range seed the stack and blocks closed after it balance it. Only lines
+/// inside the range are adjudicated: an out-of-range line can neither
+/// refuse the range nor be excused by it, it only moves the stack. Before
+/// this, a range was judged on its selected lines alone, so a no-change
+/// range inside an already-formatted block (a body plus its tail, a header
+/// plus its body, a lone tail) still reported `UnsupportedSyntax` on the
+/// second pass.
+///
+/// Blank, comment, and multiline-literal continuation lines impose no
+/// indent constraint: they pass the formatter through unchanged wherever
+/// they appear. Context lines that are not rendered boundaries still move
+/// the stack with the same comment-stripped close/open shape
+/// `format_safe_subset` uses, so an inline `} else { ... }` tail closes its
+/// block instead of leaving a stale opener for a later range.
 fn target_has_only_supported_lines(
     source: &str,
     config: &FormatConfig,
@@ -554,25 +633,58 @@ fn target_has_only_supported_lines(
 ) -> bool {
     let body_indent = indent_unit(config);
     let mut open_blocks: Vec<&str> = Vec::new();
+    // Physical lines inside a multiline literal are literal bytes, not
+    // code: exactly as in `format_safe_subset`, they never move the block
+    // stack and are never adjudicated, so string content shaped like a
+    // block header cannot invent an opener for a later range.
+    let literal_lines = preserve_region_lines(source);
     for (line, text) in split_lines_for_range_validation(source).into_iter().enumerate() {
+        if literal_lines.contains(&line) {
+            continue;
+        }
         let included = match target {
             FormatRequestTarget::Document => true,
             FormatRequestTarget::Range { range } => range_includes_line(range, line as u32),
         };
-        if !included {
-            continue;
-        }
         let trimmed = text.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             continue;
         }
         let indent_len = text.len() - text.trim_start_matches([' ', '\t']).len();
         let indent = &text[..indent_len];
+        if trimmed.starts_with('#') {
+            // Comment layout inside a tracked block is part of the rendered
+            // form (PR #17704 review): the formatter reindents comment-only
+            // lines to the block body indent, so a comment at or above its
+            // header's indent is hand-written, not rendered. Preserved
+            // lines (directives, literal content) and comments outside any
+            // tracked block certify at whatever indent they carry.
+            let preserved = is_perl_line_directive(text) || literal_lines.contains(&line);
+            if !preserved
+                && open_blocks
+                    .last()
+                    .is_some_and(|open| !indent.starts_with(&format!("{open}{body_indent}")))
+            {
+                return false;
+            }
+            continue;
+        }
         // Block boundaries the renderers own. Without this a block the
         // formatter itself rendered refused on the second pass, because no
         // header or tail line is a `format_simple_line` candidate.
         if is_rendered_block_boundary_line(text, config) {
             let role = rendered_boundary_role(text);
+            if !included {
+                // Context only: track the enclosing stack without judging
+                // lines the caller did not ask about.
+                if role.closes_block {
+                    open_blocks.pop();
+                }
+                if role.opens_block {
+                    open_blocks.push(indent);
+                }
+                continue;
+            }
             if role.closes_block {
                 let closes_matched_block = open_blocks.last().is_some_and(|open| *open == indent);
                 if !closes_matched_block {
@@ -587,6 +699,21 @@ fn target_has_only_supported_lines(
                 return false;
             }
             if role.opens_block {
+                open_blocks.push(indent);
+            }
+        } else if !included {
+            // Context only: a non-boundary line can still close or open a
+            // block (an inline `} else { ... }` tail, an anonymous-sub
+            // opener). Track that with the same comment-stripped shape
+            // `format_safe_subset` uses, without judging the line's support
+            // or layout — lines the caller did not ask about must not leave
+            // a stale opener behind for the selected range.
+            let (code, _comment) = split_trailing_comment(text);
+            let code = code.trim();
+            if code.starts_with('}') {
+                open_blocks.pop();
+            }
+            if code.ends_with('{') && !code.starts_with('{') {
                 open_blocks.push(indent);
             }
         } else if format_simple_line(text, config).is_none()
@@ -609,6 +736,12 @@ fn safety_evidence(
         FormatReasonCode::Applied | FormatReasonCode::AlreadyFormatted => {
             (FormatEvidenceState::Proven, FormatEvidenceState::Proven, FormatEvidenceState::Proven)
         }
+        FormatReasonCode::AppliedPreservingLiterals
+        | FormatReasonCode::AlreadyFormattedPreservingLiterals => (
+            FormatEvidenceState::Proven,
+            FormatEvidenceState::Proven,
+            FormatEvidenceState::PreservedPartially,
+        ),
         FormatReasonCode::FormatterDisabled => {
             (FormatEvidenceState::NotRun, FormatEvidenceState::NotRun, FormatEvidenceState::NotRun)
         }
@@ -663,6 +796,8 @@ fn next_action(reason: FormatReasonCode) -> Option<&'static str> {
         }
         FormatReasonCode::Applied
         | FormatReasonCode::AlreadyFormatted
+        | FormatReasonCode::AppliedPreservingLiterals
+        | FormatReasonCode::AlreadyFormattedPreservingLiterals
         | FormatReasonCode::UnsupportedSyntax => None,
     }
 }
@@ -923,6 +1058,39 @@ mod tests {
         assert_eq!(typed.outcome.change.edit_count, typed.result.edits.len());
         assert!(typed.outcome.change.source_bytes_changed > 0);
         assert!(typed.outcome.change.rendered_bytes_changed > 0);
+    }
+
+    /// Regression control for #17300: an admitted bare-print document needs
+    /// no edits or unsupported-syntax warning. Unsupported layouts retain
+    /// their separate refusal boundary.
+    #[test]
+    fn parse_clean_unchanged_source_is_already_formatted() {
+        let source = "print $x + $y;\n";
+        let result = NativeFormatter::new().format_document_typed(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(result.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(result.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(result.result.edits.is_empty());
+        assert!(!result.result.changed);
+    }
+
+    /// An admitted bare-print range that needs no edits is a successful no-op.
+    #[test]
+    fn parse_clean_unchanged_range_is_already_formatted() {
+        let source = "my $value = 1;\nprint $x + $y;\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        let result = NativeFormatter::new().format_range_typed(
+            source,
+            range,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+        assert_eq!(result.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(result.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(result.result.edits.is_empty());
     }
 
     #[test]

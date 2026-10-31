@@ -1,0 +1,8 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Closing-brace quick fixes preserve the block body, handle trailing comments, and withhold incomplete repairs. Stale client parser diagnostics no longer authorize edits on repaired source."
+time: 2026-10-13T00:00:00Z
+custom:
+  Slug: closing-brace-actions
+  Breaking: "no"

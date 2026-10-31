@@ -176,11 +176,49 @@ impl LspServer {
         value
     }
 
+    /// Decode escapes written by `escape_table_token`: `\\` -> `\`,
+    /// `\|` -> `|`, a lone `\` (or `\` before any other char) is kept.
+    fn decode_regex_table_escapes(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.clone().next() {
+                    Some('\\') => {
+                        chars.next();
+                        out.push('\\');
+                    }
+                    Some('|') => {
+                        chars.next();
+                        out.push('|');
+                    }
+                    _ => out.push('\\'),
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
     /// Minimal markdown-to-plaintext conversion for clients without markdown
     /// support. Strips common markdown formatting while preserving readability.
     fn markdown_to_plaintext(md: &str) -> String {
+        let mut in_regex_card = false;
+        let mut seen_table_row = false;
         md.lines()
             .map(|line| {
+                if line.trim() == "**Regex Pattern**" {
+                    in_regex_card = true;
+                    seen_table_row = false;
+                }
+                let is_table_row = line.trim_start().starts_with('|');
+                let decode_row = in_regex_card && is_table_row;
+                if is_table_row {
+                    seen_table_row = true;
+                } else if in_regex_card && seen_table_row && !line.trim().is_empty() {
+                    in_regex_card = false;
+                }
                 // Strip markdown headers (# ... ######)
                 let line = line.trim_start_matches('#').trim_start();
                 // Strip bold/italic markers
@@ -188,6 +226,9 @@ impl LspServer {
                 let line = line.replace(['*', '_'], "");
                 // Strip inline code backticks
                 let line = line.replace('`', "");
+                // Undo table escapes only inside the Regex Pattern card;
+                // unrelated content keeps its genuine backslashes.
+                let line = if decode_row { Self::decode_regex_table_escapes(&line) } else { line };
                 // Strip link syntax: [text](url) -> text
                 regex_lite_strip_links(&line)
             })
@@ -738,56 +779,96 @@ impl LspServer {
         let symbol_at_cursor = if token_candidate_is_proven {
             analyzer.find_definition(offset).filter(|sym| {
                 let token = Self::get_token_at_position_static(text, offset);
-                #[cfg(feature = "workspace")]
-                {
-                    if matches!(
-                        sym.kind,
-                        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                    ) && Self::extract_arrow_receiver(text, offset).is_some()
-                        && sym.declaration.as_deref() != Some("has")
-                    {
-                        if token != sym.name && !token.is_empty() {
-                            return false;
-                        }
-                        if token == sym.name
-                            && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
-                        {
-                            let receiver_pkg =
-                                Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
-                            if !receiver_pkg.is_empty()
-                                && analyzer
-                                    .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
-                                    .is_some_and(|hover| {
-                                        hover
-                                            .details
-                                            .iter()
-                                            .any(|detail| detail.starts_with("Decorated with:"))
-                                    })
-                            {
-                                return false;
-                            }
-                        }
-                    }
-                }
-                // The analyzer may return the containing sub when a special variable
-                // has no declaration. Let the existing special-variable card answer
-                // instead of presenting that unrelated sub as the hovered entity.
+                // A containment-based Subroutine/Method answer may only stand
+                // when the cursor is on the symbol's own name (or on bare
+                // punctuation). `find_definition`'s containment fallback
+                // returns the smallest declaration *containing* the offset, so
+                // every identifier inside a sub body resolves to the enclosing
+                // sub; answering with that card while the hover range covers a
+                // built-in (`keys`), a call-site package name (`WidgetGarden`
+                // in `WidgetGarden->new`), or a keyword (`my`) describes symbol
+                // X over token Y (#17296). Special variables keep their
+                // dedicated card even where the token scanner reads an empty
+                // token (cursor on the pipe of `$|`), so they are checked
+                // before the empty-token keep (#2831).
+                // A token that is an arrow receiver (`WidgetGarden->new`)
+                // is a call-site package name even when a same-named sub
+                // encloses it: the receiver is not the sub's declaration
+                // name, so the enclosing sub's card must not answer (#17312).
+                let token_is_arrow_receiver = {
+                    let token_end = offset
+                        + text[offset..]
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | ':'))
+                            .map(char::len_utf8)
+                            .sum::<usize>();
+                    text[token_end..].trim_start().starts_with("->")
+                };
                 if matches!(
                     sym.kind,
                     crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                ) && token != sym.name
+                ) && ((token != sym.name
+                    && token != sym.name.rsplit("::").next().unwrap_or(&sym.name))
+                    || token_is_arrow_receiver)
                 {
                     let special = Self::extract_special_variable(text, offset)
                         .unwrap_or_else(|| token.clone());
                     if Self::get_special_variable_hover(&special).is_some() {
                         return false;
                     }
+                    if !token.is_empty() {
+                        // Discard and let the token fallback answer instead —
+                        // it already renders builtins, `::`-qualified package
+                        // names, and keywords, and fails closed otherwise.
+                        return false;
+                    }
                 }
-                // If the token matches the symbol name this IS a direct hover on that
-                // symbol (e.g. hovering on `sub run` where cursor is on `run`).
-                if token == sym.name || token.is_empty() {
-                    return true; // keep — cursor is directly on the symbol
+                #[cfg(feature = "workspace")]
+                {
+                    // A method name that really is the hovered symbol's own name
+                    // (`$pkg->method` with the cursor on `method`) may still be
+                    // better described by the class model: when the inherited
+                    // hover carries modifier metadata, defer to it.
+                    if matches!(
+                        sym.kind,
+                        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                    ) && Self::extract_arrow_receiver(text, offset).is_some()
+                        && sym.declaration.as_deref() != Some("has")
+                        && token == sym.name
+                        && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                    {
+                        let receiver_pkg =
+                            Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                        if !receiver_pkg.is_empty()
+                            && analyzer
+                                .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
+                                .is_some_and(|hover| {
+                                    hover
+                                        .details
+                                        .iter()
+                                        .any(|detail| detail.starts_with("Decorated with:"))
+                                })
+                        {
+                            return false;
+                        }
+                    }
                 }
+                // #17296: `find_definition` falls back to the enclosing sub for
+                // tokens it cannot resolve (built-ins, call-site package names).
+                // Presenting that sub as the hovered entity is confidently wrong:
+                // drop it so the generic token/builtin fallback can answer (or
+                // decline) for the actual token. A qualified symbol still matches
+                // through its last `::` segment (`Foo::bar` hovered as `bar`).
+                if matches!(
+                    sym.kind,
+                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                ) && sym.name.rsplit("::").next() != Some(token.as_str())
+                {
+                    return false;
+                }
+                // The token matches the symbol name (or is empty): this IS a
+                // direct hover on that symbol (e.g. hovering on `sub run` where
+                // cursor is on `run`).
                 true
             })
         } else {
@@ -1252,8 +1333,8 @@ impl LspServer {
                 return HoverExtracted::Complete(hover);
             }
 
-            let bare = hover_text.trim_start_matches(['$', '@', '%']);
-            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(bare) {
+            // Preserve variable sigils: `$length` is not the `length` builtin.
+            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(&hover_text) {
                 return HoverExtracted::Complete(json!({
                     "contents": {
                         "kind": "markdown",
@@ -1271,6 +1352,7 @@ impl LspServer {
             }
 
             // Check Test::More/Test2 function hover when source imports a test framework
+            let bare = hover_text.trim_start_matches(['$', '@', '%']);
             let is_test_source = text.contains("use Test::More") || text.contains("use Test2");
             if is_test_source
                 && let Some((sig, desc)) = crate::completion::get_test_more_documentation(bare)
@@ -2990,5 +3072,39 @@ Not found in workspace or configured include paths.
                 "value": text,
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod plaintext_tests {
+    use super::LspServer;
+
+    #[test]
+    fn plaintext_hover_undoes_table_pipe_escapes() {
+        // Rows inside the generated Regex Pattern card decode exactly the
+        // encoder inverse: `\|` -> `|`, `\\` -> `\`.
+        let md = "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n| `\\| ` | Alternation (OR) |\n| `[a\\|b]` | Character class |\n| `[\\\\\\|]` | Character class |\n| `[\\\\\\\\\\|]` | Character class |\n| `\\\\d` | Any decimal digit (0-9) |";
+        let plain = LspServer::markdown_to_plaintext(md);
+        assert!(plain.contains("| |  | Alternation (OR) |"), "{plain}");
+        assert!(plain.contains("[a|b]"), "{plain}");
+        assert!(plain.contains(r"[\|]"), "{plain}");
+        assert!(plain.contains(r"[\\|]"), "{plain}");
+        assert!(plain.contains(r"\d"), "{plain}");
+        assert!(!plain.contains(r"\\d"), "{plain}");
+    }
+
+    #[test]
+    fn plaintext_hover_keeps_genuine_backslashes_outside_regex_card() {
+        // Unrelated content (e.g. a POD synopsis fence) passes through
+        // byte-identical for backslash-pipe sequences.
+        let md = r"my $re = qr{[\|]}; also [a\|b] and \\| here";
+        assert_eq!(LspServer::markdown_to_plaintext(md), md);
+        let fenced = "```perl\nmy $re = qr{[\\|]};\n```";
+        let plain = LspServer::markdown_to_plaintext(fenced);
+        assert!(plain.contains(r"qr{[\|]}"), "{plain}");
+        // A lone backslash inside a card row is kept, not dropped.
+        let card = "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n| `\\d` | digit |";
+        let plain = LspServer::markdown_to_plaintext(card);
+        assert!(plain.contains(r"\d"), "{plain}");
     }
 }
