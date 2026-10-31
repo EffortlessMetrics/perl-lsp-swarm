@@ -3,174 +3,86 @@
 # Run `cargo doc --no-deps` for every publishable crate and report failures.
 # Simulates docs.rs build conditions locally.
 #
-# Usage: bash scripts/verify-docs-rs.sh [--fast]
+# Usage: bash scripts/verify-docs-rs.sh [--fast] [--list]
 #   --fast: skip large crates (perl-parser, perl-lsp-rs) to reduce runtime
+#   --list: print publishable workspace crate names (from cargo metadata) and exit
 #
 # Exit codes:
-#   0: all crates documented successfully
+#   0: all crates documented successfully (or --list printed)
 #   1: one or more crates failed
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
 # Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
-. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+. "${SCRIPT_DIR}/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 
 FAST_MODE=0
+LIST_MODE=0
 for arg in "$@"; do
     case "$arg" in
         --fast) FAST_MODE=1 ;;
+        --list) LIST_MODE=1 ;;
+        *)
+            echo "verify-docs-rs: unknown argument: $arg" >&2
+            echo "Usage: bash scripts/verify-docs-rs.sh [--fast] [--list]" >&2
+            exit 1
+            ;;
     esac
 done
-
-# Full publishable list in topological order (from workspace Cargo.toml metadata)
-ALL_CRATES=(
-    # Tier 1 — Leaf crates
-    perl-position-tracking
-    perl-token
-    perl-builtins
-    perl-builtins-phf
-    perl-content-length-framing
-    perl-percentile
-    perl-subprocess-runtime
-    perl-lsp-protocol
-    # (perl-lsp-symbol-query absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    perl-keywords
-    perl-regex
-    perl-quote
-    perl-pod
-    perl-heredoc-anti-patterns
-    tree-sitter-perl-c
-    # Tier 1b
-    perl-ast
-    perl-ast-v2
-    perl-lexer
-    perl-heredoc
-    # Tier 1c
-    perl-error
-    perl-pragma
-    perl-tokenizer
-    # Tier 2 — Core infrastructure
-    perl-parser-core
-    perl-test-must
-    perl-tdd-support
-    perl-edit
-    perl-incremental-parsing
-    perl-symbol
-    perl-uri-classify
-    perl-uri
-    perl-workspace-index-state-machine
-    perl-path-normalize
-    perl-workspace-index-slo
-    # Tier 3
-    perl-workspace-index
-    perl-semantic-analyzer
-    perl-lsp-diagnostic-types
-    # (perl-lsp-diagnostics absorbed into perl-lsp-rs-core::providers::diagnostics — Wave G1b)
-    perl-lsp-text-utils
-    # (perl-lsp-rename absorbed into perl-lsp-rs-core::providers::rename — Wave G1b)
-    # (perl-lsp-code-actions absorbed into perl-lsp-rs-core::providers::code_actions — Wave G1b)
-    # (perl-lsp-folding absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-selection-range absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-completion absorbed into perl-lsp-rs-core::providers::completion — Wave G1b)
-    # (perl-lsp-file-completion absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-completion-item absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-inline-completion absorbed into perl-lsp-rs-core::providers::inline_completion — Wave G1b)
-    # (perl-lsp-ai-provider absorbed into perl-lsp-rs-core::providers::ai — Wave G1b)
-    # (perl-lsp-inlay-hints absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-code-lens absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-color-provider absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # Module resolution chain
-    perl-module-name
-    perl-module-path
-    perl-module-token-core
-    perl-module-boundary
-    perl-module-token
-    perl-module-import
-    # Tier 4 — LSP providers
-    # (perl-lsp-navigation absorbed into perl-lsp-rs-core::providers::navigation — Wave G1b)
-    # (perl-lsp-type-hierarchy absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-document-highlight absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-document-links absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-workspace-symbols absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    perl-lsp-tooling
-    perl-lsp-perltidy
-    perl-lsp-performance
-    perl-lsp-critic-parser
-    # (perl-lsp-formatting-types absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-formatting absorbed into perl-lsp-rs-core::providers::formatting — Wave G1b)
-    # (perl-lsp-on-type-formatting absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-lsp-semantic-tokens absorbed into perl-lsp-rs-core::providers::semantic_tokens — Wave G1b)
-    # (perl-lsp-providers absorbed into perl-lsp-rs-core::providers::lsp_compat — Wave G1b)
-    perl-ast-utils
-    # (perl-lsp-import-management absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    perl-qualified-name
-    perl-refactoring
-    # Tier 5
-    perl-dead-code
-    perl-parser
-    perl-parser-pest
-    perl-corpus
-    # DAP
-    perl-dap-breakpoint
-    perl-dap-eval
-    perl-dap-config
-    perl-dap-command-args
-    perl-dap-platform
-    perl-dap-shell
-    perl-dap-types
-    perl-dap-security
-    perl-dap-stack
-    perl-dap-value
-    perl-dap-variables
-    perl-path-security
-    perl-feature-catalog
-    perl-dap
-    # LSP governance
-    perl-lsp-cancellation
-    perl-lsp-input-validation
-    perl-lsp-feature-ids
-    perl-lsp-capability-map
-    perl-lsp-feature-contracts
-    perl-lsp-feature-flags
-    perl-lsp-feature-profile
-    perl-lsp-feature-profile-cli
-    perl-lsp-feature-policy
-    perl-lsp-feature-grid
-    perl-lsp-feature-governance
-    perl-lsp-launcher
-    perl-lsp-diagnostic-catalog
-    perl-lsp-limits
-    perl-lsp-uri
-    perl-lsp-config
-    perl-lsp-transport
-    # Tier 6
-    perl-module-token-parser
-    perl-text-line
-    perl-line-index
-    perl-module-reference
-    perl-module-import-match
-    perl-module-rename
-    perl-module-resolution-path
-    perl-workspace-folder
-    perl-workspace-ignore
-    perl-module-resolution-uri
-    perl-module-resolution
-    perl-source-file
-    perl-workspace-discovery
-    perl-diagnostics-codes
-    # Tier 7
-    perl-lsp-rs
-    perllsp
-    # tree-sitter facade (added in #3255, merged after this PR was cut)
-    tree-sitter-perl-rs
-)
 
 # Large crates to skip in fast mode
 SLOW_CRATES=(perl-parser perl-lsp-rs perl-corpus perllsp perl-dap perl-workspace-index)
 
-PASSED=()
-FAILED=()
-SKIPPED=()
+derive_publishable_crates() {
+    local metadata_err meta_out
+    metadata_err="$(mktemp)"
+    meta_out="$(mktemp)"
+    if ! cargo metadata --no-deps --format-version 1 \
+        --manifest-path "${REPO_ROOT}/Cargo.toml" \
+        >"${meta_out}" 2>"${metadata_err}"; then
+        echo "verify-docs-rs: REFUSED: cargo metadata is unavailable; cannot derive publishable crates." >&2
+        if [[ -s "${metadata_err}" ]]; then
+            echo "verify-docs-rs: cargo metadata error:" >&2
+            cat "${metadata_err}" >&2
+        fi
+        rm -f "${metadata_err}" "${meta_out}"
+        exit 1
+    fi
+    rm -f "${metadata_err}"
+
+    PUBLISH_TOPO="${SCRIPT_DIR}/publish-topo.py" python3 - "${meta_out}" <<'PY'
+import importlib.util
+import json
+import os
+import sys
+
+scripts_dir = os.path.dirname(os.environ["PUBLISH_TOPO"])
+spec = importlib.util.spec_from_file_location(
+    "publish_topo", os.path.join(scripts_dir, "publish-topo.py")
+)
+if spec is None or spec.loader is None:
+    print("verify-docs-rs: REFUSED: publish-topo.py is unavailable.", file=sys.stderr)
+    sys.exit(1)
+publish_topo = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(publish_topo)
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    meta = json.load(handle)
+for name in publish_topo.derive_publish_list(meta):
+    print(name)
+PY
+    rm -f "${meta_out}"
+}
+
+mapfile -t ALL_CRATES < <(derive_publishable_crates)
+
+if [[ "${LIST_MODE}" == "1" ]]; then
+    printf '%s\n' "${ALL_CRATES[@]}"
+    exit 0
+fi
 
 is_slow() {
     local crate="$1"
@@ -184,6 +96,10 @@ is_slow() {
 
 echo "=== docs.rs verification (fast=$FAST_MODE) ==="
 echo ""
+
+PASSED=()
+FAILED=()
+SKIPPED=()
 
 for crate in "${ALL_CRATES[@]}"; do
     if [[ "$FAST_MODE" == "1" ]] && is_slow "$crate"; then
