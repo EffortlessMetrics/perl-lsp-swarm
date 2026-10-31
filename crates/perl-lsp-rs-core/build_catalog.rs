@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 /// Feature maturity state (#7029 earned-claim vocabulary).
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub enum Maturity {
@@ -125,9 +127,17 @@ impl CatalogSource {
             CatalogSourceKind::Vendored => "// source: features_sot.toml\n",
         }
     }
+
+    pub const fn kind_label(&self) -> &'static str {
+        match self.kind {
+            CatalogSourceKind::Override => "override",
+            CatalogSourceKind::Workspace => "workspace",
+            CatalogSourceKind::Vendored => "package-fallback",
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogSourceKind {
     Override,
     Workspace,
@@ -138,7 +148,32 @@ pub fn resolve_catalog_source_with_override(
     manifest_dir: &Path,
     override_path: Option<PathBuf>,
 ) -> Result<CatalogSource, String> {
+    resolve_catalog_source_with_mode(manifest_dir, override_path, false)
+}
+
+#[expect(
+    dead_code,
+    reason = "package-isolated resolver is exercised by generate_lsp_catalog_module_package_isolated"
+)]
+pub fn resolve_catalog_source_package_isolated(
+    manifest_dir: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<CatalogSource, String> {
+    resolve_catalog_source_with_mode(manifest_dir, override_path, true)
+}
+
+fn resolve_catalog_source_with_mode(
+    manifest_dir: &Path,
+    override_path: Option<PathBuf>,
+    package_isolated: bool,
+) -> Result<CatalogSource, String> {
     if let Some(override_path) = override_path {
+        if package_isolated {
+            return Err(format!(
+                "OVERRIDE_NOT_ALLOWED: package-isolated resolution refuses FEATURES_TOML_OVERRIDE ({})",
+                override_path.display()
+            ));
+        }
         if !override_path.exists() {
             return Err(format!(
                 "FEATURES_TOML_OVERRIDE path does not exist: {}",
@@ -148,17 +183,19 @@ pub fn resolve_catalog_source_with_override(
         return Ok(CatalogSource { path: override_path, kind: CatalogSourceKind::Override });
     }
 
-    let local = manifest_dir.join("features.toml");
-    if local.exists() {
-        return Ok(CatalogSource { path: local, kind: CatalogSourceKind::Workspace });
-    }
+    if !package_isolated {
+        let local = manifest_dir.join("features.toml");
+        if local.exists() {
+            return Ok(CatalogSource { path: local, kind: CatalogSourceKind::Workspace });
+        }
 
-    let parent = manifest_dir.parent().and_then(Path::parent).and_then(|p| {
-        let path = p.join("features.toml");
-        path.exists().then_some(path)
-    });
-    if let Some(path) = parent {
-        return Ok(CatalogSource { path, kind: CatalogSourceKind::Workspace });
+        let parent = manifest_dir.parent().and_then(Path::parent).and_then(|p| {
+            let path = p.join("features.toml");
+            path.exists().then_some(path)
+        });
+        if let Some(path) = parent {
+            return Ok(CatalogSource { path, kind: CatalogSourceKind::Workspace });
+        }
     }
 
     let vendored = manifest_dir.join("features_sot.toml");
@@ -166,6 +203,12 @@ pub fn resolve_catalog_source_with_override(
         return Ok(CatalogSource { path: vendored, kind: CatalogSourceKind::Vendored });
     }
 
+    if package_isolated {
+        return Err(format!(
+            "MISSING_FALLBACK: package-isolated catalog requires {} (no workspace rediscovery)",
+            vendored.display()
+        ));
+    }
     Err(format!("features catalog not found for manifest dir: {}", manifest_dir.display()))
 }
 
@@ -209,17 +252,123 @@ pub fn read_catalog(path: &Path) -> Result<Catalog, String> {
     Ok(catalog)
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    format!("sha256:{hex}")
+}
+
+fn identity_header(source: &CatalogSource, digest: &str, package: Option<&str>) -> String {
+    let mut header = source.comment().to_string();
+    header.push_str(&format!("// catalog-source-kind: {}\n", source.kind_label()));
+    header.push_str(&format!("// catalog-source-digest: {digest}\n"));
+    header.push_str("// catalog-projection: FullCatalog\n");
+    if let Some(package) = package {
+        header.push_str(&format!("// catalog-package: {package}\n"));
+    }
+    header
+}
+
+#[derive(serde::Deserialize)]
+struct PackageManifestFile {
+    package: PackageManifestTable,
+}
+
+#[derive(serde::Deserialize)]
+struct PackageManifestTable {
+    name: String,
+}
+
+fn read_package_name(manifest_dir: &Path) -> Result<String, String> {
+    let path = manifest_dir.join("Cargo.toml");
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("WRONG_PACKAGE: missing {}: {error}", path.display()))?;
+    let parsed: PackageManifestFile = toml::from_str(&text)
+        .map_err(|error| format!("WRONG_PACKAGE: {}: {error}", path.display()))?;
+    Ok(parsed.package.name)
+}
+
+const EXPECTED_PACKAGE: &str = "perl-lsp-rs-core";
+
+fn validate_package_fallback(manifest_dir: &Path, catalog: &Catalog) -> Result<String, String> {
+    if catalog.advertised_feature_ids().is_empty() {
+        return Err(format!(
+            "EMPTY_FALLBACK: {} has no advertised/current catalog rows and cannot satisfy package proof",
+            manifest_dir.join("features_sot.toml").display()
+        ));
+    }
+    let name = read_package_name(manifest_dir)?;
+    if name != EXPECTED_PACKAGE {
+        return Err(format!(
+            "WRONG_PACKAGE: {} package name is {name}, expected {EXPECTED_PACKAGE}",
+            manifest_dir.join("Cargo.toml").display()
+        ));
+    }
+    Ok(name)
+}
+
 pub fn generate_lsp_catalog_module_at(
     manifest_dir: &Path,
     out_dir: &Path,
     override_path: Option<PathBuf>,
 ) -> Result<CatalogSource, String> {
-    let source = resolve_catalog_source_with_override(manifest_dir, override_path)?;
-    let catalog = read_catalog(&source.path)?;
-    let code = render_lsp_feature_catalog_module(&catalog, source.comment());
+    generate_lsp_catalog_module_at_with_mode(manifest_dir, out_dir, override_path, false)
+}
+
+pub fn generate_lsp_catalog_module_package_isolated(
+    manifest_dir: &Path,
+    out_dir: &Path,
+) -> Result<CatalogSource, String> {
+    generate_lsp_catalog_module_at_with_mode(manifest_dir, out_dir, None, true)
+}
+
+fn generate_lsp_catalog_module_at_with_mode(
+    manifest_dir: &Path,
+    out_dir: &Path,
+    override_path: Option<PathBuf>,
+    package_isolated: bool,
+) -> Result<CatalogSource, String> {
+    let source = resolve_catalog_source_with_mode(manifest_dir, override_path, package_isolated)?;
+    let bytes = fs::read(&source.path)
+        .map_err(|error| format!("failed to read features catalog: {error}"))?;
+    let digest = sha256_hex(&bytes);
+    let catalog = match source.kind {
+        CatalogSourceKind::Vendored => parse_package_fallback(&source.path, &bytes)?,
+        CatalogSourceKind::Override | CatalogSourceKind::Workspace => {
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|error| format!("catalog is not valid UTF-8: {error}"))?;
+            let catalog: Catalog = toml::from_str(text)
+                .map_err(|error| format!("failed to parse features catalog: {error}"))?;
+            catalog.validate()?;
+            catalog
+        }
+    };
+    let package = if source.kind == CatalogSourceKind::Vendored {
+        Some(validate_package_fallback(manifest_dir, &catalog)?)
+    } else {
+        None
+    };
+    let header = identity_header(&source, &digest, package.as_deref());
+    let code = render_lsp_feature_catalog_module(&catalog, &header);
     fs::write(out_dir.join("feature_contracts.rs"), code)
         .map_err(|error| format!("failed to write feature_contracts.rs: {error}"))?;
     Ok(source)
+}
+
+fn parse_package_fallback(path: &Path, bytes: &[u8]) -> Result<Catalog, String> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        format!("MALFORMED_FALLBACK: {}: {error}", path.display())
+    })?;
+    let catalog: Catalog = toml::from_str(text).map_err(|error| {
+        format!("MALFORMED_FALLBACK: {}: {error}", path.display())
+    })?;
+    catalog.validate().map_err(|error| {
+        format!("MALFORMED_FALLBACK: {}: {error}", path.display())
+    })?;
+    Ok(catalog)
 }
 
 pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str) -> String {
