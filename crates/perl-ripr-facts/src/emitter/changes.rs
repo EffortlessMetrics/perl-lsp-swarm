@@ -780,7 +780,7 @@ mod tests {
 @@ -5,3 +5,7 @@
  sub discount {
      my ($amount) = @_;
-+    eval { $amount };
++    eval $amount;
 +    our @ISA = ('Base');
 +    return shift->$method();
  }

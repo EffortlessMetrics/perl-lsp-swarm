@@ -40,7 +40,7 @@ use perl_tdd_support::{must, must_some};
 const DEFAULT_FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance";
 
 /// `lib/App.pm`: a package with two subs (`discount`, `risky`), one of which
-/// contains an `eval { }` dynamic boundary. 19 lines, 0-based line numbers
+/// contains a string `eval` dynamic boundary. 19 lines, 0-based line numbers
 /// annotated for the diff hunks in [`CHARACTERIZATION_DIFF`] below:
 ///
 /// ```text
@@ -58,13 +58,13 @@ const DEFAULT_FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations
 /// 11 }
 /// 12
 /// 13 sub risky {
-/// 14     eval { die "boom" };
+/// 14     eval "die 'boom'";
 /// 15     return 1;
 /// 16 }
 /// 17
 /// 18 1;
 /// ```
-const APP_PM: &str = "use strict;\nuse warnings;\n\npackage App;\n\nsub discount {\n    my ($amount) = @_;\n    if ($amount > 100) {\n        return $amount * 0.9;\n    }\n    return $amount;\n}\n\nsub risky {\n    eval { die \"boom\" };\n    return 1;\n}\n\n1;\n";
+const APP_PM: &str = "use strict;\nuse warnings;\n\npackage App;\n\nsub discount {\n    my ($amount) = @_;\n    if ($amount > 100) {\n        return $amount * 0.9;\n    }\n    return $amount;\n}\n\nsub risky {\n    eval \"die 'boom'\";\n    return 1;\n}\n\n1;\n";
 
 /// `lib/Other.pm`: a second package, referenced only by a bare (unqualified)
 /// call from `t/other.t` — exercises the conservative `file_proximity`
@@ -86,7 +86,7 @@ const OTHER_T: &str = "use strict;\nuse warnings;\nuse Test::More;\n\nuse Other;
 /// - hunk 2 (inside `sub discount`, lines 8-8): a valid `predicate_boundary`
 ///   change.
 /// - hunk 3 (inside `sub risky`, lines 14-15): a valid `exception_path`
-///   change whose first added line (`eval { warn 'test' };`) also trips the
+///   change whose first added line (`eval "warn 'test'";`) also trips the
 ///   `eval_or_string_code` dynamic boundary → `diff-dynamic-boundary`.
 /// - hunk 4 (`lib/Missing.pm`, a path the fixture never creates): →
 ///   `diff-file-not-found`.
@@ -96,7 +96,7 @@ const OTHER_T: &str = "use strict;\nuse warnings;\nuse Test::More;\n\nuse Other;
 /// numbers need to line up with the real fixture file's owner ranges to steer
 /// which branch each hunk lands in; the *added-line content* is free text
 /// chosen to hit a specific `behavior_hint`/boundary pattern.
-const CHARACTERIZATION_DIFF: &str = "+++ b/lib/App.pm\n@@ -1,1 +1,2 @@\n use strict;\n+use POSIX;\n@@ -8,1 +9,2 @@\n         return $amount * 0.9;\n+    if ($amount >= 500) {\n@@ -14,1 +15,3 @@\n     eval { die \"boom\" };\n+    eval { warn 'test' };\n+    die \"boom\" if $x < 0;\n+++ b/lib/Missing.pm\n@@ -1,1 +1,2 @@\n package Missing;\n+sub gone { 1 }\n";
+const CHARACTERIZATION_DIFF: &str = "+++ b/lib/App.pm\n@@ -1,1 +1,2 @@\n use strict;\n+use POSIX;\n@@ -8,1 +9,2 @@\n         return $amount * 0.9;\n+    if ($amount >= 500) {\n@@ -14,1 +15,3 @@\n     eval \"die 'boom'\";\n+    eval \"warn 'test'\";\n+    die \"boom\" if $x < 0;\n+++ b/lib/Missing.pm\n@@ -1,1 +1,2 @@\n package Missing;\n+sub gone { 1 }\n";
 
 /// Write the two-package, two-test fixture under `root` (created fresh).
 fn write_fixture(root: &str) -> std::io::Result<()> {
@@ -144,7 +144,7 @@ fn packet_characterization_no_diff_matches_golden() -> std::io::Result<()> {
 
     assert_eq!(
         must_some(packet["packet_fingerprint"].as_str()),
-        "sha256:32e2d25ccdd806bf479d9953065844a1c1faa3f1772233315fed5fb13598328c",
+        "sha256:0288a6a5c6a86a41197cb70b3704a874d6e97caab1c0ac667cc5246e77938654",
         "packet_fingerprint literal drifted from the pre-split golden"
     );
     Ok(())
@@ -167,7 +167,7 @@ fn packet_characterization_with_diff_matches_golden() -> std::io::Result<()> {
 
     assert_eq!(
         must_some(packet["packet_fingerprint"].as_str()),
-        "sha256:8fc37c160dc0bb48ce47c7eb4544202a5413ccce1b0f3c5c0456b176820ea3dd",
+        "sha256:f71a3a15b2bee5715d9a8b173ec8674149205527fd250c604e2fca038d7162a1",
         "packet_fingerprint literal drifted from the pre-split golden"
     );
     Ok(())
