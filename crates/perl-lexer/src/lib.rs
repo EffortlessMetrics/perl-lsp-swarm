@@ -888,7 +888,7 @@ impl<'a> PerlLexer<'a> {
                     let cut_opens_pod = Self::is_cut_directive(remaining)
                         && (self.pod_after_blank_line() || self.pod_after_statement_end());
                     let generic_pod = !known
-                        && !remaining.starts_with(b"=cut")
+                        && !Self::is_cut_directive(remaining)
                         && remaining.get(1).is_some_and(|b| b.is_ascii_alphabetic())
                         && (self.pod_after_blank_line() || self.pod_after_statement_end())
                         && self.pod_has_later_cut();
