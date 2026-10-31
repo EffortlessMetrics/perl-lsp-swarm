@@ -840,15 +840,36 @@ fn validate_kind_coverage(ledger: &Ledger, orchestrator_text: &str, violations: 
     }
 }
 
+/// True when `raw` is a rooted LSP `CodeActionKind` literal (not arbitrary prose).
+fn looks_like_code_action_kind(raw: &str) -> bool {
+    const ROOTS: [&str; 3] = ["quickfix", "refactor", "source"];
+    for root in ROOTS {
+        if raw == root {
+            return true;
+        }
+        let Some(tail) = raw.strip_prefix(root) else {
+            continue;
+        };
+        if !tail.starts_with('.') {
+            continue;
+        }
+        let suffix = &tail[1..];
+        if suffix.is_empty() {
+            return false;
+        }
+        return suffix.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        });
+    }
+    false
+}
+
 /// LSP kind literals appearing in the handler.
 fn emitted_kinds(handler: &str) -> BTreeSet<String> {
-    const ROOTS: [&str; 3] = ["quickfix", "refactor", "source"];
     let mut kinds = BTreeSet::new();
     for raw in handler.split('"').skip(1).step_by(2) {
-        let is_kind = ROOTS.iter().any(|root| {
-            raw == *root || raw.strip_prefix(root).is_some_and(|rest| rest.starts_with('.'))
-        }) && raw.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.');
-        if is_kind {
+        if looks_like_code_action_kind(raw) {
             kinds.insert(raw.to_string());
         }
     }
@@ -1838,6 +1859,47 @@ mod tests {
         assert!(
             violations.iter().any(|violation| violation.contains("source.brandNew")),
             "expected unclassified kind violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn emitted_kinds_collects_underscore_and_hyphen_segments() {
+        let handler = handler(
+            "let _ = \"refactor.extract_variable\"; let _ = \"source.fix-all\"; THE_CALL\n",
+        );
+        let kinds = emitted_kinds(&handler);
+        assert!(kinds.contains("refactor.extract_variable"));
+        assert!(kinds.contains("source.fix-all"));
+    }
+
+    #[test]
+    fn emitted_kinds_rejects_malformed_roots_and_prose() {
+        let handler = handler(
+            "let _ = \"refactor.\"; let _ = \"refactorx\"; let _ = \"title\"; let _ = \"documentUri\"; THE_CALL\n",
+        );
+        let kinds = emitted_kinds(&handler);
+        assert!(!kinds.contains("refactor."));
+        assert!(!kinds.contains("refactorx"));
+        assert!(!kinds.contains("title"));
+        assert!(!kinds.contains("documentUri"));
+    }
+
+    #[test]
+    fn validate_kind_coverage_flags_unclaimed_underscore_kind() {
+        let mut ledger = ledger(
+            vec![generation("gen", Some("THE_CALL"))],
+            vec![route("gen", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+        ledger.unreachable_kinds = Vec::new();
+
+        let mut violations = Vec::new();
+        let source =
+            handler("let _ = \"quickfix\"; let _ = \"refactor.extract_variable\"; THE_CALL\n");
+        validate_kind_coverage(&ledger, &source, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("refactor.extract_variable")),
+            "expected unclassified underscore kind violation, got {violations:?}"
         );
     }
 
