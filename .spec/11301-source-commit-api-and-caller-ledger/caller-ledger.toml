@@ -158,6 +158,11 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # crates/perl-parser/src/refactor/scoped_rename_tests.rs removed their 8
 # `.index_file(...)` call sites (4 per file, verified on the origin/main blobs;
 # both files leave caller_paths with them).
+# Held at 697 by #18209: crates/perl-parser/tests/rename_transaction_validity.rs
+# is a new caller identity that seeds two on-disk documents through the
+# canonical index_initial_file before planning a rename and shrinking one
+# file. Owned by the existing crates/perl-parser row; no compatibility call,
+# no production caller. Baseline therefore stays 697.
 compatibility_baseline = 697
 
 # Structural recurrence control (#11305): files under these prefixes must
@@ -219,6 +224,7 @@ caller_paths = [
   "crates/perl-parser/tests/index_lifecycle_tests.rs",
   "crates/perl-parser/tests/lsp_cancellation_mutation_hardening.rs",
   "crates/perl-parser/tests/mutation_hardening_tests.rs",
+  "crates/perl-parser/tests/rename_transaction_validity.rs",
   "crates/perl-parser/tests/workspace_index_tests.rs",
   "crates/perl-semantic-analyzer/src/analysis/index.rs",
   "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",

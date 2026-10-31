@@ -224,7 +224,7 @@ fn a_document_shortened_after_planning_refuses_without_changing_other_files() ->
     for (path, source) in [(&first, first_source), (&second, second_source)] {
         std::fs::write(path, source)?;
         let uri = url::Url::from_file_path(path).map_err(|_| "invalid fixture path")?;
-        index.index_file(uri, source.to_string())?;
+        index.index_initial_file(uri, source.to_string())?;
     }
     let engine = WorkspaceRename::new(
         index,
