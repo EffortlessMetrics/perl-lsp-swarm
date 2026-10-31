@@ -1683,7 +1683,14 @@ test('reports a failed prompt receipt write through the supplied sink and still 
 
   await suggestAiCompletionIfSupported(
     { workspaceState } as unknown as vscode.ExtensionContext,
-    { initializeResult: { capabilities: { experimental: { perlAiCompletionActivation: true } } } },
+    {
+      initializeResult: {
+        capabilities: {
+          inlineCompletionProvider: {},
+          experimental: { perlAiCompletionActivation: true },
+        },
+      },
+    },
     warn,
   );
 
