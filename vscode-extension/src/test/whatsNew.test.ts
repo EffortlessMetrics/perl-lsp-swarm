@@ -225,6 +225,32 @@ describe('WhatsNewManager.extractChangelogSection', () => {
     expect(section).toContain('New feature A');
   });
 
+  test('reads the lowercase changelog filename shipped by vsce', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wn-packaged-'));
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'changelog.md'), SAMPLE_CHANGELOG);
+      const mgr = new WhatsNewManager(makeContext({ extensionPath: tmpDir }), makeOutputChannel());
+      expect(mgr.extractChangelogSection('0.13.0')).toContain('New feature A');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('prefers the packaged changelog when both spellings are present', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wn-both-'));
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'CHANGELOG.md'), SAMPLE_CHANGELOG);
+      fs.writeFileSync(
+        path.join(tmpDir, 'changelog.md'),
+        SAMPLE_CHANGELOG.replace('New feature A', 'Packaged feature'),
+      );
+      const mgr = new WhatsNewManager(makeContext({ extensionPath: tmpDir }), makeOutputChannel());
+      expect(mgr.extractChangelogSection('0.13.0')).toContain('Packaged feature');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('returns empty string when CHANGELOG is not found', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wn-no-cl-'));
     fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ version: '0.13.0' }));
