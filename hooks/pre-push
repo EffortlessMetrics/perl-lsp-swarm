@@ -193,6 +193,260 @@ if [ "$IS_DELETE_ONLY" = true ]; then
     exit 0
 fi
 
+# SECRET_SCAN_SH_BEGIN
+# --- Token-shape secret scan (issue #17428) ---
+# Refuses token-shaped additions before they enter history. Pure git + grep:
+# no build, no network. The rule list mirrors TOKEN_SHAPES in
+# crates/perl-ci-hygiene/src/secret_scan.rs; the required secret_scan gate
+# re-scans the same shapes over the PR diff + body, so --no-verify bypasses
+# the hook but not the gate.
+#
+# Every patch-producing git read below forces text mode (#17906): binary
+# detection (a -diff attribute in .gitattributes, or a NUL byte in the
+# content) would otherwise collapse the file to "Binary files differ" with
+# no hunks and hide its added lines from the scan. The forced-open patch
+# bytes travel file-to-file — never through a Bash variable, whose command
+# substitution strips NULs and would splice a NUL-separated near-miss into
+# a token that was never in the file (#17910 review).
+SECRET_SCAN_RULE_GITHUB='gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}_[A-Za-z0-9]{59}'
+SECRET_SCAN_RULE_AWS='AKIA[0-9A-Z]{16}'
+SECRET_SCAN_RULE_SLACK='xox[baprs]-[A-Za-z0-9-]{10,48}'
+SECRET_SCAN_RULE_PRIVKEY='-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
+# Double-quoted: the optional quote class needs a literal single quote, which
+# cannot appear inside single quotes. The pattern holds no $, backtick, or
+# backslash, so double-quoting expands nothing.
+SECRET_SCAN_RULE_GENERIC="([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9_./+=-]{16,}($|[^A-Za-z0-9_./+()=-])"
+# Lines the generic rule must not report: a key-word assigned a bare identifier
+# terminated by code punctuation (a computed value, not a credential). Mirrors
+# GENERIC_REFERENCE_EXCLUSION in crates/perl-ci-hygiene/src/secret_scan.rs.
+SECRET_SCAN_EXCLUDE_GENERIC='([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Pp][Ii][_-]?[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn])[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_]{16,}[[:space:]]*([;,)]|\[)'
+SECRET_SCAN_HITS=""
+SECRET_SCAN_UNEVALUATED=""
+secret_scan_allowed() {
+    [ -n "${SECRET_SCAN_ALLOWLIST:-}" ] && [ -f "$SECRET_SCAN_ALLOWLIST" ] || return 1
+    # Same whitespace and comment rules as Allowlist::parse in the gate: trim
+    # each line, skip blanks and #-comments. Normalized per call so the file
+    # on disk is never rewritten.
+    grep -F -x -q -- "$1" <(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' "$SECRET_SCAN_ALLOWLIST") 2>/dev/null
+}
+secret_scan_stream() {
+    local file="$1" patch="$2" subject="$3" name pattern hits added_tmp
+    added_tmp="$(mktemp 2>/dev/null)" || {
+        secret_scan_cannot_evaluate "$subject" "cannot allocate a temp file for the added lines"
+        return 1
+    }
+    # Hunk-aware added-line filter: diff and file headers print before the
+    # first @@, so only + lines inside a hunk are scanned. A content line that
+    # itself starts with + (++token = …) is kept — the old ^\+[^+] grep
+    # dropped it, hiding tokens in such lines from the hooks.
+    #
+    # Byte-preserving: the patch is read from a file and the added lines land
+    # in one — no Bash variable ever holds patch bytes. Command substitution
+    # strips NULs, so a forced-open binary patch could lose the very byte
+    # separating `ghp_` from 36 letters and report a token that was never in
+    # the file (#17910 review).
+    if ! awk '/^diff --git / { in_hunk = 0 } /^@@/ { in_hunk = 1; next } in_hunk && /^\+/ { print }' "$patch" >"$added_tmp"; then
+        rm -f "$added_tmp"
+        secret_scan_cannot_evaluate "$subject" "the added-line filter failed for $file"
+        return 1
+    fi
+    if [ ! -s "$added_tmp" ]; then
+        rm -f "$added_tmp"
+        return 0
+    fi
+    for name in github-token aws-access-key slack-token private-key generic-assignment; do
+        case "$name" in
+            github-token) pattern="$SECRET_SCAN_RULE_GITHUB" ;;
+            aws-access-key) pattern="$SECRET_SCAN_RULE_AWS" ;;
+            slack-token) pattern="$SECRET_SCAN_RULE_SLACK" ;;
+            private-key) pattern="$SECRET_SCAN_RULE_PRIVKEY" ;;
+            generic-assignment) pattern="$SECRET_SCAN_RULE_GENERIC" ;;
+        esac
+        # -a keeps the greps in text mode: a NUL byte must not flip grep into
+        # binary mode, where it reports nothing at all and a real token on a
+        # NUL-carrying line would be silently missed. The NUL itself matches
+        # no value class, so a `ghp_` + NUL + 36 letters near-miss stays clean.
+        # The -- matters: the private-key shape starts with dashes and would
+        # otherwise parse as grep options, failing that rule open.
+        if [ "$name" = "generic-assignment" ]; then
+            # Bare-identifier references match the generic shape but name
+            # computed values; filter them exactly like the gate does.
+            hits="$(grep -a -E -- "$pattern" "$added_tmp" | grep -a -E -v -- "$SECRET_SCAN_EXCLUDE_GENERIC" | grep -a -c . || true)"
+        else
+            hits="$(grep -a -E -c -- "$pattern" "$added_tmp" || true)"
+        fi
+        if [ -n "$hits" ] && [ "$hits" != "0" ]; then
+            SECRET_SCAN_HITS="${SECRET_SCAN_HITS}  $file: rule $name matched $hits added line(s)
+"
+        fi
+    done
+    rm -f "$added_tmp"
+}
+secret_scan_refuse_if_hits() {
+    if [ -z "$SECRET_SCAN_HITS" ] && [ -z "$SECRET_SCAN_UNEVALUATED" ]; then
+        return 0
+    fi
+    if [ -z "$SECRET_SCAN_HITS" ]; then
+        # The scan recorded no hits, but part of it could not evaluate, so
+        # the empty result is not evidence of clean (#18375); the specific
+        # reason was already printed by secret_scan_cannot_evaluate.
+        return 1
+    fi
+    echo ""
+    echo "Secret scan refused this $1: token-shaped line(s) detected"
+    printf '%s' "$SECRET_SCAN_HITS"
+    echo ""
+    echo "   Rotate the credential if it is real; never commit secrets."
+    echo "   Documented escape for inert test fixtures: list the repo-relative"
+    echo "   path in .ci/secret-scan-allowlist.txt (one per line)."
+    return 1
+}
+secret_scan_cannot_evaluate() {
+    # Fail-closed refusal when git cannot produce the scan subject: a scan
+    # that ran on nothing must never read as clean. The status is recorded so
+    # secret_scan_refuse_if_hits refuses even though no hits were recorded.
+    SECRET_SCAN_UNEVALUATED=1
+    echo ""
+    echo "Secret scan could not evaluate this $1: $2"
+    echo "   Refusing unevaluated — fix the git failure, or bypass with"
+    echo "   git $1 --no-verify only for a genuinely environmental failure."
+    return 1
+}
+secret_scan_staged() {
+    SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
+    SECRET_SCAN_HITS=""
+    SECRET_SCAN_UNEVALUATED=""
+    local file diff_tmp list_tmp
+    list_tmp="$(mktemp 2>/dev/null)" || {
+        secret_scan_cannot_evaluate commit "cannot allocate a temp file for the staged list"
+        return 1
+    }
+    diff_tmp="$(mktemp 2>/dev/null)" || {
+        rm -f "$list_tmp"
+        secret_scan_cannot_evaluate commit "cannot allocate a temp file for the staged patch"
+        return 1
+    }
+    # -z (NUL-delimited) plus quotePath=false: a quoted name ("caf\303\251")
+    # would otherwise reach the per-file diff as a literal pathspec matching
+    # nothing, silently skipping the file.
+    if ! git -c core.quotePath=false diff --cached --name-only -z >"$list_tmp" 2>/dev/null; then
+        rm -f "$diff_tmp" "$list_tmp"
+        secret_scan_cannot_evaluate commit "git diff --cached --name-only failed"
+        return 1
+    fi
+    while IFS= read -r -d '' file; do
+        [ -z "$file" ] && continue
+        secret_scan_allowed "$file" && continue
+        # The patch is written straight to a temp file, never captured into a
+        # Bash variable: command substitution strips NULs (#17910 review), and
+        # a forced-open binary patch would lose the byte that keeps a near-miss
+        # from reading as a token.
+        if ! git --literal-pathspecs -c core.quotePath=false diff --cached --text --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ -- "$file" >"$diff_tmp" 2>/dev/null; then
+            rm -f "$diff_tmp" "$list_tmp"
+            secret_scan_cannot_evaluate commit "git diff --cached for $file failed"
+            return 1
+        fi
+        [ -s "$diff_tmp" ] && secret_scan_stream "$file" "$diff_tmp" commit
+    done <"$list_tmp"
+    rm -f "$diff_tmp" "$list_tmp"
+    secret_scan_refuse_if_hits commit
+}
+secret_scan_range() {
+    SECRET_SCAN_ALLOWLIST="$(git rev-parse --show-toplevel 2>/dev/null)/.ci/secret-scan-allowlist.txt"
+    SECRET_SCAN_HITS=""
+    SECRET_SCAN_UNEVALUATED=""
+    local base file patch_tmp list_tmp range
+    git cat-file -e "$1" 2>/dev/null || {
+        secret_scan_cannot_evaluate push "local sha $1 does not resolve"
+        return 1
+    }
+    if [ "$2" != "0000000000000000000000000000000000000000" ]; then
+        base="$2"
+        git cat-file -e "$base" 2>/dev/null || {
+            secret_scan_cannot_evaluate push "remote sha $base does not resolve locally"
+            return 1
+        }
+    else
+        base="$(git merge-base origin/main "$1" 2>/dev/null || git merge-base main "$1" 2>/dev/null || git merge-base origin/master "$1" 2>/dev/null || git merge-base master "$1" 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
+    fi
+    list_tmp="$(mktemp 2>/dev/null)" || {
+        secret_scan_cannot_evaluate push "cannot allocate a temp file for the file list"
+        return 1
+    }
+    patch_tmp="$(mktemp 2>/dev/null)" || {
+        rm -f "$list_tmp"
+        secret_scan_cannot_evaluate push "cannot allocate a temp file for the pushed patches"
+        return 1
+    }
+    if ! git -c core.quotePath=false diff --name-only -z "$base" "$1" >"$list_tmp" 2>/dev/null; then
+        rm -f "$patch_tmp" "$list_tmp"
+        secret_scan_cannot_evaluate push "git diff --name-only $base $1 failed"
+        return 1
+    fi
+    # History leg: a secret added and removed inside the range never appears
+    # in the endpoint diff, so every commit's tree delta is scanned too (-m
+    # splits merges per parent). With an empty-tree base the range is every
+    # commit reachable from the head, since a tree sha is not a revision
+    # endpoint.
+    if [ "$base" = "4b825dc642cb6eb9a060e54bf8d69288fbee4904" ]; then
+        range="$1"
+    else
+        range="$base..$1"
+    fi
+    # The file list must also include paths that only exist inside the range
+    # (added then deleted, or added then renamed): the endpoint diff cannot
+    # see them, so the history leg below would never visit them (#17432
+    # review wave 5). -m splits merges per parent; --no-renames lists both
+    # sides of a rename.
+    if ! git -c core.quotePath=false log -m --no-renames --name-only -z --format= "$range" >>"$list_tmp" 2>/dev/null; then
+        rm -f "$patch_tmp" "$list_tmp"
+        secret_scan_cannot_evaluate push "git log --name-only $range failed"
+        return 1
+    fi
+    # De-duplicate when the platform sort supports NUL mode; without it the
+    # list keeps duplicates, which only re-scan (findings are idempotent).
+    if printf '' | sort -z -u >/dev/null 2>&1; then
+        if ! sort -z -u "$list_tmp" -o "$list_tmp" 2>/dev/null; then
+            rm -f "$patch_tmp" "$list_tmp"
+            secret_scan_cannot_evaluate push "de-duplicating the file list for $range failed"
+            return 1
+        fi
+    fi
+    while IFS= read -r -d '' file; do
+        [ -z "$file" ] && continue
+        secret_scan_allowed "$file" && continue
+        # Both patch-producing reads write straight to a temp file, never into
+        # a Bash variable: command substitution strips NULs (#17910 review),
+        # and a forced-open binary patch would lose the byte that keeps a
+        # near-miss from reading as a token.
+        if ! git --literal-pathspecs -c core.quotePath=false diff --text --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ "$base" "$1" -- "$file" >"$patch_tmp" 2>/dev/null; then
+            rm -f "$patch_tmp" "$list_tmp"
+            secret_scan_cannot_evaluate push "git diff $base $1 for $file failed"
+            return 1
+        fi
+        [ -s "$patch_tmp" ] && secret_scan_stream "$file" "$patch_tmp" push
+        if ! git --literal-pathspecs -c core.quotePath=false log -p -m --text --format=commit\ %H --no-color --unified=0 --src-prefix=a/ --dst-prefix=b/ "$range" -- "$file" >"$patch_tmp" 2>/dev/null; then
+            rm -f "$patch_tmp" "$list_tmp"
+            secret_scan_cannot_evaluate push "git log $range for $file failed"
+            return 1
+        fi
+        [ -s "$patch_tmp" ] && secret_scan_stream "$file" "$patch_tmp" push
+    done <"$list_tmp"
+    rm -f "$patch_tmp" "$list_tmp"
+    secret_scan_refuse_if_hits push
+}
+# SECRET_SCAN_SH_END
+
+# --- Token-shape secret scan over every pushed ref (issue #17428) ---
+# Runs before all gates (including the doc-only fast path: secrets in docs
+# refuse too). Pure git + grep; see SECRET_SCAN_SH_BEGIN above.
+for line in "${PUSH_REFS[@]+"${PUSH_REFS[@]}"}"; do
+    read -r _push_ref push_local _remote_ref push_remote <<< "$line"
+    if [ "$push_local" != "0000000000000000000000000000000000000000" ]; then
+        secret_scan_range "$push_local" "$push_remote" || exit 1
+    fi
+done
+
 # --- Detect doc-only changes for the fast-path gate ---
 # A push is doc-only if every changed file matches one of:
 #   *.md, *.txt, LICENSE*, CHANGELOG*, docs/**, .github/ISSUE_TEMPLATE/**,
