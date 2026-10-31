@@ -828,7 +828,13 @@ fn timing_stays_advisory_in_nightly_workflow() -> Result<(), Box<dyn std::error:
 fn base_pin_max_timeout_minutes(job: &str) -> Option<u64> {
     match job {
         "mutation" => Some(60),
-        "benchmark" => Some(45),
+        // Raised from 45 by 159d80c9b2 (#18350): at the 45-minute pin the
+        // nightly deadline landed mid-`native_pipeline_benchmark` (~46 minutes
+        // in) and cancelled the job before extraction, comparison, and
+        // receipts could run. The pin tracks that owned headroom raise rather
+        // than absorbing a regression: the bump paid for the full benchmark
+        // target finishing, not for lost speed.
+        "benchmark" => Some(75),
         "real-repo-latency" => Some(30),
         "corpus-differential" => Some(20),
         "lsp-memory-plateau" => Some(35),
@@ -844,7 +850,13 @@ fn base_pin_max_timeout_minutes(job: &str) -> Option<u64> {
         "scorecard-ratchet-check" => Some(15),
         "clippy-strict" => Some(20),
         "perl-kwalitee" => Some(20),
-        "fuzz" => Some(15),
+        // Raised from 15 by 1ae41f302b (#17028, merged #17821): the 600s fuzz
+        // budget plus cold toolchain/cargo-fuzz build headroom put the job
+        // deadline inside the crash-artifact upload window at 15 minutes.
+        // The pin tracks that owned headroom raise rather than absorbing a
+        // regression: the bump paid for crash artifacts surviving
+        // cancellation, not for lost speed.
+        "fuzz" => Some(30),
         _ => None,
     }
 }
