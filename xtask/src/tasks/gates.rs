@@ -5046,6 +5046,11 @@ gates:
             return Err(color_eyre::eyre::eyre!(
                 "ordinary prose scope selected a routed test gate"
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn scoped_gate_filter_preserves_full_tier_scope_and_dispositions()
     -> color_eyre::eyre::Result<()> {
         for scenario in ["code", "prose", "missing-metadata"] {
@@ -5127,7 +5132,6 @@ gates:
                         .reason
                 );
             }
-
         }
         Ok(())
     }
