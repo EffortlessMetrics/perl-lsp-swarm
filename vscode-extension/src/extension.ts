@@ -2308,7 +2308,9 @@ function createLanguageClientLifecycle(
         crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
         // Check after finalization so a dynamic registration received during
         // its awaits is not lost between the startup check and running state.
-        void suggestAiCompletionIfSupported(context, client).catch((err: unknown) => {
+        void suggestAiCompletionIfSupported(context, client, (message) =>
+          outputChannel.warn(message),
+        ).catch((err: unknown) => {
           outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
         });
       }
@@ -2605,7 +2607,9 @@ export function createLanguageClient(serverPath: string): LanguageClient {
           extensionContext
         ) {
           // A user-facing prompt must not hold the registration response open.
-          void suggestAiCompletionIfSupported(extensionContext, lc).catch((err: unknown) => {
+          void suggestAiCompletionIfSupported(extensionContext, lc, (message) =>
+            outputChannel.warn(message),
+          ).catch((err: unknown) => {
             outputChannel.error(`AI completion suggestion failed: ${String(err)}`);
           });
         }
