@@ -71,3 +71,28 @@ void test('omits unavailable phase values without inventing samples', () => {
     p95: null,
   });
 });
+
+void test('projects installed accessibility verdicts and inventory contracts', () => {
+  const withAccessibility = (verdict, digest) => ({
+    receipt: {
+      outcome: 'completed',
+      accessibility: {
+        schema_version: 'vscode_accessibility.v1',
+        verdict,
+        candidate: { inventory_digest: digest },
+      },
+    },
+  });
+
+  const summary = summarizeReceipts([
+    withAccessibility('bounded', 'a'.repeat(64)),
+    withAccessibility('bounded', 'a'.repeat(64)),
+    { receipt: { outcome: 'completed' } },
+  ]);
+  assert.deepEqual(summary.accessibility_verdicts, { bounded: 2 });
+  assert.deepEqual(summary.accessibility_inventory_digests, { ['a'.repeat(64)]: 2 });
+
+  const withoutAccessibility = summarizeReceipts([{ receipt: { outcome: 'completed' } }]);
+  assert.deepEqual(withoutAccessibility.accessibility_verdicts, {});
+  assert.deepEqual(withoutAccessibility.accessibility_inventory_digests, {});
+});

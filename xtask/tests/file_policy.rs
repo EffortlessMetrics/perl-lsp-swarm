@@ -562,7 +562,10 @@ fn inventory_artifact_binds_checkout_and_rejects_cached_evidence() -> Result<()>
     let temp = tempfile::tempdir()?;
     let root = temp.path();
     let git = |args: &[&str]| -> Result<String> {
-        let out = std::process::Command::new("git").args(args).current_dir(root).output()?;
+        let out = xtask::git_environment::isolate(std::process::Command::new("git"))
+            .args(args)
+            .current_dir(root)
+            .output()?;
         ensure!(out.status.success(), "git failed: {}", String::from_utf8_lossy(&out.stderr));
         Ok(String::from_utf8(out.stdout)?.trim().to_string())
     };

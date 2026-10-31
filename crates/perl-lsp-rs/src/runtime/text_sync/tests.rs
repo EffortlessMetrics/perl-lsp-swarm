@@ -1256,6 +1256,7 @@ fn stale_generation_side_effects_never_reindex_symbols() -> Result<(), Box<dyn s
         generation: 0, // the generation this (now-stale) parse was captured for
         snapshot: stale_snapshot,
         text: Arc::from(stale_text),
+        refresh_consumers_after_index: false,
         // Simulates what `process_job`/`on_published` would construct on
         // the real async path -- see `PublishedParseTicket`'s doc comment.
         settle_notified_by_worker: true,
