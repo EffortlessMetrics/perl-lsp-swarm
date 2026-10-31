@@ -51,6 +51,7 @@ SCHEDULE_RUNNER_TARGET = os.path.join(
     PACKAGES_DIR_PATH, "UnitTesting", "zzz_run_scheduler.py"
 )
 RX_RESULT = re.compile(r"^(?P<result>OK|FAILED|ERROR)", re.MULTILINE)
+RX_RAN = re.compile(r"^Ran (?P<count>\d+) test", re.MULTILINE)
 RX_DONE = re.compile(r"^UnitTesting: Done\.$", re.MULTILINE)
 
 WAIT_TIMEOUT_SECONDS = int(
@@ -245,6 +246,9 @@ def _read_output(path: str, idle_timeout: int) -> bool | None:
     done = False
     lines: list[str] = []
     partial = [""]
+    ran_count: int | None = None
+    verdict_ok = False
+    verdict_failed = False
 
     def reader() -> None:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -273,11 +277,22 @@ def _read_output(path: str, idle_timeout: int) -> bool | None:
             time.sleep(0.2)
             continue
         print(line, end="")
+        match_ran = RX_RAN.search(line)
+        if match_ran is not None:
+            ran_count = int(match_ran.group("count"))
         match = RX_RESULT.search(line)
         if match is not None:
-            success = match.group("result") == "OK"
+            if match.group("result") == "OK":
+                verdict_ok = True
+            else:
+                verdict_failed = True
+                success = False
         if RX_DONE.search(line) is not None:
             done = True
+    if verdict_failed:
+        return False
+    if verdict_ok:
+        return ran_count is not None and ran_count > 0
     return success
 
 
