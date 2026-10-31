@@ -632,6 +632,11 @@ suite('First-hour VS Code receipt', function () {
             .filter((entry) => entry.when === 'false')
             .flatMap((entry) => (typeof entry.command === 'string' ? [entry.command] : [])),
         ),
+        paletteUnprovenCommands: new Set(
+          (installedManifest.contributes?.menus?.commandPalette ?? [])
+            .filter((entry) => typeof entry.when === 'string' && entry.when !== 'false')
+            .flatMap((entry) => (typeof entry.command === 'string' ? [entry.command] : [])),
+        ),
       },
     );
     const accessibilityFailures = [

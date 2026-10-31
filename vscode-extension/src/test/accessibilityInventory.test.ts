@@ -197,6 +197,7 @@ describe('installed accessibility receipt (#7865)', () => {
       registeredCommands: new Set<string>(routes),
       commandTitles: new Map(routes.map((route) => [route, `Human title for ${route}`])),
       paletteHiddenCommands: new Set<string>(),
+      paletteUnprovenCommands: new Set<string>(),
     };
   }
 
@@ -267,6 +268,19 @@ describe('installed accessibility receipt (#7865)', () => {
     for (const receipt of [missing, hidden, untitled]) {
       expect(receipt.verdict).toBe('failed');
     }
+  });
+
+  test('a dynamic when clause downgrades keyboard to not_proven, never pass or failed', () => {
+    const receipt = buildInstalledAccessibilityReceipt(candidate, CURRENT_ACCESSIBILITY_INVENTORY, {
+      ...provenObservations(),
+      paletteUnprovenCommands: new Set(['perl-lsp.showWorkspaceStatus']),
+    });
+    const row = receipt.surfaces.find(
+      (candidateRow) => candidateRow.surface_id === 'workspace_status',
+    );
+    expect(row?.keyboard).toBe('not_proven');
+    expect(row?.semantic_labels).toBe('pass');
+    expect(receipt.verdict).toBe('not_proven');
   });
 
   test('a required surface without keyboard proof is not_proven, never bounded', () => {

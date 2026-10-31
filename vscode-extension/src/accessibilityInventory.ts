@@ -296,6 +296,12 @@ export interface InstalledAccessibilityObservations {
   commandTitles: ReadonlyMap<string, string>;
   /** Command ids hidden from the command palette (a `when: 'false'` entry). */
   paletteHiddenCommands: ReadonlySet<string>;
+  /**
+   * Command ids whose command palette entry carries a context-dependent
+   * `when` clause the harness did not evaluate in the live context. Their
+   * palette reachability is unproven, not proven.
+   */
+  paletteUnprovenCommands: ReadonlySet<string>;
 }
 
 /**
@@ -382,8 +388,11 @@ export function buildInstalledAccessibilityReceipt(
       let semanticLabels: AccessibilityDimensionVerdict = 'not_proven';
       if (routeId !== null) {
         const registered = observations.registeredCommands.has(routeId);
-        keyboard =
-          registered && !observations.paletteHiddenCommands.has(routeId) ? 'pass' : 'failed';
+        keyboard = !registered || observations.paletteHiddenCommands.has(routeId)
+          ? 'failed'
+          : observations.paletteUnprovenCommands.has(routeId)
+            ? 'not_proven'
+            : 'pass';
         const title = observations.commandTitles.get(routeId);
         semanticLabels =
           registered && typeof title === 'string' && /\p{L}/u.test(title) ? 'pass' : 'failed';
@@ -400,6 +409,7 @@ export function buildInstalledAccessibilityReceipt(
   );
 
   const limitations = [
+    'Command palette entries with a context-dependent when clause are not evaluated in the live context; those keyboard rows are not_proven, never pass.',
     'Screen-reader behavior is not instrumented by the automated installed harness; screen_reader rows are not_proven and can only move past that through a bounded manual run.',
     'High-contrast and zoom/reflow rows are not exercised by the automated installed harness; custom-surface styling obligations are proven by source-level contract tests, not here.',
     'Native VS Code surfaces are not retested: only extension-contributed commands (perl-lsp.* keyboard routes) are asserted, by design (#7807 native boundary).',
