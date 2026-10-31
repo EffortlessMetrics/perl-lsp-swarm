@@ -563,6 +563,13 @@ fn test_explain_provider_decision_preserves_tracked_identifier_shapes()
             scenario,
             "legitimate scenario must round-trip unchanged"
         );
+        let message =
+            result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+        assert!(!message.contains(receipt_id), "identity must stay structured: {message}");
+        assert!(!message.contains("docs/project/status"), "{message}");
+        if let Some(scenario) = scenario {
+            assert!(!message.contains(scenario), "scenario must stay structured: {message}");
+        }
     }
     Ok(())
 }
