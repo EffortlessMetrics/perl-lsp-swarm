@@ -251,8 +251,7 @@ fn find_regex_delimiter_pair(text: &str, start_byte: usize) -> Option<(usize, us
         ("q", false),
     ];
 
-    let mut pos = 0usize;
-    while pos < line_text.len() {
+    for (pos, _) in line_text.char_indices() {
         let remaining = &line_text[pos..];
 
         // Check word boundary before operator (must not follow alphanumeric or `_`)
@@ -275,7 +274,6 @@ fn find_regex_delimiter_pair(text: &str, start_byte: usize) -> Option<(usize, us
         };
 
         let Some(&(op, two_pair)) = matched else {
-            pos += 1;
             continue;
         };
 
@@ -291,7 +289,6 @@ fn find_regex_delimiter_pair(text: &str, start_byte: usize) -> Option<(usize, us
             {
                 return Some((first_delim_byte, second_delim_byte));
             }
-            pos += op.len() + 1;
             continue;
         }
 
@@ -311,8 +308,6 @@ fn find_regex_delimiter_pair(text: &str, start_byte: usize) -> Option<(usize, us
                 return Some((second, third));
             }
         }
-
-        pos += op.len() + 1;
     }
 
     None
