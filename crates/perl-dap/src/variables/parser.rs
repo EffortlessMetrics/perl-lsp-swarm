@@ -367,7 +367,7 @@ impl VariableParser {
         let mut pairs = Vec::new();
 
         for element in elements {
-            if let Some((key, value)) = element.split_once("=>") {
+            if let Some((key, value)) = self.split_fat_comma(&element) {
                 let key = self.unquote_key(key.trim());
                 let value = self.parse_value(value.trim(), depth + 1)?;
                 pairs.push((key, value));
@@ -463,6 +463,43 @@ impl VariableParser {
         }
 
         Ok(elements)
+    }
+
+    /// Splits `key => value` on the first `=>` that is not inside a quoted string.
+    fn split_fat_comma<'a>(&self, element: &'a str) -> Option<(&'a str, &'a str)> {
+        let bytes = element.as_bytes();
+        let mut in_string = false;
+        let mut string_char = b' ';
+        let mut escape_next = false;
+
+        for (idx, &b) in bytes.iter().enumerate() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+            if b == b'\\' {
+                escape_next = true;
+                continue;
+            }
+            if in_string {
+                if b == string_char {
+                    in_string = false;
+                }
+                continue;
+            }
+            match b {
+                b'"' | b'\'' => {
+                    in_string = true;
+                    string_char = b;
+                }
+                b'=' if bytes.get(idx + 1) == Some(&b'>') => {
+                    return Some((&element[..idx], &element[idx + 2..]));
+                }
+                _ => {}
+            }
+        }
+
+        None
     }
 
     /// Removes quotes from a string value.
@@ -686,6 +723,72 @@ mod tests {
 
         let result = parser.parse_value("{}", 0);
         assert!(matches!(result, Ok(PerlValue::Hash(pairs)) if pairs.is_empty()));
+    }
+
+    #[test]
+    fn parse_hash_literal_keeps_fat_comma_inside_single_quoted_key() {
+        let parser = VariableParser::new();
+        match parser.parse_value("{'a=>b' => 1}", 0) {
+            Ok(PerlValue::Hash(pairs)) => {
+                assert_eq!(pairs.len(), 1);
+                assert_eq!(pairs[0].0, "a=>b");
+                assert!(matches!(pairs[0].1, PerlValue::Integer(1)));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_hash_literal_keeps_fat_comma_inside_double_quoted_key() {
+        let parser = VariableParser::new();
+        match parser.parse_value(r#"{"a=>b" => 1}"#, 0) {
+            Ok(PerlValue::Hash(pairs)) => {
+                assert_eq!(pairs.len(), 1);
+                assert_eq!(pairs[0].0, "a=>b");
+                assert!(matches!(pairs[0].1, PerlValue::Integer(1)));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_hash_literal_handles_escaped_quote_in_key_before_fat_comma() {
+        let parser = VariableParser::new();
+        match parser.parse_value(r#"{"a\"=>b" => 2}"#, 0) {
+            Ok(PerlValue::Hash(pairs)) => {
+                assert_eq!(pairs.len(), 1);
+                assert_eq!(pairs[0].0, r#"a"=>b"#);
+                assert!(matches!(pairs[0].1, PerlValue::Integer(2)));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_hash_literal_still_splits_on_the_real_separator_when_value_contains_fat_comma() {
+        let parser = VariableParser::new();
+        match parser.parse_value("{'msg' => 'a => b'}", 0) {
+            Ok(PerlValue::Hash(pairs)) => {
+                assert_eq!(pairs.len(), 1);
+                assert_eq!(pairs[0].0, "msg");
+                assert!(matches!(&pairs[0].1, PerlValue::Scalar(s) if s == "a => b"));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_assignment_hash_with_fat_comma_inside_quoted_key() {
+        let parser = VariableParser::new();
+        match parser.parse_assignment("%h = {'a=>b' => 1}") {
+            Ok((name, PerlValue::Hash(pairs))) => {
+                assert_eq!(name, "%h");
+                assert_eq!(pairs.len(), 1);
+                assert_eq!(pairs[0].0, "a=>b");
+                assert!(matches!(pairs[0].1, PerlValue::Integer(1)));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
     }
 
     #[test]
