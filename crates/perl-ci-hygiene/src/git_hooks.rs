@@ -70,7 +70,7 @@ secret_scan_allowed() {
     grep -F -x -q -- "$1" <(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^#/d' -e '/^$/d' "$SECRET_SCAN_ALLOWLIST") 2>/dev/null
 }
 secret_scan_stream() {
-    local file="$1" patch="$2" subject="$3" name pattern hits added_tmp
+    local file="$1" patch="$2" subject="$3" name pattern hits added_tmp result status1 status2 status3
     added_tmp="$(mktemp 2>/dev/null)" || {
         secret_scan_cannot_evaluate "$subject" "cannot allocate a temp file for the added lines"
         return 1
@@ -109,11 +109,28 @@ secret_scan_stream() {
         # The -- matters: the private-key shape starts with dashes and would
         # otherwise parse as grep options, failing that rule open.
         if [ "$name" = "generic-assignment" ]; then
-            # Bare-identifier references match the generic shape but name
-            # computed values; filter them exactly like the gate does.
-            hits="$(grep -a -E -- "$pattern" "$added_tmp" | grep -a -E -v -- "$SECRET_SCAN_EXCLUDE_GENERIC" | grep -a -c . || true)"
+            # Record every stage: pipefail alone treats normal no-match (1)
+            # as a failure and cannot distinguish it from execution errors.
+            result="$(set +e
+                grep -a -E -- "$pattern" "$added_tmp" | grep -a -E -v -- "$SECRET_SCAN_EXCLUDE_GENERIC" | grep -a -c .
+                statuses=("${PIPESTATUS[@]}")
+                printf '\n%s %s %s' "${statuses[@]}"
+            )"
+            hits="${result%%$'\n'*}"
+            read -r status1 status2 status3 <<< "${result##*$'\n'}"
+            if [ "$status1" -gt 1 ] || [ "$status2" -gt 1 ] || [ "$status3" -gt 1 ]; then
+                rm -f "$added_tmp"
+                secret_scan_cannot_evaluate "$subject" "grep failed for $file ($name)"
+                return 1
+            fi
         else
-            hits="$(grep -a -E -c -- "$pattern" "$added_tmp" || true)"
+            status1=0
+            hits="$(grep -a -E -c -- "$pattern" "$added_tmp")" || status1=$?
+            if [ "$status1" -gt 1 ]; then
+                rm -f "$added_tmp"
+                secret_scan_cannot_evaluate "$subject" "grep failed for $file ($name)"
+                return 1
+            fi
         fi
         if [ -n "$hits" ] && [ "$hits" != "0" ]; then
             SECRET_SCAN_HITS="${SECRET_SCAN_HITS}  $file: rule $name matched $hits added line(s)
@@ -148,7 +165,7 @@ secret_scan_cannot_evaluate() {
     SECRET_SCAN_UNEVALUATED=1
     echo ""
     echo "Secret scan could not evaluate this $1: $2"
-    echo "   Refusing unevaluated — fix the git failure, or bypass with"
+    echo "   Refusing unevaluated — fix the evaluation failure, or bypass with"
     echo "   git $1 --no-verify only for a genuinely environmental failure."
     return 1
 }

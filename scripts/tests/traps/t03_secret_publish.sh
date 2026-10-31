@@ -322,8 +322,17 @@ SYNC_TEST="$(grep -c 'checked_in_pre_push_hook_matches_generated_hook' "$TRAP_RO
 PARITY_TEST="$(grep -c 'secret_scan_shell_matches_lib_rules' "$HOOKSRC" || true)"
 trap_say "allowlist(file=$ALLOW_OK,doc=$ALLOW_DOC) wire(commit=$WIRE_COMMIT@${CALL_LINE}<${GATE_LINE},push=$WIRE_PUSH@${PUSH_CALL_LINE}<${PUSH_GATE_LINE}) sync=$SYNC_TEST parity=$PARITY_TEST"
 
+# Fail the trap if grep execution errors are mistaken for clean scans.
+GREP_ERRORS_OK=0
+if python3 "$TRAP_ROOT/scripts/tests/test-secret-scan-grep-errors.py" >"$SCRATCH/grep-errors.txt" 2>&1; then
+    GREP_ERRORS_OK=1
+else
+    cat "$SCRATCH/grep-errors.txt" >&2
+fi
+trap_say "grep execution error controls=$GREP_ERRORS_OK"
+
 LIVE_OK=0
-if [[ "$REFUSED" -eq 1 && "$NAMING" -eq 3 && "$PRIV_NAMING" -eq 2 && "$PLUS_NAMING" -eq 1 && "$QUOTED_NAMING" -eq 1 \
+if [[ "$GREP_ERRORS_OK" -eq 1 && "$REFUSED" -eq 1 && "$NAMING" -eq 3 && "$PRIV_NAMING" -eq 2 && "$PLUS_NAMING" -eq 1 && "$QUOTED_NAMING" -eq 1 \
     && "$INTACT" -eq 1 && "$ESCAPE" -eq 1 && "$CONTROL" -eq 1 && "$IDENT_OK" -eq 1 \
     && "$PUSH_REFUSED" -eq 1 && "$PUSH_NAMING" -eq 2 && "$ORIGIN_CLEAN" -eq 1 && "$PUSH_CONTROL" -eq 1 \
     && "$PUSH_HIST_REFUSED" -eq 1 && "$PUSH_HIST_NAMING" -eq 3 && "$HIST_ORIGIN_CLEAN" -eq 1 \
