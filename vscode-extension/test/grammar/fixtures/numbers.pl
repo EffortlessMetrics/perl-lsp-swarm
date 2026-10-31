@@ -16,3 +16,4 @@ my $vsep = v5.36_1;
 my $vsep2 = v65_66.67;
 my %h = (v5 => 1);
 my $key = $h{v5};
+my $method = $obj->v5;

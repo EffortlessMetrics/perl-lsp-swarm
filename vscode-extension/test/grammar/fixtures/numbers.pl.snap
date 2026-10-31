@@ -152,7 +152,15 @@
 #        ^ source.perl keyword.operator.assignment.perl
 #         ^ source.perl
 #          ^^ source.perl variable.other.scalar.perl
+#            ^^^^^^ source.perl
+>my $method = $obj->v5;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^ source.perl variable.other.scalar.perl
+#          ^ source.perl
+#           ^ source.perl keyword.operator.assignment.perl
 #            ^ source.perl
-#             ^^ source.perl constant.numeric.version.perl
-#               ^^^ source.perl
+#             ^^^^ source.perl variable.other.scalar.perl
+#                 ^^ source.perl keyword.operator.arrow.perl
+#                   ^^^^ source.perl
 >
