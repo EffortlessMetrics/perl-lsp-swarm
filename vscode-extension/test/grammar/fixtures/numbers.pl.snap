@@ -99,8 +99,9 @@
 #                     ^^^^ source.perl constant.numeric.float.perl
 #                         ^^ source.perl
 >sub v5 { return 42; }
-#^^^ source.perl keyword.other.perl
-#   ^^^^^^ source.perl
+#^^^ source.perl meta.declaration.subroutine.perl keyword.other.perl
+#   ^^^^ source.perl meta.declaration.subroutine.perl
+#       ^^ source.perl
 #         ^^^^^^ source.perl support.function.builtin.perl
 #               ^ source.perl
 #                ^^ source.perl constant.numeric.integer.perl
@@ -114,4 +115,44 @@
 #                ^^^ source.perl
 #                   ^ source.perl keyword.operator.string.perl
 #                    ^^^^^^^ source.perl
+>my $vsep = v5.36_1;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^ source.perl variable.other.scalar.perl
+#        ^ source.perl
+#         ^ source.perl keyword.operator.assignment.perl
+#          ^ source.perl
+#           ^^^^^^^ source.perl constant.numeric.version.perl
+#                  ^^ source.perl
+>my $vsep2 = v65_66.67;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^ source.perl variable.other.scalar.perl
+#         ^ source.perl
+#          ^ source.perl keyword.operator.assignment.perl
+#           ^ source.perl
+#            ^^^^^^^^^ source.perl constant.numeric.version.perl
+#                     ^^ source.perl
+>my %h = (v5 => 1);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^ source.perl variable.other.hash.perl
+#     ^ source.perl
+#      ^ source.perl keyword.operator.assignment.perl
+#       ^^^^^ source.perl
+#            ^^ source.perl keyword.operator.fat-comma.perl
+#              ^ source.perl
+#               ^ source.perl constant.numeric.integer.perl
+#                ^^^ source.perl
+>my $key = $h{v5};
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^ source.perl variable.other.scalar.perl
+#       ^ source.perl
+#        ^ source.perl keyword.operator.assignment.perl
+#         ^ source.perl
+#          ^^ source.perl variable.other.scalar.perl
+#            ^ source.perl
+#             ^^ source.perl constant.numeric.version.perl
+#               ^^^ source.perl
 >

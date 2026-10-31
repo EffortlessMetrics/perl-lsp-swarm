@@ -12,3 +12,7 @@ my $vdeep = v1.2.3.4;
 package Modern::Tool 1.23;
 sub v5 { return 42; }
 my $unfinished = v5.36foo;
+my $vsep = v5.36_1;
+my $vsep2 = v65_66.67;
+my %h = (v5 => 1);
+my $key = $h{v5};

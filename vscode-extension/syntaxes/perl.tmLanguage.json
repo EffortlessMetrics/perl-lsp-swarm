@@ -168,7 +168,7 @@
             "patterns": [
                 {
                     "name": "constant.numeric.version.perl",
-                    "match": "(?<!sub\\s+)\\bv\\d+(?:\\.\\d+)*\\b(?!\\.\\d)"
+                    "match": "(?<!sub\\s+)(?<!::)\\bv\\d+(?:_\\d+)*(?:\\.\\d+(?:_\\d+)*)*\\b(?!\\.\\d)(?!\\s*=>)"
                 },
                 {
                     "name": "constant.numeric.hex.perl",

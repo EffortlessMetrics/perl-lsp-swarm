@@ -3000,6 +3000,43 @@ mod tests {
         Ok(())
     }
 
+    /// #16590 follow-up: a bareword in an autoquote position (`v5 => 1`,
+    /// `$h{v5}`, `Foo::v5`, `$obj->v5`) is a string key or name, not a
+    /// v-string, and must not be painted as a number. A real v-string in
+    /// expression position (`my $x = v5;`, `v5.36_1`) still is one token.
+    #[test]
+    fn autoquoted_barewords_are_not_painted_as_vstring_numbers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my %h = (v5 => 1);\nmy $a = $h{v5};\nmy $b = Foo::v5;\nmy $c = $obj->v5;\nmy $x = v5;\nmy $y = v5.36_1;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
+        let number_idx =
+            *legend().map.get("number").ok_or("number token type missing from legend")?;
+
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut numbers = Vec::new();
+        for [delta_line, delta_start, length, token_type, _modifiers] in tokens {
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == number_idx {
+                numbers.push((line, col, length));
+            }
+        }
+
+        assert_eq!(
+            numbers,
+            vec![(0, 15, 1), (4, 8, 2), (5, 8, 7)],
+            "only the fat-comma value and the two real v-strings are numbers, got {numbers:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn statement_label_offsets_rejects_embedded_or_non_label_matches()
     -> Result<(), Box<dyn std::error::Error>> {

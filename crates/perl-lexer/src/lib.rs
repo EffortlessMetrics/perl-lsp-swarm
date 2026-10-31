@@ -1978,12 +1978,16 @@ impl<'a> PerlLexer<'a> {
         }
 
         // We have `v` followed by a digit — scan the rest of the v-string.
-        // Pattern: v DIGITS (.DIGITS)*
+        // Pattern: v DIGITS (.DIGITS)* with Perl numeric separators (`_`
+        // between digits, as in `v5.36_1`).
         let mut pos = next_pos;
 
-        // Consume leading digits
+        // Consume leading digits (and digit-separating underscores)
         while pos < bytes.len() && bytes[pos].is_ascii_digit() {
             pos += 1;
+            if pos + 1 < bytes.len() && bytes[pos] == b'_' && bytes[pos + 1].is_ascii_digit() {
+                pos += 1;
+            }
         }
 
         // Consume optional `.DIGITS` segments (require at least one digit after dot)
@@ -2000,6 +2004,9 @@ impl<'a> PerlLexer<'a> {
             // Consume digits after the dot
             while pos < bytes.len() && bytes[pos].is_ascii_digit() {
                 pos += 1;
+                if pos + 1 < bytes.len() && bytes[pos] == b'_' && bytes[pos + 1].is_ascii_digit() {
+                    pos += 1;
+                }
             }
         }
 
@@ -2019,6 +2026,13 @@ impl<'a> PerlLexer<'a> {
             }
         }
 
+        // A bareword in an autoquote context is a string, not a v-string:
+        // a fat-comma key (`v5 => 1`), a package segment (`Foo::v5`), a
+        // method name (`$obj->v5`), or a hash key (`$h{v5}`).
+        if self.vstring_is_autoquoted(start, pos) {
+            return None;
+        }
+
         // `v5` (no dots) is a valid Perl v-string meaning chr(5).
         let text = &self.input[start..pos];
 
@@ -2031,6 +2045,67 @@ impl<'a> PerlLexer<'a> {
             start,
             end: self.position,
         })
+    }
+
+    /// Whether the candidate v-string at `start..end` sits in a position
+    /// where Perl autoquotes a bareword instead of reading a v-string.
+    fn vstring_is_autoquoted(&self, start: usize, end: usize) -> bool {
+        let bytes = self.input_bytes;
+        // Fat-comma key: only whitespace may intervene before `=>`.
+        let mut after = end;
+        while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
+            after += 1;
+        }
+        if bytes.get(after) == Some(&b'=') && bytes.get(after + 1) == Some(&b'>') {
+            return true;
+        }
+        // Previous significant byte(s).
+        let mut before = start;
+        while before > 0 && (bytes[before - 1] == b' ' || bytes[before - 1] == b'\t') {
+            before -= 1;
+        }
+        if before >= 2 && &bytes[before - 2..before] == b"::" {
+            return true;
+        }
+        if before >= 2 && &bytes[before - 2..before] == b"->" {
+            return true;
+        }
+        // Hash key: `{` directly after a sigiled variable, a closing
+        // subscript, or a dereference arrow (not after a bare block opener).
+        if before >= 1 && bytes[before - 1] == b'{' {
+            let mut inner = before - 1;
+            while inner > 0 && (bytes[inner - 1] == b' ' || bytes[inner - 1] == b'\t') {
+                inner -= 1;
+            }
+            if inner >= 1 {
+                match bytes[inner - 1] {
+                    b'}' | b']' | b'$' | b'@' | b'%' => return true,
+                    b'>' if inner >= 2 && bytes[inner - 2] == b'-' => return true,
+                    c if c.is_ascii_alphanumeric() || c == b'_' => {
+                        // Identifier directly before `{`: a subscript only
+                        // when the identifier itself carries a sigil or a
+                        // dereference (a bare `sub NAME {` or block is not).
+                        let mut name_start = inner - 1;
+                        while name_start > 0
+                            && (bytes[name_start - 1].is_ascii_alphanumeric()
+                                || bytes[name_start - 1] == b'_')
+                        {
+                            name_start -= 1;
+                        }
+                        if name_start >= 1
+                            && matches!(bytes[name_start - 1], b'$' | b'@' | b'%')
+                        {
+                            return true;
+                        }
+                        if name_start >= 2 && &bytes[name_start - 2..name_start] == b"->" {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     #[inline]
