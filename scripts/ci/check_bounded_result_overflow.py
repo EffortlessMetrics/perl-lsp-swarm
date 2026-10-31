@@ -17,23 +17,32 @@ SCHEMA = ROOT / "docs/agents/bounded-subagent-result-v1.schema.json"
 FIXTURES = ROOT / "docs/agents/bounded-subagent-result-v1.fixtures.json"
 
 
+def integer_count(value: Any) -> int | None:
+    """Normalize a decoded JSON integer without rounding during addition."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
 def overflow_errors(packet: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for index, overflow in enumerate(packet.get("overflow", [])):
-        if not overflow.get("truncated"):
-            continue
         counts = overflow.get("counts")
         if not isinstance(counts, dict):
             continue
-        selected = counts.get("selected")
-        omitted = counts.get("omitted")
-        total = counts.get("total")
-        if isinstance(omitted, int) and omitted == 0:
+        selected = integer_count(counts.get("selected"))
+        omitted = integer_count(counts.get("omitted"))
+        total = integer_count(counts.get("total"))
+        if overflow.get("truncated") and omitted == 0:
             errors.append(f"overflow[{index}].counts.omitted must be greater than zero")
         if (
-            isinstance(selected, int)
-            and isinstance(omitted, int)
-            and isinstance(total, int)
+            selected is not None
+            and omitted is not None
+            and total is not None
             and selected + omitted != total
         ):
             errors.append(f"overflow[{index}].counts selected + omitted must equal total")
