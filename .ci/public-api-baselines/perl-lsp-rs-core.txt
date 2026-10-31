@@ -3920,8 +3920,8 @@ pub fn perl_lsp_rs_core::providers::FoldingRangeKind::fmt(&self, f: &mut core::f
 pub struct perl_lsp_rs_core::providers::folding::FoldingRange
 pub struct perl_lsp_rs_core::providers::folding::FoldingRange
 pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset: usize
-pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
@@ -8737,6 +8737,7 @@ pub fn perl_lsp_rs_core::providers::FileFactShardPort::new(shards: &[perl_worksp
 pub fn perl_lsp_rs_core::providers::FileFactShardPort::query(&self, request: &perl_lsp_rs_core::providers::ProviderQueryRequest, control: &dyn perl_lsp_rs_core::providers::ProviderQueryControl) -> core::result::Result<perl_lsp_rs_core::providers::ProviderQueryResultDraft, perl_lsp_rs_core::providers::ProviderQueryContractError>
 pub struct perl_lsp_rs_core::providers::FoldingRange
 pub perl_lsp_rs_core::providers::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::FoldingRange::start_offset: usize
 pub fn perl_lsp_rs_core::providers::FoldingRange::clone(&self) -> perl_lsp_rs_core::providers::FoldingRange
