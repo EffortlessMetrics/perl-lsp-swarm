@@ -518,11 +518,7 @@ mod tests {
             1,
             "code eval $code still counts"
         );
-        assert_eq!(
-            statement_eval_offsets("eval  {", false).len(),
-            1,
-            "wide-gap eval still counts"
-        );
+        assert_eq!(statement_eval_offsets("eval  {", false).len(), 1, "wide-gap eval still counts");
         assert_eq!(
             statement_eval_offsets("eval $code; # eval $other\n", false).len(),
             1,
