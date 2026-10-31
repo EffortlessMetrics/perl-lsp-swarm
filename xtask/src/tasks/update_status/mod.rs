@@ -42,7 +42,7 @@ mod tests;
 mod token;
 mod workspace;
 
-use cmd::{run_cmd, run_cmd_merged, run_subsystem};
+use cmd::{run_cmd, run_subsystem};
 
 // ---------------------------------------------------------------------------
 // Subsystem selector
