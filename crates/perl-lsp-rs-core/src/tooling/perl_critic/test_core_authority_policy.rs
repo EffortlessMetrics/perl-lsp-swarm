@@ -217,7 +217,7 @@ fn core_security_authority_survives_critic_exclude() -> Result<(), String> {
     let include = Vec::new();
     let exclude = vec!["native.security.system_exec".to_string()];
     let rows = apply_policy(true, 1, &include, &exclude);
-    require_filtered_core_only_row(&rows, "native alias excluded");
+    require_filtered_core_only_row(&rows, "native alias excluded")?;
     Ok(())
 }
 
@@ -230,7 +230,7 @@ fn core_security_authority_survives_exclusion_by_the_pl603_selector() -> Result<
     let include = Vec::new();
     let exclude = vec!["PL603".to_string()];
     let rows = apply_policy(true, 1, &include, &exclude);
-    require_filtered_core_only_row(&rows, "PL603 selector excluded");
+    require_filtered_core_only_row(&rows, "PL603 selector excluded")?;
     Ok(())
 }
 
@@ -239,7 +239,7 @@ fn core_security_authority_survives_nonmatching_critic_include() -> Result<(), S
     let include = vec!["native.testing.require_use_strict".to_string()];
     let exclude = Vec::new();
     let rows = apply_policy(true, 1, &include, &exclude);
-    require_filtered_core_only_row(&rows, "nonmatching include filter");
+    require_filtered_core_only_row(&rows, "nonmatching include filter")?;
     Ok(())
 }
 

@@ -896,9 +896,36 @@ fn raw_string_open(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
 /// replaced by a space, newlines preserved. Feature names inside `cfg`
 /// arguments are string literals too, so callers scan the ORIGINAL text at
 /// positions this copy proves are code rather than scanning this copy.
-fn code_only(text: &str) -> String {
+fn code_only(text: &str) -> Result<String, ActivationError> {
     let mask = code_mask(text);
-    text.char_indices().map(|(i, c)| if mask[i] || c == '\n' { c } else { ' ' }).collect()
+    // One preallocated buffer rather than a per-scalar collection: this runs
+    // over every compiled source file in the repository, so an allocation per
+    // character is an allocation per byte of the tree.
+    let mut code = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        // `code_mask` yields one entry per byte, so this lookup succeeds
+        // whenever mask and source agree on length. It is propagated rather
+        // than indexed so a disagreement surfaces as a named error: a panic
+        // would be louder than the truth, and a silent skip would drop a gate,
+        // which `gated_features` documents as the more expensive loss.
+        let is_code = mask.get(i).copied().ok_or_else(|| {
+            ActivationError::new(format!(
+                "activation: code mask has {} entries for a {}-byte source; byte {i} is unmasked",
+                mask.len(),
+                text.len()
+            ))
+        })?;
+        if is_code || c == '\n' {
+            code.push(c);
+        } else {
+            // A masked scalar becomes as many spaces as its UTF-8 width, so a
+            // byte offset into `code` still addresses the same byte of `text`.
+            for _ in 0..c.len_utf8() {
+                code.push(' ');
+            }
+        }
+    }
+    Ok(code)
 }
 
 /// Every feature name this file gates on.
@@ -916,20 +943,38 @@ fn code_only(text: &str) -> String {
 /// gate is not a harmless under-count: an unseen production gate leaves an
 /// all-tests population behind it and turns a product feature into a claimed
 /// test API.
-fn gated_features(text: &str) -> BTreeSet<String> {
+fn gated_features(text: &str) -> Result<BTreeSet<String>, ActivationError> {
     let mut found = BTreeSet::new();
 
     // `code` has comment and literal bodies blanked (same length, same line
     // breaks), so a `cfg!(` or `#[cfg(` that appears only inside a comment
     // or a string is invisible here; the arguments are then read from the
     // original text at the same offset, where the feature-name literals are.
-    let code = code_only(text);
+    let code = code_only(text)?;
     let mut search = 0;
-    while let Some(offset) = code[search..].find("cfg!(") {
+    loop {
+        // Both lookups below are the same invariant seen from two sides: an
+        // offset found in the masked copy must address the same byte of the
+        // source. Neither may fail silently — a `None` swallowed here removes
+        // a gate from the population without a word, which is exactly the
+        // under-count this function's doc comment calls expensive.
+        let rest = code.get(search..).ok_or_else(|| {
+            ActivationError::new(format!(
+                "activation: scan position {search} is not a character boundary of the \
+                 {}-byte masked copy",
+                code.len()
+            ))
+        })?;
+        let Some(offset) = rest.find("cfg!(") else { break };
         let start = search + offset + "cfg!(".len();
-        if let Some(args) = text[start..].split(')').next() {
-            extract_feature_names(&squeeze(args), &mut found);
-        }
+        let args = text.get(start..).ok_or_else(|| {
+            ActivationError::new(format!(
+                "activation: cfg! arguments begin at byte {start}, which is not a character \
+                 boundary of the {}-byte source; the masked copy and the source have diverged",
+                text.len()
+            ))
+        })?;
+        extract_feature_names(&squeeze(args.split(')').next().unwrap_or(args)), &mut found);
         search = start;
     }
 
@@ -957,7 +1002,7 @@ fn gated_features(text: &str) -> BTreeSet<String> {
         }
         extract_feature_names(&squeeze(&attribute), &mut found);
     }
-    found
+    Ok(found)
 }
 
 fn squeeze(value: &str) -> String {
@@ -1016,7 +1061,7 @@ fn build_gate_index(root: &Path) -> Result<GateIndex, ActivationError> {
             })?;
             let relative = path.strip_prefix(root).unwrap_or(&path);
             let site = relative.to_string_lossy().replace('\\', "/");
-            for feature in gated_features(&text) {
+            for feature in gated_features(&text)? {
                 per_feature.entry(feature).or_default().push(site.clone());
             }
         }
@@ -2354,5 +2399,47 @@ mod tests {
         });
         let _ = fs::remove_dir_all(&root);
         assert_eq!(owners, Ok(vec![UNOWNED.to_string()]));
+    }
+
+    /// The masked copy must be byte-for-byte as long as its input, because
+    /// `gated_features` reads the ORIGINAL text at offsets it found in the
+    /// copy. A masked scalar narrower than the one it replaced silently
+    /// shifts every offset after it.
+    ///
+    /// Asserted separately from any behaviour, because a drifted offset does
+    /// not reliably change the answer: it lands wherever it lands.
+    #[test]
+    fn code_only_preserves_byte_length_across_multibyte_masking() -> Result<(), String> {
+        let text = "// é\nconst enabled: bool = cfg!(feature = \"simd\");";
+        let masked = code_only(text).map_err(|error| error.to_string())?;
+        if masked.len() != text.len() {
+            return Err(format!(
+                "code_only must not change byte length: input {} bytes, masked {} bytes",
+                text.len(),
+                masked.len()
+            ));
+        }
+        Ok(())
+    }
+
+    /// A drifted offset that lands on a `)` before the feature literal makes
+    /// `gated_features` return an EMPTY set rather than panicking, which is
+    /// the loss its own doc comment warns about: an unseen production gate
+    /// read as a test API.
+    ///
+    /// `foo()` supplies that earlier `)` and five box-drawing characters
+    /// supply ten bytes of drift. Fewer than five leaves the answer correct
+    /// by accident; beyond five the run alternates between this silent wrong
+    /// answer and a char-boundary panic, depending only on where the index
+    /// lands. A test anchored on the panic would prove less than this one.
+    #[test]
+    fn gated_features_survives_multibyte_drift_onto_an_earlier_paren() -> Result<(), String> {
+        let text = "// ─────\nlet e = foo() && cfg!(feature = \"simd\");";
+        let actual = gated_features(text).map_err(|error| error.to_string())?;
+        let expected = BTreeSet::from(["simd".to_string()]);
+        if actual != expected {
+            return Err(format!("expected {expected:?}, got {actual:?}"));
+        }
+        Ok(())
     }
 }

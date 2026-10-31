@@ -21,8 +21,8 @@
 //! let ctx = PullDiagnosticsContext { /* ... */ };
 //! ```
 
-/// Dead code detection
-#[cfg(not(target_arch = "wasm32"))]
+/// Dead code detection (identity registry is target-independent; only the
+/// detector itself is gated, below)
 mod dead_code;
 /// Diagnostic deduplication utilities
 mod dedup;
@@ -31,6 +31,8 @@ mod dedup;
 mod diagnostics;
 /// Diagnostics shadow compare and cutover paths for undefined-symbol diagnostics.
 pub mod diagnostics_shadow;
+/// Generation-owned, transport-neutral document diagnostic analysis (#7286).
+pub mod document_analysis;
 /// Dynamic boundary acceptance test fixtures (Req 23.1–23.8).
 #[cfg(test)]
 mod dynamic_boundary_acceptance;
@@ -55,7 +57,13 @@ pub mod scope;
 /// AST walker utilities
 mod walker;
 
+/// Proof-only premise predicate for #7286's malformed-document contracts; see
+/// `diagnostics::parse_errors_suppress_semantic_analysis`. Never present in a
+/// production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use diagnostics::parse_errors_suppress_semantic_analysis;
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
+pub use document_analysis::DocumentDiagnosticAnalysis;
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{
     Diagnostic, DiagnosticTag, RelatedInformation, critic_overlap_observations,
@@ -69,7 +77,9 @@ pub use lints::common_mistakes;
 pub use lints::deprecated;
 pub use lints::missing_module;
 pub use lints::package_subroutine;
-pub(crate) use lints::printf_format::{count_format_specifiers, unquote_string};
+pub(crate) use lints::printf_format::{
+    count_format_specifiers, known_scalar_argument_count, unquote_string,
+};
 /// Same-file Moo/Moose role conflict detection.
 pub use lints::role_conflicts;
 pub use lints::security;
@@ -82,3 +92,6 @@ pub use lints::version_compat;
 // Re-export dead code detection (when not targeting WASM)
 #[cfg(not(target_arch = "wasm32"))]
 pub use dead_code::detect_dead_code;
+pub use dead_code::{
+    DEAD_CODE_CATEGORY, DEAD_CODE_IDENTITIES, DeadCodeIdentity, identity_for_code,
+};

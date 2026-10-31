@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Workspace diagnostic pull now returns an empty full row for previously reported documents that are no longer open, so editors clear stale diagnostics for closed or deleted files instead of keeping them indefinitely."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18051"
+  Slug: workspace-pull-tombstone
+  Breaking: "no"

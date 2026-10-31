@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub mod doctest_enforcement;
 pub mod version_sync;
 
 /// Cargo package name for this crate, used to locate its build artifacts and source tree.

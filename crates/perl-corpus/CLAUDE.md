@@ -41,7 +41,7 @@ its seed is exploratory output, not reproducible evidence.
 
 ## Programme train
 
-The stable authority train for this crate's programme (#8826 / #6696) is checked data at
+The stable authority train for this crate's programme is checked data at
 `.spec/10980-perl-corpus-stable-dag/train.manifest.json` (`perl_corpus_train.v1`). It
 owns which result depends on which, which authority moves, which writers conflict, and
 which legacy path exits; it never owns current implementation state or readiness.
@@ -80,8 +80,9 @@ umbrella, and a shared exclusive conflict key without a dependency path is a rej
   downgrade is written down at the call site as `as_paths()` or `into_paths()`.
   `tests/root_path_authority.rs` holds this boundary with `assert_does_not_implement!`,
   which breaks that test target's build if such an impl reappears. Keep the enforcement
-  there, not only in a doctest: the gates run `cargo test --locked --tests` and never
-  `cargo test --doc`.
+  there, not only in a doctest: the doctest also runs in the required
+  `doctest_contract_proof` merge gate, and the integration test
+  deliberately does not depend on this crate staying selected by that route.
 - Component-by-component selected-member opening must consume the retained root
   capability. Do not add another root-opening path.
 - The published package ships APIs and deliberately included crate assets. Repository

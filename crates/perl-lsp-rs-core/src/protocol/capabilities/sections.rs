@@ -4,9 +4,10 @@ use lsp_types::*;
 
 pub(super) fn apply_document_sync(caps: &mut ServerCapabilities) {
     // Use Options instead of Kind to comply with LSP 3.18 shape requirements.
-    // TextDocumentSyncKind::FULL (1): the server always reparses the full document
-    // on every didChange notification. INCREMENTAL (2) would be inaccurate — no
-    // incremental AST state is maintained between edits.
+    // TextDocumentSyncKind::FULL (1): v0.18 transfers complete document text on
+    // every didChange. INCREMENTAL (2) would advertise ranged transfer that
+    // production does not apply. Internal full reparse is independent of this
+    // transfer kind.
     caps.text_document_sync = Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
         open_close: Some(true),
         change: Some(TextDocumentSyncKind::FULL),
@@ -114,7 +115,8 @@ pub(super) fn apply_symbol_and_workspace_features(
         caps.workspace_symbol_provider = Some(OneOf::Left(true));
     }
 
-    if build.workspace_symbol_resolve {
+    // Resolve options cannot advertise a disabled parent request again.
+    if build.workspace_symbol && build.workspace_symbol_resolve {
         caps.workspace_symbol_provider = Some(OneOf::Right(WorkspaceSymbolOptions {
             resolve_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -291,6 +293,8 @@ fn code_action_kinds(_build: &BuildFlags) -> Vec<CodeActionKind> {
     // REFACTOR_EXTRACT is implemented in code_actions_enhanced.rs.
     // Tests verified in lsp_code_actions_tests.rs (Issue #181).
     kinds.push(CodeActionKind::REFACTOR_EXTRACT);
+    kinds.push(CodeActionKind::new("refactor.extract.variable"));
+    kinds.push(CodeActionKind::new("refactor.extract.subroutine"));
     // Note: refactor.inline is NOT advertised because no inline action
     // is currently implemented.
     kinds.push(CodeActionKind::REFACTOR_REWRITE);

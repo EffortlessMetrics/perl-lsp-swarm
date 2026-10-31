@@ -1,6 +1,6 @@
 use crate::runtime::workspace_folder::WorkspaceFolderState;
 use perl_lsp_rs_core::config::{
-    ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
+    ExternalIncludePathAuthority, RejectedClientIncludePath, UnauthorizedExternalIncludePathSource,
     WorkspaceConfigUpdateContext,
 };
 use perl_uri::uri_to_fs_path;
@@ -8,11 +8,17 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+/// Surfaces rejected client `includePaths` entries to the editor user
+/// (#17164) with the session-warning dedup applied. The `tracing::warn!`
+/// log copy at each validation site is unchanged.
+pub(super) type SurfaceRejectedIncludePaths<'a> = &'a (dyn Fn(&[RejectedClientIncludePath]) + 'a);
+
 fn apply_workspace_config_layer(
     config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
     settings: &Value,
     folder: &WorkspaceFolderState,
     external_include_paths: ExternalIncludePathAuthority,
+    surface_rejected: SurfaceRejectedIncludePaths<'_>,
 ) {
     let rejected = config.update_from_value_with_context(
         settings,
@@ -21,6 +27,7 @@ fn apply_workspace_config_layer(
             external_include_paths,
         },
     );
+    surface_rejected(&rejected);
     for entry in rejected {
         tracing::warn!(
             target: "perl_lsp::config",
@@ -39,6 +46,7 @@ pub(super) fn apply_workspace_configuration_results(
     results: &[Value],
     request_id: i64,
     init_options_perl: Option<&Value>,
+    surface_rejected: SurfaceRejectedIncludePaths<'_>,
 ) -> BTreeSet<PathBuf> {
     // Result-array position is not provenance (#4998): no `workspace/configuration`
     // response item carries independently verified user/machine authority, so both
@@ -73,6 +81,7 @@ pub(super) fn apply_workspace_configuration_results(
                     ),
                 },
             );
+            surface_rejected(&rejected);
             for entry in rejected {
                 tracing::warn!(
                     target: "perl_lsp::config",
@@ -108,6 +117,7 @@ pub(super) fn apply_workspace_configuration_results(
                 global_settings,
                 folder,
                 global_authority,
+                surface_rejected,
             );
         }
 
@@ -119,6 +129,7 @@ pub(super) fn apply_workspace_configuration_results(
                 ExternalIncludePathAuthority::Untrusted(
                     UnauthorizedExternalIncludePathSource::FolderConfiguration,
                 ),
+                surface_rejected,
             );
         } else {
             tracing::warn!(
@@ -156,7 +167,15 @@ mod tests {
             json!({"workspace": {"resolutionTimeout": 150}}),
         ];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 45, None);
+        apply_workspace_configuration_results(
+            &mut folders,
+            &folder_uris,
+            true,
+            &results,
+            45,
+            None,
+            &|_| {},
+        );
 
         assert!(
             folders[0].effective_workspace_config.external_include_paths.is_empty(),
@@ -182,7 +201,15 @@ mod tests {
         let hostile = json!({"workspace": {"externalIncludePaths": [absolute]}});
         let results = vec![hostile.clone(), hostile.clone(), hostile];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 46, None);
+        apply_workspace_configuration_results(
+            &mut folders,
+            &folder_uris,
+            true,
+            &results,
+            46,
+            None,
+            &|_| {},
+        );
 
         for folder in &folders {
             assert!(
@@ -207,7 +234,15 @@ mod tests {
             json!({"workspace": {"resolutionTimeout": 250}}),
         ];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 42, None);
+        apply_workspace_configuration_results(
+            &mut folders,
+            &folder_uris,
+            true,
+            &results,
+            42,
+            None,
+            &|_| {},
+        );
 
         assert!(folders[0].effective_workspace_config.use_system_inc);
         assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 150);
@@ -231,6 +266,7 @@ mod tests {
             &results,
             43,
             None,
+            &|_| {},
         );
 
         assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 200);
@@ -258,6 +294,7 @@ mod tests {
             &results,
             44,
             None,
+            &|_| {},
         );
 
         folders[0].refresh_workspace_metadata();

@@ -276,6 +276,126 @@ class DapScorecardRuntimeTests(unittest.TestCase):
                 {"name": "@big", "value": "[1,2,3]"}
             )
 
+    def test_launch_probes_keep_the_configured_trusted_root(self) -> None:
+        # The caller's trusted root is the boundary under test: deriving it
+        # per-probe from each script's own directory made every launch
+        # self-validating. Probes are stubbed (no process spawn); what matters
+        # is which root each launch probe receives.
+        import shutil
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            root.mkdir()
+            binary = Path(temp_dir) / "perl-dap"
+            shutil.copy("/bin/true", binary)
+            binary.chmod(0o755)
+            fixtures = {}
+            for name in ("hello", "loops", "eval", "args", "begin_end"):
+                script = root / f"{name}.pl"
+                script.write_text("print 1;\n", encoding="utf-8")
+                fixtures[name] = script
+            seen_roots: list = []
+            real_launch = MODULE.probe_launch
+            MODULE.probe_launch = (  # type: ignore[method-assign]
+                lambda b, s, t, i, r: seen_roots.append(r) or 7
+            )
+            real_attach = MODULE.probe_attach
+            MODULE.probe_attach = lambda *a, **k: 7  # type: ignore[method-assign]
+            real_metrics = MODULE.probe_session_metrics
+            MODULE.probe_session_metrics = (  # type: ignore[method-assign]
+                lambda *a, **k: ({}, {}, {}, {})
+            )
+            try:
+                scorecard = MODULE.build_scorecard(
+                    binary, binary, fixtures, 1.0, root
+                )
+            finally:
+                MODULE.probe_launch = real_launch  # type: ignore[method-assign]
+                MODULE.probe_attach = real_attach  # type: ignore[method-assign]
+                MODULE.probe_session_metrics = real_metrics  # type: ignore[method-assign]
+            self.assertEqual(len(seen_roots), 5)
+            for received in seen_roots:
+                self.assertEqual(received, root)
+            for detail in scorecard["launch"]["details"]:
+                self.assertIsNone(detail["error"])
+
+    def test_fixture_outside_the_trusted_root_is_a_caller_error(self) -> None:
+        import shutil
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "root"
+            root.mkdir()
+            elsewhere = Path(temp_dir) / "elsewhere"
+            elsewhere.mkdir()
+            binary = Path(temp_dir) / "perl-dap"
+            shutil.copy("/bin/true", binary)
+            binary.chmod(0o755)
+            fixtures = {}
+            for name in ("hello", "loops", "eval", "args", "begin_end"):
+                script = elsewhere / f"{name}.pl"
+                script.write_text("print 1;\n", encoding="utf-8")
+                fixtures[name] = script
+            real_launch = MODULE.probe_launch
+            MODULE.probe_launch = lambda *a, **k: self.fail(  # type: ignore[method-assign]
+                "out-of-root fixture must never reach the probe"
+            )
+            real_attach = MODULE.probe_attach
+            MODULE.probe_attach = lambda *a, **k: 7  # type: ignore[method-assign]
+            real_metrics = MODULE.probe_session_metrics
+            MODULE.probe_session_metrics = (  # type: ignore[method-assign]
+                lambda *a, **k: ({}, {}, {}, {})
+            )
+            try:
+                scorecard = MODULE.build_scorecard(
+                    binary, binary, fixtures, 1.0, root
+                )
+            finally:
+                MODULE.probe_launch = real_launch  # type: ignore[method-assign]
+                MODULE.probe_attach = real_attach  # type: ignore[method-assign]
+                MODULE.probe_session_metrics = real_metrics  # type: ignore[method-assign]
+            for detail in scorecard["launch"]["details"]:
+                self.assertIsNotNone(detail["error"])
+                self.assertIn("trusted root", detail["error"])
+
+    def test_trusted_root_reaches_the_server_unresolved(self) -> None:
+        # The startup contract rejects symlink roots before canonicalizing;
+        # resolving here would hide that seam and test a different root than
+        # the caller named. Capture the spawned argv without starting perl-dap.
+        captured: list = []
+        real_popen = TRANSPORT.subprocess.Popen
+
+        class _RecordingPopen:
+            def __init__(self, argv, **kwargs):
+                captured.append(argv)
+                self.stdin = io.BytesIO()
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self.returncode = 0
+
+            def poll(self):
+                return 0
+
+        TRANSPORT.subprocess.Popen = _RecordingPopen  # type: ignore[method-assign]
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                real = Path(temp_dir) / "real"
+                real.mkdir()
+                link = Path(temp_dir) / "link"
+                try:
+                    link.symlink_to(real, target_is_directory=True)
+                except OSError:
+                    self.skipTest("symlinks unavailable")
+                    return
+                TRANSPORT.DapProcess(
+                    Path(temp_dir) / "perl-dap", 1.0, None, link
+                ).close()
+        finally:
+            TRANSPORT.subprocess.Popen = real_popen  # type: ignore[method-assign]
+        self.assertEqual(len(captured), 1)
+        root_arg = captured[0][captured[0].index("--trusted-root") + 1]
+        self.assertEqual(root_arg, str(link))
+        self.assertNotEqual(root_arg, str(real.resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()

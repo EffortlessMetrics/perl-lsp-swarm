@@ -54,6 +54,7 @@ perl-subprocess-runtime.workspace = true
 perl-lsp-perltidy.workspace = true
 # perl-lsp-uri absorbed into perl-lsp-rs-core::uri (Wave G3 step 3)
 perl-diagnostics.workspace = true
+perl-uri.workspace = true
 perl-workspace.workspace = true
 perl-pragma.workspace = true
 perl-symbol.workspace = true
@@ -86,13 +87,24 @@ lsp-compat = []
 # Enabled by default; library consumers can disable with --no-default-features
 # to drop the TLS stack entirely.
 ai-provider = ["dep:ureq"]
+# Proof-only instrumentation (native-critic scope/pragma rebuild counter, #7286).
+# Off by default so a production build carries neither the counter nor its
+# accessors; `perl-lsp-rs` enables it through dev-dependencies so its tests can
+# observe the critic stage, which its own `#[cfg(test)]` cannot reach across the
+# crate boundary. Same shape as the DAP crate's `test-helpers` feature.
+#
+# That precedent is named without its crate name deliberately:
+# `test_rs_core_has_no_dap_dependency` guards the cycle break by substring, over
+# everything above `[dev-dependencies]`, so spelling the crate out even in a
+# comment trips it. Leaving the gate exactly as strict is worth the awkward
+# phrasing.
+test-instrumentation = []
 
 [dev-dependencies]
 perl-test-must.workspace = true
 perl-tdd-support.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
-perl-lsp-rs.workspace = true
 perl-subprocess-runtime.workspace = true
 tempfile.workspace = true
 insta = { workspace = true, features = ["yaml"] }

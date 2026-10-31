@@ -16,6 +16,7 @@ use lsp_types::{
 use serde::{Deserialize, Serialize};
 
 use crate::state::DocumentState;
+use crate::util::escape_markdown_text;
 use crate::util::uri::parse_uri;
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_lsp_rs_core::config::{AcceptedCriticSnapshot, CriticEngine, ServerConfig};
@@ -181,11 +182,9 @@ impl PullDiagnosticsContext {
         severity: i32,
         root: Option<&str>,
     ) -> AcceptedCriticSnapshot {
-        let config = ServerConfig {
-            perlcritic_enabled: enabled,
-            perlcritic_severity: severity.clamp(1, 5) as u8,
-            ..ServerConfig::default()
-        };
+        let mut config = ServerConfig::default();
+        config.perlcritic_enabled = enabled;
+        config.perlcritic_severity = severity.clamp(1, 5) as u8;
         AcceptedCriticSnapshot::capture(&config, root)
     }
 
@@ -521,6 +520,37 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         doc_state: Option<&DocumentState>,
     ) -> PendingPullDiagnostics {
+        // Reuse `doc_state`'s already-published parse snapshot instead of
+        // re-parsing when it demonstrably describes this exact `content`
+        // (#7286): same generation's AST, parse errors, regex analysis, and
+        // (if already built) diagnostic analysis, so a diagnostic evaluation
+        // over unchanged text doesn't pay a second parse or duplicate the
+        // pragma/scope/symbol passes. The reuse gate is exact string
+        // equality on the full buffer -- deliberately not a hash, not a
+        // generation number -- so any actual divergence between `doc_state`
+        // and `content` (a stale caller, a race) falls back to the safe
+        // re-parse path below rather than risking a wrong reuse.
+        if let Some(state) = doc_state
+            && state.text.as_str() == content
+            && let Some(snapshot) = state.current_parsed()
+            && let Some(ast) = snapshot.ast()
+        {
+            let ast = std::sync::Arc::clone(ast);
+            let parse_errors: Vec<ParseError> = snapshot.parse_errors().to_vec();
+            let diagnostic_analysis = snapshot.diagnostic_analysis();
+            let regex_analysis = snapshot.regex_analysis().cloned();
+            return self.collect_diagnostics_for_parsed_with_context(
+                uri,
+                &ast,
+                &parse_errors,
+                regex_analysis,
+                content,
+                context,
+                doc_state,
+                diagnostic_analysis,
+            );
+        }
+
         let code_text = code_slice(content);
         // Retain the canonical regex analysis for this exact parse (#7024) so the
         // pull path publishes the same regex findings as the push path.
@@ -533,128 +563,16 @@ impl PullDiagnosticsProvider {
                 // Retrieve any collected parse errors from error recovery
                 let parse_errors: Vec<ParseError> = parser.errors().to_vec();
                 let ast = std::sync::Arc::new(ast);
-                let provider = DiagnosticsProvider::new().with_regex_analysis(regex_analysis);
-                let uri_str = uri.to_string();
-                let source_path = url::Url::parse(&uri_str)
-                    .map_err(|e| {
-                        tracing::warn!(uri = %uri_str, error = %e, "pull diagnostics: failed to parse URI");
-                    })
-                    .ok()
-                    .and_then(|value| {
-                        value.to_file_path().map_err(|()| {
-                            tracing::warn!(uri = %uri_str, "pull diagnostics: URI is not a file path");
-                        }).ok()
-                    });
-                // Build the baseline include paths (configured + PERL5LIB, without lexical
-                // `use lib`/`no lib`). The resolver re-evaluates lexical paths per use-site
-                // offset so that `no lib` cancellations that precede each `use` statement
-                // are respected.
-                let base_include_paths = context.include_paths.clone();
-
-                // Extract lexical `use lib` / `no lib` operations once per diagnostic
-                // cycle so each `use Module` resolver call filters the cached ops instead
-                // of re-scanning the source prefix (#1683).
-                let source_path_ref = source_path.as_deref();
-                let workspace_root = context
-                    .workspace_root
-                    .as_deref()
-                    .or_else(|| source_path_ref.and_then(std::path::Path::parent))
-                    .unwrap_or(std::path::Path::new("."));
-                let file_dir = source_path_ref.and_then(std::path::Path::parent);
-                let use_lib_ops = extract_use_lib_operations_with_offsets(content);
-
-                // Position-aware resolver: for each `use Module` statement, recompute the
-                // effective include paths at that statement's byte offset so that `no lib`
-                // directives appearing before it cancel the appropriate `use lib` paths.
-                let resolver = |module: &str, use_site_offset: usize| {
-                    let paths = self.effective_include_paths_at_offset(
-                        &base_include_paths,
-                        &use_lib_ops,
-                        workspace_root,
-                        file_dir,
-                        use_site_offset,
-                    );
-                    self.resolve_module_with_paths(module, &paths, source_path_ref)
-                };
-
-                // Search context for PL701 display: compute once for the whole file (end
-                // offset) so the diagnostic message shows what paths were searched overall.
-                let search_paths: Vec<String> = self.effective_include_paths(
-                    &base_include_paths,
-                    &use_lib_ops,
-                    workspace_root,
-                    file_dir,
-                );
-
-                // Wire workspace semantic queries when available (pull-text path).
-                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                let core_diagnostics: Vec<_> = {
-                    let semantic_diags =
-                        context.workspace_index.as_ref().and_then(|workspace_index| {
-                            workspace_index.with_semantic_queries_for_uri(
-                                &uri_str,
-                                |file_id, queries| {
-                                    provider.get_diagnostics_with_path_and_semantics_and_project_version(
-                                        &ast,
-                                        &parse_errors,
-                                        content,
-                                        Some(&resolver),
-                                        &search_paths,
-                                        source_path.as_deref(),
-                                        context.project_version.as_deref(),
-                                        file_id,
-                                        &queries,
-                                    )
-                                },
-                            )
-                        });
-                    semantic_diags.unwrap_or_else(|| {
-                        provider.get_diagnostics_with_path_and_project_version(
-                            &ast,
-                            &parse_errors,
-                            content,
-                            Some(&resolver),
-                            &search_paths,
-                            source_path.as_deref(),
-                            context.project_version.as_deref(),
-                        )
-                    })
-                };
-                #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let core_diagnostics: Vec<_> = provider
-                    .get_diagnostics_with_path_and_project_version(
-                        &ast,
-                        &parse_errors,
-                        content,
-                        Some(&resolver),
-                        &search_paths,
-                        source_path.as_deref(),
-                        context.project_version.as_deref(),
-                    );
-
-                // Critic composition runs over the producer-owned core rows so
-                // declared overlap observations can enter the normalized seam
-                // before LSP projection (#11918); surviving rows are mapped
-                // afterwards.
-                let critic_generation =
-                    doc_state.map(|state| state.current_generation()).unwrap_or(0);
-                let critic = self.evaluate_policy_critic(
+                self.collect_diagnostics_for_parsed_with_context(
                     uri,
                     &ast,
+                    &parse_errors,
+                    Some(regex_analysis),
                     content,
                     context,
-                    perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
-                        &uri.to_string(),
-                        critic_generation,
-                    ),
-                    &core_diagnostics,
-                );
-
-                PendingPullDiagnostics {
-                    core: core_diagnostics,
-                    projected: Vec::new(),
-                    critic: Some(critic),
-                }
+                    doc_state,
+                    None,
+                )
             }
             Err(error) => {
                 // Finish the session even with no tree: it retains the geometry the
@@ -672,6 +590,162 @@ impl PullDiagnosticsProvider {
                 ));
                 PendingPullDiagnostics::projected(diagnostics)
             }
+        }
+    }
+
+    /// Shared diagnostic-computation body for
+    /// [`Self::collect_diagnostics_for_text_with_context`], parameterized
+    /// over an already-available `ast`/`parse_errors` pair and an optional
+    /// prebuilt [`perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis`]
+    /// (#7286). The caller either just re-parsed `content` (`diagnostic_analysis: None`)
+    /// or reused a matching `ParsedSnapshot` (`diagnostic_analysis: Some(_)`
+    /// when the snapshot had already built one, or lazily built here via the
+    /// `_with_analysis` provider calls below).
+    // Ten parameters: #7286 adds the snapshot's retained regex table and the
+    // generation-owned analysis to the shared pull body. Grouping them into a
+    // struct would create a one-use parameter object for a private helper
+    // whose arguments have no other shared lifetime or meaning, so the local
+    // convention (documented on the sibling critic helpers) is preferred.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_diagnostics_for_parsed_with_context(
+        &self,
+        uri: &Uri,
+        ast: &std::sync::Arc<perl_parser::ast::Node>,
+        parse_errors: &[ParseError],
+        regex_analysis: Option<std::sync::Arc<perl_parser_core::RegexAnalysisTable>>,
+        content: &str,
+        context: &PullDiagnosticsContext,
+        doc_state: Option<&DocumentState>,
+        diagnostic_analysis: Option<
+            std::sync::Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
+        >,
+    ) -> PendingPullDiagnostics {
+        // Retain the canonical regex analysis for this exact parse (#7024) so
+        // the pull path publishes the same regex findings as the push path. A
+        // reused snapshot hands over the table its own parse retained; a fresh
+        // parse hands over the table the session just finished.
+        let provider = match regex_analysis {
+            Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+            None => DiagnosticsProvider::new(),
+        };
+        let uri_str = uri.to_string();
+        // Same URI-to-path authority the push route uses, so one document has
+        // one source path on every platform. The previous strict
+        // `Url::to_file_path` here silently produced `None` on Windows for
+        // drive-less `file:///name.pl` URIs while push resolved them, which
+        // made path-conditional lints (PL200's script-file skip) disagree
+        // between transports -- caught by the push/pull parity control.
+        let source_path = perl_uri::source_path_from_uri_or_path(&uri_str);
+        // Build the baseline include paths (configured + PERL5LIB, without lexical
+        // `use lib`/`no lib`). The resolver re-evaluates lexical paths per use-site
+        // offset so that `no lib` cancellations that precede each `use` statement
+        // are respected.
+        let base_include_paths = context.include_paths.clone();
+
+        // Extract lexical `use lib` / `no lib` operations once per diagnostic
+        // cycle so each `use Module` resolver call filters the cached ops instead
+        // of re-scanning the source prefix (#1683).
+        let source_path_ref = source_path.as_deref();
+        let workspace_root = context
+            .workspace_root
+            .as_deref()
+            .or_else(|| source_path_ref.and_then(std::path::Path::parent))
+            .unwrap_or(std::path::Path::new("."));
+        let file_dir = source_path_ref.and_then(std::path::Path::parent);
+        let use_lib_ops = extract_use_lib_operations_with_offsets(content);
+
+        // Position-aware resolver: for each `use Module` statement, recompute the
+        // effective include paths at that statement's byte offset so that `no lib`
+        // directives appearing before it cancel the appropriate `use lib` paths.
+        let resolver = |module: &str, use_site_offset: usize| {
+            let paths = self.effective_include_paths_at_offset(
+                &base_include_paths,
+                &use_lib_ops,
+                workspace_root,
+                file_dir,
+                use_site_offset,
+            );
+            self.resolve_module_with_paths(module, &paths, source_path_ref)
+        };
+
+        // Search context for PL701 display: compute once for the whole file (end
+        // offset) so the diagnostic message shows what paths were searched overall.
+        let search_paths: Vec<String> = self.effective_include_paths(
+            &base_include_paths,
+            &use_lib_ops,
+            workspace_root,
+            file_dir,
+        );
+
+        // Wire workspace semantic queries when available (pull-text path).
+        #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+        let core_diagnostics: Vec<_> = {
+            let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
+                workspace_index.with_semantic_queries_for_uri(&uri_str, |file_id, queries| {
+                    provider.get_diagnostics_with_path_and_semantics_with_analysis(
+                        ast,
+                        parse_errors,
+                        content,
+                        Some(&resolver),
+                        &search_paths,
+                        source_path.as_deref(),
+                        file_id,
+                        &queries,
+                        context.project_version.as_deref(),
+                        diagnostic_analysis.as_deref(),
+                    )
+                })
+            });
+            semantic_diags.unwrap_or_else(|| {
+                provider.get_diagnostics_with_path_with_analysis(
+                    ast,
+                    parse_errors,
+                    content,
+                    Some(&resolver),
+                    &search_paths,
+                    source_path.as_deref(),
+                    context.project_version.as_deref(),
+                    diagnostic_analysis.as_deref(),
+                )
+            })
+        };
+        #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
+        let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path_with_analysis(
+            ast,
+            parse_errors,
+            content,
+            Some(&resolver),
+            &search_paths,
+            source_path.as_deref(),
+            context.project_version.as_deref(),
+            diagnostic_analysis.as_deref(),
+        );
+
+        // Critic composition runs over the producer-owned core rows so
+        // declared overlap observations can enter the normalized seam
+        // before LSP projection (#11918); surviving rows are mapped
+        // afterwards at the report boundary. The generation-owned analysis
+        // (#7286) rides along: when it provably describes this exact tree
+        // and text, the native service reuses its pragma/scope facts instead
+        // of re-deriving them per evaluation.
+        let critic_generation = doc_state.map(|state| state.current_generation()).unwrap_or(0);
+        let critic = self.evaluate_policy_critic(
+            uri,
+            ast,
+            content,
+            context,
+            perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                &uri.to_string(),
+                critic_generation,
+            ),
+            &core_diagnostics,
+            diagnostic_analysis.as_deref(),
+        );
+
+        PendingPullDiagnostics {
+            core: core_diagnostics,
+            projected: Vec::new(),
+            critic: Some(critic),
         }
     }
 
@@ -797,6 +871,7 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         core_diagnostics: &[InternalDiagnostic],
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) -> PendingPullCriticContribution {
         // #9062: routing authority is the accepted state (#8253), never the raw
         // engine setting. `EffectiveCriticState` is `Disabled | Native`, so a
@@ -804,7 +879,15 @@ impl PullDiagnosticsProvider {
         // observation that cannot construct runtime state and cannot select a
         // second evaluator here. The service owns the disabled contribution
         // too, so there is no consumer-side branch left to get wrong.
-        self.evaluate_native_critic(uri, ast, content, context, source_identity, core_diagnostics)
+        self.evaluate_native_critic(
+            uri,
+            ast,
+            content,
+            context,
+            source_identity,
+            core_diagnostics,
+            analysis,
+        )
     }
 
     /// Add native critic policy diagnostics.
@@ -814,7 +897,10 @@ impl PullDiagnosticsProvider {
     /// (#8253), so the service — not this transport — owns registry
     /// construction, candidate collection, canonical normalization, policy,
     /// and ordering. This method only extracts emitter-declared overlap
-    /// observations (#11918) and projects the resulting logical rows.
+    /// observations (#11918) and projects the resulting logical rows. The
+    /// caller's generation-owned analysis (#7286), when offered, lets the
+    /// service reuse this generation's pragma/scope facts behind its own
+    /// freshness gate instead of re-deriving them per evaluation.
     fn evaluate_native_critic(
         &self,
         uri: &Uri,
@@ -823,6 +909,7 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         core_diagnostics: &[InternalDiagnostic],
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) -> PendingPullCriticContribution {
         use perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
@@ -845,8 +932,12 @@ impl PullDiagnosticsProvider {
         let accepted_state_is_current = || context.accepted_state_currentness.holds();
 
         let snapshot = context.accepted_critic_snapshot.clone();
-        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
-            &uri.to_string(),
+        // Bound first so the label outlives the subject that borrows it:
+        // the #7286 analysis arm keeps the subject alive past the accepted()
+        // expression.
+        let uri_label = uri.to_string();
+        let subject = NativeCriticSubject::accepted(
+            &uri_label,
             source_identity,
             ast,
             content,
@@ -854,7 +945,15 @@ impl PullDiagnosticsProvider {
             overlap_observations,
             RunGate::open(),
             RunGate::new(&accepted_state_is_current),
-        ));
+        );
+        // #7286: the analysis is offered, not trusted — the service consults
+        // it only behind its own `matches(ast, source)` gate, so a stale
+        // handle degrades to the self-computed context without changing a
+        // finding.
+        let run = NativeCriticService::analyze(match analysis {
+            Some(analysis) => subject.with_analysis(analysis),
+            None => subject,
+        });
 
         PendingPullCriticContribution { snapshot, run }
     }
@@ -894,6 +993,10 @@ impl PullDiagnosticsProvider {
             })
             .collect();
         diagnostics.extend(pending.projected);
+        // Transport parity with push (#5088, #17241 F2): collapse the
+        // native↔built-in overlap pairs push collapsed before publication, so
+        // a fact reported once on push is not double-reported here.
+        super::overlap::collapse_overlapping_lsp_diagnostics(&mut diagnostics);
         (diagnostics, critic_subject_current)
     }
 
@@ -935,7 +1038,11 @@ impl PullDiagnosticsProvider {
             range,
             severity,
             code,
-            code_description: None,
+            // Push/pull parity (#1773, #17241): a critic-seam row carries the
+            // same catalog identity as the push row for the same fact, so it
+            // links the same documentation page instead of rendering
+            // second-class without a codeDescription.
+            code_description: lsp_code_description_from_str(finding.public_code()),
             source: Some("perl-lsp".to_string()),
             message,
             related_information,
@@ -958,12 +1065,16 @@ impl PullDiagnosticsProvider {
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
+            let diagnostic_analysis = parsed.diagnostic_analysis();
             let provider = match parsed.regex_analysis().cloned() {
                 Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
                 None => DiagnosticsProvider::new(),
             };
-            let source_path =
-                url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
+            // Same URI-to-path authority the push route uses (see the
+            // text-path note): `Url::to_file_path` is platform-strict and
+            // returned `None` for drive-less file URIs on Windows, so pull and
+            // push disagreed on path-conditional lints for one document.
+            let source_path = perl_uri::source_path_from_uri_or_path(&uri.to_string());
             // Build the baseline include paths (configured + PERL5LIB, without lexical
             // `use lib`/`no lib`). The resolver re-evaluates lexical paths per use-site
             // offset so that `no lib` cancellations that precede each `use` statement
@@ -1011,21 +1122,22 @@ impl PullDiagnosticsProvider {
             let core_diagnostics: Vec<_> = {
                 let semantic_diags = context.workspace_index.as_ref().and_then(|workspace_index| {
                     workspace_index.with_semantic_queries_for_uri(&uri_str, |file_id, queries| {
-                        provider.get_diagnostics_with_path_and_semantics_and_project_version(
+                        provider.get_diagnostics_with_path_and_semantics_with_analysis(
                             ast,
                             parse_errors,
                             &doc_state.text,
                             Some(&resolver),
                             &search_paths,
                             source_path.as_deref(),
-                            context.project_version.as_deref(),
                             file_id,
                             &queries,
+                            context.project_version.as_deref(),
+                            diagnostic_analysis.as_deref(),
                         )
                     })
                 });
                 semantic_diags.unwrap_or_else(|| {
-                    provider.get_diagnostics_with_path_and_project_version(
+                    provider.get_diagnostics_with_path_with_analysis(
                         ast,
                         parse_errors,
                         &doc_state.text,
@@ -1033,11 +1145,12 @@ impl PullDiagnosticsProvider {
                         &search_paths,
                         source_path.as_deref(),
                         context.project_version.as_deref(),
+                        diagnostic_analysis.as_deref(),
                     )
                 })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path_and_project_version(
+            let core_diagnostics: Vec<_> = provider.get_diagnostics_with_path_with_analysis(
                 ast,
                 parse_errors,
                 &doc_state.text,
@@ -1045,6 +1158,7 @@ impl PullDiagnosticsProvider {
                 &search_paths,
                 source_path.as_deref(),
                 context.project_version.as_deref(),
+                diagnostic_analysis.as_deref(),
             );
 
             let mut core_diagnostics = core_diagnostics;
@@ -1060,6 +1174,7 @@ impl PullDiagnosticsProvider {
                     doc_state.current_generation(),
                 ),
                 &core_diagnostics,
+                diagnostic_analysis.as_deref(),
             );
 
             // Add dead code diagnostics from workspace-wide symbol analysis
@@ -1243,16 +1358,17 @@ impl PullDiagnosticsProvider {
 
         let data = code.as_ref().and_then(|c| {
             if let NumberOrString::String(code_str) = c {
-                let category = DiagnosticCode::parse_code(code_str)
-                    .map(|dc| format!("{:?}", dc.category()))
-                    .unwrap_or_else(|| {
-                        // Check if it's a perlcritic policy
-                        if code_str.contains("::") {
-                            "PerlCritic".to_string()
-                        } else {
-                            "Other".to_string()
-                        }
-                    });
+                // Core rows carry the same identity spaces push enriches
+                // (#17241): built-in PL* codes, perlcritic policy names, and
+                // provider-owned identities such as `dead-code-*`. Resolve
+                // through the shared wire-code authority so a row reports the
+                // same category on both transports.
+                let category =
+                    if code_str.contains("::") && DiagnosticCode::parse_code(code_str).is_none() {
+                        "PerlCritic".to_string()
+                    } else {
+                        super::wire_code::wire_code_category(code_str)
+                    };
                 let data_obj = DiagnosticData {
                     code: code_str.clone(),
                     category,
@@ -1262,7 +1378,10 @@ impl PullDiagnosticsProvider {
 
                 // Add LSP 3.18 markup message support if enabled
                 if context.markup_message_support {
-                    let markdown = format!("**{}**: {}", code_str, diagnostic.message);
+                    // The plain message has already accumulated the suggestion.
+                    // Render that same complete content, escaping source-derived
+                    // text before placing it in Markdown.
+                    let markdown = format!("**{}**: {}", code_str, escape_markdown_text(&message));
                     return serde_json::to_value(data_obj).ok().map(|mut v| {
                         v["messageMarkup"] = serde_json::json!({
                             "kind": "markdown",
@@ -1349,7 +1468,15 @@ impl PullDiagnosticsProvider {
         };
 
         let offset = resolved_parse_diagnostic_offset(error, text);
-        let end_offset = offset.saturating_add(1).min(text.len());
+        let end_offset = text.get(offset..).map_or(offset, |suffix| {
+            // CRLF is one logical separator; its CR alone projects to the
+            // same UTF-16 position as the start of the pair.
+            if suffix.starts_with("\r\n") {
+                offset + 2
+            } else {
+                suffix.chars().next().map_or(offset, |next| offset + next.len_utf8())
+            }
+        });
         let range = lsp_range_from_offsets(text, offset, end_offset);
 
         let code = parse_error_code(error);
@@ -1364,7 +1491,7 @@ impl PullDiagnosticsProvider {
 
         // Add LSP 3.18 markup message support if enabled
         let data = if context.markup_message_support {
-            let markdown = format!("**{}**: {}", code_str, message);
+            let markdown = format!("**{}**: {}", code_str, escape_markdown_text(&message));
             serde_json::to_value(data_obj).ok().map(|mut v| {
                 v["messageMarkup"] = serde_json::json!({
                     "kind": "markdown",
@@ -1398,8 +1525,7 @@ fn lsp_code_description(code: Option<&NumberOrString>) -> Option<CodeDescription
 }
 
 fn lsp_code_description_from_str(code_str: &str) -> Option<CodeDescription> {
-    DiagnosticCode::parse_code(code_str)
-        .and_then(|code| code.documentation_url())
+    super::wire_code::wire_code_documentation_url(code_str)
         .and_then(|url| url.parse::<Uri>().ok())
         .map(|href| CodeDescription { href })
 }
@@ -1607,13 +1733,11 @@ mod tests {
         exclude: Vec<String>,
         root: &str,
     ) -> AcceptedCriticSnapshot {
-        let config = perl_lsp_rs_core::config::ServerConfig {
-            native_critic_profile: profile.to_string(),
-            perlcritic_severity: severity,
-            native_critic_include: include,
-            native_critic_exclude: exclude,
-            ..perl_lsp_rs_core::config::ServerConfig::default()
-        };
+        let mut config = perl_lsp_rs_core::config::ServerConfig::default();
+        config.native_critic_profile = profile.to_string();
+        config.perlcritic_severity = severity;
+        config.native_critic_include = include;
+        config.native_critic_exclude = exclude;
         AcceptedCriticSnapshot::capture(&config, Some(root))
     }
 
@@ -1724,6 +1848,43 @@ mod tests {
             .documentation_url()
             .ok_or("PL1000 should have docs")?;
         assert_eq!(code_description.href.to_string(), expected_url);
+        Ok(())
+    }
+
+    #[test]
+    fn markup_keeps_regex_and_parse_error_remediation() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///markup_remediation.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.markup_message_support = true;
+
+        let cases = [("my $re = qr/(a+)+b/;\n", "PL1000"), ("sub broken {\n", "PL002")];
+        for (source, expected_code) in cases {
+            let items = get_full_items(
+                provider.get_document_diagnostics_with_context(&uri, source, None, &context, None),
+            );
+            let diagnostic = items
+                .iter()
+                .find(|item| {
+                    item.code.as_ref().is_some_and(|code| {
+                        matches!(code, NumberOrString::String(value) if value == expected_code)
+                    })
+                })
+                .ok_or(format!("expected {expected_code} for {source:?}"))?;
+            assert!(
+                diagnostic.message.contains("Suggestion:"),
+                "control: the plain diagnostic must carry remediation: {diagnostic:?}"
+            );
+            let markup = diagnostic
+                .data
+                .as_ref()
+                .and_then(|data| data["messageMarkup"]["value"].as_str())
+                .ok_or("expected markup for a markup-capable client")?;
+            assert!(
+                markup.contains("Suggestion:"),
+                "{expected_code} markup lost the plain diagnostic's remediation: {markup:?}"
+            );
+        }
         Ok(())
     }
 
@@ -1840,6 +2001,7 @@ mod tests {
         );
 
         assert_eq!(diagnostic.range.start, Position::new(0, 3));
+        assert_eq!(diagnostic.range.end, Position::new(0, 3));
         Ok(())
     }
 
@@ -1854,6 +2016,7 @@ mod tests {
         );
 
         assert_eq!(diagnostic.range.start, Position::new(0, 2));
+        assert_eq!(diagnostic.range.end, Position::new(0, 2));
         Ok(())
     }
 
@@ -1881,97 +2044,125 @@ mod tests {
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
-            "my $x = 1;\nmy $x = 2;\nmy $unused = 3;\nmy $shadow = 4;\nmy $outer_param = 0;\nmy $cond = 0;\nmy $path = 'file.txt';\nmy @items = (1, 2);\nmy $eval_code = 'print 1';\nmy $cmd_out = `ls`;\nmy $qx_out = qx(date);\nmy $readpipe_out = readpipe($path);\nif ($cond = 1) { print $cond; }\nif (defined @items) { print @items; }\nif ($path == undef) { print $path; }\neval { die $path; };\nif ($@) { warn $@; }\nprintf \"%s %s\", $path;\nopen(FH, '<', 'file.txt');\nopen(my $log_fh, $path);\nopen(my $pipe_fh, '-|', 'ls');\neval $eval_code;\nsystem($path);\nexec('ls', '-la');\nprint $log_fh;\nprint $pipe_fh;\n{ my $shadow = 5; print $shadow; }\nsub helper($used_param, $unused_param) { return $used_param; }\nsub duplicate_param($dup_param, $dup_param) { return $dup_param; }\nsub shadow_param($outer_param) { return $outer_param; }\nsub unreachable_helper { return 1; my $dead_after_return = 2; }\nprint $x + $shadow + $outer_param + $cond + $cmd_out + $qx_out + $readpipe_out;\n=head1 NAME\n\nDemo\n\n=cut\n",
+            "my $x = 1;\nmy $x = 2;\nmy $unused = 3;\nmy $shadow = 4;\nmy $outer_param = 0;\nmy $cond = 0;\nmy $path = 'file.txt';\nmy @items = (1, 2);\nmy $eval_code = 'print 1';\nmy $cmd_out = `ls`;\nmy $qx_out = qx(date);\nmy $readpipe_out = readpipe($path);\nif ($cond = 1) { print $cond; }\nif (defined @items) { print @items; }\nif ($path == undef) { print $path; }\neval { die $path; };\nif ($@) { warn $@; }\nprintf \"%s %s\", $path;\nopen(FH, '<', 'file.txt');\nopen(my $log_fh, $path);\nopen(my $pipe_fh, '-|', 'ls');\neval $eval_code;\nsystem($path);\nexec('ls', '-la');\nprint $log_fh;\nprint $pipe_fh;\n{ my $shadow = 5; print $shadow; }\nsub helper($used_param, $unused_param) { return $used_param; }\nsub duplicate_param($dup_param, $dup_param) { return $dup_param; }\nsub shadow_param($outer_param) { return $outer_param; }\nsub unreachable_helper { return 1; my $dead_after_return = 2; }\nprint $x + $shadow + $outer_param + $cond + $cmd_out + $qx_out + $readpipe_out;\nopen(my $unchecked_fh, '<', 'other.txt');\n=head1 NAME\n\nDemo\n\n=cut\n",
             None,
             &context,
             None,
         ));
 
+        // #17241 F2: the native critic's require-use-strict fact collapses at
+        // equal (range, severity) into the built-in PL100 row, exactly as the
+        // push transport collapses it (#5088). The logical finding is
+        // represented once, with the built-in spelling.
         let strict = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL100"),
+                )
             })
-            .ok_or("expected native strict finding")?;
+            .ok_or("expected strict finding row")?;
         assert_eq!(strict.source.as_deref(), Some("perl-lsp"));
         assert_eq!(strict.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(strict.message, "Code does not use strict");
-        let data = strict.data.as_ref().ok_or("native critic data should be populated")?;
-        assert_eq!(data["code"], "native.testing.require_use_strict");
-        assert_eq!(data["suppressionKey"], "native.testing.require_use_strict");
-        assert_eq!(data["fixable"], true);
+        assert_eq!(
+            strict.message,
+            "Consider adding 'use strict;' for better error checking\nSuggestion: Add 'use \
+             strict;' at the top of the file"
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"),
+                )
+            }),
+            "native strict spelling must not appear as a separate row beside PL100"
+        );
 
         let warnings = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_warnings"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL101"),
+                )
             })
-            .ok_or("expected native warnings finding")?;
+            .ok_or("expected warnings finding row")?;
         assert_eq!(warnings.source.as_deref(), Some("perl-lsp"));
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_warnings"),
+                )
+            }),
+            "native warnings spelling must not appear as a separate row beside PL101"
+        );
 
+        // The recommended-profile native assignment fact collapses into PL403
+        // the same way (#5088/#17241); the built-in message renders the row.
         let assignment = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL403"),
+                )
             })
-            .ok_or("expected native assignment-in-condition finding")?;
+            .ok_or("expected assignment-in-condition finding row")?;
         assert_eq!(assignment.source.as_deref(), Some("perl-lsp"));
         assert_eq!(assignment.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(assignment.message, "Assignment in condition - did you mean '=='?");
-        let data = assignment
-            .data
-            .as_ref()
-            .ok_or("native assignment-in-condition data should be populated")?;
-        assert_eq!(data["code"], "native.common.assignment_in_condition");
-        assert_eq!(data["suppressionKey"], "native.common.assignment_in_condition");
-        assert_eq!(data["fixable"], true);
+        assert_eq!(
+            assignment.message,
+            "Assignment in condition - did you mean '=='?\nSuggestion: Replace '=' with '==' \
+             for numeric comparison or 'eq' for string comparison"
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"),
+                )
+            }),
+            "native assignment-in-condition spelling must not appear as a separate row beside PL403"
+        );
 
         let printf_format = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.printf_format_arity"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL405"),
                 )
             })
-            .ok_or("expected native printf format arity finding")?;
+            .ok_or("expected printf format arity finding row")?;
         assert_eq!(printf_format.source.as_deref(), Some("perl-lsp"));
         assert_eq!(printf_format.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(
-            printf_format.message,
-            "`printf` format string has 2 specifiers but 1 argument supplied"
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.printf_format_arity"),
+                )
+            }),
+            "native printf format arity spelling must not appear as a separate row beside PL405"
         );
-        let data = printf_format
-            .data
-            .as_ref()
-            .ok_or("native printf format arity data should be populated")?;
-        assert_eq!(data["code"], "native.common.printf_format_arity");
-        assert_eq!(data["suppressionKey"], "native.common.printf_format_arity");
-        assert_eq!(data["fixable"], false);
 
         let deprecated_defined = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.deprecated_defined"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL500"),
                 )
             })
-            .ok_or("expected native deprecated-defined finding")?;
+            .ok_or("expected deprecated-defined finding row")?;
         assert_eq!(deprecated_defined.source.as_deref(), Some("perl-lsp"));
         assert_eq!(deprecated_defined.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(deprecated_defined.message, "Use of 'defined @items' is deprecated");
-        let data = deprecated_defined
-            .data
-            .as_ref()
-            .ok_or("native deprecated-defined data should be populated")?;
-        assert_eq!(data["code"], "native.common.deprecated_defined");
-        assert_eq!(data["suppressionKey"], "native.common.deprecated_defined");
-        assert_eq!(data["fixable"], true);
+        assert_eq!(
+            deprecated_defined.message,
+            "Use of 'defined @items' is deprecated\nSuggestion: Replace with 'if (@items)'"
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.deprecated_defined"),
+                )
+            }),
+            "native deprecated-defined spelling must not appear as a separate row beside PL500"
+        );
 
         // #11918: the literal-undef comparison merges with its built-in PL404
         // observation into one logical row presented with the built-in
@@ -2056,38 +2247,47 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.io.bareword_filehandle");
         assert_eq!(data["fixable"], true);
 
+        // The native two-arg-open fact collapses into the same-range built-in
+        // PL401 row (#5088/#17241); the unchecked-open-close rule reports at
+        // its own range on the three-argument open further below.
         let two_arg_open = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.two_arg_open"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL401"),
+                )
             })
-            .ok_or("expected native two-arg open finding")?;
+            .ok_or("expected two-arg open finding row")?;
         assert_eq!(two_arg_open.source.as_deref(), Some("perl-lsp"));
         assert_eq!(two_arg_open.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(two_arg_open.message, "Two-argument open should use an explicit mode");
-        let data =
-            two_arg_open.data.as_ref().ok_or("native two-arg open data should be populated")?;
-        assert_eq!(data["code"], "native.io.two_arg_open");
-        assert_eq!(data["suppressionKey"], "native.io.two_arg_open");
-        assert_eq!(data["fixable"], true);
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.io.two_arg_open"),
+                )
+            }),
+            "native two-arg open spelling must not appear as a separate row beside PL401"
+        );
 
+        // The native pipe-open fact collapses into the built-in PL605 row.
         let pipe_open = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.io.pipe_open"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL605"),
+                )
             })
-            .ok_or("expected native pipe-open finding")?;
+            .ok_or("expected pipe-open finding row")?;
         assert_eq!(pipe_open.source.as_deref(), Some("perl-lsp"));
         assert_eq!(pipe_open.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(pipe_open.message, "Pipe-open executes a shell command");
-        let data = pipe_open.data.as_ref().ok_or("native pipe-open data should be populated")?;
-        assert_eq!(data["code"], "native.io.pipe_open");
-        assert_eq!(data["suppressionKey"], "native.io.pipe_open");
-        assert_eq!(data["fixable"], false);
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.io.pipe_open"),
+                )
+            }),
+            "native pipe-open spelling must not appear as a separate row beside PL605"
+        );
 
         let unchecked_open_close = items
             .iter()
@@ -2154,22 +2354,25 @@ mod tests {
             "native qx/readpipe spelling must not appear as a separate row"
         );
 
+        // The native string-eval fact collapses into the built-in PL600 row.
         let string_eval = items
             .iter()
             .find(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.string_eval"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL600"),
                 )
             })
-            .ok_or("expected native string eval finding")?;
+            .ok_or("expected string eval finding row")?;
         assert_eq!(string_eval.source.as_deref(), Some("perl-lsp"));
         assert_eq!(string_eval.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(string_eval.message, "String eval is a security risk");
-        let data =
-            string_eval.data.as_ref().ok_or("native string eval data should be populated")?;
-        assert_eq!(data["code"], "native.security.string_eval");
-        assert_eq!(data["suppressionKey"], "native.security.string_eval");
-        assert_eq!(data["fixable"], false);
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.security.string_eval"),
+                )
+            }),
+            "native string eval spelling must not appear as a separate row beside PL600"
+        );
 
         // #11918: system and exec merge with their built-in PL603/PL604
         // observations; the native spelling rides inside the merged rows.
@@ -2203,41 +2406,50 @@ mod tests {
             "native system/exec spelling must not appear as a separate row"
         );
 
+        // The strict-profile native unused-variable fact collapses into the
+        // built-in PL102 row at the same (range, severity).
         let unused = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"))
-                    && diag.message == "Lexical variable '$unused' is declared but never used"
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL102"),
+                ) && diag.range.start == Position::new(2, 3)
             })
-            .ok_or("expected native unused lexical finding")?;
+            .ok_or("expected merged unused lexical row")?;
         assert_eq!(unused.source.as_deref(), Some("perl-lsp"));
         assert_eq!(unused.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(unused.message, "Lexical variable '$unused' is declared but never used");
-        let data = unused.data.as_ref().ok_or("native unused lexical data should be populated")?;
-        assert_eq!(data["code"], "native.variables.unused_lexical");
-        assert_eq!(data["suppressionKey"], "native.variables.unused_lexical");
-        assert_eq!(data["fixable"], true);
+        assert_eq!(
+            unused.message,
+            "Variable '$unused' is declared but never used -- prefix with '_' or remove it\n\
+             Suggestion: Prefix as '_unused'"
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                )
+            }),
+            "native unused lexical spelling must not appear as a separate row beside PL102"
+        );
 
         let unused_parameter = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_parameter"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL108"),
+                )
             })
-            .ok_or("expected native unused parameter finding")?;
+            .ok_or("expected merged unused parameter row")?;
         assert_eq!(unused_parameter.source.as_deref(), Some("perl-lsp"));
         assert_eq!(unused_parameter.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(unused_parameter.message, "Parameter '$unused_param' is never used");
-        let data = unused_parameter
-            .data
-            .as_ref()
-            .ok_or("native unused parameter data should be populated")?;
-        assert_eq!(data["code"], "native.variables.unused_parameter");
-        assert_eq!(data["suppressionKey"], "native.variables.unused_parameter");
-        assert_eq!(data["fixable"], true);
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_parameter"),
+                )
+            }),
+            "native unused parameter spelling must not appear as a separate row beside PL108"
+        );
 
         let duplicate_parameter = items
             .iter()
@@ -2261,27 +2473,27 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.variables.duplicate_parameter");
         assert_eq!(data["fixable"], true);
 
+        // The native parameter-shadowing fact collapses into the built-in
+        // PL107 row; the native duplicate facts survive because their built-in
+        // twins carry a different severity (PL105/PL106 are errors).
         let parameter_shadow = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.parameter_shadows_global"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL107"),
+                )
             })
-            .ok_or("expected native parameter shadowing finding")?;
+            .ok_or("expected merged parameter shadowing row")?;
         assert_eq!(parameter_shadow.source.as_deref(), Some("perl-lsp"));
         assert_eq!(parameter_shadow.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(
-            parameter_shadow.message,
-            "Parameter '$outer_param' shadows an outer declaration"
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.parameter_shadows_global"),
+                )
+            }),
+            "native parameter shadowing spelling must not appear as a separate row beside PL107"
         );
-        let data = parameter_shadow
-            .data
-            .as_ref()
-            .ok_or("native parameter shadowing data should be populated")?;
-        assert_eq!(data["code"], "native.variables.parameter_shadows_global");
-        assert_eq!(data["suppressionKey"], "native.variables.parameter_shadows_global");
-        assert_eq!(data["fixable"], true);
 
         let duplicate = items
             .iter()
@@ -2303,22 +2515,26 @@ mod tests {
         assert_eq!(data["suppressionKey"], "native.variables.duplicate_lexical");
         assert_eq!(data["fixable"], true);
 
+        // The native shadowed-lexical fact collapses into the built-in PL104
+        // row at the same (range, severity).
         let shadowed = items
             .iter()
             .find(|diag| {
-                diag.code
-                    .as_ref()
-                    .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.variables.shadowed_lexical"))
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL104"),
+                )
             })
-            .ok_or("expected native shadowed lexical finding")?;
+            .ok_or("expected merged shadowed lexical row")?;
         assert_eq!(shadowed.source.as_deref(), Some("perl-lsp"));
         assert_eq!(shadowed.severity, Some(LspDiagnosticSeverity::WARNING));
-        assert_eq!(shadowed.message, "Lexical variable '$shadow' shadows an outer declaration");
-        let data =
-            shadowed.data.as_ref().ok_or("native shadowed lexical data should be populated")?;
-        assert_eq!(data["code"], "native.variables.shadowed_lexical");
-        assert_eq!(data["suppressionKey"], "native.variables.shadowed_lexical");
-        assert_eq!(data["fixable"], true);
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.shadowed_lexical"),
+                )
+            }),
+            "native shadowed lexical spelling must not appear as a separate row beside PL104"
+        );
 
         let require_pod_sections = items
             .iter()
@@ -2361,21 +2577,34 @@ mod tests {
             None,
         ));
 
+        // #17241 F2: the profile's strict and assignment facts collapse into
+        // their built-in twins exactly as push collapses them (#5088); the
+        // profile filter itself is proven by which rows exist at all.
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL100"),
                 )
             }),
-            "recommended native critic profile should keep strict finding: {items:?}"
+            "recommended native critic profile should keep the strict finding row: {items:?}"
         );
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "PL403"),
+                )
+            }),
+            "recommended native critic profile should keep the assignment finding row: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"),
+                ) || diag.code.as_ref().is_some_and(
                     |code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"),
                 )
             }),
-            "recommended native critic profile should keep common findings: {items:?}"
+            "collapsed native spellings must not appear as separate rows: {items:?}"
         );
         assert!(
             !items.iter().any(|diag| {
@@ -2429,23 +2658,27 @@ mod tests {
     #[test]
     fn native_critic_runtime_context_honors_include_and_exclude_filters()
     -> Result<(), Box<dyn std::error::Error>> {
+        // #17241 F2: twin-covered facts (require-use-strict, assignment) collapse
+        // into their built-in rows on this transport exactly as on push, so the
+        // filters are proven on twin-less native rows: one the include keeps,
+        // one the exclude suppresses, one the non-empty include narrows away.
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "recommended".to_string();
-        context.native_critic_include = vec!["native.testing.require_use_strict".to_string()];
-        context.native_critic_exclude = vec!["native.common.assignment_in_condition".to_string()];
+        context.native_critic_include = vec!["native.common.stale_dollar_at".to_string()];
+        context.native_critic_exclude = vec!["native.io.unchecked_open_close".to_string()];
         context.accepted_critic_snapshot = accepted_state(
             "recommended",
             3,
-            vec!["native.testing.require_use_strict".to_string()],
-            vec!["native.common.assignment_in_condition".to_string()],
+            vec!["native.common.stale_dollar_at".to_string()],
+            vec!["native.io.unchecked_open_close".to_string()],
         );
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
-            "my $cond = 0;\nif ($cond = 1) { print $cond; }\n",
+            "eval { die 'x'; };\nif ($@) { warn $@; }\nopen(FH, '<', 'f.txt');\nopen(my $fh, '<', 'g.txt');\nprint $fh;\n",
             None,
             &context,
             None,
@@ -2454,26 +2687,26 @@ mod tests {
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.stale_dollar_at"),
                 )
             }),
-            "native include should keep selected strict rule: {items:?}"
+            "native include should keep selected stale-dollar-at rule: {items:?}"
         );
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.common.assignment_in_condition"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.io.unchecked_open_close"),
                 )
             }),
-            "native include/exclude filters should suppress assignment rule: {items:?}"
+            "native exclude should suppress the unchecked open/close rule: {items:?}"
         );
         assert!(
             !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_warnings"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.io.bareword_filehandle"),
                 )
             }),
-            "native include should suppress non-included warning rule: {items:?}"
+            "non-empty native include should narrow away the bareword-filehandle rule: {items:?}"
         );
 
         Ok(())
@@ -2482,25 +2715,28 @@ mod tests {
     #[test]
     fn native_critic_include_enables_a_strict_only_rule_under_recommended()
     -> Result<(), Box<dyn std::error::Error>> {
-        // `native.variables.unused_lexical` is strict-only. Naming it in
-        // `include` used to yield no diagnostics at all under the recommended
-        // profile, because the profile registry never carried the rule.
+        // Strict-only rules named in `include` used to yield no diagnostics at
+        // all under the recommended profile, because the profile registry
+        // never carried the rule. `native.syntax.prohibit_leading_zeros`
+        // carries the include proof on its own wire identity: it has no
+        // built-in twin, so the transport collapse (#5088, #17241) cannot
+        // substitute a core row for it.
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "recommended".to_string();
-        context.native_critic_include = vec!["native.variables.unused_lexical".to_string()];
+        context.native_critic_include = vec!["native.syntax.prohibit_leading_zeros".to_string()];
         context.accepted_critic_snapshot = accepted_state(
             "recommended",
             3,
-            vec!["native.variables.unused_lexical".to_string()],
+            vec!["native.syntax.prohibit_leading_zeros".to_string()],
             Vec::new(),
         );
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
-            "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n",
+            "use strict;\nuse warnings;\nmy $mode = 0777;\nprint $mode;\n",
             None,
             &context,
             None,
@@ -2509,7 +2745,7 @@ mod tests {
         assert!(
             items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
-                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.syntax.prohibit_leading_zeros"),
                 )
             }),
             "strict-only include should run under the recommended profile: {items:?}"
@@ -2521,20 +2757,28 @@ mod tests {
     #[test]
     fn native_critic_engine_is_default_for_pull_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
+        // The default engine is proven on a twin-less native fact: a checked-
+        // contract open with no built-in twin cannot be substituted by a core
+        // row, and the legacy external critic would brand its rows
+        // `Perl::Critic` instead of emitting native identities.
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
-        let items =
-            get_full_items(provider.get_document_diagnostics(&uri, "my $x = 1;\n", None, None));
+        let items = get_full_items(provider.get_document_diagnostics(
+            &uri,
+            "open(my $fh, '<', 'file.txt');\nprint $fh;\n",
+            None,
+            None,
+        ));
 
         assert!(items.iter().any(|diag| {
-            diag.code
-                .as_ref()
-                .is_some_and(|code| matches!(code, NumberOrString::String(value) if value == "native.testing.require_use_strict"))
+            diag.code.as_ref().is_some_and(
+                |code| matches!(code, NumberOrString::String(value) if value == "native.io.unchecked_open_close"),
+            )
         }));
         assert!(!items.iter().any(|diag| {
-            diag.code.as_ref().is_some_and(|code| {
-                matches!(code, NumberOrString::String(value) if value == "TestingAndDebugging::RequireUseStrict")
-            })
+            diag.code.as_ref().is_some_and(
+                |code| matches!(code, NumberOrString::String(value) if value.contains("::")),
+            )
         }));
         Ok(())
     }
@@ -2869,8 +3113,10 @@ system($path);
 
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
+        let mut disabled_config = ServerConfig::default();
+        disabled_config.perlcritic_enabled = false;
         context.accepted_critic_snapshot = AcceptedCriticSnapshot::capture(
-            &ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() },
+            &disabled_config,
             Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
         );
         context.perlcritic_enabled = false;
@@ -2935,7 +3181,12 @@ system($path);
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = native_document_uri("pull_currentness.pl").parse()?;
+        // The liveness probe is a twin-less native fact (#17241 F2): a
+        // checked-contract open has no built-in twin, so its row survives the
+        // transport collapse and proves the critic actually contributed.
         let source = "my $x = 1;
+open(my $fh, '<', 'f.txt');
+print $fh;
 ";
 
         // Control: with the accepted policy still live, this subject really
@@ -3334,6 +3585,132 @@ system($path);
         Ok(())
     }
 
+    // ── pull-text snapshot reuse gate (#7286) ──
+
+    /// Build a `DocumentState` at generation 1 with a real published parse
+    /// snapshot for `text`, using the same guarded construction path
+    /// production publication uses.
+    fn doc_state_with_published_snapshot(text: &str) -> DocumentState {
+        let mut doc_state = DocumentState::new(text, 1);
+        let generation = doc_state.current_generation();
+        let mut parser = perl_parser::Parser::new(text);
+        let (ast, errors) = match parser.parse() {
+            Ok(ast) => (Some(ast), parser.errors().to_vec()),
+            Err(e) => (None, vec![e]),
+        };
+        let ast_arc = ast.map(std::sync::Arc::new);
+        let snapshot = std::sync::Arc::new(crate::state::ParsedSnapshot::from_parse_result(
+            generation, text, ast_arc, errors,
+        ));
+        assert!(doc_state.publish_parsed_if_current(generation, snapshot));
+        doc_state
+    }
+
+    /// When `content` exactly matches `doc_state`'s published text, the
+    /// pull-text path reuses that snapshot's AST/parse-errors/analysis
+    /// instead of re-parsing. Proven directly (not just by output
+    /// equivalence): reuse necessarily calls `snapshot.diagnostic_analysis()`,
+    /// which is observable as the snapshot's build count going from 0 to 1 --
+    /// a re-parse path would never touch this snapshot's cell at all, so the
+    /// count would stay 0.
+    #[test]
+    fn text_reuse_gate_reuses_matching_doc_state_snapshot() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///reuse.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+        let content = "sub f { my $unused = 1; print $undeclared; }\n";
+
+        let doc_state = doc_state_with_published_snapshot(content);
+        let snapshot_before =
+            doc_state.current_parsed().ok_or("snapshot must be published and current")?;
+        assert_eq!(
+            snapshot_before.diagnostic_analysis_build_count(),
+            0,
+            "the snapshot's analysis cell must start unbuilt"
+        );
+
+        let _ = provider.collect_diagnostics_for_text_with_context(
+            &uri,
+            content,
+            &context,
+            Some(&doc_state),
+        );
+
+        let snapshot_after =
+            doc_state.current_parsed().ok_or("snapshot must still be published and current")?;
+        assert_eq!(
+            snapshot_after.diagnostic_analysis_build_count(),
+            1,
+            "an exact content match must reuse doc_state's snapshot, which builds its \
+             diagnostic analysis exactly once through the shared cell"
+        );
+
+        Ok(())
+    }
+
+    /// When `content` does NOT match `doc_state.text` (a stale or differing
+    /// buffer), the pull-text path must fall back to re-parsing `content`
+    /// rather than reusing the stale snapshot. Proven two ways: (1) the stale
+    /// snapshot's analysis cell is never touched (build count stays 0), and
+    /// (2) the returned diagnostics describe `content`, not the stale text --
+    /// they equal the diagnostics produced with no `doc_state` at all, and do
+    /// NOT contain a diagnostic that only the stale text would produce.
+    #[test]
+    fn text_reuse_gate_falls_back_to_reparse_when_content_differs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///stale.pl".parse()?;
+        let context = PullDiagnosticsContext::new();
+
+        let stale_text = "sub stale_fn { my $stale_marker_unused = 1; }\n";
+        let doc_state = doc_state_with_published_snapshot(stale_text);
+
+        let fresh_content = "print $totally_different_undeclared;\n";
+        assert_ne!(doc_state.text, fresh_content, "fixture must actually differ from doc_state");
+
+        // Both routes now stage a `PendingPullDiagnostics` (#9062); the report
+        // boundary is where critic rows are committed or withheld, so the
+        // equivalence claim is made at that same boundary.
+        let (reused_path, _) = provider.finalize_pending_diagnostics(
+            &uri,
+            fresh_content,
+            &context,
+            provider.collect_diagnostics_for_text_with_context(
+                &uri,
+                fresh_content,
+                &context,
+                Some(&doc_state),
+            ),
+        );
+        let (reparsed_directly, _) = provider.finalize_pending_diagnostics(
+            &uri,
+            fresh_content,
+            &context,
+            provider.collect_diagnostics_for_text_with_context(&uri, fresh_content, &context, None),
+        );
+
+        assert_eq!(
+            reused_path, reparsed_directly,
+            "a content mismatch must force re-parsing `content`, producing the same result as \
+             calling with no doc_state at all"
+        );
+        assert!(
+            !reused_path.iter().any(|d| d.message.contains("stale_marker_unused")),
+            "the stale snapshot's own diagnostics must never leak in on a content mismatch"
+        );
+
+        let snapshot_after =
+            doc_state.current_parsed().ok_or("snapshot must still be published and current")?;
+        assert_eq!(
+            snapshot_after.diagnostic_analysis_build_count(),
+            0,
+            "the stale snapshot's analysis cell must never be touched on a content mismatch"
+        );
+
+        Ok(())
+    }
+
     /// A workspace request is a collection of document transactions, not one
     /// root transaction cloned across every item. Root A is deliberately
     /// Disabled while root B is strict-native; both full and partial APIs must
@@ -3347,7 +3724,10 @@ system($path);
             if cfg!(windows) { "file:///C:/root-a/a.pl" } else { "file:///root-a/a.pl" };
         const URI_B: &str =
             if cfg!(windows) { "file:///C:/root-b/b.pl" } else { "file:///root-b/b.pl" };
-        const SOURCE: &str = "my $x = 1;\nprint $x;\n";
+        // The native-presence probe is a twin-less native fact (#17241 F2): a
+        // checked-contract open survives the transport collapse, so only a
+        // root whose own critic authority is live reports it.
+        const SOURCE: &str = "my $x = 1;\nprint $x;\nopen(my $fh, '<', 'f.txt');\nprint $fh;\n";
 
         fn context_for(uri: &str) -> PullDiagnosticsContext {
             let (root, enabled) = if uri == URI_A { (ROOT_A, false) } else { (ROOT_B, true) };
@@ -3358,10 +3738,9 @@ system($path);
             context.accepted_critic_snapshot = if enabled {
                 accepted_state_at_root("strict", 3, Vec::new(), Vec::new(), root)
             } else {
-                AcceptedCriticSnapshot::capture(
-                    &ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() },
-                    Some(root),
-                )
+                let mut disabled_config = ServerConfig::default();
+                disabled_config.perlcritic_enabled = false;
+                AcceptedCriticSnapshot::capture(&disabled_config, Some(root))
             };
             context
         }

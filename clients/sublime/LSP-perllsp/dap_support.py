@@ -95,7 +95,29 @@ def resolve_dap_path(
     )
 
 
-def dap_command(path: Path) -> list[str]:
+def dap_command(path: Path, trusted_root: Path | None = None) -> list[str]:
     if not path.is_file():
         raise DapPathError(f"perl-dap executable is missing: {path}")
-    return [str(path.resolve()), "--stdio"]
+    command = [str(path.resolve()), "--stdio"]
+    if trusted_root is not None:
+        if not trusted_root.is_dir():
+            raise DapPathError(f"perl-dap trusted root is missing: {trusted_root}")
+        command.extend(["--trusted-root", str(trusted_root.resolve())])
+    return command
+
+
+def editor_workspace_root(folders: Iterable[str]) -> Path | None:
+    """First existing editor-owned workspace folder, if any.
+
+    The startup trusted root must come from editor-owned workspace state,
+    never from project-controlled launch data (`cwd`): a launch.json `cwd`
+    can name an ancestor or unrelated directory and would otherwise widen
+    authority, while an omitted `cwd` must fail closed instead of starting
+    the server without authority. `cwd` remains the debuggee working
+    directory only.
+    """
+    for folder in folders:
+        candidate = Path(folder)
+        if candidate.is_dir():
+            return candidate
+    return None

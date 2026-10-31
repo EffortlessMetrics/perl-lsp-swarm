@@ -71,7 +71,7 @@ jobs:
           echo "DAP_SCORECARD_REPOSITORY_SHA=$actual" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
@@ -127,6 +127,7 @@ jobs:
           python3 scripts/ci/dap_scorecard_runtime.py \
             --binary "$DAP_SCORECARD_BINARY" \
             --perl "$DAP_SCORECARD_PERL" \
+            --trusted-root "$GITHUB_WORKSPACE" \
             --fixture hello=crates/perl-dap/tests/fixtures/hello.pl \
             --fixture loops=crates/perl-dap/tests/fixtures/loops.pl \
             --fixture eval=crates/perl-dap/tests/fixtures/eval.pl \

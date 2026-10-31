@@ -197,6 +197,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         ),
         Node::new(
             NodeKind::Regex {
+                form: perl_ast::RegexSurfaceForm::BarePattern,
                 pattern: "foo".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),
@@ -335,6 +336,8 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         Node::new(NodeKind::MandatoryParameter { variable: Box::new(var("$", "x")) }, loc()),
         Node::new(
             NodeKind::OptionalParameter {
+                default_operator: "=".into(),
+                default_operator_span: Default::default(),
                 variable: Box::new(var("$", "x")),
                 default_value: Box::new(num("0")),
             },
@@ -369,6 +372,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc()),
         Node::new(
             NodeKind::NamedParameter {
+                default_operator_span: None,
                 variable: Box::new(var("$", "x")),
                 external_name: String::new(),
                 default_operator: None,

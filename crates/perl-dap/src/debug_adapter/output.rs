@@ -224,45 +224,84 @@ impl DebugAdapter {
                 _ => format!("p {}", var_name),
             };
 
+            // #15737: a missing transport or a failed send is a typed failure,
+            // not an absent value. Refuse the aggregate instead of settling it
+            // as completed with only the earlier variables.
             let output_frame_markers = {
                 let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
-                if let Some(ref mut session) = *session_guard {
-                    if let Some(stdin) = session.process.stdin.as_mut() {
-                        let commands = vec![cmd];
-                        self.send_framed_debugger_query_bound_with_token(
-                            stdin,
-                            &commands,
-                            DEBUGGER_QUERY_WAIT_MS,
-                            None,
-                            Some(expected_session_generation),
-                            None,
-                            cancellation.clone(),
-                        )
-                        .ok()
-                    } else {
-                        None
+                match *session_guard {
+                    Some(ref mut session) => match session.process.stdin.as_mut() {
+                        Some(stdin) => {
+                            let commands = vec![cmd];
+                            match self.send_framed_debugger_query_bound_with_token(
+                                stdin,
+                                &commands,
+                                DEBUGGER_QUERY_WAIT_MS,
+                                None,
+                                Some(expected_session_generation),
+                                None,
+                                cancellation.clone(),
+                            ) {
+                                Ok(markers) => Some(markers),
+                                Err(error) => {
+                                    let terminal = request.settle(
+                                        super::operation_broker::BrokerTerminal::Rejected(format!(
+                                            "inline transport failed for {var_name}: {error}"
+                                        )),
+                                    );
+                                    return Err(format!(
+                                        "inlineValues did not complete for {var_name}: {}",
+                                        terminal.as_str()
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            let terminal = request.settle(
+                                super::operation_broker::BrokerTerminal::SessionGone(
+                                    "inline_transport_unavailable",
+                                ),
+                            );
+                            return Err(format!(
+                                "inlineValues did not complete for {var_name}: {}",
+                                terminal.as_str()
+                            ));
+                        }
+                    },
+                    None => {
+                        let terminal =
+                            request.settle(super::operation_broker::BrokerTerminal::SessionGone(
+                                "inline_session_unavailable",
+                            ));
+                        return Err(format!(
+                            "inlineValues did not complete for {var_name}: {}",
+                            terminal.as_str()
+                        ));
                     }
-                } else {
-                    None
                 }
             };
 
-            let result = output_frame_markers.and_then(|(operation, begin, end)| {
-                self.capture_framed_debugger_output_for_operation(&operation, &begin, &end)
-            });
-
-            if result.is_none()
-                && self.operation_broker.current_session_generation() != expected_session_generation
-            {
-                let terminal =
-                    request.settle(super::operation_broker::BrokerTerminal::StaleGeneration);
-                return Err(format!("inlineValues did not complete: {}", terminal.as_str()));
-            }
-
-            if let Some(lines) = result {
-                let raw: String = lines.join(" ").trim().to_string();
-                if !raw.is_empty() {
-                    values.insert(var_name.clone(), raw);
+            // #15737: keep the broker's typed outcome instead of collapsing
+            // every non-completed terminal into `None`. A timed-out, cancelled,
+            // or stale frame must refuse the aggregate even when an earlier
+            // variable already produced a value and the session generation has
+            // not yet advanced.
+            let Some((operation, begin, end)) = output_frame_markers else {
+                continue;
+            };
+            match self.await_framed_debugger_output_for_operation(&operation, &begin, &end) {
+                super::operation_broker::BrokerTerminal::Completed(lines) => {
+                    let raw: String = lines.join(" ").trim().to_string();
+                    if !raw.is_empty() {
+                        values.insert(var_name.clone(), raw);
+                    }
+                }
+                terminal => {
+                    let terminal = request.settle(terminal);
+                    return Err(format!(
+                        "inlineValues did not complete for {var_name}: {}",
+                        terminal.as_str()
+                    ));
                 }
             }
         }
@@ -854,6 +893,140 @@ while (my $line = <STDIN>) {
             .ok_or("fresh inline request returned no values")?;
         if values.get("$fresh").map(String::as_str) != Some("42") {
             return Err(format!("fresh inline values did not recover: {values:?}").into());
+        }
+        Ok(())
+    }
+
+    // #15737 deterministic peer control: answer the first value, then open the
+    // second frame and withhold its payload and end marker until the test
+    // creates the release file. The capture therefore settles `TimedOut`
+    // while the session stays alive and no EOF advances the generation, so
+    // coordination — not a sleep race — decides the outcome.
+    fn install_withheld_frame_peer(
+        adapter: &DebugAdapter,
+        log: &std::path::Path,
+        release: &std::path::Path,
+    ) -> TestResult {
+        adapter.begin_session_generation();
+        let old = lock_or_recover(&adapter.session, "test.session").take();
+        if let Some(mut old) = old {
+            let _ = old.process.kill();
+            old.process.wait()?;
+        }
+        let script = r#"
+use strict;
+use warnings;
+use IO::Handle;
+$| = 1;
+my ($path, $release) = @ARGV;
+open my $log, '>>', $path or die $!;
+$log->autoflush(1);
+print "READY:$path\n";
+my $values = 0;
+while (my $line = <STDIN>) {
+    print {$log} $line;
+    if ($line =~ /DAP_BEGIN_(\d+)/) { print "DAP_BEGIN_$1\n"; }
+    elsif ($line =~ /DAP_END_(\d+)/) { print "DAP_END_$1\n"; }
+    elsif ($line =~ /^p /) {
+        $values++;
+        if ($values == 1) { print "42\n"; }
+        else {
+            my $deadline = time() + 30;
+            while (!-e $release && time() < $deadline) {
+                select(undef, undef, undef, 0.01);
+            }
+            print "43\n";
+        }
+    }
+}
+"#;
+        let process = Command::new("perl")
+            .arg("-e")
+            .arg(script)
+            .arg(log)
+            .arg(release)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        *lock_or_recover(&adapter.session, "test.session") = Some(DebugSession {
+            process,
+            state: DebugState::Stopped,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
+            last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
+            entry_stop_pending: false,
+            stopped_generation: 1,
+            module_generation: crate::reload::RuntimeModuleGenerationClock::new(),
+        });
+        adapter.operation_broker.open_session();
+        adapter.start_output_reader(std::path::PathBuf::from("."));
+        let ready = format!("READY:{}", log.display());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if lock_or_recover(&adapter.recent_output, "test.output")
+                .lines
+                .iter()
+                .any(|line| line.normalized == ready)
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("withheld-frame peer did not become ready".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn inline_withheld_frame_refuses_partial_aggregate_and_recovers() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let adapter = DebugAdapter::new();
+        let log = directory.path().join("withheld.log");
+        let release = directory.path().join("release.flag");
+        install_withheld_frame_peer(&adapter, &log, &release)?;
+        let result = adapter.query_inline_variable_values("my $first; my $second;", 1, 1, 83);
+        let error = match result {
+            Ok(values) => {
+                return Err(
+                    format!("withheld frame settled a partial aggregate: {values:?}").into()
+                );
+            }
+            Err(error) => error,
+        };
+        if !error.contains("timed_out") {
+            return Err(format!("withheld frame was not refused as timed out: {error}").into());
+        }
+        let commands = std::fs::read_to_string(&log)?;
+        if !commands.lines().any(|line| line == "p $second") {
+            return Err("fixture never reached the withheld variable".into());
+        }
+        // Release the withheld frame so the late payload and end marker drain,
+        // then prove the same session still completes a fresh aggregate.
+        std::fs::write(&release, b"release")?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let commands = std::fs::read_to_string(&log)?;
+            if commands.matches("DAP_END_").count() >= 2 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("withheld frame was never released: {commands:?}").into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let values = adapter
+            .query_inline_variable_values("my $fresh;", 1, 1, 84)?
+            .ok_or("fresh inline request after withheld frame returned no values")?;
+        if values.get("$fresh").map(String::as_str) != Some("43") {
+            return Err(format!(
+                "fresh inline values after withheld frame did not recover: {values:?}"
+            )
+            .into());
         }
         Ok(())
     }

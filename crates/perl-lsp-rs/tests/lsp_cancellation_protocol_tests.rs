@@ -131,6 +131,160 @@ fn setup_test_file(server: &LspServer, uri: &str, content: &str) {
     );
 }
 
+/// Number of request+cancellation probes used to observe the durable
+/// cancellation invariant before declaring the cancellation broken.
+const CANCEL_PROBE_ATTEMPTS: usize = 5;
+
+/// Read budget for one cancellation probe response.
+const CANCEL_PROBE_READ: Duration = Duration::from_secs(2);
+
+/// Send `method` as a request and immediately cancel it, then return the
+/// server's RequestCancelled (-32800) response for that id.
+///
+/// A cancellation notification the server processes after the request already
+/// finished is a no-op: the id is answered with its normal result, and LSP
+/// allows both outcomes. Asserting on whichever same-id response arrives first
+/// therefore races. Each probe instead pairs a fresh request id with an
+/// immediate cancellation, so the server marks the id pending at ingress
+/// before the cancellation notification is processed; the durable invariant
+/// (cancellation before dispatch yields -32800) is asserted, and the retry
+/// only absorbs the narrow request-completed-first race. A server that never
+/// answers a pending cancellation with -32800 fails after
+/// [`CANCEL_PROBE_ATTEMPTS`]. Disconnects and malformed frames fail
+/// immediately. `cancel_context` is carried in the `$/cancelRequest` params
+/// when non-null.
+/// How one same-id response settles a cancellation probe.
+enum ProbeVerdict {
+    /// The server answered the pending id with RequestCancelled (-32800): the
+    /// durable invariant the probe exists to observe.
+    Cancelled,
+    /// The request completed with a successful result before its cancellation
+    /// landed; the narrow legitimate race, so the probe retries with a fresh id.
+    CompletedEarly,
+    /// The id was answered with an error other than RequestCancelled. That is a
+    /// protocol defect, not a race: retrying would let a later cancellation hide
+    /// it, so the probe fails immediately.
+    WrongError(Value),
+}
+
+/// Classify one same-id response for [`probe_pending_request_cancellation`].
+///
+/// Only a successful result is retriable. Every error response whose code is not
+/// -32800 — including error objects without a numeric code — is a defect, never
+/// a retryable race.
+fn classify_probe_response(response: &Value) -> ProbeVerdict {
+    match response.get("error") {
+        Some(error) => {
+            if error.get("code").and_then(Value::as_i64) == Some(-32800) {
+                ProbeVerdict::Cancelled
+            } else {
+                ProbeVerdict::WrongError(error.clone())
+            }
+        }
+        None => ProbeVerdict::CompletedEarly,
+    }
+}
+
+fn probe_pending_request_cancellation(
+    fixture: &mut CancellationTestFixture,
+    base_request_id: i64,
+    method: &str,
+    params: Value,
+    cancel_context: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    for attempt in 0..CANCEL_PROBE_ATTEMPTS {
+        let request_id = fixture.track_request_id(base_request_id + attempt as i64);
+        send_request_no_wait(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params.clone()
+            }),
+        );
+        let cancel_params = if cancel_context.is_null() {
+            json!({ "id": request_id })
+        } else {
+            json!({ "id": request_id, "context": cancel_context })
+        };
+        send_notification(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": cancel_params
+            }),
+        );
+
+        match read_response_matching_outcome(&fixture.server, &json!(request_id), CANCEL_PROBE_READ)
+        {
+            ReadResponseOutcome::Response(response) => {
+                match classify_probe_response(&response) {
+                    ProbeVerdict::Cancelled => return Ok(response),
+                    // The request completed before its cancellation landed;
+                    // retry with a fresh id.
+                    ProbeVerdict::CompletedEarly => {}
+                    ProbeVerdict::WrongError(error) => {
+                        return Err(std::io::Error::other(format!(
+                            "{method} probe: request answered with unexpected error {error} instead of a result or RequestCancelled"
+                        ))
+                        .into());
+                    }
+                }
+            }
+            ReadResponseOutcome::TimedOut => {}
+            ReadResponseOutcome::Disconnected => {
+                return Err(std::io::Error::other(format!(
+                    "{method} probe: server disconnected while awaiting the cancellation response"
+                ))
+                .into());
+            }
+            ReadResponseOutcome::Malformed(detail) => {
+                return Err(std::io::Error::other(format!(
+                    "{method} probe: malformed frame while awaiting the cancellation response: {detail}"
+                ))
+                .into());
+            }
+        }
+    }
+
+    Err(std::io::Error::other(format!(
+        "{method} was not answered with RequestCancelled (-32800) within {CANCEL_PROBE_ATTEMPTS} request+cancellation probes"
+    ))
+    .into())
+}
+
+/// Scripted control for the probe's retry boundary: a wrong error code on the
+/// probed id is a protocol defect that must fail the probe, not a race the next
+/// probe may absorb — only a completed result or no same-id answer may retry.
+#[test]
+fn test_probe_classification_fails_wrong_error_and_retries_only_results()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancelled = json!({
+        "jsonrpc": "2.0", "id": 7,
+        "error": { "code": -32800, "message": "Request cancelled" }
+    });
+    assert!(matches!(classify_probe_response(&cancelled), ProbeVerdict::Cancelled));
+
+    let completed = json!({"jsonrpc": "2.0", "id": 7, "result": {"items": []}});
+    assert!(matches!(classify_probe_response(&completed), ProbeVerdict::CompletedEarly));
+
+    // Wrong-error-then-cancellation: if the loop retried this response, a later
+    // -32800 on a fresh id would mask it. The verdict must be a hard failure.
+    let wrong_code = json!({
+        "jsonrpc": "2.0", "id": 7,
+        "error": { "code": -32601, "message": "Method not found" }
+    });
+    assert!(matches!(classify_probe_response(&wrong_code), ProbeVerdict::WrongError(_)));
+
+    // An error object without a numeric code is still an error, not a result.
+    let codeless_error =
+        json!({"jsonrpc": "2.0", "id": 7, "error": {"message": "unspecified failure"}});
+    assert!(matches!(classify_probe_response(&codeless_error), ProbeVerdict::WrongError(_)));
+    Ok(())
+}
+
 // ============================================================================
 // AC1: Enhanced JSON-RPC 2.0 $/cancelRequest Processing Tests
 // ============================================================================
@@ -140,73 +294,41 @@ fn setup_test_file(server: &LspServer, uri: &str, content: &str) {
 #[test]
 fn test_enhanced_cancel_request_with_provider_context_ac1() -> Result<(), Box<dyn std::error::Error>>
 {
-    let fixture = CancellationTestFixture::new();
+    let mut fixture = CancellationTestFixture::new();
 
-    // Test completion provider cancellation with enhanced context
-    let completion_id = 1001;
-    send_request_no_wait(
-        &fixture.server,
+    // Cancel the pending completion with enhanced provider context and
+    // require the durable RequestCancelled answer for the id.
+    let response = probe_pending_request_cancellation(
+        &mut fixture,
+        1001,
+        "textDocument/completion",
         json!({
-            "jsonrpc": "2.0",
-            "id": completion_id,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": "file:///main.pl" },
-                "position": { "line": 5, "character": 10 }
-            }
+            "textDocument": { "uri": "file:///main.pl" },
+            "position": { "line": 5, "character": 10 }
         }),
-    );
-
-    // Send enhanced cancellation with provider context
-    // This should fail initially as enhanced cancellation infrastructure doesn't exist
-    send_notification(
-        &fixture.server,
         json!({
-            "jsonrpc": "2.0",
-            "method": "$/cancelRequest",
-            "params": {
-                "id": completion_id,
-                "context": {
-                    "provider": "textDocument/completion",
-                    "workspace_symbols": true,
-                    "cross_file": true,
-                    "cleanup_context": "completion_provider"
-                }
-            }
+            "provider": "textDocument/completion",
+            "workspace_symbols": true,
+            "cross_file": true,
+            "cleanup_context": "completion_provider"
         }),
-    );
+    )?;
 
-    // Validate enhanced cancellation response
-    let response =
-        read_response_matching_i64(&fixture.server, completion_id, Duration::from_millis(500));
+    // The probe only returns once the response for the id carried -32800.
+    let error = response.get("error").ok_or("Cancelled request should carry an error")?;
+    assert_eq!(error["code"].as_i64(), Some(-32800), "Should return RequestCancelled error code");
+    let message = error["message"].as_str().ok_or("Error message should be a string")?;
+    assert!(message.contains("completion"), "Error message should reference completion provider");
 
-    if let Some(resp) = response
-        && let Some(error) = resp.get("error")
-    {
-        assert_eq!(
-            error["code"].as_i64(),
-            Some(-32800),
-            "Should return RequestCancelled error code"
-        );
-        let message = error["message"].as_str().ok_or("Error message should be a string")?;
-        assert!(
-            message.contains("completion"),
-            "Error message should reference completion provider"
-        );
-
-        // Validate enhanced error data
-        if let Some(data) = error.get("data") {
-            assert!(
-                data.get("provider").is_some(),
-                "Enhanced error should include provider context"
-            );
-            // latency_ms is an optional enhanced field — presence is a bonus
-            let _ = data.get("latency_ms");
-        }
+    // Validate enhanced error data. The bare provider-side cancellation path
+    // answers with "data": null; a structured data object must carry provider
+    // context.
+    if let Some(data) = error.get("data").filter(|data| !data.is_null()) {
+        assert!(data.get("provider").is_some(), "Enhanced error should include provider context");
+        // latency_ms is an optional enhanced field — presence is a bonus
+        let _ = data.get("latency_ms");
     }
 
-    // Test will initially fail due to basic cancellation implementation
-    // Enhanced provider context processing will be implemented in feature development
     Ok(())
 }
 
@@ -309,8 +431,10 @@ fn test_multiple_provider_cancellation_with_context_ac1() -> Result<(), Box<dyn 
                 method_name
             );
 
-            // Validate enhanced error data structure
-            if let Some(data) = error.get("data") {
+            // Validate enhanced error data structure. The bare provider-side
+            // cancellation path answers with "data": null; a structured data
+            // object must carry provider information.
+            if let Some(data) = error.get("data").filter(|data| !data.is_null()) {
                 assert!(
                     data.get("provider").is_some(),
                     "Enhanced cancellation should include provider information"
@@ -1108,8 +1232,10 @@ fn test_enhanced_error_response_handling_ac4() -> Result<(), Box<dyn std::error:
                     scenario_name
                 );
 
-                // Validate enhanced error data structure
-                if let Some(data) = error.get("data") {
+                // Validate enhanced error data structure. The bare provider-side
+                // cancellation path answers with "data": null; a structured
+                // data object must carry provider information.
+                if let Some(data) = error.get("data").filter(|data| !data.is_null()) {
                     // Provider context validation
                     assert!(
                         data.get("provider").is_some(),
@@ -1569,7 +1695,7 @@ impl Drop for CancellationTestFixture {
 fn test_type_hierarchy_prepare_cancellation() -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = CancellationTestFixture::new();
 
-    run_type_hierarchy_pre_cancel_test(
+    run_type_hierarchy_cancellation_test(
         &mut fixture,
         7010,
         "textDocument/prepareTypeHierarchy",
@@ -1584,7 +1710,7 @@ fn test_type_hierarchy_prepare_cancellation() -> Result<(), Box<dyn std::error::
 fn test_type_hierarchy_supertypes_cancellation() -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = CancellationTestFixture::new();
 
-    run_type_hierarchy_pre_cancel_test(
+    run_type_hierarchy_cancellation_test(
         &mut fixture,
         7012,
         "typeHierarchy/supertypes",
@@ -1598,7 +1724,7 @@ fn test_type_hierarchy_supertypes_cancellation() -> Result<(), Box<dyn std::erro
 fn test_type_hierarchy_subtypes_cancellation() -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = CancellationTestFixture::new();
 
-    run_type_hierarchy_pre_cancel_test(
+    run_type_hierarchy_cancellation_test(
         &mut fixture,
         7014,
         "typeHierarchy/subtypes",
@@ -1628,34 +1754,19 @@ fn type_hierarchy_test_item() -> Value {
     })
 }
 
-fn run_type_hierarchy_pre_cancel_test(
+fn run_type_hierarchy_cancellation_test(
     fixture: &mut CancellationTestFixture,
-    request_id: i64,
+    base_request_id: i64,
     method: &str,
     params: Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let request_id = fixture.track_request_id(request_id);
-    send_notification(
-        &fixture.server,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "$/cancelRequest",
-            "params": { "id": request_id }
-        }),
-    );
-
-    send_request_no_wait(
-        &fixture.server,
-        json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params
-        }),
-    );
-
-    let response = read_response_matching_i64(&fixture.server, request_id, Duration::from_secs(1))
-        .ok_or_else(|| std::io::Error::other(format!("{method} must respond to a cancelled id")))?;
+    // The request must precede its cancellation: the server only records
+    // cancellations for ids it has already marked pending, so cancelling an
+    // id before the request is sent is ignored and the request would run to
+    // completion. probe_pending_request_cancellation asserts the durable
+    // -32800 answer for the pending id.
+    let response =
+        probe_pending_request_cancellation(fixture, base_request_id, method, params, Value::Null)?;
     validate_request_cancelled(&response, method)?;
     if !fixture.server.is_alive() {
         return Err(std::io::Error::other(

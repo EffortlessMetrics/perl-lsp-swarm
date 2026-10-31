@@ -1,9 +1,10 @@
 //! The `perl-ripr-facts` standalone binary's `ripr-facts` subcommand
-//! ([`run_cli`]) and the thin `run_ripr_facts`/`run_ripr_facts_with_diff`
-//! wrapper the `perl-lsp` / `perllsp` `ripr-facts` subcommand calls: argv
-//! parsing, output-path validation, writing the packet to disk, and mapping
-//! to a process exit code. All the actual fact production happens in
-//! [`crate::packet::build_ripr_facts_packet`].
+//! ([`run_cli`]) and the thin wrappers behind the `perl-lsp` / `perllsp`
+//! `--ripr-facts` flag ([`run_ripr_facts_with_diff_path`], with
+//! [`run_ripr_facts`]/[`run_ripr_facts_with_diff`] retained for no-diff
+//! callers): argv parsing, output-path validation, writing the packet to
+//! disk, and mapping to a process exit code. All the actual fact production
+//! happens in [`crate::packet::build_ripr_facts_packet`].
 
 use crate::packet::build_ripr_facts_packet;
 use crate::request::{EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsRequest, validate_ripr_facts_path};
@@ -40,6 +41,9 @@ impl Default for RiprFactsCli {
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+#[expect(clippy::print_stdout, reason = "explicit --help output goes to stdout by convention")]
+/// Entry point for the `perl-ripr-facts` binary. Parses argv, runs the requested
+/// packet generation, and returns a process exit code.
 pub fn run_cli<I, S>(args: I) -> i32
 where
     I: IntoIterator<Item = S>,
@@ -47,13 +51,26 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     let cli = match parse_ripr_facts_cli(&args) {
-        Ok(cli) => cli,
+        Ok(CliParse::Run(cli)) => cli,
+        Ok(CliParse::Help) => {
+            println!("{}", ripr_facts_usage());
+            return 0;
+        }
         Err(reason) => {
             eprintln!("ripr-facts: {reason}");
             eprintln!("{}", ripr_facts_usage());
             return 1;
         }
     };
+
+    // Fail fast on an invalid write destination before any diff I/O: an
+    // unreadable `--diff` must not mask a directory-valued `--out`, and a
+    // readable diff must not be read only to reject the destination afterwards
+    // (#17263 review). Same shared check the wrapper runs before the scan.
+    if let Err(line) = validate_out_destination(&cli.out) {
+        eprintln!("{line}");
+        return 1;
+    }
 
     let diff_text = match cli.diff_path.as_deref() {
         Some(path) => match read_diff_text(&cli.root, path) {
@@ -77,12 +94,19 @@ where
     )
 }
 
-fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
+/// Parse outcome: run the packet generation, or print usage (explicit
+/// `--help`/`-h` in flag position — never a value — exits 0, not 1).
+enum CliParse {
+    Run(RiprFactsCli),
+    Help,
+}
+
+fn parse_ripr_facts_cli(args: &[String]) -> Result<CliParse, String> {
     let mut iter = args.iter();
     let _program = iter.next();
     match iter.next().map(String::as_str) {
         Some("ripr-facts") => {}
-        Some("--help" | "-h") => return Err("missing subcommand `ripr-facts`".to_string()),
+        Some("--help" | "-h") => return Ok(CliParse::Help),
         Some(other) => return Err(format!("unexpected subcommand or option `{other}`")),
         None => return Err("missing subcommand `ripr-facts`".to_string()),
     }
@@ -92,6 +116,12 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
     let mut index = 0usize;
     while index < rest.len() {
         let flag = rest[index];
+        // Help in flag position short-circuits before value consumption, so a
+        // trailing `--help` is help, not a "missing value" error. A `--help`
+        // in *value* position (e.g. `--out --help`) stays a value.
+        if matches!(flag, "--help" | "-h") {
+            return Ok(CliParse::Help);
+        }
         let value = rest.get(index + 1).ok_or_else(|| format!("missing value for `{flag}`"))?;
         match flag {
             "--schema" => cli.schema = (*value).to_string(),
@@ -106,13 +136,15 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
         index += 2;
     }
 
-    Ok(cli)
+    Ok(CliParse::Run(cli))
 }
 
 fn ripr_facts_usage() -> &'static str {
-    "usage: perl-ripr-facts ripr-facts --schema ripr-perl-facts-v1 --root <root> \
+    "usage: perl-ripr-facts ripr-facts [--schema ripr-perl-facts-v1] [--root <root>] \
      [--base <base>] [--head <head>] [--fact-classes <classes>] \
-     [--diff <cwd-relative-diff>] --out <out>"
+     [--diff <cwd-relative-diff>] [--out <out>]\n\
+     defaults: --schema ripr-perl-facts-v1, --root ., --fact-classes <all classes>, \
+     --out target/ripr/reports/perl-facts.json"
 }
 
 fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
@@ -121,6 +153,26 @@ fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
     let path = std::path::Path::new(diff_path);
     std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read diff `{}`: {error}", path.display()))
+}
+
+/// Validate the `out` write destination: repo-relative shape plus target kind.
+///
+/// Shape validation alone says nothing about target kind, so `out` naming an
+/// existing directory used to scan the whole workspace and then die with a raw
+/// OS error that never said "is a directory" (#17263). This fails fast
+/// instead, naming the condition. (`is_dir` follows symlinks, matching what
+/// the write path would hit; a TOCTOU dir still fails closed below, just less
+/// prettily.)
+///
+/// Shared by both entry points — [`run_cli`] (before diff I/O) and
+/// [`run_ripr_facts_with_diff`] (before the workspace scan) — so the two
+/// cannot drift. The `Err` is the complete stderr line, ready to print.
+fn validate_out_destination(out: &str) -> Result<(), String> {
+    validate_ripr_facts_path(out, "out").map_err(|reason| format!("ripr-facts: {reason}"))?;
+    if std::path::Path::new(out).is_dir() {
+        return Err(out_names_directory_message(out));
+    }
+    Ok(())
 }
 
 /// Run the `ripr-facts` exporter (Campaign 31, ripr-swarm#1379).
@@ -150,6 +202,45 @@ pub fn run_ripr_facts(
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+/// Run the packet generator with a diff read from a file. Called by the
+/// `perllsp --ripr-facts --ripr-diff <file>` surface (#17152); mirrors the
+/// binary's [`run_cli`] ordering (output destination validated before diff
+/// I/O, unreadable diff fails closed with exit 1) and delegates the rest.
+pub fn run_ripr_facts_with_diff_path(
+    schema: &str,
+    root: &str,
+    base: Option<&str>,
+    head: Option<&str>,
+    fact_classes: &str,
+    diff_path: Option<&str>,
+    out: &str,
+) -> i32 {
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
+        return 1;
+    }
+
+    let diff_text = match diff_path {
+        Some(path) => match read_diff_text(root, path) {
+            Ok(text) => Some(text),
+            Err(reason) => {
+                eprintln!("ripr-facts: {reason}");
+                return 1;
+            }
+        },
+        None => None,
+    };
+
+    run_ripr_facts_with_diff(schema, root, base, head, fact_classes, diff_text.as_deref(), out)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
+)]
+/// Run the packet generator with an explicit diff input. Used by tests and
+/// library callers that already have the diff bytes; the binary routes here
+/// after CLI parsing.
 pub fn run_ripr_facts_with_diff(
     schema: &str,
     root: &str,
@@ -161,8 +252,8 @@ pub fn run_ripr_facts_with_diff(
 ) -> i32 {
     // Validate the output path first — the cheapest check — so an invalid write
     // destination fails fast, before the emitter scans the workspace.
-    if let Err(reason) = validate_ripr_facts_path(out, "out") {
-        eprintln!("ripr-facts: {reason}");
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
         return 1;
     }
 
@@ -192,21 +283,230 @@ pub fn run_ripr_facts_with_diff(
     0
 }
 
+/// Fail-fast message when `out` names an existing directory (#17263),
+/// extracted as a constructor so the wording is unit-testable (the wrapper
+/// itself only signals `stderr` + exit code).
+fn out_names_directory_message(out: &str) -> String {
+    format!(
+        "ripr-facts: `out` names an existing directory (`{out}`); pass a file path for the packet."
+    )
+}
+
 /// Write a JSON packet to the output path, creating parent directories.
+///
+/// The destination is **replaced**, never rewritten in place (#16022, #8165
+/// "Output safety"): the fully serialized packet is staged in a temporary
+/// sibling inside the destination directory, flushed and synced, and only then
+/// renamed over `out`. `std::fs::rename` replaces the destination in one step,
+/// so a RIPR consumer reading `out` observes either the previous complete
+/// packet or the new complete packet — never a truncated or half-written one.
+///
+/// A plain `std::fs::write` cannot offer that: it opens the destination with
+/// `O_TRUNC` (`CREATE_ALWAYS` on Windows), destroying the previous valid packet
+/// before the first new byte lands. Any mid-write failure — `ENOSPC`, `EIO`, a
+/// cancelled CI job, a killed producer — then leaves invalid JSON where a
+/// complete fact packet used to be, which downstream consumers cannot tell
+/// apart from a genuinely empty analysis.
+///
+/// The sibling is staged in the destination's own directory, not the system
+/// temp directory, so the rename stays within one filesystem; a cross-device
+/// rename fails with `EXDEV` and would defeat the recipe.
 fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
-    let path = std::path::Path::new(out);
+    // Replace the file `std::fs::write` would have written through, not the
+    // link pointing at it: `fs::write` follows a symlinked destination, while
+    // `fs::rename` would replace the link itself and strand its target.
+    let path = resolve_destination(std::path::Path::new(out));
+    let path = path.as_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Serialize in full before touching the filesystem: a serialization failure
+    // must leave the destination untouched, not partially rewritten.
     let json = serde_json::to_string_pretty(packet)?;
-    std::fs::write(path, json)
+
+    let temp = stage_temp_sibling(path, json.as_bytes())?;
+    carry_destination_permissions(path, &temp);
+    if let Err(error) = std::fs::rename(&temp, path) {
+        // Best-effort cleanup: only the sibling we actually created is ours, and
+        // it is scratch. A rename failure is reported as such.
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Follow a symlinked destination to the file it names.
+///
+/// `std::fs::write` follows the link and updates its target, keeping the link
+/// in place. A bare `fs::rename` onto the link would instead replace the link
+/// with a regular file and leave the real target frozen at its last contents,
+/// silently breaking any `latest.json -> packet-vN.json` style publication.
+/// Resolving first keeps the pre-existing behavior and still replaces the real
+/// file atomically, because the staged sibling then lands beside *it*.
+///
+/// Only the final component is followed, and the walk is bounded so a symlink
+/// cycle terminates instead of spinning. A broken or unreadable link resolves
+/// to itself, which lets the ordinary create path report the real error.
+fn resolve_destination(path: &std::path::Path) -> std::path::PathBuf {
+    /// Matches the conventional `SYMLOOP_MAX` floor; deeper chains are cycles
+    /// for this purpose.
+    const MAX_LINK_DEPTH: usize = 8;
+
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINK_DEPTH {
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            return current;
+        };
+        if !metadata.file_type().is_symlink() {
+            return current;
+        }
+        let Ok(target) = std::fs::read_link(&current) else {
+            return current;
+        };
+        current = match current.parent() {
+            // A relative link resolves against the directory holding the link.
+            Some(parent) if !parent.as_os_str().is_empty() && target.is_relative() => {
+                parent.join(target)
+            }
+            _ => target,
+        };
+    }
+    current
+}
+
+/// Carry an existing destination's permissions onto the staged sibling.
+///
+/// `std::fs::write` reuses the destination's inode, so its mode survives a
+/// rewrite. A staged file is new, so it would otherwise publish with the
+/// process umask and silently reset an operator's `chmod 600` on every run.
+/// Best-effort by design: when there is no previous destination the umask
+/// default is correct, and a platform that cannot read or apply the mode must
+/// not fail an otherwise complete packet.
+fn carry_destination_permissions(destination: &std::path::Path, staged: &std::path::Path) {
+    if let Ok(metadata) = std::fs::metadata(destination) {
+        let _ = std::fs::set_permissions(staged, metadata.permissions());
+    }
+}
+
+/// Per-process sequence making each staged sibling unique, so two writers in
+/// one process (parallel `cargo test` threads, a future concurrent producer)
+/// aimed at the same destination stage into separate files. Without it they
+/// would share one scratch path and interleave bytes into it.
+static TEMP_SIBLING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Build the staging path for `path`: a dot-prefixed, `.tmp`-marked sibling in
+/// the same directory, scoped by process id and an in-process sequence so no
+/// two concurrent writers collide.
+fn temp_sibling_path(path: &std::path::Path) -> std::path::PathBuf {
+    let sequence = TEMP_SIBLING_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .map_or_else(|| std::ffi::OsString::from("perl-facts.json"), std::ffi::OsStr::to_os_string);
+
+    let mut staged = std::ffi::OsString::from(".");
+    staged.push(&file_name);
+    staged.push(format!(".tmp-{}-{sequence}", std::process::id()));
+
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(staged),
+        _ => std::path::PathBuf::from(staged),
+    }
+}
+
+/// Maximum number of attempts to claim an exclusive staging sibling before
+/// reporting the collision as exhaustion. Each attempt computes a fresh path
+/// via [`temp_sibling_path`], so the bound is on attempts per destination
+/// call, not on the sequence counter itself.
+const MAX_TEMP_SIBLING_ATTEMPTS: usize = 16;
+
+/// Write `bytes` to an exclusively-created staged sibling and make them
+/// durable, so the rename that follows publishes a complete file rather than
+/// one whose contents are still only in the page cache. Returns the path of
+/// the scratch file actually created, so the caller can clean it up on
+/// rename failure and never touches a sibling this invocation did not write.
+///
+/// Staging uses `O_CREAT | O_EXCL` semantics (`OpenOptions::create_new`) so a
+/// stale sibling left over from a previous interrupted run is preserved
+/// rather than truncated. `AlreadyExists` is recovered by trying the next
+/// sequence number up to [`MAX_TEMP_SIBLING_ATTEMPTS`] — the destination
+/// itself is never touched, and a pre-existing scratch file that this
+/// invocation did not create is never removed.
+fn stage_temp_sibling(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    stage_temp_sibling_with_candidates(dest, bytes, || temp_sibling_path(dest))
+}
+
+/// [`stage_temp_sibling`] with a test-controlled candidate supplier, so the
+/// collision and exhaustion paths are deterministic instead of depending on
+/// predicting the process-global sequence.
+fn stage_temp_sibling_with_candidates(
+    dest: &std::path::Path,
+    bytes: &[u8],
+    mut next_candidate: impl FnMut() -> std::path::PathBuf,
+) -> std::io::Result<std::path::PathBuf> {
+    for _ in 0..MAX_TEMP_SIBLING_ATTEMPTS {
+        let temp = next_candidate();
+        let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // The computed path already names a real file. This is the
+                // stale-sibling case the issue describes: another run (or
+                // another part of this process) created a scratch path with
+                // a sequence number we would otherwise have used. We must
+                // not truncate it, and we must not delete it: it might not
+                // be ours. Try the next sequence number.
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        finish_staged_file(file, &temp, bytes)?;
+        return Ok(temp);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "exhausted {MAX_TEMP_SIBLING_ATTEMPTS} attempts to allocate an exclusive \
+             staging sibling for `{}`",
+            dest.display()
+        ),
+    ))
+}
+
+/// Finish the staged write for a sibling this invocation exclusively created.
+///
+/// On any write, flush, or sync failure the owned scratch is best-effort
+/// removed before the original error is returned, so repeated staging
+/// failures do not accumulate partial scratch files that a later run must
+/// treat as strangers. Only call with a path this invocation created: a
+/// pre-existing file passed here is removed on failure.
+fn finish_staged_file(
+    file: std::fs::File,
+    temp: &std::path::Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut file = file;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()
+    })();
+    if let Err(error) = result {
+        // Close before removing: deleting an open handle fails on Windows,
+        // which would leave the partial scratch behind on that platform.
+        drop(file);
+        let _ = std::fs::remove_file(temp);
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::packet::build_unavailable_packet;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::{must_some, must_some_with, must_with};
 
     /// A valid request against the crate root (`"."`, no `t/` dir → unavailable).
     /// Local copy of `crate::packet`'s test-only helper of the same name — see
@@ -238,8 +538,10 @@ mod tests {
         );
         assert_eq!(rc, 0, "wrapper must succeed");
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out)?)?;
-        let built = build_ripr_facts_packet(&valid_request("tests,oracles"))
-            .expect("valid request builds a packet");
+        let built = must_with(
+            build_ripr_facts_packet(&valid_request("tests,oracles")),
+            "valid request builds a packet",
+        );
         assert_eq!(built, written, "batch API packet must equal what the wrapper writes");
         let _ = std::fs::remove_file(out);
         Ok(())
@@ -259,15 +561,17 @@ mod tests {
         assert_eq!(rc, 0, "wrapper must succeed");
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out)?)?;
 
-        let built = build_ripr_facts_packet(&RiprFactsRequest {
-            schema: "ripr-perl-facts-v1",
-            root,
-            base: None,
-            head: None,
-            fact_classes: "files,owners",
-            diff: None,
-        })
-        .expect("valid request");
+        let built = must_with(
+            build_ripr_facts_packet(&RiprFactsRequest {
+                schema: "ripr-perl-facts-v1",
+                root,
+                base: None,
+                head: None,
+                fact_classes: "files,owners",
+                diff: None,
+            }),
+            "valid request",
+        );
         // Sanity: the fixture actually yields owners, so parity covers PR-3 facts.
         assert!(!must_some(built["owners"].as_array()).is_empty(), "fixture must yield owners");
         assert_eq!(built, written, "wrapper output must equal the batch packet with parser facts");
@@ -297,17 +601,22 @@ mod tests {
         );
         assert_eq!(rc, 0, "wrapper succeeds");
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out)?)?;
-        let built = build_ripr_facts_packet(&RiprFactsRequest {
-            schema: "ripr-perl-facts-v1",
-            root,
-            base: None,
-            head: None,
-            fact_classes: "tests,oracles,provenance,limitations",
-            diff: None,
-        })
-        .expect("valid request");
+        let built = must_with(
+            build_ripr_facts_packet(&RiprFactsRequest {
+                schema: "ripr-perl-facts-v1",
+                root,
+                base: None,
+                head: None,
+                fact_classes: "tests,oracles,provenance,limitations",
+                diff: None,
+            }),
+            "valid request",
+        );
         assert_eq!(built, written, "batch API packet == wrapper-written packet");
-        assert!(!built["oracles"].as_array().expect("oracles[]").is_empty(), "oracles present");
+        assert!(
+            !must_some_with(built["oracles"].as_array(), "oracles[]").is_empty(),
+            "oracles present"
+        );
         let _ = std::fs::remove_dir_all(root);
         Ok(())
     }
@@ -323,6 +632,50 @@ mod tests {
             "target/ripr/test-wrong-schema.json",
         );
         assert_eq!(rc, 1, "wrong schema must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_help_exits_zero() {
+        for argv in [
+            vec!["perl-ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "-h"],
+            vec!["perl-ripr-facts", "ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "ripr-facts", "--schema", "ripr-perl-facts-v1", "--help"],
+        ] {
+            let owned: Vec<String> = argv.into_iter().map(str::to_string).collect();
+            assert_eq!(run_cli(owned), 0, "explicit --help must exit 0");
+        }
+    }
+
+    #[test]
+    fn ripr_facts_help_in_value_position_stays_a_value() {
+        let argv: Vec<String> = ["perl-ripr-facts", "ripr-facts", "--out", "--help"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            matches!(parse_ripr_facts_cli(&argv), Ok(CliParse::Run(_))),
+            "--help as a flag value must not trigger help"
+        );
+    }
+
+    #[test]
+    fn ripr_facts_bare_subcommand_uses_defaults() {
+        let argv: Vec<String> =
+            ["perl-ripr-facts", "ripr-facts"].into_iter().map(str::to_string).collect();
+        let parsed = parse_ripr_facts_cli(&argv).expect("bare subcommand parses");
+        assert!(matches!(parsed, CliParse::Run(_)), "bare subcommand must run, not help");
+        if let CliParse::Run(cli) = parsed {
+            assert_eq!(cli.schema, "ripr-perl-facts-v1");
+            assert_eq!(cli.root, ".");
+            assert_eq!(cli.out, "target/ripr/reports/perl-facts.json");
+        }
+    }
+
+    #[test]
+    fn ripr_facts_missing_subcommand_still_exits_one() {
+        let rc = run_cli(vec!["perl-ripr-facts".to_string()]);
+        assert_eq!(rc, 1, "bare invocation must still exit 1");
     }
 
     #[test]
@@ -409,9 +762,9 @@ mod tests {
             out,
         );
         assert_eq!(rc, 0, "valid invocation must exit 0");
-        let written = std::fs::read_to_string(out).expect("packet must be written");
+        let written = must_with(std::fs::read_to_string(out), "packet must be written");
         let parsed: serde_json::Value =
-            serde_json::from_str(&written).expect("packet must be JSON");
+            must_with(serde_json::from_str(&written), "packet must be JSON");
         assert_eq!(parsed["packet_status"], "unavailable");
         // Clean up.
         let _ = std::fs::remove_file(out);
@@ -459,14 +812,16 @@ mod tests {
             parsed["packet_status"], "partial",
             "a discovered .t file must yield a partial packet"
         );
-        let tests = parsed["tests"].as_array().expect("tests[] is an array");
+        let tests = must_some_with(parsed["tests"].as_array(), "tests[] is an array");
         assert!(!tests.is_empty(), "the discovered .t file must produce a test fact");
         assert_eq!(
             tests[0]["framework"], "Test::More",
             "framework must be detected from `use Test::More`"
         );
-        let capabilities =
-            parsed["producer"]["capabilities"].as_array().expect("capabilities[] is an array");
+        let capabilities = must_some_with(
+            parsed["producer"]["capabilities"].as_array(),
+            "capabilities[] is an array",
+        );
         assert!(
             capabilities.iter().any(|capability| capability == "test_facts"),
             "packets carrying tests/oracles must advertise test_facts"
@@ -479,9 +834,10 @@ mod tests {
 
     #[test]
     fn ripr_facts_deduplicates_and_orders_fact_classes() {
-        let normalized =
-            crate::request::normalize_fact_classes("changes,owners,owners,changes,tests")
-                .expect("valid classes normalize");
+        let normalized = must_with(
+            crate::request::normalize_fact_classes("changes,owners,owners,changes,tests"),
+            "valid classes normalize",
+        );
         // Canonical order (VALID_FACT_CLASSES order): files, owners, changes, tests, ...
         assert_eq!(normalized, vec!["owners", "changes", "tests"]);
     }
@@ -529,12 +885,10 @@ mod tests {
     /// `crate::packet`'s test-only helpers of the same name (#9271 PR notes:
     /// duplicated rather than exposed cross-module).
     fn changes_of(p: &serde_json::Value) -> Vec<serde_json::Value> {
-        p["changes"].as_array().expect("changes[]").clone()
+        must_some_with(p["changes"].as_array(), "changes[]").clone()
     }
     fn has_limitation(p: &serde_json::Value, id_prefix: &str) -> bool {
-        p["limitations"]
-            .as_array()
-            .expect("limitations[]")
+        must_some_with(p["limitations"].as_array(), "limitations[]")
             .iter()
             .any(|l| l["limitation_id"].as_str().is_some_and(|s| s.starts_with(id_prefix)))
     }
@@ -630,5 +984,596 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
         Ok(())
+    }
+    // ── #16022 / #8165 P2: atomic packet output ──
+    //
+    // The contract these prove: `write_packet` REPLACES the destination (stage
+    // a sibling, then rename) instead of truncating it in place. The mutant to
+    // kill is a revert to `std::fs::write(path, json)`. Two tests below fail
+    // against that mutant — `write_replaces_the_destination_file_identity` and
+    // `reader_holding_the_destination_open_still_sees_the_previous_packet`.
+    // The rest guard the properties a correct rename must not lose: exact
+    // bytes, no leftover scratch, and an untouched destination on failure.
+
+    /// Build a Perl fixture root that yields real `files[]`/`owners[]` facts.
+    #[cfg(unix)]
+    fn perl_fixture(root: &str, body: &str) -> std::io::Result<()> {
+        std::fs::create_dir_all(format!("{root}/lib"))?;
+        std::fs::write(format!("{root}/lib/App.pm"), body)
+    }
+
+    /// Names of the entries directly inside `dir`, sorted.
+    fn dir_entries(dir: &str) -> std::io::Result<Vec<String>> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<String>>>()?;
+        names.sort();
+        Ok(names)
+    }
+
+    #[test]
+    fn write_replaces_the_whole_destination_and_preserves_exact_bytes() -> std::io::Result<()> {
+        // A stale predecessor much LARGER than the new packet: if the write
+        // only overwrote a prefix, the tail of the old file would survive and
+        // the byte comparison below would fail.
+        let dir = "target/ripr-atomic-replace";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let out = format!("{dir}/packet.json");
+        std::fs::write(&out, "x".repeat(64 * 1024))?;
+
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            ".",
+            Some("origin/main"),
+            Some("HEAD"),
+            "tests,oracles",
+            &out,
+        );
+        assert_eq!(rc, 0, "wrapper must succeed");
+
+        let written = std::fs::read_to_string(&out)?;
+        let built = must_with(
+            build_ripr_facts_packet(&valid_request("tests,oracles")),
+            "valid request builds a packet",
+        );
+        let expected = serde_json::to_string_pretty(&built)?;
+
+        // Byte identity, not JSON equality: this also pins the on-disk encoding
+        // (pretty-printed, no trailing newline) so the atomic staging cannot
+        // silently change the packet bytes RIPR consumers hash.
+        assert_eq!(written, expected, "destination must hold exactly the serialized packet");
+        assert!(!written.ends_with('\n'), "packet bytes carry no trailing newline");
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn successful_write_leaves_no_staged_sibling() -> std::io::Result<()> {
+        let dir = "target/ripr-atomic-no-litter";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let out = format!("{dir}/packet.json");
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "wrapper must succeed");
+
+        // Staging is an implementation detail that must not leak onto disk: a
+        // `.packet.json.tmp-*` left behind would be picked up by directory
+        // consumers and by the next run's cleanup assumptions.
+        assert_eq!(
+            dir_entries(dir)?,
+            vec!["packet.json".to_string()],
+            "only the packet may remain after a successful write"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_packet_build_preserves_the_previous_packet_byte_for_byte() -> std::io::Result<()> {
+        let dir = "target/ripr-atomic-build-failure";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let out = format!("{dir}/packet.json");
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "the first generation must succeed");
+        let previous = std::fs::read(&out)?;
+        assert!(!previous.is_empty(), "fixture must leave a real packet on disk");
+
+        // A rejected request must not disturb the destination at all: validation
+        // precedes every filesystem effect.
+        let rc = run_ripr_facts("ripr-perl-facts-v2", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 1, "an unsupported schema must fail the run");
+        assert_eq!(
+            std::fs::read(&out)?,
+            previous,
+            "a failed generation must preserve the previous valid packet"
+        );
+        assert_eq!(
+            dir_entries(dir)?,
+            vec!["packet.json".to_string()],
+            "a failed generation must not leave scratch behind either"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn out_naming_directory_fails_fast_without_litter() -> std::io::Result<()> {
+        // `#17263`: `out` naming a directory fails before the workspace scan
+        // (not after, with a raw OS error) and stages nothing.
+        let dir = "target/ripr-out-is-dir";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(format!("{dir}/packet.json"))?;
+        let out = format!("{dir}/packet.json");
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 1, "a directory destination must fail the run");
+        assert_eq!(
+            dir_entries(dir)?,
+            vec!["packet.json".to_string()],
+            "the fail-fast path must stage nothing"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn out_naming_directory_message_names_the_condition() {
+        let message = super::out_names_directory_message("out");
+        assert!(
+            message.contains("existing directory") && message.contains("out"),
+            "message must say the destination is a directory and name it; got: {message}"
+        );
+    }
+
+    #[test]
+    fn failed_replace_reports_failure_and_removes_the_staged_sibling() -> std::io::Result<()> {
+        // Occupy the destination with a directory and call the writer
+        // directly: staging succeeds, then the rename fails (a file cannot
+        // replace a directory on Unix or Windows), which exercises the
+        // replace-failure cleanup end to end. (Via `run_ripr_facts` the
+        // #17263 fail-fast check now preempts this path, so the direct call
+        // is what keeps the cleanup proof deterministic.)
+        let dir = "target/ripr-atomic-replace-failure";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(format!("{dir}/packet.json"))?;
+        let out = format!("{dir}/packet.json");
+
+        let result = super::write_packet(&out, &serde_json::json!({"probe": true}));
+        assert!(result.is_err(), "replacing a directory must fail");
+        assert_eq!(
+            dir_entries(dir)?,
+            vec!["packet.json".to_string()],
+            "a failed replace must not leave the staged sibling behind"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    // The destination-identity and open-handle proofs below read the inode the
+    // path resolves to, which has no portable equivalent: Windows file-id reads
+    // need `std::os::windows::fs::FileExt`-adjacent APIs that are not stable,
+    // and replacement semantics for a held handle differ there. The property
+    // itself is platform-independent; only this instrument is Unix-only.
+    #[cfg(unix)]
+    #[test]
+    fn write_replaces_the_destination_file_identity() -> std::io::Result<()> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let dir = "target/ripr-atomic-identity";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let out = format!("{dir}/packet.json");
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "the first generation must succeed");
+        let first = std::fs::metadata(&out)?.ino();
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "the second generation must succeed");
+        let second = std::fs::metadata(&out)?.ino();
+
+        // NEGATIVE CONTROL. `std::fs::write` truncates and rewrites the SAME
+        // inode, so it keeps this identity stable; a staged-sibling rename
+        // always publishes a new one. Reverting `write_packet` to
+        // `std::fs::write` fails exactly here.
+        assert_ne!(
+            first, second,
+            "the destination must be replaced by rename, not truncated in place"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_holding_the_destination_open_still_sees_the_previous_packet()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Read as _;
+
+        let dir = "target/ripr-atomic-open-handle";
+        let _ = std::fs::remove_dir_all(dir);
+        let root = format!("{dir}/root");
+        let out = format!("{dir}/out/packet.json");
+        perl_fixture(&root, "package App;\nsub run { return 1; }\n1;\n")?;
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", &root, None, None, "files,owners", &out);
+        assert_eq!(rc, 0, "the first generation must succeed");
+        let previous = std::fs::read_to_string(&out)?;
+
+        // A consumer that opened the packet just before the producer ran.
+        let mut held = std::fs::File::open(&out)?;
+
+        // Regenerate from changed sources so the new packet genuinely differs.
+        perl_fixture(&root, "package App;\nsub run { return 1; }\nsub extra { return 2; }\n1;\n")?;
+        let rc = run_ripr_facts("ripr-perl-facts-v1", &root, None, None, "files,owners", &out);
+        assert_eq!(rc, 0, "the second generation must succeed");
+        let current = std::fs::read_to_string(&out)?;
+        assert_ne!(current, previous, "fixture must actually change the packet");
+
+        let mut observed = String::new();
+        held.read_to_string(&mut observed)?;
+
+        // NEGATIVE CONTROL. Truncate-in-place mutates the bytes this handle
+        // points at, so `std::fs::write` would yield the NEW packet (or a
+        // truncated prefix) here. A rename leaves the old file intact until the
+        // last reader closes it, which is precisely "a failed or concurrent
+        // generation never corrupts a reader's packet".
+        assert_eq!(
+            observed, previous,
+            "an open reader must keep observing the complete previous packet"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+    // ── #16022 review round 2: behavior drift vs the old `std::fs::write` ──
+    //
+    // Replacing a file is not the same operation as rewriting one, and three
+    // differences are observable. These pin the ones that would otherwise be
+    // silent regressions against `std::fs::write`.
+
+    #[test]
+    fn staged_sibling_always_lands_beside_its_destination() {
+        // The EXDEV guarantee the rustdoc and README both claim. An
+        // implementation that staged into `std::env::temp_dir()` and renamed
+        // across mounts passes every other test in this file — the success and
+        // failure cleanup tests only assert the destination directory holds no
+        // scratch, which is trivially true if the scratch was never put there.
+        // Only this test fails against that wrong implementation.
+        for destination in ["target/ripr-x/packet.json", "packet.json", "/tmp/packet.json"] {
+            let path = std::path::Path::new(destination);
+            let staged = temp_sibling_path(path);
+            assert_eq!(
+                staged.parent(),
+                path.parent(),
+                "staged sibling for `{destination}` must share the destination's directory"
+            );
+            assert_ne!(staged, path, "staged sibling must not be the destination itself");
+        }
+    }
+
+    #[test]
+    fn staged_sibling_names_are_unique_per_call() {
+        // Two writers aimed at one destination must not share a scratch path.
+        let path = std::path::Path::new("target/ripr-x/packet.json");
+        assert_ne!(temp_sibling_path(path), temp_sibling_path(path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_preserves_an_existing_destinations_permissions() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // `std::fs::write` reuses the destination inode, so a `chmod 600` on
+        // the packet survived a regeneration. A staged sibling is a new file,
+        // so without carrying the mode across it would publish at the umask
+        // default and silently widen an operator's restriction on every run.
+        let dir = "target/ripr-atomic-perms";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let out = format!("{dir}/packet.json");
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "the first generation must succeed");
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600))?;
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
+        assert_eq!(rc, 0, "the second generation must succeed");
+
+        assert_eq!(
+            std::fs::metadata(&out)?.permissions().mode() & 0o777,
+            0o600,
+            "regenerating the packet must not widen the destination's permissions"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_through_a_symlinked_destination_keeps_the_link_and_updates_its_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `std::fs::write` follows a symlinked destination and updates the file
+        // it names. A bare rename onto the link would replace the link with a
+        // regular file and strand the real target at its previous contents —
+        // silently breaking a `latest.json -> packet-vN.json` publication.
+        let dir = "target/ripr-atomic-symlink";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(format!("{dir}/real"))?;
+        let target = format!("{dir}/real/actual.json");
+        std::fs::write(&target, "{}")?;
+
+        let link = format!("{dir}/packet.json");
+        std::os::unix::fs::symlink("real/actual.json", &link)?;
+
+        let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &link);
+        assert_eq!(rc, 0, "writing through the link must succeed");
+
+        assert!(
+            std::fs::symlink_metadata(&link)?.file_type().is_symlink(),
+            "the destination must still be a symlink, not a replaced regular file"
+        );
+        let through_link = std::fs::read_to_string(&link)?;
+        let at_target = std::fs::read_to_string(&target)?;
+        assert_eq!(through_link, at_target, "the link must still name the written file");
+        assert_ne!(at_target, "{}", "the real target must have been updated, not stranded");
+
+        // Atomicity still holds for the resolved file: staging happened beside
+        // the target, so nothing was left behind in either directory.
+        assert_eq!(
+            dir_entries(&format!("{dir}/real"))?,
+            vec!["actual.json".to_string()],
+            "no staged sibling may remain beside the resolved target"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_destination_returns_a_plain_path_unchanged() {
+        // Negative control for the symlink walk: a non-link destination, and a
+        // destination that does not exist yet, must resolve to themselves
+        // rather than to some canonicalized or parent-relative rewrite.
+        let plain = std::path::Path::new("target/ripr-x/packet.json");
+        assert_eq!(resolve_destination(plain), plain.to_path_buf());
+
+        let missing = std::path::Path::new("target/ripr-x/does-not-exist/packet.json");
+        assert_eq!(resolve_destination(missing), missing.to_path_buf());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_destination_terminates_on_a_symlink_cycle() {
+        // A cycle must return rather than spin; the bounded walk is what makes
+        // that true, and the returned path is then reported by the ordinary
+        // create path as a real error instead of hanging the producer.
+        let dir = "target/ripr-atomic-cycle";
+        let _ = std::fs::remove_dir_all(dir);
+        let Ok(()) = std::fs::create_dir_all(dir) else { return };
+        let a = format!("{dir}/a");
+        let b = format!("{dir}/b");
+        let Ok(()) = std::os::unix::fs::symlink("b", &a) else { return };
+        let Ok(()) = std::os::unix::fs::symlink("a", &b) else { return };
+
+        let resolved = resolve_destination(std::path::Path::new(&a));
+        assert!(resolved.ends_with("a") || resolved.ends_with("b"), "cycle must terminate");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // #16162 — exclusive allocation of the staged sibling. A stale scratch file
+    // left behind by a previous interrupted run must NOT be truncated by
+    // `File::create`; staging must claim a fresh sibling via O_EXCL semantics
+    // and retry until either a fresh slot is found or the bounded attempts
+    // are exhausted.
+
+    #[test]
+    fn stage_temp_sibling_preserves_an_existing_scratch_file() -> std::io::Result<()> {
+        // A pre-existing scratch file with the next sequence number's name must
+        // remain byte-identical: `stage_temp_sibling` allocates a fresh sibling
+        // rather than truncating the one it found.
+        let dir = "target/ripr-exclusive-claim";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest_string = format!("{dir}/packet.json");
+        let dest = std::path::Path::new(&dest_string);
+
+        // Predict the sibling name the implementation will compute first, plant
+        // a sentinel at exactly that path, and verify the sentinel survives.
+        let claimed_first = temp_sibling_path(dest);
+        let sentinel = b"PRE-EXISTING-SIBLING-DO-NOT-TRUNCATE";
+        std::fs::write(&claimed_first, sentinel)?;
+
+        let written = stage_temp_sibling(dest, b"new packet bytes")?;
+        assert_ne!(
+            written, claimed_first,
+            "staging must allocate a sibling distinct from the pre-existing scratch",
+        );
+
+        let preserved = std::fs::read(&claimed_first)?;
+        assert_eq!(
+            preserved, sentinel,
+            "the pre-existing sibling must be preserved byte-for-byte, not truncated",
+        );
+
+        let new_bytes = std::fs::read(&written)?;
+        assert_eq!(new_bytes, b"new packet bytes");
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stage_temp_sibling_returns_a_path_we_own() {
+        // The returned path is the one the implementation actually created;
+        // the caller uses it to clean up only its own scratch on rename
+        // failure. A test that fails on a wrong return value would silently
+        // widen cleanup to a file we did not create.
+        let dir = "target/ripr-owned-return";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let dest_string = format!("{dir}/packet.json");
+        let dest = std::path::Path::new(&dest_string);
+
+        let returned = stage_temp_sibling(dest, b"payload").unwrap();
+        assert!(
+            returned.starts_with(dir),
+            "returned sibling must live in the destination's directory: got {}",
+            returned.display(),
+        );
+        assert!(returned.exists(), "the returned sibling must exist on disk");
+        assert!(
+            returned
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.') && name.contains(".tmp-")),
+            "the returned sibling must match the dot-prefixed `.tmp-{{pid}}-{{seq}}` scheme",
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_temp_sibling_propagates_unrelated_io_errors() {
+        // When the bounded retry loop hits a non-collision error, that error
+        // is surfaced verbatim. The destination is not created, and no
+        // scratch is left behind.
+        //
+        // We trigger `NotADirectory` by passing a destination whose parent
+        // is a regular file: `OpenOptions::create_new` cannot create a
+        // sibling next to a regular file when the parent component is
+        // expected to be a directory.
+        let dir = "target/ripr-non-collision";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(format!("{dir}/regular-file"), b"not a directory").unwrap();
+
+        let blocker = format!("{dir}/regular-file/packet.json");
+        let dest = std::path::Path::new(&blocker);
+        let result = stage_temp_sibling(dest, b"payload");
+        let err = result.expect_err("a non-directory parent must surface an error");
+        assert_ne!(
+            err.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a non-collision error must not be misclassified as `AlreadyExists`",
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_temp_sibling_exhausts_deterministically_and_preserves_strangers() -> std::io::Result<()>
+    {
+        let dir = "target/ripr-exhaustion";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest = format!("{dir}/packet.json");
+        std::fs::write(&dest, b"existing destination")?;
+
+        let occupied: Vec<std::path::PathBuf> = (0..MAX_TEMP_SIBLING_ATTEMPTS)
+            .map(|index| std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-{index}")))
+            .collect();
+        for (index, path) in occupied.iter().enumerate() {
+            std::fs::write(path, format!("sentinel-{index}"))?;
+        }
+
+        let mut supplied = 0_usize;
+        let mut candidates = occupied.iter();
+        let result = stage_temp_sibling_with_candidates(
+            std::path::Path::new(&dest),
+            b"new packet bytes",
+            || {
+                supplied += 1;
+                candidates.next().map_or_else(
+                    || std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-extra")),
+                    Clone::clone,
+                )
+            },
+        );
+
+        let error = result.expect_err("fully occupied candidates must exhaust");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error.to_string().contains("exhausted 16 attempts"),
+            "exhaustion error must name the exhausted attempts: {error}"
+        );
+        assert_eq!(
+            supplied, MAX_TEMP_SIBLING_ATTEMPTS,
+            "staging must try exactly the bounded number of candidates"
+        );
+        assert_eq!(std::fs::read(&dest)?, b"existing destination");
+        for (index, path) in occupied.iter().enumerate() {
+            assert_eq!(std::fs::read(path)?, format!("sentinel-{index}").into_bytes());
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stage_temp_sibling_skips_an_occupied_first_candidate() -> std::io::Result<()> {
+        let dir = "target/ripr-occupied-first";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest = format!("{dir}/packet.json");
+        let occupied = std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-occupied"));
+        let free = std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-free"));
+        std::fs::write(&occupied, b"occupied")?;
+
+        let mut candidates = vec![occupied.clone(), free.clone()].into_iter();
+        let written = stage_temp_sibling_with_candidates(
+            std::path::Path::new(&dest),
+            b"new packet bytes",
+            || candidates.next().unwrap_or_else(|| free.clone()),
+        )?;
+
+        assert_eq!(written, free, "staging must skip the occupied candidate it tried first");
+        assert_eq!(std::fs::read(&occupied)?, b"occupied");
+        assert_eq!(std::fs::read(&written)?, b"new packet bytes");
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn finish_staged_file_removes_owned_scratch_on_write_failure() {
+        // A staging write that fails after exclusive creation must not leave
+        // a partial sibling behind: every failed attempt would otherwise burn
+        // a sequence slot and accumulate scratch that a later run must treat
+        // as a stranger. A read-only handle fails the write deterministically
+        // on every platform without fault injection.
+        let dir = "target/ripr-failed-stage-cleanup";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let owned_string = format!("{dir}/owned.tmp");
+        let owned = std::path::Path::new(&owned_string);
+        std::fs::write(owned, b"stale").unwrap();
+
+        let read_only = std::fs::File::open(owned).unwrap();
+        let err = finish_staged_file(read_only, owned, b"new bytes")
+            .expect_err("writing through a read-only handle must fail");
+        assert_ne!(
+            err.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a failed staged write is not a collision to be retried",
+        );
+        assert!(
+            !owned.exists(),
+            "failed staging must remove the owned scratch instead of leaving a partial file",
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

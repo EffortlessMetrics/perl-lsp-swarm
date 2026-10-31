@@ -4,13 +4,12 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use crate::{
-    display_path, first_cfg_test_line_number, read_lines, read_usize_file,
-    walk_rust_source_files_for_ci_checks,
+    display_path, production_source_files_for_ci_checks, read_lines, read_usize_file,
+    test_scope::{cfg_test_spans, line_is_test_scope},
 };
 
 use self::allow_scopes::{
-    PrintAllowScope, file_has_print_allow, line_has_outer_print_allow_attr,
-    line_is_whole_line_comment,
+    AttrJoiner, PrintAllowScope, file_has_print_allow, line_is_whole_line_comment,
 };
 use self::exclusions::is_excluded_for_print_check;
 
@@ -27,6 +26,108 @@ fn regex_from_static(
     label: &str,
 ) -> Result<&'static Regex> {
     regex.as_ref().map_err(|err| eyre!("{label} regex failed to compile: {err}"))
+}
+
+/// Every library-source line that calls a print macro without an applicable
+/// opt-out, as `"<relative path>:<line>:<trimmed source>"`.
+///
+/// Split out from [`check_print_in_lib`] so the scan can be exercised against a
+/// synthetic tree. The unit tests in `allow_scopes` establish that an attribute
+/// closes; only a whole-tree scan establishes that the line *after* it is still
+/// reported, which is where every defect in this module has actually landed.
+fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
+    let print_re = regex_from_static(&PRINT_MACRO_RE, "print macro")?;
+    let debug_attr_re = regex_from_static(&DEBUG_ASSERTIONS_ATTR_RE, "debug assertions attribute")?;
+    let mut offenders = Vec::new();
+
+    for path in production_source_files_for_ci_checks(repo_root)? {
+        if is_excluded_for_print_check(&path) {
+            continue;
+        }
+        let rel = display_path(repo_root, &path);
+        let lines = read_lines(&path)?;
+
+        // Skip files that have a file-level opt-out attribute.
+        if file_has_print_allow(&lines) {
+            continue;
+        }
+
+        let test_spans = cfg_test_spans(&lines);
+
+        let mut debug_assertions_scope = PrintAllowScope::default();
+        let mut print_allow_scope = PrintAllowScope::default();
+        let mut attrs = AttrJoiner::default();
+
+        let mut was_in_test_scope = false;
+        for (index, line) in lines.iter().enumerate() {
+            let line_no = index + 1;
+            // Skip the test module rather than stopping at it. This loop used to
+            // `break` at the first `#[cfg(test)]` line, so a production `println!`
+            // written after `mod tests { … }` was never reported (#16523). A span
+            // is brace-balanced, so skipping one whole leaves the scope
+            // bookkeeping below in balance: the opening `{` on the module head and
+            // its closing `}` are inside the same skipped run.
+            if line_is_test_scope(&test_spans, line_no) {
+                // An attribute written on the test module itself is observed
+                // before its span starts, so reset the allowance bookkeeping
+                // on entry: that attribute must not exempt the first
+                // production item after the span.
+                if !was_in_test_scope {
+                    // Clear only the pending attribute: an enclosing item's
+                    // active brace depth must survive the test span it contains.
+                    debug_assertions_scope.clear_pending_attribute();
+                    print_allow_scope.clear_pending_attribute();
+                    attrs = AttrJoiner::default();
+                }
+                was_in_test_scope = true;
+                continue;
+            }
+            was_in_test_scope = false;
+
+            if debug_attr_re.is_match(line) {
+                debug_assertions_scope.note_attribute();
+            }
+
+            // The joiner has to see every line, because an attribute rustfmt
+            // wrapped is only recognisable once its last line arrives.
+            let completed = attrs.feed(line);
+            if let Some(attr) = &completed
+                && !attr.inner
+            {
+                print_allow_scope.note_attribute();
+            }
+            let inside_attribute = attrs.in_attribute() || completed.is_some();
+
+            if line_is_whole_line_comment(line) {
+                continue;
+            }
+
+            // Every line is tested for a print macro, including one the joiner
+            // believes is inside an attribute. Skipping those was the more
+            // dangerous shape: an attribute the joiner failed to close would
+            // silently swallow the rest of the file. Nothing is lost by
+            // testing them, because an attribute's own text cannot contain a
+            // print macro call -- `clippy::print_stdout` is not `println!`.
+            if print_re.is_match(line)
+                && !debug_assertions_scope.allows_current_line()
+                && !print_allow_scope.allows_current_line()
+            {
+                offenders.push(format!("{rel}:{line_no}:{}", line.trim()));
+            }
+
+            // Brace counting is the part that must skip them: a wrapped
+            // attribute's braces are not an item's braces, and counting them
+            // would close a scope the attribute is still opening.
+            if inside_attribute {
+                continue;
+            }
+
+            debug_assertions_scope.observe_line(line);
+            print_allow_scope.observe_line(line);
+        }
+    }
+
+    Ok(offenders)
 }
 
 /// Enforce that library source files do not contain raw `println!` / `eprintln!` /
@@ -49,56 +150,7 @@ fn regex_from_static(
 /// This check mirrors the pattern of `cmd_check_unwraps_prod`. The baseline is stored
 /// in `ci/print_in_lib_baseline.txt`; the check fails if the current count exceeds it.
 pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
-    let print_re = regex_from_static(&PRINT_MACRO_RE, "print macro")?;
-    let debug_attr_re = regex_from_static(&DEBUG_ASSERTIONS_ATTR_RE, "debug assertions attribute")?;
-    let mut offenders = Vec::new();
-
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        if is_excluded_for_print_check(&path) {
-            continue;
-        }
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-
-        // Skip files that have a file-level opt-out attribute.
-        if file_has_print_allow(&lines) {
-            continue;
-        }
-
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
-
-        let mut debug_assertions_scope = PrintAllowScope::default();
-        let mut print_allow_scope = PrintAllowScope::default();
-
-        for (index, line) in lines.iter().enumerate() {
-            let line_no = index + 1;
-            if line_no >= test_start {
-                break;
-            }
-
-            if debug_attr_re.is_match(line) {
-                debug_assertions_scope.note_attribute();
-            }
-            if line_has_outer_print_allow_attr(line) {
-                print_allow_scope.note_attribute();
-            }
-
-            if line_is_whole_line_comment(line) {
-                continue;
-            }
-
-            if print_re.is_match(line)
-                && !debug_assertions_scope.allows_current_line()
-                && !print_allow_scope.allows_current_line()
-            {
-                offenders.push(format!("{rel}:{line_no}:{}", line.trim()));
-            }
-
-            debug_assertions_scope.observe_line(line);
-            print_allow_scope.observe_line(line);
-        }
-    }
-
+    let offenders = scan_offenders(repo_root)?;
     let baseline = read_usize_file(&repo_root.join("ci/print_in_lib_baseline.txt"), 0)?;
     println!("print macros in library source: {} (baseline: {})", offenders.len(), baseline);
     if offenders.len() > baseline {
@@ -107,6 +159,9 @@ pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
         println!("Offenders (use tracing::{{debug,info,warn,error}} instead):");
         for line in offenders.iter().take(20) {
             println!("  {line}");
+        }
+        if let Some(withheld) = offenders.len().checked_sub(20).filter(|count| *count > 0) {
+            println!("  ... and {withheld} more");
         }
         println!();
         println!("If the print macro is intentional, add #[allow(clippy::print_stderr)] or");
@@ -126,4 +181,407 @@ pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use color_eyre::eyre::ensure;
+    use std::path::PathBuf;
+
+    /// A repository tree laid out on disk, removed when the test ends.
+    ///
+    /// Setup errors propagate rather than being discarded: a fixture whose
+    /// `write` silently failed still runs its assertion, and then passes or
+    /// fails on a tree that was never built.
+    struct RepoTree {
+        root: PathBuf,
+    }
+
+    impl RepoTree {
+        /// The directory is unique per label, so parallel tests do not collide.
+        fn new(label: &str) -> Result<Self> {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or_default();
+            let root = std::env::temp_dir().join(format!("print-scan-{label}-{nanos}"));
+            std::fs::create_dir_all(root.join("crates/probe/src"))?;
+            Ok(Self { root })
+        }
+
+        /// Writes one library source file under `crates/probe/src/`.
+        fn source(&self, name: &str, contents: &str) -> Result<()> {
+            std::fs::write(self.root.join("crates/probe/src").join(name), contents)?;
+            Ok(())
+        }
+
+        /// The offender lines the scan reports for this tree.
+        fn scan(&self) -> Result<Vec<String>> {
+            scan_offenders(&self.root)
+        }
+    }
+
+    impl Drop for RepoTree {
+        fn drop(&mut self) {
+            // Cleanup is best-effort by necessity: a destructor has nowhere to
+            // report to. Every path is unique per run, so a leftover directory
+            // cannot make a later run observe the wrong condition.
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// Checks that the scan reported exactly the given source lines, in order.
+    ///
+    /// Fallible rather than asserting: a panicking predicate in
+    /// `crates/perl-ci-hygiene/src/` lands under `allow-b0217`, an unowned
+    /// `baseline_debt` entry in `policy/allow.toml`, which is a floor to burn
+    /// down rather than an allowance to add to.
+    fn check_offender_sources(offenders: &[String], expected: &[&str]) -> Result<()> {
+        let sources: Vec<&str> = offenders
+            .iter()
+            .map(|entry| entry.rsplit_once(':').map_or(entry.as_str(), |(_, source)| source))
+            .collect();
+        ensure!(sources == expected, "expected {expected:?}, offenders were {offenders:?}");
+        Ok(())
+    }
+
+    // ── trailing comment after an opt-out ────────────────────────────────────
+
+    #[test]
+    fn a_trailing_comment_on_an_opt_out_does_not_hide_a_later_print() -> Result<()> {
+        // The joiner used to decide closure from the line's last two characters,
+        // so `] // why` never closed it. The scan loop then skipped every
+        // remaining line of the file, and a production print after it was never
+        // reported. Closing the joiner is proved in `allow_scopes`; this proves
+        // the line after it still reaches the offender list.
+        let tree = RepoTree::new("trailing-comment")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[allow(clippy::print_stdout)] // the banner is this command's product\n",
+                "pub fn banner() {\n",
+                "    println!(\"allowed\");\n",
+                "}\n",
+                "\n",
+                "pub fn leaked() {\n",
+                "    println!(\"reported\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_opt_out_with_a_trailing_comment_still_covers_its_own_body() -> Result<()> {
+        // The opposite direction: the repair must not cost the attribute its
+        // scope. Without this pair, deleting the joiner entirely would pass the
+        // control above.
+        let tree = RepoTree::new("trailing-comment-covers")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[allow(clippy::print_stdout)] // the banner is this command's product\n",
+                "pub fn banner() {\n",
+                "    println!(\"allowed\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &[])?;
+        Ok(())
+    }
+
+    // ── balanced one-line item ───────────────────────────────────────────────
+
+    #[test]
+    fn an_opted_out_one_line_item_does_not_exempt_a_later_print() -> Result<()> {
+        // `fn banner() { println!("…"); }` has a net brace delta of zero and no
+        // trailing semicolon, so the pending attribute used to survive it and
+        // exempt everything that followed.
+        let tree = RepoTree::new("one-line-item")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[expect(clippy::print_stdout, reason = \"command product\")]\n",
+                "pub fn banner() { println!(\"allowed\"); }\n",
+                "\n",
+                "pub fn leaked() {\n",
+                "    println!(\"reported\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_opted_out_one_line_item_is_still_exempt_itself() -> Result<()> {
+        let tree = RepoTree::new("one-line-item-covers")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[expect(clippy::print_stdout, reason = \"command product\")]\n",
+                "pub fn banner() { println!(\"allowed\"); }\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &[])?;
+        Ok(())
+    }
+
+    // ── cfg_attr(test, …) is not a production opt-out ────────────────────────
+
+    #[test]
+    fn a_cfg_attr_test_allowance_does_not_exempt_the_file() -> Result<()> {
+        // Four library roots carry exactly this attribute. Admitting it as an
+        // unconditional inner opt-out exempted those whole files in every
+        // configuration, which is the reverse of what the attribute says.
+        let tree = RepoTree::new("cfg-attr-test")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "//! A library root.\n",
+                "#![cfg_attr(test, allow(clippy::print_stdout))]\n",
+                "\n",
+                "pub fn leaked() {\n",
+                "    println!(\"reported\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_unconditional_file_level_allowance_still_exempts_the_file() -> Result<()> {
+        // The paired direction: a real `#![allow(clippy::print_stdout)]` is the
+        // documented opt-out and must keep working, or the control above would
+        // pass on a checker that simply stopped honouring inner attributes.
+        let tree = RepoTree::new("file-level-allow")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "//! A CLI report module.\n",
+                "#![allow(clippy::print_stdout)]\n",
+                "\n",
+                "pub fn report() {\n",
+                "    println!(\"allowed\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &[])?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_compact_test_module_does_not_leak_its_prints_into_the_production_scan() -> Result<()> {
+        // The consequence, not just the boundary: a test module collapsed onto
+        // one physical line was invisible to `first_cfg_test_line_number`, so
+        // `test_start` stayed `usize::MAX` and the scan ran straight through it,
+        // reporting a test-only `println!` as a production offender (#16520).
+        // Asserting the boundary in `test_scope` alone would leave that
+        // unproven, because every production check reads the boundary only
+        // through this seam.
+        let tree = RepoTree::new("compact-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "//! A library root.\n",
+                "pub fn ok() {}\n",
+                "#[cfg(test)] mod tests { fn it() { println!(\"test-only\"); } }\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &[])?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_compact_test_module_still_lets_an_earlier_production_print_through() -> Result<()> {
+        // The paired direction: truncating at the compact module must not eat
+        // the production print above it, or the control above would also pass
+        // on a reader that bounded the file at line 1 unconditionally.
+        let tree = RepoTree::new("compact-test-module-control")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "//! A library root.\n",
+                "pub fn leaked() {\n",
+                "    println!(\"production\");\n",
+                "}\n",
+                "#[cfg(test)] mod tests { fn it() { println!(\"test-only\"); } }\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"production\");"])?;
+        Ok(())
+    }
+
+    // ── production after the test module (#16523) ────────────────────────────
+
+    #[test]
+    fn production_after_a_multiline_test_module_is_still_reported() -> Result<()> {
+        // The defect this issue is about. The scan truncated at the first
+        // `#[cfg(test)]` line, so `also_leaked` below was never reported. A
+        // false negative is the quiet direction: nothing surfaced it.
+        let tree = RepoTree::new("production-after-multiline-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "pub fn leaked() {\n",
+                "    println!(\"before\");\n",
+                "}\n",
+                "#[cfg(test)]\n",
+                "mod tests {\n",
+                "    fn it() { println!(\"test-only\"); }\n",
+                "}\n",
+                "pub fn also_leaked() {\n",
+                "    println!(\"after\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"before\");", "println!(\"after\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn production_after_a_compact_test_module_is_still_reported() -> Result<()> {
+        // The same shape in the compact spelling #16521 admitted. Both spellings
+        // must answer identically, or the repair only holds for the one rustfmt
+        // happens to produce in the file under test.
+        let tree = RepoTree::new("production-after-compact-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "pub fn leaked() {\n",
+                "    println!(\"before\");\n",
+                "}\n",
+                "#[cfg(test)] mod tests { fn it() { println!(\"test-only\"); } }\n",
+                "pub fn also_leaked() {\n",
+                "    println!(\"after\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"before\");", "println!(\"after\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_test_module_after_production_still_hides_its_own_prints() -> Result<()> {
+        // The paired direction, and the reason the answer is a list of spans and
+        // not one extent. Scanning resumes after the first module, so a reader
+        // that stopped there would report the second module's test-only print
+        // as a production offender — fixing a false negative by opening a false
+        // positive.
+        let tree = RepoTree::new("two-test-modules")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[cfg(test)]\n",
+                "mod first {\n",
+                "    fn it() { println!(\"first-test-only\"); }\n",
+                "}\n",
+                "pub fn between() {\n",
+                "    println!(\"between\");\n",
+                "}\n",
+                "#[cfg(test)]\n",
+                "mod second {\n",
+                "    fn it() { println!(\"second-test-only\"); }\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"between\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_opt_out_before_a_test_module_does_not_swallow_what_follows_it() -> Result<()> {
+        // Brace balance across a skipped span. The module's opening `{` and its
+        // closing `}` are both inside the same skipped run, so the scope
+        // bookkeeping stays balanced and a later print is still reported.
+        let tree = RepoTree::new("opt-out-before-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[allow(clippy::print_stdout)]\n",
+                "pub fn banner() {\n",
+                "    println!(\"allowed\");\n",
+                "}\n",
+                "#[cfg(test)]\n",
+                "mod tests {\n",
+                "    fn it() { println!(\"test-only\"); }\n",
+                "}\n",
+                "pub fn leaked() {\n",
+                "    println!(\"reported\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_allow_on_the_test_module_does_not_exempt_what_follows_it() -> Result<()> {
+        // An #[allow] written on `mod tests` belongs to the test module, not
+        // to the first production item after it: the allowance state observed
+        // before the span starts is reset when the span is entered.
+        let tree = RepoTree::new("allow-on-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[cfg(test)]\n",
+                "#[allow(clippy::print_stdout)]\n",
+                "mod tests {\n",
+                "    fn it() { println!(\"test-only\"); }\n",
+                "}\n",
+                "pub fn leaked() {\n",
+                "    println!(\"reported\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_enclosing_allow_survives_the_test_module_it_contains() -> Result<()> {
+        // Entering a test span clears only a pending attribute. An enclosing
+        // item's active allowance must still cover prints after the span.
+        let tree = RepoTree::new("enclosing-allow-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[allow(clippy::print_stdout)]\n",
+                "pub fn outer() {\n",
+                "    #[cfg(test)]\n",
+                "    mod tests {\n",
+                "        fn it() { println!(\"test-only\"); }\n",
+                "    }\n",
+                "    println!(\"allowed\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &[])?;
+        Ok(())
+    }
+
+    // ── the scan reports position, not just a count ──────────────────────────
+
+    #[test]
+    fn an_offender_carries_its_relative_path_and_line_number() -> Result<()> {
+        let tree = RepoTree::new("offender-shape")?;
+        tree.source("lib.rs", "pub fn leaked() {\n    println!(\"reported\");\n}\n")?;
+        let offenders = tree.scan()?;
+        let entry = offenders
+            .first()
+            .ok_or_else(|| eyre!("the scan reported nothing; offenders were {offenders:?}"))?;
+        ensure!(offenders.len() == 1, "expected one offender, got {offenders:?}");
+        // The offender embeds a platform-native display path, so compare
+        // structurally: a Unix-shaped literal fails on Windows for the wrong
+        // reason. Production output is intentionally untouched.
+        let expected_prefix = format!(
+            "{}:2:",
+            std::path::Path::new("crates").join("probe").join("src").join("lib.rs").display()
+        );
+        ensure!(entry.starts_with(&expected_prefix), "entry was {entry}");
+        Ok(())
+    }
 }

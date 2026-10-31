@@ -265,7 +265,7 @@ pub fn verify_vim_lsp_checkout(
 }
 
 fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = xtask::git_environment::isolate(Command::new("git"))
         .arg("-C")
         .arg(dir)
         .args(args)

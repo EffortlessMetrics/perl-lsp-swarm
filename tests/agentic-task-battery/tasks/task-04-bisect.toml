@@ -1,0 +1,65 @@
+# agentic_task_battery.v1 — Task 4: Bisect a regression to a commit
+# Source: recovered usability-battery design, Task 4.
+# Requires grader-supplied params: failing-test, good-sha. The runner degrades
+# to explicitly-marked MANUAL/NOT_RUN when they are absent.
+
+schema_version = "agentic_task_battery.v1"
+task_id = "task-04-bisect"
+title = "Bisect a regression to a commit"
+goal = "Use `git bisect` to find the first bad commit for a grader-supplied failing test. When done, `git bisect reset` and confirm clean state. Report first-bad SHA + one-line evidence."
+starting_state = "Clean tree; grader supplies a failing test `<pkg> <test-name>` that passes at `<known-good-SHA>` and fails at HEAD."
+instruction = "Use `git bisect` to find the first bad commit. Test command must be the single failing test, locked deps. When done, `git bisect reset` and confirm clean state. Report first-bad SHA + one-line evidence (failing assertion at that commit)."
+max_duration = "30 min"
+pass_threshold = 6
+max_points = 10
+failure_mode = "Forgetting `git bisect reset`, leaving the worktree on a detached mid-history SHA for the next task."
+automation = "partial"
+
+allowed_commands = [
+  "git status --short",
+  "git rev-parse HEAD",
+  "git bisect start",
+  "git bisect run cargo test --locked -p <pkg> <test-name>",
+  "git bisect reset",
+]
+
+[params]
+  "failing-test" = "<pkg> <test-name> supplied by the grader, e.g. `perl-token fmt::tests::x`"
+  "good-sha" = "Known-good commit SHA supplied by the grader"
+
+[[rubric]]
+  step_id = "t4-s1"
+  description = "Starts from clean tree (`git status` checked; no `git stash` — forbidden in this repo)"
+  points = 2
+  mode = "auto"
+  check = "bisect_clean"
+
+[[rubric]]
+  step_id = "t4-s2"
+  description = "Bisect test command is the single focused test, not the suite"
+  points = 2
+  mode = "auto"
+  check = "bisect_run"
+
+[[rubric]]
+  step_id = "t4-s3"
+  description = "Correct first-bad SHA (grader-known)"
+  points = 3
+  mode = "manual"
+  verify = "Compare the reported first-bad SHA against the grader-known SHA: `git rev-parse <reported-sha> && git log --oneline -1 <reported-sha>`"
+  evidence = "Reported SHA equals grader-known SHA."
+
+[[rubric]]
+  step_id = "t4-s4"
+  description = "`git bisect reset` run; final `git status`/branch confirms original state"
+  points = 2
+  mode = "auto"
+  check = "bisect_reset"
+
+[[rubric]]
+  step_id = "t4-s5"
+  description = "Reports failing assertion observed at first-bad commit"
+  points = 1
+  mode = "manual"
+  verify = "In a temporary worktree at the first-bad SHA, re-run the single test and quote the failing assertion: `git worktree add /tmp/<name> <first-bad-sha>` then `cargo test --locked -p <pkg> <test-name>` there; remove the worktree afterward. (After `git bisect reset` the main tree is back at HEAD, so testing there cannot verify the assertion at the reported commit.)"
+  evidence = "Quoted failing assertion line from the test output at the first-bad commit."

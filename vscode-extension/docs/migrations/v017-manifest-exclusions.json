@@ -1,0 +1,380 @@
+[
+  {
+    "key": "perl-lsp.aiCompletion.enabled",
+    "before": {
+      "type": "boolean",
+      "default": false,
+      "scope": "resource",
+      "order": 10,
+      "description": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the README for configuration.",
+      "markdownDescription": "Enable AI-powered inline code suggestions. Off by default; requires a language server that advertises inline-completion support. See the [README](https://github.com/EffortlessMetrics/perl-lsp/tree/master/vscode-extension#ai-completion) for configuration."
+    },
+    "after": {
+      "type": "boolean",
+      "default": false,
+      "scope": "machine",
+      "order": 10,
+      "description": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the AI completion reference.",
+      "markdownDescription": "Client preference for AI-powered inline completions. The enable prompt requires explicit server activation capability and registered inline-completion support. Server activation rules depend on the connected server build; see the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
+    },
+    "issue": 14968,
+    "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
+  },
+  {
+    "key": "perl-lsp.aiCompletion.streaming.enabled",
+    "before": {
+      "type": "boolean",
+      "default": true,
+      "scope": "resource",
+      "order": 20,
+      "description": "Enable progressive streaming for AI completions so results appear as they are generated. Requires aiCompletion.enabled to be true.",
+      "markdownDescription": "Enable progressive streaming for AI completions so results appear as they are generated. Requires `aiCompletion.enabled` to be true."
+    },
+    "after": {
+      "type": "boolean",
+      "default": true,
+      "scope": "machine",
+      "order": 20,
+      "description": "Client preference for progressive inline-completion display. Requires aiCompletion.enabled. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build.",
+      "markdownDescription": "Client preference for progressive inline-completion display. Requires `aiCompletion.enabled`. This preference does not grant server activation authority; backend and streaming behavior depend on the connected server build. See the [AI completion reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/7783f70ce2fa64e6252c2fb4aac3a117af52d39a/docs/reference/AI_COMPLETION.md)."
+    },
+    "issue": 14968,
+    "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
+  },
+  {
+    "key": "perl-lsp.autoPopulateNewFiles",
+    "before": {
+      "type": "boolean",
+      "default": true,
+      "scope": "resource",
+      "order": 70,
+      "description": "Auto-populate new .pm files with a package declaration and new .t files with Test::More boilerplate.",
+      "markdownDescription": "Auto-populate new `.pm` files with a `package` declaration and new `.t` files with `Test::More` boilerplate."
+    },
+    "after": null,
+    "issue": 7837,
+    "reason": "Removed published setting has no migration disposition yet. Initialization removal and user-visible upgrade/rollback semantics remain unproved."
+  },
+  {
+    "key": "perl-lsp.disabledFeatures",
+    "before": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "lsp.completion",
+          "lsp.hover",
+          "lsp.definition",
+          "lsp.declaration",
+          "lsp.references",
+          "lsp.document_symbol",
+          "lsp.workspace_symbol",
+          "lsp.code_action",
+          "lsp.code_lens",
+          "lsp.rename",
+          "lsp.folding_range",
+          "lsp.selection_range",
+          "lsp.linked_editing_range",
+          "lsp.inlay_hint",
+          "lsp.semantic_tokens",
+          "lsp.call_hierarchy",
+          "lsp.type_hierarchy",
+          "lsp.pull_diagnostics",
+          "lsp.document_color",
+          "lsp.signature_help",
+          "lsp.document_highlight",
+          "lsp.formatting",
+          "lsp.range_formatting"
+        ]
+      },
+      "default": [],
+      "scope": "window",
+      "order": 50,
+      "description": "Feature IDs to disable at server startup. Use canonical lsp.* IDs such as lsp.semantic_tokens. Changes take effect after restarting the language server.",
+      "markdownDescription": "Feature IDs to disable at server startup. Use canonical `lsp.*` IDs such as `lsp.semantic_tokens`. Changes take effect after restarting the language server."
+    },
+    "after": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "lsp.completion",
+          "lsp.hover",
+          "lsp.definition",
+          "lsp.declaration",
+          "lsp.references",
+          "lsp.document_symbol",
+          "lsp.workspace_symbol",
+          "lsp.document_link",
+          "lsp.code_action",
+          "lsp.code_lens",
+          "lsp.rename",
+          "lsp.implementation",
+          "lsp.type_definition",
+          "lsp.folding_range",
+          "lsp.selection_range",
+          "lsp.linked_editing_range",
+          "lsp.inlay_hint",
+          "lsp.semantic_tokens",
+          "lsp.call_hierarchy",
+          "lsp.type_hierarchy",
+          "lsp.pull_diagnostics",
+          "lsp.document_color",
+          "lsp.signature_help",
+          "lsp.document_highlight",
+          "lsp.formatting",
+          "lsp.inline_completion",
+          "lsp.inline_value",
+          "lsp.notebook_document_sync",
+          "lsp.notebook_cell_execution",
+          "lsp.moniker",
+          "lsp.execute_command"
+        ]
+      },
+      "default": [],
+      "scope": "window",
+      "order": 50,
+      "description": "Feature IDs to disable at server startup. Use canonical lsp.* IDs such as lsp.semantic_tokens. Changes take effect after restarting the language server.",
+      "markdownDescription": "Feature IDs to disable at server startup. Use canonical `lsp.*` IDs such as `lsp.semantic_tokens`. Changes take effect after restarting the language server."
+    },
+    "issue": 7837,
+    "reason": "Published feature schema or configuration guidance changed. Compatibility and upgrade/rollback interpretation remain unproved."
+  },
+  {
+    "key": "perl-lsp.enableFormatting",
+    "before": {
+      "type": "boolean",
+      "default": true,
+      "scope": "resource",
+      "order": 10,
+      "description": "Enable document formatting using perltidy. This requires perltidy to be installed on your system.",
+      "markdownDescription": "Enable document formatting using `perltidy`. This requires `perltidy` to be installed on your system."
+    },
+    "after": {
+      "type": "boolean",
+      "default": true,
+      "scope": "resource",
+      "order": 10,
+      "description": "Enable native Perl document formatting.",
+      "markdownDescription": "Enable native Perl document formatting. `perltidy` is not required unless you explicitly select an external compatibility mode."
+    },
+    "issue": 7837,
+    "reason": "Published formatter/critic descriptions or deprecation changed. Runtime compatibility and upgrade/rollback disposition remain unproved; do not invent an alias."
+  },
+  {
+    "key": "perl-lsp.featureProfile",
+    "before": {
+      "type": "string",
+      "enum": ["auto", "ga-lock", "ga", "prod", "production", "all"],
+      "enumDescriptions": [
+        "Choose the profile automatically based on the bundled binary.",
+        "Lock to the general-availability profile with conservative defaults.",
+        "Use the general-availability profile.",
+        "Use the production profile (alias for ga).",
+        "Use the production profile (alias for ga).",
+        "Enable every supported feature, including experimental ones."
+      ],
+      "default": "auto",
+      "scope": "window",
+      "order": 40,
+      "description": "Runtime LSP feature profile. auto follows the bundled binary build mode. Use ga or prod for production-safe features only. Use all to enable experimental features.",
+      "markdownDescription": "Runtime LSP feature profile. `auto` follows the bundled binary build mode. Use `ga` or `prod` for production-safe features only. Use `all` to enable experimental features."
+    },
+    "after": {
+      "type": "string",
+      "enum": ["auto", "ga-lock", "ga", "prod", "production", "all"],
+      "enumDescriptions": [
+        "Choose the profile automatically based on the bundled binary.",
+        "Lock to the general-availability profile with conservative defaults.",
+        "Use the general-availability profile.",
+        "Use the production profile.",
+        "Alias for prod (production profile).",
+        "Enable every supported feature, including experimental ones."
+      ],
+      "default": "auto",
+      "scope": "window",
+      "order": 40,
+      "description": "Runtime LSP feature profile. auto follows the bundled binary build mode. Use ga or prod for production-safe features only. Use all to enable experimental features.",
+      "markdownDescription": "Runtime LSP feature profile. `auto` follows the bundled binary build mode. Use `ga` or `prod` for production-safe features only. Use `all` to enable experimental features."
+    },
+    "issue": 7837,
+    "reason": "Published feature schema or configuration guidance changed. Compatibility and upgrade/rollback interpretation remain unproved."
+  },
+  {
+    "key": "perl-lsp.formatOnSave",
+    "before": {
+      "type": "boolean",
+      "default": false,
+      "scope": "resource",
+      "order": 20,
+      "description": "Format the document automatically on save. This requires perltidy to be installed.",
+      "markdownDescription": "Format the document automatically on save. This requires `perltidy` to be installed."
+    },
+    "after": {
+      "type": "boolean",
+      "default": false,
+      "scope": "resource",
+      "order": 20,
+      "description": "Format the document automatically on save using the configured formatter engine. The default engine is native.",
+      "markdownDescription": "Format the document automatically on save using the configured formatter engine. The default engine is native; `perltidy` is used only when an external compatibility mode is explicitly selected."
+    },
+    "issue": 7837,
+    "reason": "Published formatter/critic descriptions or deprecation changed. Runtime compatibility and upgrade/rollback disposition remain unproved; do not invent an alias."
+  },
+  {
+    "key": "perl-lsp.includePaths",
+    "before": {
+      "type": "array",
+      "default": ["lib", "local/lib/perl5"],
+      "items": {
+        "type": "string"
+      },
+      "scope": "resource",
+      "order": 30,
+      "description": "Additional library paths (like use lib) to search for Perl modules. Set this if you see \"Can't locate Foo/Bar.pm\" style module lookup errors. Relative paths resolve from the workspace root.",
+      "markdownDescription": "Additional library paths (like `use lib`) to search for Perl modules. Set this if you see `Can't locate Foo/Bar.pm` style module lookup errors. Relative paths resolve from the workspace root."
+    },
+    "after": {
+      "type": "array",
+      "default": ["lib", "local/lib/perl5"],
+      "items": {
+        "type": "string"
+      },
+      "scope": "resource",
+      "order": 30,
+      "description": "Additional library paths (like use lib) to search for Perl modules. Set this if you see \"Can't locate Foo/Bar.pm\" style module lookup errors. Relative paths resolve from the workspace root.",
+      "markdownDescription": "Additional library paths (like `use lib`) to search for Perl modules. Set this if you see `Can't locate Foo/Bar.pm` style module lookup errors. Relative paths resolve from the workspace root. Absolute external roots belong in `#perl-lsp.externalIncludePaths#`."
+    },
+    "issue": 7837,
+    "reason": "Published feature schema or configuration guidance changed. Compatibility and upgrade/rollback interpretation remain unproved."
+  },
+  {
+    "key": "perl-lsp.perlcritic.enabled",
+    "before": {
+      "type": "boolean",
+      "default": false,
+      "scope": "resource",
+      "order": 40,
+      "description": "Enable external Perl::Critic diagnostics from the VS Code extension.",
+      "markdownDescription": "Enable external `perlcritic` diagnostics from the VS Code extension."
+    },
+    "after": {
+      "type": "boolean",
+      "default": false,
+      "scope": "resource",
+      "order": 40,
+      "deprecationMessage": "Deprecated: use perl-lsp.critic.enabled (with perl-lsp.critic.engine = \"legacy\" for the external binary). This alias still works but perl-lsp.critic.* wins if both are set.",
+      "markdownDeprecationMessage": "**Deprecated:** use `perl-lsp.critic.enabled` (with `perl-lsp.critic.engine` = `legacy` for the external binary). This alias still works but `perl-lsp.critic.*` wins if both are set.",
+      "description": "Enable the optional external perlcritic diagnostics for legacy compatibility. Native critic diagnostics are on by default; this setting only takes effect when the critic engine is set to legacy in .perl-lsp.toml (the perlcritic binary must then be on PATH).",
+      "markdownDescription": "Enable the optional external `perlcritic` diagnostics for legacy compatibility. Native critic diagnostics are always on by default; this setting only takes effect when `[critic].engine = \"legacy\"` is set in `.perl-lsp.toml`, in which case the `perlcritic` binary must be on `PATH`."
+    },
+    "issue": 7837,
+    "reason": "Published formatter/critic descriptions or deprecation changed. Runtime compatibility and upgrade/rollback disposition remain unproved; do not invent an alias."
+  },
+  {
+    "key": "perl-lsp.perlcritic.profile",
+    "before": {
+      "type": "string",
+      "default": "",
+      "scope": "resource",
+      "order": 42,
+      "description": "Optional path to a .perlcriticrc profile file used by the extension when synchronizing critic settings.",
+      "markdownDescription": "Optional path to a `.perlcriticrc` profile file used by the extension when synchronizing critic settings."
+    },
+    "after": {
+      "type": "string",
+      "default": "",
+      "scope": "machine",
+      "order": 42,
+      "deprecationMessage": "Deprecated: use perl-lsp.critic.profile for the native profile, or the legacy [critic] settings in .perl-lsp.toml for an external .perlcriticrc.",
+      "markdownDeprecationMessage": "**Deprecated:** use `perl-lsp.critic.profile` for the native profile, or the legacy `[critic]` settings in `.perl-lsp.toml` for an external `.perlcriticrc`.",
+      "description": "Optional path to a .perlcriticrc profile file used by the extension when synchronizing critic settings.",
+      "markdownDescription": "Optional path to a `.perlcriticrc` profile file used by the extension when synchronizing critic settings."
+    },
+    "issue": 14968,
+    "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
+  },
+  {
+    "key": "perl-lsp.perlcritic.severity",
+    "before": {
+      "type": "number",
+      "enum": [1, 2, 3, 4, 5],
+      "enumDescriptions": [
+        "Severity 1 - very permissive",
+        "Severity 2 - permissive",
+        "Severity 3 - balanced default",
+        "Severity 4 - strict",
+        "Severity 5 - very strict"
+      ],
+      "default": 3,
+      "scope": "resource",
+      "order": 41,
+      "description": "Perl::Critic minimum severity (1 = least severe/reports more, 5 = most severe/reports less).",
+      "markdownDescription": "Perl::Critic minimum severity (`1` = least severe/reports more, `5` = most severe/reports less)."
+    },
+    "after": {
+      "type": "number",
+      "enum": [1, 2, 3, 4, 5],
+      "enumDescriptions": [
+        "Severity 1 - report all severities (most diagnostics)",
+        "Severity 2 - report severity 2 and above",
+        "Severity 3 - report severity 3 and above (default)",
+        "Severity 4 - report severity 4 and above",
+        "Severity 5 - report only severity 5 (fewest diagnostics)"
+      ],
+      "default": 3,
+      "scope": "resource",
+      "order": 41,
+      "deprecationMessage": "Deprecated: use perl-lsp.critic.severity. This alias still works but perl-lsp.critic.* wins if both are set.",
+      "markdownDeprecationMessage": "**Deprecated:** use `perl-lsp.critic.severity`. This alias still works but `perl-lsp.critic.*` wins if both are set.",
+      "description": "Critic minimum severity (1 = least severe/reports more, 5 = most severe/reports less). Applies to the native critic; the legacy external engine uses the same scale.",
+      "markdownDescription": "Critic minimum severity (`1` = least severe/reports more, `5` = most severe/reports less). Applies to the native critic; the legacy external engine uses the same scale."
+    },
+    "issue": 7837,
+    "reason": "Published formatter/critic descriptions or deprecation changed. Runtime compatibility and upgrade/rollback disposition remain unproved; do not invent an alias."
+  },
+  {
+    "key": "perl-lsp.perlcritic.theme",
+    "before": {
+      "type": "string",
+      "default": "",
+      "scope": "resource",
+      "order": 43,
+      "description": "Optional display theme label for PerlCritic settings. Reserved for editor-facing UI organization.",
+      "markdownDescription": "Optional display theme label for PerlCritic settings. Reserved for editor-facing UI organization."
+    },
+    "after": {
+      "type": "string",
+      "default": "",
+      "scope": "machine",
+      "order": 43,
+      "deprecationMessage": "This setting has no effect and will be removed. Use perl-lsp.critic.profile instead.",
+      "markdownDeprecationMessage": "**No effect.** This setting does nothing \u2014 it is a legacy placeholder from an earlier UI design and will be removed. Use `perl-lsp.critic.profile` to select the native rule profile.",
+      "description": "[No effect] Legacy placeholder \u2014 will be removed.",
+      "markdownDescription": "**[No effect]** Legacy placeholder \u2014 will be removed. Use `perl-lsp.critic.profile` instead."
+    },
+    "issue": 14968,
+    "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
+  },
+  {
+    "key": "perl-lsp.perltidyConfig",
+    "before": {
+      "type": "string",
+      "default": "",
+      "scope": "resource",
+      "order": 30,
+      "description": "Path to your .perltidyrc configuration file. If omitted, perl-lsp searches the workspace and home directory.",
+      "markdownDescription": "Path to your `.perltidyrc` configuration file. If omitted, perl-lsp searches the workspace and home directory."
+    },
+    "after": {
+      "type": "string",
+      "default": "",
+      "scope": "machine",
+      "order": 30,
+      "description": "Path to a .perltidyrc profile used for compatibility reporting or explicit external perltidy mode. It is not required for native formatting. If omitted, perl-lsp searches the workspace and home directory.",
+      "markdownDescription": "Path to a `.perltidyrc` profile used for compatibility reporting or explicit external `perltidy` mode. It is not required for native formatting. If omitted, perl-lsp searches the workspace and home directory."
+    },
+    "issue": 14968,
+    "reason": "Unresolved resource-to-machine upgrade/rollback semantics owned by #14968; preserve user choices. This exact exclusion does not authorize moving settings or widening trust."
+  }
+]

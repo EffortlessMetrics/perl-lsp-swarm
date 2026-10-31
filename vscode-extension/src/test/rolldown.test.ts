@@ -70,30 +70,21 @@ describe('Rolldown bundle configuration', () => {
     });
   });
 
-  test('patches the pinned jsonrpc write-failure rejection without an orphaned throw', () => {
+  test('resolved jsonrpc rejects write failures upstream without a bundle patch', () => {
     const packageEntry = require.resolve('vscode-jsonrpc');
     const packageRoot = path.dirname(path.dirname(path.dirname(packageEntry)));
     const sourcePath = path.join(packageRoot, 'lib', 'common', 'connection.js');
     const script = `
       import fs from 'node:fs';
-      import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
+      import * as config from './rolldown.config.mjs';
       const sourcePath = ${JSON.stringify(sourcePath)};
       const source = fs.readFileSync(sourcePath, 'utf8');
-      const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
-      if (!patched) process.exit(21);
-      const expected = [
-        'responsePromise.reject(new messages_1.ResponseError(messages_1.ErrorCodes.MessageWriteError',
-        'logger.error(\`Sending request failed.\`);',
-        '                    return;',
-      ];
-      const rejectionOffset = patched.indexOf(expected[0]);
-      const rejectionBlock = patched.slice(rejectionOffset, rejectionOffset + 500);
-      if (rejectionOffset < 0 || expected.some((text) => !rejectionBlock.includes(text))) process.exit(22);
-      if (rejectionBlock.includes('                    throw error;')) process.exit(23);
-      if (patchPinnedJsonRpcConnectionSource(source, 'other-module/connection.js') !== null) process.exit(26);
-      let rejected = false;
-      try { patchPinnedJsonRpcConnectionSource(source + '\\n', sourcePath); } catch { rejected = true; }
-      if (!rejected) process.exit(27);
+      if ('patchPinnedJsonRpcConnectionSource' in config) process.exit(21);
+      const rejectionOffset = source.indexOf('responsePromise.reject(new messages_1.ResponseError(messages_1.ErrorCodes.MessageWriteError');
+      const rejectionBlock = source.slice(rejectionOffset, rejectionOffset + 500);
+      if (rejectionOffset < 0) process.exit(22);
+      if (!rejectionBlock.includes('logger.error(\`Sending request failed.\`);')) process.exit(24);
+      if (rejectionBlock.includes('throw error;')) process.exit(23);
     `;
     execFileSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: EXT_ROOT,
@@ -102,19 +93,17 @@ describe('Rolldown bundle configuration', () => {
     });
   });
 
-  test('the transformed jsonrpc connection rejects failed writes without an unhandled rejection', () => {
+  test('the resolved jsonrpc connection rejects failed writes without an unhandled rejection', () => {
     const script = `
       import Module, { createRequire } from 'node:module';
       import fs from 'node:fs';
       import path from 'node:path';
-      import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
       const require = createRequire(import.meta.url);
       const packageEntry = require.resolve('vscode-jsonrpc');
       const packageRoot = packageEntry.slice(0, packageEntry.lastIndexOf('node_modules'));
       const sourcePath = path.join(packageRoot, 'node_modules', 'vscode-jsonrpc', 'lib', 'common', 'connection.js');
       const source = fs.readFileSync(sourcePath, 'utf8');
-      const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
-      if (!patched) process.exit(31);
+      const patched = source;
       const originalLoader = Module._extensions['.js'];
       Module._extensions['.js'] = (module, filename) => {
         if (filename === sourcePath) module._compile(patched, filename);

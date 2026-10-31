@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
@@ -31,6 +32,139 @@ const DAP_SMOKE_CLAIM_BOUNDARY: &str = concat!(
     "no terminated event is expected; does not ",
     "prove launch/debug-session semantics or platform-wide process cleanup"
 );
+
+#[test]
+fn stdio_transport_attach_host_rejects_wrong_types_without_connecting() -> Result<()> {
+    // A listening owned endpoint makes the old localhost fallback succeed:
+    // a refused/unavailable endpoint could hide the wrong destination.
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let port = listener.local_addr()?.port();
+    let binary = OsString::from(env!("CARGO_BIN_EXE_perl-dap"));
+    let mut dap = DapProcess::spawn_binary(&binary)?;
+    dap.send_request(1, "initialize", Some(json!({"adapterID": "perl-dap"})))?;
+    dap.wait_for_response(1, "initialize")?;
+    dap.wait_for_event("initialized")?;
+
+    for (index, host) in [json!(false), json!(true), json!(42), json!(1.5), json!([]), json!({})]
+        .into_iter()
+        .enumerate()
+    {
+        let seq = index as i64 + 2;
+        dap.send_request(seq, "attach", Some(json!({"host": host, "port": port})))?;
+        // Read the very next frame: a fabricated session event must fail,
+        // rather than be discarded while searching for the response.
+        let response = dap
+            .rx
+            .recv_timeout(Duration::from_secs(5))?
+            .map_err(|error| anyhow!("stdio reader failed: {error}"))?;
+        match response {
+            DapMessage::Response {
+                request_seq,
+                command,
+                success: false,
+                body: None,
+                message: Some(message),
+                ..
+            } => {
+                assert_eq!(request_seq, seq);
+                assert_eq!(command, "attach");
+                assert_eq!(message, "Invalid host: expected a string", "host={host}");
+            }
+            other => {
+                return Err(anyhow!("host={host}: expected invalid-host refusal, got {other:?}"));
+            }
+        }
+        match listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => {
+                return Err(anyhow!(
+                    "host={host}: malformed host contacted the listener: {other:?}"
+                ));
+            }
+        }
+    }
+
+    dap.send_request(8, "threads", None)?;
+    match dap
+        .rx
+        .recv_timeout(Duration::from_secs(5))?
+        .map_err(|error| anyhow!("stdio reader failed: {error}"))?
+    {
+        DapMessage::Response {
+            request_seq: 8,
+            command,
+            success: true,
+            body: Some(body),
+            message: None,
+            ..
+        } if command == "threads" => assert_eq!(body, json!({"threads": []})),
+        other => return Err(anyhow!("unexpected post-refusal threads message: {other:?}")),
+    }
+    dap.send_request(9, "disconnect", Some(json!({})))?;
+    match dap
+        .rx
+        .recv_timeout(Duration::from_secs(5))?
+        .map_err(|error| anyhow!("stdio reader failed: {error}"))?
+    {
+        DapMessage::Response { request_seq: 9, command, success: true, .. }
+            if command == "disconnect" => {}
+        other => return Err(anyhow!("unexpected post-refusal message: {other:?}")),
+    }
+    match dap.rx.recv_timeout(Duration::from_secs(5)) {
+        Err(RecvTimeoutError::Disconnected) => {}
+        other => {
+            return Err(anyhow!(
+                "refused attach fabricated a session event or failed to exit: {other:?}"
+            ));
+        }
+    }
+    dap.finish_cleanly()?;
+    assert_eq!(dap.child.try_wait()?.and_then(|status| status.code()), Some(0));
+    // EOF/exit also bounds any delayed background connection attempt.
+    match listener.accept() {
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => {
+            return Err(anyhow!("refused attach contacted the listener before exit: {other:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn stdio_transport_attach_host_preserves_defaults_and_loopback_strings() -> Result<()> {
+    // These positive controls discriminate an over-broad reject-all fix and
+    // preserve the existing omitted/null-host configuration behavior.
+    for host in [None, Some(Value::Null), Some(json!("127.0.0.1")), Some(json!(" 127.0.0.1 "))] {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let mut args = json!({"port": listener.local_addr()?.port()});
+        if let Some(host) = &host {
+            args["host"] = host.clone();
+        }
+        let binary = OsString::from(env!("CARGO_BIN_EXE_perl-dap"));
+        let mut dap = DapProcess::spawn_binary(&binary)?;
+        dap.send_request(1, "initialize", Some(json!({"adapterID": "perl-dap"})))?;
+        dap.wait_for_response(1, "initialize")?;
+        dap.wait_for_event("initialized")?;
+        dap.send_request(2, "attach", Some(args))?;
+        match dap.wait_for_response_message(2, "attach")? {
+            DapMessage::Response { success: true, body: None, message: None, .. } => {}
+            other => {
+                return Err(anyhow!("host={host:?}: supported host did not attach: {other:?}"));
+            }
+        }
+        // Successful attach must have actually reached our endpoint, rather
+        // than merely returned success from a configuration-only path.
+        let (_socket, address) = listener.accept()?;
+        assert!(address.ip().is_loopback());
+        dap.send_request(3, "disconnect", Some(json!({})))?;
+        dap.wait_for_response(3, "disconnect")?;
+        dap.finish_cleanly()?;
+        assert_eq!(dap.child.try_wait()?.and_then(|status| status.code()), Some(0));
+    }
+    Ok(())
+}
 
 struct DapProcess {
     child: Child,
@@ -136,6 +270,12 @@ impl DapProcess {
             .arg("--stdio")
             .arg("--log-level")
             .arg("error")
+            // Transport e2e exercises framing/session behavior, not the
+            // launch-authority contract (#8656): without an explicit
+            // acknowledgement every `launch` is refused.
+            .arg("--allow-unbounded")
+            .arg("--unbounded-note")
+            .arg("test: stdio transport e2e")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -267,6 +407,164 @@ impl Drop for DapProcess {
 
 fn configured_dap_binary_path() -> OsString {
     dap_binary_path(std::env::var_os(EXPLICIT_DAP_BINARY_ENV))
+}
+
+fn port_proof_response(dap: &DapProcess, request: i64, expected: &str) -> Result<DapMessage> {
+    match dap.rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(response))
+            if matches!(&response, DapMessage::Response { request_seq, command, .. }
+            if *request_seq == request && command == expected) =>
+        {
+            Ok(response)
+        }
+        other => Err(anyhow!("expected next response {request} {expected}, got {other:?}")),
+    }
+}
+
+fn port_proof_initialize(dap: &mut DapProcess) -> Result<()> {
+    dap.send_request(1, "initialize", Some(json!({"adapterID": "perl-dap"})))?;
+    dap.wait_for_response(1, "initialize")?;
+    dap.wait_for_event("initialized")?;
+    Ok(())
+}
+
+fn port_proof_no_contact(listener: &TcpListener) -> Result<()> {
+    match listener.accept() {
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+        other => Err(anyhow!("invalid port contacted owned fallback listener: {other:?}")),
+    }
+}
+
+fn port_proof_accept(listener: &TcpListener) -> Result<TcpStream> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Ok(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error.into()),
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!("valid port did not contact owned listener"));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn port_proof_disconnect(dap: &mut DapProcess, request: i64, attached: bool) -> Result<()> {
+    dap.send_request(request, "disconnect", Some(json!({})))?;
+    let mut acknowledged = false;
+    let mut terminated = false;
+    loop {
+        match dap.rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(DapMessage::Response { request_seq, command, success: true, .. }))
+                if request_seq == request && command == "disconnect" && !acknowledged =>
+            {
+                acknowledged = true;
+            }
+            Ok(Ok(DapMessage::Event { event, .. }))
+                if attached && event == "terminated" && !terminated =>
+            {
+                terminated = true;
+            }
+            Err(RecvTimeoutError::Disconnected) if acknowledged => break,
+            other => return Err(anyhow!("unexpected disconnect/EOF frame: {other:?}")),
+        }
+    }
+    dap.finish_cleanly()
+}
+
+#[test]
+fn stdio_transport_native_port_refusal_and_defaults() -> Result<()> {
+    // Own the actual fallback endpoint before spawning any adapter. A failed
+    // bind is unavailable proof, never a skipped/passing no-contact control.
+    let listener = TcpListener::bind(("127.0.0.1", 13603))
+        .context("native port proof requires exclusive ownership of fallback port 13603")?;
+    listener.set_nonblocking(true)?;
+    let binary = configured_dap_binary_path();
+    // Reject-all and null-rejection fixes must fail these admitted controls.
+    for args in [
+        json!({"host": "127.0.0.1", "timeout": 100}),
+        json!({"host": " 127.0.0.1 ", "port": null, "timeout": 100}),
+    ] {
+        let mut dap = DapProcess::spawn_binary(&binary)?;
+        port_proof_initialize(&mut dap)?;
+        dap.send_request(2, "attach", Some(args))?;
+        let response = port_proof_response(&dap, 2, "attach")?;
+        if !matches!(response, DapMessage::Response { success: true, .. }) {
+            return Err(anyhow!("default port control failed: {response:?}"));
+        }
+        let _peer = port_proof_accept(&listener)?;
+        port_proof_disconnect(&mut dap, 3, true)?;
+        port_proof_no_contact(&listener)?;
+    }
+    let mut dap = DapProcess::spawn_binary(&binary)?;
+    port_proof_initialize(&mut dap)?;
+    let malformed = [
+        "false",
+        "true",
+        "\"13603\"",
+        "\"\"",
+        "-1",
+        "1.5",
+        "13603.0",
+        "1e3",
+        "[]",
+        "{}",
+        "0",
+        "65536",
+        "18446744073709551615",
+        "18446744073709551616",
+    ];
+    let mut request = 2;
+    for literal in malformed {
+        // Send literal JSON so decimal/exponent tokens reach the real parser
+        // unchanged by the test serializer.
+        let payload = format!(
+            "{{\"type\":\"request\",\"seq\":{request},\"command\":\"attach\",\"arguments\":{{\"host\":\"127.0.0.1\",\"port\":{literal},\"timeout\":100}}}}"
+        );
+        write!(dap.stdin, "Content-Length: {}\r\n\r\n", payload.len())?;
+        dap.stdin.write_all(payload.as_bytes())?;
+        dap.stdin.flush()?;
+        let response = port_proof_response(&dap, request, "attach")?;
+        if !matches!(&response, DapMessage::Response {
+            success: false, body: None, message: Some(message), ..
+        } if message == "Invalid port: expected an integer in range 1-65535")
+        {
+            let contacted = listener.accept().is_ok();
+            return Err(anyhow!(
+                "port {literal} was not refused: {response:?}; fallback contacted={contacted}"
+            ));
+        }
+        port_proof_no_contact(&listener)?;
+        request += 1;
+        dap.send_request(request, "threads", None)?;
+        let response = port_proof_response(&dap, request, "threads")?;
+        if !matches!(&response, DapMessage::Response {
+            success: true, body: Some(body), ..
+        } if body == &json!({"threads": []}))
+        {
+            return Err(anyhow!("invalid port mutated session or broke recovery: {response:?}"));
+        }
+        request += 1;
+    }
+    // Repair the malformed request in this same adapter, selecting an owned
+    // ephemeral endpoint. The fallback listener stays untouched through exit.
+    let selected = TcpListener::bind(("127.0.0.1", 0))?;
+    selected.set_nonblocking(true)?;
+    let port = selected.local_addr()?.port();
+    dap.send_request(
+        request,
+        "attach",
+        Some(json!({"host": "127.0.0.1", "port": port, "timeout": 100})),
+    )?;
+    let response = port_proof_response(&dap, request, "attach")?;
+    if !matches!(response, DapMessage::Response { success: true, .. }) {
+        return Err(anyhow!("valid explicit port retry failed: {response:?}"));
+    }
+    let _peer = port_proof_accept(&selected)?;
+    port_proof_disconnect(&mut dap, request + 1, true)?;
+    port_proof_no_contact(&listener)?;
+    Ok(())
 }
 
 fn dap_binary_path(explicit: Option<OsString>) -> OsString {
@@ -613,7 +911,9 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
         .get("result")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("baseline evaluate result was not a string: {baseline:?}"))?;
-    if baseline_result.split_whitespace().collect::<Vec<_>>() != ["0", "42"] {
+    // #17244: the evaluate result is the value itself (`42`), not perl5db's
+    // ordinal-prefixed `x`-dump text (`0  42`).
+    if baseline_result.split_whitespace().collect::<Vec<_>>() != ["42"] {
         return Err(anyhow!("baseline evaluate did not produce 42: {baseline:?}"));
     }
 
@@ -668,7 +968,7 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("follow-up evaluate result was not a string: {follow_up:?}"))?;
     if follow_up_result != baseline_result
-        || follow_up_result.split_whitespace().collect::<Vec<_>>() != ["0", "42"]
+        || follow_up_result.split_whitespace().collect::<Vec<_>>() != ["42"]
     {
         return Err(anyhow!(
             "follow-up evaluate was contaminated by cancelled output: {follow_up:?}"

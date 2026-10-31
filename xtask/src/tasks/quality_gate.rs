@@ -35,8 +35,8 @@ pub(crate) struct LifecycleDates {
     pub expires: String,
 }
 
-/// Caller-supplied policy adaptation injected by the [`super::quality_gate_facade`]
-/// adapter to keep candidate verdicts invariant under wall-clock progression.
+/// Policy adaptation applied by the quality-gate entry point to keep candidate
+/// verdicts invariant under wall-clock progression.
 ///
 /// When supplied:
 /// - The engine evaluates [`LifecycleOverlay::raw`] — the exact policy bytes
@@ -100,6 +100,11 @@ pub struct QualityGateArgs {
     pub patch_coverage: Option<f64>,
     pub ripr_base: String,
     pub ripr_head: String,
+    pub ripr_pr_head: Option<String>,
+    /// Commit the repo-wide total-debt receipt may be bound to instead of the
+    /// head, for `enforce-new-ripr` only. Normally the merge base the pull
+    /// request is measured against. `None` keeps the receipt head-bound.
+    pub ripr_baseline_commit: Option<String>,
     pub receipt: PathBuf,
     pub summary: PathBuf,
     pub check: bool,
@@ -117,13 +122,26 @@ struct GateEvaluation {
     failed: bool,
 }
 
-/// Evaluate the gate and publish the rendered artifacts, then classify the
-/// exit. `overlay = None` is the plain engine path; the
-/// [`super::quality_gate_facade`] adapter is the only caller that supplies an
-/// overlay. Rendering, freshness comparison, output writes, and exit
-/// classification all live behind this seam — callers must not duplicate any
-/// of them.
-pub fn run_with_overlay(args: QualityGateArgs, overlay: Option<LifecycleOverlay>) -> Result<()> {
+/// Load the caller's policy once, evaluate the gate, publish its artifacts,
+/// and classify the exit. An unreadable policy follows the evaluation path
+/// that emits fail-closed JSON and Markdown artifacts.
+pub fn run(args: QualityGateArgs) -> Result<()> {
+    let overlay = match fs::read_to_string(&args.exception_policy) {
+        Ok(raw) => Some(compute_lifecycle_overlay(&raw)?),
+        Err(_) => None,
+    };
+    // Refused current RIPR admission must not leave an earlier success artifact.
+    if !args.check && !matches!(args.mode, QualityGateMode::EnforcePatchCoverage) {
+        for path in [&args.receipt, &args.summary] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("invalidating {}", path.display()));
+                }
+            }
+        }
+    }
     let root = std::env::current_dir().context("resolving current directory")?;
     let evaluation = evaluate(&root, &args, overlay.as_ref())?;
     publish(&args, evaluation)
@@ -179,11 +197,55 @@ fn evaluate(
     overlay: Option<&LifecycleOverlay>,
 ) -> Result<GateEvaluation> {
     let head = current_head(root)?;
-    match args.mode {
+    if matches!(args.mode, QualityGateMode::EnforcePatchCoverage) {
+        return evaluate_patch_coverage(&head, args, overlay);
+    }
+    let subject = super::ripr_evidence::pr_comparison_subject(
+        root,
+        &args.ripr_base,
+        &args.ripr_head,
+        args.ripr_pr_head.as_deref(),
+    )?;
+    if let Some(subject) = subject.as_ref()
+        && (subject["evaluated_sha"].as_str() != Some(head.as_str())
+            || args.ripr_baseline_commit.is_some())
+    {
+        bail!(
+            "PR comparison requires exact evaluated checkout and head-bound repository-wide RIPR proof"
+        );
+    }
+    if args.ripr_pr_head.is_some() {
+        for path in [&args.ripr_pr_receipt, &args.review_receipt] {
+            let packet: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+            super::ripr_evidence::validate_comparison_subject(&packet, subject.as_ref())?;
+            if packet.get("base_sha") != subject.as_ref().map(|s| &s["event_base_sha"])
+                || packet.get("head_sha") != subject.as_ref().map(|s| &s["evaluated_sha"])
+                || packet.get("evaluated_head_sha") != subject.as_ref().map(|s| &s["evaluated_sha"])
+                || packet.get("pr_head_sha") != subject.as_ref().map(|s| &s["pr_head_sha"])
+            {
+                bail!("RIPR outer provenance differs from independently selected subject");
+            }
+        }
+    } else {
+        for path in [&args.ripr_pr_receipt, &args.review_receipt] {
+            if let Ok(text) = fs::read_to_string(path)
+                && let Ok(packet) = serde_json::from_str::<Value>(&text)
+                && (packet.get("comparison_subject").is_some()
+                    || packet.get("pr_head_sha").is_some_and(|v| !v.is_null()))
+            {
+                bail!("PR receipts require independent --ripr-pr-head input");
+            }
+        }
+    }
+    let mut evaluation = match args.mode {
         QualityGateMode::Enforce => evaluate_final(&head, args, overlay),
         QualityGateMode::EnforcePatchCoverage => evaluate_patch_coverage(&head, args, overlay),
         QualityGateMode::EnforceNewRipr => evaluate_new_ripr(&head, args, overlay),
+    }?;
+    if let Some(subject) = subject {
+        evaluation.receipt["comparison_subject"] = subject;
     }
+    Ok(evaluation)
 }
 
 fn evaluate_final(
@@ -481,8 +543,26 @@ fn evaluate_new_ripr(
     args: &QualityGateArgs,
     overlay: Option<&LifecycleOverlay>,
 ) -> Result<GateEvaluation> {
-    let ripr = read_ripr_plus_receipt(&args.ripr_receipt, head);
     let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
+    // #16126: this gate blocks on `ripr_pr`, the diff-scoped receipt. The
+    // repo-wide receipt below is a freshness proof of total debt and its count
+    // is never compared to anything here, so it need not be rebuilt on the
+    // head. `evaluate_final` is the mode that does compare it, and stays
+    // head-bound.
+    //
+    // A named baseline is accepted only when the diff-scoped receipt says the
+    // diff was measured from that same commit. The caller naming a commit is
+    // not evidence that the commit is this pull request's merge base, so the
+    // gate verifies the claim against `ripr_pr.base_sha` rather than trusting
+    // it. A missing `base_sha` -- which includes every case where the
+    // diff-scoped receipt is itself absent or stale -- accepts no baseline, so
+    // the repo-wide receipt falls back to head-bound and a base-bound one reads
+    // `stale`, which blocks.
+    let mut accepted = vec![head];
+    if let Some(baseline) = accepted_baseline_commit(args, &ripr_pr) {
+        accepted.push(baseline);
+    }
+    let ripr = read_ripr_plus_receipt_bound(&args.ripr_receipt, &accepted);
     let review = read_review_guidance_receipt(&args.review_receipt, head);
     let exceptions = read_exception_policy(args, today(), overlay);
     let mut next_actions = Vec::new();
@@ -495,7 +575,7 @@ fn evaluate_new_ripr(
         next_actions.push(ripr_pr_receipt_action(&ripr_pr, head, args));
     }
     let review_receipt_blocks_without_new_gaps =
-        matches!(review.status.as_str(), "missing" | "invalid" | "stale");
+        matches!(review.status.as_str(), "missing" | "invalid" | "invalid_schema" | "stale");
     if review_receipt_blocks_without_new_gaps {
         next_actions.push(ripr_review_receipt_action(&review, head, args));
     }
@@ -559,6 +639,12 @@ fn evaluate_new_ripr(
             "receipt": display_path(&args.ripr_receipt),
             "receipt_head": ripr.receipt_head,
             "expected_head": head,
+            // Which commit the total-debt proof is actually bound to. The head
+            // when the receipt was rebuilt here, otherwise the merge base the
+            // pull request is measured against (#16126). Recorded so a reader
+            // of this receipt never has to assume.
+            "bound_to": ripr.bound_to,
+            "accepted_baseline_commit": args.ripr_baseline_commit,
             "unresolved": ripr.unresolved,
         },
         "ripr_pr": {
@@ -620,6 +706,11 @@ struct CoverageReceipt {
 struct RiprPlusReceipt {
     status: String,
     receipt_head: Option<String>,
+    /// Which of the accepted commits the receipt actually proved, when
+    /// `status` is `present`. Recorded so the emitted receipt names the
+    /// commit the total-debt proof is bound to rather than leaving a reader
+    /// to assume it was the head.
+    bound_to: Option<String>,
     unresolved: Option<u64>,
     recommended_first_clusters: Vec<Value>,
 }
@@ -754,7 +845,7 @@ struct ExceptionRequirements {
 /// Returns an overlay with no rows and no validation error when the policy
 /// content already lines up with the engine's natural verdict; callers can
 /// always supply the result unconditionally.
-pub(crate) fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
+fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
     use toml::Value as TomlValue;
 
     let mut overlay = LifecycleOverlay { raw: raw.to_string(), ..Default::default() };
@@ -1124,6 +1215,25 @@ fn quality_exception_receipt_entry(
     })
 }
 
+/// Producer wire contract for the coverage receipt: `quality_baseline.rs`
+/// emits `"schema_version": 1` (numeric). The gate refuses any other
+/// envelope version so a semantic producer bump cannot be silently ingested
+/// as fresh evidence (#15353).
+const COVERAGE_RECEIPT_SCHEMA_VERSION: u64 = 1;
+/// Producer wire contract for the repo-wide RIPR+ receipt:
+/// `ripr_evidence.rs` emits `"schema_version": 2` (numeric) for the
+/// `ripr_plus_baseline` envelope (#15354).
+const RIPR_PLUS_RECEIPT_SCHEMA_VERSION: u64 = 2;
+/// Producer wire contract for the diff-scoped RIPR PR receipt:
+/// `ripr_evidence.rs` emits `"schema_version": "0.1"` (string) for the
+/// `pr_evidence` envelope (#15354).
+const RIPR_PR_RECEIPT_SCHEMA_VERSION: &str = "0.1";
+/// Producer wire contract for the RIPR review-guidance receipt:
+/// `ripr_evidence.rs` pins `"schema_version": "0.1"` on every review-comments
+/// emit path (clean, degraded, and the ripr packet validator), so the gate
+/// can fail closed on the same value (#15355).
+const REVIEW_GUIDANCE_RECEIPT_SCHEMA_VERSION: &str = "0.1";
+
 fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
     let Ok(raw) = fs::read_to_string(path) else {
         return CoverageReceipt {
@@ -1151,6 +1261,22 @@ fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
             recommended_project_clusters: Vec::new(),
         };
     };
+
+    if payload.get("schema_version").and_then(Value::as_u64)
+        != Some(COVERAGE_RECEIPT_SCHEMA_VERSION)
+    {
+        return CoverageReceipt {
+            status: "invalid_schema".to_string(),
+            receipt_head: None,
+            lcov: None,
+            patch: None,
+            project: None,
+            scope: None,
+            patch_files: Vec::new(),
+            top_files: Vec::new(),
+            recommended_project_clusters: Vec::new(),
+        };
+    }
 
     let receipt_head = payload.get("head").and_then(Value::as_str).map(ToOwned::to_owned);
     let status = if receipt_head.as_deref() == Some(expected_head) { "present" } else { "stale" };
@@ -1197,24 +1323,73 @@ fn read_json_receipt(path: &Path) -> JsonReceipt {
     }
 }
 
+/// The commit, other than the head, whose repo-wide total-debt receipt this
+/// evaluation may accept (#16126).
+///
+/// Returns `Some` only when the caller named a non-empty commit *and* the
+/// diff-scoped receipt records that same commit as the base it measured the
+/// diff from. Both halves are required: the flag alone proves only that the
+/// caller repeated a commit, and an unrelated total-debt proof would otherwise
+/// satisfy freshness for a diff measured from somewhere else.
+fn accepted_baseline_commit<'a>(
+    args: &'a QualityGateArgs,
+    ripr_pr: &RiprPrReceipt,
+) -> Option<&'a str> {
+    let baseline = args.ripr_baseline_commit.as_deref().filter(|c| !c.is_empty())?;
+    let measured_base = ripr_pr.base_sha.as_deref().filter(|c| !c.is_empty())?;
+    (baseline == measured_base).then_some(baseline)
+}
+
 fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
+    read_ripr_plus_receipt_bound(path, &[expected_head])
+}
+
+/// Read the repo-wide RIPR+ total-debt receipt, accepting a binding to any one
+/// of `accepted`.
+///
+/// `enforce-new-ripr` blocks on the *diff-scoped* PR receipt; this receipt's
+/// count is recorded and never compared to anything (#16126). What the gate
+/// needs from it is proof that current total debt was measured, so the gate may
+/// accept a receipt bound to the merge base the pull request is measured
+/// against instead of one rebuilt on the head, which costs ~31 minutes a run.
+///
+/// The caller names every acceptable commit exactly. This is never a
+/// "recent enough" match: a receipt bound to some other commit stays `stale`,
+/// and `stale` blocks, so a head with no reachable proof cannot read as proved.
+fn read_ripr_plus_receipt_bound(path: &Path, accepted: &[&str]) -> RiprPlusReceipt {
     match read_json_receipt(path) {
         JsonReceipt::Missing => RiprPlusReceipt {
             status: "missing".to_string(),
             receipt_head: None,
+            bound_to: None,
             unresolved: None,
             recommended_first_clusters: Vec::new(),
         },
         JsonReceipt::Invalid => RiprPlusReceipt {
             status: "invalid".to_string(),
             receipt_head: None,
+            bound_to: None,
             unresolved: None,
             recommended_first_clusters: Vec::new(),
         },
         JsonReceipt::Present(payload) => {
+            if payload.get("schema_version").and_then(Value::as_u64)
+                != Some(RIPR_PLUS_RECEIPT_SCHEMA_VERSION)
+            {
+                return RiprPlusReceipt {
+                    status: "invalid_schema".to_string(),
+                    receipt_head: None,
+                    bound_to: None,
+                    unresolved: None,
+                    recommended_first_clusters: Vec::new(),
+                };
+            }
             let receipt_head = payload.get("head").and_then(Value::as_str).map(ToOwned::to_owned);
-            let status =
-                if receipt_head.as_deref() == Some(expected_head) { "present" } else { "stale" };
+            let bound_to = receipt_head
+                .as_deref()
+                .filter(|head| accepted.contains(head))
+                .map(ToOwned::to_owned);
+            let status = if bound_to.is_some() { "present" } else { "stale" };
             let recommended_first_clusters = payload
                 .get("recommended_first_clusters")
                 .and_then(Value::as_array)
@@ -1223,6 +1398,7 @@ fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
             RiprPlusReceipt {
                 status: status.to_string(),
                 receipt_head,
+                bound_to,
                 unresolved: payload.get("unresolved").and_then(Value::as_u64),
                 recommended_first_clusters,
             }
@@ -1305,6 +1481,18 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
             non_production_excluded: None,
         },
         JsonReceipt::Present(payload) => {
+            if payload.get("schema_version").and_then(Value::as_str)
+                != Some(RIPR_PR_RECEIPT_SCHEMA_VERSION)
+            {
+                return RiprPrReceipt {
+                    status: "invalid_schema".to_string(),
+                    receipt_head_sha: None,
+                    base: None,
+                    base_sha: None,
+                    new_unresolved: None,
+                    non_production_excluded: None,
+                };
+            }
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
             let status = if receipt_head_sha.as_deref() == Some(expected_head) {
@@ -1353,6 +1541,22 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             unavailable_reason: None,
         },
         JsonReceipt::Present(payload) => {
+            if payload.get("schema_version").and_then(Value::as_str)
+                != Some(REVIEW_GUIDANCE_RECEIPT_SCHEMA_VERSION)
+            {
+                return ReviewGuidanceReceipt {
+                    status: "invalid_schema".to_string(),
+                    receipt_head_sha: None,
+                    base: None,
+                    base_sha: None,
+                    production_files_considered: None,
+                    changed_production_files: None,
+                    top_gaps: Vec::new(),
+                    static_limitation_gaps: Vec::new(),
+                    suppressed_gap_ids: BTreeSet::new(),
+                    unavailable_reason: None,
+                };
+            }
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
             let production_files_considered = payload
@@ -1468,15 +1672,16 @@ fn review_guidance_items(value: &Value, limit: usize) -> (Vec<Value>, Vec<Value>
         };
         for item in items {
             let gap = review_guidance_item(source, item);
-            if review_guidance_item_is_static_limitation(&gap)
-                && !static_limitation_gaps
+            if review_guidance_item_is_static_limitation(&gap) {
+                if !static_limitation_gaps
                     .iter()
                     .any(|seen| seen.get("gap_id") == gap.get("gap_id"))
-            {
-                // Keep scanning past the top-gaps window so a receipt naming
-                // more static limitations than the window holds still earns
-                // full clearing credit (#15630).
-                static_limitation_gaps.push(gap.clone());
+                {
+                    // The producer can include generic suggested_test text on a
+                    // nonactionable card. Its disposition takes precedence.
+                    static_limitation_gaps.push(gap);
+                }
+                continue;
             }
             if gaps.len() < limit && review_guidance_item_is_actionable(&gap) {
                 gaps.push(gap);
@@ -1588,8 +1793,34 @@ fn review_guidance_item(source: &str, item: &Value) -> Value {
         // The producer's own disposition for this seam (#15630). Only the
         // literal value "static_limitation" is consumed downstream; exposure
         // classes (`weakly_exposed`/`grip_class`) never carry it.
-        "classification": first_string(item, &["/classification"]),
+        "classification": guidance_classification(item),
+        "gap_state": first_string(item, &["/gap_state"]),
     })
+}
+
+/// RIPR 0.10 uses `gap_state` for its canonical actionability decision, while
+/// older guidance used `classification`. A conflicting pair or a 0.10 static
+/// card without its producer explanation cannot earn clearing credit.
+fn guidance_classification(item: &Value) -> Option<String> {
+    let classification = first_string(item, &["/classification"]);
+    let gap_state = first_string(item, &["/gap_state"]);
+    match (classification, gap_state) {
+        (Some(classification), Some(gap_state)) if classification != gap_state => None,
+        (Some(_), Some(gap_state))
+            if gap_state == "static_limitation"
+                && !string_field_is_filled(item, "why_not_actionable") =>
+        {
+            None
+        }
+        (Some(classification), _) => Some(classification),
+        (None, Some(gap_state))
+            if gap_state == "static_limitation"
+                && string_field_is_filled(item, "why_not_actionable") =>
+        {
+            Some(gap_state)
+        }
+        _ => None,
+    }
 }
 
 fn first_string(item: &Value, pointers: &[&str]) -> Option<String> {
@@ -2548,7 +2779,18 @@ fn quality_gate_command(args: &QualityGateArgs, check: bool, patch: Option<f64>)
                 args.ripr_base,
                 args.ripr_head
             ));
+            // Without this the published repair command evaluates a different
+            // binding than the run that emitted it, and re-running it would
+            // report the accepted receipt as stale (#16126).
+            if let Some(baseline) = args.ripr_baseline_commit.as_deref()
+                && !baseline.is_empty()
+            {
+                command.push_str(&format!(" --ripr-baseline-commit {baseline}"));
+            }
         }
+    }
+    if let Some(head) = &args.ripr_pr_head {
+        command.push_str(&format!(" --ripr-pr-head {head}"));
     }
     command.push_str(&format!(
         " --receipt {} --summary {}",
@@ -2575,6 +2817,9 @@ fn ripr_plus_command(args: &QualityGateArgs, check: bool) -> String {
 fn ripr_pr_command(args: &QualityGateArgs, check: bool) -> String {
     let mut command =
         format!("cargo xtask ripr-pr --base {} --head {}", args.ripr_base, args.ripr_head);
+    if let Some(head) = &args.ripr_pr_head {
+        command.push_str(&format!(" --pr-head {head}"));
+    }
     if check {
         command.push_str(" --check");
     }
@@ -2586,6 +2831,9 @@ fn ripr_review_command(args: &QualityGateArgs, check: bool) -> String {
         "cargo xtask ripr-review-comments --base {} --head {}",
         args.ripr_base, args.ripr_head
     );
+    if let Some(head) = &args.ripr_pr_head {
+        command.push_str(&format!(" --pr-head {head}"));
+    }
     if check {
         command.push_str(" --check");
     }
@@ -2648,7 +2896,10 @@ mod tests {
     use super::*;
 
     fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         if !output.status.success() {
             bail!("git {:?} failed with status {}", args, output.status);
         }
@@ -2663,6 +2914,7 @@ mod tests {
         write_text(
             &path,
             &render_json(&json!({
+                "schema_version": 1,
                 "head": head,
                 "scope": "workspace",
                 "coverage": {
@@ -2704,6 +2956,172 @@ mod tests {
     }
 
     #[test]
+    fn coverage_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("coverage-missing.json");
+        write_text(
+            &missing,
+            &render_json(&json!({
+                "head": head,
+                "scope": "workspace",
+                "coverage": { "patch": 99.0, "project": 94.0 }
+            }))?,
+        )?;
+        assert_eq!(read_coverage_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("coverage-wrong.json");
+        write_text(
+            &wrong,
+            &render_json(&json!({
+                "schema_version": 2,
+                "head": head,
+                "scope": "workspace",
+                "coverage": { "patch": 99.0, "project": 94.0 }
+            }))?,
+        )?;
+        let receipt = read_coverage_receipt(&wrong, head);
+        assert_eq!(receipt.status, "invalid_schema");
+        assert_eq!(
+            receipt.receipt_head, None,
+            "an unvalidated envelope must not be classified against the expected head"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_plus_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("ripr-plus-missing.json");
+        write_text(&missing, &render_json(&json!({ "head": head, "unresolved": 0 }))?)?;
+        assert_eq!(read_ripr_plus_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("ripr-plus-wrong.json");
+        write_text(
+            &wrong,
+            &render_json(&json!({ "schema_version": 3, "head": head, "unresolved": 0 }))?,
+        )?;
+        assert_eq!(read_ripr_plus_receipt(&wrong, head).status, "invalid_schema");
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_pr_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("repo-exposure-missing.json");
+        write_text(
+            &missing,
+            &json!({
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-sha",
+                "summary": { "severe_gaps": 1 }
+            })
+            .to_string(),
+        )?;
+        assert_eq!(read_ripr_pr_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("repo-exposure-wrong.json");
+        write_text(
+            &wrong,
+            &json!({
+                "schema_version": "0.2",
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-sha",
+                "summary": { "severe_gaps": 1 }
+            })
+            .to_string(),
+        )?;
+        assert_eq!(read_ripr_pr_receipt(&wrong, head).status, "invalid_schema");
+        Ok(())
+    }
+
+    #[test]
+    fn review_guidance_receipt_refuses_missing_and_wrong_schema_version() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+
+        let missing = dir.path().join("comments-missing.json");
+        write_text(
+            &missing,
+            &json!({
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        assert_eq!(read_review_guidance_receipt(&missing, head).status, "invalid_schema");
+
+        let wrong = dir.path().join("comments-wrong.json");
+        write_text(
+            &wrong,
+            &json!({
+                "schema_version": "0.2",
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        let receipt = read_review_guidance_receipt(&wrong, head);
+        assert_eq!(receipt.status, "invalid_schema");
+        assert_eq!(receipt.top_gaps, Vec::<Value>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn new_ripr_gate_blocks_on_invalid_schema_review_receipt() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "schema-head";
+        write_gate_inputs(
+            dir.path(),
+            head,
+            &json!({
+                "schema_version": "9.9",
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            }),
+        )?;
+        let args = new_ripr_args(dir.path())?;
+
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+        assert!(evaluation.failed);
+        let actions = evaluation
+            .receipt
+            .get("next_actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            actions.iter().any(|action| {
+                action.get("kind").and_then(Value::as_str)
+                    == Some("ripr_review_receipt_not_current")
+                    && action.get("reason").and_then(Value::as_str) == Some("invalid_schema")
+            }),
+            "an invalid_schema review receipt must block the new-gap gate: {actions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn current_head_reads_repository_head() -> Result<()> {
         let dir = tempdir()?;
         run_git(dir.path(), &["init"])?;
@@ -2726,6 +3144,7 @@ mod tests {
         write_text(
             &path,
             &render_json(&json!({
+                "schema_version": 2,
                 "head": head,
                 "unresolved": 3,
                 "recommended_first_clusters": [
@@ -3022,6 +3441,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "advisory",
                 "comments": [
@@ -3127,6 +3547,189 @@ mod tests {
             "comments",
             &no_identity
         )));
+    }
+
+    fn hosted_16619_inline_subset() -> Result<Value> {
+        let mut guidance: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-static-limitations.json"
+        ))?;
+        // The capture keeps its real artifact SHAs; substitute the subject for
+        // this evaluation so the gate checks the same identity relationship.
+        guidance["head_sha"] = json!("hosted-head");
+        guidance["base_sha"] = json!("hosted-base");
+        // Isolate the three inline cards for per-item accept/reject controls.
+        // The complete hosted receipt has seven additional summary-only cards;
+        // the separate counted-basis test below must use all ten.
+        guidance["summary_only"] = json!([]);
+        guidance["suppressed"] = json!([]);
+        guidance["warnings"] = json!([]);
+        Ok(guidance)
+    }
+
+    fn evaluate_hosted_16619_guidance(
+        guidance: &Value,
+        gap_count: u64,
+        pr_head: &str,
+        pr_base: &str,
+    ) -> Result<GateEvaluation> {
+        let dir = tempdir()?;
+        fs::write(
+            dir.path().join("ripr-plus.json"),
+            json!({ "schema_version": 2, "head": "hosted-head", "unresolved": 0 }).to_string(),
+        )?;
+        fs::write(
+            dir.path().join("repo-exposure.json"),
+            json!({
+                "schema_version": "0.1",
+                "head_sha": pr_head,
+                "base": "origin/main",
+                "base_sha": pr_base,
+                "summary": {
+                    "severe_gaps": gap_count,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": gap_count
+                }
+            })
+            .to_string(),
+        )?;
+        fs::write(dir.path().join("comments.json"), guidance.to_string())?;
+        evaluate_new_ripr("hosted-head", &new_ripr_args(dir.path())?, None)
+    }
+
+    /// #16712: real RIPR 0.10 guidance has a generic suggested_test even on
+    /// explicitly nonactionable call-presence limitations. The suggestion must
+    /// not spend an actionable slot or turn the disposition into a repair packet.
+    #[test]
+    fn hosted_16619_inline_subset_clears_only_auditable_same_subject_gaps() -> Result<()> {
+        let guidance = hosted_16619_inline_subset()?;
+        let pass = evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "hosted-base")?;
+        assert!(!pass.failed, "{:?}", pass.receipt["next_actions"]);
+        assert_eq!(pass.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
+        assert_eq!(pass.receipt.pointer("/review_guidance/top_gaps"), Some(&json!([])));
+        let limitations =
+            pass.receipt["review_guidance"]["static_limitation_gaps"].as_array().map(Vec::len);
+        assert_eq!(limitations, Some(3));
+
+        // A fourth, genuinely actionable card remains a blocking repair packet.
+        let mut mixed = guidance.clone();
+        let mut actionable = mixed["comments"][0].clone();
+        actionable["seam_id"] = json!("actionable-fourth");
+        actionable["gap_state"] = json!("actionable");
+        if let Some(card) = actionable.as_object_mut() {
+            card.remove("why_not_actionable");
+        }
+        if let Some(cards) = mixed["comments"].as_array_mut() {
+            cards.push(actionable);
+        }
+        let blocked = evaluate_hosted_16619_guidance(&mixed, 4, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
+        assert_eq!(gap_action(&blocked, "new_ripr_gap")["new_unresolved"], json!(1));
+
+        // One unauditable card cannot consume credit just because it carries
+        // the producer's disposition text.
+        let mut missing_id = guidance.clone();
+        if let Some(card) = missing_id["comments"][0].as_object_mut() {
+            card.remove("seam_id");
+        }
+        let blocked = evaluate_hosted_16619_guidance(&missing_id, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        let mut missing_explanation = guidance.clone();
+        if let Some(card) = missing_explanation["comments"][0].as_object_mut() {
+            card.remove("why_not_actionable");
+        }
+        let blocked =
+            evaluate_hosted_16619_guidance(&missing_explanation, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        let mut dual_field_without_explanation = missing_explanation.clone();
+        dual_field_without_explanation["comments"][0]["classification"] =
+            json!("static_limitation");
+        let blocked = evaluate_hosted_16619_guidance(
+            &dual_field_without_explanation,
+            3,
+            "hosted-head",
+            "hosted-base",
+        )?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        // An opposite disposition must not be resolved in favor of clearing.
+        let mut conflicting = guidance.clone();
+        conflicting["comments"][0]["classification"] = json!("actionable");
+        let blocked =
+            evaluate_hosted_16619_guidance(&conflicting, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(2)));
+
+        let stale = evaluate_hosted_16619_guidance(&guidance, 3, "another-head", "hosted-base")?;
+        assert!(stale.failed);
+        assert_eq!(stale.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(0)));
+
+        let mut stale_guidance = guidance.clone();
+        stale_guidance["head_sha"] = json!("another-head");
+        let blocked =
+            evaluate_hosted_16619_guidance(&stale_guidance, 3, "hosted-head", "hosted-base")?;
+        assert!(blocked.failed);
+        assert_eq!(blocked.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(0)));
+
+        let other_base =
+            evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "another-base")?;
+        assert!(other_base.failed);
+        assert_eq!(
+            other_base.receipt.pointer("/ripr_pr/static_limitation_cleared"),
+            Some(&json!(0))
+        );
+
+        // The pre-0.10 producer's classification form remains supported.
+        let mut older = guidance.clone();
+        if let Some(cards) = older["comments"].as_array_mut() {
+            for card in cards {
+                card["classification"] = json!("static_limitation");
+                if let Some(card) = card.as_object_mut() {
+                    card.remove("gap_state");
+                    card.remove("why_not_actionable");
+                }
+            }
+        }
+        let old_pass = evaluate_hosted_16619_guidance(&older, 3, "hosted-head", "hosted-base")?;
+        assert!(!old_pass.failed, "{:?}", old_pass.receipt["next_actions"]);
+        assert_eq!(old_pass.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
+        Ok(())
+    }
+
+    /// The complete hosted artifact falsifies count-only disposition clearing:
+    /// its three counted raw probes are changed literals, not the three inline
+    /// static-limitation call seams. A safe gate must retain all three blockers
+    /// until a producer-backed item-to-count relationship can be established.
+    #[test]
+    fn hosted_16619_full_receipt_does_not_clear_unrelated_raw_gaps() -> Result<()> {
+        let raw: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-counted-raw-gaps.json"
+        ))?;
+        assert_eq!(raw["summary"]["no_static_path"], json!(3));
+        assert_eq!(raw["findings"].as_array().map(Vec::len), Some(3));
+
+        let mut guidance: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-static-limitations.json"
+        ))?;
+        assert_eq!(guidance["summary"]["comments"], json!(3));
+        assert_eq!(guidance["summary"]["summary_only"], json!(7));
+        guidance["head_sha"] = json!("hosted-head");
+        guidance["base_sha"] = json!("hosted-base");
+        let evaluation =
+            evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "hosted-base")?;
+        assert!(evaluation.failed, "the changed raw gaps must remain blocking");
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_pr/static_limitation_cleared"),
+            Some(&json!(0)),
+            "unjoined static guidance cannot clear distinct counted raw probes"
+        );
+        assert_eq!(gap_action(&evaluation, "new_ripr_gap")["new_unresolved"], json!(3));
+        Ok(())
     }
 
     #[test]
@@ -3284,11 +3887,12 @@ mod tests {
         let head = "review-head";
         fs::write(
             dir.path().join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.path().join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-A",
@@ -3299,6 +3903,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/other",
                 "base_sha": "base-B",
@@ -3363,11 +3968,12 @@ mod tests {
         let head = "review-head";
         fs::write(
             dir.path().join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.path().join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-A",
@@ -3378,6 +3984,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-A",
@@ -3445,6 +4052,269 @@ mod tests {
         Ok(path)
     }
 
+    /// A repo-wide receipt bound to `commit`, plus the other inputs the
+    /// new-gap gate reads. Written locally rather than through
+    /// `write_gate_inputs` so these tests isolate the receipt *binding* from
+    /// the gap count, which is a separate question with its own tests.
+    fn write_binding_inputs(dir: &Path, head: &str, receipt_commit: &str) -> Result<()> {
+        write_binding_inputs_measured_from(dir, head, receipt_commit, Some("merge-base-sha"))
+    }
+
+    /// As `write_binding_inputs`, but `measured_base` is the commit the
+    /// diff-scoped receipt says it measured the diff from -- the fact the gate
+    /// checks a named baseline against. `None` omits `base_sha` entirely.
+    fn write_binding_inputs_measured_from(
+        dir: &Path,
+        head: &str,
+        receipt_commit: &str,
+        measured_base: Option<&str>,
+    ) -> Result<()> {
+        fs::write(
+            dir.join("ripr-plus.json"),
+            json!({ "schema_version": 2, "head": receipt_commit, "unresolved": 5685 }).to_string(),
+        )?;
+        let mut pr_receipt = json!({
+            "schema_version": "0.1",
+            "head_sha": head,
+            "base": "origin/main",
+            "summary": { "severe_gaps": 0, "reachable_unrevealed": 0, "no_static_path": 0 }
+        });
+        if let Some(base_sha) = measured_base
+            && let Some(map) = pr_receipt.as_object_mut()
+        {
+            map.insert("base_sha".to_string(), json!(base_sha));
+        }
+        fs::write(dir.join("repo-exposure.json"), pr_receipt.to_string())?;
+        fs::write(
+            dir.join("comments.json"),
+            json!({
+                "schema_version": "0.1",
+                "head_sha": head,
+                "status": "advisory",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        Ok(())
+    }
+
+    /// #16126. `enforce-new-ripr` blocks on the diff-scoped `ripr_pr` receipt;
+    /// the repo-wide receipt is a freshness proof whose count this mode never
+    /// compares to anything. Rebuilding it on the head costs ~31 minutes a run,
+    /// so the gate accepts one bound to the merge base when the caller names
+    /// that commit exactly.
+    #[test]
+    fn a_named_baseline_commit_satisfies_the_new_gap_gate() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "head-sha";
+        let base = "merge-base-sha";
+        // The receipt was produced on the merge base, not on this head.
+        write_binding_inputs(dir.path(), head, base)?;
+
+        let mut args = new_ripr_args(dir.path())?;
+        args.ripr_baseline_commit = Some(base.to_string());
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+        assert_eq!(evaluation.receipt.pointer("/ripr_plus/status"), Some(&json!("present")));
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_plus/bound_to"),
+            Some(&json!(base)),
+            "the receipt must name the commit the proof is bound to, not leave it assumed"
+        );
+        assert_eq!(
+            gap_action(&evaluation, "ripr_receipt_not_current"),
+            json!(null),
+            "a receipt bound to the named merge base is current total-debt proof"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_head_binding_still_works_and_is_recorded_as_the_head() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "head-sha";
+        write_binding_inputs(dir.path(), head, head)?;
+
+        let args = new_ripr_args(dir.path())?;
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+        assert_eq!(evaluation.receipt.pointer("/ripr_plus/status"), Some(&json!("present")));
+        assert_eq!(evaluation.receipt.pointer("/ripr_plus/bound_to"), Some(&json!(head)));
+        assert_eq!(gap_action(&evaluation, "ripr_receipt_not_current"), json!(null));
+        Ok(())
+    }
+
+    /// The load-bearing half. The realistic wrong implementation is a binding
+    /// that accepts any reasonably recent receipt; every dated-field defect in
+    /// this repository started that way. A head with no reachable proof must
+    /// not read as proved, so each of these stays `stale`, and `stale` blocks.
+    #[test]
+    fn an_unnamed_or_mismatched_baseline_blocks_rather_than_passing() -> Result<()> {
+        let head = "head-sha";
+        let base = "merge-base-sha";
+
+        let cases: [(&str, Option<String>); 3] = [
+            ("no baseline named at all", None),
+            ("an empty baseline must not widen the binding", Some(String::new())),
+            ("a baseline that is not the receipt's commit", Some("some-other-sha".to_string())),
+        ];
+
+        for (label, baseline) in cases {
+            let dir = tempdir()?;
+            write_binding_inputs(dir.path(), head, base)?;
+
+            let mut args = new_ripr_args(dir.path())?;
+            args.ripr_baseline_commit = baseline;
+            let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_plus/status"),
+                Some(&json!("stale")),
+                "{label}"
+            );
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_plus/bound_to"),
+                Some(&json!(null)),
+                "{label}: nothing was proved, so nothing is bound"
+            );
+            assert_eq!(
+                gap_action(&evaluation, "ripr_receipt_not_current").get("blocking"),
+                Some(&json!(true)),
+                "{label}: a head with no reachable proof must not pass"
+            );
+            assert!(evaluation.failed, "{label}");
+        }
+        Ok(())
+    }
+
+    /// The non-regression that matters. `evaluate_final` is the mode that does
+    /// compare the repo-wide total to zero (`ripr_total_unresolved_action`), so
+    /// its proof must stay bound to the head even when a baseline is named.
+    /// Widening it here would weaken a gate this change never intended to touch.
+    #[test]
+    fn the_total_debt_mode_stays_head_bound_even_when_a_baseline_is_named() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "head-sha";
+        let base = "merge-base-sha";
+        write_binding_inputs(dir.path(), head, base)?;
+
+        // `evaluate_final` also reads coverage inputs that the new-gap mode
+        // does not; supply the minimum so the run reaches the binding check
+        // rather than erroring before it.
+        fs::write(
+            dir.path().join("codecov.yml"),
+            "coverage:\n  status:\n    patch:\n      default:\n        target: 95%\n        threshold: 0%\n",
+        )?;
+        fs::write(
+            dir.path().join("coverage.json"),
+            json!({
+                "schema_version": 1,
+                "head": head,
+                "scope": "workspace",
+                "coverage": { "patch": 99.0, "project": 94.0 }
+            })
+            .to_string(),
+        )?;
+
+        let mut args = new_ripr_args(dir.path())?;
+        args.mode = QualityGateMode::Enforce;
+        args.ripr_baseline_commit = Some(base.to_string());
+        let evaluation = evaluate_final(head, &args, None)?;
+
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_plus/status"),
+            Some(&json!("stale")),
+            "enforce mode compares the repo-wide total, so it must prove it on the head"
+        );
+        assert_eq!(
+            gap_action(&evaluation, "ripr_receipt_not_current").get("blocking"),
+            Some(&json!(true))
+        );
+        Ok(())
+    }
+
+    /// #16126, after review. Naming a commit is not evidence that the commit
+    /// is this pull request's merge base. Without this check an unrelated
+    /// total-debt proof satisfies freshness for a diff measured from somewhere
+    /// else, purely because the caller echoed the proof's own commit back.
+    /// The diff-scoped receipt already records the base it measured from, so
+    /// the gate verifies the claim instead of trusting it.
+    #[test]
+    fn a_baseline_that_is_not_the_measured_base_blocks_even_when_it_matches_the_receipt()
+    -> Result<()> {
+        let head = "head-sha";
+        let unrelated = "unrelated-commit";
+
+        let cases: [(&str, Option<&str>); 2] = [
+            ("the diff was measured from a different base", Some("merge-base-sha")),
+            ("the diff-scoped receipt records no base at all", None),
+        ];
+
+        for (label, measured_base) in cases {
+            let dir = tempdir()?;
+            // The repo-wide receipt really is bound to `unrelated`, and the
+            // caller really does name `unrelated`. Only the cross-check
+            // against the measured base separates this from the good case.
+            write_binding_inputs_measured_from(dir.path(), head, unrelated, measured_base)?;
+
+            let mut args = new_ripr_args(dir.path())?;
+            args.ripr_baseline_commit = Some(unrelated.to_string());
+            let evaluation = evaluate_new_ripr(head, &args, None)?;
+
+            assert_eq!(
+                evaluation.receipt.pointer("/ripr_plus/status"),
+                Some(&json!("stale")),
+                "{label}"
+            );
+            assert_eq!(
+                gap_action(&evaluation, "ripr_receipt_not_current").get("blocking"),
+                Some(&json!(true)),
+                "{label}: a proof of some other tree is not this diff's total-debt proof"
+            );
+            assert!(evaluation.failed, "{label}");
+        }
+        Ok(())
+    }
+
+    /// The published repair commands must evaluate the same binding as the run
+    /// that emitted them. Dropping the flag would have a reader reproduce a
+    /// `stale` verdict for a receipt the gate accepted, and chase a blocker
+    /// that does not exist.
+    #[test]
+    fn the_repair_command_carries_the_baseline_binding() -> Result<()> {
+        let dir = tempdir()?;
+        let mut args = new_ripr_args(dir.path())?;
+
+        assert!(
+            !quality_gate_command(&args, false, None).contains("--ripr-baseline-commit"),
+            "no baseline named, so none is rendered"
+        );
+
+        args.ripr_baseline_commit = Some(String::new());
+        assert!(
+            !quality_gate_command(&args, false, None).contains("--ripr-baseline-commit"),
+            "an empty baseline changes no binding, so it renders nothing"
+        );
+
+        args.ripr_baseline_commit = Some("merge-base-sha".to_string());
+        for check in [false, true] {
+            let rendered = quality_gate_command(&args, check, None);
+            assert!(rendered.contains("--ripr-baseline-commit merge-base-sha"), "{rendered}");
+            assert_eq!(rendered.ends_with(" --check"), check, "{rendered}");
+        }
+
+        // The mode that stays head-bound must not advertise the option.
+        args.mode = QualityGateMode::Enforce;
+        assert!(
+            !quality_gate_command(&args, false, None).contains("--ripr-baseline-commit"),
+            "enforce mode compares the total on the head, so the option is not its contract"
+        );
+        Ok(())
+    }
+
     fn new_ripr_args(dir: &Path) -> Result<QualityGateArgs> {
         Ok(QualityGateArgs {
             mode: QualityGateMode::EnforceNewRipr,
@@ -3457,6 +4327,8 @@ mod tests {
             patch_coverage: None,
             ripr_base: "origin/main".to_string(),
             ripr_head: "HEAD".to_string(),
+            ripr_pr_head: None,
+            ripr_baseline_commit: None,
             receipt: dir.join("quality-gate.json"),
             summary: dir.join("quality-gate.md"),
             check: false,
@@ -3467,11 +4339,12 @@ mod tests {
     fn write_gate_inputs(dir: &Path, head: &str, review_packet: &Value) -> Result<()> {
         fs::write(
             dir.join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-sha",
@@ -3501,6 +4374,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "incomplete",
                 "comments": [],
@@ -3531,6 +4405,7 @@ mod tests {
             dir.path(),
             head,
             &json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "incomplete",
                 "comments": [],
@@ -3582,11 +4457,12 @@ mod tests {
         let head = "review-head";
         fs::write(
             dir.path().join("ripr-plus.json"),
-            json!({ "head": head, "unresolved": 0 }).to_string(),
+            json!({ "schema_version": 2, "head": head, "unresolved": 0 }).to_string(),
         )?;
         fs::write(
             dir.path().join("repo-exposure.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "base": "origin/main",
                 "base_sha": "base-sha",
@@ -3602,6 +4478,7 @@ mod tests {
         fs::write(
             dir.path().join("comments.json"),
             json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "present",
                 "comments": [],
@@ -3635,6 +4512,7 @@ mod tests {
             dir.path(),
             head,
             &json!({
+                "schema_version": "0.1",
                 "head_sha": head,
                 "status": "error",
                 "comments": [],
@@ -3850,6 +4728,8 @@ mod tests {
             patch_coverage: None,
             ripr_base: "origin/main".to_string(),
             ripr_head: "HEAD".to_string(),
+            ripr_pr_head: None,
+            ripr_baseline_commit: None,
             receipt: dir.path().join("quality-gate.json"),
             summary: dir.path().join("quality-gate.md"),
             check: false,
