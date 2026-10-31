@@ -6,7 +6,8 @@ use serde_json::Value;
 use super::concept_id_set;
 use super::constants::{
     REQUIRED_AMBIGUOUS_TERMS, REQUIRED_AXES, REQUIRED_BOUNDARY_TERMS, REQUIRED_IDENTITIES,
-    REQUIRED_JOURNEYS, REQUIRED_RELATION_IDS, REQUIRED_RELATION_KEYS, REQUIRED_STATES,
+    REQUIRED_JOURNEYS, REQUIRED_RELATION_BINDINGS, REQUIRED_RELATION_IDS, REQUIRED_RELATION_KEYS,
+    REQUIRED_STATES,
 };
 use super::model::{Identity, RelationKind, StateTerm, Vocabulary};
 use super::{SCHEMA_NAME, SCHEMA_VERSION};
@@ -165,6 +166,20 @@ impl Vocabulary {
             }
             nonempty("relationship.reason", &relation.reason)?;
             let key = format!("{}|{}|{}", relation.from_id, relation.kind.as_str(), relation.to);
+            // The stable ID must name this exact semantic tuple: checking
+            // the ID set and the tuple set independently would let two
+            // relations swap tuples and still validate.
+            let bound = REQUIRED_RELATION_BINDINGS
+                .iter()
+                .find(|(id, _)| *id == relation.id)
+                .map(|(_, expected)| *expected);
+            if bound != Some(key.as_str()) {
+                bail!(
+                    "relationship {} is bound to {key}, expected {}",
+                    relation.id,
+                    bound.unwrap_or("<unknown id>")
+                );
+            }
             if !relation_keys.insert(key) {
                 bail!("duplicate relationship semantic in {}", relation.id);
             }
