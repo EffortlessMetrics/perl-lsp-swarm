@@ -4,40 +4,64 @@ use super::super::types::{CodeAction, CodeActionEdit, CodeActionKind};
 use crate::providers::rename::TextEdit;
 use perl_parser_core::ast::{Node, NodeKind};
 
+/// File operations that can receive an `or die` suffix.
+const FILE_OPS: &[&str] =
+    &["open", "close", "print", "printf", "write", "read", "seek", "truncate"];
+
 /// Add error checking to file operations
+///
+/// Offered only when the file-op `FunctionCall` is the entire statement
+/// expression (`ExpressionStatement`). Nested calls (`if (...)`, assignment
+/// RHS, argument lists) are skipped: appending `or die` there changes
+/// precedence or produces invalid Perl (#18442 item 3).
+///
+/// The dispatcher already visits `ExpressionStatement` nodes, so the
+/// statement-level gate lives here without a parent-pointer change.
 pub fn add_error_checking(node: &Node, source: &str) -> Option<CodeAction> {
-    if let NodeKind::FunctionCall { name, args: _ } = &node.kind {
-        let func_name = name.as_str();
-
-        // Check for file operations without error checking
-        if matches!(
-            func_name,
-            "open" | "close" | "print" | "printf" | "write" | "read" | "seek" | "truncate"
-        ) {
-            // Check if already has error checking
-            if !has_error_checking_nearby(source, node.location.end) {
-                let expr_text = &source[node.location.start..node.location.end];
-
-                return Some(CodeAction {
-                    title: format!("Add error checking to '{}'", func_name),
-                    kind: CodeActionKind::RefactorRewrite,
-                    diagnostics: Vec::new(),
-                    edit: CodeActionEdit {
-                        changes: vec![TextEdit {
-                            location: node.location,
-                            new_text: format!(
-                                "{} or die \"Failed to {}: $!\"",
-                                expr_text, func_name
-                            ),
-                        }],
-                    },
-                    is_preferred: false,
-                });
-            }
-        }
+    let (call, func_name) = statement_level_file_op(node)?;
+    if has_error_checking_nearby(source, call.location.end) {
+        return None;
     }
+    let expr_text = source.get(call.location.start..call.location.end)?;
+    Some(CodeAction {
+        title: format!("Add error checking to '{}'", func_name),
+        kind: CodeActionKind::RefactorRewrite,
+        diagnostics: Vec::new(),
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: call.location,
+                new_text: wrap_call_with_or_die(func_name, expr_text),
+            }],
+        },
+        is_preferred: false,
+    })
+}
 
-    None
+/// A file-op call that is the entire `ExpressionStatement` expression.
+fn statement_level_file_op(node: &Node) -> Option<(&Node, &str)> {
+    let NodeKind::ExpressionStatement { expression } = &node.kind else {
+        return None;
+    };
+    match &expression.kind {
+        NodeKind::FunctionCall { name, .. } if FILE_OPS.contains(&name.as_str()) => {
+            Some((expression, name.as_str()))
+        }
+        _ => None,
+    }
+}
+
+/// Bind `or die` to the call. Paren-less forms such as `open my $fh, '<', $f`
+/// become `open(...)` so the suffix cannot be absorbed as a list argument.
+fn wrap_call_with_or_die(func_name: &str, expr_text: &str) -> String {
+    let Some(after_name) = expr_text.get(func_name.len()..) else {
+        return format!("{expr_text} or die \"Failed to {func_name}: $!\"");
+    };
+    let trimmed = after_name.trim_start();
+    if trimmed.starts_with('(') {
+        format!("{expr_text} or die \"Failed to {func_name}: $!\"")
+    } else {
+        format!("{func_name}({trimmed}) or die \"Failed to {func_name}: $!\"")
+    }
 }
 
 /// Number of characters of lookahead scanned for an existing error-checking idiom.
@@ -145,5 +169,109 @@ mod utf8_boundary_tests {
             !has_error_checking_nearby(&outside, 0),
             "'die' starting at character 60 is outside the 50-character window"
         );
+    }
+}
+
+#[cfg(test)]
+mod statement_level_tests {
+    use super::super::EnhancedCodeActionsProvider;
+    use super::*;
+    use perl_parser_core::Parser;
+    use perl_tdd_support::{must, must_some};
+
+    fn actions_for(source: &str) -> Vec<CodeAction> {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let provider = EnhancedCodeActionsProvider::new(source.to_string());
+        provider.get_enhanced_refactoring_actions(&ast, (0, source.len()))
+    }
+
+    fn error_checking_action(source: &str) -> Option<CodeAction> {
+        actions_for(source).into_iter().find(|a| a.title.contains("error checking"))
+    }
+
+    fn apply_first_edit(source: &str, action: &CodeAction) -> String {
+        let edit = must_some(action.edit.changes.first());
+        let mut out = String::new();
+        if let Some(prefix) = source.get(..edit.location.start) {
+            out.push_str(prefix);
+        }
+        out.push_str(&edit.new_text);
+        if let Some(suffix) = source.get(edit.location.end..) {
+            out.push_str(suffix);
+        }
+        out
+    }
+
+    fn assert_reparses(source: &str) {
+        let mut parser = Parser::new(source);
+        must(parser.parse());
+    }
+
+    /// #18442 item 3: statement-level paren-less `open` must become a
+    /// call-bounded `or die` that the parser accepts.
+    #[test]
+    fn statement_level_parenless_open_wraps_and_reparses() {
+        let source = "open my $fh, '<', $f;";
+        let action = must_some(error_checking_action(source));
+        assert!(
+            action.title.contains("open"),
+            "expected an open-targeted action, got {}",
+            action.title
+        );
+        let edit = must_some(action.edit.changes.first());
+        assert!(
+            edit.new_text.starts_with("open(") && edit.new_text.contains(") or die"),
+            "paren-less open must be wrapped so `or die` binds to the call, got {:?}",
+            edit.new_text
+        );
+        let updated = apply_first_edit(source, &action);
+        assert!(
+            updated.contains("open(my $fh, '<', $f) or die"),
+            "applied edit should keep the original args inside the call: {updated:?}"
+        );
+        assert_reparses(&updated);
+    }
+
+    /// Nested file-op calls must not receive `or die`; appending there
+    /// changes precedence or produces invalid Perl.
+    #[test]
+    fn nested_file_ops_do_not_offer_error_checking() {
+        for source in ["if (open($fh, '<', $f)) { }", "my $ok = close($fh);", "foo(close($fh));"] {
+            assert!(
+                error_checking_action(source).is_none(),
+                "nested/non-statement call must not offer error checking: {source}"
+            );
+        }
+    }
+
+    /// Existing nearby `or die` remains a negative control.
+    #[test]
+    fn existing_or_die_nearby_suppresses_action() {
+        let source = "open my $fh, '<', $f or die \"x\";";
+        assert!(
+            error_checking_action(source).is_none(),
+            "already-checked open must not offer another or die"
+        );
+    }
+
+    /// Parenthesized statement-level calls keep their parens and still reparse.
+    #[test]
+    fn statement_level_parenthesized_open_keeps_parens_and_reparses() {
+        let source = "open($fh, '<', 'f');";
+        let action = must_some(error_checking_action(source));
+        let edit = must_some(action.edit.changes.first());
+        assert!(
+            edit.new_text.starts_with("open(") && edit.new_text.contains(") or die"),
+            "parenthesized open should keep its parens, got {:?}",
+            edit.new_text
+        );
+        assert!(
+            !edit.new_text.starts_with("open(("),
+            "must not wrap an already-parenthesized call: {:?}",
+            edit.new_text
+        );
+        let updated = apply_first_edit(source, &action);
+        assert_reparses(&updated);
     }
 }
