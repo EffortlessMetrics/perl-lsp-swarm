@@ -20,6 +20,7 @@ use super::owners::owner_kind;
 /// Patterns that indicate a dynamic boundary in Perl source. Each entry maps
 /// a string-search pattern to the ripr BoundaryKind it represents.
 const DYNAMIC_BOUNDARY_PATTERNS: &[(&str, &str)] = &[
+    ("eval {", "eval_or_string_code"),
     ("eval(", "eval_or_string_code"),
     ("eval '", "eval_or_string_code"),
     ("eval\"", "eval_or_string_code"),
@@ -58,7 +59,7 @@ const DYNAMIC_BOUNDARY_PATTERNS: &[(&str, &str)] = &[
 /// Known miss, documented: `LABEL: eval $x` (label colon) is excluded by the
 /// `:` rule. Vanishingly rare; the recall gain on the string-eval shape
 /// dwarfs it.
-fn statement_eval_offsets(content: &str) -> Vec<usize> {
+fn statement_eval_offsets(content: &str, test_file: bool) -> Vec<usize> {
     const EVAL_LEN: usize = 4;
     let bytes = content.as_bytes();
     let mut offsets = Vec::new();
@@ -81,11 +82,14 @@ fn statement_eval_offsets(content: &str) -> Vec<usize> {
             continue;
         }
         // Block `eval { ... }` is lexically scoped static code that only traps
-        // an exception; it runs no code the parser cannot see, so it is not a
-        // dynamic boundary (#18498). Any whitespace gap before `{` is the
-        // block form. String forms (`eval $code`, `eval "..."`, `eval '...'`)
-        // and `eval(` stay boundaries.
-        if rest.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
+        // an exception. In a test file the trapped code is what the test
+        // drives, so the block is not a boundary and the oracle on `$@` is
+        // graded instead (#18498). In a source file the same block can hide
+        // the owner's own failure path, so it stays a boundary: the table
+        // owns the exact `"eval {"` spelling, wider gaps are ours.
+        if rest.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{')
+            && (test_file || rest.starts_with(b" {"))
+        {
             continue;
         }
         // Table overlap: `"eval '"` with a single-space gap is the table's
@@ -203,11 +207,17 @@ fn push_boundary(
     }));
 }
 
-pub(crate) fn dynamic_boundaries_in_lines(lines: &[String]) -> Vec<(&'static str, &'static str)> {
+pub(crate) fn dynamic_boundaries_in_lines(
+    lines: &[String],
+    test_file: bool,
+) -> Vec<(&'static str, &'static str)> {
     let mut seen_kinds = std::collections::HashSet::new();
     let mut boundaries = Vec::new();
     for line in lines {
         for &(pattern, boundary_kind) in DYNAMIC_BOUNDARY_PATTERNS {
+            if test_file && pattern == "eval {" {
+                continue;
+            }
             if line.contains(pattern) && seen_kinds.insert(boundary_kind) {
                 boundaries.push((pattern, boundary_kind));
             }
@@ -219,7 +229,7 @@ pub(crate) fn dynamic_boundaries_in_lines(lines: &[String]) -> Vec<(&'static str
     // the same `join("\n")` reconstruction the change digest uses — so an
     // `eval` + `$code` split across hunk lines is not missed, with the shared
     // `seen_kinds` set keeping one entry per boundary kind.
-    if !statement_eval_offsets(&lines.join("\n")).is_empty()
+    if !statement_eval_offsets(&lines.join("\n"), test_file).is_empty()
         && seen_kinds.insert("eval_or_string_code")
     {
         boundaries.push(("eval <whitespace>", "eval_or_string_code"));
@@ -264,10 +274,14 @@ pub(crate) fn emit_boundaries_and_commands(root: &str) -> (Vec<Value>, Vec<Value
     all_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (file_path, content) in &all_files {
+        let test_file = file_path.ends_with(".t");
         let file_id = format!("file:{file_path}");
         let owner_index = boundary_owner_index(file_path, content);
         let line_index = LineIndex::new(content.clone());
         for (pattern, boundary_kind) in DYNAMIC_BOUNDARY_PATTERNS {
+            if test_file && *pattern == "eval {" {
+                continue;
+            }
             for (offset, _) in content.match_indices(pattern) {
                 push_boundary(
                     &mut boundaries,
@@ -290,7 +304,7 @@ pub(crate) fn emit_boundaries_and_commands(root: &str) -> (Vec<Value>, Vec<Value
         // the exact-prefix skip (` {`, ` '`) guarantees no occurrence
         // double-emits with the table's `"eval {"`/`eval(`/`eval'`/`eval"`
         // entries (#17283).
-        for offset in statement_eval_offsets(content) {
+        for offset in statement_eval_offsets(content, test_file) {
             push_boundary(
                 &mut boundaries,
                 &mut limitations,
@@ -360,31 +374,35 @@ mod tests {
     #[test]
     fn statement_eval_matches_spaced_forms() {
         // `#17264`: the common string-eval shapes the table misses.
-        assert_eq!(statement_eval_offsets("my $r = eval $code;").len(), 1);
-        assert_eq!(statement_eval_offsets("my $r = eval \"$code\";").len(), 1);
-        assert_eq!(statement_eval_offsets("eval $code;").len(), 1, "statement start matches");
+        assert_eq!(statement_eval_offsets("my $r = eval $code;", false).len(), 1);
+        assert_eq!(statement_eval_offsets("my $r = eval \"$code\";", false).len(), 1);
         assert_eq!(
-            statement_eval_offsets("my $r = eval ($code);").len(),
+            statement_eval_offsets("eval $code;", false).len(),
+            1,
+            "statement start matches"
+        );
+        assert_eq!(
+            statement_eval_offsets("my $r = eval ($code);", false).len(),
             1,
             "spaced paren matches (the table only has the glued form)"
         );
         assert_eq!(
-            statement_eval_offsets("if ($x) {\n\teval\n$code;\n}").len(),
+            statement_eval_offsets("if ($x) {\n\teval\n$code;\n}", false).len(),
             1,
             "newline follower matches"
         );
-        // Block `eval { ... }` is static and is not a boundary in any spelling
-        // (#18498): single space, wide gap, tab, newline.
+        // Block `eval { ... }` is not a boundary in a test file in any
+        // spelling (#18498): single space, wide gap, tab, newline.
         for block in [
             "my $r = eval { compute() };",
             "my $r = eval  { compute() };",
             "eval\t{ };",
             "eval\n{ };",
         ] {
-            assert!(statement_eval_offsets(block).is_empty(), "block form `{block}`");
+            assert!(statement_eval_offsets(block, true).is_empty(), "block form `{block}`");
         }
         assert_eq!(
-            statement_eval_offsets("my $r = eval  'die';").len(),
+            statement_eval_offsets("my $r = eval  'die';", false).len(),
             1,
             "double-space quote matches (the table only has single-space)"
         );
@@ -393,20 +411,21 @@ mod tests {
     #[test]
     fn statement_eval_rejects_glued_and_non_call_forms() {
         // Glued forms stay with the substring table (no double-emit).
-        assert!(statement_eval_offsets("eval{}").is_empty());
-        assert!(statement_eval_offsets("eval($x)").is_empty());
-        assert!(statement_eval_offsets("eval\"$x\"").is_empty());
-        assert!(statement_eval_offsets("eval'$x'").is_empty());
+        assert!(statement_eval_offsets("eval{}", false).is_empty());
+        assert!(statement_eval_offsets("eval($x)", false).is_empty());
+        assert!(statement_eval_offsets("eval\"$x\"", false).is_empty());
+        assert!(statement_eval_offsets("eval'$x'", false).is_empty());
         // Single-space block/quote forms belong to the table's `"eval {"` /
         // `"eval '"` entries — the matcher must not double-emit them (#17283).
-        assert!(statement_eval_offsets("my $r = eval { };").is_empty());
-        assert!(statement_eval_offsets("sub run { eval '1 + 1'; }").is_empty());
+        assert!(statement_eval_offsets("my $r = eval { };", false).is_empty());
+        assert!(statement_eval_offsets("my $r = eval { };", true).is_empty());
+        assert!(statement_eval_offsets("sub run { eval '1 + 1'; }", false).is_empty());
         // Non-calls must not match (the issue's false-positive watch list).
-        assert!(statement_eval_offsets("my $eval = 1;").is_empty(), "$eval var");
-        assert!(statement_eval_offsets("$obj->eval $x;").is_empty(), "method call");
-        assert!(statement_eval_offsets("Foo::eval $x;").is_empty(), "qualified call");
-        assert!(statement_eval_offsets("sub eval { 1 }").is_empty(), "sub definition");
-        assert!(statement_eval_offsets("retrieval $x;").is_empty(), "eval inside a word");
+        assert!(statement_eval_offsets("my $eval = 1;", false).is_empty(), "$eval var");
+        assert!(statement_eval_offsets("$obj->eval $x;", false).is_empty(), "method call");
+        assert!(statement_eval_offsets("Foo::eval $x;", false).is_empty(), "qualified call");
+        assert!(statement_eval_offsets("sub eval { 1 }", false).is_empty(), "sub definition");
+        assert!(statement_eval_offsets("retrieval $x;", false).is_empty(), "eval inside a word");
     }
 
     #[test]
@@ -456,10 +475,14 @@ mod tests {
     }
 
     fn eval_boundary_count(name: &str, source: &str) -> usize {
+        eval_boundary_count_in(name, "lib/Probe.pm", source)
+    }
+
+    fn eval_boundary_count_in(name: &str, rel: &str, source: &str) -> usize {
         let root = std::env::temp_dir().join(format!("perl-18498-{name}"));
-        let lib_dir = root.join("lib");
-        must(std::fs::create_dir_all(&lib_dir));
-        must(std::fs::write(lib_dir.join("Probe.pm"), source));
+        let path = root.join(rel);
+        must(std::fs::create_dir_all(must_some(path.parent())));
+        must(std::fs::write(&path, source));
         let (boundaries, _limitations, _cmds) =
             emit_boundaries_and_commands(must_some(root.to_str()));
         let _ = std::fs::remove_dir_all(&root);
@@ -467,18 +490,37 @@ mod tests {
     }
 
     #[test]
-    fn block_eval_is_not_a_dynamic_boundary() {
-        // #18498: `eval { ... }` only traps an exception in code the parser
-        // sees, so it must not fail the whole file closed.
+    fn block_eval_is_not_a_boundary_in_a_test_file() {
+        // #18498: in a test file `eval { ... }` only traps the exception the
+        // test is observing, so it must not fail the whole file closed.
+        for (name, body) in [
+            ("single", "eval { die };"),
+            ("wide", "my $v = eval  { compute() };"),
+            ("tab", "my $v = eval\t{ compute() };"),
+            ("newline", "my $v = eval\n{ compute() };"),
+            ("nested", "eval { eval { die }; };"),
+        ] {
+            let source = format!("use Test::More;\n{body}\nlike($@, qr/x/);\n");
+            assert_eq!(
+                eval_boundary_count_in(&format!("t-{name}"), "t/probe.t", &source),
+                0,
+                "block eval `{body}`"
+            );
+        }
+    }
+
+    #[test]
+    fn block_eval_in_a_source_file_stays_a_boundary() {
+        // #18498 runtime control: the same block in the owner can hide the
+        // owner's own failure path, so it keeps failing closed.
         for (name, body) in [
             ("single", "sub run { eval { die }; }"),
             ("wide", "sub run { my $v = eval  { compute() }; }"),
             ("tab", "sub run { my $v = eval\t{ compute() }; }"),
             ("newline", "sub run { my $v = eval\n{ compute() }; }"),
-            ("nested", "sub run { eval { eval { die }; }; }"),
         ] {
             let source = format!("package Probe;\n{body}\n1;");
-            assert_eq!(eval_boundary_count(name, &source), 0, "block eval `{body}`");
+            assert_eq!(eval_boundary_count(name, &source), 1, "block eval `{body}`");
         }
     }
 
@@ -494,15 +536,20 @@ mod tests {
             ("paren", "sub run { my $c = shift; eval($c); }"),
             ("spaced_paren", "sub run { my $c = shift; eval ($c); }"),
             ("wide_quote", "sub run { eval  'die'; }"),
-            ("beside_block", "sub run { eval { die }; my $c = shift; eval $c; }"),
         ] {
             let source = format!("package Probe;\n{body}\n1;");
             assert_eq!(eval_boundary_count(name, &source), 1, "string eval `{body}`");
+            // The same string forms stay boundaries in a test file, beside a block eval.
+            let t_source = format!("use Test::More;\neval {{ die }};\n{body}\n");
+            assert!(
+                eval_boundary_count_in(&format!("t-{name}"), "t/probe.t", &t_source) >= 1,
+                "string eval `{body}` in a test file"
+            );
         }
     }
 
     #[test]
-    fn dynamic_dispatch_and_other_kinds_are_unaffected_by_block_eval() {
+    fn dynamic_dispatch_and_other_kinds_coexist_with_source_block_eval() {
         let root = std::env::temp_dir().join("perl-18498-other-kinds");
         let lib_dir = root.join("lib");
         must(std::fs::create_dir_all(&lib_dir));
@@ -516,7 +563,7 @@ mod tests {
         let kinds: Vec<&str> = boundaries.iter().filter_map(|b| b["kind"].as_str()).collect();
         assert!(kinds.contains(&"dynamic_dispatch"), "dispatch inside a block eval: {kinds:?}");
         assert!(kinds.contains(&"role_composition"), "@ISA: {kinds:?}");
-        assert!(!kinds.contains(&"eval_or_string_code"), "block eval adds none: {kinds:?}");
+        assert!(kinds.contains(&"eval_or_string_code"), "source block eval stays: {kinds:?}");
     }
 
     #[test]
@@ -524,7 +571,7 @@ mod tests {
         // `#17283`: `eval` + `$code` split across hunk lines must attribute
         // the boundary the file scan would find.
         let lines = vec!["my $r = eval".to_string(), "$code;".to_string()];
-        let found = dynamic_boundaries_in_lines(&lines);
+        let found = dynamic_boundaries_in_lines(&lines, false);
         assert_eq!(
             found.iter().filter(|(_, kind)| *kind == "eval_or_string_code").count(),
             1,
@@ -538,7 +585,7 @@ mod tests {
         // and wide-gap blocks are caught in the diff scan too (#17283).
         for line in ["my $r = eval $code;", "my $r = eval  'die';", "eval ($c);"] {
             let lines = vec![line.to_string()];
-            let found = dynamic_boundaries_in_lines(&lines);
+            let found = dynamic_boundaries_in_lines(&lines, false);
             assert!(
                 found.iter().any(|(_, kind)| *kind == "eval_or_string_code"),
                 "hunk line `{line}` must yield an eval boundary: {found:?}"
@@ -547,12 +594,17 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_boundaries_in_lines_ignores_block_eval() {
+    fn dynamic_boundaries_in_lines_block_eval_follows_file_kind() {
         for line in ["eval { die };", "my $r = eval  { compute() };", "eval\t{ };"] {
-            let found = dynamic_boundaries_in_lines(&[line.to_string()]);
+            let in_test = dynamic_boundaries_in_lines(&[line.to_string()], true);
             assert!(
-                found.iter().all(|(_, kind)| *kind != "eval_or_string_code"),
-                "block eval `{line}` is not a boundary: {found:?}"
+                in_test.iter().all(|(_, kind)| *kind != "eval_or_string_code"),
+                "test-file block eval `{line}` is not a boundary: {in_test:?}"
+            );
+            let in_source = dynamic_boundaries_in_lines(&[line.to_string()], false);
+            assert!(
+                in_source.iter().any(|(_, kind)| *kind == "eval_or_string_code"),
+                "source block eval `{line}` stays a boundary: {in_source:?}"
             );
         }
     }
@@ -561,7 +613,7 @@ mod tests {
     fn dynamic_boundaries_in_lines_dedups_table_and_matcher_eval() {
         // A table hit plus a matcher hit in one hunk still yield one entry.
         let lines = vec!["eval 'die';".to_string(), "my $r = eval $c;".to_string()];
-        let found = dynamic_boundaries_in_lines(&lines);
+        let found = dynamic_boundaries_in_lines(&lines, false);
         assert_eq!(
             found.iter().filter(|(_, kind)| *kind == "eval_or_string_code").count(),
             1,

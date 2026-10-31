@@ -145,9 +145,11 @@ byte→line/column) and `perl-symbol` (`extract_symbol_decls` /
 `extract_symbol_refs`) — not `perl-workspace` (which pulls `lsp-types`).
 Relations (parser-backed `direct_owner_call` via test-call AST facts since #3293
 PR 6, plus `file_proximity`) and dynamic boundaries are emitted. Block
-`eval { ... }` is not a boundary (it only traps an exception in code the
-parser sees); string forms (`eval $code`, `eval "..."`, `eval '...'`, `eval(`)
-still emit `eval_or_string_code` and fail closed. The
+`eval { ... }` in a test file is not a boundary (it only traps the exception
+the test observes, and `like($@, MATCHER)` is graded like the other exception
+matchers); block `eval` in a source file and every string form
+(`eval $code`, `eval "..."`, `eval '...'`, `eval(`) still emit
+`eval_or_string_code` and fail closed. The
 canonical `perl-ripr-facts ripr-facts` CLI accepts `--diff
 <cwd-relative-file>` and supplies that unified diff text to the packet
 builder. Compatibility wrappers that call `run_ripr_facts` without diff text

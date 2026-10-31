@@ -91,6 +91,18 @@ fn walk(node: &Node, out: &mut Vec<GradedCall>) {
                         nested_start: Some(inner.location.start),
                     });
                 }
+                // `like($@, MATCHER)` after an `eval { ... }` observes the
+                // trapped exception through the same matcher (#18498).
+                if let Some(first) = args.first()
+                    && matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "@")
+                {
+                    out.push(GradedCall {
+                        name: "like",
+                        start: node.location.start,
+                        grade: grade_matcher(args.get(1)),
+                        nested_start: None,
+                    });
+                }
             }
             _ => {}
         }
@@ -204,6 +216,22 @@ mod tests {
             grades("like(dies { die 1 }, $re, 'n');"),
             [("like", MatcherGrade::Broad, true)]
         );
+    }
+
+    #[test]
+    fn like_over_the_trapped_error_is_graded_by_its_matcher() {
+        // #18498: `eval { ... }; like($@, MATCHER)` observes the exception.
+        for src in ["eval { die 1 }; like($@, qr/boom/, 'n');", "eval { die 1 }; like($@, 'boom');"]
+        {
+            assert_eq!(grades(src), [("like", MatcherGrade::Pinned, false)], "src: {src}");
+        }
+        for src in [
+            "eval { die 1 }; like($@, qr/.*/, 'n');",
+            "eval { die 1 }; like($@, $re);",
+            "eval { die 1 }; like($@, qr//);",
+        ] {
+            assert_eq!(grades(src), [("like", MatcherGrade::Broad, false)], "src: {src}");
+        }
     }
 
     #[test]
