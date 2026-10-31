@@ -8,8 +8,8 @@
 //! restructuring the walk (a rewrite), not moving code. Kept fused here; see
 //! the #9271 PR notes for that deviation.
 
-use perl_parser_core::Parser;
 use perl_parser_core::line_index::LineIndex;
+use perl_parser_core::{Parser, SourceRegionIndex, SourceRegionKind};
 use perl_symbol::surface::extract_symbol_decls;
 use serde_json::{Value, json};
 
@@ -54,7 +54,12 @@ const DYNAMIC_BOUNDARY_PATTERNS: &[(&str, &str)] = &[
 ///   (#17283). Wider gaps (`eval  {`, tabs, newlines, `eval  '...'`) are the
 ///   matcher's — the table's literals cannot express them;
 /// - a `sub`/`method` keyword immediately before (over whitespace) makes it a
-///   definition named `eval`, not a call — skipped.
+///   definition named `eval`, not a call — skipped;
+/// - the occurrence must not sit inside a comment, POD, or string/quoted
+///   span. High-confidence `eval_or_string_code` facts fail closed
+///   downstream, so a comment like `sub safe { # eval $code` must not
+///   block guidance (#17289). Classification uses lexer token spans via
+///   [`SourceRegionIndex`] — not a second full parse.
 ///
 /// Known miss, documented: `LABEL: eval $x` (label colon) is excluded by the
 /// `:` rule. Vanishingly rare; the recall gain on the string-eval shape
@@ -63,6 +68,7 @@ fn statement_eval_offsets(content: &str, test_file: bool) -> Vec<usize> {
     const EVAL_LEN: usize = 4;
     let bytes = content.as_bytes();
     let mut offsets = Vec::new();
+    let mut regions: Option<SourceRegionIndex> = None;
     for (offset, _) in content.match_indices("eval") {
         let prev_ok = match offset.checked_sub(1).map(|i| bytes[i]) {
             None => true,
@@ -110,9 +116,26 @@ fn statement_eval_offsets(content: &str, test_file: bool) -> Vec<usize> {
                 continue;
             }
         }
+        let regions = regions.get_or_insert_with(|| SourceRegionIndex::build(content));
+        if statement_eval_is_non_code(regions, offset) {
+            continue;
+        }
         offsets.push(offset);
     }
     offsets
+}
+
+/// Whether a candidate `eval` keyword sits in a non-code span that must not
+/// emit a high-confidence boundary (#17289).
+fn statement_eval_is_non_code(regions: &SourceRegionIndex, offset: usize) -> bool {
+    matches!(
+        regions.kind_at_offset(offset),
+        SourceRegionKind::LineComment
+            | SourceRegionKind::Pod
+            | SourceRegionKind::StringLiteral
+            | SourceRegionKind::QuoteLike
+            | SourceRegionKind::Heredoc
+    )
 }
 
 #[derive(Debug)]
@@ -426,6 +449,63 @@ mod tests {
         assert!(statement_eval_offsets("Foo::eval $x;", false).is_empty(), "qualified call");
         assert!(statement_eval_offsets("sub eval { 1 }", false).is_empty(), "sub definition");
         assert!(statement_eval_offsets("retrieval $x;", false).is_empty(), "eval inside a word");
+    }
+
+    #[test]
+    fn statement_eval_skips_comment_string_and_pod_but_keeps_calls() {
+        // `#17289`: high-confidence matcher must not fire on non-code spans.
+        assert!(
+            statement_eval_offsets("sub safe { # eval $code\n return 1; }").is_empty(),
+            "line comment must not count as a statement eval"
+        );
+        assert!(
+            statement_eval_offsets(r#"my $text = "say eval $code";"#).is_empty(),
+            "string literal must not count as a statement eval"
+        );
+        assert!(
+            statement_eval_offsets("=pod\n\neval $code\n\n=cut\nsub f { 1 }\n").is_empty(),
+            "POD must not count as a statement eval"
+        );
+        // Positive controls: real calls still count, including the wide-gap
+        // block form the table cannot express, even when a comment also
+        // mentions eval.
+        assert_eq!(statement_eval_offsets("eval $code").len(), 1, "code eval $code still counts");
+        assert_eq!(statement_eval_offsets("eval  {").len(), 1, "wide-gap eval still counts");
+        assert_eq!(
+            statement_eval_offsets("eval $code; # eval $other\n").len(),
+            1,
+            "code eval still counts beside a comment mention"
+        );
+    }
+
+    #[test]
+    fn emit_boundaries_comment_eval_is_not_a_boundary() {
+        // End to end: the issue repro must not fail-closed a safe sub.
+        let root = std::env::temp_dir().join("perl-B8-eval-comment-root");
+        let lib_dir = root.join("lib");
+        must(std::fs::create_dir_all(&lib_dir));
+        must(std::fs::write(
+            lib_dir.join("Safe.pm"),
+            "package Safe;\nsub safe { # eval $code\n return 1; }\n1;",
+        ));
+
+        let (boundaries, _limitations, _cmds) =
+            emit_boundaries_and_commands(must_some(root.to_str()));
+        let evals: Vec<_> =
+            boundaries.iter().filter(|b| b["kind"] == "eval_or_string_code").collect();
+        assert!(evals.is_empty(), "comment eval must not emit a boundary: {evals:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dynamic_boundaries_in_lines_skips_comment_eval() {
+        let lines = vec!["sub safe { # eval $code".to_string(), " return 1; }".to_string()];
+        let found = dynamic_boundaries_in_lines(&lines);
+        assert!(
+            found.iter().all(|(_, kind)| *kind != "eval_or_string_code"),
+            "hunk comment eval must not yield a boundary: {found:?}"
+        );
     }
 
     #[test]
