@@ -374,6 +374,27 @@ fn immutable_sha_pattern() -> Result<Regex> {
     Regex::new(r"^[0-9a-fA-F]{40}$").context("compiling immutable sha pattern")
 }
 
+/// Canonicalizes the gh-aw compiler's resolved-source annotation to the
+/// release it names (e.g. `v9.0.0 (source v9)` -> `v9.0.0`).
+///
+/// Compiled lock files pin the resolved release SHA and record the reviewed
+/// release in their own manifest, but annotate one occurrence with the
+/// floating source the compiler resolved. The authority reviews
+/// action@sha -> release mappings, so the occurrence is classified by the
+/// release it names; the SHA must still match the ledger exactly, and any
+/// other shape keeps its legacy classification and must match verbatim.
+fn canonicalize_compiler_source_annotation(comment: String, release: &Regex) -> String {
+    if let Some((head, tail)) = comment.rsplit_once(" (source ")
+        && let Some(inner) = tail.strip_suffix(')')
+        && !inner.is_empty()
+        && inner.bytes().all(|b| !b.is_ascii_whitespace() && b != b'(' && b != b')')
+        && release.is_match(head)
+    {
+        return head.to_owned();
+    }
+    comment
+}
+
 fn ledger_display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
@@ -461,8 +482,11 @@ fn scan_text(path: &str, text: &str, pattern: &Regex) -> Result<Vec<Occurrence>>
             if scalar.starts_with("./") {
                 return None;
             }
-            let comment =
-                captures.get(4).map(|m| m.as_str().trim().to_owned()).filter(|v| !v.is_empty());
+            let comment = captures
+                .get(4)
+                .map(|m| m.as_str().trim().to_owned())
+                .filter(|v| !v.is_empty())
+                .map(|v| canonicalize_compiler_source_annotation(v, &release));
             let (action, reference, reference_kind) =
                 if let Some(image) = scalar.strip_prefix("docker://") {
                     (image.to_owned(), scalar.to_owned(), ReferenceKind::Docker)
@@ -813,6 +837,43 @@ mod tests {
         assert!(summary.contains("and 6 more"));
         assert!(summary.contains("test.yml:10"));
         assert!(!summary.contains("test.yml:11"));
+        Ok(())
+    }
+    #[test]
+    fn compiler_source_annotation_canonicalizes_to_reviewed_release() -> Result<()> {
+        // gh-aw compiled lock files annotate the resolved release with the
+        // floating source the compiler resolved (`v9.0.0 (source v9)`). The
+        // occurrence pins the reviewed release SHA, so it classifies as the
+        // release it names and matches the ledger entry its siblings use.
+        let got = scan(&format!("- uses: actions/github-script@{SHA} # v9.0.0 (source v9)\n"))?;
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].comment.as_deref(), Some("v9.0.0"));
+        assert_eq!(got[0].projection_kind, Some(ProjectionKind::ReleaseTag));
+        let map =
+            ledger(vec![row("actions/github-script", SHA, ProjectionKind::ReleaseTag, "v9.0.0")]);
+        assert!(validate(got, vec![], true, false, &map).passed);
+        Ok(())
+    }
+    #[test]
+    fn compiler_source_annotation_on_unreviewed_sha_still_fails() -> Result<()> {
+        // Canonicalization must not smuggle an unreviewed SHA past the
+        // ledger: the annotation names a release, but no entry reviews this
+        // SHA for it.
+        let got = scan(&format!("- uses: actions/github-script@{SHA} # v9.9.9 (source v9)\n"))?;
+        let map =
+            ledger(vec![row("actions/github-script", SHA, ProjectionKind::ReleaseTag, "v9.0.0")]);
+        let receipt = validate(got, vec![], true, false, &map);
+        assert!(receipt.issues.iter().any(|i| i.code == "ACTION_PROVENANCE_NOT_PROVEN"));
+        Ok(())
+    }
+    #[test]
+    fn non_release_source_annotation_keeps_legacy_classification() -> Result<()> {
+        // Only a release-shaped head canonicalizes; anything else keeps its
+        // legacy classification and must match the ledger verbatim.
+        let got = scan(&format!("- uses: actions/github-script@{SHA} # main (source main)\n"))?;
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].comment.as_deref(), Some("main (source main)"));
+        assert_eq!(got[0].projection_kind, Some(ProjectionKind::LegacyDebt));
         Ok(())
     }
 }
