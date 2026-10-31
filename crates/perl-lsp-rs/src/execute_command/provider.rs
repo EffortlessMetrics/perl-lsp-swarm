@@ -384,19 +384,16 @@ impl ExecuteCommandProvider {
         }
 
         let mut explanation = default_provider_decision_explanation(request.provider);
-        // Capture only the defaults. Caller context and request details belong
-        // outside the policy heading, even though the shared formatter supports both.
+        // Capture only the defaults. Request evidence stays outside the policy
+        // heading; receipt and scenario identity stay in the structured response.
         let policy_summary = format_provider_decision_explanation(&explanation);
-        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
             validate_explanation_echo(&receipt_id, "receipt_id")?;
-            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
             validate_explanation_echo(&scenario, "scenario")?;
-            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -430,9 +427,8 @@ impl ExecuteCommandProvider {
         } else {
             "No request evidence is attached.".to_string()
         };
-        let user_message = format!(
-            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
-        );
+        let user_message =
+            format!("{request_evidence}\nProvider policy summary:\n{policy_summary}");
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
@@ -788,12 +784,13 @@ impl ExecuteCommandProvider {
 
         if self.external_critic_requested() {
             // Legacy engine: external `perlcritic` when present, else the
-            // `BuiltInAnalyzer` (Perl::Critic-compatible) fallback. Legacy
-            // behavior is unchanged.
-            if command_exists("perlcritic")
-                && let Ok(result) = self.run_external_critic(&canonical_path)
-            {
-                return Ok(result);
+            // `BuiltInAnalyzer` (Perl::Critic-compatible) fallback.
+            if command_exists("perlcritic") {
+                // A present-but-failing `perlcritic` (e.g. an unparsable
+                // `.perlcriticrc`) must surface its bounded error instead of
+                // silently degrading to a rule set the client did not
+                // request (#16550). Only a missing binary falls back.
+                return self.run_external_critic(&canonical_path);
             }
             return self.run_builtin_critic(&canonical_path);
         }
@@ -831,10 +828,11 @@ impl ExecuteCommandProvider {
         }
 
         if self.external_critic_requested() {
-            if command_exists("perlcritic")
-                && let Ok(result) = self.run_external_critic(path)
-            {
-                return Ok(result);
+            if command_exists("perlcritic") {
+                // Same #16550 contract as `run_critic_secure`: a present-but-
+                // failing perlcritic surfaces its error instead of silently
+                // falling back to the builtin analyzer.
+                return self.run_external_critic(path);
             }
             return self.run_builtin_critic(path);
         }
@@ -926,8 +924,7 @@ impl ExecuteCommandProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(code_text, &ast, &critic_config);
-        let profile =
-            NativeCriticProfile::parse_legacy(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
+        let profile = NativeCriticProfile::parse(&cfg.profile).unwrap_or_default();
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
         let file = file_path.to_string_lossy();
 
@@ -1033,11 +1030,15 @@ impl ExecuteCommandProvider {
             })
             .collect();
 
+        // `builtin` (not `native`): this is the Perl::Critic-compatible
+        // fallback analyzer, a different rule set from the native registry.
+        // Labeling it `native` made the two engines indistinguishable to the
+        // client (#16550).
         Ok(json!({
             "status": "success",
             "violations": formatted_violations,
             "violationCount": formatted_violations.len(),
-            "analyzerUsed": "native"
+            "analyzerUsed": "builtin"
         }))
     }
 

@@ -463,11 +463,43 @@ pub fn probe_vim_version(executable: &Path) -> Result<String> {
 // Safe archive extraction
 // ---------------------------------------------------------------------------
 
+/// Resolve an archive entry name to a path inside `dest`.
+///
+/// `relative` is the part of a normalized entry name that follows the
+/// pinned subtree prefix. It is admitted only when it is a plain relative
+/// path, and the resolved target is asserted to stay inside `dest` rather
+/// than assumed to.
+///
+/// `Path::is_absolute` is not a sufficient admission test. On Windows a
+/// path can carry a root without a drive prefix (`/etc/x`, after the
+/// separator normalization the caller applies), and `is_absolute` is false
+/// for that shape while `Path::join` still discards `dest` and resolves
+/// the name against the drive root. `Path::has_root` is true for that
+/// shape on every platform, so it is the admission predicate. The
+/// drive-letter check stays because `C:relative` is rooted-but-prefixless
+/// in the other direction: it has no root, but `join` still resolves it
+/// against that drive.
+fn resolve_entry_target(dest: &Path, relative: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        !Path::new(relative).has_root() && !relative.contains(':'),
+        "archive entry {relative} is not a relative subtree path"
+    );
+    let target = dest.join(relative);
+    anyhow::ensure!(
+        target.starts_with(dest),
+        "archive entry {relative} resolves outside the extraction destination"
+    );
+    Ok(target)
+}
+
 /// Extract exactly the pinned runtime subtree of `archive` into `dest`,
-/// refusing path traversal, absolute entries, drive letters, symlinks, and
+/// refusing path traversal, rooted entries, drive letters, symlinks, and
 /// oversized payloads. Only regular directories and files are admitted:
-/// entries carrying symlink mode bits fail explicitly (the doc claim is
-/// enforced by `is_symlink`, not by incidental file/dir classification).
+/// entries carrying symlink mode bits fail explicitly, and that rejection
+/// runs before the directory branch so a directory-shaped entry name cannot
+/// skip it. Entry names are admitted only as plain relative paths (see
+/// [`resolve_entry_target`]) and the resolved target is asserted to stay
+/// inside `dest`.
 /// Payload bytes are streamed to disk under a running cap on ACTUAL
 /// decompressed bytes, so a header that lies about its declared size cannot
 /// smuggle a deflate bomb past [`EXTRACTION_TOTAL_CAP_BYTES`].
@@ -486,7 +518,10 @@ fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> R
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).context("reading archive entry")?;
         anyhow::ensure!(extracted < EXTRACTION_MAX_ENTRIES, "archive exceeds the entry cap");
-        let raw_name = entry.name().to_string();
+        let raw_name = entry
+            .name()
+            .with_context(|| format!("decoding archive entry name at index {index}"))?
+            .into_owned();
         let normalized = raw_name.replace('\\', "/");
         anyhow::ensure!(
             !normalized.contains('\0') && !normalized.contains(".."),
@@ -500,22 +535,24 @@ fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> R
             // destination already exists, nothing to extract.
             continue;
         }
+        let target = resolve_entry_target(dest, relative)
+            .with_context(|| format!("resolving archive entry {raw_name}"))?;
+        // Explicit symlink rejection before any directory or regular-file
+        // admission, so the doc claim is enforced by the entry's own mode
+        // bits rather than by incidental name-based file/dir
+        // classification. `zip` decides `is_dir` from a trailing separator
+        // and `is_symlink` from the unix mode bits, so a symlink-mode entry
+        // whose name ends in `/` would otherwise be admitted as a
+        // directory and skip this rejection entirely.
         anyhow::ensure!(
-            !Path::new(relative).is_absolute() && !relative.contains(':'),
-            "archive entry {raw_name} is not a relative subtree path"
+            !entry.is_symlink(),
+            "archive entry {raw_name} carries symlink metadata; symlinks are refused"
         );
-        let target = dest.join(relative);
         if entry.is_dir() {
             fs::create_dir_all(&target)
                 .with_context(|| format!("creating extracted directory {}", target.display()))?;
             continue;
         }
-        // Explicit symlink rejection before any regular-file admission, so
-        // the doc claim is enforced by name rather than incidentally.
-        anyhow::ensure!(
-            !entry.is_symlink(),
-            "archive entry {raw_name} carries symlink metadata; symlinks are refused"
-        );
         anyhow::ensure!(
             entry.is_file(),
             "archive entry {raw_name} is neither a regular file nor a directory"
@@ -987,7 +1024,7 @@ fn install_vim_lsp_checkout(
         ),
     ];
     for (label, args) in steps {
-        let mut command = Command::new("git");
+        let mut command = crate::git_environment::command();
         command.args(&args);
         // Bounded like every other acquisition subprocess: a wedged git
         // transport or an endlessly chatty step cannot hold provisioning
@@ -1563,7 +1600,7 @@ mod tests {
     }
 
     fn git(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git")
+        let output = crate::git_environment::command()
             .args(["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"])
             .arg("-C")
             .arg(repo)
@@ -2593,6 +2630,123 @@ mod tests {
         let error = extract_runtime_subtree(&archive_path, VIM_ARCHIVE_RUNTIME_SUBTREE, &dest)
             .err()
             .ok_or_else(|| anyhow::anyhow!("symlink entry must be refused"))?;
+        assert!(error.to_string().contains("symlink"), "{error}");
+        Ok(())
+    }
+
+    /// #18072: a rooted-but-prefixless entry name must not be admitted.
+    ///
+    /// `Path::is_absolute` is false for `/etc/x` on Windows — it has a root
+    /// but no drive prefix — and `Path::join` then resolves it against the
+    /// drive root instead of `dest`. The admission predicate is `has_root`,
+    /// which is true for that shape on every platform.
+    #[test]
+    fn rooted_entry_name_is_refused() -> Result<()> {
+        let dest = Path::new("dest");
+        // `\etc\x` is only a rooted shape on Windows: on POSIX a backslash
+        // is an ordinary filename character, and the production caller has
+        // already normalized `\` to `/` (yielding the covered `//etc/x`).
+        let names: &[&str] = if cfg!(windows) {
+            &["/etc/x", "//etc/x", "\\etc\\x", "/C:/x", "C:foo"]
+        } else {
+            &["/etc/x", "//etc/x", "/C:/x", "C:foo"]
+        };
+        for name in names {
+            let error = resolve_entry_target(dest, name)
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("rooted entry name {name:?} must be refused"))?;
+            let chain = format!("{error:#}");
+            assert!(chain.contains("not a relative subtree path"), "{name:?}: {chain}");
+        }
+        Ok(())
+    }
+
+    /// #18072: the containment assertion is a property, not a platform
+    /// assumption — an admitted name always resolves inside `dest`.
+    #[test]
+    fn relative_entry_name_resolves_inside_destination() {
+        let dest = Path::new("dest");
+        for name in ["vim/ok.txt", "nested/deeper/ok.txt", "dirlink/"] {
+            let target = resolve_entry_target(dest, name)
+                .expect("a plain relative entry name must be admitted");
+            assert!(target.starts_with(dest), "{name:?} resolved to {target:?}");
+        }
+    }
+
+    /// #18072: records why the admission predicate is `has_root` and not
+    /// `is_absolute`. On Windows the escaping shape has a root but no drive
+    /// prefix, so `is_absolute` is false for exactly the name that escapes
+    /// `dest` through `Path::join`.
+    #[cfg(windows)]
+    #[test]
+    fn rooted_name_has_root_but_not_absolute_on_windows() {
+        let name = Path::new("/etc/x");
+        assert!(!name.is_absolute(), "the Windows escape shape is not absolute");
+        assert!(name.has_root(), "the Windows escape shape is rooted");
+        let dest = Path::new(r"D:\a\b\dest");
+        assert!(
+            !dest.join("/etc/x").starts_with(dest),
+            "the Windows escape shape must resolve outside the destination"
+        );
+    }
+
+    /// #18072: end-to-end proof that a rooted entry name is refused by the
+    /// extraction path, not only by the helper.
+    #[test]
+    fn archive_rooted_entry_name_is_refused() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let archive_path = scratch.path().join("rooted.zip");
+        let file = fs::File::create(&archive_path)?;
+        let mut writer = zip::ZipWriter::new(file);
+        // The separator normalization the caller applies leaves the name
+        // with a single leading separator after the subtree prefix, which
+        // is the rooted-but-prefixless shape.
+        writer
+            .start_file("vim/vim92//etc/x", zip::write::SimpleFileOptions::default())
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        std::io::Write::write_all(&mut writer, b"payload")
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        writer.finish().map_err(|error| anyhow::anyhow!("{error}"))?;
+        let dest = scratch.path().join("extracted");
+        let error = extract_runtime_subtree(&archive_path, VIM_ARCHIVE_RUNTIME_SUBTREE, &dest)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("rooted entry name must be refused"))?;
+        // Either guard may refuse it: the rooted-name predicate or the
+        // containment assertion. The contract is the refusal, not which
+        // guard produced it. The predicate's own discrimination is proved
+        // by `rooted_entry_name_is_refused`, which asserts this guard
+        // specifically.
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("not a relative subtree path")
+                || chain.contains("resolves outside the extraction destination"),
+            "{chain}"
+        );
+        Ok(())
+    }
+
+    /// #18072: `zip` decides `is_dir` from a trailing separator and
+    /// `is_symlink` from the unix mode bits, so a symlink-mode entry whose
+    /// name ends in `/` was admitted as a directory and skipped the symlink
+    /// rejection entirely.
+    #[test]
+    fn archive_directory_shaped_symlink_entry_is_refused() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let archive_path = scratch.path().join("dir-shaped-symlink.zip");
+        let file = fs::File::create(&archive_path)?;
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .add_symlink(
+                "vim/vim92/dirlink/",
+                "../evil.vim",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        writer.finish().map_err(|error| anyhow::anyhow!("{error}"))?;
+        let dest = scratch.path().join("extracted");
+        let error = extract_runtime_subtree(&archive_path, VIM_ARCHIVE_RUNTIME_SUBTREE, &dest)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("directory-shaped symlink entry must be refused"))?;
         assert!(error.to_string().contains("symlink"), "{error}");
         Ok(())
     }

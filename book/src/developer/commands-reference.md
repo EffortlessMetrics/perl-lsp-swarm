@@ -1,21 +1,63 @@
-# Commands Reference (*Diataxis: Reference* - Complete command specifications)
+# Commands Reference
 
-*This reference provides all available commands for building, testing, and using the tree-sitter-perl ecosystem.*
+This reference lists the commands contributors actually use. The standard flow is:
 
-## Installation Commands (*Diataxis: How-to Guide* - Step-by-step installation)
+```bash
+just devex
+just doctor
+just pr-fast
+nix develop -c just ci-gate
+just ci-full
+just status-update
+just status-check
+just release-check
+```
+
+## Tooling Prerequisites
+
+`just` is required for the short command forms used throughout this repository.
+
+```bash
+# Install just (https://github.com/casey/just)
+cargo install just
+```
+
+If you are in a constrained environment where `just` is unavailable, you can still
+run the equivalent core checks directly with Cargo:
+
+```bash
+# Fast local validation fallback
+cargo xtask fmt
+cargo test --workspace --lib
+
+# Broader validation fallback
+cargo test --workspace
+```
+
+## Installation Commands
 
 ### LSP Server
 ```bash
-# Quick install (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+# VS Code extension
+code --install-extension EffortlessMetrics.perl-lsp-rs
 
-# Homebrew (macOS)
+# GitHub release binary
+# Download from https://github.com/EffortlessMetrics/perl-lsp/releases
+
+# Installer script (Linux/macOS) — identity-bound remote bootstrap once closeout publishes ref+digest
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
+
+# Homebrew via the EffortlessMetrics tap (macOS/Linux)
 brew install effortlessmetrics/tap/perllsp
 
 # Build from source
 cargo build -p perllsp --release
 
-# Install globally
+# Install locally from this repo
 cargo install --path crates/perllsp
 
 # Run the LSP server
@@ -26,21 +68,87 @@ perllsp --stdio --log  # With debug logging
 ### DAP Server (Debug Adapter)
 ```bash
 # Build DAP server
-cargo build -p perl-parser --bin perl-dap --release
+cargo build -p perl-dap --release
 
 # Install DAP server globally
-cargo install --path crates/perl-parser --bin perl-dap
+cargo install --path crates/perl-dap
 
 # Run the DAP server (for VSCode integration)
 perl-dap --stdio  # Standard DAP transport
 ```
 
-## Build Commands (*Diataxis: How-to Guide* - Development builds)
+## Developer Workflow
 
-### Published Crates
+### Command Decision Table
+
+| Situation | Command | Why |
+|---|---|---|
+| New checkout | `just doctor` | Verifies workspace health, hooks, branch state, and common drift. |
+| Tool/env check | `just devex` | Checks required tools, Rust components, and local setup. |
+| Before push | `just ready` | Runs doctor plus the fast PR gate. |
+| Fast PR loop | `just pr-fast` | Cheapest useful proof while iterating. |
+| Agent compile/test | `just agent-check` / `just agent-test` | Uses cargo-safe agent profiles and bounded build directories. |
+| Agent lint | `just agent-clippy` | Runs clippy through the cargo-safe agent profile. |
+| Agent PR proof | `just agent-pr-fast` | Runs the PR-fast gate through cargo-safe. |
+| Full pre-merge | `just ci-gate` or `nix develop -c just ci-gate` | Canonical local merge gate. |
+| Memory touched | `cargo xtask check-memory-lifecycle-policy` | Enforces retained-state lifecycle and receipt policy. |
+| Retained owner added | `cargo xtask check-memory-retained-owner-drift --base origin/master` | Checks whether long-lived storage/task additions need retained-state inventory coverage. |
+| Parser-accuracy metrics touched | `just ci-metrics-ratchet-check parser_accuracy` | Verifies parser-accuracy scorecard floors do not regress. |
+| Generated status docs touched | `just status-update` then `just status-check` | Regenerates and verifies `docs/project/status/` outputs. |
+| Retired goal-selector compatibility | `cargo xtask check-active-goal-manifest`, `cargo xtask goals next`, `cargo xtask goals reconcile` | RETIRED. Each prints a retirement receipt and exits 0. They validate nothing, select no work, and mutate nothing. Live work selection is now owned by current GitHub state — issues, PRs, reviews, and checks. |
+| Release/version surfaces touched | `just version-check` then `just release-check` | Verifies version sync and the release-prep gate before tagging/publishing. |
+| Native tooling defaults touched | `cargo xtask native-tooling check-defaults` | Verifies native formatter and native critic default paths do not silently shell out. |
+| Native tooling cutover status touched | `cargo xtask native-tooling readiness --markdown docs/project/status/native_tooling_readiness.md` | Renders explicit native formatter/critic default-readiness criteria from existing receipts. |
+| Non-Rust migration planning | `cargo xtask non-rust migration-candidates --limit 20` | Finds script-style tooling that should move into Rust-owned crates or typed xtask tasks. |
+| User migration check | `perllsp --perltidy-compat-report .perltidyrc` / `perllsp --perlcritic-compat-report .perlcriticrc` | Classifies legacy profiles against native formatter and critic support without requiring external tools. |
+| Native critic touched | `cargo xtask native-critic check` | Runs native critic rules and emits check receipts for findings, suppressions, and fixability. |
+| DevEx docs touched | `cargo xtask check-devex-docs` | Verifies toolchain wording and documented command references stay current. |
+| Need a terminal summary | `just quick-ref` | Prints the short command decision tree. |
+
+### Common Commands
+
 ```bash
-# Install from crates.io
-cargo install perllsp                     # LSP server
+# Workspace health check (run before any agent-spawning session)
+just doctor         # Detects+fixes core.bare, worktree leaks, stale branches, etc.
+
+# Developer utilities
+just upstream-log   # Shows recent N commits from auto-detected upstream ref
+
+# Check the local environment (tools, Rust components)
+just devex          # Alias: just doctor-env
+
+# Pre-push preflight (doctor + fast gate)
+just ready
+
+# Agent-safe compile/test/lint
+just agent-preflight
+just agent-check
+just agent-test
+just agent-clippy
+just agent-pr-fast
+
+# Fast validation while iterating
+just pr-fast
+
+# Canonical local merge gate
+nix develop -c just ci-gate
+
+# Metrics/status/release surfaces
+just ci-metrics-ratchet-check parser_accuracy
+just status-update
+just status-check
+just version-check
+just release-check
+```
+
+## Build Commands
+
+### Published Crates and Local Binaries
+```bash
+# Install the LSP server from this checkout
+cargo install --path crates/perllsp        # LSP server
+
+# Add published library crates
 cargo add perl-parser                      # As library dependency
 cargo add perl-corpus --dev                # For testing
 
@@ -69,7 +177,7 @@ cargo build -p perl-parser --features incremental --release
 cargo build --all
 ```
 
-## Workspace Configuration (v0.8.8+)
+## Workspace Configuration
 
 The workspace uses an exclusion strategy to ensure reliable builds across all platforms:
 
@@ -101,64 +209,26 @@ The xtask crate is excluded from the workspace to maintain clean builds while pr
 
 ## Test Commands
 
-### Workspace Testing (v0.8.8)
+### Workspace Testing
 ```bash
-# Test core published crates (workspace members only)
-cargo test                              # Tests perl-lexer, perl-parser, perl-corpus, perl-lsp
-                                        # Excludes crates with system dependencies
+# Test all workspace crates
+cargo test --workspace --lib            # Library tests only (fast)
+cargo test --workspace                  # All tests
 
-# Test individual published crates
-cargo test -p perl-parser               # Main parser library tests (195 tests)
-cargo test -p perl-lexer                # Lexer tests (40 tests)  
-cargo test -p perl-corpus               # Corpus tests (12 tests)
-cargo test -p perl-lsp-rs                  # LSP integration tests
-
-# Advanced test commands (excluded from workspace, run from xtask directory)
-# cd xtask && cargo run test            # Advanced xtask test suite
-# cd xtask && cargo run corpus          # Dual-scanner corpus comparison
+# Test individual crates
+cargo test -p perl-parser               # Parser tests
+cargo test -p perl-lexer                # Lexer tests
+cargo test -p perl-lsp-rs                  # LSP server tests
+cargo test -p perl-dap                  # DAP server tests
 ```
 
-### Comprehensive Integration Testing
+### LSP Integration Testing
 ```bash
-# LSP E2E tests
-cargo test -p perl-parser --test lsp_comprehensive_e2e_test  # 33 LSP E2E tests
+# Run with reduced thread count for reliability
+RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 
-# Symbol documentation tests (comment extraction)
-cargo test -p perl-parser --test symbol_documentation_tests
-
-# File completion tests
-cargo test -p perl-parser --test file_completion_tests
-
-# DAP tests
-cargo test -p perl-parser --test dap_comprehensive_test
-cargo test -p perl-parser --test dap_integration_test -- --ignored  # Full integration test
-
-# Incremental parsing tests
-cargo test -p perl-parser --test incremental_integration_test --features incremental
-cargo test -p perl-parser --features incremental
-cargo test -p perl-parser incremental_v2::tests            # IncrementalParserV2 tests
-
-# Performance and benchmark tests  
-cargo test -p perl-parser --test incremental_perf_test
-cargo bench incremental --features incremental
-```
-
-### Enhanced Workspace Navigation Tests (v0.8.8)
-```bash
-# Test comprehensive AST traversal with ExpressionStatement support
-cargo test -p perl-parser --test workspace_comprehensive_traversal_test
-
-# Test enhanced code actions and refactoring
-cargo test -p perl-parser code_actions_enhanced
-
-# Test improved call hierarchy provider
-cargo test -p perl-parser call_hierarchy_provider
-
-# Test enhanced workspace indexing and symbol resolution
-cargo test -p perl-parser workspace_index workspace_rename
-
-# Test TDD basic functionality enhancements
-cargo test -p perl-parser tdd_basic
+# Run specific test by name
+cargo test -p perl-parser -- test_name --exact
 ```
 
 ### WSL-Safe Local Gate (*Diataxis: How-to Guide* - Resource-constrained testing)
@@ -200,73 +270,19 @@ CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=2 ./scripts/gate-local.sh
 | `RUST_TEST_THREADS` | 1 | Test parallelism (1 = serial) |
 | `GATE_RELEASE` | unset | Set to "1" for release builds |
 
-### Performance Testing (PR #140) (*Diataxis: How-to Guide* - Test reliability)
+### LSP Test Threading
 
-PR #140 delivers significant performance optimizations for test speed and reliability:
-
-- **LSP behavioral tests**: 1560s+ → 0.31s
-- **User story tests**: 1500s+ → 0.32s
-- **Workspace tests**: 60s+ → 0.26s
-- **Overall suite**: 60s+ → <10s
-
-The testing infrastructure includes adaptive threading configuration that scales timeouts and concurrency based on system constraints, enhanced with intelligent symbol waiting and optimized idle detection cycles.
+The LSP test suite uses adaptive threading. Use `RUST_TEST_THREADS=2` for reliable CI behavior:
 
 ```bash
-# CI testing with adaptive timeouts (PR #140 optimizations)
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs              # Adaptive threading behavioral tests
-RUST_TEST_THREADS=2 cargo test -p perl-parser           # Enhanced with intelligent symbol waiting
+# Reliable CI and development default
+RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 
-# Optimized single-threaded testing (maximum reliability)
-RUST_TEST_THREADS=1 cargo test --test lsp_comprehensive_e2e_test  # Exponential backoff protection
+# Override test timeouts for slow environments
+LSP_TEST_TIMEOUT_MS=20000 cargo test -p perl-lsp-rs
 
-# High-performance development environment
-cargo test -p perl-lsp-rs                                   # 200ms idle detection cycles (was 1000ms)
-cargo test                                               # <10s total execution (was >60s)
-
-# Enhanced timeout configuration (PR #140 features)
-LSP_TEST_TIMEOUT_MS=20000 cargo test -p perl-lsp-rs        # Override adaptive timeouts
-LSP_TEST_SHORT_MS=1000 cargo test -p perl-lsp-rs           # Fine-grained timeout control
-
-# Advanced debugging with performance monitoring
-LSP_TEST_ECHO_STDERR=1 RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --nocapture
-RUST_LOG=debug cargo test -p perl-lsp-rs -- --nocapture    # Monitor timeout scaling
-```
-
-#### Performance Matrix (*Diataxis: Reference* - PR #140 achievements)
-
-| Test Suite | Before PR #140 | After PR #140 |
-|------------|----------------|----------------|
-| **lsp_behavioral_tests** | 1560s+ | 0.31s |
-| **lsp_full_coverage_user_stories** | 1500s+ | 0.32s |
-| **Individual workspace tests** | 60s+ | 0.26s |
-| **lsp_golden_tests** | 45s | 2.1s |
-| **Overall test suite** | 60s+ | <10s |
-
-#### Enhanced Thread Configuration Reference (*Diataxis: Reference* - Multi-tier timeout scaling)
-
-| Environment | Thread Count | LSP Harness | Comprehensive | Idle Detection | Use Case |
-|------------|-------------|-------------|--------------|----------------|----------|
-| **CI/GitHub Actions** | 0-2 | 500ms | 15s | 200ms cycles | Resource-constrained automation |
-| **Constrained Dev** | 3-4 | 300ms | 10s | 200ms cycles | Limited hardware development |
-| **Light Constraint** | 5-8 | 200ms | 7.5s | 200ms cycles | Modern development machines |
-| **Full Workstation** | >8 | 200ms | 5s | 200ms cycles | High-performance development |
-
-#### Thread-Aware Test Examples (*Diataxis: Tutorial* - Common testing patterns)
-
-```bash
-# GitHub Actions CI configuration
-- name: Run LSP tests
-  run: RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs
-  timeout-minutes: 10
-
-# Local development on limited hardware
-RUST_TEST_THREADS=4 cargo test -p perl-parser --test lsp_comprehensive_e2e_test
-
-# High-performance workstation (default behavior)
-cargo test  # Uses all available threads, standard 5-second timeouts
-
-# Debug timeout issues
-RUST_LOG=debug LSP_TEST_ECHO_STDERR=1 RUST_TEST_THREADS=1 cargo test -p perl-lsp-rs --test specific_test
+# Debug failing tests
+RUST_LOG=debug LSP_TEST_ECHO_STDERR=1 cargo test -p perl-lsp-rs -- --nocapture
 ```
 
 ## Parser Commands
@@ -294,21 +310,14 @@ cargo run -p perl-parser --example lsp_capabilities
 ### Core LSP Testing (*Diataxis: How-to Guide* - Development workflows)
 
 ```bash
-# Run LSP tests with performance optimizations (v0.8.8+)
-cargo test -p perl-parser lsp
-
-# Run LSP integration tests with controlled threading (recommended)
+# Run LSP tests (recommended thread configuration)
 RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 
-# Performance testing with enhanced test harness (PR #140)
-LSP_TEST_FALLBACKS=1 cargo test -p perl-lsp-rs             # Fast mode with mock responses
+# Run parser-side LSP unit tests
+cargo test -p perl-parser lsp
 
-# Optimal CI performance with adaptive configuration
-RUST_TEST_THREADS=2 LSP_TEST_FALLBACKS=1 cargo test -p perl-lsp-rs -- --test-threads=2
-
-# Enhanced test harness features (PR #140)
-cargo test -p perl-lsp-rs --test lsp_behavioral_tests       # Adaptive threading tests
-cargo test -p perl-lsp-rs --test lsp_full_coverage_user_stories  # User story tests
+# Fast mode for CI
+RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
 
 # Run specific performance-sensitive tests with threading control
 RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs test_completion_detail_formatting -- --test-threads=2
@@ -333,75 +342,44 @@ perllsp --stdio < test_requests.jsonrpc
 
 ### LSP Testing Environment Variables (*Diataxis: Reference* - Configuration options)
 
-**RUST_TEST_THREADS** (**Enhanced in PR #140**):
+**RUST_TEST_THREADS**:
 ```bash
-# Control test thread concurrency for optimal performance
+# Control test thread concurrency
 export RUST_TEST_THREADS=2                # Recommended for CI
 
-# Performance testing with adaptive timeouts
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --test lsp_behavioral_tests     # 0.31s (was 1560s+)
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --test lsp_full_coverage_user_stories  # 0.32s (was 1500s+)
-
-# Benefits of PR #140 threading optimization:
-# - Significantly faster behavioral test execution
-# - 100% test pass rate (was ~55% due to timeouts)
-# - Intelligent symbol waiting with exponential backoff
-# - Optimized idle detection (1000ms → 200ms cycles)
-# - Enhanced test harness with mock responses and graceful degradation
-
 # Thread configuration examples:
-cargo test -p perl-lsp-rs -- --test-threads=2              # Optimal CI configuration
+cargo test -p perl-lsp-rs -- --test-threads=2              # Reliable CI configuration
 RUST_TEST_THREADS=1 cargo test -p perl-lsp-rs              # Maximum reliability mode
 RUST_TEST_THREADS=4 cargo test -p perl-lsp-rs              # High-performance development
 ```
 
-**LSP_TEST_FALLBACKS** (**NEW in v0.8.8**):
+**LSP test environment**:
 ```bash
-# Enable fast testing mode (reduces test timeouts by ~75%)
-export LSP_TEST_FALLBACKS=1
+# Optional external dependencies for compatibility adapters
+export PERLTIDY_PATH="/usr/local/bin/perltidy"      # explicit external formatter mode
+export PERLCRITIC_PATH="/usr/local/bin/perlcritic"  # explicit legacy critic mode
 
-# Optional external dependencies for enhanced features
-export PERLTIDY_PATH="/usr/local/bin/perltidy"    # Custom perltidy location
-export PERLCRITIC_PATH="/usr/local/bin/perlcritic" # Custom perlcritic location
+# Override adaptive test timeouts
+LSP_TEST_TIMEOUT_MS=20000 cargo test -p perl-lsp-rs
+LSP_TEST_SHORT_MS=1000 cargo test -p perl-lsp-rs
 
-# Performance characteristics in fallback mode:
-# - Base timeout: 500ms (vs 2000ms)
-# - Wait for idle: 50ms (vs 2000ms)  
-# - Symbol polling: single 200ms attempt (vs progressive backoff)
-# - Result: 99.5% faster test execution (60s+ → 0.26s for workspace tests)
-
-# Use cases:
-cargo test -p perl-lsp-rs                    # Fast CI/development testing
-LSP_TEST_FALLBACKS=1 cargo test --workspace  # Quick workspace validation
-LSP_TEST_FALLBACKS=1 cargo check --workspace # Fast build verification
+# Debug test output
+LSP_TEST_ECHO_STDERR=1 cargo test -p perl-lsp-rs -- --nocapture
 ```
 
-**PERL_LSP_INCREMENTAL**:
-```bash
-# Enable incremental parsing
-export PERL_LSP_INCREMENTAL=1
-perllsp --stdio
+### LSP executeCommand Integration (*Diataxis: How-to Guide* - Execute command usage)
 
-# Performance benefits:
-# - <1ms LSP updates with 70-99% node reuse efficiency
-# - Production-stable incremental parsing
-# - Enterprise-grade workspace refactoring support
-```
+The LSP server supports `workspace/executeCommand` with native critic analysis,
+legacy perlcritic compatibility, and advanced code actions.
 
-### LSP executeCommand Integration ⭐ **NEW: Issue #145** (*Diataxis: How-to Guide* - Execute command usage)
+#### perl.runCritic Command Usage
 
-The LSP server now supports comprehensive `workspace/executeCommand` functionality with integrated perlcritic analysis and advanced code actions.
+**Native Critic and Legacy Compatibility Overview** (*Diataxis: Explanation* - Architecture design):
 
-#### perl.runCritic Command Usage ⭐ **NEW: Issue #145**
-
-**Dual Analyzer Strategy Overview** (*Diataxis: Explanation* - Architecture design):
-
-The `perl.runCritic` command implements a sophisticated dual analyzer strategy ensuring 100% availability:
-
-1. **Primary**: External perlcritic (full policy coverage, configurable)
-2. **Fallback**: Built-in analyzer (always available, comprehensive basic policies)
-3. **Seamless Transition**: Automatic fallback with no user intervention required
-4. **Performance Target**: <2s execution time for typical Perl files
+The normal diagnostic path uses the native critic engine by default. The
+`perl.runCritic` execute command still supports legacy compatibility behavior,
+but external `perlcritic` should be treated as an explicit adapter rather than
+the default editor path.
 
 **Basic Usage** (*Diataxis: Tutorial* - Getting started with code quality analysis):
 ```bash
@@ -411,21 +389,32 @@ cargo test -p perl-lsp-rs --test lsp_behavioral_tests -- test_execute_command_pe
 # Test executeCommand protocol compliance
 cargo test -p perl-lsp-rs --test lsp_execute_command_tests
 
-# Test with dual analyzer strategy (external + built-in fallback)
-cargo test -p perl-lsp-rs --test lsp_execute_command_tests -- test_perlcritic_dual_analyzer
+# Test native critic diagnostics through the LSP runtime
+cargo test -p perl-lsp-rs native_critic_engine --profile agent --locked --lib -- --nocapture
 
-# Test built-in analyzer specifically
-cargo test -p perl-parser --test execute_command_tests -- test_execute_command_run_critic_builtin
+# Test execute-command critic behavior in the core provider
+cargo test -p perl-lsp-rs test_execute_command_run_critic_builtin --lib
 
 # Test with missing files (error handling)
-cargo test -p perl-parser --test execute_command_tests -- test_execute_command_run_critic_missing_file
+cargo test -p perl-lsp-rs test_execute_command_run_critic_missing_file --lib
 ```
 
-**Advanced Configuration** (*Diataxis: How-to Guide* - Optimizing perlcritic integration):
+**Advanced Configuration** (*Diataxis: How-to Guide* - Optimizing critic integration):
 
-**External Perlcritic Setup**:
+**Native Critic Setup**:
+```toml
+[diagnostics]
+perlcritic = true
+perlcritic_severity = 3
+
+[critic]
+engine = "native"
+profile = "recommended"
+```
+
+**External Perlcritic Compatibility Setup**:
 ```bash
-# Install perlcritic for enhanced analysis
+# Install perlcritic only when exact legacy policy output is required
 sudo apt-get install perlcritic         # Ubuntu/Debian
 brew install perl-critic                # macOS
 cpan Perl::Critic                      # CPAN installation
@@ -435,15 +424,16 @@ which perlcritic                        # Should return path if installed
 perlcritic --version                    # Check version
 
 # Test external analyzer detection
-cargo test -p perl-parser --test execute_command_tests -- test_command_exists_behavior
+cargo test -p perl-lsp-rs test_command_exists_behavior --profile agent --locked --lib -- --nocapture
 ```
 
-**Built-in Analyzer Capabilities** (*Diataxis: Reference* - Policy coverage):
+**Native Critic Capabilities** (*Diataxis: Reference* - Policy coverage):
 ```rust
-// Built-in analyzer policies (always available)
+// Native critic policies (always available)
 - RequireUseStrict: "Missing 'use strict' pragma"
 - RequireUseWarnings: "Missing 'use warnings' pragma"
 - Syntax::ParseError: "Comprehensive syntax error detection"
+- Stable native rule IDs, suppressions, and code actions
 - Performance optimized: ~100µs analysis time for typical files
 - Parse-error resilient: Continues analysis even with syntax errors
 ```
@@ -451,22 +441,22 @@ cargo test -p perl-parser --test execute_command_tests -- test_command_exists_be
 **Performance Specifications** (*Diataxis: Reference* - Timing requirements):
 | Analyzer Type | File Size | Analysis Time | Policy Coverage | Availability |
 |---------------|-----------|---------------|-----------------|--------------|
-| External perlcritic | <10KB | <0.5s | 150+ policies | Requires installation |
-| External perlcritic | <100KB | <1.5s | 150+ policies | Configurable severity |
-| Built-in analyzer | <10KB | <0.1s | Core policies | 100% availability |
-| Built-in analyzer | <100KB | <0.3s | Core policies | Parse-error resilient |
+| Native critic | <10KB | <0.1s | Recommended native profile | 100% availability |
+| Native critic | <100KB | <0.3s | Recommended native profile | Parse-error resilient |
+| External perlcritic | <10KB | <0.5s | Legacy policy catalog | Explicit compatibility mode |
+| External perlcritic | <100KB | <1.5s | Legacy policy catalog | Configurable severity |
 
 **Troubleshooting** (*Diataxis: How-to Guide* - Common issues and solutions):
 
-**Issue: External perlcritic not found**
+**Issue: External perlcritic not found in legacy mode**
 ```bash
-# Problem: LSP falls back to built-in analyzer always
-# Solution: Install perlcritic and verify PATH
+# Problem: explicit legacy compatibility mode cannot launch perlcritic
+# Solution: use native critic, or install perlcritic and verify PATH
 which perlcritic || echo "perlcritic not found in PATH"
 echo $PATH | grep -o '/usr/local/bin\|/usr/bin\|/opt/perl/bin'
 
-# Alternative: Use built-in analyzer explicitly (always works)
-cargo test -p perl-parser --test execute_command_tests -- test_execute_command_run_critic_builtin
+# Alternative: use the native critic path
+cargo test -p perl-lsp-rs test_execute_command_run_critic_builtin --profile agent --locked --lib -- --nocapture
 ```
 
 **Issue: Analysis timeout or slow performance**
@@ -476,16 +466,16 @@ cargo test -p perl-parser --test execute_command_tests -- test_execute_command_r
 wc -l your_file.pl                     # Check line count
 time perlcritic your_file.pl           # Test external tool directly
 
-# Built-in analyzer performance validation
-cargo test -p perl-parser --test execute_command_tests -- test_run_builtin_critic_with_valid_file
+# Native critic performance validation
+cargo test -p perl-lsp-rs test_run_builtin_critic_with_valid_file --profile agent --locked --lib -- --nocapture
 ```
 
 **Issue: Parse errors prevent analysis**
 ```bash
 # Problem: Syntax errors stop analysis
-# Solution: Built-in analyzer handles parse errors gracefully
+# Solution: Native critic keeps executeCommand isolated from parser failures
 perl -c your_file.pl                   # Check syntax separately
-cargo test -p perl-parser --test execute_command_tests # Built-in handles syntax errors
+cargo test -p perl-lsp-rs test_execute_command_run_critic_builtin --profile agent --locked --lib -- --nocapture
 ```
 
 **Integration with LSP Diagnostics** (*Diataxis: How-to Guide* - Diagnostic workflow):
@@ -537,7 +527,7 @@ cargo test -p perl-lsp-rs --test lsp_performance_tests -- test_execute_command_l
 
 #### Supported executeCommand Operations (*Diataxis: Reference* - Complete command list)
 
-**Core Commands** (Available since v0.8.8+):
+**Core Commands**:
 ```bash
 # Test all supported executeCommand operations
 cargo test -p perl-lsp-rs --test lsp_execute_command_tests -- test_supported_commands
@@ -553,9 +543,16 @@ cargo test -p perl-lsp-rs --test lsp_behavioral_tests -- test_execute_command_de
 - ✅ `perl.runFile` - Execute single Perl file with output capture
 - ✅ `perl.runTestSub` - Execute specific test subroutine with isolation
 - ✅ `perl.debugTests` - Debug test execution with breakpoint support
-- ✅ `perl.runCritic` - **NEW**: Perl::Critic analysis with dual analyzer strategy
+- ✅ `perl.runCritic` - Native critic analysis with explicit Perl::Critic compatibility
+- ✅ `perl.explainProviderDecision` - Return a structured provider decision explanation, a user-readable `user_message`, and a local `copyable_payload` for bug reports. The v1 command is conservative: it attaches current provider-matrix receipt anchors for known surfaces, includes the additive `provider_decision.v1` schema version, preserves caller-provided receipt/scenario IDs, accepts an optional object-valued `request_receipt` for request-local bug reports, and accepts an optional typed `request_id` selector for the latest matching references runtime receipt. Numeric and string selectors are distinct; a selector with no matching latest receipt (including a provider trace without a recorded request ID) returns no request evidence, and cannot be combined with a caller-supplied `request_receipt`. It normalizes attached receipts with shared fallback/source-backed/dynamic-boundary fields while preserving provider-specific fields, redacts workspace roots to class/hash metadata in the copyable payload, can replay persisted provider-local request receipts for covered live rename and refactor proof surfaces, and returns a low-confidence `missing_fact` / `no_result` fallback for unknown surfaces. Latest-only selection does not guarantee identity across reused request IDs or bind a receipt to every accepted-state or terminal-response identity.
+- ✅ `perl.workspaceTrustReport` - Return a read-only workspace trust report from current server state, including workspace roots, module-resolution configuration, advisory setup hints, the perldoc oracle contract, sanitized caller-supplied VS Code DAP/perldoc runtime state, launch-configuration/module-path counts and path classes, subprocess probe boundaries, index status, support tiers, provider-decision trace keys, and the report claim boundary. It does not copy raw launch paths, run perldoc, start DAP, inspect debug-session internals, probe Perl, refresh parser receipts, or promote provider support tiers.
+- ✅ `perl.agentContext` - Return a read-only agent orientation envelope containing the workspace trust report, current advertised custom command IDs, and pointers to existing setup-hint, explanation, and edit-preview commands. The standard LSP `arguments` property is optional: omit it or send `[]` for no client runtime state, or send one object to supply caller-owned runtime state. If initialization disables `lsp.execute_command`, `execute_commands` is empty and command-backed next actions are omitted for that session. It does not scan files, probe Perl, run perldoc, launch DAP, apply edits, or execute follow-up commands.
+- ✅ `perl.explainMissingModuleLookup` - Return a bounded missing-module / `@INC` lookup explanation from current runtime state, including the requested module, expected relative path, effective include paths, PERL5LIB policy, the stored interpreter startup `@INC` acquisition state (`module_resolution.interpreter_startup_inc`: outcome code, attempts consumed, retry eligibility, terminal state, lookup impact, redacted remediation code, owning folder, and currentness ceiling), whether the not-found search was complete (`module_resolution.result.search_complete`), claim boundary, user message, and local copyable payload. It does not scan files, launch or retry the Perl startup `@INC` probe, change diagnostic suppression, change resolver behavior, or promote support tiers.
+- ✅ `perl.previewSafeDelete` - Return a scoped safe-delete symbol preview with a user-readable allow/block/refuse explanation and an empty workspace edit. This is UX proof only: it never applies live symbol-level deletion.
+- ✅ `perl.safeDeleteSymbol` - Return a narrow source-backed symbol-delete `WorkspaceEdit` only when the safe-delete compiler plan is fresh/high-confidence/allowed and rollback proof restores the original text. Imported/exported, stale, generated, dynamic-boundary, low-confidence, fallback, and non-source-backed requests return an empty edit with a blocker/fallback explanation.
+- ✅ `perl.previewPackageRename` - Return a scoped package/compiler-backed rename preview with planned edit evidence, blockers or fallback state, and a user-readable explanation. This is UX proof only: it never applies or authorizes package rename edits.
 
-### Advanced Code Actions Testing ⭐ **NEW: Issue #145** (*Diataxis: How-to Guide* - Code action workflows)
+### Advanced Code Actions Testing (*Diataxis: How-to Guide* - Code action workflows)
 
 **Refactoring Operations** (*Diataxis: Tutorial* - Using code actions for refactoring):
 ```bash
@@ -565,7 +562,7 @@ cargo test -p perl-lsp-rs --test lsp_code_actions_tests
 # Test specific refactoring categories
 cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_extract_variable_action     # RefactorExtract
 cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_extract_subroutine_action  # Advanced extraction
-cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_organize_imports_action    # SourceOrganizeImports
+cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_organize_imports           # source.organizeImports stays withdrawn (#8305)
 
 # Test code quality improvements
 cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_modernize_code_actions     # RefactorRewrite
@@ -596,12 +593,13 @@ cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_cross_file_extra
     "range": {"start": {"line": 10, "character": 4}, "end": {"line": 12, "character": 8}},
     "context": {
       "diagnostics": [],
-      "only": ["refactor.extract", "source.organizeImports"]
+      "only": ["refactor.extract"]
     }
   }
 }
 
 // Server response with available code actions
+// (`source.organizeImports` is withdrawn, #8305, and is never returned)
 {
   "jsonrpc": "2.0",
   "id": 2,
@@ -611,11 +609,6 @@ cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_cross_file_extra
       "kind": "refactor.extract",
       "edit": { /* WorkspaceEdit with text changes */ },
       "isPreferred": true
-    },
-    {
-      "title": "Organize Imports",
-      "kind": "source.organizeImports",
-      "edit": { /* Import optimization changes */ }
     }
   ]
 }
@@ -639,20 +632,16 @@ cargo test -p perl-lsp-rs --test lsp_performance_benchmarks -- test_code_actions
 
 **Quality Assurance Commands**:
 ```bash
-# Acceptance criteria validation (Issue #145)
-cargo test -p perl-lsp-rs --test lsp_execute_command_tests -- test_ac1_execute_command_implementation  # AC1
-cargo test -p perl-lsp-rs --test lsp_execute_command_tests -- test_ac2_perlcritic_integration          # AC2
-cargo test -p perl-lsp-rs --test lsp_code_actions_tests -- test_ac3_advanced_refactoring_operations   # AC3
-
-# Previously ignored tests now enabled
-cargo test -p perl-lsp-rs --test lsp_behavioral_tests | grep -v "ignored"  # Verify test enablement
+# executeCommand integration tests
+cargo test -p perl-lsp-rs --test lsp_execute_command_tests
+cargo test -p perl-lsp-rs --test lsp_code_actions_tests
 ```
 
 The enhanced executeCommand and code actions integration delivers LSP functionality with <50ms response times, comprehensive error handling, and robust tool integration patterns.
 
 ## Benchmark Commands
 
-### Workspace Benchmarks (v0.8.8)
+### Workspace Benchmarks
 ```bash
 # Run parser benchmarks (workspace crates)
 cargo bench                             # Benchmarks for published crates
@@ -666,7 +655,7 @@ cargo bench -p perl-corpus              # Corpus validation performance
 cargo test -p perl-parser --test incremental_perf_test  # Incremental parsing performance
 ```
 
-### Comprehensive C vs Rust Benchmark Framework (v0.8.8)
+### Comprehensive C vs Rust Benchmark Framework
 ```bash
 # Run complete cross-language benchmark suite with statistical analysis
 cargo xtask bench                       # Complete benchmark workflow with C vs Rust comparison
@@ -682,7 +671,7 @@ python3 scripts/generate_comparison.py \
   --output comparison.json \
   --report comparison_report.md
 
-# Custom performance gates (5% parse time, 20% memory defaults)
+# Custom performance gates
 python3 scripts/generate_comparison.py \
   --parse-threshold 3.0 \
   --memory-threshold 15.0 \
@@ -707,7 +696,7 @@ cargo run --bin xtask -- validate-memory-profiling  # Test dual-mode memory meas
 
 ## Code Quality Commands
 
-### Workspace Quality Checks (v0.8.8)
+### Workspace Quality Checks
 ```bash
 # Run standard Rust quality checks (workspace crates)
 cargo fmt                              # Format workspace code
@@ -724,9 +713,23 @@ cargo test --doc                      # Documentation tests
 # cargo xtask fmt                     # xtask excluded from workspace
 ```
 
+### Local Developer Watch Commands
+```bash
+# Install bacon once for interactive watch mode
+cargo install --locked bacon
+
+# Fast watch loop from justfile
+just dev-watch            # default: workspace check
+just dev-watch-clippy     # core clippy loop
+just dev-watch-tests      # core test loop
+```
+
+The watch recipes use `bacon.toml` with project-tuned jobs for faster local feedback loops.
+For a walkthrough and editor task example, see [Continuous Testing](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/CONTINUOUS_TESTING.md).
+
 ## Dual-Scanner Corpus Comparison (*Diataxis: How-to Guide* - Testing procedures)
 
-### Running Dual-Scanner Corpus Tests (v0.8.8+)
+### Running Dual-Scanner Corpus Tests
 ```bash
 # Prerequisites: Install libclang-dev for C scanner support
 sudo apt-get install libclang-dev  # Ubuntu/Debian
@@ -1077,7 +1080,7 @@ The unified scanner architecture provides:
 
 ## Edge Case Testing Commands
 
-### Workspace Edge Case Tests (v0.8.8)
+### Workspace Edge Case Tests
 ```bash  
 # Run comprehensive edge case tests (workspace crates)
 cargo test -p perl-parser               # Includes all edge case coverage
@@ -1156,6 +1159,122 @@ cd tree-sitter-perl
 npx tree-sitter generate
 ```
 
+## CPAN Corpus Commands (*Diataxis: Reference* - CPAN top-1000 parser validation)
+
+The CPAN corpus workflow validates parser coverage against the top-1000 most-downloaded CPAN distributions. The pipeline has four stages: fetch the distribution list, install the modules locally, sweep (parse) them to measure error rates, and ratchet newly-clean modules into a tracked manifest.
+
+### Justfile Recipes
+
+```bash
+# Fetch CPAN top-1000 distribution list from MetaCPAN
+just cpan-corpus-fetch              # Writes .ci/cpan-top-1000-distributions.txt
+
+# Install CPAN top-1000 distributions locally via cpanm
+just cpan-corpus-install            # Installs into target/cpan-corpus/; auto-fetches the list, bootstraps cpanm, and reuses target/cpan-corpus/.cpanm
+
+# Sweep CPAN corpus and print parser error rates
+just cpan-corpus-sweep              # Parse all .pm files, report clean rate
+
+# Seed/update the committed CPAN ratchet floor
+just cpan-corpus-baseline-update    # Writes .ci/cpan-corpus-baseline.json
+
+# Check CPAN corpus against baseline and known-clean manifest
+just cpan-corpus-check              # Enforces full-corpus ratchet + strict known-clean subset
+
+# Auto-add newly-clean CPAN modules to known-clean manifest
+just cpan-corpus-ratchet            # Appends to .ci/cpan-corpus-manifest.txt
+```
+
+### xtask Subcommands
+
+```bash
+# Fetch distribution list from MetaCPAN
+cargo xtask cpan-corpus fetch-list
+cargo xtask cpan-corpus fetch-list --output custom-path.txt
+
+# Install distributions locally using cpanm --notest --local-lib
+cargo xtask cpan-corpus install
+cargo xtask cpan-corpus install --dist-list .ci/cpan-top-1000-distributions.txt --install-dir target/cpan-corpus
+
+# Sweep installed CPAN corpus with the v3 parser
+cargo xtask cpan-corpus sweep
+cargo xtask cpan-corpus sweep --verbose                    # Per-file details
+cargo xtask cpan-corpus sweep --output cpan-report.json    # JSON report
+
+# Auto-ratchet: append newly-clean modules to manifest
+cargo xtask cpan-corpus ratchet
+cargo xtask cpan-corpus ratchet --manifest .ci/cpan-corpus-manifest.txt
+```
+
+### Typical Workflow
+
+```bash
+# First-time setup
+just cpan-corpus-fetch        # Download distribution list
+just cpan-corpus-install      # Install modules (takes a while; fetches the list if needed)
+just cpan-corpus-baseline-update  # Commit first ratchet floor
+
+# Ongoing validation (after parser changes)
+just cpan-corpus-sweep        # Check current error rates
+just cpan-corpus-ratchet      # Lock in improvements
+
+# CI regression check
+just cpan-corpus-check        # Fails if full-corpus ratchet or known-clean subset regresses
+```
+
+### Prerequisites
+
+- **curl** -- required for `fetch-list` (MetaCPAN API calls)
+- **cpanm** -- required for `install` (App::cpanminus)
+- **perl** -- required at runtime for module installation
+
+### Key Paths
+
+| What | Where |
+|------|-------|
+| Distribution list | `.ci/cpan-top-1000-distributions.txt` |
+| Full-corpus baseline | `.ci/cpan-corpus-baseline.json` |
+| Known-clean manifest | `.ci/cpan-corpus-manifest.txt` |
+| Local install directory | `target/cpan-corpus/` |
+| Sweep JSON report | `target/cpan-corpus-report.json` (when using `--output`) |
+
+## Release Commands
+
+### Bump Workspace Version
+
+All crate versions inherit from `[workspace.package] version` in `Cargo.toml`. Bump
+every tracked version site in a single command:
+
+```bash
+just bump-version 0.13.0
+```
+
+This updates: `[workspace.package]` version, all `[workspace.dependencies]` version fields,
+`vscode-extension/package.json`, `features.toml`, and documentation version references.
+Then runs `cargo check --workspace` to regenerate `Cargo.lock`.
+
+After running, review with `git diff`, commit, push, and open a PR.
+
+### Release Sequence
+
+```bash
+# 1. Verify all version sites are consistent
+just version-check
+
+# 2. Full release gate (ci-gate + release build + version check)
+just release-gate
+
+# 3. Extended check (release-gate + semver + changelog + publish dry-run)
+just release-check
+
+# 4. After merging the version-bump PR, tag and push
+git tag v0.13.0
+git push origin v0.13.0
+# GitHub Release creation triggers the crates.io publish workflow automatically
+```
+
+See [CONTRIBUTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#release-workflow) for the full release workflow.
+
 ## Common Development Tasks
 
 ### Adding a New Perl Feature
@@ -1167,7 +1286,7 @@ npx tree-sitter generate
 6. Run benchmarks: `cargo bench --features pure-rust`
 
 ### Debugging Parse Failures
-1. Use `cargo xtask corpus --diagnose` for detailed error info
+1. Use `cargo run -p xtask --features legacy -- corpus --diagnose` for detailed error info
 2. For Pest parser: Check parse error messages which show exact location
 3. Use `cargo xtask parse-rust file.pl --ast` to see AST structure
 

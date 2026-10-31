@@ -169,10 +169,21 @@ impl PerlToolchainProfile {
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let oracle = super::PerlOracleEnv::for_version_probe(self.perl_binary.clone(), cwd);
+        // The probe child must not inherit the server's stdin (the LSP JSON-RPC
+        // transport): on Windows an inheriting console child blocks inside
+        // process initialization until killed, and an inheriting child would
+        // read protocol bytes (#17305).
         let detected_version =
-            oracle.into_command().arg("-e").arg("print $]").output().ok().and_then(|out| {
-                if out.status.success() { String::from_utf8(out.stdout).ok() } else { None }
-            });
+            oracle
+                .into_command()
+                .arg("-e")
+                .arg("print $]")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() { String::from_utf8(out.stdout).ok() } else { None }
+                });
 
         if let Some(fingerprint) = fingerprint
             && let Ok(mut cache) = PERL_VERSION_CACHE.lock()

@@ -1706,7 +1706,10 @@ coverage:
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> TestResult<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         if !output.status.success() {
             return Err(format!("git {:?} failed with status {}", args, output.status).into());
         }
@@ -2140,7 +2143,7 @@ mod tests {\n\
         // fail-closed behavior for genuinely unavailable production sources.
         for required in [
             "crates/perl-lexer/src/lib.rs",
-            "/home/runner/work/repo/repo/crates/perl-lexer/src/lib.rs",
+            "/unavailable/work/repo/repo/crates/perl-lexer/src/lib.rs",
             "C:/old-checkout/xtask/src/tasks/example.rs",
         ] {
             if !is_required_production_source_path(required, root) {

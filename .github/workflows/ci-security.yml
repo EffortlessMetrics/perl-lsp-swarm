@@ -11,6 +11,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '**/Cargo.toml'
+      - 'deny.toml'
       - '.github/workflows/ci-security.yml'
       - '.docker/**'
       - 'Dockerfile*'
@@ -91,7 +92,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 
@@ -103,7 +104,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: cargo-audit
 
@@ -145,7 +146,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 
@@ -157,7 +158,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: cargo-deny
 
@@ -200,7 +201,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'trivy-repository'
@@ -233,6 +234,9 @@ jobs:
   trivy-docker-scan:
     name: Trivy Rust builder image scan
     runs-on: ubuntu-24.04
+    # #17030, run 38300972665 at a6f3e24fa2: cold image prep 564s,
+    # scan 37s (existing Trivy DB cache), SARIF 19s; job 636s / 1200s.
+    # Observed headroom 564s; one observation, not a worst-case bound.
     timeout-minutes: 20
     needs: preflight-latest-check
     if: (needs.preflight-latest-check.outputs.is_latest == 'true') && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -244,12 +248,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Build Docker image
+        id: image-build
         env:
           BUILDER_IMAGE_REF: perl-lsp-ci:${{ github.sha }}
         run: |
+          start=$SECONDS
           docker build -t "$BUILDER_IMAGE_REF" -f .docker/rust/Dockerfile .
+          echo "Rust builder image preparation: $((SECONDS - start))s; job budget: 1200s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run Trivy vulnerability scanner (Docker image)
+        id: image-scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           scan-type: 'image'
@@ -263,16 +271,38 @@ jobs:
           timeout: '15m'
 
       - name: Upload Trivy Docker results to GitHub Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
+        if: always() && hashFiles('trivy-docker-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
         with:
           sarif_file: 'trivy-docker-results.sarif'
           category: 'trivy-docker'
 
       - name: Upload Trivy Docker results (artifact)
-        if: always()
+        if: always() && hashFiles('trivy-docker-results.sarif') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: trivy-docker-scan-results
           path: trivy-docker-results.sarif
+          if-no-files-found: error
           retention-days: 30
+
+      - name: Summarize Rust builder scan execution
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.image-build.outcome }}
+          SCAN_OUTCOME: ${{ steps.image-scan.outcome }}
+        run: |
+          {
+            echo "## Rust builder image scan execution"
+            echo "- Image preparation: $BUILD_OUTCOME"
+            echo "- Scanner execution: $SCAN_OUTCOME"
+            if [ "$SCAN_OUTCOME" != success ]; then
+              echo "- No completed vulnerability observation; inspect build/scanner logs for infrastructure errors."
+            elif [ ! -s trivy-docker-results.sarif ]; then
+              echo "- Scanner reported success but produced no SARIF; observation is incomplete."
+              echo "::error::Successful image scanner produced no nonempty SARIF" >&2
+              exit 1
+            else
+              echo "- Scan executed with reporting-only exit semantics; success does not mean zero findings."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

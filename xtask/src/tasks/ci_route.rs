@@ -108,6 +108,8 @@ struct CoveragePack {
 const COVERAGE_PACKS_TOML: &str = include_str!("../../../.ci/coverage-packs.toml");
 const NON_LCOV_COVERAGE_SKIP_REASON: &str =
     "non-LCOV CI policy/routing surface; covered by focused CI gates";
+const LCOV_DISABLED_COVERAGE_SKIP_REASON: &str =
+    "LCOV measurement disabled for this pack; covered by focused CI gates";
 const NON_SOURCE_LCOV_COVERAGE_SKIP_REASON: &str =
     "LCOV coverage pack matched only non-source files; covered by focused CI gates";
 const RUST_FOCUSED_PACK_ID: &str = "patch-coverage-rust-focused";
@@ -240,12 +242,15 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
         // The #5432 shadow measurement lane is manual-only, so ordinary CI
-        // never executes it. These three targets are the only thing standing
+        // never executes it. These targets are the only thing standing
         // between that lane and silent drift, and compiling them is not
-        // running them.
+        // running them. The disposition tests bind production flags and
+        // borderline-repeat confirmation without a native runner.
         "cargo test -p xtask --test release_artifact_size_shadow_workflow --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_disposition --profile agent --locked -- --nocapture",
         "cargo test -p xtask --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
         "cargo test -p xtask --test release_artifact_size_smoke_script --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --example release_artifact_size --profile agent --locked -- --nocapture",
     ],
 };
 
@@ -812,7 +817,12 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
                 | "scripts/ci/release_artifact_size_stage.sh"
                 | "scripts/ci/release_artifact_size_smoke.sh"
                 | "xtask/examples/release_artifact_size.rs"
+                | "xtask/src/bin/release_artifact_size/disposition.rs"
+                | "xtask/src/bin/release_artifact_size/measure.rs"
+                | "xtask/src/bin/release_artifact_size/model.rs"
                 | "xtask/src/bin/release_artifact_size/policy.rs"
+                | "xtask/src/bin/release_artifact_size/render.rs"
+                | "xtask/tests/release_artifact_size_disposition.rs"
                 | "xtask/tests/release_artifact_size_shadow_workflow.rs"
                 | "xtask/tests/release_artifact_size_stage_script.rs"
                 | "xtask/tests/release_artifact_size_smoke_script.rs"
@@ -1632,7 +1642,12 @@ fn coverage_proof_pack_selection(
             bail!("coverage pack `{pack_id}` is missing from .ci/coverage-packs.toml");
         };
         if !pack.lcov {
-            skipped.insert(pack_id.clone(), NON_LCOV_COVERAGE_SKIP_REASON.to_string());
+            let reason = if pack_matches_lcov_source(pack, changed_files) {
+                LCOV_DISABLED_COVERAGE_SKIP_REASON
+            } else {
+                NON_LCOV_COVERAGE_SKIP_REASON
+            };
+            skipped.insert(pack_id.clone(), reason.to_string());
             continue;
         }
         if !pack_matches_lcov_source(pack, changed_files) {
@@ -1873,7 +1888,7 @@ mod tests {
         assert!(receipt.coverage_proof_packs.is_empty());
         assert_eq!(
             receipt.skipped_by_policy.get("patch-coverage-ci-route").map(String::as_str),
-            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+            Some(LCOV_DISABLED_COVERAGE_SKIP_REASON)
         );
         Ok(())
     }
@@ -3756,7 +3771,7 @@ mod tests {
         );
         assert_eq!(
             skipped.get("patch-coverage-xtask-inline-quality").map(String::as_str),
-            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+            Some(LCOV_DISABLED_COVERAGE_SKIP_REASON)
         );
         assert_eq!(
             skipped.get("patch-coverage-ci-policy").map(String::as_str),
@@ -4039,7 +4054,7 @@ mod tests {
                 .skipped_by_policy
                 .get("patch-coverage-xtask-inline-quality")
                 .map(String::as_str),
-            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+            Some(LCOV_DISABLED_COVERAGE_SKIP_REASON)
         );
         assert!(receipt.required_proof_packs.iter().any(|pack| {
             pack.id == "xtask-inline-completion-quality"
@@ -4092,7 +4107,7 @@ mod tests {
                 .skipped_by_policy
                 .get("patch-coverage-xtask-inline-quality")
                 .map(String::as_str),
-            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+            Some(LCOV_DISABLED_COVERAGE_SKIP_REASON)
         );
         assert!(receipt.required_proof_packs.iter().any(|pack| {
             pack.id == "xtask-inline-completion-quality"
@@ -4744,6 +4759,41 @@ mod tests {
         assert_eq!(receipt.coverage_pack_cap, COVERAGE_PACK_CAP);
         assert_eq!(receipt.coverage_packs_skipped, 0);
         assert!(receipt.coverage_pack_skip_reason.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn non_lcov_skip_reason_ignores_unrelated_lcov_source() -> Result<()> {
+        let selector = vec!["patch-coverage-ci-route".to_string()];
+        let changed_files = vec![
+            "scripts/ci/route-codecov-packs.py".to_string(),
+            "crates/perl-parser/src/lib.rs".to_string(),
+        ];
+        let (_, skipped, _) = coverage_proof_pack_selection(&selector, &changed_files)?;
+        assert_eq!(
+            skipped.get("patch-coverage-ci-route").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn non_lcov_source_routes_report_routing_bug_with_accurate_reason() -> Result<()> {
+        for (file, pack_id) in [
+            ("xtask/src/tasks/ci_route.rs", "patch-coverage-ci-route"),
+            ("xtask/src/bin/product-topology.rs", "patch-coverage-xtask-product-topology"),
+            ("xtask/src/tasks/inline_completion_quality.rs", "patch-coverage-xtask-inline-quality"),
+        ] {
+            let receipt =
+                route_receipt("origin/main", "HEAD", vec![file.to_string()], "ci-route.v1")?;
+            assert_eq!(receipt.routing_classification, "routing_bug", "{file}");
+            assert!(receipt.coverage_proof_packs.is_empty(), "{file}");
+            assert_eq!(
+                receipt.skipped_by_policy.get(pack_id).map(String::as_str),
+                Some(LCOV_DISABLED_COVERAGE_SKIP_REASON),
+                "{file}"
+            );
+        }
         Ok(())
     }
 

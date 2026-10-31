@@ -14,7 +14,7 @@ scanner (`scanner.c`) from `c-src/` via the `cc` crate and expose a
 tree-sitter `Language` for compatibility testing and benchmarking against
 the native Rust parser.
 
-**Version**: tracks the workspace (currently `0.12.3`).
+**Version**: inherits the workspace version from the root `Cargo.toml`.
 
 This crate is a workspace member and is published to crates.io. It
 requires only a C compiler at build time — no `libclang` / `bindgen`
@@ -64,6 +64,11 @@ package is self-contained.
 | `create_parser()` | `-> Parser` | Creates a parser (ignores errors) |
 | `parse_perl_code()` | `(&str) -> Result<Tree, Box<dyn Error>>` | Parses a Perl string |
 | `parse_perl_file()` | `(P: AsRef<Path>) -> Result<Tree, Box<dyn Error>>` | Reads and parses a file |
+| `ParseResult` | summary type | Owns a clean tree; exposes error state, total named/anonymous node count, S-expression and raw-tree access |
+| `try_parse_perl_summary()` | `(&str) -> Result<ParseResult, ParsePerlError>` | Rejects syntax-error trees with `MalformedSource` |
+| `parse_perl_summary()` | `(&str) -> Result<ParseResult, Box<dyn Error>>` | Boxed-error summary entry point |
+| `INJECTIONS_QUERY` / `load_injections_query()` | `&str` / `Result<Query, QueryError>` | Packaged injection source and supported query constructor |
+| `HIGHLIGHTS_QUERY` | `&str` | Raw snapshot source; full compilation requires a compatible grammar/query refresh |
 | `get_scanner_config()` | `-> &'static str` | Returns `"c-scanner"` |
 
 The `unsafe extern "C"` block declares `tree_sitter_perl() -> Language`

@@ -11,6 +11,72 @@ use serde::{Deserialize, Serialize};
 pub const ISSUE_CONTRACT_SCHEMA_V1: &str = "issue_contract.v1";
 pub const CLOSE_PACKET_SCHEMA_V1: &str = "issue_close_proof.v1";
 
+/// Additive envelopes; the embedded strict v1 documents are unchanged.
+pub const CONTRACT_IDENTITY_SCHEMA_V1: &str = "issue_contract_identity.v1";
+pub const FULL_PACKET_BINDING_SCHEMA_V1: &str = "issue_close_proof_binding.v1";
+
+/// Declared content identity. Neither the name nor digest authenticates its source.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceIdentity {
+    pub identity: String,
+    pub digest: String,
+}
+
+/// Opaque relation class, interpreted by the future owning compiler/policy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChildRelationDeclaration {
+    pub child: IssueRef,
+    pub relation_class: String,
+}
+
+/// Candidate-declared ruling material. This type does not select or adopt a ruling.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RulingDeclaration {
+    pub ruling_type: String,
+    pub source: SourceIdentity,
+    pub review: SourceIdentity,
+    pub supersedes: Vec<SourceIdentity>,
+    pub changed_propositions: Vec<String>,
+}
+
+/// Explicit identity inputs absent from the legacy v1 representation.
+///
+/// Collections are unordered sets in this additive protocol. Missing collections
+/// are not inferred as empty. All values remain declarations: compiler/adoption
+/// authority, evidence admission and semantic completion are not established here.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContractIdentityContext {
+    pub child_relations: Vec<ChildRelationDeclaration>,
+    pub permitted_transferred_rows: Vec<String>,
+    pub linked_authorities: Vec<SourceIdentity>,
+    pub accepted_rulings: Vec<RulingDeclaration>,
+    pub compiler_generation: SourceIdentity,
+    pub schema_generation: SourceIdentity,
+    pub policy_generation: SourceIdentity,
+    pub limitations: Vec<String>,
+    #[serde(deserialize_with = "explicit_optional_source")]
+    pub adoption_record: Option<SourceIdentity>,
+}
+
+fn explicit_optional_source<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Option<SourceIdentity>, D::Error> {
+    Option::<SourceIdentity>::deserialize(decoder)
+}
+
+/// Additive full binding around an unchanged issue_close_proof.v1 packet.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FullBoundPacket {
+    pub schema_version: String,
+    pub packet: ClosePacket,
+    pub full_contract_digest: String,
+}
+
 /// What class of proposition an issue owns.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -156,11 +222,16 @@ pub struct EvidenceRef {
     pub subject: String,
     pub content_digest: String,
     pub reference: String,
+    /// Envelope schema identity the referenced evidence declares (for example
+    /// `landing_proof.v1`). Cross-vend consumers pin this per producer family
+    /// instead of trusting the producer name string (#15386).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
 }
 
 /// Transfer of one denominator row to another open owner.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "disposition", rename_all = "snake_case")]
+#[serde(tag = "disposition", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RowDispositionValue {
     ProvenCurrentMain {
         evidence: EvidenceRef,
@@ -216,7 +287,7 @@ impl RowDispositionValue {
 }
 
 /// Disposition of one negative control at packet generation time.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ControlOutcome {
     Verified,
@@ -224,8 +295,27 @@ pub enum ControlOutcome {
     NotProven { reason: String },
 }
 
+impl<'de> Deserialize<'de> for ControlOutcome {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        // Empty struct payloads honor deny_unknown_fields where serde's
+        // internally tagged unit visitor would discard arbitrary fields.
+        #[derive(Deserialize)]
+        #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            Verified {},
+            Failed { reason: String },
+            NotProven { reason: String },
+        }
+        Ok(match Wire::deserialize(decoder)? {
+            Wire::Verified {} => Self::Verified,
+            Wire::Failed { reason } => Self::Failed { reason },
+            Wire::NotProven { reason } => Self::NotProven { reason },
+        })
+    }
+}
+
 /// Disposition of one mandatory child issue.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ChildState {
     ClosedByPacket {
@@ -239,6 +329,43 @@ pub enum ChildState {
         destination_contract_identity: String,
         rationale: String,
     },
+}
+
+impl<'de> Deserialize<'de> for ChildState {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            ClosedByPacket {
+                packet_subject: String,
+            },
+            StillOpen {},
+            TransferredToOpenOwner {
+                proposition: String,
+                destination_repository: String,
+                destination_issue: u64,
+                destination_contract_identity: String,
+                rationale: String,
+            },
+        }
+        Ok(match Wire::deserialize(decoder)? {
+            Wire::ClosedByPacket { packet_subject } => Self::ClosedByPacket { packet_subject },
+            Wire::StillOpen {} => Self::StillOpen,
+            Wire::TransferredToOpenOwner {
+                proposition,
+                destination_repository,
+                destination_issue,
+                destination_contract_identity,
+                rationale,
+            } => Self::TransferredToOpenOwner {
+                proposition,
+                destination_repository,
+                destination_issue,
+                destination_contract_identity,
+                rationale,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

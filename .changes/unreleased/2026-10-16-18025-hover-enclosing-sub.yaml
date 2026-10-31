@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Hovering a built-in or a call-site package name inside a subroutine no longer returns the enclosing subroutine's definition card; hover now answers for the token under the cursor or declines."
+time: 2026-10-16T22:30:00Z
+custom:
+  PR: "18025"
+  Slug: hover-enclosing-sub-17296
+  Breaking: "no"

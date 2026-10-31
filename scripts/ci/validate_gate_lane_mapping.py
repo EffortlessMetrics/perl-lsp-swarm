@@ -68,6 +68,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_scoped": {"lanes": ["pr_smoke"]},
     "check_tests_scoped": {"lanes": ["pr_smoke"]},
     "unit_routed_full": {"lanes": ["pr_smoke"]},
+    "unit_routed_full_build": {"lanes": ["pr_smoke"]},
     # The gate runs inside the existing pr-fast invocation in advisory
     # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
     "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
@@ -118,6 +119,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # The agent-ledger validator (#15380) runs in the required merge-gate
     # policy shard, so it shares that shard's economics.
     "agent_ledgers_validate": {"lanes": ["merge_gate_shards"]},
+    # The production-unsafe SAFETY-reasoning ratchet (#16215) runs in the
+    # required merge-gate policy shard, so it shares that shard's economics.
+    "unsafe_prod_check": {"lanes": ["merge_gate_shards"]},
     # The code-action generation ledger ratchet runs in the required merge-gate
     # policy shard (#15764), so its economics live on this lane.
     "code_action_generation_ledger": {"lanes": ["merge_gate_shards"]},

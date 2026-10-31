@@ -182,6 +182,18 @@ fn routed_integration_test_gate_has_cold_ci_headroom() -> Result<(), Box<dyn std
             >= 1_320_000,
         "unit_routed_full duration budget must reflect observed cold PR-fast runtime"
     );
+    // #16194: the gate builds perllsp but its routed cohort contains suites
+    // that hard-require PERL_LSP_BIN (ux_process_lifecycle_e2e); the test
+    // step must export the binary the build step just produced, or those
+    // suites can never pass under this gate. The env-wrapped shape keeps
+    // is_cargo_test_command recognition intact (first_failure.rs skips
+    // `env` + assignments before the wrapped cargo invocation).
+    let command = &gate.command;
+    assert!(
+        command.contains("&& env PERL_LSP_BIN=")
+            && command.ends_with("cargo test --locked --tests {package_args}"),
+        "unit_routed_full must export PERL_LSP_BIN to its cargo test step (#16194), got: {command}"
+    );
 
     Ok(())
 }

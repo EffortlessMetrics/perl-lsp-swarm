@@ -20,6 +20,27 @@ fn is_plain_bareword_glob_name(inner: &str) -> bool {
 /// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
 /// bare expression text (`foo()`, `"name"`) as a static glob name would mint
 /// a symbol that no static consumer can resolve (#15712).
+/// A list-declaration slot that real Perl classifies as a constant item.
+///
+/// `my`/`our`/`state` reject a sigil-less name, number, string, v-string, or
+/// signed numeric literal. `local` still rejects those literals, but a bare
+/// identifier stays eligible: `local(slot)` can name an `:lvalue` subroutine
+/// (#16732). Variables, `undef`, nested lists, typeglobs, and subscripted
+/// lvalues stay outside this class.
+fn is_constant_declaration_list_item(declarator: &str, item: &Node) -> bool {
+    match &item.kind {
+        NodeKind::Identifier { name } => {
+            declarator != "local" && !name.starts_with(['$', '@', '%', '*', '&'])
+        }
+        NodeKind::Number { .. } | NodeKind::String { .. } | NodeKind::VString { .. } => true,
+        NodeKind::Unary { operand, .. } => is_constant_declaration_list_item(declarator, operand),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            is_constant_declaration_list_item(declarator, variable)
+        }
+        _ => false,
+    }
+}
+
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
     let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
         return name.trim().trim_end_matches(';').trim().to_string();
@@ -43,7 +64,7 @@ impl<'a> Parser<'a> {
 
             // Parse comma-separated list of variables with their individual attributes
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                let var = self.parse_variable_list_item()?;
+                let var = self.parse_variable_list_item(&declarator)?;
                 variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
@@ -251,7 +272,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse one slot in a lexical list declaration.
-    fn parse_variable_list_item(&mut self) -> ParseResult<Node> {
+    fn parse_variable_list_item(&mut self, declarator: &str) -> ParseResult<Node> {
         match self.peek_kind() {
             Some(TokenKind::Undef) => {
                 let undef_token = self.consume_token()?;
@@ -265,7 +286,7 @@ impl<'a> Parser<'a> {
                 self.consume_token()?; // consume (
                 let mut items = Vec::new();
                 while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                    items.push(self.parse_variable_list_item()?);
+                    items.push(self.parse_variable_list_item(declarator)?);
                     if self.peek_kind() == Some(TokenKind::Comma) {
                         self.consume_token()?; // consume ,
                     } else if self.peek_kind() != Some(TokenKind::RightParen) {
@@ -297,8 +318,42 @@ impl<'a> Parser<'a> {
                     ),
                 }
             }
-            _ => self.parse_ternary(),
+            _ => {
+                let item = self.parse_ternary()?;
+                Ok(self.recover_constant_declaration_list_item(declarator, item))
+            }
         }
+    }
+
+    /// Recover a sigil-less / constant slot in `my`/`our`/`state`/`local` lists.
+    ///
+    /// Real `perl -c` rejects `my (base)` with `Can't declare constant item in
+    /// "my"`. The previous path parsed the bareword through `parse_ternary` and
+    /// kept a clean AST, so `perllsp --check` answered `ok` (#16732). Record a
+    /// blocking diagnostic on the offending range and wrap the item so later
+    /// list slots and later statements still parse.
+    fn recover_constant_declaration_list_item(&mut self, declarator: &str, item: Node) -> Node {
+        if !is_constant_declaration_list_item(declarator, &item) {
+            return item;
+        }
+        let message = if declarator == "local" {
+            "Can't modify constant item in local".to_string()
+        } else {
+            format!("Can't declare constant item in \"{declarator}\"")
+        };
+        let location = item.location;
+        self.record_error(ParseError::syntax(message.clone(), location.start));
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
+        Node::new(
+            NodeKind::Error {
+                message,
+                expected: vec![],
+                found: None,
+                partial: Some(Box::new(item)),
+            },
+            location,
+        )
     }
 
     /// Attach optional per-item attributes after a list-declaration slot.
@@ -1584,7 +1639,15 @@ impl<'a> Parser<'a> {
         let default_value =
             if default_token.is_some() { Some(Box::new(self.parse_ternary()?)) } else { None };
         if let Some(default) = &default_value {
-            end = default.location.end;
+            // #16242: a grouped default such as `$a = (1+2)` consumes its closing
+            // parentheses while the parenthesized primary returns the *inner*
+            // expression node, so the child's `location.end` can stop short of the
+            // consumed grouping delimiters. Keep the consumed extent honest for both
+            // the parameter node and the InvalidSignatureParameter ranges below by
+            // also taking the parser's consumed-token endpoint; the max with the
+            // child's own end covers expression paths that take tokens straight off
+            // the stream, where `last_end_position` lags behind (see #5503).
+            end = default.location.end.max(self.previous_position());
         }
         if let Some(kind) = invalid_kind {
             let range = SourceLocation { start, end };
@@ -2094,7 +2157,46 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
                 },
             }
         }
-        other => other,
+        ParseError::DoWhileTrailingBlock { location } => {
+            ParseError::DoWhileTrailingBlock { location: location.saturating_add(offset) }
+        }
+        ParseError::CStyleForContinueBlock { location } => {
+            ParseError::CStyleForContinueBlock { location: location.saturating_add(offset) }
+        }
+        ParseError::QualifiedLoopControlLabel { location } => {
+            ParseError::QualifiedLoopControlLabel { location: location.saturating_add(offset) }
+        }
+        ParseError::CatchVariableRedeclaration { keyword, range } => {
+            ParseError::CatchVariableRedeclaration {
+                keyword,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
+        }
+        ParseError::HeredocBudgetExhausted { limit, usage, location } => {
+            // `limit`/`usage` are charged byte counts, not source offsets.
+            ParseError::HeredocBudgetExhausted {
+                limit,
+                usage,
+                location: location.saturating_add(offset),
+            }
+        }
+        // No source location to translate. This list is deliberately
+        // exhaustive: a future located variant must choose its translation
+        // here instead of silently keeping inner-source coordinates.
+        other @ (ParseError::UnexpectedEof
+        | ParseError::LexerError { .. }
+        | ParseError::RecursionLimit
+        | ParseError::RecursionDepthExhausted { .. }
+        | ParseError::CoreBudgetExhausted { .. }
+        | ParseError::InvalidNumber { .. }
+        | ParseError::InvalidString
+        | ParseError::UnclosedDelimiter { .. }
+        | ParseError::InvalidRegex { .. }
+        | ParseError::NestingTooDeep { .. }
+        | ParseError::Cancelled) => other,
     }
 }
 
@@ -2252,6 +2354,68 @@ mod inline_expression_tests {
     fn propagated_syntax_error_is_offset() {
         let error = offset_parse_error(ParseError::syntax("bad", 3), 17);
         assert_eq!(error.location(), Some(20));
+    }
+
+    #[test]
+    fn typed_loop_and_budget_failures_are_offset() {
+        // #18210: these four located variants used to fall through the
+        // wildcard and keep inner-source coordinates.
+        let cases = [
+            (ParseError::DoWhileTrailingBlock { location: 5 }, 22),
+            (ParseError::CStyleForContinueBlock { location: 5 }, 22),
+            (ParseError::QualifiedLoopControlLabel { location: 5 }, 22),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(offset_parse_error(error, 17).location(), Some(expected));
+        }
+        // Budget payloads are counts, not offsets: only location moves.
+        let shifted = offset_parse_error(
+            ParseError::HeredocBudgetExhausted { limit: 100, usage: 100, location: 5 },
+            17,
+        );
+        assert!(matches!(
+            shifted,
+            ParseError::HeredocBudgetExhausted { limit: 100, usage: 100, location: 22 }
+        ));
+        // Repeated fused nesting composes one translation per adoption.
+        let once = offset_parse_error(ParseError::QualifiedLoopControlLabel { location: 5 }, 2);
+        assert_eq!(offset_parse_error(once, 21).location(), Some(28));
+    }
+
+    #[test]
+    fn fused_qualified_label_reports_outer_byte() -> Result<(), Box<dyn std::error::Error>> {
+        // #18210: `# 💖\nmy $value = *{last FOO::BAR};` — the inner parse
+        // sees `last FOO::BAR` at offset 21; FOO::BAR starts at byte 26 of
+        // the outer source, not byte 5 (inside the line-1 comment).
+        let source = "# 💖\nmy $value = *{last FOO::BAR};";
+        assert_eq!(source.find("FOO::BAR"), Some(26));
+        // The outer parse surfaces the adopted failure as its own error:
+        // its location must be the outer byte, not the inner offset.
+        let mut parser = Parser::new(source);
+        match parser.parse() {
+            Err(error) => {
+                assert_eq!(error.location(), Some(26), "outer error must point at FOO::BAR")
+            }
+            Ok(_) => {
+                let locations: Vec<usize> =
+                    parser.errors().iter().filter_map(|e| e.location()).collect();
+                assert!(locations.contains(&26), "outer diagnostics lack byte 26: {locations:?}");
+            }
+        }
+        // The adoption seam itself must also carry outer coordinates.
+        match parse_inline_expression(
+            "last FOO::BAR",
+            21,
+            ParserConfigIdentity::production_default(),
+        ) {
+            Err(failure) if failure.error.location() == Some(26) => Ok(()),
+            Err(failure) => Err(format!(
+                "expected outer byte 26 at the adoption seam, got {:?}",
+                failure.error.location()
+            )
+            .into()),
+            Ok(_) => Err("expected the qualified label to be rejected".into()),
+        }
     }
 
     #[test]

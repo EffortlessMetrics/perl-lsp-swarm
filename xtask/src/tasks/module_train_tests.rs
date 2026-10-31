@@ -873,13 +873,15 @@ fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
         vec!["add", "probe.rs"],
         vec!["commit", "-qm", "capture"],
     ] {
-        let output =
-            std::process::Command::new("git").args(&args).current_dir(repo.path()).output()?;
+        let output = xtask::git_environment::isolate(std::process::Command::new("git"))
+            .args(&args)
+            .current_dir(repo.path())
+            .output()?;
         if !output.status.success() {
             bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
         }
     }
-    let head = std::process::Command::new("git")
+    let head = xtask::git_environment::isolate(std::process::Command::new("git"))
         .args(["rev-parse", "HEAD"])
         .current_dir(repo.path())
         .output()?;
@@ -888,7 +890,7 @@ fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
     }
     let head = String::from_utf8(head.stdout)?.trim().to_string();
     let tree_spec = format!("{head}^{{tree}}");
-    let tree = std::process::Command::new("git")
+    let tree = xtask::git_environment::isolate(std::process::Command::new("git"))
         .args(["rev-parse", tree_spec.as_str()])
         .current_dir(repo.path())
         .output()?;
@@ -930,13 +932,15 @@ fn offline_status_and_next_use_the_shared_captured_tree_source() -> Result<()> {
         vec!["add", "."],
         vec!["commit", "-qm", "capture"],
     ] {
-        let output =
-            std::process::Command::new("git").args(&args).current_dir(repo.path()).output()?;
+        let output = xtask::git_environment::isolate(std::process::Command::new("git"))
+            .args(&args)
+            .current_dir(repo.path())
+            .output()?;
         if !output.status.success() {
             bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
         }
     }
-    let head = std::process::Command::new("git")
+    let head = xtask::git_environment::isolate(std::process::Command::new("git"))
         .args(["rev-parse", "HEAD"])
         .current_dir(repo.path())
         .output()?;
@@ -1389,7 +1393,7 @@ fn git_facts_follow_the_loaded_repository_not_the_process_cwd() -> Result<()> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).with_context(|| "failed to create scratch repo dir")?;
     fn scratch_git(dir: &std::path::Path, args: &[&str]) -> Result<()> {
-        let output = std::process::Command::new("git")
+        let output = xtask::git_environment::isolate(std::process::Command::new("git"))
             .args(args)
             .current_dir(dir)
             .env("GIT_CONFIG_GLOBAL", std::path::Path::new("NUL"))

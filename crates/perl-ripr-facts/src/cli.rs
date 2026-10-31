@@ -1,9 +1,10 @@
 //! The `perl-ripr-facts` standalone binary's `ripr-facts` subcommand
-//! ([`run_cli`]) and the thin `run_ripr_facts`/`run_ripr_facts_with_diff`
-//! wrapper the `perl-lsp` / `perllsp` `ripr-facts` subcommand calls: argv
-//! parsing, output-path validation, writing the packet to disk, and mapping
-//! to a process exit code. All the actual fact production happens in
-//! [`crate::packet::build_ripr_facts_packet`].
+//! ([`run_cli`]) and the thin wrappers behind the `perl-lsp` / `perllsp`
+//! `--ripr-facts` flag ([`run_ripr_facts_with_diff_path`], with
+//! [`run_ripr_facts`]/[`run_ripr_facts_with_diff`] retained for no-diff
+//! callers): argv parsing, output-path validation, writing the packet to
+//! disk, and mapping to a process exit code. All the actual fact production
+//! happens in [`crate::packet::build_ripr_facts_packet`].
 
 use crate::packet::build_ripr_facts_packet;
 use crate::request::{EXPECTED_RIPR_FACTS_SCHEMA, RiprFactsRequest, validate_ripr_facts_path};
@@ -40,6 +41,9 @@ impl Default for RiprFactsCli {
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+#[expect(clippy::print_stdout, reason = "explicit --help output goes to stdout by convention")]
+/// Entry point for the `perl-ripr-facts` binary. Parses argv, runs the requested
+/// packet generation, and returns a process exit code.
 pub fn run_cli<I, S>(args: I) -> i32
 where
     I: IntoIterator<Item = S>,
@@ -47,13 +51,26 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     let cli = match parse_ripr_facts_cli(&args) {
-        Ok(cli) => cli,
+        Ok(CliParse::Run(cli)) => cli,
+        Ok(CliParse::Help) => {
+            println!("{}", ripr_facts_usage());
+            return 0;
+        }
         Err(reason) => {
             eprintln!("ripr-facts: {reason}");
             eprintln!("{}", ripr_facts_usage());
             return 1;
         }
     };
+
+    // Fail fast on an invalid write destination before any diff I/O: an
+    // unreadable `--diff` must not mask a directory-valued `--out`, and a
+    // readable diff must not be read only to reject the destination afterwards
+    // (#17263 review). Same shared check the wrapper runs before the scan.
+    if let Err(line) = validate_out_destination(&cli.out) {
+        eprintln!("{line}");
+        return 1;
+    }
 
     let diff_text = match cli.diff_path.as_deref() {
         Some(path) => match read_diff_text(&cli.root, path) {
@@ -77,12 +94,19 @@ where
     )
 }
 
-fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
+/// Parse outcome: run the packet generation, or print usage (explicit
+/// `--help`/`-h` in flag position — never a value — exits 0, not 1).
+enum CliParse {
+    Run(RiprFactsCli),
+    Help,
+}
+
+fn parse_ripr_facts_cli(args: &[String]) -> Result<CliParse, String> {
     let mut iter = args.iter();
     let _program = iter.next();
     match iter.next().map(String::as_str) {
         Some("ripr-facts") => {}
-        Some("--help" | "-h") => return Err("missing subcommand `ripr-facts`".to_string()),
+        Some("--help" | "-h") => return Ok(CliParse::Help),
         Some(other) => return Err(format!("unexpected subcommand or option `{other}`")),
         None => return Err("missing subcommand `ripr-facts`".to_string()),
     }
@@ -92,6 +116,12 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
     let mut index = 0usize;
     while index < rest.len() {
         let flag = rest[index];
+        // Help in flag position short-circuits before value consumption, so a
+        // trailing `--help` is help, not a "missing value" error. A `--help`
+        // in *value* position (e.g. `--out --help`) stays a value.
+        if matches!(flag, "--help" | "-h") {
+            return Ok(CliParse::Help);
+        }
         let value = rest.get(index + 1).ok_or_else(|| format!("missing value for `{flag}`"))?;
         match flag {
             "--schema" => cli.schema = (*value).to_string(),
@@ -106,13 +136,15 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
         index += 2;
     }
 
-    Ok(cli)
+    Ok(CliParse::Run(cli))
 }
 
 fn ripr_facts_usage() -> &'static str {
-    "usage: perl-ripr-facts ripr-facts --schema ripr-perl-facts-v1 --root <root> \
+    "usage: perl-ripr-facts ripr-facts [--schema ripr-perl-facts-v1] [--root <root>] \
      [--base <base>] [--head <head>] [--fact-classes <classes>] \
-     [--diff <cwd-relative-diff>] --out <out>"
+     [--diff <cwd-relative-diff>] [--out <out>]\n\
+     defaults: --schema ripr-perl-facts-v1, --root ., --fact-classes <all classes>, \
+     --out target/ripr/reports/perl-facts.json"
 }
 
 fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
@@ -121,6 +153,26 @@ fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
     let path = std::path::Path::new(diff_path);
     std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read diff `{}`: {error}", path.display()))
+}
+
+/// Validate the `out` write destination: repo-relative shape plus target kind.
+///
+/// Shape validation alone says nothing about target kind, so `out` naming an
+/// existing directory used to scan the whole workspace and then die with a raw
+/// OS error that never said "is a directory" (#17263). This fails fast
+/// instead, naming the condition. (`is_dir` follows symlinks, matching what
+/// the write path would hit; a TOCTOU dir still fails closed below, just less
+/// prettily.)
+///
+/// Shared by both entry points — [`run_cli`] (before diff I/O) and
+/// [`run_ripr_facts_with_diff`] (before the workspace scan) — so the two
+/// cannot drift. The `Err` is the complete stderr line, ready to print.
+fn validate_out_destination(out: &str) -> Result<(), String> {
+    validate_ripr_facts_path(out, "out").map_err(|reason| format!("ripr-facts: {reason}"))?;
+    if std::path::Path::new(out).is_dir() {
+        return Err(out_names_directory_message(out));
+    }
+    Ok(())
 }
 
 /// Run the `ripr-facts` exporter (Campaign 31, ripr-swarm#1379).
@@ -150,6 +202,45 @@ pub fn run_ripr_facts(
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+/// Run the packet generator with a diff read from a file. Called by the
+/// `perllsp --ripr-facts --ripr-diff <file>` surface (#17152); mirrors the
+/// binary's [`run_cli`] ordering (output destination validated before diff
+/// I/O, unreadable diff fails closed with exit 1) and delegates the rest.
+pub fn run_ripr_facts_with_diff_path(
+    schema: &str,
+    root: &str,
+    base: Option<&str>,
+    head: Option<&str>,
+    fact_classes: &str,
+    diff_path: Option<&str>,
+    out: &str,
+) -> i32 {
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
+        return 1;
+    }
+
+    let diff_text = match diff_path {
+        Some(path) => match read_diff_text(root, path) {
+            Ok(text) => Some(text),
+            Err(reason) => {
+                eprintln!("ripr-facts: {reason}");
+                return 1;
+            }
+        },
+        None => None,
+    };
+
+    run_ripr_facts_with_diff(schema, root, base, head, fact_classes, diff_text.as_deref(), out)
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
+)]
+/// Run the packet generator with an explicit diff input. Used by tests and
+/// library callers that already have the diff bytes; the binary routes here
+/// after CLI parsing.
 pub fn run_ripr_facts_with_diff(
     schema: &str,
     root: &str,
@@ -161,8 +252,8 @@ pub fn run_ripr_facts_with_diff(
 ) -> i32 {
     // Validate the output path first — the cheapest check — so an invalid write
     // destination fails fast, before the emitter scans the workspace.
-    if let Err(reason) = validate_ripr_facts_path(out, "out") {
-        eprintln!("ripr-facts: {reason}");
+    if let Err(line) = validate_out_destination(out) {
+        eprintln!("{line}");
         return 1;
     }
 
@@ -190,6 +281,15 @@ pub fn run_ripr_facts_with_diff(
     let status = packet["packet_status"].as_str().unwrap_or("unknown");
     eprintln!("ripr-facts: wrote {status} packet to `{out}`");
     0
+}
+
+/// Fail-fast message when `out` names an existing directory (#17263),
+/// extracted as a constructor so the wording is unit-testable (the wrapper
+/// itself only signals `stderr` + exit code).
+fn out_names_directory_message(out: &str) -> String {
+    format!(
+        "ripr-facts: `out` names an existing directory (`{out}`); pass a file path for the packet."
+    )
 }
 
 /// Write a JSON packet to the output path, creating parent directories.
@@ -224,15 +324,11 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
     // must leave the destination untouched, not partially rewritten.
     let json = serde_json::to_string_pretty(packet)?;
 
-    let temp = temp_sibling_path(path);
-    if let Err(error) = stage_temp_sibling(&temp, json.as_bytes()) {
-        // Best-effort cleanup: the staged sibling is scratch, and the failure we
-        // report is the staging error, not whatever removing the scratch hit.
-        let _ = std::fs::remove_file(&temp);
-        return Err(error);
-    }
+    let temp = stage_temp_sibling(path, json.as_bytes())?;
     carry_destination_permissions(path, &temp);
     if let Err(error) = std::fs::rename(&temp, path) {
+        // Best-effort cleanup: only the sibling we actually created is ours, and
+        // it is scratch. A rename failure is reported as such.
         let _ = std::fs::remove_file(&temp);
         return Err(error);
     }
@@ -317,19 +413,96 @@ fn temp_sibling_path(path: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// Write `bytes` to the staged sibling and make them durable, so the rename
-/// that follows publishes a complete file rather than one whose contents are
-/// still only in the page cache.
-fn stage_temp_sibling(temp: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Maximum number of attempts to claim an exclusive staging sibling before
+/// reporting the collision as exhaustion. Each attempt computes a fresh path
+/// via [`temp_sibling_path`], so the bound is on attempts per destination
+/// call, not on the sequence counter itself.
+const MAX_TEMP_SIBLING_ATTEMPTS: usize = 16;
+
+/// Write `bytes` to an exclusively-created staged sibling and make them
+/// durable, so the rename that follows publishes a complete file rather than
+/// one whose contents are still only in the page cache. Returns the path of
+/// the scratch file actually created, so the caller can clean it up on
+/// rename failure and never touches a sibling this invocation did not write.
+///
+/// Staging uses `O_CREAT | O_EXCL` semantics (`OpenOptions::create_new`) so a
+/// stale sibling left over from a previous interrupted run is preserved
+/// rather than truncated. `AlreadyExists` is recovered by trying the next
+/// sequence number up to [`MAX_TEMP_SIBLING_ATTEMPTS`] — the destination
+/// itself is never touched, and a pre-existing scratch file that this
+/// invocation did not create is never removed.
+fn stage_temp_sibling(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    stage_temp_sibling_with_candidates(dest, bytes, || temp_sibling_path(dest))
+}
+
+/// [`stage_temp_sibling`] with a test-controlled candidate supplier, so the
+/// collision and exhaustion paths are deterministic instead of depending on
+/// predicting the process-global sequence.
+fn stage_temp_sibling_with_candidates(
+    dest: &std::path::Path,
+    bytes: &[u8],
+    mut next_candidate: impl FnMut() -> std::path::PathBuf,
+) -> std::io::Result<std::path::PathBuf> {
+    for _ in 0..MAX_TEMP_SIBLING_ATTEMPTS {
+        let temp = next_candidate();
+        let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // The computed path already names a real file. This is the
+                // stale-sibling case the issue describes: another run (or
+                // another part of this process) created a scratch path with
+                // a sequence number we would otherwise have used. We must
+                // not truncate it, and we must not delete it: it might not
+                // be ours. Try the next sequence number.
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        finish_staged_file(file, &temp, bytes)?;
+        return Ok(temp);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "exhausted {MAX_TEMP_SIBLING_ATTEMPTS} attempts to allocate an exclusive \
+             staging sibling for `{}`",
+            dest.display()
+        ),
+    ))
+}
+
+/// Finish the staged write for a sibling this invocation exclusively created.
+///
+/// On any write, flush, or sync failure the owned scratch is best-effort
+/// removed before the original error is returned, so repeated staging
+/// failures do not accumulate partial scratch files that a later run must
+/// treat as strangers. Only call with a path this invocation created: a
+/// pre-existing file passed here is removed on failure.
+fn finish_staged_file(
+    file: std::fs::File,
+    temp: &std::path::Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
     use std::io::Write as _;
 
-    let mut file = std::fs::File::create(temp)?;
-    file.write_all(bytes)?;
-    file.flush()?;
-    file.sync_all()
+    let mut file = file;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()
+    })();
+    if let Err(error) = result {
+        // Close before removing: deleting an open handle fails on Windows,
+        // which would leave the partial scratch behind on that platform.
+        drop(file);
+        let _ = std::fs::remove_file(temp);
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::packet::build_unavailable_packet;
@@ -459,6 +632,50 @@ mod tests {
             "target/ripr/test-wrong-schema.json",
         );
         assert_eq!(rc, 1, "wrong schema must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_help_exits_zero() {
+        for argv in [
+            vec!["perl-ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "-h"],
+            vec!["perl-ripr-facts", "ripr-facts", "--help"],
+            vec!["perl-ripr-facts", "ripr-facts", "--schema", "ripr-perl-facts-v1", "--help"],
+        ] {
+            let owned: Vec<String> = argv.into_iter().map(str::to_string).collect();
+            assert_eq!(run_cli(owned), 0, "explicit --help must exit 0");
+        }
+    }
+
+    #[test]
+    fn ripr_facts_help_in_value_position_stays_a_value() {
+        let argv: Vec<String> = ["perl-ripr-facts", "ripr-facts", "--out", "--help"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            matches!(parse_ripr_facts_cli(&argv), Ok(CliParse::Run(_))),
+            "--help as a flag value must not trigger help"
+        );
+    }
+
+    #[test]
+    fn ripr_facts_bare_subcommand_uses_defaults() {
+        let argv: Vec<String> =
+            ["perl-ripr-facts", "ripr-facts"].into_iter().map(str::to_string).collect();
+        let parsed = parse_ripr_facts_cli(&argv).expect("bare subcommand parses");
+        assert!(matches!(parsed, CliParse::Run(_)), "bare subcommand must run, not help");
+        if let CliParse::Run(cli) = parsed {
+            assert_eq!(cli.schema, "ripr-perl-facts-v1");
+            assert_eq!(cli.root, ".");
+            assert_eq!(cli.out, "target/ripr/reports/perl-facts.json");
+        }
+    }
+
+    #[test]
+    fn ripr_facts_missing_subcommand_still_exits_one() {
+        let rc = run_cli(vec!["perl-ripr-facts".to_string()]);
+        assert_eq!(rc, 1, "bare invocation must still exit 1");
     }
 
     #[test]
@@ -779,6 +996,7 @@ mod tests {
     // bytes, no leftover scratch, and an untouched destination on failure.
 
     /// Build a Perl fixture root that yields real `files[]`/`owners[]` facts.
+    #[cfg(unix)]
     fn perl_fixture(root: &str, body: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(format!("{root}/lib"))?;
         std::fs::write(format!("{root}/lib/App.pm"), body)
@@ -886,17 +1104,50 @@ mod tests {
     }
 
     #[test]
-    fn failed_replace_reports_failure_and_removes_the_staged_sibling() -> std::io::Result<()> {
-        // Occupy the destination with a directory. Staging succeeds, then the
-        // rename fails (a file cannot replace a directory on Unix or Windows),
-        // which exercises the replace-failure path end to end.
-        let dir = "target/ripr-atomic-replace-failure";
+    fn out_naming_directory_fails_fast_without_litter() -> std::io::Result<()> {
+        // `#17263`: `out` naming a directory fails before the workspace scan
+        // (not after, with a raw OS error) and stages nothing.
+        let dir = "target/ripr-out-is-dir";
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(format!("{dir}/packet.json"))?;
         let out = format!("{dir}/packet.json");
 
         let rc = run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "tests,oracles", &out);
-        assert_eq!(rc, 1, "an unusable destination must fail the run");
+        assert_eq!(rc, 1, "a directory destination must fail the run");
+        assert_eq!(
+            dir_entries(dir)?,
+            vec!["packet.json".to_string()],
+            "the fail-fast path must stage nothing"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn out_naming_directory_message_names_the_condition() {
+        let message = super::out_names_directory_message("out");
+        assert!(
+            message.contains("existing directory") && message.contains("out"),
+            "message must say the destination is a directory and name it; got: {message}"
+        );
+    }
+
+    #[test]
+    fn failed_replace_reports_failure_and_removes_the_staged_sibling() -> std::io::Result<()> {
+        // Occupy the destination with a directory and call the writer
+        // directly: staging succeeds, then the rename fails (a file cannot
+        // replace a directory on Unix or Windows), which exercises the
+        // replace-failure cleanup end to end. (Via `run_ripr_facts` the
+        // #17263 fail-fast check now preempts this path, so the direct call
+        // is what keeps the cleanup proof deterministic.)
+        let dir = "target/ripr-atomic-replace-failure";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(format!("{dir}/packet.json"))?;
+        let out = format!("{dir}/packet.json");
+
+        let result = super::write_packet(&out, &serde_json::json!({"probe": true}));
+        assert!(result.is_err(), "replacing a directory must fail");
         assert_eq!(
             dir_entries(dir)?,
             vec!["packet.json".to_string()],
@@ -1118,6 +1369,210 @@ mod tests {
 
         let resolved = resolve_destination(std::path::Path::new(&a));
         assert!(resolved.ends_with("a") || resolved.ends_with("b"), "cycle must terminate");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // #16162 — exclusive allocation of the staged sibling. A stale scratch file
+    // left behind by a previous interrupted run must NOT be truncated by
+    // `File::create`; staging must claim a fresh sibling via O_EXCL semantics
+    // and retry until either a fresh slot is found or the bounded attempts
+    // are exhausted.
+
+    #[test]
+    fn stage_temp_sibling_preserves_an_existing_scratch_file() -> std::io::Result<()> {
+        // A pre-existing scratch file with the next sequence number's name must
+        // remain byte-identical: `stage_temp_sibling` allocates a fresh sibling
+        // rather than truncating the one it found.
+        let dir = "target/ripr-exclusive-claim";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest_string = format!("{dir}/packet.json");
+        let dest = std::path::Path::new(&dest_string);
+
+        // Predict the sibling name the implementation will compute first, plant
+        // a sentinel at exactly that path, and verify the sentinel survives.
+        let claimed_first = temp_sibling_path(dest);
+        let sentinel = b"PRE-EXISTING-SIBLING-DO-NOT-TRUNCATE";
+        std::fs::write(&claimed_first, sentinel)?;
+
+        let written = stage_temp_sibling(dest, b"new packet bytes")?;
+        assert_ne!(
+            written, claimed_first,
+            "staging must allocate a sibling distinct from the pre-existing scratch",
+        );
+
+        let preserved = std::fs::read(&claimed_first)?;
+        assert_eq!(
+            preserved, sentinel,
+            "the pre-existing sibling must be preserved byte-for-byte, not truncated",
+        );
+
+        let new_bytes = std::fs::read(&written)?;
+        assert_eq!(new_bytes, b"new packet bytes");
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stage_temp_sibling_returns_a_path_we_own() {
+        // The returned path is the one the implementation actually created;
+        // the caller uses it to clean up only its own scratch on rename
+        // failure. A test that fails on a wrong return value would silently
+        // widen cleanup to a file we did not create.
+        let dir = "target/ripr-owned-return";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let dest_string = format!("{dir}/packet.json");
+        let dest = std::path::Path::new(&dest_string);
+
+        let returned = stage_temp_sibling(dest, b"payload").unwrap();
+        assert!(
+            returned.starts_with(dir),
+            "returned sibling must live in the destination's directory: got {}",
+            returned.display(),
+        );
+        assert!(returned.exists(), "the returned sibling must exist on disk");
+        assert!(
+            returned
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.') && name.contains(".tmp-")),
+            "the returned sibling must match the dot-prefixed `.tmp-{{pid}}-{{seq}}` scheme",
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_temp_sibling_propagates_unrelated_io_errors() {
+        // When the bounded retry loop hits a non-collision error, that error
+        // is surfaced verbatim. The destination is not created, and no
+        // scratch is left behind.
+        //
+        // We trigger `NotADirectory` by passing a destination whose parent
+        // is a regular file: `OpenOptions::create_new` cannot create a
+        // sibling next to a regular file when the parent component is
+        // expected to be a directory.
+        let dir = "target/ripr-non-collision";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(format!("{dir}/regular-file"), b"not a directory").unwrap();
+
+        let blocker = format!("{dir}/regular-file/packet.json");
+        let dest = std::path::Path::new(&blocker);
+        let result = stage_temp_sibling(dest, b"payload");
+        let err = result.expect_err("a non-directory parent must surface an error");
+        assert_ne!(
+            err.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a non-collision error must not be misclassified as `AlreadyExists`",
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_temp_sibling_exhausts_deterministically_and_preserves_strangers() -> std::io::Result<()>
+    {
+        let dir = "target/ripr-exhaustion";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest = format!("{dir}/packet.json");
+        std::fs::write(&dest, b"existing destination")?;
+
+        let occupied: Vec<std::path::PathBuf> = (0..MAX_TEMP_SIBLING_ATTEMPTS)
+            .map(|index| std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-{index}")))
+            .collect();
+        for (index, path) in occupied.iter().enumerate() {
+            std::fs::write(path, format!("sentinel-{index}"))?;
+        }
+
+        let mut supplied = 0_usize;
+        let mut candidates = occupied.iter();
+        let result = stage_temp_sibling_with_candidates(
+            std::path::Path::new(&dest),
+            b"new packet bytes",
+            || {
+                supplied += 1;
+                candidates.next().map_or_else(
+                    || std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-extra")),
+                    Clone::clone,
+                )
+            },
+        );
+
+        let error = result.expect_err("fully occupied candidates must exhaust");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error.to_string().contains("exhausted 16 attempts"),
+            "exhaustion error must name the exhausted attempts: {error}"
+        );
+        assert_eq!(
+            supplied, MAX_TEMP_SIBLING_ATTEMPTS,
+            "staging must try exactly the bounded number of candidates"
+        );
+        assert_eq!(std::fs::read(&dest)?, b"existing destination");
+        for (index, path) in occupied.iter().enumerate() {
+            assert_eq!(std::fs::read(path)?, format!("sentinel-{index}").into_bytes());
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stage_temp_sibling_skips_an_occupied_first_candidate() -> std::io::Result<()> {
+        let dir = "target/ripr-occupied-first";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        let dest = format!("{dir}/packet.json");
+        let occupied = std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-occupied"));
+        let free = std::path::PathBuf::from(format!("{dir}/.packet.json.tmp-test-free"));
+        std::fs::write(&occupied, b"occupied")?;
+
+        let mut candidates = vec![occupied.clone(), free.clone()].into_iter();
+        let written = stage_temp_sibling_with_candidates(
+            std::path::Path::new(&dest),
+            b"new packet bytes",
+            || candidates.next().unwrap_or_else(|| free.clone()),
+        )?;
+
+        assert_eq!(written, free, "staging must skip the occupied candidate it tried first");
+        assert_eq!(std::fs::read(&occupied)?, b"occupied");
+        assert_eq!(std::fs::read(&written)?, b"new packet bytes");
+
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    #[test]
+    fn finish_staged_file_removes_owned_scratch_on_write_failure() {
+        // A staging write that fails after exclusive creation must not leave
+        // a partial sibling behind: every failed attempt would otherwise burn
+        // a sequence slot and accumulate scratch that a later run must treat
+        // as a stranger. A read-only handle fails the write deterministically
+        // on every platform without fault injection.
+        let dir = "target/ripr-failed-stage-cleanup";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let owned_string = format!("{dir}/owned.tmp");
+        let owned = std::path::Path::new(&owned_string);
+        std::fs::write(owned, b"stale").unwrap();
+
+        let read_only = std::fs::File::open(owned).unwrap();
+        let err = finish_staged_file(read_only, owned, b"new bytes")
+            .expect_err("writing through a read-only handle must fail");
+        assert_ne!(
+            err.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a failed staged write is not a collision to be retried",
+        );
+        assert!(
+            !owned.exists(),
+            "failed staging must remove the owned scratch instead of leaving a partial file",
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

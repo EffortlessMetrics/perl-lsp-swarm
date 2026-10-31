@@ -73,8 +73,16 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("test_api", 27),
     ("lab", 21),
     ("oracle", 1),
-    ("benchmark", 15),
-    ("gate", 94),
+    // 15 -> 16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]] target
+    // added by the #17154 ripr packet benchmark suite (#17170).
+    // 16 -> 17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]] target
+    // added by the #17159 LSP stdio round-trip latency benchmark (#17179).
+    ("benchmark", 17),
+    // 94 -> 95: `unsafe_prod_check` entered .ci/gate-policy.yaml with #16215;
+    // the committed inventory and these constants predate the merge that
+    // carried it, so both fell one gate behind the authority.
+    // 95 -> 96: routed integration-test compilation preparation (#17459).
+    ("gate", 96),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -89,8 +97,16 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // 406261b3e (#15895) -- the same commit that last wrote the inventory
     // without them. Merging main forward added two more: completion_candidate_ledger
     // in c02237eda (#16102) and code_action_generation_ledger in 3752ae836 (#15946).
-    ("gate-policy-gates", 94, 94),
-    ("cargo-bench-targets", 15, 15),
+    // 94/94 -> 95/95: unsafe_prod_check (#16215) entered .ci/gate-policy.yaml and
+    // the merge carrying it onto this branch predates the last inventory write.
+    // 95/95 -> 96/96: unit_routed_full_build adds one required compilation gate (#17459).
+    ("gate-policy-gates", 96, 96),
+    // 15/15 -> 16/16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]]
+    // target added by the #17154 ripr packet benchmark suite (#17170).
+    // 16/16 -> 17/17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]]
+    // target added by the #17159 LSP stdio round-trip latency benchmark
+    // (#17179).
+    ("cargo-bench-targets", 17, 17),
     // 79/26 -> 80/27: `perl-lsp-rs-core/test-instrumentation`, declared in
     // crates/perl-lsp-rs-core/Cargo.toml by 234574a74 (#14272).
     ("cargo-test-features", 80, 27),

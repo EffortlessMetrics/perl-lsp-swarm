@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: Complete malformed JSON frames now receive a ParseError with a null ID while following valid LSP frames remain processable.
+time: 2026-10-13T02:11:24Z
+custom:
+  PR: "17754"
+  Slug: malformed-json-recovery
+  Breaking: "no"

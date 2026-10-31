@@ -10,6 +10,10 @@ readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 bash -n "$REPO_ROOT/scripts/apply-zed-perl-upstream.sh"
 
+# The committed editor guide is a generated book projection with rewritten links.
+# Check it against the generator output rather than comparing raw source bytes.
+bash "$REPO_ROOT/scripts/ci/validate_book_copy_freshness.sh"
+
 # Behavioral proof for the staged candidate: its own unit suite carries the
 # LSP/DAP identity-separation, schema acceptance/rejection, request-kind,
 # precedence, projection, and cleanup-boundary falsifiers (#9485).
@@ -178,8 +182,8 @@ require(
 require("Zed integration: planned / not proven" in readme, "README Zed boundary is missing")
 require("Zed is **planned / not proven**" in faq, "FAQ Zed boundary is missing")
 require("**Status: planned / not proven.**" in setup, "Zed guide status is missing")
-require("Planned / not proven" in combined_setup, "combined editor table must bound Zed")
-require(book_setup == combined_setup, "committed mdBook editor projection must match the canonical guide")
+require("| Zed | **Planned / not proven:**" in combined_setup, "combined editor table must bound Zed")
+require("| Zed | **Planned / not proven:**" in book_setup, "mdBook editor table must bound Zed")
 require("public Perl extension does not register `perllsp`" in troubleshooting, "troubleshooting boundary is missing")
 require("Zed integration: planned / not proven" in steering, "agent steering still overclaims Zed")
 
@@ -196,10 +200,18 @@ def markdown_section(text: str, heading: str, next_heading_prefix: str) -> str:
 zed_sections = {
     "docs/EDITORS/ZED_SETUP.md": setup,
     "docs/how-to/EDITOR_SETUP.md": markdown_section(combined_setup, "### Zed", "### "),
+    "book/src/reference/editor-setup-canonical.md": markdown_section(
+        book_setup, "### Zed", "### "
+    ),
     "docs/how-to/TROUBLESHOOTING.md": markdown_section(
         troubleshooting, "## Zed Does Not Start `perllsp`", "## "
     ),
 }
+for path in ("docs/how-to/EDITOR_SETUP.md", "book/src/reference/editor-setup-canonical.md"):
+    require(
+        zed_sections[path].lstrip().startswith("**Planned / not proven.**"),
+        f"{path} Zed section must start with planned/not-proven status",
+    )
 for path, text in zed_sections.items():
     require(
         '\"perl-lsp\": {' not in text,
