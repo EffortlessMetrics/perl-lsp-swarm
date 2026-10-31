@@ -80,12 +80,9 @@ impl EventSource for Inbox {
     fn wait_for_events<T>(
         &self,
         timeout: Duration,
-        mut select: impl FnMut(&[LspEvent]) -> Option<T>,
+        select: impl FnMut(&[LspEvent]) -> Option<T>,
     ) -> Result<T, WaitEnd> {
-        self.wait_for_raw_events(timeout, |events| {
-            let decoded: Vec<LspEvent> = events.iter().cloned().map(decode_event).collect();
-            select(&decoded)
-        })
+        wait_decoded_events(self, timeout, select)
     }
 }
 
@@ -502,13 +499,13 @@ impl UxClient {
     /// After this call the internal queue is empty.  Use `peek_events` if you
     /// need to inspect events without consuming them.
     pub fn drain_events(&self) -> Vec<LspEvent> {
-        self.inbox.drain_events().into_iter().map(decode_event).collect()
+        self.inbox.drain_events().iter().map(decode_event).collect()
     }
 
     /// Clone and decode all buffered events **without** removing them from the
     /// queue.  Safe to call before or after `drain_events` / `collect_notifications`.
     pub fn peek_events(&self) -> Vec<LspEvent> {
-        self.inbox.snapshot().events().iter().cloned().map(decode_event).collect()
+        self.inbox.snapshot().events().iter().map(decode_event).collect()
     }
 
     /// Clone raw server-initiated messages without removing them from the queue.
@@ -676,12 +673,9 @@ impl UxClient {
     fn wait_decoded<T>(
         &self,
         timeout: Duration,
-        mut select: impl FnMut(&[LspEvent]) -> Option<T>,
+        select: impl FnMut(&[LspEvent]) -> Option<T>,
     ) -> Result<T, WaitEnd> {
-        self.wait_for_raw_events(timeout, move |raw| {
-            let decoded: Vec<LspEvent> = raw.iter().cloned().map(decode_event).collect();
-            select(&decoded)
-        })
+        wait_decoded_events(&self.inbox, timeout, select)
     }
 
     /// The typed reason the server's output stream ended, if it has.
@@ -1408,7 +1402,34 @@ fn registration_capability_paths(method: &str) -> Option<&'static [&'static str]
 }
 // ── Event decoding ────────────────────────────────────────────────────────────
 
-fn decode_event(v: Value) -> LspEvent {
+#[cfg(test)]
+thread_local! {
+    static EVENT_DECODE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Decode only the newly copied suffix of a raw-event wait.
+///
+/// The waiter-local decoded list stays aligned with the raw projection: a
+/// drain resets both, and later wakes append only events newer than last seen.
+fn wait_decoded_events<T>(
+    inbox: &Inbox,
+    timeout: Duration,
+    mut select: impl FnMut(&[LspEvent]) -> Option<T>,
+) -> Result<T, WaitEnd> {
+    let decoded = std::cell::RefCell::new(Vec::new());
+    inbox.wait_for_raw_events_incremental(timeout, |raw, new_from| {
+        {
+            let mut decoded = decoded.borrow_mut();
+            decoded.truncate(new_from);
+            decoded.extend(raw.get(new_from..).unwrap_or(&[]).iter().map(decode_event));
+        }
+        select(&decoded.borrow())
+    })
+}
+
+fn decode_event(v: &Value) -> LspEvent {
+    #[cfg(test)]
+    EVENT_DECODE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     let method = v["method"].as_str().unwrap_or("").to_string();
     match method.as_str() {
         "window/showMessage" => {
@@ -2512,6 +2533,56 @@ mod server_request_tests {
 
         let expected = format!("Content-Length: {}\r\n\r\n{body}", body.len());
         assert_eq!(framed, expected.as_bytes());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod event_wait_decode_tests {
+    use super::EventSource;
+    use crate::observation::Inbox;
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn reset_decode_count() {
+        super::EVENT_DECODE_COUNT.with(|count| count.set(0));
+    }
+
+    fn decode_count() -> usize {
+        super::EVENT_DECODE_COUNT.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn event_source_decodes_only_new_events_across_n_notifications() -> anyhow::Result<()> {
+        const N: usize = 32;
+        reset_decode_count();
+        let inbox = Inbox::new();
+        let publisher = inbox.clone();
+        let mut published = 0_usize;
+
+        let matched = inbox.wait_for_events(Duration::from_secs(30), |events| {
+            if published < N {
+                publisher.push_event(json!({
+                    "method": "window/logMessage",
+                    "params": { "type": 4, "message": published.to_string() }
+                }));
+                published += 1;
+            }
+            (events.len() == N).then_some(events.len())
+        })?;
+
+        anyhow::ensure!(matched == N, "decoded wait must observe the full retained history");
+        let decodes = decode_count();
+        let clones = inbox.event_wait_clone_count();
+        let triangular = N * (N + 1) / 2;
+        anyhow::ensure!(
+            decodes == N,
+            "event wait must decode each of {N} events once, got {decodes} (triangular would be {triangular})"
+        );
+        anyhow::ensure!(
+            clones == N,
+            "event wait must clone each of {N} events once, got {clones} (triangular would be {triangular})"
+        );
         Ok(())
     }
 }
