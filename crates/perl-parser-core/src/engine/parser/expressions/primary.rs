@@ -282,9 +282,25 @@ impl<'a> Parser<'a> {
                     })?;
 
                 let has_embedded_code = self.analyze_regex_body_for_ast(&body, token.start())?;
+                // The lexer emits all three forms as TokenKind::Regex. Retain
+                // the operator from the token before its delimiters/body are
+                // normalized by the strict extractor.
+                let form = if token.text.starts_with("qr") {
+                    perl_ast::RegexSurfaceForm::Qr
+                } else if token.text.starts_with('m') {
+                    perl_ast::RegexSurfaceForm::MatchOperator
+                } else {
+                    perl_ast::RegexSurfaceForm::BarePattern
+                };
 
                 self.charge_node(
-                    NodeKind::Regex { pattern, replacement: None, modifiers, has_embedded_code },
+                    NodeKind::Regex {
+                        form,
+                        pattern,
+                        replacement: None,
+                        modifiers,
+                        has_embedded_code,
+                    },
                     SourceLocation { start: token.start(), end: token.end() },
                 )
             }

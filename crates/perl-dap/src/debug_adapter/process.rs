@@ -2846,18 +2846,28 @@ impl DebugAdapter {
                 }
             };
             let normalized_host = host.trim();
-            let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
-            if raw_port > 65535 {
-                return DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: false,
-                    command: "attach".to_string(),
-                    body: None,
-                    message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
-                };
-            }
-            let port = raw_port as u16;
+            let port = match args.get("port") {
+                None | Some(Value::Null) => 13603,
+                Some(value) => match value
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+                    .filter(|port| *port != 0)
+                {
+                    Some(port) => port,
+                    None => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "attach".to_string(),
+                            body: None,
+                            message: Some(
+                                "Invalid port: expected an integer in range 1-65535".to_string(),
+                            ),
+                        };
+                    }
+                },
+            };
             let timeout = args
                 .get("timeout")
                 .or_else(|| args.get("timeoutMs"))

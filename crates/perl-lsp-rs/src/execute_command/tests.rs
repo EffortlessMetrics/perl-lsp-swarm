@@ -563,6 +563,13 @@ fn test_explain_provider_decision_preserves_tracked_identifier_shapes()
             scenario,
             "legitimate scenario must round-trip unchanged"
         );
+        let message =
+            result.get("user_message").and_then(Value::as_str).ok_or("missing user_message")?;
+        assert!(!message.contains(receipt_id), "identity must stay structured: {message}");
+        assert!(!message.contains("docs/project/status"), "{message}");
+        if let Some(scenario) = scenario {
+            assert!(!message.contains(scenario), "scenario must stay structured: {message}");
+        }
     }
     Ok(())
 }
@@ -1384,7 +1391,10 @@ fn test_run_builtin_critic_with_valid_file() -> Result<(), Box<dyn std::error::E
     let result_value = result?;
     assert_eq!(result_value["status"], "success");
     assert!(result_value["violations"].is_array());
-    assert_eq!(result_value["analyzerUsed"], "native");
+    // #16550: the fallback analyzer is labeled `builtin`, distinct from the
+    // native registry engine's `native`, so the client can tell which rule
+    // set produced the verdict.
+    assert_eq!(result_value["analyzerUsed"], "builtin");
     Ok(())
 }
 

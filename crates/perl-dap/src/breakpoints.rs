@@ -211,10 +211,49 @@ fn file_paths_match(stored: &str, observed: &str) -> bool {
     if stored == observed {
         return true;
     }
+    // Separator-spelling identity: `/` and `\` are the same separator on
+    // Windows (on POSIX a backslash stays a literal filename character), and
+    // DAP clients do not guarantee one spelling between `launch.program` and
+    // `setBreakpoints.source.path` (#17246).
+    if same_path_components(stored, observed) {
+        return true;
+    }
     // Allow suffix matching for relative-vs-absolute path pairs (e.g. "bar.pl" matches
     // "/abs/path/bar.pl"), but require a path-component boundary before the matched suffix
     // to prevent mid-component false matches (e.g. "bar.pl" must NOT match "foobar.pl").
     path_suffix_matches(stored, observed) || path_suffix_matches(observed, stored)
+}
+
+/// The separator set for spelling-identity comparison. Both `/` and `\` are
+/// separators only where the platform gives `\` no filename meaning (Windows);
+/// on POSIX a backslash is a legal filename character and must stay literal,
+/// or `/tmp/a\b.pl` and `/tmp/a/b.pl` would be conflated (#17246).
+#[cfg(windows)]
+fn is_path_separator(character: char) -> bool {
+    character == '/' || character == '\\'
+}
+
+#[cfg(not(windows))]
+fn is_path_separator(character: char) -> bool {
+    character == '/'
+}
+
+/// Compare two path spellings component-wise, treating the platform's
+/// separator set as equivalent and collapsing duplicate or trailing
+/// separators. Case is preserved deliberately: this is spelling identity for
+/// the same on-disk file, not case-insensitive filesystem identity (#17246).
+fn same_path_components(a: &str, b: &str) -> bool {
+    let mut left = a.split(is_path_separator).filter(|component| !component.is_empty());
+    let mut right = b.split(is_path_separator).filter(|component| !component.is_empty());
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(left_component), Some(right_component)) if left_component == right_component => {
+                continue;
+            }
+            _ => return false,
+        }
+    }
 }
 
 /// Interpolate logpoint message template with variable values.
@@ -1714,6 +1753,103 @@ EOF
         assert!(!file_paths_match("bar.pl", "foobar.pl"));
         assert!(!file_paths_match("/path/to/foobar.pl", "bar.pl"));
         assert!(!file_paths_match("bar.pl", "/path/to/foobar.pl"));
+    }
+
+    #[test]
+    fn test_file_paths_match_separator_spelling_identity() {
+        // The same file spelled with the other path separator must match:
+        // DAP clients do not guarantee one spelling between launch.program
+        // and setBreakpoints.source.path (#17246). Backslash equivalence is
+        // Windows separator semantics only; on POSIX a backslash is a literal
+        // filename character, so only `/` varies there (#17246 review).
+        if cfg!(windows) {
+            assert!(file_paths_match("F:\\w\\deep.pl", "F:/w/deep.pl",));
+            assert!(file_paths_match("F:/w/deep.pl", "F:\\w\\deep.pl"));
+            // Duplicate and trailing separators collapse.
+            assert!(file_paths_match("F://w\\deep.pl\\", "F:/w/deep.pl"));
+            // Case is deliberately NOT unified: this is spelling identity for
+            // the same on-disk file, not case-insensitive filesystem identity.
+            assert!(!file_paths_match("F:\\w\\deep.pl", "f:/w/deep.pl"));
+            assert!(!file_paths_match("F:\\w\\deep.pl", "F:/w/other.pl"));
+            assert!(file_paths_match("F:\\w\\deep.pl", "deep.pl"));
+        } else {
+            assert!(file_paths_match("/w//deep.pl/", "/w/deep.pl"));
+            assert!(!file_paths_match("/w/deep.pl", "/w/other.pl"));
+            assert!(file_paths_match("/w/deep.pl", "deep.pl"));
+        }
+    }
+
+    /// On POSIX a backslash is a legal filename character, so the separator
+    /// equivalence must not conflate `/tmp/a\b.pl` with `/tmp/a/b.pl`; on
+    /// Windows the two names cannot coexist and remain one file (#17246).
+    #[test]
+    fn test_file_paths_match_posix_backslash_stays_literal() {
+        let backslash_name = "/tmp/a\\b.pl";
+        let slash_name = "/tmp/a/b.pl";
+        if cfg!(windows) {
+            assert!(file_paths_match(backslash_name, slash_name));
+        } else {
+            assert!(!file_paths_match(backslash_name, slash_name));
+        }
+    }
+
+    /// A runtime stop reported under the launch spelling must correlate with
+    /// an installation registered under the client's breakpoint spelling:
+    /// before #17246 the spelling mismatch swallowed the stop entirely (no
+    /// `stopped` event while the debuggee sat suspended at the line).
+    ///
+    /// The mismatch exists only where both separators denote the same file —
+    /// Windows. POSIX has exactly one separator, so there the fixture-derived
+    /// alternative spelling is a different (nonexistent) file and the
+    /// correlation must keep failing; that negative is covered by
+    /// [`Self::test_file_paths_match_posix_backslash_stays_literal`].
+    #[cfg(windows)]
+    #[test]
+    fn engine_hit_correlates_across_separator_spellings() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_file, stored_spelling) = create_test_perl_file();
+        // Derive the other spelling from whichever separator the fixture path
+        // actually uses: Windows temp paths carry `\`, so the forward-slash
+        // rendering is the launch-side spelling of the same file.
+        let observed_spelling = stored_spelling.replace('\\', "/");
+        assert_ne!(
+            stored_spelling, observed_spelling,
+            "test fixture must actually exercise both separator spellings"
+        );
+        let store = BreakpointStore::new();
+        let args = SetBreakpointsArguments {
+            source: Source {
+                path: Some(stored_spelling.clone()),
+                name: Some("script.pl".to_string()),
+            },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        };
+        let response = store.set_breakpoints(&args);
+        let id = response.first().ok_or("missing breakpoint response")?.id;
+        let digest =
+            perl_source_identity::ContentDigest::of_bytes(&std::fs::read(&stored_spelling)?)
+                .to_string();
+        if !store.mark_engine_installed(id, &stored_spelling, 5, 7, digest.clone()) {
+            return Err("engine installation was not committed".into());
+        }
+        if !store.has_engine_breakpoint_candidate(&observed_spelling, 5, 7) {
+            return Err("stop under the launch spelling was not admitted as a hit candidate".into());
+        }
+        let outcome = store.register_engine_breakpoint_hit(&observed_spelling, 5, 7, &digest);
+        if !outcome.should_stop || outcome.hit_breakpoint_ids != vec![id] {
+            return Err(format!(
+                "stop under the launch spelling did not correlate with the installation: {outcome:?}"
+            )
+            .into());
+        }
+        Ok(())
     }
 
     #[test]

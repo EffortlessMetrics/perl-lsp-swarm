@@ -137,7 +137,10 @@ impl NativeFormatter {
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
-            if literal_lines.contains(&line_index) {
+            // Line directives are preserved exactly: Perl honors them only
+            // at column zero, so reindenting one inside a block would
+            // change source-location semantics (PR #17704 review).
+            if literal_lines.contains(&line_index) || is_perl_line_directive(body) {
                 formatted.push_str(body);
                 formatted.push_str(line_ending);
                 continue;
@@ -189,6 +192,7 @@ impl NativeFormatter {
                             // cannot change meaning.
                             None if closes
                                 || opens
+                                || body.trim_start().starts_with('#')
                                 || literal_lines.contains(&(line_index + 1)) =>
                             {
                                 candidate
@@ -243,7 +247,10 @@ impl NativeFormatter {
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if literal_lines.contains(&line_index) || body.trim().is_empty() {
+            let formatted_body = if literal_lines.contains(&line_index)
+                || is_perl_line_directive(body)
+                || body.trim().is_empty()
+            {
                 None
             } else if is_rendered_block_boundary_line(body, config) {
                 let role = rendered_boundary_role(body);
@@ -284,6 +291,7 @@ impl NativeFormatter {
                                 Some(formatted) => Some(formatted),
                                 None if closes
                                     || opens
+                                    || body.trim_start().starts_with('#')
                                     || literal_lines.contains(&(line_index + 1)) =>
                                 {
                                     Some(candidate)
@@ -354,6 +362,30 @@ impl NativeFormatter {
             FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
     }
+}
+
+/// Whether `line` has the shape of a Perl `#line` directive: `#line 100
+/// "generated.pl"`, `# line 100 "generated.pl"`, or `#line 100` (verified
+/// against Perl: the `line` keyword must be a separate word followed by a
+/// decimal line number; `# 100 "file"`, `#line100`, and `#linear` are plain
+/// comments). Perl honors the directive only when `#` sits in column zero,
+/// so reindenting one out of a block would silently change `__LINE__`,
+/// `__FILE__`, and error locations (PR #17704 review). The check is
+/// deliberately fail-closed on the trimmed line: directive-shaped text is
+/// preserved wherever it sits rather than risk moving a real directive.
+pub(super) fn is_perl_line_directive(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('#') else { return false };
+    let Some(rest) = rest.trim_start().strip_prefix("line") else { return false };
+    if !rest.starts_with([' ', '\t']) {
+        return false;
+    }
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let digit_len = rest.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return false;
+    }
+    let rest = &rest[digit_len..];
+    rest.is_empty() || rest.starts_with([' ', '\t'])
 }
 
 /// Line indices (0-based) that belong to a literal-preserve region and must
