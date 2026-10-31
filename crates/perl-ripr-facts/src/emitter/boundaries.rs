@@ -110,9 +110,11 @@ fn statement_eval_offsets(content: &str, test_file: bool) -> Vec<usize> {
             }
             _ => false,
         };
-        // `evalbytes(` is glued: `eval(` is the table's, `evalbytes(` is not.
-        let glued_evalbytes_paren = is_evalbytes && rest.first() == Some(&b'(');
-        if !bare && !glued_evalbytes_paren {
+        // `evalbytes` has no table entry, so every glued opener is ours:
+        // `evalbytes(`, `evalbytes"..."`, `evalbytes'...'`, `evalbytes$code`.
+        let glued_evalbytes =
+            is_evalbytes && matches!(rest.first(), Some(b'(' | b'"' | b'\'' | b'$'));
+        if !bare && !glued_evalbytes {
             let Some(first) = rest.first().copied() else {
                 continue;
             };
@@ -506,6 +508,9 @@ mod tests {
             "evalbytes $code;",
             "my $r = evalbytes \"$code\";",
             "evalbytes($code);",
+            "evalbytes\"$code\";",
+            "evalbytes'die';",
+            "evalbytes$code;",
             "evalbytes;",
             "evalbytes 'die';",
             "CORE::eval $code;",
