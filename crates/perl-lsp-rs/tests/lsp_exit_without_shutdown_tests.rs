@@ -22,10 +22,7 @@ fn exit_without_shutdown_reports_reason_on_stderr() -> TestResult {
         return Err(format!("initialize failed: {initialized:?}").into());
     }
 
-    send_notification(
-        &server,
-        json!({"jsonrpc":"2.0","method":"exit","params":null}),
-    );
+    send_notification(&server, json!({"jsonrpc":"2.0","method":"exit","params":null}));
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
@@ -41,27 +38,19 @@ fn exit_without_shutdown_reports_reason_on_stderr() -> TestResult {
         }
         std::thread::sleep(Duration::from_millis(25));
     };
-    let status =
-        status.ok_or("server child did not exit after bare exit notification")?;
+    let status = status.ok_or("server child did not exit after bare exit notification")?;
     if status.success() {
         return Err(format!("exit without shutdown must not succeed: {status}").into());
     }
     let code = status.code().ok_or("server exited without status code")?;
     if code != 1 {
-        return Err(format!(
-            "expected exit code 1, got {code}; {}",
-            server.stderr_tail()
-        )
-        .into());
+        return Err(format!("expected exit code 1, got {code}; {}", server.stderr_tail()).into());
     }
 
     let stderr = server.stderr_tail();
     let reason = "perl-lsp: exiting with code 1: `exit` notification received without a prior `shutdown` request";
     if !stderr.contains(reason) {
-        return Err(format!(
-            "expected abnormal-exit reason on stderr; got: {stderr}"
-        )
-        .into());
+        return Err(format!("expected abnormal-exit reason on stderr; got: {stderr}").into());
     }
     Ok(())
 }
