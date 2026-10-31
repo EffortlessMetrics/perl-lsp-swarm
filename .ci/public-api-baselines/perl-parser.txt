@@ -881,6 +881,16 @@ pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::new(index: 
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::optimize_imports(&self) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, alloc::string::String>
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::rename_symbol(&self, old_name: &str, new_name: &str, _file_path: &std::path::Path, _position: (usize, usize)) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, perl_parser::refactor::workspace_refactor::RefactorError>
 pub mod perl_parser::prelude::refactor::workspace_rename
+pub enum perl_parser::prelude::refactor::workspace_rename::InvalidEditReason
+pub perl_parser::prelude::refactor::workspace_rename::InvalidEditReason::NonCharBoundary
+pub perl_parser::prelude::refactor::workspace_rename::InvalidEditReason::OutOfOrder
+pub perl_parser::prelude::refactor::workspace_rename::InvalidEditReason::Overlapping
+pub perl_parser::prelude::refactor::workspace_rename::InvalidEditReason::PastEnd
+pub perl_parser::prelude::refactor::workspace_rename::InvalidEditReason::Reversed
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::clone(&self) -> perl_parser::refactor::workspace_rename::InvalidEditReason
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::eq(&self, other: &perl_parser::refactor::workspace_rename::InvalidEditReason) -> bool
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser::prelude::refactor::workspace_rename::Progress
 pub perl_parser::prelude::refactor::workspace_rename::Progress::Complete
 pub perl_parser::prelude::refactor::workspace_rename::Progress::Complete::changes: usize
@@ -894,6 +904,8 @@ pub perl_parser::prelude::refactor::workspace_rename::Progress::Scanning::total:
 pub fn perl_parser::refactor::workspace_rename::Progress::clone(&self) -> perl_parser::refactor::workspace_rename::Progress
 pub fn perl_parser::refactor::workspace_rename::Progress::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::DuplicateDocument
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::DuplicateDocument::file: std::path::PathBuf
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::FileSystemError
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::FileSystemError::error: alloc::string::String
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::FileSystemError::file: std::path::PathBuf
@@ -901,6 +913,11 @@ pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::File
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::IndexUpdateFailed
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::IndexUpdateFailed::affected_files: alloc::vec::Vec<std::path::PathBuf>
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::IndexUpdateFailed::error: alloc::string::String
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::end: usize
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::file: std::path::PathBuf
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::reason: perl_parser::refactor::workspace_rename::InvalidEditReason
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::start: usize
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::NameConflict
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::NameConflict::conflicts: alloc::vec::Vec<perl_parser::refactor::workspace_rename::ConflictLocation>
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::NameConflict::new_name: alloc::string::String
@@ -1262,6 +1279,16 @@ pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::new(index: 
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::optimize_imports(&self) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, alloc::string::String>
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::rename_symbol(&self, old_name: &str, new_name: &str, _file_path: &std::path::Path, _position: (usize, usize)) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, perl_parser::refactor::workspace_refactor::RefactorError>
 pub mod perl_parser::refactor::workspace_rename
+pub enum perl_parser::refactor::workspace_rename::InvalidEditReason
+pub perl_parser::refactor::workspace_rename::InvalidEditReason::NonCharBoundary
+pub perl_parser::refactor::workspace_rename::InvalidEditReason::OutOfOrder
+pub perl_parser::refactor::workspace_rename::InvalidEditReason::Overlapping
+pub perl_parser::refactor::workspace_rename::InvalidEditReason::PastEnd
+pub perl_parser::refactor::workspace_rename::InvalidEditReason::Reversed
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::clone(&self) -> perl_parser::refactor::workspace_rename::InvalidEditReason
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::eq(&self, other: &perl_parser::refactor::workspace_rename::InvalidEditReason) -> bool
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser::refactor::workspace_rename::InvalidEditReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser::refactor::workspace_rename::Progress
 pub perl_parser::refactor::workspace_rename::Progress::Complete
 pub perl_parser::refactor::workspace_rename::Progress::Complete::changes: usize
@@ -1275,6 +1302,8 @@ pub perl_parser::refactor::workspace_rename::Progress::Scanning::total: usize
 pub fn perl_parser::refactor::workspace_rename::Progress::clone(&self) -> perl_parser::refactor::workspace_rename::Progress
 pub fn perl_parser::refactor::workspace_rename::Progress::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser::refactor::workspace_rename::WorkspaceRenameError
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::DuplicateDocument
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::DuplicateDocument::file: std::path::PathBuf
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::FileSystemError
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::FileSystemError::error: alloc::string::String
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::FileSystemError::file: std::path::PathBuf
@@ -1282,6 +1311,11 @@ pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::FileSystemErr
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::IndexUpdateFailed
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::IndexUpdateFailed::affected_files: alloc::vec::Vec<std::path::PathBuf>
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::IndexUpdateFailed::error: alloc::string::String
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::end: usize
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::file: std::path::PathBuf
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::reason: perl_parser::refactor::workspace_rename::InvalidEditReason
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::InvalidEdit::start: usize
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::NameConflict
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::NameConflict::conflicts: alloc::vec::Vec<perl_parser::refactor::workspace_rename::ConflictLocation>
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::NameConflict::new_name: alloc::string::String
