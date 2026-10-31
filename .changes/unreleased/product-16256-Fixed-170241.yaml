@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Angle terms now preserve raw source, distinguish filehandles from globs, and retain caller delimiters after malformed input under cumulative byte and step limits. LexerConfig adds two fields, contextual result enums gain variants and ContextualOpResult no longer implements Copy; migrate exhaustive construction and matches. Lexer checkpoint schema 2 rejects older snapshots.
+time: 2026-09-20T17:02:41Z
+custom:
+  PR: 16256
+  Slug: bounded-source-aware-angle-scanning
+  Breaking: "yes"
