@@ -2732,13 +2732,21 @@ perlcritic_severity = 2
         buffer: &std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
         needle: &str,
     ) -> String {
+        wait_for_output_count(buffer, needle, 1)
+    }
+
+    /// Poll until at least `expected` occurrences of `needle` have arrived
+    /// (or the deadline passes), then take a final drain window so an
+    /// erroneous duplicate queued right behind is counted too.
+    fn wait_for_output_count(
+        buffer: &std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+        needle: &str,
+        expected: usize,
+    ) -> String {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
-            if output.contains(needle) || std::time::Instant::now() >= deadline {
-                // Final drain window: an erroneous duplicate emission queued
-                // right behind the first frame must be counted by the caller's
-                // exact-count assertion, not still sitting in the channel.
+            if output.matches(needle).count() >= expected || std::time::Instant::now() >= deadline {
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 return String::from_utf8_lossy(&buffer.lock()).into_owned();
             }
@@ -2814,8 +2822,11 @@ perlcritic_severity = 2
             "textDocument": {"uri": uri_b, "languageId": "perl", "version": 1, "text": "print 2;\n"}
         })))?;
 
-        let output =
-            wait_for_output(&buffer, "Fix the error in .perl-lsp.toml and reload the window.");
+        let output = wait_for_output_count(
+            &buffer,
+            "Fix the error in .perl-lsp.toml and reload the window.",
+            2,
+        );
         assert_eq!(
             output.matches("Fix the error in .perl-lsp.toml and reload the window.").count(),
             2,

@@ -60,6 +60,12 @@ use parking_lot::Mutex;
 /// bytes per family regardless of client behavior.
 pub(crate) const PER_FAMILY_ENTRY_CAP: usize = 32;
 
+/// Entry cap for the core-module notice family only: `is_core_perl_module`
+/// matches a fixed set of 34 module names, so the shared cap of 32 would
+/// leave the last names unretained and re-notified on every navigation.
+/// The set is closed, so a larger cap stays bounded.
+pub(crate) const CORE_MODULE_NOTICE_CAP: usize = 64;
+
 /// One governed session-warning family (#9769).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionWarningFamily {
@@ -225,12 +231,12 @@ struct FamilyState {
 }
 
 impl FamilyState {
-    fn note(&mut self, identity: SessionWarningIdentity) -> SessionWarningDecision {
+    fn note(&mut self, identity: SessionWarningIdentity, cap: usize) -> SessionWarningDecision {
         if self.seen.contains(&identity) {
             self.suppressed += 1;
             return SessionWarningDecision::Suppress;
         }
-        if self.seen.len() >= PER_FAMILY_ENTRY_CAP {
+        if self.seen.len() >= cap {
             self.emitted_without_retaining += 1;
             return SessionWarningDecision::EmitWithoutRetaining;
         }
@@ -257,14 +263,24 @@ impl FamilyState {
 }
 
 /// One family's locked state.
-#[derive(Default)]
 struct FamilyStore {
     state: Mutex<FamilyState>,
+    cap: usize,
+}
+
+impl Default for FamilyStore {
+    fn default() -> Self {
+        Self::new(PER_FAMILY_ENTRY_CAP)
+    }
 }
 
 impl FamilyStore {
+    fn new(cap: usize) -> Self {
+        Self { state: Mutex::default(), cap }
+    }
+
     fn note(&self, identity: SessionWarningIdentity) -> SessionWarningDecision {
-        self.state.lock().note(identity)
+        self.state.lock().note(identity, self.cap)
     }
 
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -294,7 +310,6 @@ impl FamilyStore {
 ///
 /// Presentation/operational state only (#9769): classification
 /// `provider_or_presentation`, semantic authority none, persistence never.
-#[derive(Default)]
 pub(crate) struct SessionWarningDedupStore {
     #[cfg(not(target_arch = "wasm32"))]
     critic: FamilyStore,
@@ -305,6 +320,22 @@ pub(crate) struct SessionWarningDedupStore {
     #[cfg(not(target_arch = "wasm32"))]
     project_config: FamilyStore,
     core_module_notice: FamilyStore,
+}
+
+impl Default for SessionWarningDedupStore {
+    fn default() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            critic: FamilyStore::default(),
+            client_setting: FamilyStore::default(),
+            client_include_path: FamilyStore::default(),
+            ai_backend: FamilyStore::default(),
+            formatter_options: FamilyStore::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            project_config: FamilyStore::default(),
+            core_module_notice: FamilyStore::new(CORE_MODULE_NOTICE_CAP),
+        }
+    }
 }
 
 impl SessionWarningDedupStore {
@@ -354,8 +385,9 @@ impl SessionWarningDedupStore {
         identity: SessionWarningIdentity,
         emit: impl FnOnce() -> bool,
     ) -> SessionWarningDecision {
-        let mut state = self.family(family).state.lock();
-        let decision = state.note(identity);
+        let store = self.family(family);
+        let mut state = store.state.lock();
+        let decision = state.note(identity, store.cap);
         if matches!(
             decision,
             SessionWarningDecision::EmitFirst | SessionWarningDecision::EmitWithoutRetaining

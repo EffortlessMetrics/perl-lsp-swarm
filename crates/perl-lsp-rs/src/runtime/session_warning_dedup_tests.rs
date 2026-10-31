@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 
 use super::LspServer;
 use super::session_warning_dedup::{
-    PER_FAMILY_ENTRY_CAP, SessionWarningCode, SessionWarningDecision, SessionWarningFamily,
-    SessionWarningIdentity, SessionWarningSubjectTag,
+    CORE_MODULE_NOTICE_CAP, PER_FAMILY_ENTRY_CAP, SessionWarningCode, SessionWarningDecision,
+    SessionWarningFamily, SessionWarningIdentity, SessionWarningSubjectTag,
 };
 
 fn profile_identity(profile: &str) -> SessionWarningIdentity {
@@ -89,6 +89,25 @@ fn many_distinct_subjects_stop_retaining_at_the_hard_bound() {
         note_critic(&server, profile_identity(&format!("/adversarial/profile-{index}")));
     }
     assert_eq!(server.session_warning_dedup_snapshot().critic.entries, PER_FAMILY_ENTRY_CAP);
+}
+
+#[test]
+fn core_module_notice_retains_the_full_closed_module_set() {
+    let server = LspServer::new();
+    // The closed core-module set has 34 names, above the shared cap of 32:
+    // every one must be retained so none re-notifies on later navigation.
+    for index in 0..CORE_MODULE_NOTICE_CAP {
+        let identity = profile_identity(&format!("core-module-{index}"));
+        assert_eq!(
+            server.session_warning_dedup.note(SessionWarningFamily::CoreModuleNotice, identity),
+            SessionWarningDecision::EmitFirst,
+            "core module subject {index}"
+        );
+    }
+    assert_eq!(
+        server.session_warning_dedup_snapshot().core_module_notice.entries,
+        CORE_MODULE_NOTICE_CAP
+    );
 }
 
 #[test]
