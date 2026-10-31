@@ -345,6 +345,7 @@ impl Default for SessionWarningDedupStore {
             #[cfg(not(target_arch = "wasm32"))]
             project_config: FamilyStore::default(),
             core_module_notice: FamilyStore::new(CORE_MODULE_NOTICE_CAP),
+            critic_engine_availability: FamilyStore::default(),
         }
     }
 }
