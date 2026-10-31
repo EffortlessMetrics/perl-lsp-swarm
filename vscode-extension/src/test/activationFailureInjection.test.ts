@@ -945,14 +945,14 @@ describe('production activation failure injection (#7855)', () => {
   });
 
   test('a workspace event delivered during rollback cannot corrupt the receipt', async () => {
-    // Fail after the debugger phase. In reverse order the POD save
+    // Fail after the debugger phase. In reverse order the arrow-completion
     // watcher is disposed before the configuration watcher, so firing a
-    // configuration change while the POD watcher's dispose runs reaches the
+    // configuration change while the arrow watcher's dispose runs reaches the
     // still-live configuration listener — the realistic mid-rollback
     // interleaving.
     const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (boundary) => {
       if (boundary.phase === 'document_providers' && boundary.ordinal === 1) {
-        armBusDisposeHook('watcher:pod-save', () => {
+        armBusDisposeHook('watcher:arrow-completion', () => {
           fireHostEvent('watcher:configuration', { affectsConfiguration: () => false });
         });
       }
