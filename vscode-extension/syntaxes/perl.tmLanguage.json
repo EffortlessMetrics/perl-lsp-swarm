@@ -501,8 +501,8 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(\\()",
-                    "end": "\\)[cgimosxpodualner]*",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\()",
+                    "end": "\\)\\s*\\((?:[^()\\\\]|\\\\.)*\\)[cgimosxpodualner]*",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -517,8 +517,27 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(\\{)",
-                    "end": "\\}[cgimosxpodualner]*",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\{)",
+                    "end": "\\}\\s*\\{(?:[^{}\\\\]|\\\\.)*\\}[cgimosxpodualner]*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.perl"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.perl",
+                            "match": "\\\\."
+                        },
+                        {
+                            "include": "#substitution-nested-braces"
+                        }
+                    ]
+                },
+                {
+                    "name": "string.regexp.replace.perl",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(\\[)",
+                    "end": "\\]\\s*\\[(?:[^\\[\\]\\\\]|\\\\.)*\\][cgimosxpodualner]*",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -533,8 +552,8 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(\\[)",
-                    "end": "\\][cgimosxpodualner]*",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*(<)",
+                    "end": ">\\s*<(?:[^<>\\\\]|\\\\.)*>[cgimosxpodualner]*",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -549,8 +568,8 @@
                 },
                 {
                     "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*(<)",
-                    "end": ">[cgimosxpodualner]*",
+                    "begin": "(?<![-\\w>])\\b(s|tr|y)\\s*([^\\s\\w=}])",
+                    "end": "(?:\\\\.|[^\\\\])*?\\2\\s*(?:\\\\.|[^\\\\])*?\\2[cgimosxpodualner]*",
                     "captures": {
                         "1": {
                             "name": "keyword.other.perl"
@@ -562,22 +581,19 @@
                             "match": "\\\\."
                         }
                     ]
+                }
+            ]
+        },
+        "substitution-nested-braces": {
+            "begin": "\\{",
+            "end": "\\}",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.perl",
+                    "match": "\\\\."
                 },
                 {
-                    "name": "string.regexp.replace.perl",
-                    "begin": "\\b(s|tr|y)\\s*([^\\s\\w])",
-                    "end": "\\2[cgimosxpodualner]*",
-                    "captures": {
-                        "1": {
-                            "name": "keyword.other.perl"
-                        }
-                    },
-                    "patterns": [
-                        {
-                            "name": "constant.character.escape.perl",
-                            "match": "\\\\."
-                        }
-                    ]
+                    "include": "#substitution-nested-braces"
                 }
             ]
         },
