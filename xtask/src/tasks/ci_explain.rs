@@ -437,6 +437,7 @@ fn format_explanation(explanation: &ExplainReceipt) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_some_with, must_with};
 
     fn make_gate(name: &str, status: &str, required: bool) -> GateResult {
         GateResult {
@@ -496,9 +497,9 @@ mod tests {
     fn load_receipt_malformed_json_returns_malformed_error() {
         use std::fs;
         use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
+        let tmp = must_with(TempDir::new(), "tempdir");
         let path = tmp.path().join("bad.json");
-        fs::write(&path, b"not valid json").expect("write");
+        must_with(fs::write(&path, b"not valid json"), "write");
         let result = load_receipt(&path);
         assert!(matches!(result, Err(ReceiptLoadError::Malformed(_))));
     }
@@ -507,9 +508,9 @@ mod tests {
     fn load_receipt_unsupported_schema_returns_error() {
         use std::fs;
         use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
+        let tmp = must_with(TempDir::new(), "tempdir");
         let path = tmp.path().join("receipt.json");
-        fs::write(&path, br#"{"schema_version":"gates.v99","gates":[]}"#).expect("write");
+        must_with(fs::write(&path, br#"{"schema_version":"gates.v99","gates":[]}"#), "write");
         let result = load_receipt(&path);
         assert!(matches!(result, Err(ReceiptLoadError::UnsupportedSchema(_))));
     }
@@ -518,10 +519,10 @@ mod tests {
     fn load_receipt_absent_schema_version_is_accepted() {
         use std::fs;
         use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
+        let tmp = must_with(TempDir::new(), "tempdir");
         let path = tmp.path().join("receipt.json");
         // Older receipts without schema_version must still parse successfully.
-        fs::write(&path, br#"{"gates":[]}"#).expect("write");
+        must_with(fs::write(&path, br#"{"gates":[]}"#), "write");
         let result = load_receipt(&path);
         assert!(result.is_ok());
     }
@@ -538,17 +539,210 @@ mod tests {
     fn load_receipt_accepts_producer_emitted_schema_version() {
         use std::fs;
         use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
+        let tmp = must_with(TempDir::new(), "tempdir");
         let path = tmp.path().join("receipt.json");
-        let body =
-            format!(r#"{{"schema_version":"{}","gates":[]}}"#, GATES_RECEIPT_SCHEMA_VERSION,);
-        fs::write(&path, body).expect("write");
+        let body = format!(r#"{{"schema_version":"{}","gates":[]}}"#, GATES_RECEIPT_SCHEMA_VERSION);
+        must_with(fs::write(&path, body), "write");
         let result = load_receipt(&path);
         assert!(
             result.is_ok(),
             "consumer rejected producer-emitted schema_version {:?}: {:?}",
             GATES_RECEIPT_SCHEMA_VERSION,
             result.err(),
+        );
+    }
+
+    // ── producer → consumer envelope-shape drift visibility (#15344) ─────────
+
+    /// Build a real `gates::Receipt` through the producer's own types — no
+    /// hand-written receipt JSON — mirroring how the producer's receipt
+    /// builder assembles the envelope. Any producer envelope field added or
+    /// removed must update this constructor, keeping the tests below pinned
+    /// to the producer's actual shape rather than a copy of it.
+    fn make_producer_receipt() -> super::super::gates::Receipt {
+        use super::super::gates::{
+            EnvironmentInfo, GateResult, PlatformInfo, ReceiptMetadata, ReceiptSummary,
+            ToolchainInfo,
+        };
+        super::super::gates::Receipt {
+            schema_version: GATES_RECEIPT_SCHEMA_VERSION.to_string(),
+            metadata: ReceiptMetadata {
+                timestamp: "2026-09-18T00:00:00Z".to_string(),
+                git_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                git_sha_short: "01234567".to_string(),
+                git_branch: "fix/15344-gates-ciexplain-e2e".to_string(),
+                git_dirty: false,
+                toolchain: ToolchainInfo {
+                    rustc_version: "rustc 1.90.0 (fixture)".to_string(),
+                    rustc_channel: None,
+                    rustc_semver: None,
+                    cargo_version: None,
+                    node_version: None,
+                    nix_version: None,
+                },
+                platform: PlatformInfo {
+                    os: "linux".to_string(),
+                    os_version: None,
+                    arch: "x86_64".to_string(),
+                    cpu_cores: None,
+                    memory_gb: None,
+                    is_wsl: None,
+                },
+                environment: EnvironmentInfo {
+                    env_type: "local".to_string(),
+                    ci_provider: None,
+                    ci_run_id: None,
+                    ci_run_attempt: None,
+                    ci_run_url: None,
+                    pr_number: None,
+                    nix_shell: None,
+                },
+                trigger: Some("manual".to_string()),
+            },
+            gates: vec![GateResult {
+                gate_name: "fmt".to_string(),
+                tier: "pr_fast".to_string(),
+                status: "fail".to_string(),
+                required: Some(true),
+                duration_ms: 12,
+                command: "cargo xtask fmt --check".to_string(),
+                exit_code: Some(1),
+                output_summary: Some("formatting drift detected".to_string()),
+                log_path: None,
+                metrics: None,
+                artifacts: None,
+                first_failure: None,
+                command_started: true,
+            }],
+            summary: ReceiptSummary {
+                total_gates: 1,
+                passed: 0,
+                failed: 1,
+                skipped: 0,
+                timeout: None,
+                error: None,
+                total_duration_ms: 12,
+                tier_results: None,
+                overall_status: "fail".to_string(),
+                blocking_failures: None,
+                aggregate_metrics: None,
+            },
+            agent_receipt: None,
+            diff_config: None,
+        }
+    }
+
+    /// Serialize through the producer's exact serialization path — the same
+    /// `serde_json::to_string_pretty` call `gates::write_receipt` performs
+    /// after validation. The returned bytes are what the producer emits.
+    fn serialize_producer_receipt(receipt: &super::super::gates::Receipt) -> String {
+        must_with(serde_json::to_string_pretty(receipt), "producer serializes its receipt")
+    }
+
+    /// End-to-end envelope-shape test for the `gates::Receipt` (producer) →
+    /// `ci_explain::Receipt` (consumer) pair (#15344).
+    ///
+    /// The producer's real envelope — built through its own types, serialized
+    /// the way `write_receipt` serializes it — must survive the consumer's
+    /// parse path with `schema_version` and gate identity fields intact, and
+    /// the parsed envelope must still drive the consumer's semantics. If
+    /// either side renames, retypes, or re-versions its envelope
+    /// incompatibly (the #15337 `"1.0.0"` vs `"gates.v1"` drift), this test
+    /// fails at the committing change instead of leaving every freshly
+    /// emitted receipt silently rejected.
+    #[test]
+    fn producer_receipt_envelope_survives_consumer_parse_path() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = must_with(TempDir::new(), "tempdir");
+        let path = tmp.path().join("receipt.json");
+        let producer_bytes = serialize_producer_receipt(&make_producer_receipt());
+        let emitted: serde_json::Value =
+            must_with(serde_json::from_str(&producer_bytes), "producer output is valid JSON");
+        assert_eq!(
+            emitted["schema_version"], GATES_RECEIPT_SCHEMA_VERSION,
+            "producer envelope must carry the shared schema version"
+        );
+        must_with(fs::write(&path, producer_bytes), "write producer bytes");
+
+        let loaded =
+            must_with(load_receipt(&path), "consumer accepts the producer's emitted envelope");
+        assert_eq!(
+            loaded.schema_version.as_deref(),
+            Some(GATES_RECEIPT_SCHEMA_VERSION),
+            "schema_version must survive the consumer parse path unchanged"
+        );
+        assert_eq!(
+            loaded.gates.len(),
+            1,
+            "consumer must keep every producer gate entry, got {:?}",
+            loaded.gates
+        );
+        let gate = &loaded.gates[0];
+        assert_eq!(gate.gate_name, "fmt", "gate identity must survive the envelope");
+        assert_eq!(gate.status, "fail");
+        assert_eq!(gate.required, Some(true));
+        assert_eq!(gate.command.as_deref(), Some("cargo xtask fmt --check"));
+
+        // The surviving envelope must still drive the consumer's semantics.
+        let explanation = explain(&loaded, None);
+        assert_eq!(explanation.blocking_check_name.as_deref(), Some("fmt"));
+    }
+
+    /// The #15337 drift shape, replayed: a producer-emitted receipt whose
+    /// `schema_version` is not the consumer's supported value must be refused
+    /// with a typed `ReceiptLoadError::UnsupportedSchema`, never silently
+    /// accepted or dropped.
+    #[test]
+    fn consumer_refuses_receipt_whose_schema_version_drifts() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = must_with(TempDir::new(), "tempdir");
+        let path = tmp.path().join("receipt.json");
+        let producer_bytes = serialize_producer_receipt(&make_producer_receipt());
+        let mut emitted: serde_json::Value =
+            must_with(serde_json::from_str(&producer_bytes), "producer output is valid JSON");
+        emitted["schema_version"] = serde_json::Value::String("1.0.0".to_string());
+        must_with(
+            fs::write(&path, must_with(serde_json::to_vec_pretty(&emitted), "serialize")),
+            "write",
+        );
+        let result = load_receipt(&path);
+        match result {
+            Err(ReceiptLoadError::UnsupportedSchema(v)) => assert_eq!(v, "1.0.0"),
+            other => {
+                assert!(
+                    matches!(other, Err(ReceiptLoadError::UnsupportedSchema(_))),
+                    "drifted schema_version must be a typed refusal, got {other:?}"
+                );
+            }
+        }
+    }
+
+    /// Negative control: a producer-emitted receipt missing a field the
+    /// consumer treats as required gate identity (`gate_name`) must be
+    /// refused with a typed `ReceiptLoadError::Malformed`. If the consumer
+    /// ever silently defaults that field, this test fails and the drift
+    /// becomes visible instead of producing explanations without a gate.
+    #[test]
+    fn consumer_refuses_receipt_missing_required_gate_identity() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = must_with(TempDir::new(), "tempdir");
+        let path = tmp.path().join("receipt.json");
+        let producer_bytes = serialize_producer_receipt(&make_producer_receipt());
+        let mut emitted: serde_json::Value =
+            must_with(serde_json::from_str(&producer_bytes), "producer output is valid JSON");
+        must_some_with(emitted["gates"][0].as_object_mut(), "producer emits a gate object")
+            .remove("gate_name");
+        must_with(
+            fs::write(&path, must_with(serde_json::to_vec_pretty(&emitted), "serialize")),
+            "write",
+        );
+        let result = load_receipt(&path);
+        assert!(
+            matches!(result, Err(ReceiptLoadError::Malformed(_))),
+            "missing gate identity must be a typed refusal, got {result:?}"
         );
     }
 
@@ -815,7 +1009,7 @@ mod tests {
 
     #[test]
     fn resolve_run_id_receipt_path_points_to_artifact_root() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = must_with(tempfile::tempdir(), "tempdir");
         let path = resolve_run_id_receipt_path(dir.path());
         assert_eq!(path, dir.path().join("receipt.json"));
     }
@@ -829,14 +1023,14 @@ mod tests {
 
     #[test]
     fn downloaded_artifact_layout_loads_real_gate_receipt_fixture() {
-        let download_dir = tempfile::tempdir().expect("tempdir");
+        let download_dir = must_with(tempfile::tempdir(), "tempdir");
         let artifact_path = download_dir.path().join("receipt.json");
         let fixture =
             include_str!("../../tests/fixtures/ci-explain-run/gate-receipts/receipt.json");
-        fs::write(&artifact_path, fixture).expect("write fixture");
+        must_with(fs::write(&artifact_path, fixture), "write fixture");
 
         let receipt_path = resolve_run_id_receipt_path(download_dir.path());
-        let receipt = load_receipt(&receipt_path).expect("load downloaded artifact layout");
+        let receipt = must_with(load_receipt(&receipt_path), "load downloaded artifact layout");
         assert_eq!(receipt.gates.len(), 1);
         assert_eq!(receipt.gates[0].gate_name, "fmt");
     }

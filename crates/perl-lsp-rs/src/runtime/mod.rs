@@ -20,6 +20,7 @@ mod diagnostics_sink;
 mod dispatch;
 mod document_access;
 mod document_symbols_sink;
+mod exit_policy;
 /// File discovery abstraction for workspace scanning
 pub mod file_discovery;
 /// File watcher change debouncer for bulk operation handling
@@ -56,6 +57,7 @@ mod text_sync;
 /// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
 pub(crate) mod timing;
 mod types;
+pub(crate) mod v0_18_text_sync_envelope;
 mod window;
 mod workspace;
 mod workspace_folder;
@@ -76,6 +78,8 @@ mod open_buffer_authority_tests;
 mod runtime_services_tests;
 #[cfg(test)]
 mod session_warning_dedup_tests;
+#[cfg(test)]
+mod watched_delete_republish_tests;
 
 // Test/pressure observation of the bounded session-warning dedup store (#9769).
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -100,10 +104,7 @@ pub(crate) struct WorkspaceTopologyTransitionGate {
     pub(crate) started: std::sync::mpsc::Sender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
 }
-use perl_tdd_support::{
-    tdd_basic::TestGenerator,
-    test_runner::{TestKind, TestRunner},
-};
+use perl_tdd_support::test_runner::{TestKind, TestRunner};
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
@@ -187,8 +188,19 @@ pub struct LspServer {
     initialize_requested: AtomicBool,
     /// Whether the server is initialized
     initialized: AtomicBool,
+    /// Server-owned coordinate authority, published only after initialize succeeds.
+    pub(crate) position_encoding_session_context:
+        Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
+    /// What an `exit` notification ends: the process (stdio default) or only
+    /// this connection (socket mode, #17331). Set once at construction.
+    exit_policy: exit_policy::ExitPolicy,
+    /// Woken when `exit` should end this connection's serve loop without
+    /// terminating the process (socket mode, #17331). `notify_one` stores a
+    /// permit, so a notify that races an ingress loop not yet parked on the
+    /// select arm is never lost.
+    connection_exit: Arc<tokio::sync::Notify>,
     /// Pending `window/logMessage` text to emit once the client has sent the
     /// `initialized` notification (notifications must not be sent before the
     /// initialize response is delivered). Currently used for the JetBrains
@@ -215,6 +227,12 @@ pub struct LspServer {
     outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
+    /// Root-input classification recorded by the most recent `initialize`
+    /// request (#8161). `None` before the first initialize. Kept as a separate
+    /// receipt from `client_capabilities.workspace_folders_support` so the
+    /// client's advertised bit and the declared root input never merge into
+    /// one derived boolean.
+    initial_root_input: Mutex<Option<lifecycle::root_input::InitialRootInput>>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Request IDs that are queued or executing in the async scheduler.
@@ -289,6 +307,12 @@ pub struct LspServer {
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
     /// Canonical feature IDs emitted by the most recent initialize response.
     advertised_feature_ids: Mutex<Vec<&'static str>>,
+    /// Accepted text-sync session contract plus the digest of the exact
+    /// `InitializeResult` built from it (#9378). `None` until initialize is
+    /// accepted; set exactly once, and never replaced or partially altered.
+    /// The immutable contract is the single authority for the wire sync kind
+    /// and position encoding — no other field may carry a competing value.
+    text_sync_session: Mutex<Option<lifecycle::session_contract::AcceptedTextSyncSession>>,
     /// Client supports pull diagnostics
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution
@@ -473,6 +497,21 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
+    /// Whether the "this is a Perl core module, use hover instead" goto-definition
+    /// notice has already been written to the output channel this session.
+    ///
+    /// Same shape and same reason as `root_undetected_shown`: goto-definition is a
+    /// per-request action, so an unguarded notice repeats on every F12 over
+    /// `use strict` and trains the user to ignore the channel. Instance-level
+    /// rather than a process-level `Once`, so each `LspServer` session is its own
+    /// window (#16551).
+    pub(crate) core_module_notice_shown: Arc<AtomicBool>,
+    /// Bounded pending/notified module identities and background scan capacity.
+    pub(crate) module_ambiguity_notices:
+        Arc<lifecycle::module_resolution::ModuleAmbiguityNoticeState>,
+    #[cfg(test)]
+    pub(crate) module_ambiguity_probe_gate:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
@@ -731,6 +770,44 @@ impl LspServer {
         );
         if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
             tracing::debug!(?decision, "AI auth failure warning emission decided");
+        }
+    }
+
+    /// Notify the user once per session when the explicitly requested external
+    /// `perlcritic` analyzer is unavailable and the built-in fallback analyzer
+    /// ran instead.
+    ///
+    /// The built-in analyzer applies a different rule set from external
+    /// `perlcritic`; before #16550 that fallback was silent and the command
+    /// result even labeled it with the native engine's `analyzerUsed` value,
+    /// so a client could not tell which rule set produced the verdict. The
+    /// wording and install remediation stay here; suppression identity is the
+    /// subjectless critic code (the condition is environment-global for the
+    /// session), retained in the bounded session-warning dedup store (#9769)
+    /// under the dedicated availability family: the subject is the
+    /// environment's engine availability, not a critic setting, so a
+    /// critic-configuration transition's `clear_family(Critic)` must not
+    /// resurrect this once-per-session warning (#16550 review).
+    pub(crate) fn notify_critic_external_unavailable(&self) {
+        let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
+            session_warning_dedup::SessionWarningCode::CriticExternalUnavailable,
+        );
+        // Decide + send + rollback under one family-lock hold (#9769), the
+        // same guarded emission the AI auth failure path uses.
+        let decision = self.session_warning_dedup.emit_once_with(
+            session_warning_dedup::SessionWarningFamily::CriticEngineAvailability,
+            identity,
+            || {
+                self.show_message(
+                    MessageType::Warning,
+                    "perlcritic not found on PATH; Perl LSP used its built-in fallback \
+                     analyzer. Install with `cpanm Perl::Critic`.",
+                )
+                .is_ok()
+            },
+        );
+        if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
+            tracing::debug!(?decision, "critic fallback warning emission decided");
         }
     }
 
@@ -1606,6 +1683,32 @@ impl LspServer {
         }
         if !self.runtime_services.schedule_diagnostic_debounce(uri) {
             self.publish_diagnostics(uri);
+        }
+    }
+
+    /// Republish diagnostics for every open document.
+    ///
+    /// External-mutation seams — workspace-folder identity changes, watched
+    /// `didChangeWatchedFiles` events, client create/rename/delete file operations,
+    /// and reconciled dependency saves (#17332, #18116) — invalidate facts an
+    /// open buffer's diagnostics were computed from (for example a dependency
+    /// module the index can no longer resolve). The buffer text itself did not
+    /// change, so no `didChange`
+    /// publish will repair the client's stale display; the seam must push fresh
+    /// publications itself.
+    ///
+    /// The open set is snapshotted under the lock and republished after it is
+    /// released: `publish_diagnostics` re-acquires `documents.lock()`, and
+    /// `parking_lot::Mutex` is not reentrant. Publications go through
+    /// [`Self::publish_diagnostics_debounced`], so a burst of delete events
+    /// coalesces per URI.
+    pub(crate) fn republish_open_document_diagnostics(&self) {
+        let open_uris: Vec<String> = {
+            let documents = self.documents.lock();
+            documents.keys().cloned().collect()
+        };
+        for open_uri in open_uris {
+            self.publish_diagnostics_debounced(&open_uri);
         }
     }
 

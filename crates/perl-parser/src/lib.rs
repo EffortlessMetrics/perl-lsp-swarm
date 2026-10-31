@@ -216,8 +216,6 @@ pub use refactor::import_optimizer;
 pub use refactor::modernize;
 /// Enhanced code modernization with refactoring capabilities.
 pub use refactor::modernize_refactored;
-/// Unified refactoring engine for comprehensive code transformations.
-pub use refactor::refactoring;
 /// Token stream with position-aware iteration.
 pub use tokens::token_stream;
 /// Lightweight token wrapper for AST integration.
@@ -351,11 +349,6 @@ pub use type_inference::{
     TypeInferenceEngine, TypeLocation,
 };
 
-/// Refactoring engine types: configuration, operations, and results.
-pub use refactoring::{
-    ModernizationPattern, RefactoringConfig, RefactoringEngine, RefactoringOperation,
-    RefactoringResult, RefactoringScope, RefactoringType,
-};
 #[cfg(test)]
 /// TDD workflow types: actions, configuration, and cycle management.
 pub use tdd_workflow::{

@@ -1221,11 +1221,14 @@ mod tests {
             NodeKind::Signature { parameters: vec![] },
             NodeKind::MandatoryParameter { variable: Box::new(leaf()) },
             NodeKind::OptionalParameter {
+                default_operator: "=".into(),
+                default_operator_span: Default::default(),
                 variable: Box::new(leaf()),
                 default_value: Box::new(leaf()),
             },
             NodeKind::SlurpyParameter { variable: Box::new(leaf()) },
             NodeKind::NamedParameter {
+                default_operator_span: None,
                 variable: Box::new(leaf()),
                 external_name: String::new(),
                 default_operator: None,
@@ -1256,6 +1259,7 @@ mod tests {
                 args: vec![],
             },
             NodeKind::Regex {
+                form: crate::ast::RegexSurfaceForm::BarePattern,
                 pattern: "foo".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),
@@ -1788,11 +1792,14 @@ mod tests {
             n(NodeKind::Signature { parameters: vec![leaf()] }),
             n(NodeKind::MandatoryParameter { variable: Box::new(leaf()) }),
             n(NodeKind::OptionalParameter {
+                default_operator: "=".into(),
+                default_operator_span: Default::default(),
                 variable: Box::new(leaf()),
                 default_value: Box::new(leaf()),
             }),
             n(NodeKind::SlurpyParameter { variable: Box::new(leaf()) }),
             n(NodeKind::NamedParameter {
+                default_operator_span: None,
                 variable: Box::new(leaf()),
                 external_name: String::new(),
                 default_operator: None,
@@ -1826,6 +1833,7 @@ mod tests {
                 args: vec![leaf()],
             }),
             n(NodeKind::Regex {
+                form: crate::ast::RegexSurfaceForm::BarePattern,
                 pattern: "foo".to_string(),
                 replacement: None,
                 modifiers: "".to_string(),

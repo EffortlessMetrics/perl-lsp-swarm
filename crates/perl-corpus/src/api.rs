@@ -41,7 +41,7 @@ pub use crate::tie_interface::{
 pub use root::{CORPUS_ROOT_ENV, CorpusRoot, CorpusRootError, CorpusRootSource};
 pub use topology::{
     AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
-    CorpusAssetLayer, CorpusTopology, CorpusTopologyError,
+    CorpusAssetLayer, CorpusTopology, CorpusTopologyError, UnclassifiedReason,
 };
 
 /// Serializes every test that reads or mutates the process-wide current

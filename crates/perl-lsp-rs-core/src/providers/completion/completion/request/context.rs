@@ -73,6 +73,7 @@ mod tests {
             current_package: "main".to_string(),
             prefix: prefix.to_string(),
             prefix_start: 23,
+            suffix_end: 25,
             cursor_scope_id: 0,
         }
     }

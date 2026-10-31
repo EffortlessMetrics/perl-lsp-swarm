@@ -90,30 +90,25 @@ class C {
     );
 }
 
-// --- Negative / boundary coverage: the `//=` / `||=` operators are named-only.
-
+// #8912 real-Perl authority reverses the former positional-rejection and
+// named-aggregate acceptance assertions. Field/range proof is in signature_forms_8915.
 #[test]
-fn positional_defined_or_default_is_rejected() {
-    // `//=` is valid only for named params (PPC0024); on a positional parameter
-    // the parser must report an error rather than consume it as a default.
-    assert_has_error("sub f ($x //= 1) { }", "error");
+fn positional_defined_or_default_is_accepted() {
+    assert_clean_parse("use feature 'signatures'; sub f ($x //= 1) { }");
 }
-
 #[test]
-fn positional_logical_or_default_is_rejected() {
-    assert_has_error("sub f ($x ||= 1) { }", "error");
+fn positional_logical_or_default_is_accepted() {
+    assert_clean_parse("use feature 'signatures'; sub f ($x ||= 1) { }");
 }
-
 #[test]
-fn named_slurpy_hash_defined_or_default_parses() {
-    // The named-slurpy branch also carries the new default-operator handling:
-    // the leading colon makes `:%rest` a NamedParameter (slurpy variable) that
-    // records the `//=` operator.
-    let src = "sub f (:%rest //= {}) { }";
-    assert_clean_parse(src);
-    assert_eq!(
-        named_param_default_operators(src),
-        vec![Some("//=".to_string())],
-        ":%rest //= {{}} records the `//=` default operator",
-    );
+fn named_slurpy_hash_defined_or_default_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let output =
+        perl_parser_core::Parser::new("use feature 'signatures'; sub f (:%rest //= {}) { }")
+            .parse_with_recovery();
+    if !output.diagnostics.iter().any(|error| {
+        matches!(error, perl_parser_core::ParseError::InvalidSignatureParameter { .. })
+    }) {
+        return Err("named aggregate accepted".into());
+    }
+    Ok(())
 }

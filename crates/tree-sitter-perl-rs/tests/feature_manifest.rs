@@ -118,46 +118,82 @@ fn semantic_overlay_feature_owns_its_upper_dependencies() -> TestResult {
         require(path.is_file(), format!("manifest contract path missing {}", path.display()))?;
     }
 
-    // The facade is one module on this layout, so the ledger names every
-    // overlay-owned item in `lib.rs` rather than a gated `mod` declaration.
-    // Each item is matched together with the attribute immediately above it, so
-    // deleting a single gate fails here even though the crate still compiles
-    // with the feature on.
+    // The facade is split into modules, so the ledger pins the feature gate at
+    // the two compilation-relevant ownership points — the gated `mod`
+    // declaration plus its re-export in `lib.rs`, and the gated `Tree`
+    // entry-point method in `tree.rs` — and then asserts that every
+    // overlay-owned item (upper-stack imports, public types, query impl, and
+    // crate-private traversal helper) lives in the feature-owned module file.
+    // Items inside that file need no per-item gate: it never compiles without
+    // the feature. Each lib/tree assertion is matched together with the
+    // attribute immediately above it, so deleting a single gate fails here even
+    // though the crate still compiles with the feature on.
     let lib_path = crate_root().join("src/lib.rs");
     let lib = fs::read_to_string(&lib_path)?;
 
-    // The three direct upper-stack imports the feature owns. These are the
-    // edges that make the dependency graph assertions below reachable at all.
+    assert_cfg_owned(&lib, "mod semantic_overlay;", &lib_path)?;
+    assert_cfg_owned(
+        &lib,
+        "pub use semantic_overlay::{OverlayDefinition, SemanticOverlay, VisibleImport};",
+        &lib_path,
+    )?;
+
+    // The `Tree` entry point and its body: a gate on the signature alone would
+    // still admit a body that resolved the overlay unconditionally.
+    let tree_path = crate_root().join("src/tree.rs");
+    let tree_source = fs::read_to_string(&tree_path)?;
+    assert_cfg_owned(
+        &tree_source,
+        "pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {\n        SemanticOverlay { tree: self }\n    }",
+        &tree_path,
+    )?;
+
+    // The feature-owned module file: the three direct upper-stack imports (the
+    // edges that make the dependency-graph assertions below reachable at all),
+    // the three public overlay types (each anchored by its first doc line), the
+    // query implementations, and the crate-private traversal helper they are
+    // the only callers of.
+    let overlay_path = crate_root().join("src/semantic_overlay.rs");
+    let overlay = fs::read_to_string(&overlay_path)?;
+
     for import in [
         "use perl_module::parse_module_import_head;",
         "use perl_pragma::{PragmaState, PragmaTracker};",
         "use perl_semantic_analyzer::semantic::SemanticModel;",
     ] {
-        assert_cfg_owned(&lib, import, &lib_path)?;
+        require(
+            normalize_whitespace(&overlay).contains(&normalize_whitespace(import)),
+            format!(
+                "{} does not contain the feature-owned import {import:?}",
+                overlay_path.display()
+            ),
+        )?;
     }
 
-    // The three public overlay types. Each gate sits above the item's doc
-    // comment, so the first doc line is what anchors the assertion.
     for doc_anchor in [
         "/// Experimental semantic overlay query handle.",
         "/// Symbol definition returned by [`SemanticOverlay`] queries.",
         "/// Import statement visible at a specific source offset.",
     ] {
-        assert_cfg_owned(&lib, doc_anchor, &lib_path)?;
+        require(
+            normalize_whitespace(&overlay).contains(&normalize_whitespace(doc_anchor)),
+            format!(
+                "{} does not contain the feature-owned item {doc_anchor:?}",
+                overlay_path.display()
+            ),
+        )?;
     }
 
-    // The entry point and its body: a gate on the signature alone would still
-    // admit a body that resolved the overlay unconditionally.
-    assert_cfg_owned(
-        &lib,
-        "pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {\n        SemanticOverlay { tree: self }\n    }",
-        &lib_path,
+    require(
+        normalize_whitespace(&overlay)
+            .contains(&normalize_whitespace("impl<'tree> SemanticOverlay<'tree> {")),
+        format!("{} does not contain the overlay query impl", overlay_path.display()),
     )?;
-
-    // The query implementations and the crate-private traversal helper they
-    // are the only callers of.
-    assert_cfg_owned(&lib, "impl<'tree> SemanticOverlay<'tree> {", &lib_path)?;
-    assert_cfg_owned(&lib, "fn collect_visible_use_imports(", &lib_path)?;
+    require(
+        normalize_whitespace(&overlay)
+            .contains(&normalize_whitespace("fn collect_visible_use_imports(")),
+        format!("{} does not contain the overlay traversal helper", overlay_path.display()),
+    )?;
 
     Ok(())
 }

@@ -44,7 +44,7 @@ goto-definition. That's the symptom of mixing prefix-form source with an
 exact-symbol consumer. The fix is two fixtures (one prefix-cursor, one exact),
 not one tortured fixture.
 
-**Historical**: `scenario_14` removed a `#[ignore]`'d test in #8524 for exactly
+**Historical**: `scenario_14` removed a `#[ignore]`'d test for exactly
 this reason — it asserted goto-definition on `use Gre`. See
 `tests/ux_scenario_14_inc_conformance.rs` for the current pattern: separate
 `*_COMPLETION_SOURCE` and `*_SOURCE` constants per fixture.

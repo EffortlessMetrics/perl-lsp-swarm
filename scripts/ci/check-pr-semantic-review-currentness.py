@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NamedTuple, Optional
 
@@ -49,6 +50,13 @@ RESULT_SECTION_RE = re.compile(
 )
 ANY_SECTION_RE = re.compile(r"^[ \t]*##[ \t]", re.MULTILINE)
 RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
+# Stdout JSON payload version. The marker envelope (`semantic-review:v1`) and the
+# stdout payload are two distinct wire surfaces: the marker is parsed by the
+# campaign review pipeline, the stdout payload is parsed by upstream operators
+# and gates. Pin the payload version explicitly so a shape bump (e.g. a new
+# `finalised_at` key) is observable at the consumer side rather than silent.
+SCHEMA_VERSION = "semantic_review_currentness.v1"
+FIXTURE_ENV = "SEMANTIC_REVIEW_TEST_FIXTURE"
 
 
 class Review(NamedTuple):
@@ -140,15 +148,63 @@ def ensure_commit(root: Path, oid: str) -> None:
         raise CurrentnessError(f"fetched object is not a commit: {oid}")
 
 
-def subject_digest(root: Path, merge_base: str, head: str) -> str:
-    ensure_commit(root, merge_base)
-    ensure_commit(root, head)
-    ancestry = _run(
-        ["git", "merge-base", "--is-ancestor", merge_base, head],
+ANCESTRY_ANCESTOR = "ancestor"
+ANCESTRY_NOT_ANCESTOR = "not-ancestor"
+ANCESTRY_INSTRUMENT_FAILURE = "instrument-failure"
+
+# `https://user:token@host/...` and token-only `https://token@host/...` — git prints
+# credential-bearing URLs on some failures; any userinfo before `@` is a secret.
+_EMBEDDED_CREDENTIALS_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)://[^\s/@]+@")
+
+
+def sanitize_git_diagnostic(stderr: str, *, limit: int = 200) -> str:
+    """Make git stderr safe to embed in a diagnostic.
+
+    Control sequences become whitespace, embedded URL credentials are redacted,
+    whitespace collapses, and the result is bounded to `limit` characters. The
+    text only explains a broken instrument; no ancestry verdict is ever read
+    from it, so lossy compression cannot change a classification.
+    """
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in stderr)
+    cleaned = _EMBEDDED_CREDENTIALS_RE.sub(r"\1://***@", cleaned)
+    return " ".join(cleaned.split())[:limit]
+
+
+def ancestry_state(root: Path, base: str, head: str) -> tuple[str, str]:
+    """Classify one `git merge-base --is-ancestor` probe; never collapse its outcomes.
+
+    The probe is a three-state predicate, not a boolean: exit 0 is "ancestor",
+    exit 1 is a genuine "not ancestor" over the locally available graph, and
+    everything else — exit 128, a signal, a broken clone — is an instrument
+    failure that proves nothing about ancestry. Returning
+    `(ANCESTRY_INSTRUMENT_FAILURE, "exit N: stderr")` keeps git errors from
+    reading as predicate verdicts in review evidence.
+    """
+    probe = _run(
+        ["git", "merge-base", "--is-ancestor", base, head],
         cwd=root,
         check=False,
     )
-    if ancestry.returncode != 0:
+    if probe.returncode == 0:
+        return ANCESTRY_ANCESTOR, ""
+    if probe.returncode == 1:
+        return ANCESTRY_NOT_ANCESTOR, ""
+    stderr = sanitize_git_diagnostic(probe.stderr or "")
+    detail = f"exit {probe.returncode}: {stderr}" if stderr else f"exit {probe.returncode}"
+    return ANCESTRY_INSTRUMENT_FAILURE, detail
+
+
+def subject_digest(root: Path, merge_base: str, head: str) -> str:
+    ensure_commit(root, merge_base)
+    ensure_commit(root, head)
+    state, detail = ancestry_state(root, merge_base, head)
+    if state == ANCESTRY_INSTRUMENT_FAILURE:
+        raise CurrentnessError(
+            f"ancestry probe between merge base {merge_base} and reviewed head "
+            f"{head} failed as a git instrument error ({detail}); it establishes "
+            "no ancestry verdict"
+        )
+    if state == ANCESTRY_NOT_ANCESTOR:
         raise CurrentnessError(
             f"marker merge base {merge_base} is not an ancestor of reviewed head {head}"
         )
@@ -246,10 +302,16 @@ def declared_review_result(body: str) -> Optional[str]:
     return declared[0]
 
 
+def has_cumulative_review_sections(body: str) -> bool:
+    """Use the same reader-visible section boundary for positive and adverse reviews."""
+    headings = {line.strip() for line in outside_fences(body).splitlines()}
+    return all(section in headings for section in REQUIRED_SECTIONS) and bool(
+        {"## Findings", "## No material findings"}.intersection(headings)
+    )
+
+
 def parse_marker(body: str, expected_pr: int, review_commit: str) -> Optional[Marker]:
-    if not all(section in body for section in REQUIRED_SECTIONS):
-        return None
-    if "## Findings" not in body and "## No material findings" not in body:
+    if not has_cumulative_review_sections(body):
         return None
     if declared_review_result(body) != MARKER_RESULT:
         return None
@@ -290,14 +352,67 @@ def latest_valid_review(
 ) -> tuple[Review, Marker] | None:
     candidates: list[tuple[Review, Marker]] = []
     for review in reviews:
-        if review.user_type.lower() == "bot" or review.state.upper() == "DISMISSED":
+        if review.user_type.lower() == "bot" or review.state.upper() not in {
+            "COMMENTED", "APPROVED", "CHANGES_REQUESTED"
+        }:
             continue
         marker = parse_marker(review.body, expected_pr, review.commit_oid)
         if marker is not None:
             candidates.append((review, marker))
     if not candidates:
         return None
-    return max(candidates, key=lambda pair: pair[0].submitted_at)
+    return max(candidates, key=lambda pair: review_time(pair[0]))
+
+
+def review_time(review: Review) -> datetime:
+    """Compare actual submitted instants; absent ordering evidence is not green."""
+    try:
+        instant = datetime.fromisoformat(review.submitted_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise CurrentnessError("cumulative review has invalid submitted_at") from error
+    if instant.tzinfo is None:
+        raise CurrentnessError("cumulative review submitted_at has no timezone")
+    return instant
+
+
+def superseding_review_reason(reviews: Iterable[Review], selected: Review) -> str | None:
+    """A later cumulative COMMENT verdict can withdraw an earlier clean marker.
+
+    The v1 marker still only authorizes REVIEW_CURRENT. Adverse outcomes need no
+    green marker to invalidate that authorization (#15010). Ordinary commentary
+    and quoted templates are not cumulative review declarations. Native threads
+    and change-request reviews remain independently governed by convergence.
+
+    Equal timestamps cannot establish that green came last, so a conflicting
+    declaration at the same instant blocks. A later valid cumulative rereview
+    can restore eligibility; its truth and finding dispositions remain review
+    obligations, not facts this reducer can manufacture.
+    """
+    selected_at = review_time(selected)
+    barriers: list[tuple[datetime, str]] = []
+    for review in reviews:
+        if review.user_type.lower() == "bot" or review.state.upper() in {"DISMISSED", "PENDING"}:
+            continue
+        if not has_cumulative_review_sections(review.body):
+            continue
+        submitted_at = review_time(review)
+        # Only a proved earlier instant makes identity defects irrelevant. Unknown
+        # ordering remains an instrument failure, not permission to reuse green.
+        if submitted_at < selected_at:
+            continue
+        if not review.login or review.user_type != "User" or review.state.upper() not in {
+            "COMMENTED", "APPROVED", "CHANGES_REQUESTED"
+        } or not OID_RE.fullmatch(review.commit_oid):
+            raise CurrentnessError("cumulative review has incomplete author/state/subject identity")
+        result = declared_review_result(review.body)
+        if result != MARKER_RESULT:
+            barriers.append((submitted_at, result.lower() if result else "ambiguous"))
+    if not barriers:
+        return None
+    newest = max(instant for instant, _ in barriers)
+    outcomes = {result for instant, result in barriers if instant == newest}
+    suffix = next(iter(outcomes)) if len(outcomes) == 1 else "ambiguous"
+    return "later_cumulative_review_" + suffix
 
 
 def fenced_blocks(text: str) -> list[str]:
@@ -352,12 +467,14 @@ def blob_text(root: Path, rev: str, path: str) -> str:
 def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple[bool, str]:
     ensure_commit(root, reviewed_head)
     ensure_commit(root, current_head)
-    ancestry = _run(
-        ["git", "merge-base", "--is-ancestor", reviewed_head, current_head],
-        cwd=root,
-        check=False,
-    )
-    if ancestry.returncode != 0:
+    state, detail = ancestry_state(root, reviewed_head, current_head)
+    if state == ANCESTRY_INSTRUMENT_FAILURE:
+        raise CurrentnessError(
+            f"ancestry probe between reviewed head {reviewed_head} and current head "
+            f"{current_head} failed as a git instrument error ({detail}); it "
+            "establishes no ancestry verdict"
+        )
+    if state == ANCESTRY_NOT_ANCESTOR:
         return False, "reviewed head is not an ancestor of current head"
 
     names = _git_text(root, "diff", "--name-status", reviewed_head, current_head, "--")
@@ -371,8 +488,8 @@ def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple
         return False, "post-review change is not in a whitespace-insensitive prose file"
 
     # A prose extension does not make the whole file whitespace-insensitive. Fenced
-    # blocks in these files carry commands and configuration, where inserting or
-    # removing a space changes what runs, so they are compared byte-for-byte.
+    # blocks in these files carry commands and configuration, where they are
+    # compared byte-for-byte.
     for path in paths:
         if fenced_blocks(blob_text(root, reviewed_head, path)) != fenced_blocks(
             blob_text(root, current_head, path)
@@ -408,6 +525,7 @@ def evaluate(
     reviews: Iterable[Review],
 ) -> dict[str, Any]:
     ensure_commit(root, current_head)
+    reviews = tuple(reviews)
     selected = latest_valid_review(reviews, pr)
     if selected is None:
         return {
@@ -419,6 +537,17 @@ def evaluate(
             "carried_forward": False,
         }
     review, marker = selected
+    barrier = superseding_review_reason(reviews, review)
+    if barrier is not None:
+        return {
+            "classification": "NOT_PROVEN",
+            "reason": barrier,
+            "pr": pr,
+            "current_head": current_head,
+            "reviewed_head": marker.head,
+            "reviewer": review.login,
+            "carried_forward": False,
+        }
     actual_digest = subject_digest(root, marker.merge_base, marker.head)
     if actual_digest != marker.subject_sha256:
         return {
@@ -471,14 +600,19 @@ def evaluate(
 
 
 def _flatten_pages(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, list):
-        raise CurrentnessError("review API did not return an array")
-    if value and all(isinstance(page, list) for page in value):
-        return [item for page in value for item in page if isinstance(item, dict)]
-    return [item for item in value if isinstance(item, dict)]
+    # gh --paginate --slurp returns an array of page arrays, including [[]]
+    # for no reviews. Never discard a malformed page/row from the inventory.
+    if not isinstance(value, list) or not value or any(
+        not isinstance(page, list) for page in value
+    ):
+        raise CurrentnessError("review API omitted its paginated page arrays")
+    rows = [item for page in value for item in page]
+    if any(not isinstance(row, dict) for row in rows):
+        raise CurrentnessError("review API returned a malformed row")
+    return rows
 
 
-def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
+def fetch_pr_identity(repo: str, pr: int, root: Path) -> tuple[str, str]:
     metadata_raw = _run(
         [
             "gh",
@@ -493,10 +627,20 @@ def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
         cwd=root,
     ).stdout
     metadata = json.loads(metadata_raw)
+    if not isinstance(metadata, dict):
+        raise CurrentnessError("PR metadata did not return an object")
     current_head = metadata.get("headRefOid")
     base_head = metadata.get("baseRefOid")
-    if not isinstance(current_head, str) or not isinstance(base_head, str):
+    if any(
+        not isinstance(oid, str) or not OID_RE.fullmatch(oid)
+        for oid in (current_head, base_head)
+    ):
         raise CurrentnessError("PR metadata omitted head/base identity")
+    return current_head, base_head
+
+
+def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
+    current_head, base_head = fetch_pr_identity(repo, pr, root)
 
     reviews_raw = _run(
         [
@@ -509,17 +653,25 @@ def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
         cwd=root,
     ).stdout
     rows = _flatten_pages(json.loads(reviews_raw))
-    reviews = [
-        Review(
-            login=str((row.get("user") or {}).get("login") or ""),
-            user_type=str((row.get("user") or {}).get("type") or ""),
-            state=str(row.get("state") or ""),
-            body=str(row.get("body") or ""),
-            commit_oid=str(row.get("commit_id") or ""),
-            submitted_at=str(row.get("submitted_at") or ""),
-        )
-        for row in rows
-    ]
+    reviews = []
+    for row in rows:
+        user = row.get("user")
+        if (
+            not isinstance(user, dict)
+            or any(not isinstance(user.get(key), str) or not user[key]
+                   for key in ("login", "type"))
+            or any(not isinstance(row.get(key), str)
+                   for key in ("state", "body", "commit_id", "submitted_at"))
+        ):
+            raise CurrentnessError("review API omitted typed review identity/content")
+        if not row["state"] or not row["submitted_at"] or not OID_RE.fullmatch(row["commit_id"]):
+            raise CurrentnessError("review API omitted review state/commit/submission identity")
+        reviews.append(Review(
+            user["login"], user["type"], row["state"], row["body"],
+            row["commit_id"], row["submitted_at"],
+        ))
+    if fetch_pr_identity(repo, pr, root) != (current_head, base_head):
+        raise CurrentnessError("PR head/base moved during review acquisition")
     return current_head, base_head, reviews
 
 
@@ -527,7 +679,11 @@ class MarkerRefused(RuntimeError):
     """The substantive review result does not carry a marker; not an instrument failure."""
 
 
-def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
+def emit_marker(
+    root: Path, repo: str, pr: int, result: str, *, expected_head: Optional[str] = None
+) -> str:
+    if FIXTURE_ENV in os.environ:
+        raise CurrentnessError("fixture environment cannot emit a production marker")
     if result not in SUBSTANTIVE_REVIEW_RESULTS:
         raise CurrentnessError(f"unknown substantive review result: {result!r}")
     if result != MARKER_RESULT:
@@ -536,6 +692,8 @@ def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
             f"only {MARKER_RESULT} does"
         )
     current_head, base_head, _ = fetch_pr(repo, pr, root)
+    if expected_head is not None and current_head != expected_head:
+        raise CurrentnessError("acquired PR head differs from expected head")
     ensure_commit(root, current_head)
     ensure_commit(root, base_head)
     merge_base = _git_text(root, "merge-base", base_head, current_head)
@@ -552,12 +710,30 @@ def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
     ) + " -->"
 
 
+def stdout_payload(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Pin the operator/gate JSON wire surface.
+
+    The marker envelope (`semantic-review:v1`) is a distinct versioned surface.
+    Every stdout JSON object — success, MARKER_REFUSED, and instrument failure —
+    goes through this helper so a fourth call site cannot omit `schema_version`,
+    and a stale or foreign `schema_version` in the verdict dict cannot leak.
+    """
+    payload = dict(fields)
+    payload["schema_version"] = SCHEMA_VERSION
+    return payload
+
+
+def emit_stdout_json(fields: Mapping[str, Any]) -> None:
+    print(json.dumps(stdout_payload(fields), sort_keys=True))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pr", type=int)
     parser.add_argument("repo")
     parser.add_argument("--root", type=Path, default=Path("."))
-    parser.add_argument("--fixture", type=Path)
+    parser.add_argument("--fixture", type=Path, help="test-only evaluator input; never live qualification")
+    parser.add_argument("--expected-head", help="refuse acquisition of a different PR head")
     parser.add_argument("--emit-marker", action="store_true")
     parser.add_argument(
         "--result",
@@ -576,18 +752,36 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--emit-marker requires --result naming the substantive review result")
     root = args.root.resolve()
     fixture = args.fixture
-    if fixture is None and os.environ.get("SEMANTIC_REVIEW_TEST_FIXTURE"):
-        fixture = Path(os.environ["SEMANTIC_REVIEW_TEST_FIXTURE"])
+    fixture_selected = fixture is not None or FIXTURE_ENV in os.environ
     try:
         if args.emit_marker:
-            print(emit_marker(root, args.repo, args.pr, args.result))
+            if fixture_selected:
+                raise CurrentnessError("fixture inputs cannot emit a production marker")
+            print(emit_marker(
+                root, args.repo, args.pr, args.result, expected_head=args.expected_head
+            ))
             return 0
-        if fixture:
+        if fixture is None and FIXTURE_ENV in os.environ:
+            if not os.environ[FIXTURE_ENV]:
+                raise CurrentnessError("empty fixture environment is not live acquisition")
+            fixture = Path(os.environ[FIXTURE_ENV])
+        if fixture is not None:
             raw = json.loads(fixture.read_text(encoding="utf-8"))
-            current_head = str(raw["head"])
-            reviews = [Review(**row) for row in raw.get("reviews", [])]
+            if (
+                not isinstance(raw, dict)
+                or not isinstance(raw.get("head"), str)
+                or not OID_RE.fullmatch(raw["head"])
+                or not isinstance(raw.get("reviews"), list)
+            ):
+                raise CurrentnessError("fixture omitted head/review inventory")
+            current_head = raw["head"]
+            reviews = [Review(**row) for row in raw["reviews"]]
+            if any(not isinstance(field, str) for row in reviews for field in row):
+                raise CurrentnessError("fixture review fields must be strings")
         else:
             current_head, _base, reviews = fetch_pr(args.repo, args.pr, root)
+        if args.expected_head is not None and current_head != args.expected_head:
+            raise CurrentnessError("acquired PR head differs from expected head")
         result = evaluate(
             root,
             pr=args.pr,
@@ -597,17 +791,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     except MarkerRefused as refusal:
         # A refusal is a correct outcome of a non-REVIEW_CURRENT review, not a broken
         # instrument, so it stays distinguishable from both verdicts and failures.
-        print(
-            json.dumps(
-                {
-                    "classification": "MARKER_REFUSED",
-                    "reason": "result_does_not_carry_a_marker",
-                    "detail": str(refusal),
-                    "pr": args.pr,
-                    "result": args.result,
-                },
-                sort_keys=True,
-            )
+        emit_stdout_json(
+            {
+                "classification": "MARKER_REFUSED",
+                "reason": "result_does_not_carry_a_marker",
+                "detail": str(refusal),
+                "pr": args.pr,
+                "result": args.result,
+            }
         )
         return 3
     except (
@@ -619,15 +810,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         TypeError,
         ValueError,
     ) as error:
-        result = {
-            "classification": "NOT_PROVEN",
-            "reason": "instrument_failure",
-            "detail": str(error),
-            "pr": args.pr,
-        }
-        print(json.dumps(result, sort_keys=True))
+        emit_stdout_json(
+            {
+                "classification": "NOT_PROVEN",
+                "reason": "instrument_failure",
+                "detail": str(error),
+                "pr": args.pr,
+            }
+        )
         return 2
-    print(json.dumps(result, sort_keys=True))
+    if fixture_selected:
+        result = {
+            "classification": "NOT_PROVEN", "reason": "fixture_evaluation_only",
+            "pr": args.pr, "repo": args.repo, "acquisition_mode": "fixture",
+            "evaluator_result": stdout_payload(result),
+        }
+    else:
+        result.update(acquisition_mode="gh_live", repo=args.repo)
+    emit_stdout_json(result)
     return 0 if result["classification"] == "REVIEW_CURRENT" else 1
 
 

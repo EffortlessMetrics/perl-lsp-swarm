@@ -467,6 +467,9 @@ fn run_bounded(command: &mut Command) -> Result<std::process::Output, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::null());
+    // #15538: the deadline path must reach descendants, not only the direct
+    // child. On Unix this makes the child a process-group leader.
+    crate::process_tree::prepare_owned_command(command);
     let mut child = command.spawn().map_err(|error| format!("spawn perl: {error}"))?;
     // Bounded readers: stop at the cap so a flooding process cannot grow
     // the harness without bound.
@@ -506,7 +509,9 @@ fn run_bounded(command: &mut Command) -> Result<std::process::Output, String> {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
+                    // #15538: kill the whole owned tree and reap, so no
+                    // measurement grandchild outlives the deadline.
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     break Err(
                         "measurement perl exceeded the 20s deadline and was killed".to_string()
                     );

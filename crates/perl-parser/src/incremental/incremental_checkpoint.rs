@@ -245,16 +245,15 @@ impl TokenCache {
     ///
     /// Consequence: `get_tokens_from(position)` and `get_tokens_before(position)`
     /// must be called with a position expressed in the same pre-edit coordinate
-    /// space as the token offsets, or with `relex_end`/`relex_start` values that
-    /// were computed BEFORE calling `adjust_positions`.  Currently callers use
-    /// checkpoint positions that are updated by `checkpoint_cache.apply_edit`
-    /// before `adjust_positions` is called, meaning the positions are in
-    /// post-edit space while tokens are in pre-edit space.  The resulting
-    /// boundary-position mismatch is bounded in practice (at most one token per
-    /// checkpoint gap) and is tracked as a known limitation; fixing it would
-    /// require either shifting token coords here or computing `relex_end` in
-    /// pre-edit space.  See the `test_adjust_positions_shifts_segment_bounds_not_token_coords`
-    /// test for the invariant this method does guarantee.
+    /// space as the token offsets.  The left checkpoint sits at or before the
+    /// edit start, where pre- and post-edit coincide, so `relex_start` is valid
+    /// as-is; the right checkpoint was shifted into post-edit space by
+    /// `checkpoint_cache.apply_edit`, so Phase-3 maps `relex_end` back by the
+    /// edit's byte shift before the suffix lookup (#17397).  Passing post-edit
+    /// `relex_end` directly drops or duplicates the tokens straddling a nonzero
+    /// shift at the re-lex/suffix seam.  See the
+    /// `test_adjust_positions_shifts_segment_bounds_not_token_coords` test for
+    /// the invariant this method does guarantee.
     fn adjust_positions(&mut self, edit_start: usize, old_len: usize, new_len: usize) {
         let delta = new_len as isize - old_len as isize;
 
@@ -572,6 +571,21 @@ impl CheckpointedIncrementalParser {
     /// Collects lexer checkpoints at pre-defined positions and caches the full
     /// set of **parser** tokens (trivia-filtered) so they can be reused during
     /// subsequent incremental reparses.
+    ///
+    /// # Checkpoint-distance contract (#13217, #17397)
+    ///
+    /// Each target in `[0, 100, 500, 1000, 5000]` is recorded at a token
+    /// boundary at-or-after the target: every iteration drains all targets
+    /// `<=` the previous boundary and records the checkpoint at the end of
+    /// the token being scanned, so a target straddled by a token can neither
+    /// be skipped nor block later targets. An edit below the largest
+    /// recorded checkpoint therefore sees bounded left/right windows (the
+    /// `checkpoint_distance` bench pins `<= 5000` for its 150/600/2000 edits
+    /// against this guarantee). Right distance stays unbounded in general: with
+    /// no checkpoint at-or-after the edit end the window falls back to EOF by
+    /// design (see `test_checkpoint_window_reuses_suffix_without_tail_fallback`),
+    /// so the `<= 5000` bound is a property of that fixture's geometry, not a
+    /// library invariant — do not raise it without a contract-backed explanation.
     fn parse_with_checkpoints(&mut self) -> ParseResult<Node> {
         // A full reparse must rebuild both caches from the current source
         // state; carrying forward shifted checkpoints from a prior incremental
@@ -586,9 +600,18 @@ impl CheckpointedIncrementalParser {
         // Collect raw lexer tokens and save checkpoints at specific positions
         let mut position = 0;
         while let Some(token) = lexer.next_token() {
-            // Save checkpoint at specific positions
-            if checkpoint_positions.first() == Some(&position) {
+            // Record each target at the token boundary closing the token
+            // being scanned when the target is met: drain every target at or
+            // behind the previous boundary so a straddled target can neither
+            // be skipped nor block later ones. One checkpoint covers every
+            // target met here (same lexer state; the cache replaces
+            // same-position entries, #17401 review).
+            let mut drained = false;
+            while checkpoint_positions.first().is_some_and(|target| *target <= position) {
                 checkpoint_positions.remove(0);
+                drained = true;
+            }
+            if drained {
                 let checkpoint = lexer.checkpoint();
                 self.checkpoint_cache.add(checkpoint);
             }
@@ -684,6 +707,14 @@ impl CheckpointedIncrementalParser {
         let relex_end =
             right_checkpoint.as_ref().map(|cp| cp.position()).unwrap_or(self.source.len());
 
+        // A zero-width window re-lexes nothing (Phase 2 breaks before pushing
+        // any token), so a joining edit across it would silently drop the
+        // joined token. Fail closed to a full reparse (#17401 review).
+        if relex_start >= relex_end {
+            self.stats.cache_misses += 1;
+            return self.parse_with_checkpoints();
+        }
+
         // Track checkpoint distances for statistics
         let edit_end = edit.start + edit.new_text.len();
         if edit.start >= relex_start {
@@ -757,10 +788,24 @@ impl CheckpointedIncrementalParser {
         let byte_shift: isize = edit.new_text.len() as isize - (edit.end - edit.start) as isize;
 
         if right_checkpoint.is_some() {
-            let segments_after = self.token_cache.count_segments_with_tokens_after(relex_end);
+            // Phase 2 finishes the token straddling `relex_end`, so the
+            // re-lexed span runs past it; the suffix must start after the
+            // ACTUAL re-lexed end, or tokens in the overhang are both
+            // re-lexed and reused (#17401 review). `relex_end` is post-edit
+            // geometry (the right checkpoint was shifted by
+            // `CheckpointCache::apply_edit`), but cached tokens still carry
+            // pre-edit coordinates. Map the suffix lookup back to pre-edit
+            // space so the Phase-2/Phase-3 seam neither drops nor duplicates
+            // tokens when the byte shift is nonzero (#17397).
+            // (The prefix side needs no mapping: the left checkpoint sits at
+            // or before the edit start, where pre- and post-edit coincide.)
+            let actual_relex_end =
+                newly_lexed_parser_tokens.last().map(|token| token.end()).unwrap_or(relex_end);
+            let suffix_lookup = (actual_relex_end as isize - byte_shift).max(0) as usize;
+            let segments_after = self.token_cache.count_segments_with_tokens_after(suffix_lookup);
             self.stats.segments_reused_after += segments_after;
 
-            if let Some(cached) = self.token_cache.get_tokens_from(relex_end) {
+            if let Some(cached) = self.token_cache.get_tokens_from(suffix_lookup) {
                 self.stats.cache_hits += 1;
                 for token in cached {
                     // Adjust byte positions to account for the inserted/removed bytes.
@@ -827,7 +872,7 @@ mod tests {
     use super::*;
     use perl_parser_core::NodeKind;
     use perl_parser_core::token_stream::TokenKind;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_some, must_some_with, must_with};
 
     /// Cache-geometry tests care about span overlap, not identifier spelling.
     /// Pad a single label character so `text.len()` matches `end - start`.
@@ -971,7 +1016,28 @@ mod tests {
 
         let mut incremental = CheckpointedIncrementalParser::new();
         must(incremental.parse(source));
+        // Force the fail-closed full-reparse path. Dense at-or-after
+        // checkpoints (#17397) route this edit through the incremental path,
+        // which keeps shifted — not rebuilt — checkpoints, so the bare edit no
+        // longer reaches the fallback whose cache rebuild this test pins. An
+        // unrestorable left candidate (mid-token offset 125, which no live
+        // checkpoint can occupy) makes `apply_edit` fall back to
+        // `parse_with_checkpoints`, mirroring
+        // `test_invalidated_checkpoint_falls_back_before_restore`.
+        #[expect(deprecated, reason = "test-only unrestorable cache key, not a live boundary")]
+        incremental.checkpoint_cache.add(LexerCheckpoint::at_position(edit.start));
         must(incremental.apply_edit(&edit));
+        assert_eq!(
+            incremental.stats().checkpoints_used,
+            0,
+            "injected checkpoint must force the fallback path, got {:?}",
+            incremental.stats()
+        );
+        assert!(
+            incremental.stats().cache_misses > 0,
+            "injected checkpoint must trigger the conservative fallback, got {:?}",
+            incremental.stats()
+        );
 
         let mut full = CheckpointedIncrementalParser::new();
         must(full.parse(edited_source.clone()));
@@ -1070,6 +1136,245 @@ mod tests {
         let mut full = CheckpointedIncrementalParser::new();
         let full_tree = must(full.parse(expected_source));
         assert_eq!(incremental_tree, full_tree, "incremental tree diverged from fresh full parse");
+    }
+
+    /// Mirror of the `checkpoint_distance` bench fixture
+    /// (`crates/perl-incremental-parsing/benches/incremental_parsing_benchmarks.rs`).
+    /// Kept byte-identical so this test pins the geometry the bench asserts on;
+    /// update both together if the fixture ever changes.
+    fn bench_fixture_with_checkpoints() -> String {
+        let mut source = String::new();
+
+        source.push_str("# Preamble to position 100\n");
+        for i in 0..20 {
+            source.push_str(&format!("my $var{i} = {i};\n"));
+        }
+
+        source.push_str("\n# Content between 100 and 500\n");
+        for i in 0..100 {
+            source.push_str(&format!("my $mid{i} = {};\n", i * 2));
+        }
+
+        source.push_str("\n# Content between 500 and 1000\n");
+        for i in 0..250 {
+            source.push_str(&format!("my $late{i} = {};\n", i * 3));
+        }
+
+        source.push_str("\n# Content beyond 1000\n");
+        for i in 0..1000 {
+            source.push_str(&format!("my $end{i} = {};\n", i * 4));
+        }
+
+        source
+    }
+
+    #[test]
+    fn test_bench_fixture_records_checkpoint_at_or_after_each_target() {
+        // Regression test for #17397 (contract question from #13217): every
+        // checkpoint target must resolve to a recorded checkpoint at-or-after
+        // it, so the `checkpoint_distance` bench edits see bounded windows.
+        let source = bench_fixture_with_checkpoints();
+        assert_eq!(
+            source.len(),
+            25_262,
+            "fixture transcription must match the bench geometry that panicked with 25107"
+        );
+
+        let mut parser = CheckpointedIncrementalParser::new();
+        must_with(parser.parse(source.clone()), "bench fixture must parse");
+
+        // Density: all five targets sit below EOF, so all five must record.
+        // Before the fix only targets hit by exact token-end equality survived.
+        assert_eq!(
+            parser.checkpoint_cache.len(),
+            5,
+            "each target in [0, 100, 500, 1000, 5000] must record a checkpoint"
+        );
+
+        // At-or-after with locality: the fixture is short `my $v = N;` lines,
+        // so the closing boundary of the token scanned when a target is met
+        // stays well within 100 bytes beyond it; a skipped target would
+        // resolve >= 400 bytes out (the smallest gap between later targets).
+        for target in [0, 100, 500, 1000, 5000] {
+            let checkpoint = must_some_with(
+                parser.checkpoint_cache.find_after(target),
+                format!("target {target} must resolve to a checkpoint at-or-after it"),
+            );
+            assert!(
+                checkpoint.position() >= target,
+                "target {target} resolved behind itself at {}",
+                checkpoint.position()
+            );
+            assert!(
+                checkpoint.position() - target < 100,
+                "target {target} overshot to {}",
+                checkpoint.position()
+            );
+        }
+
+        // Behavioral contract: the bench's edits must take the incremental path
+        // (`checkpoints_used == 1` pins this; the fallback leaves distances at
+        // 0 and would pass the bounds below vacuously), see bounded windows,
+        // and produce trees identical to a fresh full parse.
+        for pos in [150, 600, 2000] {
+            let mut parser = CheckpointedIncrementalParser::new();
+            must_with(parser.parse(source.clone()), "bench fixture must parse");
+            let edit = SimpleEdit { start: pos, end: pos + 5, new_text: "xxxxx".to_string() };
+            let incremental_tree =
+                must_with(parser.apply_edit(&edit), format!("edit at {pos} must apply"));
+            let stats = parser.stats();
+            assert_eq!(
+                stats.checkpoints_used, 1,
+                "edit at {pos} must take the incremental path, got {stats:?}"
+            );
+            assert!(
+                stats.left_checkpoint_distance <= 5000,
+                "left checkpoint distance too large for edit at {pos}: {}",
+                stats.left_checkpoint_distance
+            );
+            assert!(
+                stats.right_checkpoint_distance <= 5000,
+                "right checkpoint distance too large for edit at {pos}: {}",
+                stats.right_checkpoint_distance
+            );
+
+            let mut expected_source = source.clone();
+            expected_source.replace_range(edit.start..edit.end, &edit.new_text);
+            let mut full = CheckpointedIncrementalParser::new();
+            let full_tree = must_with(full.parse(expected_source), "edited fixture must parse");
+            assert_eq!(
+                incremental_tree, full_tree,
+                "incremental tree diverged from fresh full parse for edit at {pos}"
+            );
+        }
+
+        // Shifted edits must keep the re-lex/suffix seam exact in both
+        // directions: the suffix lookup runs in pre-edit coordinates while the
+        // re-lex window runs in post-edit coordinates (#17397).
+        for (start, end, new_text) in
+            [(600, 600, "hello"), (600, 605, ""), (2000, 2000, "world"), (2000, 2010, "")]
+        {
+            let mut parser = CheckpointedIncrementalParser::new();
+            must_with(parser.parse(source.clone()), "bench fixture must parse");
+            let edit = SimpleEdit { start, end, new_text: new_text.to_string() };
+            let incremental_tree =
+                must_with(parser.apply_edit(&edit), format!("edit at {start}..{end} must apply"));
+            let stats = parser.stats();
+            assert_eq!(
+                stats.checkpoints_used, 1,
+                "edit at {start}..{end} must take the incremental path, got {stats:?}"
+            );
+            assert!(
+                stats.left_checkpoint_distance <= 5000 && stats.right_checkpoint_distance <= 5000,
+                "unbounded window for edit at {start}..{end}, got {stats:?}"
+            );
+
+            let mut expected_source = source.clone();
+            expected_source.replace_range(edit.start..edit.end, &edit.new_text);
+            let mut full = CheckpointedIncrementalParser::new();
+            let full_tree = must_with(full.parse(expected_source), "edited fixture must parse");
+            assert_eq!(
+                incremental_tree, full_tree,
+                "incremental tree diverged from fresh full parse for edit at {start}..{end}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_boundary_deletion_joining_tokens_matches_full_parse() {
+        // Regression probe for #17401 review (checkpoint-boundary deletion):
+        // deleting a separator exactly at a recorded checkpoint must not
+        // drop the joined token. Sweep small deletions at and around every
+        // recorded checkpoint of the bench fixture; each must produce a
+        // tree identical to a fresh full parse (the incremental path and
+        // the fail-closed fallback agree by construction, so any divergence
+        // is a wrong incremental tree).
+        let source = bench_fixture_with_checkpoints();
+        let mut probe = CheckpointedIncrementalParser::new();
+        must_with(probe.parse(source.clone()), "bench fixture must parse");
+        let mut checkpoints = Vec::new();
+        let mut cursor = 0;
+        while let Some(found) = probe.checkpoint_cache.find_after(cursor).map(|cp| cp.position()) {
+            checkpoints.push(found);
+            cursor = found + 1;
+        }
+        assert!(checkpoints.len() >= 2, "sweep needs recorded checkpoints, got {checkpoints:?}");
+
+        let mut incremental_taken = 0usize;
+        for origin in &checkpoints {
+            for delta in [-2isize, -1, 0, 1] {
+                for len in [1usize, 3] {
+                    let start = origin.saturating_add_signed(delta);
+                    let end = (start + len).min(source.len());
+                    if start >= end {
+                        continue;
+                    }
+                    let mut parser = CheckpointedIncrementalParser::new();
+                    must_with(parser.parse(source.clone()), "bench fixture must parse");
+                    let edit = SimpleEdit { start, end, new_text: String::new() };
+                    let incremental_tree = must_with(
+                        parser.apply_edit(&edit),
+                        format!("deletion at {start}..{end} must apply"),
+                    );
+                    if parser.stats().checkpoints_used == 1 {
+                        incremental_taken += 1;
+                    }
+                    let mut expected_source = source.clone();
+                    expected_source.replace_range(start..end, "");
+                    let mut full = CheckpointedIncrementalParser::new();
+                    let full_tree =
+                        must_with(full.parse(expected_source), "edited fixture must parse");
+                    assert_eq!(
+                        incremental_tree,
+                        full_tree,
+                        "incremental tree diverged from fresh full parse for \
+                         deletion at {start}..{end} near checkpoint {origin}, \
+                         stats {:?}",
+                        parser.stats()
+                    );
+                }
+            }
+        }
+        assert!(
+            incremental_taken > 0,
+            "sweep must exercise the incremental path at least once, all fell back"
+        );
+    }
+
+    #[test]
+    fn test_consecutive_trivia_insertions_match_full_parse() {
+        // Regression probe for #17401 review (cumulative shifts): retained
+        // suffix segments keep pre-edit coordinates in the cache while only
+        // segment bounds shift, so a second shifted edit must still resolve
+        // suffix tokens at correct offsets. Two consecutive trivia-only
+        // insertions (no parser tokens produced) must each take the
+        // incremental path and agree with a fresh full parse.
+        let source = bench_fixture_with_checkpoints();
+        let mut parser = CheckpointedIncrementalParser::new();
+        must_with(parser.parse(source.clone()), "bench fixture must parse");
+        let mut expected_source = source.clone();
+        for (start, new_text) in
+            [(600usize, " "), (600usize, " ".repeat(50).leak() as &str), (2000usize, "  ")]
+        {
+            let edit = SimpleEdit { start, end: start, new_text: new_text.to_string() };
+            let used_before = parser.stats().checkpoints_used;
+            let incremental_tree =
+                must_with(parser.apply_edit(&edit), format!("insertion at {start} must apply"));
+            let stats = parser.stats();
+            assert_eq!(
+                stats.checkpoints_used - used_before,
+                1,
+                "insertion at {start} must take the incremental path, got {stats:?}"
+            );
+            expected_source.insert_str(start, new_text);
+            let mut full = CheckpointedIncrementalParser::new();
+            let full_tree =
+                must_with(full.parse(expected_source.clone()), "edited fixture must parse");
+            assert_eq!(
+                incremental_tree, full_tree,
+                "incremental tree diverged from fresh full parse after insertion at {start}"
+            );
+        }
     }
 
     #[test]

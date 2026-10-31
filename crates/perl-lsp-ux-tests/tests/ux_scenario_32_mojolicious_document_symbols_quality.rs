@@ -12,6 +12,9 @@
 //! - dynamic-boundary-shaped names observed separately from exact symbols
 //! - freshness after editing a document so stale symbol names disappear
 
+// UX receipt tests intentionally write structured receipts to stderr for --nocapture logs.
+#![allow(clippy::print_stderr)]
+
 use anyhow::Result;
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::missing_binary_skip;

@@ -86,7 +86,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000015f9b",
               "content_digest": "00000000000000000000000000000000000000000000000000000000000dbc15",
-              "reference": "child packets #9001012/#9001013 receipts"
+              "reference": "child packets #9001012/#9001013 receipts",
+              "schema_version": "landing_proof.v1"
             }
           },
           "controller.fanin.evidence": {

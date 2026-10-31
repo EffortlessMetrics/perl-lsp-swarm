@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Extract to subroutine preserves ordinary scalar sigils and first-use parameter order, retains the call-site lexical block, chooses an unused name, and withholds edits for unsupported captures, control flow, scope, or insertion points such as sub text inside strings."
+time: 2026-09-28T20:42:53Z
+custom:
+  PR: "16667"
+  Slug: extract-subroutine-safe-edits
+  Breaking: "no"

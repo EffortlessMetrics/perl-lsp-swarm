@@ -5,6 +5,8 @@ use crate::os_runtime::{candidate_priority, select_path_candidate};
 #[cfg(windows)]
 use crate::os_runtime::{resolve_cmd_exe, resolve_command_invocation, windows_program_priority};
 use crate::*;
+#[cfg(windows)]
+use std::path::Path;
 
 #[test]
 fn test_subprocess_output_success() {
@@ -35,7 +37,7 @@ fn test_mock_runtime() {
     let result = runtime.run_command("perltidy", &["-st"], Some(b"my $x = 1;"));
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert_eq!(output.stdout_lossy(), "formatted code");
 
@@ -56,7 +58,7 @@ fn test_os_runtime_echo() {
     let result = runtime.run_command("echo", &["hello"], None);
 
     assert!(result.is_ok());
-    let output = perl_tdd_support::must(result);
+    let output = perl_test_must::must(result);
     assert!(output.success());
     assert!(output.stdout_lossy().trim() == "hello");
 }
@@ -100,18 +102,25 @@ fn test_os_runtime_rejects_nul_bytes_in_program_or_args() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_test_must::must(resolve_command_invocation(
         r"C:\Strawberry\perl\bin\perltidy.bat",
         &["-st", "-se"],
     ));
 
     // The cmd.exe used for batch wrappers is resolved to an ABSOLUTE path —
     // never the bare "cmd.exe", which CreateProcess would search CWD-first.
+    let program = cmd.get_program().to_string_lossy().to_string();
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
         "batch wrapper must run via an absolute cmd.exe path, not a bare name; got: {program}"
     );
+    // The /C payload is composed in cmd.exe conventions (per-token `"..."`),
+    // wrapped in ONE extra outer quote pair that cmd /S strips, and appended as
+    // a raw (un-MSVC-escaped) argument so its quotes reach cmd.exe verbatim
+    // (#17371).  std's default escaping would turn the inner `"` into `\"`,
+    // which cmd.exe cannot parse.
     assert_eq!(
         args,
         vec![
@@ -119,7 +128,7 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
             "/V:OFF".to_string(),
             "/S".to_string(),
             "/C".to_string(),
-            "\"C:\\Strawberry\\perl\\bin\\perltidy.bat\" \"-st\" \"-se\"".to_string(),
+            "\"\"C:\\Strawberry\\perl\\bin\\perltidy.bat\" \"-st\" \"-se\"\"".to_string(),
         ]
     );
 }
@@ -132,11 +141,13 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_includes_v_off_flag() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.bat",
         &["--profile=!TEMP!"],
     ));
 
+    let program = cmd.get_program().to_string_lossy().to_string();
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert!(
         std::path::Path::new(&program).is_absolute()
             && program.to_ascii_lowercase().ends_with("cmd.exe"),
@@ -149,15 +160,33 @@ fn test_resolve_command_invocation_includes_v_off_flag() {
     );
 }
 
+/// `%TEMP%` in a batch-wrapper argument would be silently substituted by
+/// cmd.exe's command-line expansion pass (`%` has no command-line escape), so
+/// the resolver must fail closed instead of corrupting the argument (#17371).
+#[cfg(windows)]
+#[test]
+fn test_resolve_command_invocation_fails_closed_on_expandable_percent_ref() {
+    // TEMP is defined in every Windows environment.
+    let result = resolve_command_invocation(r"C:\tools\perlcritic.bat", &[r"--out=%TEMP%\x"]);
+    assert!(result.is_err(), "an expandable %NAME% argument must fail closed; got: {result:?}");
+    let err = result.expect_err("must be Err");
+    assert!(
+        err.message.contains("cmd.exe would substitute"),
+        "error must explain the %...% substitution refusal; got: {}",
+        err.message
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_preserves_executable_paths() {
-    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+    let cmd = perl_test_must::must(resolve_command_invocation(
         r"C:\tools\perlcritic.exe",
         &["--version"],
     ));
 
-    assert_eq!(program, r"C:\tools\perlcritic.exe");
+    assert_eq!(cmd.get_program(), std::ffi::OsStr::new(r"C:\tools\perlcritic.exe"));
+    let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
     assert_eq!(args, vec!["--version".to_string()]);
 }
 
@@ -262,8 +291,40 @@ fn test_select_path_candidate_rejects_relative_candidates_on_all_platforms() {
 #[test]
 fn test_select_path_candidate_empty_candidates_returns_none() {
     let cwd = std::env::temp_dir();
-    let result = select_path_candidate(&[], &cwd);
+    let candidates: &[&str] = &[];
+    let result = select_path_candidate(candidates, &cwd);
     assert!(result.is_none(), "empty candidate list must return None; got: {result:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn availability_rejects_absolute_and_separator_bearing_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let existing = std::env::current_exe()?;
+    let existing = existing.to_str().ok_or("current executable path is not UTF-8")?;
+    let missing = r"C:\definitely-not-a-real-tool-14815.exe";
+
+    for command in [
+        existing,
+        missing,
+        r".\tool.exe",
+        r"tools\tool.exe",
+        "tools/tool.exe",
+        "C:tool.exe",
+        "",
+        ".",
+        "..",
+    ] {
+        if crate::command_exists(command) {
+            return Err(format!("bare-name availability admitted path input {command:?}").into());
+        }
+    }
+    for command in [existing, missing] {
+        if crate::resolve_program(command)? != command {
+            return Err("launch resolution must preserve caller-resolved absolute paths".into());
+        }
+    }
+    Ok(())
 }
 
 /// Layer 2 — CWD exclusion: a candidate whose parent is the CWD is rejected.
@@ -329,7 +390,7 @@ fn test_select_path_candidate_planted_cwd_binary_is_rejected_in_favor_of_path() 
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "planted CWD binary must not be selected; legitimate PATH binary must win"
     );
 }
@@ -357,7 +418,7 @@ fn test_select_path_candidate_legitimate_path_binary_resolves() {
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "a legitimate PATH binary must resolve when CWD is different"
     );
 }
@@ -374,7 +435,7 @@ fn test_select_path_candidate_extension_priority_preserved_among_path_candidates
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         ".exe must beat .bat in extension priority ordering"
     );
 }
@@ -414,7 +475,7 @@ fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "relative candidate must be dropped; absolute PATH binary must win"
     );
 }
@@ -446,7 +507,7 @@ fn test_select_path_candidate_extensioned_bare_cwd_binary_rejected_in_favor_of_p
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "extensioned bare name: CWD-planted binary must be rejected; PATH binary must win"
     );
 }
@@ -530,7 +591,11 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         let runtime = OsSubprocessRuntime::new();
         let result = runtime.run_command("pwned.bat", &[], None);
         assert!(result.is_err(), "child must fail closed: {result:?}");
-        println!("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
+        // `writeln!` rather than `println!`: the marker must stay on stdout
+        // (the parent asserts the captured child stdout contains it), and the
+        // workspace clippy gate denies `clippy::print_stdout`.
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), "PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
         return;
     }
 
@@ -579,6 +644,95 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
     );
 }
 
+// --- Batch-wrapper command-line round-trip (#17371) ---
+//
+// `resolve_command_invocation` routes `.bat`/`.cmd` tools through
+// `cmd.exe /D /V:OFF /S /C <payload>`. The payload is composed in cmd.exe
+// quoting conventions (per-token `"..."`, `%` verbatim, `""` doubling), so it
+// must reach cmd.exe byte-for-byte: std's default MSVC escaping rewrites its
+// `"` into `\"`, and cmd.exe — which does not understand `\"` — then fails to
+// recognize the batch file at all ('\"...bat\"' is not recognized). The fixed
+// path appends the payload with `CommandExt::raw_arg` wrapped in one extra
+// outer quote pair, which `/S` mode strips, leaving the per-token-quoted line
+// intact.
+//
+// This test drives the REAL spawn chain (`run_command` → resolve →
+// `std::process::Command` → CreateProcess → cmd.exe → child .bat) with a
+// perlcritic.bat-style probe and asserts every argument round-trips verbatim:
+// the `%`-bearing format strings that direct `Command::new(bat)` refuses
+// (Rust's BatBadBut hardening), a path containing a space, an empty argument,
+// embedded double quotes, and shell metacharacters.
+
+#[cfg(windows)]
+#[test]
+fn bat_wrapper_arguments_round_trip_through_real_cmd_spawn() {
+    let workspace =
+        std::env::temp_dir().join(format!("cmd_quote_roundtrip_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("create temp workspace");
+
+    let probe = workspace.join("probe_args.bat");
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(&probe).expect("write probe .bat");
+        writeln!(f, "@echo off").expect("write bat header");
+        writeln!(f, ":loop").expect("write bat loop label");
+        writeln!(f, "if [%1]==[] goto done").expect("write bat loop guard");
+        writeln!(f, "echo ARG=%1").expect("write bat arg echo");
+        writeln!(f, "shift").expect("write bat shift");
+        writeln!(f, "goto loop").expect("write bat loop jump");
+        writeln!(f, ":done").expect("write bat done label");
+        writeln!(f, "echo END_OF_ARGS").expect("write bat terminator");
+    }
+
+    let runtime = OsSubprocessRuntime::with_timeout(30);
+    let result = runtime.run_command(
+        probe.to_str().expect("temp path is UTF-8"),
+        &[
+            // Literal `\n` two-char sequence — perlcritic's --verbose format
+            // strings carry real `%` directives that must survive cmd's
+            // substitution pass untouched.
+            "--verbose=%f:%l:%c:%s:%p:%m\\n",
+            "--",
+            r"C:\dir with space\fixture.pl",
+            // Empty argument: must survive as an empty quoted token.
+            "",
+            // Embedded double quotes: cmd.exe `""` doubling must deliver the
+            // cmd-convention-encoded token without losing the quotes.
+            r#"--note="quoted value""#,
+            // Shell metacharacters: must stay literal inside the quoted token
+            // (no `&` command split, no `|`/`^` processing by cmd.exe).
+            "--flag=a&b|c^d",
+        ],
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
+
+    let output = perl_test_must::must(result);
+    assert!(
+        output.success(),
+        "batch wrapper spawn must succeed; status={:?} stderr={:?}",
+        output.status_code,
+        output.stderr_lossy()
+    );
+    let stdout = output.stdout_lossy();
+    let lines: Vec<&str> =
+        stdout.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines,
+        vec![
+            r#"ARG="--verbose=%f:%l:%c:%s:%p:%m\n""#,
+            r#"ARG="--""#,
+            r#"ARG="C:\dir with space\fixture.pl""#,
+            r#"ARG="""#,
+            r#"ARG="--note=""quoted value""""#,
+            r#"ARG="--flag=a&b|c^d""#,
+            "END_OF_ARGS",
+        ],
+        "every argument must round-trip through cmd.exe verbatim; stdout={stdout:?}"
+    );
+}
+
 // --- Relative path-with-separator bypass regression ---
 //
 // `resolve_windows_program` passes a program through unchanged when it contains
@@ -607,11 +761,9 @@ fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
-    let (program, _args) = perl_tdd_support::must(resolve_command_invocation(
-        r"C:\tools\perltidy.exe",
-        &["--version"],
-    ));
-    assert_eq!(program, r"C:\tools\perltidy.exe");
+    let cmd =
+        perl_test_must::must(resolve_command_invocation(r"C:\tools\perltidy.exe", &["--version"]));
+    assert_eq!(cmd.get_program(), std::ffi::OsStr::new(r"C:\tools\perltidy.exe"));
 }
 
 // --- Call-observation tests for resolve_program public API ---

@@ -129,7 +129,7 @@ pub fn find_references_with_pir_shadow(
             extract_lexical_facts(&hir)
         };
 
-        let opts = ReferenceOptions { include_declaration: true };
+        let opts = ReferenceOptions { include_declaration: true, query_byte_offset: Some(offset) };
 
         // `references_pir_promote` in Shadow mode: evaluates the PIR candidate,
         // builds the `PirShadowCompareReceipt` via `shadow_references_with_pir`,

@@ -49,6 +49,16 @@ Create `.vscode/launch.json` in your workspace:
 Set breakpoints in a `.pl`, `.pm`, or `.t` file, choose the configuration, and
 start debugging from VS Code.
 
+## Startup Authority
+
+`perl-dap` debugs only inside an explicitly trusted workspace. VS Code passes
+your open workspace folder as `--trusted-root` automatically; Sublime does the
+same from its project folders. A bare `perl-dap --stdio` started without
+authority refuses every `launch` fail-closed — this is the boundary, not a
+bug. `launch.json` data (`cwd`, `workspaceRoot`) can narrow the trusted root
+for one launch but can never create or widen it: keep the workspace folder
+open rather than pointing `cwd` elsewhere and expecting authority to follow.
+
 ## Attach To A Running Process
 
 DAP `attach` is a protocol request to an adapter the editor already launched.
@@ -89,6 +99,14 @@ control. It is not a sandboxed interpreter boundary and does not provide
 interpreter or operating-system isolation. Timeout enforcement is a separate
 defense, and expressions that need side effects must opt in explicitly with
 the DAP `allowSideEffects` field.
+
+That opt-in is honored **only** in the debug console (the `repl` evaluation
+context). Watch expressions, hovers, and the variables view cannot run
+side-effectful Perl even with the field set — those requests are refused rather
+than downgraded, because the editor issues them on its own (a hover fires from
+mouse movement, watches re-evaluate on every stop) rather than at your
+deliberate request. Evaluating in the debug console still runs with the
+debuggee's full authority; it is confined to that one context, not sandboxed.
 
 ## Common Problems
 

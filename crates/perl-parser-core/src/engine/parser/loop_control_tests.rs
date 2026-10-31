@@ -131,4 +131,125 @@ mod tests {
         assert!(sexp.contains("redo"), "Expected redo in continue block, got: {sexp}");
         assert!(!sexp.contains("ERROR"), "Parse should not emit ERROR nodes: {sexp}");
     }
+
+    #[test]
+    fn test_bare_continue_simple() {
+        // AC: bare `continue;` at statement level parses as a LoopControl node
+        // (the when-block fall-through op), not as a bareword Identifier.
+        let source = "continue;";
+        let ast = must_some(parse_code(source));
+        assert!(
+            matches!(ast.kind, NodeKind::Program { .. }),
+            "expected Program, got {:?}",
+            ast.kind
+        );
+        let NodeKind::Program { statements } = &ast.kind else {
+            return;
+        };
+        let stmt = must_some(statements.first());
+        assert!(
+            matches!(stmt.kind, NodeKind::LoopControl { .. }),
+            "expected LoopControl, got {:?}",
+            stmt.kind
+        );
+        let NodeKind::LoopControl { op, label } = &stmt.kind else {
+            return;
+        };
+        assert_eq!(op, "continue");
+        assert!(label.is_none());
+    }
+
+    #[test]
+    fn test_continue_with_label() {
+        // Real Perl rejects labels on `continue` (`continue OUTER` is a
+        // syntax error), so the label must not attach: recovery records an
+        // error and no LoopControl node carries a label (#16285).
+        let source = "continue OUTER;";
+        let mut parser = Parser::new(source);
+        let ast = must_some(parser.parse().ok());
+        assert!(
+            !parser.errors().is_empty(),
+            "expected a recorded rejection for `continue OUTER`, got none"
+        );
+        let NodeKind::Program { statements } = &ast.kind else {
+            panic!("expected Program, got {:?}", ast.kind);
+        };
+        assert!(
+            !statements
+                .iter()
+                .any(|stmt| matches!(&stmt.kind, NodeKind::LoopControl { label: Some(_), .. })),
+            "no LoopControl node may carry a label for `continue`"
+        );
+    }
+
+    #[test]
+    fn test_continue_in_when_block() {
+        // Inside a `when` block, `continue` falls through to the next case.
+        let source = "given ($x) { when (1) { do_thing(); continue } when (2) { do_other(); } }";
+        let ast = must_some(parse_code(source));
+
+        let sexp = ast.to_sexp();
+        assert!(
+            sexp.contains("continue"),
+            "Expected `continue` to appear as a loop-control op, got: {sexp}"
+        );
+        assert!(
+            !sexp.contains("Identifier(\"continue\")"),
+            "`continue` should not be parsed as an Identifier, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn test_qualified_loop_control_label_is_hard_error() {
+        // (#16296) Real Perl rejects package-qualified loop labels outright.
+        // Direct variant-plus-location assertion on the exact seam.
+        let mut parser = Parser::new("while (1) { last FOO::BAR; }");
+        match parser.parse() {
+            Err(crate::syntax::error::ParseError::QualifiedLoopControlLabel { location }) => {
+                assert_eq!(location, 17, "label starts at byte 17");
+            }
+            Err(other) => panic!("expected QualifiedLoopControlLabel, got {other:?}"),
+            Ok(ast) => panic!("qualified loop label must fail to parse, got {:?}", ast.kind),
+        }
+    }
+
+    #[test]
+    fn test_qualified_label_survives_brace_fallback() {
+        // (#16296) In `my $x = { ... }` the braces are hash-or-block
+        // ambiguous; the qualified-label error must propagate instead of
+        // being swallowed into a recovered block.
+        let mut parser = Parser::new("my $x = { last FOO::BAR; };");
+        match parser.parse() {
+            Err(crate::syntax::error::ParseError::QualifiedLoopControlLabel { location }) => {
+                assert_eq!(location, 15, "label starts at byte 15");
+            }
+            Err(other) => panic!("expected QualifiedLoopControlLabel, got {other:?}"),
+            Ok(ast) => panic!("qualified loop label must fail to parse, got {:?}", ast.kind),
+        }
+    }
+
+    #[test]
+    fn test_post_loop_continue_block_unaffected() {
+        // The post-loop `continue { BLOCK }` form must still parse as the
+        // While/For/Foreach `continue_block`, not as a labeled LoopControl.
+        let source = "while (1) { last; } continue { $x++; }";
+        let ast = must_some(parse_code(source));
+
+        assert!(
+            matches!(ast.kind, NodeKind::Program { .. }),
+            "expected Program, got {:?}",
+            ast.kind
+        );
+        let NodeKind::Program { statements } = &ast.kind else {
+            return;
+        };
+        let while_stmt = must_some(statements.first());
+        let NodeKind::While { continue_block, .. } = &while_stmt.kind else {
+            panic!("expected While, got {:?}", while_stmt.kind);
+        };
+        assert!(
+            continue_block.is_some(),
+            "post-loop `continue {{ BLOCK }}` must attach as While.continue_block"
+        );
+    }
 }

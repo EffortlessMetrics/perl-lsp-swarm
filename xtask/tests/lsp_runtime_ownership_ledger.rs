@@ -343,6 +343,20 @@ const MODULES: &[ModuleRow] = &[
         "#7386"
     ),
     module_row!(
+        "v0_18_text_sync_envelope",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore + adapter",
+        "retain the selected v0.18 full-document UTF-16 envelope above runtime until the atomic-incremental cutover",
+        "#8129"
+    ),
+    module_row!(
+        "watched_delete_republish_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of watched-file and file-operation DELETED diagnostic republish beside its subject",
+        "#17332"
+    ),
+    module_row!(
         "window",
         ApplicationPolicy,
         "PerlLspAdapter over generic client",

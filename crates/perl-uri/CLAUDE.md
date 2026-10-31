@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 `perl-uri` is a **Tier 1 leaf crate** providing URI-to-filesystem-path conversion and normalization utilities for the Perl LSP ecosystem.
 
-**Version**: workspace (currently 0.12.3)
+**Version**: tracks the workspace version.
 
 ## Commands
 
@@ -22,7 +22,7 @@ cargo doc -p perl-uri --open         # View documentation
 ### Dependencies
 
 - `url` (external) -- URL parsing and manipulation
-- `perl-tdd-support` (dev) -- test assertion helpers (`must`, `must_some`)
+- `perl-test-must` (dev) -- test assertion helpers (`must`, `must_some`)
 - `tempfile` (dev) -- temporary file utilities
 
 ### Key Functions
@@ -68,5 +68,5 @@ let key = uri_key("file:///C:/Users/test.pl"); // "file:///c:/Users/test.pl"
 - Always use these functions for URI/path conversion instead of manual string manipulation
 - `fs_path_to_uri` resolves relative paths via `std::env::current_dir` before conversion
 - Percent-encoding/decoding is handled automatically by the `url` crate
-- Tests use `perl_tdd_support::must` / `must_some` instead of `unwrap()` / `expect()`
+- Tests use `perl_test_must::must` / `must_some` instead of `unwrap()` / `expect()`
 - The `#[allow(clippy::unwrap_used, clippy::expect_used)]` attribute is applied only to the test module

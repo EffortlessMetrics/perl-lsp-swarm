@@ -8,9 +8,10 @@
 
 use anyhow::{Context, Result, bail};
 use perl_core_harness_types::{
-    ExecutionMechanism, HarnessMode, RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus,
-    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
-    SemanticBoundaryRecord, SemanticBoundarySourceSpan, validate_execution_mechanism,
+    ExecutionMechanism, HarnessMode, LEGACY_SELECTED_EXECUTE_SCAFFOLD,
+    RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus, SemanticBoundaryConfidence,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRecord,
+    SemanticBoundarySourceSpan, validate_execution_mechanism,
 };
 use perl_parser_core::hir::{
     CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile, HirScopeId,
@@ -91,16 +92,27 @@ fn main() {
             let args = env::args_os().skip(1).collect::<Vec<_>>();
             let display_path =
                 infer_display_path(&args).unwrap_or_else(|| "perl-core-test-runner".to_string());
-            let mut result = ModeRunResult::fail("cli_switch", err.to_string());
-            if mode == HarnessMode::Execute.as_str() {
-                result = result.with_mechanism(ExecutionMechanism::FixtureReplay);
-            }
+            let result = cli_failure_result(&mode, err.to_string());
             emit_internal_failure(&err);
             let _ = append_context_record(&mode, &display_path, &result);
             1
         }
     };
     std::process::exit(code);
+}
+
+/// Failure result for an invocation that dies before reaching its rail.
+///
+/// Separated from [`main`] so the execute backstop stamp is unit-testable:
+/// `main` exits the process and cannot be called from tests (#4773).
+fn cli_failure_result(mode: &str, detail: String) -> ModeRunResult {
+    let mut result = ModeRunResult::fail("cli_switch", detail);
+    if mode == HarnessMode::Execute.as_str() {
+        result = result
+            .with_mechanism(ExecutionMechanism::FixtureReplay)
+            .with_scaffold_stamp(LEGACY_SELECTED_EXECUTE_SCAFFOLD);
+    }
+    result
 }
 
 fn run() -> Result<RunnerStatus> {
@@ -217,6 +229,7 @@ struct ModeRunResult {
     assertions_total: usize,
     tap_output: Option<String>,
     mechanism: Option<ExecutionMechanism>,
+    scaffold_stamp: Option<String>,
     semantic_boundaries: Vec<SemanticBoundaryRecord>,
 }
 
@@ -230,6 +243,7 @@ impl ModeRunResult {
             assertions_total: 1,
             tap_output: None,
             mechanism: None,
+            scaffold_stamp: None,
             semantic_boundaries: Vec::new(),
         }
     }
@@ -243,6 +257,7 @@ impl ModeRunResult {
             assertions_total,
             tap_output: Some(tap_output),
             mechanism: None,
+            scaffold_stamp: None,
             semantic_boundaries: Vec::new(),
         }
     }
@@ -256,6 +271,7 @@ impl ModeRunResult {
             assertions_total: 1,
             tap_output: None,
             mechanism: None,
+            scaffold_stamp: None,
             semantic_boundaries: Vec::new(),
         }
     }
@@ -270,6 +286,15 @@ impl ModeRunResult {
     /// failure path when an execute invocation dies before reaching it.
     fn with_mechanism(mut self, mechanism: ExecutionMechanism) -> Self {
         self.mechanism = Some(mechanism);
+        self
+    }
+
+    /// Stamp the result with the scaffold identity that produced it.
+    ///
+    /// Applied alongside [`ModeRunResult::with_mechanism`] on the execute rail
+    /// and its failure backstop; never on parse or compile results (#4773).
+    fn with_scaffold_stamp(mut self, stamp: &str) -> Self {
+        self.scaffold_stamp = Some(stamp.to_string());
         self
     }
 }
@@ -536,7 +561,7 @@ fn is_runtime_callable_scope(scope_id: Option<HirScopeId>, hir: &HirFile) -> boo
         if matches!(scope.kind, ScopeKind::PhaseBlock) {
             return false;
         }
-        if matches!(scope.kind, ScopeKind::Subroutine | ScopeKind::Method) {
+        if scope.kind.is_callable() {
             return true;
         }
         current = scope.parent;
@@ -1555,7 +1580,8 @@ fn is_run_switchp_data_setup_boundary(
 fn run_execute(invocation: &Invocation) -> Result<ModeRunResult> {
     Ok(execute_selected_fixture(invocation)
         .unwrap_or_else(ModeRunResult::from_error)
-        .with_mechanism(ExecutionMechanism::FixtureReplay))
+        .with_mechanism(ExecutionMechanism::FixtureReplay)
+        .with_scaffold_stamp(LEGACY_SELECTED_EXECUTE_SCAFFOLD))
 }
 
 fn execute_selected_fixture(invocation: &Invocation) -> Result<ModeRunResult> {
@@ -2241,6 +2267,7 @@ fn write_context_record(
         bucket: result.bucket.clone(),
         first_diagnostic: result.first_diagnostic.clone(),
         mechanism: result.mechanism,
+        scaffold_stamp: result.scaffold_stamp.clone(),
         semantic_boundaries: result.semantic_boundaries.clone(),
     };
     let json = serde_json::to_string(&record).context("serializing runner record")?;
@@ -5740,6 +5767,102 @@ while ($x != 1) { $x = 1; }
     }
 
     #[test]
+    fn every_selected_execute_fixture_carries_the_scaffold_stamp() -> TestResult {
+        let sources = selected_execute_sources();
+        assert_eq!(
+            sources.iter().map(|(path, _)| *path).collect::<Vec<_>>().len(),
+            EXECUTE_BASE_ALLOWLIST.len(),
+            "every allowlisted fixture must be covered by this control"
+        );
+
+        for (path, source) in sources {
+            let invocation =
+                Invocation { source: SourceInput::Inline(source), display_path: path.to_string() };
+
+            let result = run_execute(&invocation)?;
+
+            assert_eq!(result.status, RunnerStatus::Pass, "{path} should replay cleanly");
+            assert_eq!(
+                result.scaffold_stamp.as_deref(),
+                Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD),
+                "{path} was produced by the selected scaffold and must say so"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_execute_paths_carry_the_scaffold_stamp() -> TestResult {
+        // A rejected path fails on the replay rail, so it carries the rail's
+        // scaffold identity like every other execute outcome.
+        let invocation = Invocation {
+            source: SourceInput::Inline(base_if_source()),
+            display_path: "base/rs.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.scaffold_stamp.as_deref(), Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_failure_backstop_stamps_execute_and_not_parse() -> TestResult {
+        // The only failure path that never reaches a rail: `main` builds it
+        // via `cli_failure_result`, so the helper carries the proof.
+        let failed_execute = cli_failure_result("execute", "boom".to_string());
+        assert_eq!(failed_execute.status, RunnerStatus::Fail);
+        assert_eq!(failed_execute.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        assert_eq!(
+            failed_execute.scaffold_stamp.as_deref(),
+            Some(LEGACY_SELECTED_EXECUTE_SCAFFOLD)
+        );
+
+        let failed_parse = cli_failure_result("parse", "boom".to_string());
+        assert_eq!(failed_parse.mechanism, None);
+        assert!(failed_parse.scaffold_stamp.is_none(), "parse backstop must not stamp");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_execute_records_write_the_scaffold_stamp() -> TestResult {
+        // Write-through of a pre-stamped failure struct; the backstop's own
+        // stamping is proven by `cli_failure_backstop_stamps_execute_and_not_parse`.
+        let temp = tempfile::tempdir()?;
+        let context = temp.path().join("records.jsonl");
+        let failed = ModeRunResult::fail("cli_switch", "boom".to_string())
+            .with_mechanism(ExecutionMechanism::FixtureReplay)
+            .with_scaffold_stamp(LEGACY_SELECTED_EXECUTE_SCAFFOLD);
+
+        write_context_record(&context, "execute", "base/if.t", &failed)?;
+
+        let raw = fs::read_to_string(context)?;
+        let record: serde_json::Value = serde_json::from_str(raw.trim())?;
+        assert_eq!(record["status"], "fail");
+        assert_eq!(record["scaffold_stamp"], LEGACY_SELECTED_EXECUTE_SCAFFOLD);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_and_compile_results_carry_no_scaffold_stamp() -> TestResult {
+        // The stamp names the selected-execute scaffold; modes that execute
+        // nothing must never set it.
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("ok.t");
+        fs::write(&script, "my $x = 1;\n")?;
+        let invocation =
+            Invocation { source: SourceInput::File(script), display_path: "base/ok.t".to_string() };
+
+        let parsed = run_parse(&invocation)?;
+        assert!(parsed.scaffold_stamp.is_none(), "parse must not stamp");
+
+        let compiled = run_compile(&invocation)?;
+        assert!(compiled.scaffold_stamp.is_none(), "compile must not stamp");
+        Ok(())
+    }
+
+    #[test]
     fn identical_fixture_source_under_another_path_is_not_promoted() -> TestResult {
         // Recognizing `base/if.t`'s exact source does not make the same bytes
         // executable under a different name: the scaffold is path-dispatched,
@@ -5843,6 +5966,7 @@ while ($x != 1) { $x = 1; }
         assert_eq!(record["assertions_total"], 1);
         assert!(record["bucket"].is_null());
         assert!(record["first_diagnostic"].is_null());
+        assert!(record["scaffold_stamp"].is_null());
         assert_eq!(record["semantic_boundaries"], serde_json::json!([]));
         Ok(())
     }

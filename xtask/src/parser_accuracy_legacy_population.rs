@@ -21,6 +21,13 @@ pub const LEGACY_POPULATION_SCHEMA_VERSION: u32 = 1;
 /// Profile identity for the quarantined trailing-whitespace observation.
 pub const LEGACY_WHITESPACE_PROFILE: &str = "trailing_horizontal_whitespace.legacy.v1";
 
+/// The one aggregate metric the retained whitespace population may declare.
+///
+/// `build_legacy_whitespace_population` always names this metric, so a
+/// population declaring any other quarantined row as its aggregate would bind
+/// unrelated observations to the whitespace population's profile and counts.
+pub const LEGACY_WHITESPACE_AGGREGATE_METRIC: &str = "whitespace_invariance_rate";
+
 /// Current authored parser-accuracy manifest.
 pub const DEFAULT_PARSER_ACCURACY_MANIFEST: &str =
     "crates/perl-corpus/fixtures/parser_accuracy/manifest.json";
@@ -168,6 +175,39 @@ impl LegacyPopulation {
         output.push('\n');
         Ok(output)
     }
+}
+
+/// Every legacy metamorphic observation the contract holds as investigation-only.
+///
+/// Only the whitespace row is bound to a projected population, so an artifact
+/// that declared a *partial* `quarantined_metrics` set would let the other two
+/// reappear as `measured` and be counted as trusted accuracy. Both validators
+/// require the declaration to cover this set, so under-declaring is refused
+/// rather than obeyed.
+///
+/// This is not the `is_legacy_untrusted_metric` name classifier this contract
+/// retired. That downgraded *any* row whose name resembled a legacy metric;
+/// this only checks that the artifact's own declaration is complete. A metric
+/// named `whitespace_invariance_rate_v2` is still ordinary trusted accuracy.
+pub const LEGACY_QUARANTINED_METRICS: [&str; 3] =
+    ["whitespace_invariance_rate", "comment_invariance_rate", "newline_style_invariance_rate"];
+
+/// The single runtime authority for the canonical population-identity format.
+///
+/// `perl_lsp_rs_core::hashing::sha256_hex` — the only producer of these
+/// identities — emits `sha256:` followed by 64 **lowercase** hex characters,
+/// and `.ci/schemas/parser-accuracy.schema.json` pins the same
+/// `^sha256:[0-9a-f]{64}$`. A validator written as `is_ascii_hexdigit` would
+/// also admit uppercase `A-F`, so an artifact the schema rejects would render
+/// as current status. Both the generator's `validate_legacy_population_evidence`
+/// and the status reader's `trust_disposition_is_fail_closed` call this, so the
+/// runtime has one definition rather than one per consumer.
+#[must_use]
+pub fn is_canonical_population_identity(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    digest.len() == 64 && digest.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Fail-closed population construction errors.

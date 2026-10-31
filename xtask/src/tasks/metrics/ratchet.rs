@@ -150,11 +150,34 @@ pub(super) fn is_lower_better_metric(metric: &str, explicit: &[String]) -> bool 
 /// The #4063 builder emits this format from `parser-stats --json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricReceipt {
+    /// Envelope version; must equal [`SCHEMA_VERSION`]. Receipts are runtime
+    /// artifacts (`target/receipts/metrics/`), never committed, so the field
+    /// has no serde default: a legacy receipt without it fails to parse
+    /// (fail-closed) instead of being silently misread (#15352).
+    pub schema_version: u32,
     pub subsystem: String,
     pub generated_at: String,
     pub commit: String,
     pub floor_metrics: BTreeMap<String, Option<f64>>,
     pub improvement_metrics: BTreeMap<String, Option<f64>>,
+}
+
+/// Load a runtime [`MetricReceipt`] with strict schema gating, mirroring
+/// [`load_baseline`]: a receipt whose `schema_version` differs from
+/// [`SCHEMA_VERSION`] is rejected instead of silently misread.
+pub fn load_receipt(path: &Path) -> Result<MetricReceipt> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read receipt: {}", path.display()))?;
+    let receipt: MetricReceipt = serde_json::from_str(&raw)
+        .with_context(|| format!("Failed to parse receipt: {}", path.display()))?;
+    let found = receipt.schema_version;
+    if found != SCHEMA_VERSION {
+        return Err(eyre!(
+            "Metric receipt schema version mismatch at {}: expected {SCHEMA_VERSION}, got {found}",
+            path.display()
+        ));
+    }
+    Ok(receipt)
 }
 
 // =============================================================================
@@ -186,10 +209,7 @@ pub fn run_ratchet_check(
         BTreeMap<String, Option<f64>>,
         BTreeMap<String, Option<f64>>,
     ) = if receipt_path.exists() {
-        let raw = std::fs::read_to_string(&receipt_path)
-            .with_context(|| format!("Failed to read receipt: {}", receipt_path.display()))?;
-        let receipt: MetricReceipt = serde_json::from_str(&raw)
-            .with_context(|| format!("Failed to parse receipt: {}", receipt_path.display()))?;
+        let receipt = load_receipt(&receipt_path)?;
         (receipt.floor_metrics, receipt.improvement_metrics)
     } else {
         // No receipt yet — fall back to baseline values (idempotent, always
@@ -331,6 +351,51 @@ mod tests {
             tolerance_pct: 0.005,
             lower_is_better: Vec::new(),
         }
+    }
+
+    fn receipt_json(schema_version: u32) -> String {
+        let empty = "{}";
+        format!(
+            r#"{{"schema_version": {schema_version}, "subsystem": "parser", "generated_at": "2026-01-01T00:00:00Z", "commit": "deadbeef", "floor_metrics": {{"parse_nodes": 10.0}}, "improvement_metrics": {empty}}}"#
+        )
+    }
+
+    /// Producer round-trip: a receipt stamped with the current schema version
+    /// survives write → strict-gated load unchanged.
+    #[test]
+    fn receipt_round_trips_through_load_receipt() -> color_eyre::eyre::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let path = tmp.path().join("parser.json");
+        std::fs::write(&path, receipt_json(SCHEMA_VERSION))?;
+        let receipt = load_receipt(&path)?;
+        assert_eq!(receipt.schema_version, SCHEMA_VERSION);
+        assert_eq!(receipt.subsystem, "parser");
+        assert_eq!(receipt.floor_metrics.get("parse_nodes"), Some(&Some(10.0)));
+        Ok(())
+    }
+
+    /// Negative control: a future-format receipt is rejected, not misread.
+    #[test]
+    fn receipt_with_wrong_schema_version_is_rejected() -> color_eyre::eyre::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let path = tmp.path().join("parser.json");
+        std::fs::write(&path, receipt_json(SCHEMA_VERSION + 1))?;
+        let err =
+            load_receipt(&path).err().ok_or_else(|| eyre!("expected schema version rejection"))?;
+        assert!(err.to_string().contains("schema version mismatch"), "{err}");
+        Ok(())
+    }
+
+    /// Negative control: a legacy receipt without the envelope field fails to
+    /// parse (no serde default) — fail-closed, not silently accepted.
+    #[test]
+    fn receipt_without_schema_version_fails_closed() -> color_eyre::eyre::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let path = tmp.path().join("parser.json");
+        let legacy = r#"{"subsystem":"parser","generated_at":"t","commit":"c","floor_metrics":{},"improvement_metrics":{}}"#;
+        std::fs::write(&path, legacy)?;
+        assert!(load_receipt(&path).is_err(), "receipt without schema_version must fail closed");
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -542,6 +607,7 @@ mod tests {
         std::fs::write(
             receipt_dir.join("test.json"),
             r#"{
+  "schema_version": 1,
   "subsystem": "test",
   "generated_at": "2026-05-03T00:00:00Z",
   "commit": "current",
@@ -663,6 +729,7 @@ mod tests {
         std::fs::write(
             receipt_dir.join("test.json"),
             r#"{
+  "schema_version": 1,
   "subsystem": "test",
   "generated_at": "2026-05-03T00:00:00Z",
   "commit": "current",
@@ -675,10 +742,19 @@ mod tests {
 
         let result = run_ratchet_check(dir.path(), "test", None, false);
 
+        // The fixture carries the current schema version so the failure must
+        // come from the floor-regression path (0.5 < 0.9 baseline), not from
+        // schema gating: without the stamp this assertion passes on a parse
+        // error and stops exercising violation handling.
+        let err = result.err().ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "a receipt below the committed floor must fail; otherwise the bootstrap \
+                 pass above proves nothing"
+            )
+        })?;
         assert!(
-            result.is_err(),
-            "a receipt below the committed floor must fail; otherwise the bootstrap \
-             pass above proves nothing"
+            err.to_string().contains("floor metric violation"),
+            "expected a floor-regression failure, got: {err}"
         );
 
         Ok(())

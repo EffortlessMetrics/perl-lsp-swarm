@@ -1,0 +1,9 @@
+project: product
+component: Installation
+kind: Fixed
+body: Make PATH selector creation commit-atomic across source-only and release product-unit transitions, and require the focused installer tests to distinguish absent selectors from dangling ones.
+time: 2026-09-19T08:00:00Z
+custom:
+  PR: "14052"
+  Slug: path-selector-commit-atomic
+  Breaking: "no"

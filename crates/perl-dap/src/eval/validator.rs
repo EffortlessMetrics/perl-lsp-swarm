@@ -9,6 +9,13 @@ use super::patterns::{
 };
 
 /// Error type for unsafe expression detection
+///
+/// These messages name `allowSideEffects` as the recovery, which is only
+/// reachable from the `repl` evaluation context since #9385. They are written
+/// context-free on purpose so this validator stays pure and independently
+/// testable; `eval::trust::retarget_side_effect_hint` rewrites the hint at the
+/// adapter seam, which is the first place that knows the context. Change the
+/// hint wording here and that retargeting must be updated with it.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ValidationError {
     /// Expression contains a dangerous operation

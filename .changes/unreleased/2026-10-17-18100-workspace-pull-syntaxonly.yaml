@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Workspace-wide diagnostic pulls now honor syntax-only diagnostic mode, matching push and per-document pull. Previously workspace/diagnostic ignored the mode and ran the full semantic, critic, and module-resolution analysis for every open file, so latency measurements and reduced-mode clients silently received full-cost results from that transport."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18100"
+  Slug: workspace-pull-syntaxonly
+  Breaking: "no"

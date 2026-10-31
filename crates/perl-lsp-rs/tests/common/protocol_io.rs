@@ -269,6 +269,26 @@ pub fn read_response_matching_i64(server: &LspServer, id: i64, dur: Duration) ->
     read_response_matching(server, &json!(id), dur)
 }
 
+/// Receive the first same-id response only when `accept` matches it.
+///
+/// Cancellation tests race a completion result against its cancel error on one
+/// request id (#15913): the first arrival may be the result, a generic cancel
+/// error, or the expected shaped error. Waiting for any same-id response and
+/// asserting on whatever won is timing-dependent, so callers pass the shape
+/// they require and retry the stimulus with a fresh id on `None`. One JSON-RPC
+/// response settles an id, so a non-matching first arrival also yields `None`.
+pub fn read_response_where(
+    server: &LspServer,
+    id: &Value,
+    dur: Duration,
+    accept: impl Fn(&Value) -> bool,
+) -> Option<Value> {
+    match read_response_matching_outcome(server, id, dur) {
+        ReadResponseOutcome::Response(msg) if accept(&msg) => Some(msg),
+        _ => None,
+    }
+}
+
 /// Write raw bytes (for malformed/binary frame tests).
 pub fn send_raw(server: &LspServer, bytes: &[u8]) {
     // Ignore write errors - BrokenPipe during teardown is expected

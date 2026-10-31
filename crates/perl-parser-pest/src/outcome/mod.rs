@@ -4,12 +4,19 @@
 //! [`crate::PureRustPerlParser::parse`]'s error path: [`crate::ParseError`]
 //! (the crate's single fallible-return error type) wraps exactly these two
 //! types as its `Rejected` and `Failed` arms. That integration is limited to
-//! the error side. `parse()`'s success return remains `crate::AstNode`;
-//! [`ParseOutcome`], [`ParseAttempt`], and [`ParseCompleteness`] are not
-//! wired into `parse()` and there is no `parse_strict`. Constructors for
-//! those success-side types exist so later train rows can consume the
-//! vocabulary without implying that current recovery already accounts for
-//! source.
+//! the error side. `parse()`'s success return remains `crate::AstNode`, and
+//! there is no `parse_strict`.
+//!
+//! On the success side the one integrated consumer is the heredoc contract
+//! (#8220), which reports through
+//! [`crate::PureRustPerlParser::parse_heredoc_outcome`] as a
+//! [`ParseCompleteness`] and did change what
+//! [`crate::PureRustPerlParser::parse`] returns for heredocs.
+//! [`ParseOutcome`] and [`ParseAttempt`] remain unwired substrate, and
+//! `parse_with_recovery` is unchanged. That completeness is heredoc-scoped:
+//! constructors for the success-side types exist so later train rows can
+//! consume the vocabulary, without implying that current recovery already
+//! accounts for source.
 //!
 //! Parser-domain completeness, rejection, and operational failure are distinct
 //! types and cannot be stored in one another's success path.

@@ -188,7 +188,7 @@ fn test_incremental_edit_recovery() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    // Make edit that breaks syntax temporarily
+    // Make edit that breaks syntax temporarily (full-document transfer).
     send_notification(
         &server,
         json!({
@@ -200,11 +200,7 @@ fn test_incremental_edit_recovery() -> Result<(), Box<dyn std::error::Error>> {
                     "version": 2
                 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 1, "character": 8 },
-                        "end": { "line": 1, "character": 9 }
-                    },
-                    "text": ""  // Delete '2', leaving "my $y = ;"
+                    "text": "my $x = 1;\nmy $y = ;\nprint $x + $y;"
                 }]
             }
         }),
@@ -222,11 +218,7 @@ fn test_incremental_edit_recovery() -> Result<(), Box<dyn std::error::Error>> {
                     "version": 3
                 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 1, "character": 8 },
-                        "end": { "line": 1, "character": 8 }
-                    },
-                    "text": "3"  // Add '3', making "my $y = 3;"
+                    "text": "my $x = 1;\nmy $y = 3;\nprint $x + $y;"
                 }]
             }
         }),
@@ -748,7 +740,7 @@ fn test_diagnostic_recovery() -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::sleep(Duration::from_millis(100));
 
-    // Fix one error at a time
+    // Fix one error at a time via full-document replacements.
     send_notification(
         &server,
         json!({
@@ -760,11 +752,7 @@ fn test_diagnostic_recovery() -> Result<(), Box<dyn std::error::Error>> {
                     "version": 2
                 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 0, "character": 8 },
-                        "end": { "line": 0, "character": 8 }
-                    },
-                    "text": "1"
+                    "text": "my $x = 1;\nmy $y = ;\nmy $z = ;"
                 }]
             }
         }),
@@ -787,11 +775,7 @@ fn test_diagnostic_recovery() -> Result<(), Box<dyn std::error::Error>> {
                     "version": 3
                 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 1, "character": 8 },
-                        "end": { "line": 1, "character": 8 }
-                    },
-                    "text": "2"
+                    "text": "my $x = 1;\nmy $y = 2;\nmy $z = ;"
                 }]
             }
         }),
@@ -814,11 +798,7 @@ fn test_diagnostic_recovery() -> Result<(), Box<dyn std::error::Error>> {
                     "version": 4
                 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": 2, "character": 8 },
-                        "end": { "line": 2, "character": 8 }
-                    },
-                    "text": "3"
+                    "text": "my $x = 1;\nmy $y = 2;\nmy $z = 3;"
                 }]
             }
         }),
@@ -846,7 +826,7 @@ fn test_diagnostic_recovery() -> Result<(), Box<dyn std::error::Error>> {
     assert!(response["result"].is_array());
     let symbols = response["result"].as_array().ok_or("Expected 'result' to be an array")?;
 
-    // #307: Under CI load, incremental didChange notifications may not all be
+    // #307: Under CI load, sequential full-document didChange notifications may not all be
     // processed before the documentSymbol request. Retry with a convergence
     // loop instead of accepting degraded behavior.
     let mut attempt = 0;

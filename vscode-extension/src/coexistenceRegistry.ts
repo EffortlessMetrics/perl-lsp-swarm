@@ -138,6 +138,21 @@ export function coexistenceConflictKey(finding: CoexistenceFinding): string {
   );
 }
 
+/**
+ * Scope-independent identity of a conflict: the condition itself, without
+ * where it was observed. Two findings sharing this identity describe the same
+ * underlying condition, so a host-wide observation already covers any folder
+ * that merely re-reads the same setting (#16000).
+ *
+ * The observed other owner is part of the condition, not incidental detail: a
+ * root that names a different competing owner for the same class and subject
+ * — a stale `critic.engine` of `external` under a root while the host-wide
+ * value is `legacy`, say — is a distinct condition and keeps its own identity.
+ */
+export function coexistenceConflictIdentity(finding: CoexistenceFinding): string {
+  return [finding.conflictClass, finding.subject, finding.otherOwner ?? ''].join('|');
+}
+
 export interface RedactedCoexistencePacketEntry {
   readonly conflictClass: CoexistenceConflictClass;
   readonly scopeKind: 'user' | 'workspace-folder';

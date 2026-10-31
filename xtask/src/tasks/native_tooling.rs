@@ -148,6 +148,9 @@ struct FormatterStatus {
     corpus_files_changed: Option<usize>,
     corpus_idempotence_passed_count: Option<usize>,
     corpus_parse_preserved_count: Option<usize>,
+    /// Schema-v1 corpus receipt field `literal_bailout_count`: literal-
+    /// preservation events (refusals on unchanged output plus changed-
+    /// preserving formats), not only refusals (#17907).
     corpus_literal_bailout_count: Option<usize>,
     corpus_unsupported_patterns_count: Option<usize>,
     corpus_unsupported_parse_clean_count: Option<usize>,
@@ -506,7 +509,7 @@ fn build_readiness_receipt(
         formatter.format_corpus_receipt_present,
         false,
         format!(
-            "unsupported_diagnostics={} parse_clean_unsupported={} parse_error_diagnostics={} literal_bailouts={} diagnostics={}",
+            "unsupported_diagnostics={} parse_clean_unsupported={} parse_error_diagnostics={} literal_preservation_events={} diagnostics={}",
             optional_metric(
                 formatter.corpus_unsupported_patterns_count,
                 formatter.format_corpus_receipt_present,
@@ -772,9 +775,10 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
     let executable_diagnostics = blank_comments(&diagnostics_source);
     let production_diagnostics = production_prefix(&executable_diagnostics);
 
-    let native_service_count = production_diagnostics
-        .matches("NativeCriticService::analyze(NativeCriticSubject::accepted(")
-        .count();
+    let native_service_count =
+        production_diagnostics.matches("NativeCriticService::analyze(").count();
+    let accepted_subject_count =
+        production_diagnostics.matches("NativeCriticSubject::accepted(").count();
     let accepted_capture_count = production_diagnostics.matches("capture_accepted_critic(").count();
     let finalize_critic_count = production_diagnostics.matches("finalize_pending_critic(").count();
 
@@ -823,10 +827,11 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         DefaultCheck {
             name: "native_critic_routes_through_accepted_service",
             passed: native_service_count >= 1
+                && accepted_subject_count >= 1
                 && accepted_capture_count >= 1
                 && finalize_critic_count >= 1,
             detail: format!(
-                "native critic service entry={native_service_count} accepted-capture={accepted_capture_count} finalize={finalize_critic_count} in diagnostics runtime production code"
+                "native critic service entry={native_service_count} accepted-subject={accepted_subject_count} accepted-capture={accepted_capture_count} finalize={finalize_critic_count} in diagnostics runtime production code"
             ),
         },
         DefaultCheck {
@@ -1436,7 +1441,7 @@ fn render_markdown(receipt: &NativeToolingStatusReceipt) -> String {
 | Corpus files changed | {} |
 | Corpus idempotence | {} |
 | Corpus parse preservation | {} |
-| Corpus literal bailouts | {} |
+| Corpus literal-preservation events | {} |
 | Corpus unsupported diagnostics | {} |
 | Corpus unsupported parse-clean diagnostics | {} |
 | Corpus parse-error diagnostics | {} |
@@ -1835,7 +1840,7 @@ mod tests {
         assert_eq!(value["formatter"]["format_else_placement"], "separate-line");
         assert_eq!(value["formatter"]["format_keyword_spacing"], "compact");
         assert_eq!(value["formatter"]["format_trailing_comma"], "add-when-wrapped");
-        assert_eq!(value["critic"]["native_rule_count"], 28);
+        assert_eq!(value["critic"]["native_rule_count"], 31);
         assert_eq!(value["critic"]["critic_check_receipt_present"], true);
         assert_eq!(value["critic"]["critic_check_profile"], "strict");
         assert_eq!(value["critic"]["critic_check_files_checked"], 3);
@@ -1886,7 +1891,7 @@ mod tests {
         assert!(markdown.contains("| Corpus files changed | 1 |"));
         assert!(markdown.contains("| Corpus idempotence | 2/2 |"));
         assert!(markdown.contains("| Corpus parse preservation | 2/2 |"));
-        assert!(markdown.contains("| Corpus literal bailouts | 1 |"));
+        assert!(markdown.contains("| Corpus literal-preservation events | 1 |"));
         assert!(markdown.contains("| Corpus unsupported diagnostics | 0 |"));
         assert!(markdown.contains("| Corpus unsupported parse-clean diagnostics | 0 |"));
         assert!(markdown.contains("| Corpus parse-error diagnostics | 0 |"));
@@ -2410,7 +2415,8 @@ match self.mode {
 fn push_diagnostics(&self, uri: &str) {
     let accepted_critic = self.capture_accepted_critic(uri);
     let pending = self.evaluate_native_critic(ast, text, uri, identity, accepted_critic.clone(), &diagnostics);
-    let run = NativeCriticService::analyze(NativeCriticSubject::accepted(subject, identity, ast, text, state, observations, gate, current));
+    let subject = NativeCriticSubject::accepted(subject, identity, ast, text, state, observations, gate, current);
+    let run = NativeCriticService::analyze(subject);
     if self.finalize_pending_critic(&mut diagnostics, pending) {
     }
 }

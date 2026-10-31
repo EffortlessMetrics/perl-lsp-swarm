@@ -68,6 +68,13 @@ pub enum ParsePerlError {
     ParseReturnedNone,
     /// Reading source bytes from disk failed.
     Io(std::io::Error),
+    /// Parsing completed but the resulting tree contains syntax errors.
+    ///
+    /// Produced by the summary APIs ([`parse_perl_summary`],
+    /// [`try_parse_perl_summary`]), which fail closed rather than hand back a
+    /// summary of a broken tree. Recover the error-bearing tree through
+    /// [`try_parse_perl_code`].
+    MalformedSource,
 }
 
 impl fmt::Display for ParsePerlError {
@@ -78,6 +85,7 @@ impl fmt::Display for ParsePerlError {
             }
             Self::ParseReturnedNone => write!(f, "tree-sitter returned no parse tree"),
             Self::Io(error) => write!(f, "failed to read Perl source file: {error}"),
+            Self::MalformedSource => write!(f, "parsed tree contains syntax errors"),
         }
     }
 }
@@ -88,6 +96,7 @@ impl std::error::Error for ParsePerlError {
             Self::LanguageSetup(error) => Some(error),
             Self::ParseReturnedNone => None,
             Self::Io(error) => Some(error),
+            Self::MalformedSource => None,
         }
     }
 }
@@ -157,6 +166,55 @@ pub fn language() -> Language {
     // cannot cause aliasing or memory-safety issues. Soundness depends on the build script
     // linking the correct, ABI-compatible parser object, which cc::Build in build.rs guarantees.
     unsafe { tree_sitter_perl() }
+}
+
+/// The vendored upstream `queries/injections.scm` source.
+///
+/// Mirrors how upstream grammar bindings embed their query files as public
+/// string constants; the copy lives inside this crate (like `c-src/`) so the
+/// published package stays self-contained. Provenance is recorded in the
+/// package's `UPSTREAM_SNAPSHOT.md` file.
+pub const INJECTIONS_QUERY: &str = include_str!("../queries/injections.scm");
+
+/// The vendored upstream `queries/highlights.scm` source.
+///
+/// See [`INJECTIONS_QUERY`] for the embedding/provenance contract. The full
+/// source is retained for snapshot comparison; it is not promised to compile
+/// until the vendored grammar and query snapshots are refreshed together.
+pub const HIGHLIGHTS_QUERY: &str = include_str!("../queries/highlights.scm");
+
+/// Compiles [`INJECTIONS_QUERY`] against the Perl language.
+///
+/// This is the public, typed entry point for consumers that previously had to
+/// locate the repository's vendored `.scm` files and call
+/// `tree_sitter::Query::new` themselves.
+///
+/// # Example
+///
+/// ```rust
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let query = tree_sitter_perl_c::load_injections_query()?;
+/// if !query
+///     .capture_names()
+///     .iter()
+///     .any(|name| *name == "injection.content")
+/// {
+///     return Err("expected injection.content capture".into());
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns [`tree_sitter::QueryError`] if the embedded source stops matching
+/// the compiled grammar (a snapshot consistency fault, not caller input).
+pub fn load_injections_query() -> Result<tree_sitter::Query, tree_sitter::QueryError> {
+    load_query(INJECTIONS_QUERY)
+}
+
+fn load_query(source: &str) -> Result<tree_sitter::Query, tree_sitter::QueryError> {
+    tree_sitter::Query::new(&language(), source)
 }
 
 /// Creates a [`tree_sitter::Parser`] configured for Perl.
@@ -371,6 +429,126 @@ pub fn try_parse_perl_file<P: AsRef<Path>>(path: P) -> Result<tree_sitter::Tree,
     try_parse_perl_bytes(&code)
 }
 
+/// Ergonomic summary of a clean Perl parse.
+///
+/// Returned by [`parse_perl_summary`] / [`try_parse_perl_summary`] instead of a
+/// bare [`tree_sitter::Tree`]. The raw tree stays reachable through
+/// [`ParseResult::tree`] / [`ParseResult::into_tree`], so power users lose no
+/// capability — this is an additive wrapper, not an AST replacement.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct ParseResult {
+    tree: tree_sitter::Tree,
+    node_count: usize,
+}
+
+impl ParseResult {
+    /// Whether the underlying tree contains syntax errors.
+    ///
+    /// Summaries handed out by [`try_parse_perl_summary`] fail closed on
+    /// malformed source, so callers receiving one always see `false` here;
+    /// the value is derived from the live tree rather than baked in so the
+    /// type stays honest independent of how it was obtained.
+    pub fn has_error(&self) -> bool {
+        self.tree.root_node().has_error()
+    }
+
+    /// Total number of syntax nodes in the parsed tree, including unnamed tokens.
+    pub fn node_count(&self) -> usize {
+        self.node_count
+    }
+
+    /// S-expression rendering of the root node, computed from the live tree
+    /// each call (never cached).
+    pub fn root_sexp(&self) -> String {
+        self.tree.root_node().to_sexp()
+    }
+
+    /// Borrows the underlying parse tree for advanced inspection.
+    pub fn tree(&self) -> &tree_sitter::Tree {
+        &self.tree
+    }
+
+    /// Consumes the summary and returns the underlying parse tree.
+    pub fn into_tree(self) -> tree_sitter::Tree {
+        self.tree
+    }
+}
+
+/// Counts every node under `root` (named and unnamed) with an explicit cursor
+/// walk, so pathological nesting depth cannot exhaust the stack through
+/// recursion.
+fn count_tree_nodes(root: tree_sitter::Node<'_>) -> usize {
+    let mut count = 0usize;
+    let mut cursor = root.walk();
+    'descend: loop {
+        count += 1;
+        if cursor.goto_first_child() || cursor.goto_next_sibling() {
+            continue 'descend;
+        }
+        while cursor.goto_parent() {
+            if cursor.goto_next_sibling() {
+                continue 'descend;
+            }
+        }
+        break 'descend;
+    }
+    count
+}
+
+/// Parses a Perl source string and returns an ergonomic [`ParseResult`] summary.
+///
+/// Unlike [`parse_perl_code`], this fails closed on malformed source: a parse
+/// that completes but contains syntax error nodes yields
+/// [`ParsePerlError::MalformedSource`] instead of a summary dressed over a
+/// broken tree.
+///
+/// # Example
+///
+/// ```rust
+/// use tree_sitter_perl_c::parse_perl_summary;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let summary = parse_perl_summary("my $x = 42;")?;
+/// if summary.has_error() {
+///     return Err("summary unexpectedly contains syntax errors".into());
+/// }
+/// if summary.node_count() <= 1 {
+///     return Err("summary should contain more than its root node".into());
+/// }
+/// if !summary.root_sexp().starts_with("(source_file") {
+///     return Err("summary root should be a source_file".into());
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns a boxed [`ParsePerlError`] when the parser cannot be initialised,
+/// tree-sitter returns no tree, or the source is malformed.
+/// Prefer [`try_parse_perl_summary`] when you need typed error discrimination.
+pub fn parse_perl_summary(code: &str) -> Result<ParseResult, Box<dyn std::error::Error>> {
+    try_parse_perl_summary(code).map_err(Into::into)
+}
+
+/// Typed variant of [`parse_perl_summary`].
+///
+/// Returns [`ParsePerlError::MalformedSource`] when the parse completes but the
+/// tree contains syntax error nodes; use [`try_parse_perl_code`] when you need
+/// the error-bearing tree itself.
+///
+/// # Errors
+///
+/// Surfaces every failure mode as its typed [`ParsePerlError`] variant.
+pub fn try_parse_perl_summary(code: &str) -> Result<ParseResult, ParsePerlError> {
+    let tree = try_parse_perl_code(code)?;
+    if tree.root_node().has_error() {
+        return Err(ParsePerlError::MalformedSource);
+    }
+    Ok(ParseResult { node_count: count_tree_nodes(tree.root_node()), tree })
+}
+
 /// Returns the scanner backend identifier for this crate.
 ///
 /// Always returns `"c-scanner"`. Useful when code needs to distinguish between
@@ -385,8 +563,6 @@ pub fn get_scanner_config() -> &'static str {
 mod tests {
     use super::*;
     use tree_sitter::{Query, QueryCursor, StreamingIterator};
-
-    const INJECTIONS_QUERY: &str = include_str!("../../../tree-sitter-perl/queries/injections.scm");
 
     fn capture_text<'a>(
         query: &'a Query,
@@ -500,7 +676,6 @@ mod tests {
         let tree = parse_perl_code(code)?;
         let query = Query::new(&language(), INJECTIONS_QUERY)?;
         let mut cursor = QueryCursor::new();
-
         let mut matched = false;
         let mut matches = cursor.matches(&query, tree.root_node(), code.as_bytes());
         while let Some(m) = matches.next() {
@@ -550,6 +725,148 @@ mod tests {
     fn test_parse_bytes_empty_source() -> Result<(), Box<dyn std::error::Error>> {
         let tree = parse_perl_bytes(b"")?;
         assert_eq!(tree.root_node().kind(), "source_file");
+        Ok(())
+    }
+
+    fn query_has_capture(query: &Query, expected: &str) -> bool {
+        query.capture_names().contains(&expected)
+    }
+
+    #[test]
+    fn load_injections_query_compiles_and_matches_inline_cpp_heredoc()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = "use Inline CPP => <<'END_CPP';\n#include <string>\nclass Greet {};\nEND_CPP\n";
+        let tree = parse_perl_code(code)?;
+        let query = load_injections_query()?;
+        if !query_has_capture(&query, "injection.content") {
+            return Err("expected injection.content capture".into());
+        }
+        if !query_has_capture(&query, "inline.package") {
+            return Err("expected inline.package capture".into());
+        }
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), code.as_bytes());
+        let mut saw_injection_content_heredoc = false;
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                if capture.node.kind() == "heredoc_content" {
+                    saw_injection_content_heredoc = true;
+                }
+            }
+        }
+        if !saw_injection_content_heredoc {
+            return Err(
+                "expected the public injection loader to yield heredoc_content captures".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn highlights_query_snapshot_tripwire_fails_closed_on_snapshot_drift()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Tripwire: the upstream highlights.scm copied at snapshot time does
+        // not fully validate against the frozen c-src/ parser (first
+        // offender: `postfix_deref` literal children at row 136). When a
+        // snapshot refresh resolves the delta, flip this test to the
+        // positive-capture form used by the injections loader and record the
+        // refreshed fingerprints in UPSTREAM_SNAPSHOT.md.
+        let Err(error) = Query::new(&language(), HIGHLIGHTS_QUERY) else {
+            return Err(
+                "snapshot drift resolved: flip this tripwire to positive-capture assertions".into(),
+            );
+        };
+        if error.kind != tree_sitter::QueryErrorKind::Structure {
+            return Err(format!("expected a structural query error, got {:?}", error.kind).into());
+        }
+        // Positive discrimination: the language + query machinery itself is
+        // healthy; fragments of the same file compile and capture normally
+        // (same technique as tests/query_conformance.rs).
+        let fragment_query = Query::new(&language(), "(comment) @comment")?;
+        let code = "# just a comment\nmy $x = 1;\n";
+        let tree = parse_perl_code(code)?;
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&fragment_query, tree.root_node(), code.as_bytes());
+        let mut saw_comment_capture = false;
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                if capture.node.kind() == "comment" {
+                    saw_comment_capture = true;
+                }
+            }
+        }
+        if !saw_comment_capture {
+            return Err("expected highlight fragment query to capture comments".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_perl_summary_reports_clean_tree_facts() -> Result<(), Box<dyn std::error::Error>> {
+        let summary = parse_perl_summary("my $x = 42;\n")?;
+        // Frozen parser shape, including anonymous nodes, is:
+        // source_file, expression_statement, assignment_expression,
+        // variable_declaration, my, scalar, $, varname, =, number, ;.
+        if summary.node_count() != 11 {
+            return Err(format!(
+                "expected 11 nodes in the fixed parse fixture, got {}",
+                summary.node_count()
+            )
+            .into());
+        }
+        if summary.has_error() {
+            return Err("clean summary unexpectedly contains syntax errors".into());
+        }
+        if summary.tree().root_node().kind() != "source_file" {
+            return Err("summary root should be a source_file".into());
+        }
+        if !summary.root_sexp().starts_with("(source_file") {
+            return Err("summary S-expression should start with source_file".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_perl_summary_fails_closed_on_malformed_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let result = try_parse_perl_summary("my $x = @@@@@@;");
+        if !matches!(result, Err(ParsePerlError::MalformedSource)) {
+            return Err("malformed source should produce ParsePerlError::MalformedSource".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_perl_summary_boxed_variant_propagates_malformed_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let error = parse_perl_summary("my $x = @@@@@@;")
+            .err()
+            .ok_or("boxed variant must also fail closed on error trees")?;
+        if !matches!(error.downcast_ref::<ParsePerlError>(), Some(ParsePerlError::MalformedSource))
+        {
+            return Err("boxed variant must preserve ParsePerlError::MalformedSource".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_result_into_tree_preserves_root() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "print 1;\n";
+        let summary = try_parse_perl_summary(source)?;
+        let expected_sexp = summary.root_sexp();
+        let tree = summary.into_tree();
+        if tree.root_node().has_error() {
+            return Err("into_tree must preserve a clean parse tree".into());
+        }
+        if tree.root_node().kind() != "source_file" {
+            return Err("into_tree must preserve the source_file root".into());
+        }
+        if tree.root_node().to_sexp() != expected_sexp
+            || tree.root_node().end_byte() != source.len()
+        {
+            return Err("into_tree must preserve the source tree structure".into());
+        }
         Ok(())
     }
 }

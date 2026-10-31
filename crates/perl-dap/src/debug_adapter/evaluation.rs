@@ -7,6 +7,8 @@ use super::{
     SetExpressionResponseBody, Value, Variable, VariableCacheKind, lock_or_recover,
     module_path_to_name, operation_broker, parse_dap_arguments, validate_safe_expression,
 };
+use crate::backend::EvaluateContext;
+use crate::eval::{EvaluateAdmission, admit, retarget_side_effect_hint};
 use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value::PerlValue;
 use crate::value_format::ValueFormatPolicy;
@@ -98,10 +100,31 @@ impl DebugAdapter {
 
             // AC10.2: Policy validation for a non-mutating subset by default.
             // This is admission control, not a real sandbox.
+            //
+            // #9385: the custom `allowSideEffects` flag is only honored for the
+            // explicit `repl` context. Watch, hover, variables, an unrecognized
+            // label, and an absent context are read-oriented paths the editor
+            // drives without a deliberate user action, so they can never be
+            // widened into arbitrary Perl execution by the flag. The decision is
+            // taken here, before any debugger command is constructed, so a
+            // refusal is never preceded by a debugger write.
             let allow_side_effects = args.allow_side_effects.unwrap_or(false);
+            let context = args.context.as_deref().map(EvaluateContext::from_dap_label);
+            let admission = admit(context.as_ref(), allow_side_effects, self.repl_trust());
 
-            // Validate expression safety if side effects are not allowed
-            if !allow_side_effects {
+            if let Some(refusal) = admission.refusal_message() {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "evaluate".to_string(),
+                    body: None,
+                    message: Some(refusal),
+                };
+            }
+
+            // Screen the expression unless the trusted REPL boundary admitted it.
+            if admission == EvaluateAdmission::Screened {
                 if let Some(error) = validate_safe_expression(expression) {
                     return DapMessage::Response {
                         seq,
@@ -109,7 +132,7 @@ impl DebugAdapter {
                         success: false,
                         command: "evaluate".to_string(),
                         body: None,
-                        message: Some(error),
+                        message: Some(retarget_side_effect_hint(error, context.as_ref())),
                     };
                 }
 
@@ -122,7 +145,10 @@ impl DebugAdapter {
                         success: false,
                         command: "evaluate".to_string(),
                         body: None,
-                        message: Some(error.to_string()),
+                        message: Some(retarget_side_effect_hint(
+                            error.to_string(),
+                            context.as_ref(),
+                        )),
                     };
                 }
             }
@@ -338,13 +364,24 @@ impl DebugAdapter {
         }
 
         let parsed = if let Some(lines) = framed_lines.as_ref() {
-            Self::parse_evaluate_result_from_lines(
-                lines,
-                expression,
-                true,
-                DebuggerOutputOrigin::DebuggerControlPayload,
-                ParseIdentity::new().with_operation_id_from_i64(request_seq),
-            )
+            // This handler queried `x`, which renders a numbered dump (`0  5`,
+            // one `N  ` line per element). Strip the dump scaffolding into the
+            // single value text the response should present first; the generic
+            // line parse stays the fallback for anything that is not a dump
+            // (#17244). The setExpression read-back path sends `p`, whose
+            // unquoted output can legitimately look dump-shaped, so it must
+            // not go through this reshape.
+            Self::parse_evaluate_result_from_x_dump(lines)
+                .map(|(value, type_name)| (value, type_name, None))
+                .or_else(|| {
+                    Self::parse_evaluate_result_from_lines(
+                        lines,
+                        expression,
+                        true,
+                        DebuggerOutputOrigin::DebuggerControlPayload,
+                        ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                    )
+                })
         } else {
             self.parse_evaluate_result_from_output(expression)
         };

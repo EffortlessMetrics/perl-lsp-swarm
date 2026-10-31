@@ -147,7 +147,7 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> Result<Output> {
-    Command::new("git")
+    xtask::git_environment::isolate(Command::new("git"))
         .current_dir(cwd)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args)
