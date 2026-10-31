@@ -1669,3 +1669,32 @@ describe('AI journey with registered inline providers', () => {
     },
   );
 });
+
+test('reports a failed prompt receipt write through the supplied sink and still honours the choice', async () => {
+  const update = jest.fn();
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update,
+  });
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Enable');
+  const workspaceState = makeState();
+  workspaceState.update.mockRejectedValueOnce(new Error('disk full'));
+  const warn = jest.fn();
+
+  await suggestAiCompletionIfSupported(
+    { workspaceState } as unknown as vscode.ExtensionContext,
+    {
+      initializeResult: {
+        capabilities: {
+          inlineCompletionProvider: {},
+          experimental: { perlAiCompletionActivation: true },
+        },
+      },
+    },
+    warn,
+  );
+
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0]?.[0]).toContain('disk full');
+  expect(update).toHaveBeenCalledWith('aiCompletion.enabled', true, expect.anything());
+});
