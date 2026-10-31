@@ -926,26 +926,41 @@ impl<'a> Parser<'a> {
             })
     }
 
+    /// Walk `root`'s subtree with an explicit stack so left-deep AST chains do
+    /// not consume unbounded native stack (issue #18537 mechanism A).
+    fn subtree_contains(root: &Node, mut node_matches: impl FnMut(&Node) -> bool) -> bool {
+        let mut stack: Vec<&Node> = vec![root];
+        while let Some(node) = stack.pop() {
+            if node_matches(node) {
+                return true;
+            }
+            stack.extend(node.children());
+        }
+        false
+    }
+
     /// Whether the subtree declares a heredoc.
     fn contains_heredoc(node: &Node) -> bool {
-        matches!(node.kind, NodeKind::Heredoc { .. })
-            || node.children().into_iter().any(Self::contains_heredoc)
+        Self::subtree_contains(node, |node| matches!(node.kind, NodeKind::Heredoc { .. }))
     }
 
     /// Ordinary shift expressions can contain a quoted word immediately after
     /// `<<`, but that word is not a heredoc delimiter. Keep them out of the
     /// narrow leaked-heredoc recovery path.
     fn contains_left_shift(node: &Node) -> bool {
-        matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=")
-            || node.children().into_iter().any(Self::contains_left_shift)
+        Self::subtree_contains(node, |node| {
+            matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=")
+        })
     }
 
     fn contains_identifier_left_shift(node: &Node) -> bool {
-        matches!(
-            &node.kind,
-            NodeKind::Binary { op, left, .. }
-                if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
-        ) || node.children().into_iter().any(Self::contains_identifier_left_shift)
+        Self::subtree_contains(node, |node| {
+            matches!(
+                &node.kind,
+                NodeKind::Binary { op, left, .. }
+                    if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
+            )
+        })
     }
 
     fn can_arm_heredoc_recovery(node: &Node) -> bool {
