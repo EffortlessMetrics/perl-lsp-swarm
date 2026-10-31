@@ -499,21 +499,48 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
 
 /// Every heredoc opener queued on one code line, in order, as
 /// `(terminator, indented)` pairs.
+fn heredoc_opener_follows_shift_lhs(before: &str) -> bool {
+    let Some(last) = before.trim_end().chars().last() else {
+        return false;
+    };
+    matches!(last, '0'..='9' | '$' | '@' | '%' | ')' | ']')
+}
+
 fn heredoc_openers(line: &str) -> Vec<(String, bool)> {
+    let (code, _) = split_trailing_comment(line);
     let mut openers = Vec::new();
-    let mut rest = line;
-    while let Some((_, after_marker)) = rest.split_once("<<") {
-        let after_space = after_marker.trim_start();
-        let (indented, marker) = match after_space.strip_prefix('~') {
-            Some(stripped) => (true, stripped.trim_start()),
-            None => (false, after_space),
+    let mut rest = code;
+    while let Some((before, after_marker)) = rest.split_once("<<") {
+        if after_marker.starts_with('<') {
+            rest = after_marker;
+            continue;
+        }
+        // Unquoted heredoc barewords attach directly to << / <<~; whitespace means
+        // bitwise left shift (`1 << CONST`).
+        if after_marker.starts_with([' ', '\t']) {
+            rest = after_marker;
+            continue;
+        }
+        if heredoc_opener_follows_shift_lhs(before) {
+            rest = after_marker;
+            continue;
+        }
+        let (indented, marker) = match after_marker.strip_prefix('~') {
+            Some(stripped) => (true, stripped),
+            None => (false, after_marker),
         };
         let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
         let name: String =
             marker.chars().take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric()).collect();
-        if !name.is_empty() {
-            openers.push((name, indented));
+        let Some(first) = name.chars().next() else {
+            rest = after_marker;
+            continue;
+        };
+        if first.is_ascii_digit() {
+            rest = after_marker;
+            continue;
         }
+        openers.push((name, indented));
         rest = after_marker;
     }
     openers
@@ -1090,6 +1117,12 @@ pub(super) fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
             '"' if !in_single && !in_backtick => in_double = !in_double,
             '`' if !in_single && !in_double => in_backtick = !in_backtick,
             '#' if !in_single && !in_double && !in_backtick => {
+                if index > 0 {
+                    let prev = body.as_bytes()[index - 1];
+                    if prev == b'$' {
+                        continue;
+                    }
+                }
                 let code = body[..index].trim_end();
                 if code.trim().is_empty() {
                     return (body, None);
@@ -2618,10 +2651,87 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
 mod tests {
     use super::{
         FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-        byte_span_for_line_range, literal_preserve_region, literal_preserve_region_for_range,
-        range_includes_line, split_line_ending, split_trailing_comment,
-        token_literal_preserve_region_overlapping,
+        byte_span_for_line_range, heredoc_openers, literal_preserve_region,
+        literal_preserve_region_for_range, range_includes_line, split_line_ending,
+        split_trailing_comment, token_literal_preserve_region_overlapping,
     };
+
+    #[test]
+    fn split_trailing_comment_treats_array_last_index_sigil_as_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (code, comment) = split_trailing_comment("if ($#ARGV >= 0) {");
+        assert_eq!(code, "if ($#ARGV >= 0) {");
+        assert_eq!(comment, None);
+
+        let (code, comment) = split_trailing_comment("for (my $i = 0; $i <= $#items; $i++) {");
+        assert_eq!(code, "for (my $i = 0; $i <= $#items; $i++) {");
+        assert_eq!(comment, None);
+
+        let (code, comment) = split_trailing_comment("my $n = $#{ $arr }; # real");
+        assert_eq!(code, "my $n = $#{ $arr };");
+        assert_eq!(comment, Some("# real"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn heredoc_openers_ignore_bitwise_shift_and_comment_mentions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert!(heredoc_openers("my $m = 1 << BITS;").is_empty());
+        assert!(heredoc_openers("my $x = $y << 2;").is_empty());
+        assert!(heredoc_openers("my $z = 1<<5;").is_empty());
+        assert!(heredoc_openers("my $a = 1; # see <<EOF").is_empty());
+
+        assert_eq!(heredoc_openers("my $text = <<EOF;"), vec![("EOF".to_string(), false)]);
+        assert_eq!(heredoc_openers("my $text = <<~EOF;"), vec![("EOF".to_string(), true)]);
+        assert_eq!(heredoc_openers("my $text = <<\"EOF\";"), vec![("EOF".to_string(), false)]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_formatter_preserves_block_indent_with_array_last_index_sigil()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let formatter = NativeFormatter::new();
+        let source = "sub demo {\nif ($#ARGV >= 0) {\n    my $x = 1;\n}\n}\n";
+        let result = formatter.format_document(source, &FormatConfig::default());
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(
+            result.formatted,
+            "sub demo {\n    if ($#ARGV >= 0) {\n        my $x = 1;\n    }\n}\n"
+        );
+        let again = formatter.format_document(&result.formatted, &FormatConfig::default());
+        assert!(!again.changed);
+        assert_eq!(again.formatted, result.formatted);
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_formatter_does_not_align_hash_inside_array_last_index_sigil()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let formatter = NativeFormatter::new();
+        let source = "if ($#a >= 0) {\n    my $y = 1; # note\n}\n";
+        let result = formatter.format_document(source, &FormatConfig::default());
+        assert!(result.diagnostics.is_empty());
+        assert!(!result.formatted.contains("$   #"));
+        assert!(result.formatted.contains("$#a"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_formatter_does_not_treat_bitwise_shift_as_heredoc()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let formatter = NativeFormatter::new();
+        let source = "sub demo {\n    my $m = 1 << 8;\n    my $n = 2;\n}\n";
+        let result = formatter.format_document(source, &FormatConfig::default());
+        assert!(result.diagnostics.is_empty(), "diagnostics: {:?}", result.diagnostics);
+        assert!(result.formatted.contains("my $n = 2;"));
+        assert!(result.formatted.contains("1 << 8"));
+
+        Ok(())
+    }
 
     #[test]
     fn split_trailing_comment_ignores_hash_inside_backticks()
