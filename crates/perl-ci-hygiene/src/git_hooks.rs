@@ -1425,7 +1425,9 @@ mod tests {
                 "cannot_evaluate must record the unevaluated status"
             );
             assert!(
-                hook.contains("[ -z \"$SECRET_SCAN_HITS\" ] && [ -z \"$SECRET_SCAN_UNEVALUATED\" ]"),
+                hook.contains(
+                    "[ -z \"$SECRET_SCAN_HITS\" ] && [ -z \"$SECRET_SCAN_UNEVALUATED\" ]"
+                ),
                 "refuse_if_hits must fail closed when the scan could not evaluate"
             );
             assert_eq!(
@@ -1433,6 +1435,52 @@ mod tests {
                 3,
                 "the unevaluated status must be initialized and reset per scan like the hits"
             );
+        }
+    }
+
+    #[test]
+    fn secret_scan_grep_errors_fail_closed() {
+        // #18467: the rule-matching greps swallowed every invocation error
+        // with `|| true`, so a shadowed or broken grep (exit >= 2) read as a
+        // clean scan and a real token committed silently. The capture shape
+        // must survive in the assembled hook: exit 1 stays the legitimate
+        // no-match (zero hits), and any status > 1 routes through
+        // secret_scan_cannot_evaluate, which records SECRET_SCAN_UNEVALUATED.
+        for hook in [pre_commit_hook_script(), pre_push_hook_script()] {
+            // The swallow must be gone from both the simple rule grep and
+            // the generic-assignment three-grep pipeline.
+            assert!(
+                !hook.contains("grep -a -E -c -- \"$pattern\" \"$added_tmp\" || true"),
+                "the simple rule grep must not swallow its invocation status"
+            );
+            assert!(
+                !hook.contains("| grep -a -c . || true"),
+                "the generic-assignment pipeline must not swallow invocation statuses"
+            );
+            // Simple grep: the status is captured, not discarded; only a
+            // status > 1 is an evaluation failure.
+            for pin in [
+                "hits=\"$(grep -a -E -c -- \"$pattern\" \"$added_tmp\")\" || status1=$?",
+                "if [ \"$status1\" -gt 1 ]; then",
+                "secret_scan_cannot_evaluate \"$subject\" \"grep failed for $file ($name)\"",
+            ] {
+                assert!(
+                    hook.contains(pin),
+                    "grep failures >= 2 must reach the unevaluated record ({pin})"
+                );
+            }
+            // Generic-assignment pipeline: every stage's status is recorded
+            // (pipefail alone cannot distinguish no-match from breakage) and
+            // any stage > 1 refuses.
+            for pin in [
+                "statuses=(\"${PIPESTATUS[@]}\")",
+                "[ \"$status1\" -gt 1 ] || [ \"$status2\" -gt 1 ] || [ \"$status3\" -gt 1 ]",
+            ] {
+                assert!(
+                    hook.contains(pin),
+                    "pipeline grep failures >= 2 must reach the unevaluated record ({pin})"
+                );
+            }
         }
     }
 
