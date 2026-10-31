@@ -490,6 +490,72 @@ fn default_timeout() -> Duration {
         })
 }
 
+/// Drain optional JSON-RPC traffic after a violation without blocking for the
+/// full default request timeout.
+pub fn drain_short_timeout(server: &LspServer) {
+    let _ = read_response_only_timeout(server, short_timeout());
+}
+
+/// Prove an initialized server still answers `shutdown`.
+pub fn probe_shutdown_request(server: &LspServer) -> Value {
+    send_request_with_response_timeout(
+        server,
+        json!({"jsonrpc":"2.0","id":900_001,"method":"shutdown","params":{}}),
+        default_timeout(),
+    )
+}
+
+/// Prove an uninitialized server still answers a well-formed request with the
+/// standard not-initialized error.
+pub fn probe_before_initialize_error(server: &LspServer) -> Value {
+    send_request_with_response_timeout(
+        server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 900_002,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {"uri": "file:///probe.pl"},
+                "position": {"line": 0, "character": 0}
+            }
+        }),
+        default_timeout(),
+    )
+}
+
+/// After optional immediate traffic, assert the server is still responsive.
+pub fn assert_server_responsive(
+    server: &LspServer,
+    initialized: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    drain_short_timeout(server);
+    let response = if initialized {
+        probe_shutdown_request(server)
+    } else {
+        probe_before_initialize_error(server)
+    };
+    if initialized {
+        if response.get("result").is_some() || response["error"].is_object() {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Expected shutdown probe response, got: {response:?}"),
+            )
+            .into())
+        }
+    } else if response["error"].is_object() {
+        assert_eq!(response["error"]["code"], -32002);
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Expected not-initialized error probe, got: {response:?}"),
+        )
+        .into())
+    }
+}
+
 /// Short timeout for expected non-responses (malformed requests, etc)
 pub fn short_timeout() -> Duration {
     std::env::var("LSP_TEST_SHORT_MS")
