@@ -69,9 +69,11 @@ class RouteCodecovPacksTests(unittest.TestCase):
 
     def test_nightly_no_pack_receipt_preserves_routing_bug(self) -> None:
         workflow = (router.REPO_ROOT / ".github/workflows/ci-nightly.yml").read_text()
-        start = workflow.index('          coverage_required="$(python3')
-        end = workflow.index("\n      - name: Install Rust", start)
-        script = "\n".join(line[10:] for line in workflow[start:end].splitlines())
+        start = workflow.index("      - name: Emit skipped coverage proof receipt")
+        end = workflow.index("\n      - name: Append coverage proof summary", start)
+        run_lines = workflow[start:end].splitlines()
+        run_start = next(i for i, line in enumerate(run_lines) if line.strip() == "run: |") + 1
+        script = "\n".join(line[10:] for line in run_lines[run_start:] if line.strip())
         for classification, decision in [("routing_bug", "routing_bug"), ("routing_skip", "skipped-by-policy")]:
             with self.subTest(classification=classification), tempfile.TemporaryDirectory() as directory:
                 receipts = Path(directory) / "target/receipts/quality"
