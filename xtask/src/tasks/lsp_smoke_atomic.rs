@@ -239,7 +239,13 @@ pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
             let filter = spec.test_filter.unwrap_or_default();
             let executable = executable.unwrap_or("<unresolved-prebuilt-test-binary>");
             let exact = if spec.exact { " --exact" } else { "" };
-            format!("\"{executable}\" {filter}{exact} --test-threads=1")
+            // Plain double quotes do not stop `$` expansion in the native
+            // command validator; quote through shlex when the path needs it.
+            let quoted = match shlex::try_quote(executable) {
+                Ok(quoted) if quoted.as_ref() != executable => quoted.into_owned(),
+                _ => format!("\"{executable}\""),
+            };
+            format!("{quoted} {filter}{exact} --test-threads=1")
         }
     }
 }
@@ -1283,6 +1289,16 @@ mod tests {
             "\"target/debug/deps/semantic_definition-test\" \
 semantic_definition_tests::definition_finds_scalar_variable_declaration --exact \
 --test-threads=1"
+        );
+    }
+
+    #[test]
+    fn behavior_command_quotes_dollar_paths_without_expansion() {
+        let spec = pinned_spec("semantic_definition/scalar_variable");
+        let command = command_line(&spec, Some("C:/work$tree/target/debug/deps/semantic_definition-test"));
+        assert!(
+            command.starts_with("'C:/work$tree/target/debug/deps/semantic_definition-test'"),
+            "dollar paths must be single-quoted so the native validator sees no expansion: {command}"
         );
     }
 
