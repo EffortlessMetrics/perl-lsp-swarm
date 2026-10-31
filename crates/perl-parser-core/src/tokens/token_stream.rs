@@ -823,13 +823,32 @@ impl<'a> TokenStream<'a> {
                     // also has strict parser-side validation, as do transliteration
                     // operators, so route malformed `s///`, `tr///`, and `y///`
                     // tokens there instead of losing the lexer diagnostic as Unknown.
-                    // Other operators (qr, qx, m) still fall through to Unknown until
-                    // dedicated recovery is added.
+                    // `qr`/`m` route to Regex and `qx` to QuoteCommand, whose
+                    // primary arms and closing-delimiter recovery name the
+                    // unterminated operator instead of an unknown token.
                     let text = token.text.as_ref();
                     if text.starts_with("qq") {
                         TokenKind::QuoteDouble
                     } else if text.starts_with("qw") {
                         TokenKind::QuoteWords
+                    } else if text
+                        .strip_prefix("qr")
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+                    {
+                        TokenKind::Regex
+                    } else if text
+                        .strip_prefix("qx")
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+                    {
+                        TokenKind::QuoteCommand
+                    } else if text
+                        .strip_prefix('m')
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+                    {
+                        TokenKind::Regex
                     } else if text
                         .strip_prefix('s')
                         .and_then(|rest| rest.chars().next())

@@ -564,7 +564,7 @@ pub fn extract_transliteration_parts_strict(
 }
 
 /// Get the closing delimiter for a given opening delimiter
-fn get_closing_delimiter(open: char) -> char {
+pub(crate) fn get_closing_delimiter(open: char) -> char {
     match open {
         '(' => ')',
         '[' => ']',
