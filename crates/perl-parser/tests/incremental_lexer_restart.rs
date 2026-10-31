@@ -5,8 +5,10 @@
 mod interior_edits;
 
 use perl_lexer::{PerlLexer, Token, TokenType};
-use perl_parser::incremental::{LexRestartStrategy, MAX_STORED_LEX_CHECKPOINTS};
-use perl_parser::{Edit, IncrementalState, apply_edits};
+use perl_parser::incremental::{
+    LexRestartStrategy, MAX_STORED_LEX_CHECKPOINTS, ParseSnapshotStrategy,
+};
+use perl_parser::{Edit, IncrementalState, Parser, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -201,5 +203,75 @@ fn timeout_sensitive_heredoc_state_selects_an_earlier_safe_checkpoint_with_span_
         assert_eq!(actual.start, expected.start, "downstream token start {index}");
         assert_eq!(actual.end, expected.end, "downstream token end {index}");
     }
+    Ok(())
+}
+
+#[rstest::rstest]
+#[case::number("my $x = 1", "", "0", "my $x = 10")]
+#[case::unicode_identifier("my $café", "", "_long", "my $café_long")]
+#[case::incomplete_exponent("my $x = 1e+____", "", "2", "my $x = 1e+____2")]
+#[case::quote_gap("my $x = q   ", "", "{foo};", "my $x = q   {foo};")]
+#[case::quote_suffix("my $x = q   name", "name", "{foo};", "my $x = q   {foo};")]
+#[case::remove_closer("my $x = q{foo};", "};", "", "my $x = q{foo")]
+#[case::comment_continues(
+    "my $x = 1; # trailing",
+    "",
+    " print 2;",
+    "my $x = 1; # trailing print 2;"
+)]
+#[case::comment_ends("my $x = 1; # trailing", "", "\nprint 2;", "my $x = 1; # trailing\nprint 2;")]
+#[case::empty_source("", "", "my $x = 1;", "my $x = 1;")]
+#[case::delete_document("my $x = 1;", "my $x = 1;", "", "")]
+fn eof_edits_match_fresh_tokens_and_parse_output(
+    #[case] source: &str,
+    #[case] removed_suffix: &str,
+    #[case] replacement: &str,
+    #[case] expected: &str,
+) -> TestResult {
+    assert!(source.ends_with(removed_suffix));
+    let start = source.len() - removed_suffix.len();
+    let edit = Edit {
+        start_byte: start,
+        old_end_byte: source.len(),
+        new_end_byte: start + replacement.len(),
+        new_text: replacement.to_string(),
+    };
+    let mut state = IncrementalState::new(source.to_string());
+    let result = apply_edits(&mut state, &[edit])?;
+
+    assert_eq!(state.source(), expected);
+    assert_eq!(state.rope().to_string(), expected);
+    // Compare semantics before strategy so the pre-fix failure identifies the
+    // stale token, rather than merely the intended conservative routing.
+    assert_tokens_equal(state.tokens(), &fresh_tokens(expected));
+    let fresh = Parser::new(expected).parse_with_recovery();
+    for output in [state.parse_output(), result.parse_output()] {
+        assert_eq!(output.ast, fresh.ast);
+        assert_eq!(output.diagnostics, fresh.diagnostics);
+        assert_eq!(output.stop_cause(), fresh.stop_cause());
+        assert_eq!(output.recovered_count, fresh.recovered_count);
+        assert_eq!(output.budget_usage.errors_emitted, fresh.budget_usage.errors_emitted);
+        assert_eq!(output.budget_usage.current_depth, fresh.budget_usage.current_depth);
+        assert_eq!(output.budget_usage.max_depth_reached, fresh.budget_usage.max_depth_reached);
+        assert_eq!(output.budget_usage.tokens_skipped, fresh.budget_usage.tokens_skipped);
+        assert_eq!(
+            output.budget_usage.recoveries_attempted,
+            fresh.budget_usage.recoveries_attempted
+        );
+    }
+    state.snapshot().validate_against(expected)?;
+    result.snapshot.validate_against(expected)?;
+    assert_eq!(state.generation().get(), 1);
+    assert_eq!(result.snapshot.generation(), state.generation());
+    assert_eq!(result.snapshot.strategy(), ParseSnapshotStrategy::IncrementalFullFallback);
+    assert_eq!(result.lex_restart.strategy, LexRestartStrategy::FullRelex);
+    assert_eq!(result.lex_restart.restart_byte, 0);
+    assert_eq!(result.lex_restart.old_prefix_bytes_replayed, 0);
+    assert_eq!(result.lex_restart.relexed_bytes, expected.len());
+    assert_eq!(result.lex_restart.reused_prefix_tokens, 0);
+    assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+    assert_eq!(result.reused_tokens, 0);
+    assert_eq!(result.reparsed_bytes, expected.len());
+    assert_eq!(result.token_count, state.tokens().len());
     Ok(())
 }

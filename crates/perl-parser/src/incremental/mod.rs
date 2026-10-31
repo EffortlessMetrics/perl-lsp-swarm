@@ -172,6 +172,14 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
     if sorted_edits.len() == 1 {
         let edit = &sorted_edits[0];
 
+        // EOF can determine earlier token boundaries: appending to a number,
+        // completing a quote operator, or extending a comment can invalidate
+        // tokens before the edit. A saved checkpoint does not track that
+        // lookahead dependency, so rebuild the complete generation (#18302).
+        if edit.touched_bytes() > 0 && edit.old_end_byte == state.source().len() {
+            return full_reparse_after_edits(state, &sorted_edits);
+        }
+
         if edit.touched_bytes() > 1024 || edit.new_text.matches('\n').count() > 10 {
             return full_reparse_after_edits(state, &sorted_edits);
         }
