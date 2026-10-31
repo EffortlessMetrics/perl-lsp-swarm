@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Offer Add error checking only on statement-level file-operation calls, and wrap paren-less calls so or die binds to the call.
+time: 2026-10-31T19:45:00Z
+custom:
+  PR: "18565"
+  Slug: error-checking-statement-level
+  Breaking: "no"
