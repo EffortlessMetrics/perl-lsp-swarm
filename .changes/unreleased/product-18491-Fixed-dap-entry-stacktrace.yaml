@@ -1,0 +1,15 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: >-
+  DAP stackTrace at a stopOnEntry pause now returns the entry frame instead of
+  an empty stack: the engine breakpoint acknowledgement no longer restores a
+  stale pre-query execution state over a suspension the output reader
+  published while the query was in flight, and a bare debugger prompt no
+  longer downgrades an already-admitted source frame to an `<unknown>`
+  placeholder.
+time: 2026-10-31T00:00:00Z
+custom:
+  PR: "18491"
+  Slug: dap-entry-stacktrace
+  Breaking: "no"

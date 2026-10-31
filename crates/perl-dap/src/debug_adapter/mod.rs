@@ -183,6 +183,16 @@ pub struct DebugAdapter {
     debugger_output_marker: Arc<AtomicU64>,
     /// Test-observable count of framed debugger query writes.
     debugger_query_count: Arc<AtomicU64>,
+    /// Count of reader-published suspension transitions (#18491).
+    ///
+    /// The output reader is the authority that publishes a stop (entry, step,
+    /// breakpoint, exception) or retains the pre-configurationDone startup
+    /// pause. Adapter-internal framed queries that mask the session as
+    /// `Stopped` for their echo window must not clobber a suspension the
+    /// reader published while the query was in flight, so those callers
+    /// snapshot this counter and only restore their masked state when it is
+    /// unchanged.
+    reader_stop_publications: Arc<AtomicU64>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
     /// Legacy retained slot: the #9091 fail-closed request path neither reads
     /// nor writes it; lifecycle cleanup retires it at its own boundary.
@@ -335,6 +345,7 @@ impl DebugAdapter {
             exception_break_on_warn: Arc::new(Mutex::new(false)),
             debugger_output_marker: Arc::new(AtomicU64::new(1)),
             debugger_query_count: Arc::new(AtomicU64::new(0)),
+            reader_stop_publications: Arc::new(AtomicU64::new(0)),
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
@@ -763,6 +774,7 @@ impl DebugAdapter {
     ) -> Result<(), EngineBreakpointAcknowledgeError> {
         let command = Self::engine_breakpoint_probe_command(source_path, line);
         let captured_generation = self.current_session_generation();
+        let prior_stop_publications = self.reader_stop_publications.load(Ordering::Acquire);
         let (operation, begin, end, prior_state) = {
             let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
             let session = guard.as_mut().ok_or_else(|| {
@@ -822,7 +834,17 @@ impl DebugAdapter {
         if self.current_session_generation() == captured_generation {
             let mut guard = lock_or_recover(&self.session, "acknowledge_engine_breakpoint.restore");
             if let Some(session) = guard.as_mut() {
-                session.state = prior_state;
+                // Restore the masked state only when the reader published no
+                // suspension while the query was in flight (#18491). The
+                // entry-stop publication can land inside this echo window;
+                // blindly restoring the pre-query snapshot (e.g. `Running`)
+                // desynchronized the advertised stopped state from the
+                // debugger, and every subsequent stackTrace answered from the
+                // `Stopped`-gated snapshot path with an empty frame list.
+                let stop_publications = self.reader_stop_publications.load(Ordering::Acquire);
+                if stop_publications == prior_stop_publications {
+                    session.state = prior_state;
+                }
             }
         }
         result
