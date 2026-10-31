@@ -625,12 +625,38 @@ fn try_as_subtest(
         return None;
     }
     let mut children = Vec::new();
+    let mut has_complete_coderef = false;
     for arg in args.iter().skip(1) {
         if let NodeKind::Subroutine { body, .. } = &arg.kind {
+            if !subtest_coderef_block_is_source_complete(body, source) {
+                return None;
+            }
+            has_complete_coderef = true;
             collect_subtest_calls(body, source, index, source_len, names, &mut children);
         }
     }
+    if !has_complete_coderef {
+        return None;
+    }
     Some(SubtestCall { name, range, name_range, children })
+}
+
+/// A subtest coderef must be brace-closed in source before discovery retains it.
+///
+/// Recovered parses can still attach a `Subroutine`/`Block` node to an
+/// incomplete `sub {` tail; those calls must fail closed so Test Explorer does
+/// not publish items the runner cannot reach.
+fn subtest_coderef_block_is_source_complete(body: &Node, source: &str) -> bool {
+    let NodeKind::Block { .. } = &body.kind else {
+        return false;
+    };
+    let start = body.location.start;
+    let end = body.location.end;
+    if end <= start || end > source.len() {
+        return false;
+    }
+    let slice = &source[start..end];
+    slice.starts_with('{') && slice.ends_with('}')
 }
 
 fn collect_named_test_subs(
