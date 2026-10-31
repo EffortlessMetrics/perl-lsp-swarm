@@ -3780,12 +3780,12 @@ impl<'a> PerlLexer<'a> {
             }
 
             match ch {
-                '\\' => {
+                '\\' if delim != '\\' => {
                     body.push(ch);
                     self.advance();
                     escaped = true;
                 }
-                '"' | '\'' if ch != delim => {
+                '"' | '\'' if ch != delim && delim != '\\' => {
                     if let Some((string_end, true)) =
                         self.scan_inner_string_for_delimiter(self.position, ch, delim)
                     {
