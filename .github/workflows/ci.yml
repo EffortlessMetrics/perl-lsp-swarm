@@ -2289,6 +2289,20 @@ jobs:
           grep -Eq '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured;' \
             "$RUNNER_TEMP/package-formatter-callers.log"
 
+      # #13424: receipt admission lives in the xtask binary, while the workspace
+      # lib suite only compiles that target. Exercise it on this existing runner.
+      - name: Compatibility receipt snapshot contracts
+        run: |
+          set -o pipefail
+          cargo test -p perl-lsp-ux-tests --locked --test receipt_schema_validation
+          cargo test -p perl-lsp-ux-tests --locked recorder
+          cargo test -p xtask --bin xtask --locked lsp_stats -- --color never | tee "$RUNNER_TEMP/lsp-stats.log"
+          grep -F 'test tasks::metrics::lsp_stats_guarded::receipt_set_tests::finalized_set_ignores_malformed_valid_and_removed_source ... ok' "$RUNNER_TEMP/lsp-stats.log"
+          grep -F 'test tasks::metrics::lsp_stats_guarded::receipt_set_tests::changed_path_set_is_a_typed_unstable_input_error ... ok' "$RUNNER_TEMP/lsp-stats.log"
+          grep -F 'test tasks::metrics::lsp_stats_guarded::receipt_set_tests::equal_conflicting_and_different_component_cases_are_duplicates ... ok' "$RUNNER_TEMP/lsp-stats.log"
+          cargo test -p xtask --test lsp_stats_cli --locked -- --color never | tee "$RUNNER_TEMP/lsp-stats-cli.log"
+          grep -F 'test incoherent_sets_fail_publicly_without_overwriting_output ... ok' "$RUNNER_TEMP/lsp-stats-cli.log"
+
       # The active cache denominator (#9177) is derived from workflow source, so it
       # silently rots whenever a cache step, trigger, or save guard moves. This
       # contract lives as the xtask binary's own unit tests (tasks::ci_cache_inventory),
