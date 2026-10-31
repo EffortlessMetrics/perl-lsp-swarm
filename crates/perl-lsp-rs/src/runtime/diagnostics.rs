@@ -1868,6 +1868,34 @@ impl LspServer {
                 .find(|(u, _)| u == uri_str)
                 .and_then(|(_, id)| id.clone());
 
+            // Full-sync loss cannot finish parsing until explicit recovery.
+            // Unlike a transient pending parse, omission would leave the
+            // client's predecessor findings visible indefinitely (#17998).
+            if doc.full_sync_required() {
+                if let Ok(report) = self.commit_if_diagnostic_subject_current(
+                    DiagnosticSubject {
+                        uri: uri_str,
+                        document_instance: generation,
+                        generation: *gen_at_snapshot,
+                        workspace_generation: Some(*workspace_gen_at_snapshot),
+                        accepted_folder_config_generation: *config_generation_at_snapshot,
+                        accepted_critic_snapshot: None,
+                        accepted_topology_generation: None,
+                    },
+                    || {
+                        json!({
+                            "uri": uri_str,
+                            "version": doc.version,
+                            "kind": "full",
+                            "items": []
+                        })
+                    },
+                ) {
+                    items.push(report);
+                }
+                continue;
+            }
+
             let Some(parsed) = doc.current_parsed() else { continue };
 
             // Syntax-only short-circuit for workspace pull. Mirrors the
