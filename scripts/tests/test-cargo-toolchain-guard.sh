@@ -283,6 +283,18 @@ assert_contains "guard: reports configured off-PATH Cargo" \
 assert_contains "guard: install is conditional" \
   "install rustup only if no suitable installation exists" "${TMPDIR_BASE}/hidden.err"
 
+# A searchable directory named cargo is not an executable Cargo file.
+DIR_HOME="${TMPDIR_BASE}/directory cargo"
+mkdir -p "${DIR_HOME}/bin/cargo"
+code=0
+env -i PATH="${TMPDIR_BASE}/empty-path" CARGO_HOME="$DIR_HOME" "$(command -v bash)" \
+  -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/directory.err" || code=$?
+if [[ "$code" -eq 78 ]] && ! grep -Fq 'found an executable Cargo' "${TMPDIR_BASE}/directory.err"; then
+  pass "guard: directory named cargo is not reported as an executable"
+else
+  fail "guard: directory named cargo was falsely reported as an executable"
+fi
+
 # ── full guard with unparseable --version output ──────────────────────────────
 
 BROKEN_BIN="${TMPDIR_BASE}/broken-bin"
