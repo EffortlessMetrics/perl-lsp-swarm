@@ -1001,13 +1001,11 @@ jobs:
         # Its separate failed receipt remains evidence; runtime gates still own
         # the verdict, including the required compilation row on their retry.
         continue-on-error: true
-        # Bound preparation inside the 75m job envelope: the runtime step
-        # derives its watchdog from the stamp written here, so a cold 25m
-        # preparation cannot silently consume the runtime receipt's time.
+        # Bound preparation inside the 75m job envelope so a cold routed
+        # build cannot silently consume the runtime watchdog's hour.
         timeout-minutes: 25
         run: |
           set +e
-          date +%s > "$RUNNER_TEMP/pr-smoke-prep-start"
           "$CARGO_TARGET_DIR/debug/xtask" gates --tier pr-fast \
             --gate unit_routed_full_build --subject target/receipts/ci-subject.json \
             --receipt --receipt-path target/receipts/routed-test-build/receipt.json
@@ -1035,14 +1033,7 @@ jobs:
           # Share the existing 60m watchdog: run two in-process server targets
           # that unit_routed_full otherwise reaches after DAP.
           # Both targets and the broader tier retain their independent failures.
-          # Shrink the watchdog by the time preparation already consumed so
-          # the 75m job envelope always leaves room to write receipts.
-          prep_start="$(cat "$RUNNER_TEMP/pr-smoke-prep-start" 2>/dev/null || date +%s)"
-          elapsed=$(( $(date +%s) - prep_start ))
-          watchdog=$(( 4200 - elapsed - 300 ))
-          if [ "$watchdog" -gt 3600 ]; then watchdog=3600; fi
-          if [ "$watchdog" -lt 600 ]; then watchdog=600; fi
-          timeout --signal=TERM --kill-after=60s "${watchdog}s" bash <<'PR_FAST'
+          timeout --signal=TERM --kill-after=60s 3600s bash <<'PR_FAST'
           set -uo pipefail
           navigation_status=0
           if [ "$PR_SMOKE_NAVIGATION_PROOF" = 'true' ]; then

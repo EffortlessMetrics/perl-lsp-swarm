@@ -93,11 +93,9 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         Some(25),
         "preparation must be bounded inside the 75m job envelope"
     );
-    assert!(build.contains("pr-smoke-prep-start"));
     assert!(build.contains("routed-test-build/logs/unit_routed_full_build.log"));
     let runtime = steps[execute]["run"].as_str().ok_or("missing runtime command")?;
-    assert!(runtime.contains("timeout --signal=TERM --kill-after=60s \"${watchdog}s\""));
-    assert!(runtime.contains("watchdog=$(( 4200 - elapsed - 300 ))"));
+    assert!(runtime.contains("timeout --signal=TERM --kill-after=60s 3600s"));
     assert!(
         runtime
             .contains("gates --tier pr-fast --subject target/receipts/ci-subject.json --receipt")
