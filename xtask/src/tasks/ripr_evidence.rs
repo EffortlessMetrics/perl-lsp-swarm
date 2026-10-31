@@ -11250,7 +11250,7 @@ paths = ["archive/["]
 
         assert_eq!(
             extents
-                .resolve("/home/runner/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
+                .resolve("/unavailable/work/perl-lsp-swarm/xtask/src/tasks/check_version_sync.rs"),
             HeadPathState::Present(13)
         );
         assert_eq!(
@@ -13238,7 +13238,10 @@ paths = ["archive/["]
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         if !output.status.success() {
             bail!("git {:?} failed with status {}", args, output.status);
         }
@@ -13918,7 +13921,7 @@ esac
     /// is deliberately not pointed at `/dev/null`: that path does not exist on
     /// Windows, and this crate's tests are in the Windows CI crate scope.
     fn ancestry_git(repository: &Path, arguments: &[&str]) -> Result<String> {
-        let output = Command::new("git")
+        let output = xtask::git_environment::isolate(Command::new("git"))
             .args([
                 "-c",
                 "commit.gpgsign=false",

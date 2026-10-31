@@ -603,7 +603,7 @@ fn resolve_commit(repository: &Path, revision: &str) -> Option<String> {
 }
 
 fn git_command(repository: &Path, arguments: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = crate::git_environment::command();
     command
         .args(arguments)
         .current_dir(repository)
@@ -1256,7 +1256,8 @@ mod tests {
     }
 
     fn git_at(repository: &Path, arguments: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(arguments).current_dir(repository).output()?;
+        let output =
+            crate::git_environment::command().args(arguments).current_dir(repository).output()?;
         if !output.status.success() {
             bail!(
                 "git {} failed with status {}\nstdout:\n{}\nstderr:\n{}",
@@ -1272,13 +1273,16 @@ mod tests {
     }
 
     fn git_status_at(repository: &Path, arguments: &[&str]) -> Result<Option<i32>> {
-        let output = Command::new("git").args(arguments).current_dir(repository).output()?;
+        let output =
+            crate::git_environment::command().args(arguments).current_dir(repository).output()?;
         Ok(output.status.code())
     }
 
     fn object_exists(repository: &Path, sha: &str) -> Result<bool> {
-        let output =
-            Command::new("git").args(["cat-file", "-e", sha]).current_dir(repository).output()?;
+        let output = crate::git_environment::command()
+            .args(["cat-file", "-e", sha])
+            .current_dir(repository)
+            .output()?;
         Ok(output.status.success())
     }
 }
