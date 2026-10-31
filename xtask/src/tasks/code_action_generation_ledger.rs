@@ -840,6 +840,18 @@ fn validate_kind_coverage(ledger: &Ledger, orchestrator_text: &str, violations: 
     }
 }
 
+/// Non-empty path segment of an LSP `CodeActionKind` (`[A-Za-z0-9_-]`).
+fn kind_segment_valid(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+fn kind_literal_shape_valid(raw: &str) -> bool {
+    raw.split('.').all(kind_segment_valid)
+}
+
 /// LSP kind literals appearing in the handler.
 fn emitted_kinds(handler: &str) -> BTreeSet<String> {
     const ROOTS: [&str; 3] = ["quickfix", "refactor", "source"];
@@ -847,7 +859,7 @@ fn emitted_kinds(handler: &str) -> BTreeSet<String> {
     for raw in handler.split('"').skip(1).step_by(2) {
         let is_kind = ROOTS.iter().any(|root| {
             raw == *root || raw.strip_prefix(root).is_some_and(|rest| rest.starts_with('.'))
-        }) && raw.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.');
+        }) && kind_literal_shape_valid(raw);
         if is_kind {
             kinds.insert(raw.to_string());
         }
@@ -1817,6 +1829,59 @@ mod tests {
             occurrences(&blanked, "CALL()").len(),
             2,
             "code and string survive; comment does not"
+        );
+    }
+
+    fn handler_slice(source: &str) -> String {
+        let start = source
+            .find(HANDLER_START)
+            .expect("handler start marker");
+        let end = source.find(HANDLER_END).expect("handler end marker");
+        blank_comments(&source[start..end])
+    }
+
+    #[test]
+    fn emitted_kinds_collects_hyphen_and_underscore_segments() {
+        let source = handler(
+            "let _ = \"refactor.extract_variable\"; let _ = \"source.fix-all\"; let _ = \"quickfix\";\n",
+        );
+        let kinds = emitted_kinds(&handler_slice(&source));
+        assert!(kinds.contains("refactor.extract_variable"));
+        assert!(kinds.contains("source.fix-all"));
+        assert!(kinds.contains("quickfix"));
+    }
+
+    #[test]
+    fn emitted_kinds_excludes_malformed_and_prose_literals() {
+        let source = handler(
+            "let _ = \"refactor.\"; let _ = \"refactorx\"; let _ = \"documentUri\"; let _ = \"title\";\n",
+        );
+        let kinds = emitted_kinds(&handler_slice(&source));
+        assert!(!kinds.contains("refactor."));
+        assert!(!kinds.contains("refactorx"));
+        assert!(!kinds.contains("documentUri"));
+        assert!(!kinds.contains("title"));
+    }
+
+    #[test]
+    fn validate_kind_coverage_flags_unclaimed_underscore_kind() {
+        let mut ledger = ledger(
+            vec![generation("gen", Some("THE_CALL"))],
+            vec![route("gen", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+        ledger.unreachable_kinds = Vec::new();
+
+        let mut violations = Vec::new();
+        let source = handler(&format!(
+            "let _ = \"refactor.extract_variable\"; THE_CALL\n{NO_AST_MARKER}"
+        ));
+        validate_kind_coverage(&ledger, &source, &mut violations);
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("refactor.extract_variable")),
+            "expected unclassified underscore kind violation, got {violations:?}"
         );
     }
 
