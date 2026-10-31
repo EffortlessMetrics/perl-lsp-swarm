@@ -1625,4 +1625,68 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn imports_fold_covers_whole_block() -> Result<(), JsonRpcError> {
+        // An n-line `use`/`require` import block has no closing brace, so the
+        // last import line is content and must fold: n imports fold (0, n-1),
+        // not (0, n-2) (#18113).
+        let make = |n: usize| {
+            (0..n).map(|i| format!("use Module{i};\n")).collect::<Vec<_>>().concat()
+                + "my $x = 1;\n"
+        };
+        for (n, expected_end) in [(2usize, 1usize), (3, 2), (5, 4)] {
+            let source = make(n);
+            let ranges = folding_ranges_for_source(&source)?;
+            let import_fold = ranges.iter().find(|r| r.get("kind") == Some(&json!("imports")));
+            let fold = import_fold.ok_or_else(|| {
+                JsonRpcError::new(
+                    INTERNAL_ERROR,
+                    format!("expected an imports folding range for n={n}: {ranges:?}"),
+                )
+            })?;
+            assert_eq!(fold.get("startLine"), Some(&json!(0)));
+            assert_eq!(
+                fold.get("endLine"),
+                Some(&json!(expected_end)),
+                "{n}-import block must fold (0,{expected_end}): {ranges:?}"
+            );
+        }
+
+        // Realistic fixture: all three imports — including `use POSIX ...` —
+        // must sit inside the fold.
+        let source = "use strict;\nuse warnings;\nuse POSIX qw(floor);\nmy $x = 1;\n";
+        let ranges = folding_ranges_for_source(source)?;
+        let import_fold = ranges.iter().find(|r| r.get("kind") == Some(&json!("imports")));
+        let fold = import_fold.ok_or_else(|| {
+            JsonRpcError::new(
+                INTERNAL_ERROR,
+                format!(
+                    "expected an imports folding range for the strict/warnings/POSIX fixture: {ranges:?}"
+                ),
+            )
+        })?;
+        assert_eq!(fold.get("startLine"), Some(&json!(0)));
+        assert_eq!(
+            fold.get("endLine"),
+            Some(&json!(2)),
+            "imports fold must cover all three import lines: {ranges:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn imports_fold_covers_whole_block_preserves_non_import_brace() -> Result<(), JsonRpcError> {
+        // Ordinary block spans end at a closing brace, which must remain visible.
+        let ranges = folding_ranges_for_source("sub full {\n    my $x = 1;\n    my $y = 2;\n}\n")?;
+        assert_eq!(ranges.len(), 1, "expected one deduplicated block fold: {ranges:?}");
+        assert_ne!(ranges[0].get("kind"), Some(&json!("imports")));
+        assert_eq!(ranges[0].get("startLine"), Some(&json!(0)));
+        assert_eq!(
+            ranges[0].get("endLine"),
+            Some(&json!(2)),
+            "non-import fold must keep its closing brace visible: {ranges:?}"
+        );
+        Ok(())
+    }
 }
