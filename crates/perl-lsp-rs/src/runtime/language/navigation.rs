@@ -619,14 +619,11 @@ fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecis
 }
 
 pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
-    FQN_RE
-        .get_or_init(|| regex::Regex::new(FQN_CAPTURE))
-        .as_ref()
-        .map_err(|err| {
-            crate::protocol::internal_error(&format!(
-                "Failed to initialize fully-qualified symbol regex: {err}"
-            ))
-        })
+    FQN_RE.get_or_init(|| regex::Regex::new(FQN_CAPTURE)).as_ref().map_err(|err| {
+        crate::protocol::internal_error(&format!(
+            "Failed to initialize fully-qualified symbol regex: {err}"
+        ))
+    })
 }
 
 #[cfg(feature = "workspace")]
