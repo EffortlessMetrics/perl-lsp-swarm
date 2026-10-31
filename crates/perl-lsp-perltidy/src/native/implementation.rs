@@ -3067,8 +3067,8 @@ mod tests {
     }
 
     #[test]
-    fn heredoc_openers_skips_bitshift_and_comment_markers()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn heredoc_openers_skips_bitshift_and_comment_markers() -> Result<(), Box<dyn std::error::Error>>
+    {
         assert!(heredoc_openers("my $m = 1 << BITS;").is_empty());
         assert!(heredoc_openers("my $x = 1; # see <<EOF").is_empty());
         assert_eq!(heredoc_openers("print <<EOF;"), vec![("EOF".to_string(), false)]);
