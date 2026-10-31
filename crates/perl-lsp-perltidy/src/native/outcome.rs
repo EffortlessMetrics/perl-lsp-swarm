@@ -5,8 +5,8 @@ use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
     TextRange, TrailingComma, format_simple_line, indent_unit, is_perl_line_directive,
-    is_rendered_block_boundary_line, literal_preserve_region, multiline_literal_lines,
-    preserve_region_lines, range_includes_line, rendered_boundary_role, split_trailing_comment,
+    is_rendered_block_boundary_line, literal_preserve_region, preserve_region_lines,
+    range_includes_line, rendered_boundary_role, split_trailing_comment,
 };
 use serde::{Deserialize, Serialize};
 
@@ -632,7 +632,6 @@ fn target_has_only_supported_lines(
     target: FormatRequestTarget,
 ) -> bool {
     let body_indent = indent_unit(config);
-    let literal_lines = multiline_literal_lines(source);
     let mut open_blocks: Vec<&str> = Vec::new();
     // Physical lines inside a multiline literal are literal bytes, not
     // code: exactly as in `format_safe_subset`, they never move the block
