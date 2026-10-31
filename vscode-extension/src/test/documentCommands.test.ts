@@ -13,8 +13,9 @@ type TestEditor = {
   document: {
     languageId: string;
     isDirty: boolean;
+    version: number;
     uri: { fsPath: string; toString: () => string };
-    save: jest.Mock<Promise<void>, []>;
+    save: jest.Mock<Promise<boolean>, []>;
   };
 };
 
@@ -23,11 +24,12 @@ function makeEditor(overrides: Partial<TestEditor['document']> = {}): TestEditor
     document: {
       languageId: 'perl',
       isDirty: false,
+      version: 1,
       uri: {
         fsPath: '/workspace/lib/Example.pm',
         toString: () => 'file:///workspace/lib/Example.pm',
       },
-      save: jest.fn(async () => undefined),
+      save: jest.fn(async () => true),
       ...overrides,
     },
   };
@@ -65,6 +67,10 @@ describe('document command implementations', () => {
 
   test('saves dirty documents and reports successful syntax checks', async () => {
     const editor = makeEditor({ isDirty: true });
+    editor.document.save.mockImplementation(async () => {
+      editor.document.isDirty = false;
+      return true;
+    });
     setActiveEditor(editor);
     (vscode.workspace.getWorkspaceFolder as jest.Mock).mockReturnValue({
       uri: { fsPath: '/workspace' },
@@ -89,6 +95,82 @@ describe('document command implementations', () => {
 
     expect(editor.document.save).toHaveBeenCalledTimes(1);
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Syntax OK: Example.pm');
+  });
+
+  test('refuses syntax check when save returns false (#17993)', async () => {
+    const editor = makeEditor({ isDirty: true });
+    editor.document.save.mockResolvedValue(false);
+    setActiveEditor(editor);
+    const execFile: ExecFileLike = jest.fn();
+
+    await runCheckSyntaxCommand({
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+      execFile,
+    });
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      'Could not save Example.pm. Syntax not checked.',
+    );
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  test('refuses syntax check when save rejects (#17993)', async () => {
+    const editor = makeEditor({ isDirty: true });
+    editor.document.save.mockRejectedValue(new Error('save failed'));
+    setActiveEditor(editor);
+    const execFile: ExecFileLike = jest.fn();
+
+    await runCheckSyntaxCommand({
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+      execFile,
+    });
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      'Could not save Example.pm. Syntax not checked.',
+    );
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  test('refuses syntax check when the buffer stays dirty after save (#17993)', async () => {
+    const editor = makeEditor({ isDirty: true });
+    editor.document.save.mockResolvedValue(true);
+    setActiveEditor(editor);
+    const execFile: ExecFileLike = jest.fn();
+
+    await runCheckSyntaxCommand({
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+      execFile,
+    });
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      'Could not save Example.pm. Syntax not checked.',
+    );
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  test('refuses syntax check when the document version changes during save (#17993)', async () => {
+    const editor = makeEditor({ isDirty: true });
+    editor.document.save.mockImplementation(async () => {
+      editor.document.version = 2;
+      editor.document.isDirty = false;
+      return true;
+    });
+    setActiveEditor(editor);
+    const execFile: ExecFileLike = jest.fn();
+
+    await runCheckSyntaxCommand({
+      outputChannel: makeOutputChannel(),
+      serverNotRunningMessage: () => 'server unavailable',
+      execFile,
+    });
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      'Could not save Example.pm. Syntax not checked.',
+    );
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   test('offers syntax failure output and writes it to the injected channel', async () => {
