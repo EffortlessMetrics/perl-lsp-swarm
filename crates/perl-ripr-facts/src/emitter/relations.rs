@@ -205,22 +205,57 @@ pub(crate) fn emit_relations_and_discriminators(
     (relations, limitations)
 }
 
-/// Every distinct `package Foo::Bar;` name in source order (the first is the
-/// file's primary package).
+/// Every distinct package declared in source order (the first is the file's
+/// primary package). Handles `package Foo;`, `package Foo 1.0;`,
+/// `package Foo { ... }` and `package Foo 1.0 { ... }`; lines inside POD blocks
+/// are skipped.
 fn extract_package_names(content: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
+    let mut in_pod = false;
     for line in content.lines() {
+        if line.starts_with('=') && line.len() > 1 && line.as_bytes()[1].is_ascii_alphabetic() {
+            in_pod = !line.starts_with("=cut");
+            continue;
+        }
+        if in_pod {
+            continue;
+        }
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("package ")
-            && let Some(name_end) = rest.find(';')
+            && let Some(name) = package_name_from_declaration(rest)
+            && !names.contains(&name)
         {
-            let name = rest[..name_end].trim().to_string();
-            if !name.is_empty() && !names.contains(&name) {
-                names.push(name);
-            }
+            names.push(name);
         }
     }
     names
+}
+
+/// The package name from the text after `package `, when it is followed by a
+/// statement end (`;`), a block open (`{`), or a version then either.
+fn package_name_from_declaration(rest: &str) -> Option<String> {
+    let rest = rest.trim_start();
+    let name_len =
+        rest.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':')).unwrap_or(rest.len());
+    let name = &rest[..name_len];
+    if name.is_empty() {
+        return None;
+    }
+    let after = rest[name_len..].trim_start();
+    let after = match after.split_once(char::is_whitespace) {
+        Some((token, tail)) if is_version_token(token) => tail.trim_start(),
+        None if is_version_token(after.trim_end_matches([';', '{'])) && after != ";" => after
+            .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '_' || c == 'v'),
+        _ => after,
+    };
+    after.starts_with([';', '{']).then(|| name.to_string())
+}
+
+fn is_version_token(token: &str) -> bool {
+    let body = token.strip_prefix('v').unwrap_or(token);
+    !body.is_empty()
+        && body.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && body.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
 fn test_references_package(
@@ -499,6 +534,28 @@ mod tests {
             extract_package_names(content),
             vec!["Forms::Error".to_string(), "Forms".to_string()]
         );
+    }
+
+    #[test]
+    fn extract_package_names_handles_block_and_versioned_declarations() {
+        let cases: &[(&str, &[&str])] = &[
+            ("package First;\npackage Second { sub target { 42 } }\n", &["First", "Second"]),
+            ("package First;\npackage Second {\n sub target { 42 }\n}\n", &["First", "Second"]),
+            ("package First;\npackage Second 1.0;\n", &["First", "Second"]),
+            ("package First;\npackage Second v1.2.3 {\n}\n", &["First", "Second"]),
+            ("package First 0.01;\n", &["First"]),
+            ("package Foo::Bar{\n}\n", &["Foo::Bar"]),
+        ];
+        for (src, want) in cases {
+            let want: Vec<String> = want.iter().map(|n| (*n).to_string()).collect();
+            assert_eq!(extract_package_names(src), want, "source: {src:?}");
+        }
+    }
+
+    #[test]
+    fn extract_package_names_ignores_pod_and_prose_lines() {
+        let src = "package Real;\n\n=head1 NOTES\n\npackage Fake;\n\n=cut\n\npackage Also;\npackage manager docs\n";
+        assert_eq!(extract_package_names(src), vec!["Real".to_string(), "Also".to_string()]);
     }
 
     #[test]

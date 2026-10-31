@@ -86,3 +86,37 @@ fn a_test_that_only_uses_the_first_package_does_not_link_the_later_one() {
         "a test that never names Forms must not reach prefix_only: {relations:#?}"
     );
 }
+
+const BLOCK_AND_VERSION_PM: &str = "package First;\nuse strict;\nsub first_one { 1 }\npackage Second 1.0 {\n    sub target { 42 }\n}\npackage Third {\n    sub other { 7 }\n}\n1;\n";
+
+const BLOCK_CALLS_T: &str = "use strict;\nuse warnings;\nuse Test::More;\nuse First;\nis(Second::target(), 42, 'second');\nis(Third::other(), 7, 'third');\ndone_testing();\n";
+
+#[test]
+fn block_and_versioned_packages_get_direct_owner_calls() {
+    let relations = relations_for(
+        "target/ripr-multi-package/block-version",
+        &[("lib/First.pm", BLOCK_AND_VERSION_PM), ("t/calls.t", BLOCK_CALLS_T)],
+    );
+    for sub in ["target", "other"] {
+        assert_eq!(
+            kinds_for_owner(&relations, sub),
+            vec!["direct_owner_call".to_string()],
+            "{sub}: {relations:#?}"
+        );
+    }
+}
+
+#[test]
+fn pod_package_lines_create_no_package_relations() {
+    let pm = "package Real;\nsub run { 1 }\n\n=head1 NOTES\n\npackage Fake;\nsub ghost { 2 }\n\n=cut\n\n1;\n";
+    let t =
+        "use strict;\nuse Test::More;\nuse Real;\nis(Fake::ghost(), 2, 'x');\ndone_testing();\n";
+    let relations = relations_for(
+        "target/ripr-multi-package/pod-control",
+        &[("lib/Real.pm", pm), ("t/real.t", t)],
+    );
+    assert!(
+        !relations.iter().any(|r| r["owner_id"].as_str().is_some_and(|id| id.contains("Fake"))),
+        "POD text must not declare a package: {relations:#?}"
+    );
+}
