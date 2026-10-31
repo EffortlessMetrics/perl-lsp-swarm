@@ -1539,6 +1539,23 @@ fn operation_token_outside_subcommand_position_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// A toolchain pin may lead the line: `cargo +nightly check` still puts
+/// the operation token in the subcommand position.
+#[test]
+fn operation_token_after_toolchain_pin_is_admitted() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    let expected = record.cell.expected_command_token().map(str::to_string).unwrap_or_default();
+    record.command.args = vec!["+nightly".to_string(), expected];
+    let reasons = reasons_of(&record);
+    assert!(
+        !reasons
+            .iter()
+            .any(|reason| matches!(reason, NotProvenReason::OperationCommandMismatch { .. })),
+        "a pinned toolchain must not refuse the subcommand: {reasons:?}"
+    );
+    Ok(())
+}
+
 /// The barrier latch: release fires exactly once even across duplicate
 /// arrivals (complements the barrier test with an extra participant).
 #[test]
