@@ -42,10 +42,17 @@ static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 // Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
 // post-1.73 format ("panicked at path:row:col:") where the location appears
-// directly after "panicked at " without a quoted message.
+// directly after "panicked at " without a quoted message. The first character
+// class accepts a letter (relative paths like `crates/...`), `.` (`./`-relative
+// paths), or `/` (absolute paths) so panics whose frame is outside the
+// workspace root — a dependency's own `unwrap`, a `registry/src/...` frame, or
+// any build whose `CARGO_MANIFEST_DIR` is not a prefix of the compiled file —
+// are still captured. The `[^:\s]` segments forbid whitespace and inner `:`
+// across the whole path, so a token like `./ something:100:200` — whitespace
+// inside the "path" — cannot be captured as a location.
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z][^:\s][^:]*:\d+:\d+)")
+    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:\s]*:\d+:\d+)")
         .expect("panic regex must compile")
 });
 
@@ -380,6 +387,94 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
         ensure!(
             names == vec!["c::d".to_string()],
             "a bare carriage return must separate the two status lines, got {names:?}"
+        );
+        Ok(())
+    }
+
+    /// Absolute Unix-style paths are what rustc prints when the panicking
+    /// frame is not under the workspace root. The first-character class used
+    /// to be `[a-zA-Z]`, so these lines never matched and `panic_location`
+    /// was silently absent — the missing-evidence bug #16147 names.
+    ///
+    /// Ported from #16189's UX-receipt copy of this regex.
+    #[test]
+    fn panic_re_matches_absolute_path_panic() -> Result<()> {
+        let line = "thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:";
+        let located = panic_location(line);
+        ensure!(
+            located.as_deref() == Some("/home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1"),
+            "an absolute panic location must be captured, got {located:?}"
+        );
+        Ok(())
+    }
+
+    /// `./`-relative paths appear from some toolchain and vendoring
+    /// configurations. Like the absolute case, the old regex refused them
+    /// because `.` is not a letter.
+    #[test]
+    fn panic_re_matches_dot_relative_path_panic() -> Result<()> {
+        let line = "thread 'x' panicked at ./xtask/src/a.rs:7:1:";
+        let located = panic_location(line);
+        ensure!(
+            located.as_deref() == Some("./xtask/src/a.rs:7:1"),
+            "a ./-relative panic location must be captured, got {located:?}"
+        );
+        Ok(())
+    }
+
+    /// The case the digest fails hardest on is a panic inside a dependency,
+    /// which is exactly where the reader has the least context to diagnose
+    /// from the test name alone. The registry path lives under an absolute
+    /// prefix (`/root/.cargo/...`) so the old `[a-zA-Z]` anchor rejected it
+    /// on the leading `/`.
+    #[test]
+    fn panic_re_matches_cargo_registry_panic() -> Result<()> {
+        let line = "thread 'x' panicked at /root/.cargo/registry/src/index/foo-1.0/src/lib.rs:3:4:";
+        let located = panic_location(line);
+        ensure!(
+            located.as_deref() == Some("/root/.cargo/registry/src/index/foo-1.0/src/lib.rs:3:4"),
+            "a cargo-registry panic location must be captured, got {located:?}"
+        );
+        Ok(())
+    }
+
+    /// The first-character class `[a-zA-Z./]` keeps the old anchor's
+    /// narrowness: a leading space, digit, or `-` still cannot start a
+    /// captured location. This is the failure mode #16147 warns about —
+    /// letting the regex swallow prose after `panicked at`.
+    #[test]
+    fn panic_re_first_character_anchor_still_excludes_arbitrary_text() -> Result<()> {
+        for line in [
+            "thread 'x' panicked at  something happened: 100:200",
+            "thread 'x' panicked at 9lives/src/lib.rs:42:8:",
+            "thread 'x' panicked at -/weird/path.rs:42:8:",
+        ] {
+            let located = panic_location(line);
+            ensure!(located.is_none(), "leading {line:?} must not match, but got {located:?}");
+        }
+        Ok(())
+    }
+
+    /// Path segments are whitespace-free by grammar. The `[^:]*` tail used
+    /// to admit inner whitespace and captured `./ something:100:200` as a
+    /// bogus location (review finding on #16189); `[^:\s]*` refuses it.
+    #[test]
+    fn panic_re_whitespace_inside_path_is_not_captured() -> Result<()> {
+        for line in [
+            "thread 'x' panicked at ./ something:100:200",
+            "thread 'x' panicked at ./a b.rs:100:200",
+        ] {
+            let located = panic_location(line);
+            ensure!(
+                located.is_none(),
+                "whitespace inside {line:?} must not be captured as a path, but got {located:?}"
+            );
+        }
+        let line = "thread 'x' panicked at ./xtask/src/a.rs:100:200:";
+        let located = panic_location(line);
+        ensure!(
+            located.as_deref() == Some("./xtask/src/a.rs:100:200"),
+            "a genuine ./-relative location must still match, got {located:?}"
         );
         Ok(())
     }

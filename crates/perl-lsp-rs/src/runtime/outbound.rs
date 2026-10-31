@@ -1419,7 +1419,7 @@ pub(crate) mod tests {
         }));
         sender.send_notification("window/logMessage", json!({"failure": true}))?;
 
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(1), sender.response_failure_notified())
                 .await
@@ -1454,7 +1454,7 @@ pub(crate) mod tests {
             "an unsettled writer must snapshot as None (admission-path shape)"
         );
 
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(2), sender.response_failure_notified())
                 .await
@@ -1698,7 +1698,7 @@ pub(crate) mod tests {
 
         // The failure is sticky, so a waiter created after the failed send is
         // still woken. This is the ingress escape from a full response queue.
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_millis(100), sender.response_failure_notified())
                 .await
@@ -1720,7 +1720,7 @@ pub(crate) mod tests {
             return Err(format!("expected WouldBlock, got {error}").into());
         }
 
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
         let timed_out = runtime.block_on(async {
             tokio::time::timeout(Duration::from_millis(25), sender.response_failure_notified())
                 .await
@@ -1785,14 +1785,18 @@ pub(crate) mod tests {
     /// Verify that OutboundSender also satisfies the OutboundSink trait,
     /// so production code and test code share the same interface (#5015 PR-2).
     #[test]
-    fn outbound_sender_satisfies_sink_trait() {
+    fn outbound_sender_satisfies_sink_trait() -> Result<(), Box<dyn Error>> {
         fn accept_sink(sink: &dyn OutboundSink) -> io::Result<()> {
             sink.send_notification("test/method", json!({}))
         }
 
-        let (sender, _handle) = spawn_writer(Box::new(std::io::sink()));
+        let (sender, handle) = spawn_writer(Box::new(std::io::sink()));
         // This compiles only if OutboundSender implements OutboundSink.
-        accept_sink(&sender).unwrap();
+        let send_result = accept_sink(&sender);
+        let _ = sender.close_and_wait(Duration::from_secs(1));
+        handle.join().map_err(|_| "writer thread panicked")?;
+        send_result?;
+        Ok(())
     }
 
     /// #8896 §3: the outbound seam refuses to emit frames whose method is

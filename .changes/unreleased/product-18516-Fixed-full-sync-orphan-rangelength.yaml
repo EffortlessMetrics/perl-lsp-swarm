@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Reject full-document change members that carry rangeLength without range, including explicit null, so Full sync keeps last-good text instead of installing invalid replacements.
+time: 2026-10-31T11:45:00Z
+custom:
+  PR: "18516"
+  Slug: full-sync-orphan-rangelength
+  Breaking: "no"

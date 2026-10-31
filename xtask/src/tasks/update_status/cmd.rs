@@ -120,22 +120,44 @@ pub(super) fn run_cmd(root: &Path, args: &[&str], timeout: Duration) -> String {
 /// names to stdout, so separate pipes lose the ordering needed for crate attribution.
 /// The command is spawned directly and the file is read without joining pipe readers;
 /// after a timeout, descendants that inherited the file cannot extend the bound.
+///
+/// Failed output is discarded: callers that parse counts must not treat a compiler
+/// diagnostic as discovery data. Prefer [`run_cmd_merged_with_failure_tail`] when the
+/// caller needs to report why the command failed.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "success-or-nothing wrapper retained for sibling callers")
+)]
 pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> String {
+    run_cmd_merged_with_failure_tail(root, args, timeout).unwrap_or_default()
+}
+
+/// Same merged spawn as [`run_cmd_merged`], but a non-acceptable run returns a bounded
+/// tail of the captured file instead of discarding it.
+///
+/// `Ok` is the full merged text of a successful command. `Err` is a bounded tail of
+/// whatever was captured (possibly empty) so reporters can name the compiler error
+/// without feeding that text into count parsers.
+pub(super) fn run_cmd_merged_with_failure_tail(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> std::result::Result<String, String> {
     let Some((&program, rest)) = args.split_first() else {
-        return String::new();
+        return Err(String::new());
     };
     eprintln!("[update-status] running: {}", args.join(" "));
     let Ok(mut merged) = tempfile::tempfile() else {
         eprintln!("[update-status] failed to create merged-output file");
-        return String::new();
+        return Err(String::new());
     };
     let Ok(stdout) = merged.try_clone() else {
         eprintln!("[update-status] failed to clone merged-output file");
-        return String::new();
+        return Err(String::new());
     };
     let Ok(stderr) = merged.try_clone() else {
         eprintln!("[update-status] failed to clone merged-output file");
-        return String::new();
+        return Err(String::new());
     };
     let child = Command::new(program)
         .args(rest)
@@ -145,7 +167,7 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
         .spawn();
     let Ok(mut child) = child else {
         eprintln!("[update-status] failed to start `{}`", args.join(" "));
-        return String::new();
+        return Err(String::new());
     };
 
     let started_at = Instant::now();
@@ -171,12 +193,24 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
             }
         }
     };
-    if !merged_output_is_acceptable(
+    let output = read_merged_output(&mut merged);
+    if merged_output_is_acceptable(
         observation_failed,
         status.as_ref().map(|status| status.success()),
     ) {
-        return String::new();
+        Ok(output)
+    } else {
+        Err(bounded_merged_failure_tail(&output))
     }
+}
+
+fn merged_output_is_acceptable(observation_failed: bool, status_success: Option<bool>) -> bool {
+    !observation_failed && status_success == Some(true)
+}
+
+const MERGED_FAILURE_TAIL_CHARS: usize = 2000;
+
+fn read_merged_output(merged: &mut (impl Read + Seek)) -> String {
     if merged.seek(SeekFrom::Start(0)).is_err() {
         return String::new();
     }
@@ -187,8 +221,13 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
     output
 }
 
-fn merged_output_is_acceptable(observation_failed: bool, status_success: Option<bool>) -> bool {
-    !observation_failed && status_success == Some(true)
+fn bounded_merged_failure_tail(output: &str) -> String {
+    let total = output.chars().count();
+    if total <= MERGED_FAILURE_TAIL_CHARS {
+        return output.to_string();
+    }
+    let tail: String = output.chars().skip(total - MERGED_FAILURE_TAIL_CHARS).collect();
+    format!("…{tail}")
 }
 
 pub(super) fn run_subsystem<T>(
@@ -227,6 +266,45 @@ mod tests {
             "failed merged command output must not be treated as valid discovery data"
         );
         Ok(())
+    }
+
+    #[test]
+    fn run_cmd_merged_with_failure_tail_returns_failed_command_output() {
+        let result = run_cmd_merged_with_failure_tail(
+            Path::new("."),
+            &["rustc", "--definitely-invalid-update-status-option"],
+            Duration::from_secs(10),
+        );
+        assert!(
+            matches!(
+                &result,
+                Err(tail)
+                    if tail.contains("Unrecognized option")
+                        && tail.contains("definitely-invalid-update-status-option")
+            ),
+            "failed merged output must reach the rustc diagnostic, not just argv, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn merged_failure_tail_is_bounded_and_keeps_the_end() {
+        let output = format!("{}UNIQUE_END_MARKER", "x".repeat(5000));
+        let tail = bounded_merged_failure_tail(&output);
+        assert!(
+            tail.chars().count() <= MERGED_FAILURE_TAIL_CHARS + 1,
+            "failure tail must stay bounded, got {} chars",
+            tail.chars().count()
+        );
+        assert!(
+            tail.contains("UNIQUE_END_MARKER"),
+            "failure tail must keep the end of the captured output"
+        );
+        assert!(tail.starts_with('…'), "truncated failure tail must be marked as a tail");
+    }
+
+    #[test]
+    fn merged_failure_tail_preserves_short_output() {
+        assert_eq!(bounded_merged_failure_tail("rustc error"), "rustc error");
     }
 
     #[test]

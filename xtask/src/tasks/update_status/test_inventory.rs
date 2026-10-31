@@ -8,7 +8,7 @@ use std::time::Duration;
 use color_eyre::eyre::{Result, bail};
 use regex::Regex;
 
-use super::run_cmd_merged;
+use super::cmd::run_cmd_merged_with_failure_tail;
 
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static ANSI_ESCAPE_RE: LazyLock<Regex> =
@@ -49,15 +49,31 @@ pub(super) fn collect_for_selection<T>(
 }
 
 pub(super) fn collect_per_crate_test_counts(root: &Path) -> Result<PerCrateTestCounts> {
-    let output = run_cmd_merged(
+    inventory_from_merged_result(run_cmd_merged_with_failure_tail(
         root,
         &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
         Duration::from_mins(12),
-    );
-    if output.is_empty() {
-        bail!("test inventory discovery failed or returned no output");
+    ))
+}
+
+fn inventory_from_merged_result(
+    merged: std::result::Result<String, String>,
+) -> Result<PerCrateTestCounts> {
+    match merged {
+        Ok(output) if !output.is_empty() => {
+            validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
+        }
+        Ok(_) => bail!("{}", discovery_failure_message("")),
+        Err(tail) => bail!("{}", discovery_failure_message(&tail)),
     }
-    validate_per_crate_test_counts(parse_per_crate_test_counts(&output))
+}
+
+fn discovery_failure_message(failure_tail: &str) -> String {
+    if failure_tail.is_empty() {
+        "test inventory discovery failed or returned no output".to_string()
+    } else {
+        format!("test inventory discovery failed or returned no output\n{failure_tail}")
+    }
 }
 
 fn validate_per_crate_test_counts(counts: PerCrateTestCounts) -> Result<PerCrateTestCounts> {
@@ -172,6 +188,35 @@ mod tests {
         assert!(
             validate_per_crate_test_counts(PerCrateTestCounts::default()).is_err(),
             "zero discovered tests must be rejected rather than overwriting status with zeros"
+        );
+    }
+
+    #[test]
+    fn empty_failure_tail_keeps_the_original_discovery_error() {
+        let message = match inventory_from_merged_result(Err(String::new())) {
+            Ok(counts) => format!("unexpected success: {counts:?}"),
+            Err(err) => err.to_string(),
+        };
+        assert_eq!(message, "test inventory discovery failed or returned no output");
+    }
+
+    #[test]
+    fn failing_command_output_reaches_the_inventory_error() {
+        let merged = run_cmd_merged_with_failure_tail(
+            Path::new("."),
+            &["rustc", "--definitely-invalid-update-status-option"],
+            Duration::from_secs(10),
+        );
+        let result = inventory_from_merged_result(merged);
+        let message = result.as_ref().err().map(ToString::to_string).unwrap_or_default();
+        assert!(
+            message.contains("test inventory discovery failed or returned no output"),
+            "inventory error must keep the discovery prefix, got: {result:?}"
+        );
+        assert!(
+            message.contains("Unrecognized option")
+                && message.contains("definitely-invalid-update-status-option"),
+            "failing-command rustc diagnostic must reach the inventory error, not just argv, got: {result:?}"
         );
     }
 }
