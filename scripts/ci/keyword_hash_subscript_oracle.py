@@ -68,7 +68,7 @@ def load_matrix(path=MATRIX):
         if source != (PREFIX + subject(r['id']) + SUFFIX).encode('utf-8'):
             raise ValueError(r['id'] + ': source/profile mismatch')
         a, b = r['subject_span']
-        if not 0 <= a < b < len(source):
+        if [a, b] != [len(PREFIX), len(PREFIX) + len(subject(r['id']))]:
             raise ValueError('subject geometry')
         def geometry(n, lower, upper):
             a, b = n['span']

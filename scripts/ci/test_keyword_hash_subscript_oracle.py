@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -52,10 +53,22 @@ class OracleControls(unittest.TestCase):
     def test_other_runtime_is_not_this_profile(self):
         for version, archname in [('5.42.2', 'test'), ('5.40.1', 'deliberately-other-platform')]:
             identity = {'status': 'completed', 'exit': 0, 'stdout': f"version='{version}';\narchname='{archname}';\n", 'stderr': ''}
-            with patch.object(oracle, 'execute', return_value=identity):
+            with patch.object(oracle.shutil, 'which', return_value=sys.executable), \
+                    patch.object(oracle, 'execute', return_value=identity):
                 result = oracle.run('perl')
             self.assertEqual('NOT_PROVEN', result['status'])
             self.assertEqual([], result['rows'])
+
+    def test_retained_receipt_matches_current_matrix(self):
+        matrix, matrix_hash = oracle.load_matrix()
+        receipt = json.loads(
+            (oracle.ROOT / '.ci/keyword-hash-subscript/perl-5.40.1.json').read_text())
+        self.assertEqual('PROVEN', receipt['status'])
+        self.assertEqual(matrix_hash, receipt['matrix_sha256'])
+        by_id = {r['id']: r for r in matrix['cases']}
+        self.assertEqual(set(by_id), {r['id'] for r in receipt['rows']})
+        for row in receipt['rows']:
+            self.assertEqual(by_id[row['id']]['source_sha256'], row['source_sha256'])
 
 if __name__ == '__main__':
     unittest.main()
