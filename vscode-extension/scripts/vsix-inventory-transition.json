@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7807,
-  "reason": "Compose issue 7807 POD preview webview accessibility bundle growth (+780 out/extension.js bytes) with main's accepted #17689 critic.engine transition after merging origin/main at 80816f8ff0",
-  "base_baseline_file_sha256": "382c054e80e80e8162de3373399f4401d1f9e4c79342d4447188a386a5eb8cf0",
-  "candidate_baseline_file_sha256": "9a54c1928a454f81a1be78584e0cd311c95963f90f98a2ad98ef9fec8910109c",
-  "base_inventory_sha256": "00acc7c6104d69f3a9bb51ef6454b1a251133e7873d24dd7cc0cc1ca6c95d369",
-  "candidate_inventory_sha256": "9a2cdeed102de287f11be6e8e705507b731a2be0b336ca0695e989d52bf5bd53"
+  "owner_issue": 16585,
+  "reason": "Re-measured from this PR's failing smoke receipt projected_actual (31 files, 1938202 bytes): the PR's extension changes (gate the AI-completion enable journey) shifted the produced package; base is main's current baseline.",
+  "base_baseline_file_sha256": "daa7d4775e6e0aa1aa026b08bf6e2b6f1483004be2da8d8272d211e247ea8d42",
+  "base_inventory_sha256": "4ed08e537a58d83824d48ac7cff1c4aa058516f02d9858333018995ed39c3735",
+  "candidate_baseline_file_sha256": "76ced040e30a4f70d0d55448beceec25475d3c399a06f661c613756ebb8ce4db",
+  "candidate_inventory_sha256": "ba88ea223cd3cee7f5d0ee1d02d246cb805732b19079f4bd99228c257e01e296"
 }

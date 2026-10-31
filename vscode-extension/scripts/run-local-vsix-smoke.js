@@ -1208,9 +1208,24 @@ function validateVerifiedCandidateReceipt({
         `verified child status ${JSON.stringify(receipt.status)} is not executable evidence`,
       );
     }
+    let sourceBytes;
+    let sourceReceipt;
+    try {
+      // Hash and parse one snapshot; a producer may replace the receipt between reads.
+      sourceBytes = fs.readFileSync(sourceReceiptFile);
+      sourceReceipt = JSON.parse(sourceBytes.toString('utf8'));
+    } catch (error) {
+      violations.push(
+        `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     if (!receipt.source_receipt_sha256 || !sourceReceiptFile) {
       violations.push('verified child receipt does not bind its packaged source receipt');
-    } else if (receipt.source_receipt_sha256 !== sha256File(sourceReceiptFile)) {
+    } else if (
+      sourceBytes &&
+      receipt.source_receipt_sha256 !==
+        crypto.createHash('sha256').update(sourceBytes).digest('hex')
+    ) {
       violations.push('verified child source receipt digest does not match this run');
     }
     if (receipt.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
@@ -1218,14 +1233,6 @@ function validateVerifiedCandidateReceipt({
     }
     if (receipt.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
       violations.push("verified child bundled-server digest is not this run's server");
-    }
-    let sourceReceipt;
-    try {
-      sourceReceipt = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
-    } catch (error) {
-      violations.push(
-        `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
     if (sourceReceipt?.repository_sha !== env.PERL_LSP_CURRENT_SOURCE_SHA) {
       violations.push('packaged source receipt does not bind this candidate source');

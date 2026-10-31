@@ -893,7 +893,7 @@ pub fn observe_geometry_fields(kind: &NodeKind) -> Vec<ObservedGeometryField> {
         NodeKind::FunctionCall { name: _, args: _ } => NONE,
         NodeKind::AmperCall { name: _, args: _ } => NONE,
         NodeKind::IndirectCall { method: _, object: _, args: _ } => NONE,
-        NodeKind::Regex { pattern: _, replacement: _, modifiers: _, has_embedded_code: _ } => NONE,
+        NodeKind::Regex { .. } => NONE,
         NodeKind::Match { expr: _, pattern: _, modifiers: _, has_embedded_code: _, negated: _ } => {
             NONE
         }

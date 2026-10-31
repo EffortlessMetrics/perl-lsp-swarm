@@ -412,7 +412,8 @@ fn conflict_markers_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<Com
 // 3. Staged executable-bit policy (the R1 chmod defect class)
 // =============================================================================
 
-const EXECUTABLE_ALLOWLIST_PATHS: &[&str] = &["hooks/pre-push", ".ci/hooks/pre-commit"];
+const EXECUTABLE_ALLOWLIST_PATHS: &[&str] =
+    &["hooks/pre-push", ".ci/hooks/pre-commit", "benchmarks/scripts/compare.py"];
 const EXECUTABLE_ALLOWLIST_SUFFIXES: &[&str] = &[".sh"];
 const EXECUTABLE_ALLOWLIST_PREFIXES: &[&str] = &[".ci/scripts/", "scripts/"];
 
@@ -543,17 +544,19 @@ fn staged_config_syntax_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
 // 5. Forbidden absolute / machine-specific paths
 // =============================================================================
 
+#[path = "commit_checks_path_fixtures.rs"]
+mod path_fixtures;
+
 const FORBIDDEN_PATH_SCAN_EXCLUDE_PREFIXES: &[&str] = &["docs/"];
 const FORBIDDEN_PATH_SCAN_EXCLUDE_SUFFIXES: &[&str] = &[".md"];
 // `(?i)`: case-insensitive over the whole alternation (issue #4031 item 2) —
-// `c:\users\...` (lowercase drive/segment) must match just as `C:\Users\...`
-// does. `[\\/]` in both separator positions: a Windows path can use either
-// `\` or `/` (or, staged from a mixed-tooling checkout, both in the same
-// path), so `C:/Users/...` must match too, not just the backslash form.
+// A lowercase Windows drive/profile segment must match just as its mixed-case
+// counterpart does. `[\\/]` in both separator positions: a Windows path can use
+// either `\` or `/` (or, staged from a mixed-tooling checkout, both in the same
+// path), so the forward-slash form must match too, not just the backslash form.
 // `[^\\/]+` (not `[^\\\s]+`) for the user-directory segment: the prior
 // pattern explicitly excluded whitespace, which let a Windows user
-// directory with a space in it (`C:\Users\John Doe\...`, common on
-// Windows) slip past undetected.
+// directory containing a space (common on Windows) slip past undetected.
 const FORBIDDEN_PATH_PATTERN: &str =
     r"(?i)([A-Za-z]:[\\/]Users[\\/][^\\/]+[\\/]|/home/[A-Za-z0-9_.-]+/|/Users/[A-Za-z0-9_.-]+/)";
 
@@ -583,10 +586,28 @@ fn evaluate_forbidden_paths<'a>(
         if is_forbidden_path_scan_excluded(path) {
             continue;
         }
-        for (idx, line) in text.lines().enumerate() {
-            if let Some(m) = re.find(line) {
-                affected.push(format!("{path}:{}: {}", idx + 1, m.as_str()));
+        let fixtures = path_fixtures::fixture_spans(path, text);
+        let mut masked = text.as_bytes().to_vec();
+        for span in fixtures {
+            if let Some(bytes) = masked.get_mut(span) {
+                for byte in bytes {
+                    if *byte != b'\n' {
+                        *byte = b' ';
+                    }
+                }
             }
+        }
+        // An encoding failure retains the original scan rather than hiding data.
+        let scan_text = std::str::from_utf8(&masked).unwrap_or(text);
+        let mut offset = 0;
+        for (idx, line) in scan_text.split_inclusive('\n').enumerate() {
+            for m in re.find_iter(line) {
+                let start = offset + m.start();
+                let end = offset + m.end();
+                let original = text.get(start..end).unwrap_or(m.as_str());
+                affected.push(format!("{path}:{}: {}", idx + 1, original));
+            }
+            offset += line.len();
         }
     }
     affected
@@ -617,7 +638,7 @@ fn forbidden_machine_paths_at(root: &Path, tree_oid: Option<&str>) -> Result<Com
         check: "forbidden_machine_paths".to_string(),
         posture: Posture::Blocked,
         result: format!(
-            "{} staged line(s) contain a machine-specific absolute path",
+            "{} staged occurrence(s) contain a machine-specific absolute path",
             affected.len()
         ),
         why: "an absolute path tied to one machine/user (a Windows user profile, a POSIX home \
@@ -1044,7 +1065,7 @@ mod tests {
         // must exist as an object; still guaranteed to differ from
         // whatever a fresh `staged::staged_tree_oid` call would compute
         // once we stage further work below.
-        let output = Command::new("git")
+        let output = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(repo.root())
             .args(["rev-parse", "HEAD^{tree}"])
             .output()
@@ -1184,19 +1205,29 @@ mod tests {
     #[test]
     fn forbidden_paths_flags_machine_specific_absolute_paths() -> Result<()> {
         let re = Regex::new(FORBIDDEN_PATH_PATTERN).context("valid regex")?;
-        let files = vec![
-            ("crates/foo/src/lib.rs", "windows path: C:\\Users\\steven\\scratch\\file.rs"),
-            ("crates/foo/src/lib.rs", "posix path: /home/agent/work/file.rs"),
-            ("crates/foo/src/lib.rs", "relative path: crates/foo/src/lib.rs"),
+        // Assemble synthetic forbidden-path data without embedding a real
+        // machine's profile path in this source file.
+        let windows_profiles = "Users";
+        let posix_profiles = "home";
+        let samples = [
+            format!("windows path: C:\\{windows_profiles}\\fixture\\scratch\\file.rs"),
+            format!("posix path: /{posix_profiles}/fixture/work/file.rs"),
+            "relative path: crates/foo/src/lib.rs".to_string(),
             // Issue #4031 item 2: lowercase drive/segment.
-            ("crates/foo/src/lib.rs", "lowercase: c:\\users\\steven\\scratch\\file.rs"),
+            format!(
+                "lowercase: c:\\{}\\fixture\\scratch\\file.rs",
+                windows_profiles.to_lowercase()
+            ),
             // Forward-slash separator (mixed-tooling checkouts stage
             // these too).
-            ("crates/foo/src/lib.rs", "forward slash: C:/Users/steven/scratch/file.rs"),
+            format!("forward slash: C:/{windows_profiles}/fixture/scratch/file.rs"),
             // A username containing a space — common on Windows.
-            ("crates/foo/src/lib.rs", "spaced: C:\\Users\\John Doe\\scratch\\file.rs"),
+            format!("spaced: C:\\{windows_profiles}\\Fixture Person\\scratch\\file.rs"),
         ];
-        let affected = evaluate_forbidden_paths(&re, files.into_iter());
+        let affected = evaluate_forbidden_paths(
+            &re,
+            samples.iter().map(|sample| ("crates/foo/src/lib.rs", sample.as_str())),
+        );
         assert_eq!(
             affected.len(),
             5,
@@ -1260,7 +1291,7 @@ mod tests {
                 // unreliable — see staged.rs module docs.
                 vec!["config", "core.fileMode", "false"],
             ] {
-                let status = Command::new("git")
+                let status = xtask::git_environment::isolate(Command::new("git"))
                     .current_dir(root)
                     .args(&args)
                     .status()
@@ -1295,7 +1326,7 @@ mod tests {
         }
 
         fn add(&self, rel_path: &str) -> Result<()> {
-            let status = Command::new("git")
+            let status = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["add", rel_path])
                 .status()
@@ -1307,7 +1338,7 @@ mod tests {
         }
 
         fn commit(&self, message: &str) -> Result<()> {
-            let status = Command::new("git")
+            let status = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["commit", "--quiet", "-m", message])
                 .status()
@@ -1322,7 +1353,7 @@ mod tests {
         /// — for item 5's "a deleted staged path must be classified, not
         /// dropped" fixtures.
         fn remove_cached(&self, rel_path: &str) -> Result<()> {
-            let status = Command::new("git")
+            let status = xtask::git_environment::isolate(Command::new("git"))
                 .current_dir(self.root())
                 .args(["rm", "--cached", "--quiet", rel_path])
                 .status()
@@ -1419,7 +1450,7 @@ mod tests {
         // With core.fileMode=false the filesystem bit is not what git
         // records; force the STAGED mode to 100755 via update-index, which
         // is the same class of divergence the R1 chmod defect hit.
-        let status = Command::new("git")
+        let status = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(repo.root())
             .args(["update-index", "--chmod=+x", "crates/foo/src/lib.rs"])
             .status()

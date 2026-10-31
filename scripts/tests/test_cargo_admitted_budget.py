@@ -1,6 +1,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -252,7 +253,8 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         filters = workflow.split("jobs:", 1)[0]
         for path in ("scripts/cargo-admitted", "scripts/cargo_admitted.py",
                      "scripts/tests/test_cargo_admitted_storage.py",
-                     "scripts/tests/test_cargo_admitted_budget.py", "justfile"):
+                     "scripts/tests/test_cargo_admitted_budget.py", "justfile",
+                     "CONTRIBUTING.md"):
             self.assertIn("- '" + path + "'", filters)
         job = workflow.split("  cargo-admitted-storage-self-test:", 1)[1].split("\n  cargo-toolchain-guard-self-test:", 1)[0]
         self.assertIn("run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_admitted*.py'", job)
@@ -263,6 +265,47 @@ class ConstrainedAdmissionTests(unittest.TestCase):
         self.assertIn("Cargo build capacity was not assessed", recipe)
         self.assertIn("scripts/cargo-admitted --preflight <exact Cargo command>", recipe)
         self.assertNotIn('"agent preflight ok"', recipe)
+
+    def test_contributor_build_choices_distinguish_admission_from_compatibility(self):
+        guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        section = guide.split("### 4. Run focused proof first", 1)[1].split("### 5.", 1)[0]
+        self.assertIn("scripts/cargo-admitted --preflight <exact Cargo command>", section)
+        self.assertIn("docs/agents/CARGO_STORAGE.md", section)
+        self.assertIn("docs/how-to/CONSTRAINED_CARGO_BUILDS.md", section)
+        rows = [line for line in section.splitlines() if line.startswith("| ")]
+        for operation in ("check", "test"):
+            command = f"scripts/cargo-admitted {operation} -p <package> --locked"
+            self.assertTrue(any("New agent" in row and command in row for row in rows), command)
+        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
+                       "agent-nextest", "agent-pr-fast"):
+            matching = [row for row in rows if f"`just {recipe}" in row]
+            self.assertTrue(matching, recipe)
+            self.assertTrue(all("compatibility" in row.lower() for row in matching), recipe)
+        clippy = next(row for row in rows if "Agent Clippy" in row)
+        self.assertIn("#staged-native-clippy", clippy)
+        self.assertIn("1.95.0", clippy)
+        self.assertIn("Linux", clippy)
+
+    def test_legacy_recipe_help_does_not_promise_admission(self):
+        justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+        for recipe in ("cached", "agent-check", "agent-test", "agent-clippy",
+                       "agent-nextest", "agent-pr-fast"):
+            with self.subTest(recipe=recipe):
+                match = re.search(r"((?:^#[^\n]*\n)+)^" + re.escape(recipe)
+                                  + r"(?: [^\n:]*)?:", justfile, re.MULTILINE)
+                self.assertIsNotNone(match, f"{recipe} needs visible compatibility help")
+                # just --list displays only the last comment line.
+                help_text = match.group(1).splitlines()[-1]
+                self.assertIn("Legacy cargo-safe compatibility", help_text)
+                self.assertIn("not host admission", help_text)
+                self.assertNotIn("Agent-safe", help_text)
+                self.assertNotIn("Documented default", help_text)
+                if recipe in ("cached", "agent-check", "agent-test"):
+                    self.assertIn("scripts/cargo-admitted", help_text)
+                elif recipe == "agent-clippy":
+                    self.assertIn("CARGO_STORAGE.md#staged-native-clippy", help_text)
+                else:
+                    self.assertIn("not admitted", help_text)
 
     def test_readonly_preflight_uses_the_execution_budget_without_allocating(self):
         import json
