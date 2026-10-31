@@ -419,7 +419,14 @@ fn classify(
     }
 
     let Some(diagnostic) = result.diagnostics.first() else {
-        return if target_has_only_supported_lines(source, config, target) {
+        // A document target that spans a preserved-literal region (#17708) is
+        // admitted on the preservation contract itself: the formatter emits
+        // literal lines byte-exact, so an unchanged result over a preserve
+        // region is already formatted preserving literals — even when an
+        // opener line (`my $m = <<'EOF';`, bare `write;`) is not a
+        // `format_simple_line` candidate and fails the rendered-layout walk
+        // (#18465).
+        return if preserving || target_has_only_supported_lines(source, config, target) {
             Classification {
                 disposition: FormatDisposition::NoChange,
                 reason: if preserving {
