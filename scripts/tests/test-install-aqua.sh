@@ -288,6 +288,26 @@ file_lacks "doctor no longer prescribes go install" "${DOCTOR}" "go install gith
 file_contains "docs point at the shared installer" "${DOCS}" "scripts/tools/install-aqua.sh"
 file_lacks "docs no longer prescribe go install" "${DOCS}" "go install github.com/aquaproj/aqua"
 
+DOCTOR_HOME="${TMP}/doctor-home"
+DOCTOR_PATH="${TMP}/doctor-path"
+mkdir -p "${DOCTOR_HOME}/.local/bin" "${DOCTOR_PATH}"
+for tool in bash dirname cat; do
+    ln -s "$(command -v "${tool}")" "${DOCTOR_PATH}/${tool}"
+done
+
+run_capture env HOME="${DOCTOR_HOME}" PATH="${DOCTOR_PATH}" bash "${DOCTOR}"
+assert_status "missing Aqua remains NOT PROVEN" 2
+assert_contains "missing Aqua names installation" "aqua is not installed"
+assert_lacks "missing Aqua is not mislabeled as PATH-only" "not found on PATH"
+
+printf '#!/usr/bin/env bash\nexit 0\n' >"${DOCTOR_HOME}/.local/bin/aqua"
+chmod +x "${DOCTOR_HOME}/.local/bin/aqua"
+run_capture env HOME="${DOCTOR_HOME}" PATH="${DOCTOR_PATH}" bash "${DOCTOR}"
+assert_status "Aqua outside PATH remains NOT PROVEN" 2
+assert_contains "off-PATH Aqua names PATH resolution" "not found on PATH"
+assert_contains "off-PATH Aqua supplies PATH activation" 'export PATH="$HOME/.local/bin:$PATH"'
+assert_lacks "off-PATH Aqua is not mislabeled as absent" "aqua is not installed"
+
 printf '\n%d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ "${FAIL}" -ne 0 ]]; then
     exit 1
