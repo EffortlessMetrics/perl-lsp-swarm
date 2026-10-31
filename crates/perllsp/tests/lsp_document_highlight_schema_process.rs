@@ -102,9 +102,9 @@ impl HighlightFixture {
         let mut found = 0usize;
         let mut start = 0usize;
         let byte = loop {
-            let rel = self.source[start..]
-                .find(needle)
-                .ok_or_else(|| anyhow::anyhow!("needle {needle:?} occurrence {occurrence} missing"))?;
+            let rel = self.source[start..].find(needle).ok_or_else(|| {
+                anyhow::anyhow!("needle {needle:?} occurrence {occurrence} missing")
+            })?;
             let absolute = start + rel;
             if found == occurrence {
                 break absolute + 1;
@@ -276,7 +276,8 @@ fn document_highlight_sub_scope_container_element_spellings() -> Result<()> {
         "cursor on $#items inside sub"
     );
 
-    let scalar_shadow = "sub demo {\n    my @items = (1);\n    my $items = 0;\n    print $items;\n}\n";
+    let scalar_shadow =
+        "sub demo {\n    my @items = (1);\n    my $items = 0;\n    print $items;\n}\n";
     let mut shadow_fixture = HighlightFixture::open(scalar_shadow)?;
     ensure!(
         sort_highlights(&shadow_fixture.highlights_at("@items", 0)?)
