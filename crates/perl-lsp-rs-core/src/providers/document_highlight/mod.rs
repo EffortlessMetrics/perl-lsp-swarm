@@ -639,19 +639,28 @@ impl DocumentHighlightProvider {
             highlights.push(DocumentHighlight { location: node.location, kind });
         }
 
-        // Also check cross-sigil matches (e.g. $arr[0] ↔ @arr) within scope
+        // Cross-sigil element spellings within sub scope (e.g. $items[0] ↔ @items).
+        // Use the traversal parent like the file-scope collector; gate on container
+        // role so a same-named scalar index/key operand stays excluded (#18312).
         if let NodeKind::Variable { sigil, name } = &node.kind
+            && !self.node_matches_symbol(node, source, target)
             && node.location.start >= sub_start
             && node.location.end <= sub_end
+            && let Some(target_sigil) = &target.sigil
+            && self.scoped_cross_sigil_candidate(
+                sigil,
+                name,
+                target_sigil,
+                &target.name,
+                node,
+                parent,
+            )
         {
-            // Presence of a subscript parent is the gate; the parent node
-            // itself is not needed here.
-            if self.find_subscript_parent(node, node.location.start).is_some() {
-                let target_sigil_str = target.sigil.as_deref().unwrap_or("");
-                if self.is_cross_sigil_match(sigil, name, target_sigil_str, &target.name, parent) {
-                    let kind = self.determine_highlight_kind_with_parent(node, parent);
-                    highlights.push(DocumentHighlight { location: node.location, kind });
-                }
+            let cross_match =
+                self.is_cross_sigil_match(sigil, name, target_sigil, &target.name, parent);
+            if cross_match {
+                let kind = self.determine_highlight_kind_with_parent(node, parent);
+                highlights.push(DocumentHighlight { location: node.location, kind });
             }
         }
 
@@ -855,6 +864,35 @@ impl DocumentHighlightProvider {
                 kind: DocumentHighlightKind::Text,
             });
         }
+    }
+
+    /// Returns true when a variable inside a scoped sub may participate in
+    /// cross-sigil highlighting: `$#name` for an `@name` target, or the
+    /// container (left) operand of a `[]`/`{}` subscript Binary (#18312).
+    fn scoped_cross_sigil_candidate(
+        &self,
+        sigil: &str,
+        name: &str,
+        target_sigil: &str,
+        target_name: &str,
+        node: &Node,
+        parent: Option<&Node>,
+    ) -> bool {
+        if target_sigil == "@"
+            && sigil == "$"
+            && name.strip_prefix('#').is_some_and(|bare| bare == target_name)
+        {
+            return true;
+        }
+        if let Some(parent_node) = parent
+            && let NodeKind::Binary { op, left, .. } = &parent_node.kind
+            && (op == "[]" || op == "{}")
+            && left.location.start == node.location.start
+            && left.location.end == node.location.end
+        {
+            return true;
+        }
+        false
     }
 
     /// Check whether a variable occurrence with `(sigil, name)` is a cross-sigil
