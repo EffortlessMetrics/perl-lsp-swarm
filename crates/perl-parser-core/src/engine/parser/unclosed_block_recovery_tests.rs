@@ -217,18 +217,37 @@ fn test_recovery_on_sub_keyword_in_unclosed_block() {
             statements.iter().map(|s| s.kind.kind_name()).collect::<Vec<_>>()
         );
 
-        // foo's body should contain bar as a nested named sub
-        if let NodeKind::Subroutine { body, .. } = &statements[0].kind
-            && let NodeKind::Block { statements: body_stmts } = &body.kind
-        {
-            let has_bar = body_stmts.iter().any(|s| {
+        // foo's body should contain bar as a nested named sub. foo's block is
+        // unclosed at EOF, so the body travels inside the parser's standard
+        // recovery wrapper; the nested-sub property must survive the wrap
+        // (#16969), not silently stop being checked — hence the explicit
+        // panics on every non-matching shape below.
+        match &statements[0].kind {
+            NodeKind::Subroutine { body, .. } => {
+                let body_kind = match &body.kind {
+                    NodeKind::Error { partial: Some(partial), .. } => &partial.kind,
+                    other => other,
+                };
+                let body_stmts = match body_kind {
+                    NodeKind::Block { statements } => statements,
+                    other => panic!(
+                        "foo's body (through the recovery wrapper) should be a Block. Got: {}",
+                        other.kind_name()
+                    ),
+                };
+                let has_bar = body_stmts.iter().any(|s| {
                     matches!(&s.kind, NodeKind::Subroutine { name, .. } if name.as_deref() == Some("bar"))
                 });
-            assert!(
-                has_bar,
-                "foo's body should contain nested sub bar. Got: {:?}",
-                body_stmts.iter().map(|s| s.kind.kind_name()).collect::<Vec<_>>()
-            );
+                assert!(
+                    has_bar,
+                    "foo's body should contain nested sub bar. Got: {:?}",
+                    body_stmts.iter().map(|s| s.kind.kind_name()).collect::<Vec<_>>()
+                );
+            }
+            other => panic!(
+                "The first statement should be the (possibly wrapped) subroutine 'foo'. Got: {}",
+                other.kind_name()
+            ),
         }
     } else {
         panic!("Expected Program node");
