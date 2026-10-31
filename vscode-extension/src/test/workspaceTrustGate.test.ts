@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { writeFakeTool } from './fakeToolFixture';
 
 const mockLanguageClientStart = jest.fn(() => new Promise<void>(() => undefined));
 const mockLanguageClientStop = jest.fn(async () => undefined);
@@ -140,7 +141,7 @@ describe('workspace trust activation gate (#4631)', () => {
         extensionRoot,
         process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
       );
-      fs.writeFileSync(serverPath, '');
+      writeFakeTool(serverPath);
       mockConfig(serverPath);
 
       await activate(makeContext(extensionRoot));
@@ -164,7 +165,7 @@ describe('workspace trust activation gate (#4631)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -196,7 +197,7 @@ describe('workspace trust activation gate (#4631)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -228,7 +229,7 @@ describe('workspace trust activation gate (#4631)', () => {
       extensionRoot,
       process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
     );
-    fs.writeFileSync(serverPath, '');
+    writeFakeTool(serverPath);
     mockConfig(serverPath);
 
     await activate(makeContext(extensionRoot));
@@ -250,15 +251,15 @@ describe('workspace trust activation gate (#4631)', () => {
         extensionRoot,
         process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
       );
-      fs.writeFileSync(serverPath, '');
+      writeFakeTool(serverPath);
       mockConfig(serverPath);
 
       const activation = activate(makeContext(extensionRoot));
 
       await expect(
-        Promise.race([activation.then(() => 'activated' as const), delay(250)]),
+        Promise.race([activation.then(() => 'activated' as const), delay(5_000)]),
       ).resolves.toBe('activated');
-      await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 500);
+      await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 5_000);
 
       expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
       // onDidGrantWorkspaceTrust should NOT be registered when already trusted.

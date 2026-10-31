@@ -1,0 +1,9 @@
+project: product
+component: Compiler facts
+kind: Fixed
+body: "A dynamic indirect constructor receiver such as the $class in `new $class` was recorded with the same bareword role as a static class name in `new Foo`. It now records a distinct DynamicIndirectObject role, so consumers can tell a runtime constructor target from a static one without inspecting the name."
+time: 2026-10-21T00:00:00Z
+custom:
+  PR: "18279"
+  Slug: dynamic-indirect-role
+  Breaking: "no"

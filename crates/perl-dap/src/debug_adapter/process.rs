@@ -2846,18 +2846,28 @@ impl DebugAdapter {
                 }
             };
             let normalized_host = host.trim();
-            let raw_port = args.get("port").and_then(|p| p.as_u64()).unwrap_or(13603);
-            if raw_port > 65535 {
-                return DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: false,
-                    command: "attach".to_string(),
-                    body: None,
-                    message: Some(format!("Port {raw_port} out of range (must be 1-65535)")),
-                };
-            }
-            let port = raw_port as u16;
+            let port = match args.get("port") {
+                None | Some(Value::Null) => 13603,
+                Some(value) => match value
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+                    .filter(|port| *port != 0)
+                {
+                    Some(port) => port,
+                    None => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "attach".to_string(),
+                            body: None,
+                            message: Some(
+                                "Invalid port: expected an integer in range 1-65535".to_string(),
+                            ),
+                        };
+                    }
+                },
+            };
             let timeout = args
                 .get("timeout")
                 .or_else(|| args.get("timeoutMs"))
@@ -3932,6 +3942,7 @@ fn deliver_reserved_terminated_event(
 
 #[cfg(test)]
 mod tests {
+    use super::super::patterns::DEBUGGER_QUERY_WAIT_MS;
     use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
     use super::{
@@ -5738,6 +5749,19 @@ mod tests {
         }
     }
 
+    // These protocol fixtures need an owned session, but do not exercise process
+    // termination. Establish natural no-op exit before testing event ordering so
+    // unrelated child shutdown latency cannot consume the cleanup deadline.
+    fn seed_quiescent_protocol_session(adapter: &DebugAdapter) -> Result<(), String> {
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut session = adapter.session.lock().map_err(|_| "session lock poisoned")?;
+        let session = session.as_mut().ok_or("seeded session missing")?;
+        if !DebugAdapter::wait_for_child_exit(&mut session.process, Duration::from_secs(5)) {
+            return Err("protocol fixture no-op child did not exit during setup".to_string());
+        }
+        Ok(())
+    }
+
     #[test]
     fn disconnect_terminal_after_async_completion_and_invalidation() -> Result<(), String> {
         for (invalidate, fail_cleanup) in [(false, false), (true, false), (true, true)] {
@@ -5745,7 +5769,7 @@ mod tests {
             let mut adapter = DebugAdapter::new();
             adapter.set_event_sender(sender);
             if fail_cleanup {
-                adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+                seed_quiescent_protocol_session(&adapter)?;
             }
             let event_sender = adapter.event_sender.as_ref().ok_or("missing event sender")?;
             let generation = adapter.current_session_generation();
@@ -5826,7 +5850,7 @@ mod tests {
             .map_err(|error| error.to_string())?;
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(outbound.clone());
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let generation = adapter.current_session_generation();
         let state = adapter.termination_state.clone();
         let sequence = adapter.seq.clone();
@@ -5942,7 +5966,7 @@ mod tests {
         let (sender, receiver) = sync_channel(4);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
-        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        seed_quiescent_protocol_session(&adapter)?;
         let reported_delivery = super::emit_terminated_event_guarded(
             adapter.event_sender.as_ref().ok_or("missing event sender")?,
             &adapter.seq,
@@ -7399,12 +7423,22 @@ mod tests {
         Ok(())
     }
 
-    fn spawn_reader_fixture_child(mode: &str) -> Result<super::Child, String> {
-        std::process::Command::new("perl")
+    fn spawn_reader_fixture_child(mode: &str) -> Result<(super::Child, String), String> {
+        static NEXT_READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let ready = format!(
+            "READER_READY_{}",
+            NEXT_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let child = std::process::Command::new("perl")
                 .arg("-e")
                 .arg(r##"
-                    my $mode = shift; my $round = 0; my $active;
+                    my $mode = shift; my $ready = shift; my $round = 0; my $active;
                     select STDERR; $|=1; select STDOUT; $|=1;
+                    if ($mode eq 'startup_delayed') {
+                        select undef, undef, undef, 0.9;
+                        $mode = 'valid';
+                    }
+                    print STDERR "$ready\n";
                     while (<STDIN>) {
                         if (/DAP_BEGIN_(\d+)/) {
                             ++$round; $active = $round == 1 ? $mode : 'valid';
@@ -7433,11 +7467,13 @@ mod tests {
                     }
                 "##)
                 .arg(mode)
+                .arg(&ready)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| format!("failed to spawn reader fixture: {error}"))
+                .map_err(|error| format!("failed to spawn reader fixture: {error}"))?;
+        Ok((child, ready))
     }
 
     fn reader_stack_fixture(mode: &str) -> Result<Arc<DebugAdapter>, String> {
@@ -7456,16 +7492,21 @@ mod tests {
             end_column: None,
         }]);
         adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+        let ready;
         {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
             let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
             session.stopped_generation = 1;
-            let child = spawn_reader_fixture_child(mode)?;
+            let (child, child_ready) = spawn_reader_fixture_child(mode)?;
+            ready = child_ready;
             let mut previous = std::mem::replace(&mut session.process, child);
             let _ = previous.kill();
             previous.wait().map_err(|error| format!("failed to reap seed process: {error}"))?;
         }
         adapter.start_output_reader(PathBuf::from("."));
+        // Spawn success does not establish interpreter startup. Start each
+        // unchanged query deadline only after this child's reader is ready.
+        wait_for_reader_barrier(&adapter, &ready)?;
         // Drop owns bounded child cleanup on both success and every error path.
         Ok(adapter)
     }
@@ -7522,8 +7563,61 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts the accepted authority for a `late` fixture payload whose end
+    /// marker landed inside the framed-query window (coverage clamp, #18348):
+    /// the parsed `main` frame replaces the pre-seeded sentinel as the
+    /// response and the cached session frames, and the sentinel arguments are
+    /// dropped with the replaced frame.
+    fn assert_in_window_late_payload_accepted(
+        adapter: &DebugAdapter,
+        response: DapMessage,
+    ) -> Result<(), String> {
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("in-window late stackTrace failed: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or_else(|| format!("missing stack frame: {body}"))?;
+        if frame.get("name").and_then(Value::as_str) != Some("main")
+            || frame.get("line").and_then(Value::as_i64) != Some(9)
+        {
+            return Err(format!("in-window late payload not accepted: {body}"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.reader_late_window");
+        let session = guard.as_ref().ok_or("reader lost the session")?;
+        let cached = session.stack_frames.first().ok_or("reader lost cached frames")?;
+        if cached.name != "main" || cached.line != 9 {
+            return Err("in-window late payload did not reach cached authority".to_string());
+        }
+        if session.stack_frame_arguments.contains_key(&cached.id) {
+            return Err("in-window late payload kept the sentinel arguments".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framed_reader_startup_precedes_query_deadline() -> Result<(), String> {
+        // Startup exceeds the unchanged 600ms query budget. Readiness must
+        // absorb it before the query; query latency still remains bounded.
+        let adapter = reader_stack_fixture("startup_delayed")?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        assert_reader_stack(&adapter, response, "main::run", 7, &["$value", "[1, 2]", "\"a,b\""])
+    }
+
     #[test]
     fn framed_reader_preserves_stack_and_recovers_after_partial_output() -> Result<(), String> {
+        // The `late` fixture withholds its end marker for 0.9s. Against the
+        // plain framed-query window (`DEBUGGER_QUERY_WAIT_MS * 8`) that is
+        // genuinely late: the query times out and the pre-seeded sentinel
+        // frame stays authoritative. Coverage instrumentation clamps the
+        // window to >=15s (#18348), which pulls the marker inside the window,
+        // so the completed poison payload is then legitimately accepted as
+        // stack authority. Derive the expectation from the effective window
+        // rather than raw instrumentation env checks (#18348).
+        let late_marker_in_window = Duration::from_millis(900)
+            <= DebugAdapter::framed_query_window_for_test(DEBUGGER_QUERY_WAIT_MS * 8);
         for mode in ["empty", "internal", "partial", "late", "late_begin", "valid"] {
             let adapter = reader_stack_fixture(mode)?;
             let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
@@ -7536,6 +7630,8 @@ mod tests {
                     7,
                     &["$value", "[1, 2]", "\"a,b\""],
                 )?;
+            } else if mode == "late" && late_marker_in_window {
+                assert_in_window_late_payload_accepted(&adapter, response)?;
             } else {
                 assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
             }
@@ -7616,14 +7712,14 @@ mod tests {
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
         adapter.begin_session_generation();
-        let mut old_child = {
+        let (mut old_child, ready) = {
             let mut guard = lock_or_recover(&adapter.session, "test.reader_replacement");
             let session = guard.as_mut().ok_or("missing old session")?;
-            let child = spawn_reader_fixture_child("valid")?;
+            let (child, ready) = spawn_reader_fixture_child("valid")?;
             session.stack_frames.first_mut().ok_or("missing old frame")?.name =
                 "replacement".to_string();
             session.stack_frame_arguments.insert(1, vec!["replacement_arg".to_string()]);
-            std::mem::replace(&mut session.process, child)
+            (std::mem::replace(&mut session.process, child), ready)
         };
         adapter.operation_broker.open_session();
         adapter.start_output_reader(PathBuf::from("."));
@@ -7632,6 +7728,9 @@ mod tests {
         // must leave the replacement's authorities intact.
         drop(old_child.stdin.take());
         let result = (|| {
+            // The unique marker prevents the previous child's startup from
+            // satisfying replacement readiness under concurrent host load.
+            wait_for_reader_barrier(&adapter, &ready)?;
             if !DebugAdapter::wait_for_child_exit(&mut old_child, Duration::from_secs(5)) {
                 return Err("old reader fixture failed to finish delayed output".to_string());
             }

@@ -211,10 +211,9 @@ pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
+pub use unicode::is_perl_identifier_continue;
 
-use unicode::{
-    is_perl_identifier_continue, is_perl_identifier_start, is_perl_package_segment_start,
-};
+use unicode::{is_perl_identifier_start, is_perl_package_segment_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
@@ -529,6 +528,16 @@ impl<'a> PerlLexer<'a> {
             }
 
             if let Some(token) = self.try_variable() {
+                // A sigil-named token inside the post-`sub` window is a
+                // signature parameter, so later quote-like words in the
+                // window are expression operators (#13919).
+                if self.in_prototype
+                    && token.text.len() > 1
+                    && matches!(token.text.as_bytes()[0], b'$' | b'@' | b'%')
+                    && token.text[1..].chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                {
+                    self.prototype_signature_seen = true;
+                }
                 return Some(token);
             }
 
@@ -561,6 +570,11 @@ impl<'a> PerlLexer<'a> {
             }
 
             if let Some(token) = self.try_operator() {
+                // A default assignment inside the window is signature
+                // evidence: prototypes never contain one (#13919).
+                if self.in_prototype && matches!(token.text.as_ref(), "=" | "//=" | "||=") {
+                    self.prototype_signature_seen = true;
+                }
                 return Some(token);
             }
 
@@ -666,11 +680,14 @@ impl<'a> PerlLexer<'a> {
         let saved_delimiter_stack = self.delimiter_stack.clone();
         let saved_prototype = self.in_prototype;
         let saved_depth = self.prototype_depth;
+        let saved_signature_seen = self.prototype_signature_seen;
         let saved_after_sub = self.after_sub;
         let saved_after_arrow = self.after_arrow;
         let saved_hash_brace_depth = self.hash_brace_depth;
         let saved_after_var_subscript = self.after_var_subscript;
         let saved_paren_depth = self.paren_depth;
+        let saved_print_list_parens = self.print_list_parens.clone();
+        let saved_pending_print_list_paren = self.pending_print_list_paren;
         let saved_current_pos = self.current_pos;
         let saved_after_newline = self.after_newline;
         let saved_pending_heredocs = self.pending_heredocs.clone();
@@ -685,11 +702,14 @@ impl<'a> PerlLexer<'a> {
         self.delimiter_stack = saved_delimiter_stack;
         self.in_prototype = saved_prototype;
         self.prototype_depth = saved_depth;
+        self.prototype_signature_seen = saved_signature_seen;
         self.after_sub = saved_after_sub;
         self.after_arrow = saved_after_arrow;
         self.hash_brace_depth = saved_hash_brace_depth;
         self.after_var_subscript = saved_after_var_subscript;
         self.paren_depth = saved_paren_depth;
+        self.print_list_parens = saved_print_list_parens;
+        self.pending_print_list_paren = saved_pending_print_list_paren;
         self.current_pos = saved_current_pos;
         self.after_newline = saved_after_newline;
         self.pending_heredocs = saved_pending_heredocs;
@@ -725,11 +745,14 @@ impl<'a> PerlLexer<'a> {
         self.delimiter_stack.clear();
         self.in_prototype = false;
         self.prototype_depth = 0;
+        self.prototype_signature_seen = false;
         self.after_sub = false;
         self.after_arrow = false;
         self.hash_brace_depth = 0;
         self.after_var_subscript = false;
         self.paren_depth = 0;
+        self.print_list_parens.clear();
+        self.pending_print_list_paren = false;
         self.current_pos = Position::start();
         self.after_newline = true;
         self.pending_heredocs.clear();
@@ -958,22 +981,35 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn try_heredoc(&mut self) -> Option<Token> {
-        if self.mode == LexerMode::ExpectOperator {
-            // `<<` is the left-shift operator, not a heredoc, when we are
-            // inside a parenthesized expression and have just finished a term.
-            // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and
-            // paren_depth > 0, so `<<index` must be the bitshift operator, not
-            // a heredoc start.
-            //
-            // The paren guard alone must not fire at statement level
-            // (paren_depth == 0) because `print $fh <<END` is valid Perl:
-            // `$fh` sets ExpectOperator but `<<END` is a heredoc. A nullary
-            // authority is different (#16165): `sub foo ()` and `time`
-            // complete a term, so `foo <<END` and `time <<END` shift even at
-            // statement level (local Perl oracle).
-            if self.paren_depth > 0 || self.preceding_word_is_nullary() {
-                return None;
-            }
+        // `<<` is the left-shift operator, not a heredoc, when we are inside
+        // a parenthesized expression and have just finished a term.
+        // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and paren_depth > 0,
+        // so `<<index` must be the bitshift operator, not a heredoc start.
+        //
+        // We must NOT fire the paren guard at statement level (paren_depth == 0)
+        // because `print $fh <<END` is valid Perl: `$fh` sets ExpectOperator but
+        // `<<END` is a heredoc. The depth check distinguishes the two cases.
+        //
+        // Per #16163, the same exception applies inside the parens of a list-
+        // operator `print(...)` call: the filehandle-like preceding term is still
+        // a print argument, not a regular expression operand, so `<<'END'` after
+        // `$fh` is a heredoc opener, not a left shift. `print_list_paren_depth`
+        // is incremented when `print` is invoked as a list operator with parens
+        // (no preceding `->` or `&`) and decremented on the matching `)`.
+        //
+        // A nullary authority is different (#16165): `sub foo ()` and `time`
+        // complete a term, so `foo <<END` and `time <<END` shift even at
+        // statement level (local Perl oracle).
+        let print_filehandle_slot = self.print_list_parens.last().is_some_and(
+            |(enclosing_depth, seen_comma, slot_live)| {
+                self.paren_depth == enclosing_depth + 1 && !seen_comma && *slot_live
+            },
+        );
+        if self.mode == LexerMode::ExpectOperator
+            && ((self.paren_depth > 0 && !print_filehandle_slot)
+                || self.preceding_word_is_nullary())
+        {
+            return None;
         }
 
         // Check for heredoc start
@@ -1106,7 +1142,7 @@ impl<'a> PerlLexer<'a> {
         // runs the unterminated-quote recovery, which consumes through
         // end-of-line: it errors when a newline follows (#12363) and silently
         // swallows the rest of the line otherwise. A multiplication such as
-        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        // `$a * ";"` is excluded using the lexer mode and existing operand exclusions.
         if matches!(quote, '"' | '\'' | '`')
             && self.peek_char(1) == Some(';')
             && self.glob_sigil_precedes()
@@ -1133,6 +1169,11 @@ impl<'a> PerlLexer<'a> {
     /// position (preceded by an operator or the start of input, not by an
     /// operand — `$a * x` is multiplication, `= *x` is a glob).
     fn glob_sigil_precedes(&self) -> bool {
+        // A multiplication operator expects its right operand; a glob term
+        // expects an operator. Reuse that Unicode-aware token classification.
+        if self.mode != LexerMode::ExpectOperator {
+            return false;
+        }
         let bytes = self.input.as_bytes();
         let mut index = self.position;
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
@@ -1145,15 +1186,16 @@ impl<'a> PerlLexer<'a> {
         while index > 0 && bytes[index - 1].is_ascii_whitespace() {
             index -= 1;
         }
-        if index == 0 {
-            return true;
-        }
-        let before = bytes[index - 1] as char;
-        !(before.is_ascii_alphanumeric()
-            || matches!(
-                before,
-                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
-            ))
+        // The ASCII star/whitespace scan leaves `index` on a scalar boundary.
+        // Keep the historical ASCII exclusions: widening this predicate to
+        // Unicode identifiers would mistake preceding comment text for operands.
+        !self.input[..index].chars().next_back().is_some_and(|before| {
+            before.is_ascii_alphanumeric()
+                || matches!(
+                    before,
+                    '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+                )
+        })
     }
 
     #[inline]
@@ -2045,6 +2087,20 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth > 0 && matches!(next, ',' | '}' | ';')
     }
 
+    /// While the post-`sub` parenthesised window is open, a quote-like word
+    /// whose would-be delimiter is a prototype payload character or a window
+    /// terminator is prototype text, not an operator (#13919). A genuine
+    /// quote delimiter (`{`, `/`, `'`, ...) still opens the operator, which
+    /// keeps signature default expressions (`sub f($x = q{hello})`) intact:
+    /// payload words are only ever followed by payload or terminator
+    /// characters, never by a quote delimiter.
+    #[inline]
+    fn prototype_payload_candidate(&self, candidate: char) -> bool {
+        self.in_prototype
+            && !self.prototype_signature_seen
+            && matches!(candidate, ')' | ';' | ',' | '$' | '@' | '%' | '&' | '*' | '\\' | '+' | '_')
+    }
+
     /// q-family quote words still open inside subscripts (`@h{qw/a b/}`).
     /// `m` opens only when the next char is a real delimiter, not a key
     /// boundary (`$h{m}` vs `$h->{scalar m/foo/}`). `s`/`tr`/`y` use the
@@ -2179,6 +2235,7 @@ impl<'a> PerlLexer<'a> {
                         && !is_fat_arrow
                         && !is_filetest_s
                         && !self.hash_subscript_bare_key_boundary(next)
+                        && !self.prototype_payload_candidate(next)
                         && !substitution_disallows_whitespace
                         && (!has_gap
                             || is_paired_delim
@@ -2205,6 +2262,9 @@ impl<'a> PerlLexer<'a> {
                 }
             }
 
+            // Quote-like spellings inside a prototype are payload text:
+            // they must surface as identifiers so the parser classifies the
+            // parenthesised text as a prototype, not a signature (#13919).
             let token_type = if is_keyword_fast(text) {
                 // Check for special keywords that affect lexer mode
                 match text {
@@ -2280,6 +2340,7 @@ impl<'a> PerlLexer<'a> {
                                 && !is_fat_arrow
                                 && !is_filetest_s
                                 && !is_hash_subscript_bare_key_boundary
+                                && !self.prototype_payload_candidate(next)
                                     && (!has_gap
                                         || is_paired_delim
                                         || is_quote_char
@@ -2375,10 +2436,30 @@ impl<'a> PerlLexer<'a> {
                 TokenType::Identifier(Arc::from(text))
             };
 
+            // Detect `print(` invoked as a list operator at term position
+            // (no preceding `->` or `&`) for #16163. When the immediately
+            // following non-whitespace byte is `(`, mark the next open paren
+            // as the list-operator opener so `<<` inside the parens is
+            // recognized as a heredoc. Method (`->print`) and function
+            // (`&print`) calls are excluded; the parser sees `<<` as a
+            // left-shift operator there.
+            //
+            // The check runs BEFORE `after_arrow` is cleared below so the
+            // operator state at the start of the identifier still reflects
+            // whether `->` immediately preceded `print`.
+            if text == "print"
+                && !self.after_arrow
+                && self.print_list_paren_follows(start)
+                && !self.preceded_by_ampersand(start)
+            {
+                self.pending_print_list_paren = true;
+            }
+
             self.after_arrow = false;
             // A keyword/identifier is not a variable; `{` after it is a block opener.
             self.after_var_subscript = false;
             // hash_brace_depth is managed by { and } handlers, not cleared per-token
+
             Some(Token { token_type, text: Arc::from(text), start, end: self.position })
         } else {
             None
@@ -2487,6 +2568,38 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn try_operator(&mut self) -> Option<Token> {
+        // A binary operator at the print-list depth ends the filehandle
+        // slot (#16365): in `print($x + $y << 'END')` the `<<` follows a
+        // compound expression, so it is the left-shift operator (a Perl
+        // syntax error there), not a heredoc opener. Only the slot whose
+        // term is still the lone first argument stays live.
+        if self.mode == LexerMode::ExpectOperator
+            && !matches!(self.current_char(), Some('-') if self.peek_byte(1) == Some(b'>'))
+            && matches!(
+                self.current_char(),
+                Some(
+                    '+' | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '&'
+                        | '|'
+                        | '^'
+                        | '<'
+                        | '>'
+                        | '='
+                        | '!'
+                        | '~'
+                        | '?'
+                        | ':'
+                        | '.'
+                )
+            )
+            && let Some((enclosing_depth, _, slot_live)) = self.print_list_parens.last_mut()
+            && self.paren_depth == *enclosing_depth + 1
+        {
+            *slot_live = false;
+        }
         // Skip operator parsing if we're expecting a delimiter for a quote operator
         if matches!(self.mode, LexerMode::ExpectDelimiter) && self.current_quote_op.is_some() {
             return None;
@@ -2725,8 +2838,20 @@ impl<'a> PerlLexer<'a> {
                     self.in_prototype = true;
                     self.after_sub = false;
                     self.prototype_depth = 1;
+                    self.prototype_signature_seen = false;
                 } else if self.in_prototype {
                     self.prototype_depth += 1;
+                }
+                // Track `print(...)` list-operator parens for #16163. The flag
+                // is set by the identifier handler when `print` at term position
+                // is followed (after horizontal whitespace) by `(`. The flag is
+                // consumed here even when nested prototypes re-enter the path.
+                if self.pending_print_list_paren {
+                    self.pending_print_list_paren = false;
+                    // Record the enclosing depth so the matching `)` pops
+                    // exactly this opener, never a nested paren (#16163
+                    // review).
+                    self.print_list_parens.push((self.paren_depth, false, true));
                 }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
@@ -2748,10 +2873,21 @@ impl<'a> PerlLexer<'a> {
                     self.prototype_depth -= 1;
                     if self.prototype_depth == 0 {
                         self.in_prototype = false;
+                        self.prototype_signature_seen = false;
                     }
                 }
                 self.after_arrow = false;
                 self.paren_depth = self.paren_depth.saturating_sub(1);
+                // A closing paren pops the `print(...)` opener it actually
+                // matches: the enclosing depth recorded at the opener equals
+                // this paren's depth after the decrement. A nested `)` inside
+                // the print list leaves the opener on the stack (#16163
+                // review).
+                if let Some((enclosing_depth, _, _)) = self.print_list_parens.last()
+                    && self.paren_depth == *enclosing_depth
+                {
+                    self.print_list_parens.pop();
+                }
                 // A closing paren ends any var-subscript context: `if ($var)` should
                 // NOT leave after_var_subscript set, otherwise the following `{` would
                 // incorrectly increment hash_brace_depth and suppress regex operators
@@ -2782,6 +2918,14 @@ impl<'a> PerlLexer<'a> {
             }
             ',' => {
                 self.advance();
+                // A top-level comma inside a `print(...)` list ends the
+                // filehandle slot (#16163 review): later arguments are
+                // ordinary list terms, so a following `<<` is a shift.
+                if let Some((enclosing_depth, seen_comma, _)) = self.print_list_parens.last_mut()
+                    && self.paren_depth == *enclosing_depth + 1
+                {
+                    *seen_comma = true;
+                }
                 self.after_var_subscript = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {

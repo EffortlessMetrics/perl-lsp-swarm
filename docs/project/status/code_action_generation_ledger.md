@@ -25,7 +25,9 @@ diagnostic codes to stable action IDs and safety metadata" — but no such
 registry exists in the tree today. Searching the workspace for an action-ID or
 fixability registry finds only `tooling/perl_critic/remediation.rs`, which
 classifies *critic remediation eligibility*, not action identity. So a family
-here is `<emitted CodeActionKind>:<capability name>` — a label chosen to name
+here is the `<emitted CodeActionKind>:<capability name>` form for custom families,
+the complete emitted CodeActionKind for typed extraction families
+(refactor.extract.variable, refactor.extract.subroutine) — a label chosen to name
 the user-visible capability a generation answers, deliberately shaped so it can
 be mapped onto real action IDs later rather than competing with them.
 
@@ -118,12 +120,12 @@ handler does not satisfy it.
 | native_critic | quickfix:critic_finding | canonical_candidate | — |
 | legacy_critic | none:unreachable_stub | retire_candidate | — |
 | provider_original | quickfix:hardcoded_shebang | canonical_candidate | — |
-| provider_enhanced | refactor.extract:variable | canonical_candidate | — |
-| provider_original | refactor.extract:variable | redundant_behavior | — |
-| provider_enhanced | refactor.extract:subroutine | canonical_candidate | — |
-| provider_original | refactor.extract:subroutine | redundant_behavior | — |
-| provider_original | refactor.extract:basic_fallback | shadow_only_candidate | — |
-| disabled_extract_placeholder | refactor.extract:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
+| provider_enhanced | refactor.extract.variable | canonical_candidate | — |
+| provider_original | refactor.extract.variable | redundant_behavior | — |
+| provider_enhanced | refactor.extract.subroutine | canonical_candidate | — |
+| provider_original | refactor.extract.subroutine | redundant_behavior | — |
+| provider_original | refactor.extract.variable:basic_fallback | shadow_only_candidate | — |
+| disabled_extract_placeholder | refactor.extract.variable:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
 | provider_enhanced | refactor.rewrite:enhanced_transforms | canonical_candidate | — |
 | provider_original | refactor.rewrite:enhanced_transforms | redundant_behavior | — |
 | provider_original | source.modernize:modernize | canonical_candidate | — |
@@ -237,15 +239,18 @@ rather than asserting the tidier claim that the family answers once. When #9189
 resolves the duplication that fixture must fail, forcing this ledger to be
 updated alongside the routing change.
 
-### Three CodeActionKinds are serializable but unreachable
+### Four CodeActionKinds are serializable but unreachable
 
 `handle_code_action` maps `InternalCodeActionKind::Refactor` to `"refactor"`,
-`RefactorInline` to `"refactor.inline"`, and `Source` to `"source"`, but no
-producer anywhere in the workspace constructs any of the three. Refactor and
-RefactorInline were dead mappings from the start; `Source` lost its last
-producer when the #17304 repair removed the `test_generator` generation. All
-three kinds are dead mappings: reachable in the serializer, unreachable in
-practice.
+`RefactorInline` to `"refactor.inline"`, `Source` to `"source"`, and
+`RefactorExtract` to `"refactor.extract"`, but no producer anywhere in the
+workspace constructs any of the four. Refactor and RefactorInline were dead
+mappings from the start; `Source` lost its last producer when the #17304
+repair removed the `test_generator` generation; `RefactorExtract` lost its
+last producer when the #16577 repair moved the extract generations onto the
+typed `refactor.extract.variable` and `refactor.extract.subroutine` kinds.
+All four kinds are dead mappings: reachable in the serializer, unreachable
+in practice.
 
 They are recorded in `unreachable_kinds` rather than left implicit, because the
 drift check requires every kind literal in the handler to be either a
@@ -302,7 +307,7 @@ The corpus covers the outcome classes #9188 requires:
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
-| recorded gap (`NOT_PROVEN`) | the remaining `text_fallback` row, `refactor.extract:subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract:basic_fallback` carry a `proof_gap` instead of a parity fixture — four rows |
+| recorded gap (`NOT_PROVEN`) | the remaining `text_fallback` row, `refactor.extract.subroutine` on both the enhanced and the original generation, and the remaining variable arm in `refactor.extract.variable:basic_fallback` carry a `proof_gap` instead of a parity fixture — four rows |
 
 Every `cac-parity-*` id named anywhere on this page is checked against the
 ledger's routes. This table previously named a fixture that had been renamed,

@@ -456,21 +456,30 @@ impl LspServer {
                 // Calculate actual line numbers from document content
                 let start_line = offset_to_line(doc_text, range.start_offset);
                 let end_line = offset_to_line(doc_text, range.end_offset);
-                let lsp_end_line = match lsp_inclusive_multiline_end_line(start_line, end_line) {
-                    Some(end) => Some(end),
-                    None => {
-                        // A span rejected by the inclusive filter may still
-                        // genuinely cover multiple lines when its end offset
-                        // sits at the start of its last line (heredoc bodies
-                        // end at content, not at line starts). Count the
-                        // newlines inside the span: any newline means real
-                        // multiline content that must not be dropped
-                        // (#15430 residue).
-                        let newlines = doc_text
-                            .get(range.start_offset..range.end_offset)
-                            .map(|span| span.matches('\n').count())
-                            .unwrap_or(0);
-                        (newlines >= 1).then_some(start_line + newlines)
+                // Imports spans end at the last use/no statement, so their
+                // end line is content to keep inside the fold, not a closing
+                // brace line to keep visible (#18113).
+                let is_imports =
+                    matches!(range.kind, Some(crate::folding::FoldingRangeKind::Imports));
+                let lsp_end_line = if is_imports && end_line > start_line {
+                    Some(end_line)
+                } else {
+                    match lsp_inclusive_multiline_end_line(start_line, end_line) {
+                        Some(end) => Some(end),
+                        None => {
+                            // A span rejected by the inclusive filter may still
+                            // genuinely cover multiple lines when its end offset
+                            // sits at the start of its last line (heredoc bodies
+                            // end at content, not at line starts). Count the
+                            // newlines inside the span: any newline means real
+                            // multiline content that must not be dropped
+                            // (#15430 residue).
+                            let newlines = doc_text
+                                .get(range.start_offset..range.end_offset)
+                                .map(|span| span.matches('\n').count())
+                                .unwrap_or(0);
+                            (newlines >= 1).then_some(start_line + newlines)
+                        }
                     }
                 };
                 if let Some(lsp_end_line) = lsp_end_line {

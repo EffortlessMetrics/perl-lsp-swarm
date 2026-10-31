@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Parser-error diagnostics now underline complete Unicode characters, including astral characters after multiline edits.
+time: 2026-10-19T01:08:19Z
+custom:
+  PR: "18147"
+  Slug: parser-diagnostic-utf16-range
+  Breaking: "no"

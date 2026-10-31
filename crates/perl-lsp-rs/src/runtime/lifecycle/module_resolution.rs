@@ -1037,7 +1037,7 @@ mod tests {
             .to_string();
         let report = collect_module_uri_candidates_with_effective_inc(
             "Alias",
-            &[alias_uri.clone()],
+            std::slice::from_ref(&alias_uri),
             &[],
             &[perl_module::IncRoot {
                 kind: IncRootKind::ExternalAbsolute,
