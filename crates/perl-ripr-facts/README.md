@@ -148,7 +148,8 @@ PR 6, plus `file_proximity`) and dynamic boundaries are emitted. Block
 `eval { ... }` in a test file is not a boundary (it only traps the exception
 the test observes, and `like($@, MATCHER)` is graded like the other exception
 matchers); block `eval` in a source file and every string form
-(`eval $code`, `eval "..."`, `eval '...'`, `eval(`) still emit
+(`eval $code`, `eval "..."`, `eval '...'`, `eval(`, bare `eval;`, `evalbytes`,
+`CORE::eval`) still emit
 `eval_or_string_code` and fail closed. The
 canonical `perl-ripr-facts ripr-facts` CLI accepts `--diff
 <cwd-relative-file>` and supplies that unified diff text to the packet
