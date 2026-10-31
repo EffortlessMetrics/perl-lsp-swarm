@@ -3920,7 +3920,9 @@ pub fn perl_lsp_rs_core::providers::FoldingRangeKind::fmt(&self, f: &mut core::f
 pub struct perl_lsp_rs_core::providers::folding::FoldingRange
 pub struct perl_lsp_rs_core::providers::folding::FoldingRange
 pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::folding::FoldingRange::start_offset: usize
@@ -5251,6 +5253,7 @@ pub fn perl_lsp_rs_core::providers::FoldingRangeKind::clone(&self) -> perl_lsp_r
 pub fn perl_lsp_rs_core::providers::FoldingRangeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange
 pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::end_offset: usize
+pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::end_offset_on_content_line: bool
 pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::kind: core::option::Option<perl_lsp_rs_core::providers::FoldingRangeKind>
 pub perl_lsp_rs_core::providers::lsp_compat::folding::FoldingRange::start_offset: usize
 pub fn perl_lsp_rs_core::providers::FoldingRange::clone(&self) -> perl_lsp_rs_core::providers::FoldingRange
