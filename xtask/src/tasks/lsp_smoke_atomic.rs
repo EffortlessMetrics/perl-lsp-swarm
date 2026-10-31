@@ -240,10 +240,11 @@ pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
             let executable = executable.unwrap_or("<unresolved-prebuilt-test-binary>");
             let exact = if spec.exact { " --exact" } else { "" };
             // Plain double quotes do not stop `$` expansion in the native
-            // command validator; quote through shlex when the path needs it.
-            let quoted = match shlex::try_quote(executable) {
-                Ok(quoted) if quoted.as_ref() != executable => quoted.into_owned(),
-                _ => format!("\"{executable}\""),
+            // command validator; single-quote paths that need protection.
+            let quoted = if executable.chars().any(|c| matches!(c, '$' | '`' | '"' | '\'' | '\\')) {
+                format!("'{}'", executable.replace('\'', "'\\''"))
+            } else {
+                format!("\"{executable}\"")
             };
             format!("{quoted} {filter}{exact} --test-threads=1")
         }
