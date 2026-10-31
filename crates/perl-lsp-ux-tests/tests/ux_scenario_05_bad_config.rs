@@ -293,6 +293,80 @@ fn scenario_05_malformed_project_config_emits_one_bounded_warning_naming_the_fil
     );
 }
 
+#[test]
+fn scenario_05_repeated_opens_stay_at_one_bounded_config_warning() {
+    run_ux_scenario_with_evidence_class(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_05_repeated_opens_stay_at_one_bounded_config_warning",
+        UxCiTier::Pr,
+        Some(UxComponent::Infra),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+
+            let harness = UxHarness::new(config_with_malformed_project_toml())
+                .context("Failed to create UX harness with malformed .perl-lsp.toml")?;
+
+            // First open: the didOpen-time single-file config refresh reads the
+            // malformed `.perl-lsp.toml` and surfaces the bounded Warning
+            // naming the file.
+            harness
+                .open_file("config_repeat_a.pl", "my $x = 1;\n")
+                .context("first didOpen should succeed even with a malformed project config")?;
+            let observed = harness
+                .client
+                .wait_for_events(CONFIG_WARNING_WAIT, |events| {
+                    events
+                        .iter()
+                        .any(|event| {
+                            matches!(event, LspEvent::WindowMessage { message, .. }
+                                if message.contains(".perl-lsp.toml"))
+                        })
+                        .then_some(())
+                })
+                .map_err(|end| anyhow::anyhow!("first open produced no config warning: {end:?}"));
+            recorder.check("config warning observed after the first open", observed.is_ok())?;
+            observed?;
+
+            // Two more open opportunities in the SAME session re-run
+            // single-file discovery against the unchanged broken file. The
+            // session must stay at exactly one warning: the stable condition
+            // must not re-interrupt the user on every open (#16548, #16666).
+            // The hover round-trip both proves the server
+            // stayed responsive across the repeated opens and synchronizes the
+            // final count behind the last didOpen.
+            harness
+                .open_file("config_repeat_b.pl", "my $y = 2;\n")
+                .context("second didOpen should succeed")?;
+            harness
+                .open_file("config_repeat_c.pl", "my $z = 3;\n")
+                .context("third didOpen should succeed")?;
+            harness
+                .hover("config_repeat_c.pl", 0, 3)
+                .context("server became unresponsive across repeated opens of a broken config")?;
+            recorder.check("hover round-trip completed after repeated opens", true)?;
+
+            let events = harness.client.peek_events();
+            let warnings = config_message_events(&events);
+            recorder
+                .check("repeated opens stay at exactly one config warning", warnings.len() == 1)?;
+            anyhow::ensure!(
+                warnings.len() == 1,
+                "an unchanged broken config must warn once per session across repeated \
+                 opens, got {} .perl-lsp.toml messages: {warnings:?}",
+                warnings.len()
+            );
+
+            harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
+    );
+}
+
 #[cfg(test)]
 mod contract_tests {
     use super::{ensure_no_panic_trace, protocol_error_message};
