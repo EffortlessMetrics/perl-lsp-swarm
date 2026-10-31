@@ -1296,7 +1296,8 @@ semantic_definition_tests::definition_finds_scalar_variable_declaration --exact 
     #[test]
     fn behavior_command_quotes_dollar_paths_without_expansion() {
         let spec = pinned_spec("semantic_definition/scalar_variable");
-        let command = command_line(&spec, Some("C:/work$tree/target/debug/deps/semantic_definition-test"));
+        let command =
+            command_line(&spec, Some("C:/work$tree/target/debug/deps/semantic_definition-test"));
         assert!(
             command.starts_with("'C:/work$tree/target/debug/deps/semantic_definition-test'"),
             "dollar paths must be single-quoted so the native validator sees no expansion: {command}"
