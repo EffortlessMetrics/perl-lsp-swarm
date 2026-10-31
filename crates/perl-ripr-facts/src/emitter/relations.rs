@@ -74,29 +74,39 @@ pub(crate) fn emit_relations_and_discriminators(
     pm_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Parse each candidate `.pm` once, hoisted above the test loop below —
-    // NOT once per (test, pm) pair. `extract_package_name` stays the existing
+    // NOT once per (test, pm) pair. `extract_package_names` stays the existing
     // string scan (out of scope); only the declared-sub proof is parser-backed.
     // The same parse also resolves the package's real `owners[]` `owner_id`
     // (#3342) so a relation can carry a resolvable cross-reference; `None` means
     // the parse exposed no matching container decl (unparsed/name-mismatched).
-    type PmFact = (String, String, std::collections::BTreeMap<String, String>, Option<String>);
+    // One entry per `package NAME;` statement, not just the first: a module may
+    // declare a helper or exception package ahead of its own (`Forms::Error`
+    // before `Forms`), and a package-qualified call names its package
+    // unambiguously. `primary` marks the first package, the only one that also
+    // takes the path-proximity heuristic.
+    type PmFact =
+        (String, String, std::collections::BTreeMap<String, String>, Option<String>, bool);
     let pm_facts: Vec<PmFact> = pm_files
         .iter()
-        .map(|(pm_path, pm_content)| {
-            let package_name = extract_package_name(pm_content);
-            let (declared_sub_owner_ids, owner_id) = if package_name.is_empty() {
-                (std::collections::BTreeMap::new(), None)
-            } else {
-                match Parser::new(pm_content).parse() {
-                    Ok(ast) => (
-                        declared_sub_owner_ids(&ast, pm_path, &package_name),
-                        resolve_package_owner_id(&ast, pm_path, &package_name),
-                    ),
-                    // parse failure → cannot prove calls or resolve an owner
-                    Err(_) => (std::collections::BTreeMap::new(), None),
-                }
-            };
-            (pm_path.clone(), package_name, declared_sub_owner_ids, owner_id)
+        .flat_map(|(pm_path, pm_content)| {
+            let package_names = extract_package_names(pm_content);
+            // Parse once per file; a parse failure cannot prove calls or resolve an owner.
+            let ast =
+                if package_names.is_empty() { None } else { Parser::new(pm_content).parse().ok() };
+            package_names
+                .into_iter()
+                .enumerate()
+                .map(|(index, package_name)| {
+                    let (declared_sub_owner_ids, owner_id) = match &ast {
+                        Some(ast) => (
+                            declared_sub_owner_ids(ast, pm_path, &package_name),
+                            resolve_package_owner_id(ast, pm_path, &package_name),
+                        ),
+                        None => (std::collections::BTreeMap::new(), None),
+                    };
+                    (pm_path.clone(), package_name, declared_sub_owner_ids, owner_id, index == 0)
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -122,7 +132,8 @@ pub(crate) fn emit_relations_and_discriminators(
         let test_file_id = test["file_id"].as_str().unwrap_or("");
         let test_path = test["name"].as_str().unwrap_or("");
 
-        for (pm_path, package_name, declared_sub_owner_ids, package_owner_id) in &pm_facts {
+        for (pm_path, package_name, declared_sub_owner_ids, package_owner_id, primary) in &pm_facts
+        {
             if package_name.is_empty() {
                 continue;
             }
@@ -134,6 +145,7 @@ pub(crate) fn emit_relations_and_discriminators(
                     t_call_facts.get(test_path),
                     pm_path,
                     package_name,
+                    *primary,
                 )
             {
                 // #3342: a relation's `owner_id` must resolve to a real
@@ -193,17 +205,22 @@ pub(crate) fn emit_relations_and_discriminators(
     (relations, limitations)
 }
 
-/// Extract the package name from Perl source (first `package Foo::Bar;` line).
-fn extract_package_name(content: &str) -> String {
+/// Every distinct `package Foo::Bar;` name in source order (the first is the
+/// file's primary package).
+fn extract_package_names(content: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("package ")
             && let Some(name_end) = rest.find(';')
         {
-            return rest[..name_end].trim().to_string();
+            let name = rest[..name_end].trim().to_string();
+            if !name.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
         }
     }
-    String::new()
+    names
 }
 
 fn test_references_package(
@@ -211,6 +228,7 @@ fn test_references_package(
     facts: Option<&TestCallFacts>,
     pm_path: &str,
     package_name: &str,
+    primary: bool,
 ) -> bool {
     facts.is_some_and(|facts| {
         facts.used_modules.contains(package_name)
@@ -218,7 +236,7 @@ fn test_references_package(
                 .calls
                 .iter()
                 .any(|call| call.package_qualifier.as_deref() == Some(package_name))
-    }) || file_references_package(test_path, &[], pm_path)
+    }) || (primary && file_references_package(test_path, &[], pm_path))
 }
 
 /// Check if a test file references a .pm file (fallback heuristic: same basename).
@@ -470,12 +488,22 @@ mod tests {
     #[test]
     fn extract_package_name_from_pm_content() {
         let content = "package My::App;\nuse strict;\n1;";
-        assert_eq!(extract_package_name(content), "My::App");
+        assert_eq!(extract_package_names(content), vec!["My::App".to_string()]);
+    }
+
+    #[test]
+    fn extract_package_names_lists_every_package_in_source_order() {
+        let content =
+            "package Forms::Error;\nsub new {}\npackage Forms;\npackage Forms::Error;\n1;";
+        assert_eq!(
+            extract_package_names(content),
+            vec!["Forms::Error".to_string(), "Forms".to_string()]
+        );
     }
 
     #[test]
     fn extract_package_name_returns_empty_when_no_package() {
-        assert_eq!(extract_package_name("use strict;\n1;"), "");
+        assert!(extract_package_names("use strict;\n1;").is_empty());
     }
 
     /// Build `TestCallFacts` directly from source, mirroring what
