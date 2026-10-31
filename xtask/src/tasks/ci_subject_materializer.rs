@@ -233,7 +233,7 @@ fn merge_tree(root: &Path, input: &SubjectInput) -> Result<String> {
 }
 
 fn deterministic_git_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = xtask::git_environment::isolate(Command::new("git"));
     command
         .current_dir(root)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -340,8 +340,11 @@ fn git_version(root: &Path) -> Result<String> {
 }
 
 fn git_stdout_bounded(root: &Path, args: &[&str]) -> Result<String> {
-    let output = run_git_bounded(Command::new("git").args(args).current_dir(root), None)
-        .with_context(|| format!("running git {}", args.join(" ")))?;
+    let output = run_git_bounded(
+        xtask::git_environment::isolate(Command::new("git")).args(args).current_dir(root),
+        None,
+    )
+    .with_context(|| format!("running git {}", args.join(" ")))?;
     if !output.status.success() {
         return Err(eyre!(
             "git {} failed: {}",
@@ -419,7 +422,10 @@ mod tests {
     use color_eyre::eyre::{Result, ensure, eyre};
 
     fn git(root: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(root).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(root)
+            .output()?;
         if !output.status.success() {
             return Err(eyre!("git {} failed", args.join(" ")));
         }

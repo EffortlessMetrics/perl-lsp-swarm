@@ -2712,6 +2712,12 @@ pub(crate) fn run_shell_command_with_timeout_in(
         .map_err(|report| GateShellError { report, child_started })?;
 
     let mut process = shell_command_process(command, timeout_secs);
+    // Test fixtures select their own repositories. Hook-local Git inputs must
+    // not redirect their init/config/index operations into the real checkout.
+    // Keep the parent's context, and preserve it for staged commit-check gates.
+    if is_cargo_test_command(command) {
+        process = crate::git_environment::isolate(process);
+    }
     if let Some(dir) = current_dir {
         process.current_dir(dir);
     }
@@ -4058,6 +4064,202 @@ mod tests {
             color_eyre::eyre::bail!("git {:?} failed with status {}", args, output.status);
         }
         Ok(String::from_utf8(output.stdout)?)
+    }
+
+    fn fixture_snapshot(root: &Path) -> Result<BTreeMap<std::path::PathBuf, Vec<u8>>> {
+        let mut files = BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                let path = entry.path();
+                if entry.file_type()?.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.insert(path.strip_prefix(root)?.to_path_buf(), fs::read(path)?);
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    const GATE_CONTEXT_ROOT: &str = "XTASK_GATE_CONTEXT_PROBE_ROOT";
+    const GATE_CONTEXT_MODE: &str = "XTASK_GATE_CONTEXT_PROBE_MODE";
+    const GATE_CONTEXT_TEST: &str =
+        "tasks::gates::tests::test_gate_children_isolate_git_and_preserve_staged_context";
+    const GATE_CONTEXT_PROBE: &str = "tasks::gates::tests::gate_context_child_probe";
+
+    // Only the exactly selected fake-Cargo child performs this probe. Its raw
+    // Git commands intentionally do not use the new Git helper: the gate's
+    // process boundary, rather than fixture implementation, must isolate them.
+    #[test]
+    fn gate_context_child_probe() -> Result<()> {
+        use color_eyre::eyre::ensure;
+        let Some(root) = std::env::var_os(GATE_CONTEXT_ROOT) else {
+            return Ok(());
+        };
+        let root = std::path::PathBuf::from(root);
+        let caller = root.join("caller");
+        let mode = std::env::var(GATE_CONTEXT_MODE)?;
+        if mode == "staged" {
+            ensure!(
+                std::env::var_os("GIT_INDEX_FILE").as_deref()
+                    == Some(caller.join(".git/index").as_os_str()),
+                "staged gate lost its caller index"
+            );
+            let output = Command::new("git").args(["write-tree"]).current_dir(&caller).output()?;
+            ensure!(output.status.success());
+            ensure!(
+                String::from_utf8(output.stdout)?.trim()
+                    == fs::read_to_string(root.join("staged-tree"))?,
+                "staged gate selected a different index"
+            );
+        } else {
+            let foreign = root.join("foreign");
+            fs::create_dir(&foreign)?;
+            for args in [vec!["init", "--quiet"], vec!["config", "user.name", "Foreign Fixture"]] {
+                let output = Command::new("git").args(&args).current_dir(&foreign).output()?;
+                ensure!(output.status.success(), "raw fixture Git {args:?} failed");
+            }
+            let output = Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .current_dir(&foreign)
+                .output()?;
+            ensure!(output.status.success());
+            let observed = std::path::PathBuf::from(String::from_utf8(output.stdout)?.trim());
+            ensure!(observed.canonicalize()? == foreign.canonicalize()?, "wrong fixture root");
+            ensure!(std::env::var_os("GIT_INDEX_FILE").is_none(), "test retained hook index");
+        }
+        fs::write(root.join("probe-complete"), mode)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_gate_children_isolate_git_and_preserve_staged_context() -> Result<()> {
+        use color_eyre::eyre::ensure;
+        if let Some(root) = std::env::var_os(GATE_CONTEXT_ROOT) {
+            let root = std::path::PathBuf::from(root);
+            let command = fs::read_to_string(root.join("command"))?;
+            let mode = std::env::var(GATE_CONTEXT_MODE)?;
+            let log_path = root.join("gate.log");
+            let exit = if mode == "baseline" {
+                // Controlled wrong implementation: the same native process
+                // factory without the test-environment boundary.
+                let log = fs::File::create(&log_path)?;
+                let status = super::shell_command_process(&command, 30)
+                    .current_dir(root.join("commands"))
+                    .stdout(std::process::Stdio::from(log.try_clone()?))
+                    .stderr(std::process::Stdio::from(log))
+                    .status()?;
+                status.code().ok_or_else(|| color_eyre::eyre::eyre!("probe exited by signal"))?
+            } else {
+                let execution = super::run_shell_command_with_timeout_in(
+                    &command,
+                    &log_path,
+                    30,
+                    Some(&root.join("commands")),
+                )
+                .map_err(|error| error.report)?;
+                ensure!(!execution.timed_out, "probe timed out");
+                execution.exit_code
+            };
+            fs::write(root.join("exit-code"), exit.to_string())?;
+            fs::write(root.join("driver-complete"), "done")?;
+            return Ok(());
+        }
+
+        for mode in ["baseline", "test", "chained", "staged"] {
+            let temp = tempdir()?;
+            let root = temp.path();
+            let caller = root.join("caller");
+            fs::create_dir(&caller)?;
+            run_git(&caller, &["init", "--quiet"])?;
+            run_git(&caller, &["config", "user.name", "Caller Guardian"])?;
+            run_git(&caller, &["config", "user.email", "caller@example.invalid"])?;
+            run_git(&caller, &["config", "core.hooksPath", ".git/fixture-hooks"])?;
+            fs::write(caller.join("value.txt"), "base\n")?;
+            run_git(&caller, &["add", "."])?;
+            run_git(&caller, &["commit", "--quiet", "-m", "caller"])?;
+            fs::write(caller.join("value.txt"), "staged\n")?;
+            run_git(&caller, &["add", "."])?;
+            fs::write(root.join("staged-tree"), run_git(&caller, &["write-tree"])?.trim())?;
+            fs::write(caller.join("value.txt"), "unstaged\n")?;
+            fs::write(caller.join("untracked.txt"), "unique content\n")?;
+            let before = fixture_snapshot(&caller)?;
+            let commands = root.join("commands");
+            fs::create_dir(&commands)?;
+            let executable = std::env::current_exe()?;
+            #[cfg(windows)]
+            let cargo = {
+                fs::write(
+                    commands.join("cargo.cmd"),
+                    format!(
+                        "@echo off\r\n\"{}\" --exact {GATE_CONTEXT_PROBE} --nocapture\r\nexit /b %ERRORLEVEL%\r\n",
+                        executable.display()
+                    ),
+                )?;
+                ".\\cargo.cmd"
+            };
+            #[cfg(not(windows))]
+            let cargo = {
+                use std::os::unix::fs::PermissionsExt;
+                let path = commands.join("cargo");
+                let quoted = executable.to_string_lossy().replace('\'', "'\\''");
+                fs::write(
+                    &path,
+                    format!(
+                        "#!/bin/sh\nexec '{quoted}' --exact {GATE_CONTEXT_PROBE} --nocapture\n"
+                    ),
+                )?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                "./cargo"
+            };
+            let command = if mode == "staged" {
+                format!("{cargo} xtask commit-check staged_tree_identity")
+            } else if mode == "chained" {
+                #[cfg(windows)]
+                let setup = "cmd /C exit 0";
+                #[cfg(not(windows))]
+                let setup = "true";
+                format!("{setup} && {cargo} test")
+            } else {
+                format!("{cargo} test")
+            };
+            fs::write(root.join("command"), command)?;
+            let mut driver = Command::new(&executable);
+            driver.args(["--exact", GATE_CONTEXT_TEST, "--nocapture"]);
+            driver = crate::git_environment::isolate(driver);
+            driver
+                .env(GATE_CONTEXT_ROOT, root)
+                .env(GATE_CONTEXT_MODE, mode)
+                .env("GIT_DIR", caller.join(".git"))
+                .env("GIT_COMMON_DIR", caller.join(".git"))
+                .env("GIT_WORK_TREE", &caller)
+                .env("GIT_INDEX_FILE", caller.join(".git/index"));
+            let output = driver.output()?;
+            ensure!(
+                output.status.success(),
+                "{mode}: driver failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            ensure!(root.join("driver-complete").is_file(), "{mode}: driver did not execute");
+            let exit = fs::read_to_string(root.join("exit-code"))?;
+            if mode == "baseline" {
+                ensure!(exit != "0", "wrong implementation unexpectedly passed");
+                ensure!(fixture_snapshot(&caller)? != before, "negative control was vacuous");
+                eprintln!("controlled wrong boundary failed and changed disposable caller config");
+            } else {
+                ensure!(
+                    exit == "0",
+                    "{mode}: gate failed: {}",
+                    fs::read_to_string(root.join("gate.log"))?
+                );
+                ensure!(fixture_snapshot(&caller)? == before, "{mode}: caller changed");
+                ensure!(root.join("probe-complete").is_file(), "{mode}: probe did not execute");
+            }
+        }
+        Ok(())
     }
 
     #[test]

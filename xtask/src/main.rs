@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 
 mod allocation_tracker;
 mod cli;
+use xtask::git_environment;
+#[cfg(test)]
+#[path = "../tests/git_test_support.rs"]
+mod git_test_support;
 mod tasks;
 #[cfg(test)]
 mod test_support;
@@ -55,23 +59,23 @@ use tasks::{
     kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
     memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
     native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
-    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
-    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
-    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, standalone_diagnostics, standalone_vectors, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    no_publish_side_effects, oneliner_capability_matrix, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
+    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
+    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
+    supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
+    targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
+    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
+    workflow_authority_inventory, workflow_policy_lint, workflow_trigger_lint,
+    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -417,6 +421,20 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Validate a `no_publish_side_effects.v1` surface inventory against
+    /// caller-supplied release-topology bytes (#9414; self-consistent
+    /// projection, canonical admission out of scope).
+    #[command(name = "no-publish-side-effects")]
+    NoPublishSideEffects {
+        /// Path to the inventory JSON document.
+        #[arg(long)]
+        inventory: std::path::PathBuf,
+        /// Path to the caller-supplied release-topology.json artifact
+        /// (canonical admission out of scope).
+        #[arg(long)]
+        topology: std::path::PathBuf,
     },
 
     /// Reconcile `policy/tree-sitter-compat-inventory.toml` against the real
@@ -2192,18 +2210,20 @@ enum Commands {
         version: String,
     },
 
-    /// Publish crates to crates.io
+    /// Non-publishing package rehearsal; does not establish release readiness
+    ///
+    /// Direct publication is disabled. Follow the reviewed release transaction
+    /// (#13768 / #6055) through `release-orchestration.yml`; see docs/release/RUNBOOK.md.
     PublishCrates {
-        /// Skip confirmation
-        #[arg(long)]
-        yes: bool,
-
-        /// Dry run (don't actually publish)
+        /// Dry run (nothing is published)
         #[arg(long)]
         dry_run: bool,
     },
 
-    /// Dispatch the "Publish to crates.io" workflow for a release
+    /// Legacy workflow dispatch request; does not verify publication or completion
+    ///
+    /// This helper does not supply sealed-handoff eligibility inputs. Use the
+    /// reviewed release transaction (#13768 / #6055); run correlation is #16799.
     PublishRelease {
         /// Release version (for example 0.x.y)
         version: String,
@@ -2246,16 +2266,11 @@ enum Commands {
         date: Option<String>,
     },
 
-    /// Publish VSCode extension to marketplace
-    PublishVscode {
-        /// Skip confirmation
-        #[arg(long)]
-        yes: bool,
-
-        /// PAT token for authentication
-        #[arg(long)]
-        token: Option<String>,
-    },
+    /// Refuse direct marketplace publication (workflow-gated)
+    ///
+    /// Direct local publication is disabled: the gated
+    /// `publish-extension.yml` workflow owns marketplace publication.
+    PublishVscode,
 
     /// Verify transitive normal-dep closure of published crates contains only publishable deps
     PublishClosure {
@@ -6074,6 +6089,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
+        Commands::NoPublishSideEffects { inventory, topology } => {
+            no_publish_side_effects::run(inventory, topology)
+        }
         Commands::CompatInventory { check } => compat_inventory::run(check),
         Commands::KwaliteeInventory { check, scaffold, root } => {
             kwalitee_namespace_inventory::run(check, scaffold, root)
@@ -7001,7 +7019,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             test_lsp::run(create_only, test, cleanup)
         }
         Commands::BumpVersion { version } => bump_version::run(version),
-        Commands::PublishCrates { yes, dry_run } => publish::publish_crates(yes, dry_run),
+        Commands::PublishCrates { dry_run } => publish::publish_crates(dry_run),
         Commands::PublishRelease { version, dry_run, git_ref } => {
             publish::publish_release(version, dry_run, git_ref)
         }
@@ -7010,7 +7028,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::HookTests => hook_checks::run_hook_tests(),
         Commands::ForbidFatalConstructs { args } => forbid_fatal_constructs::run(args),
         Commands::CiHygiene { command, args } => ci_hygiene::run(command, args),
-        Commands::PublishVscode { yes, token } => publish::publish_vscode(yes, token),
+        Commands::PublishVscode => publish::publish_vscode(),
         Commands::PublishClosure { crate_name } => publish_closure::run(crate_name),
         Commands::PublishedCrateCount => count_ratchet::run(),
         Commands::PublishManifestCheck => publish_manifest_check::run(),

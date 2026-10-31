@@ -170,6 +170,19 @@ pub enum GotoTargetForm {
     Expr,
 }
 
+/// The source operator that produced a regex node. `Qr` constructs a regex
+/// value; the other forms match against Perl's default topic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexSurfaceForm {
+    /// `qr//` constructs a Regexp value without matching a topic.
+    Qr,
+    /// `m//` matches Perl's default topic unless explicitly bound.
+    MatchOperator,
+    /// `/.../` matches Perl's default topic unless explicitly bound.
+    BarePattern,
+}
+
 /// Stable identifier for a named child relationship in the syntax tree.
 ///
 /// Field identifiers are represented by canonical static names so the AST,
@@ -1250,6 +1263,8 @@ pub enum NodeKind {
 
     /// Regex literal: `/pattern/modifiers` or `qr/pattern/modifiers`
     Regex {
+        /// Source operator, independent of pattern spelling and delimiters.
+        form: RegexSurfaceForm,
         /// Regular expression pattern
         pattern: String,
         /// Replacement string (for s/// when parsed as regex)
@@ -2178,6 +2193,7 @@ mod tests {
                 args: vec![],
             },
             NodeKind::Regex {
+                form: RegexSurfaceForm::BarePattern,
                 pattern: String::new(),
                 replacement: None,
                 modifiers: String::new(),
