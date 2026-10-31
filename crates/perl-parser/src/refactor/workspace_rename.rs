@@ -73,7 +73,11 @@ pub struct BackupInfo {
 /// Configuration for workspace-wide rename operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceRenameConfig {
-    /// Enable best-effort backup restoration after a write failure (default: true)
+    /// Retained config flag; `apply_edits` does not read it.
+    ///
+    /// Best-effort backup restoration after a write failure runs whenever
+    /// `WorkspaceRenameResult.backup_info` is present, including when this flag is
+    /// `false`.
     pub atomic_mode: bool,
 
     /// Create backups before modification (default: true)
