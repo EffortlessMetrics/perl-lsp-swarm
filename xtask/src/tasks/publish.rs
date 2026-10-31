@@ -1,7 +1,7 @@
 //! Publishing functionality for crates and VSCode extension
 
 use crate::utils::{project_root, run_cargo_metadata};
-use color_eyre::eyre::{bail, eyre, Result};
+use color_eyre::eyre::{Result, bail, eyre};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
