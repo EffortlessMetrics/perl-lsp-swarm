@@ -268,10 +268,18 @@ assert_contains "guard: missing cargo message names the requirement" \
 # silently changing which executable the calling entrypoint uses.
 HIDDEN_HOME="${TMPDIR_BASE}/hidden cargo"
 mkdir -p "${HIDDEN_HOME}/bin"
-printf '#!/bin/sh\ntouch "%s"\n' "${TMPDIR_BASE}/hidden-ran" > "${HIDDEN_HOME}/bin/cargo"
+printf '#!/bin/sh\n: > "$HIDDEN_MARKER"\n' > "${HIDDEN_HOME}/bin/cargo"
 chmod +x "${HIDDEN_HOME}/bin/cargo"
+# Prove the sentinel works in the same empty PATH environment.
+env -i PATH="${TMPDIR_BASE}/empty-path" HIDDEN_MARKER="${TMPDIR_BASE}/hidden-ran" "${HIDDEN_HOME}/bin/cargo"
+if [[ -f "${TMPDIR_BASE}/hidden-ran" ]]; then
+  pass "guard: off-PATH sentinel creates marker with empty PATH"
+else
+  fail "guard: off-PATH sentinel failed to create marker"
+fi
+rm -f "${TMPDIR_BASE}/hidden-ran"
 code=0
-env -i PATH="${TMPDIR_BASE}/empty-path" CARGO_HOME="$HIDDEN_HOME" "$(command -v bash)" \
+env -i PATH="${TMPDIR_BASE}/empty-path" CARGO_HOME="$HIDDEN_HOME" HIDDEN_MARKER="${TMPDIR_BASE}/hidden-ran" "$(command -v bash)" \
   -c ". \"$LIB\"; cargo_toolchain_guard" 2> "${TMPDIR_BASE}/hidden.err" || code=$?
 if [[ "$code" -eq 78 && ! -e "${TMPDIR_BASE}/hidden-ran" ]]; then
   pass "guard: off-PATH Cargo is reported without execution or implicit selection"
