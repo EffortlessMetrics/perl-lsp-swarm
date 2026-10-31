@@ -23,7 +23,6 @@ The native critic is configured by the `[critic]` table in `.perl-lsp.toml`
 |-----|---------|---------|
 | `[critic] engine` | `native` | `native` (built-in) or `legacy` (external `perlcritic`). |
 | `[critic] profile` | `recommended` | Base rule set: `recommended` (16 rules) or `strict` (all 32). |
-
 | `[critic] include` | `[]` | **Whitelist, resolved against the full rule catalog.** When non-empty, exactly the listed rule IDs run. A listed rule that the profile does not contain is pulled in from the full catalog, so `include` can enable a strict-only rule without switching profile. Unknown IDs match nothing and are warned about at config load. |
 | `[critic] exclude` | `[]` | Rule IDs to remove from the selected profile. |
 
@@ -64,13 +63,9 @@ always `WARNING`.
 ## Profiles
 
 `profile` selects the active rule set. **Recommended** is the balanced
-default (16 rules). **Strict** is a strict superset — the same 16 plus 13 more
-(29 total). `include` (whitelist) / `exclude` (blacklist) then narrow that set
-by rule ID. `exclude` only removes; `include` resolves against the full 29-rule
 default (16 rules). **Strict** is a strict superset — the same 16 plus 16 more
 (32 total). `include` (whitelist) / `exclude` (blacklist) then narrow that set
 by rule ID. `exclude` only removes; `include` resolves against the full 32-rule
-
 catalog, so it can name a rule the profile does not contain.
 
 ## Rule matrix
@@ -109,11 +104,8 @@ but no shipped rule uses them.)
 | `native.syntax.unquoted_bareword` | Syntax | Stern (4) | WARNING | Bareword not allowed under `strict` | – | ✓ |
 | `native.documentation.require_pod_sections` | Documentation | Harsh (3) | WARNING | POD is missing a required `=head1` section | – | ✓ |
 | `native.syntax.prohibit_leading_zeros` | Syntax | Stern (4) | WARNING | Integer literal with a leading zero is octal | – | ✓ |
-| `native.maintainability.too_many_branches` | Maintainability | Stern (4) | WARNING | Subroutine exceeds 10 branch points (if/elsif/unless/while/until/for/foreach/ternary/when/statement modifiers; else/default and `&&`/`\|\|` not counted) | – | ✓ |
-
-**Recommended profile** (16 rules): the first 16 rows above (through
-`native.security.system_exec`) — the security- and correctness-critical set.
 | `native.maintainability.sub_too_long` | Maintainability | Stern (4) | WARNING | Subroutine body exceeds 50 lines | – | ✓ |
+| `native.maintainability.too_many_branches` | Maintainability | Stern (4) | WARNING | Subroutine exceeds 10 branch points (if/elsif/unless/while/until/for/foreach/ternary/when/statement modifiers; else/default and `&&`/`\|\|` not counted) | – | ✓ |
 | `native.maintainability.too_many_nested_blocks` | Maintainability | Stern (4) | WARNING | Blocks nested more than 4 levels deep in a subroutine | – | ✓ |
 | `native.maintainability.too_many_params` | Maintainability | Stern (4) | WARNING | Subroutine signature declares more than 5 parameters | – | ✓ |
 
