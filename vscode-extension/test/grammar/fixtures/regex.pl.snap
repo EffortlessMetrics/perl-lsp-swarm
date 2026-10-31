@@ -30,11 +30,8 @@
 #                     ^ source.perl
 #                      ^ source.perl string.regexp.replace.perl keyword.other.perl
 #                       ^ source.perl string.regexp.replace.perl
-#                        ^^^ source.perl string.regexp.replace.perl
-#                           ^^^ source.perl string.regexp.replace.perl
-#                              ^ source.perl
-#                               ^ source.perl keyword.operator.arithmetic.perl
-#                                ^^^ source.perl
+#                        ^^^^^^^^^ source.perl string.regexp.replace.perl
+#                                 ^^ source.perl
 >$str =~ tr/a-z/A-Z/;
 #^^^^ source.perl variable.other.scalar.perl
 #    ^ source.perl
@@ -43,12 +40,7 @@
 #       ^ source.perl
 #        ^^ source.perl string.regexp.replace.perl keyword.other.perl
 #          ^ source.perl string.regexp.replace.perl
-#           ^^^ source.perl string.regexp.replace.perl
-#              ^ source.perl string.regexp.replace.perl
-#               ^ source.perl
-#                ^ source.perl keyword.operator.arithmetic.perl
-#                 ^ source.perl
-#                  ^ source.perl keyword.operator.arithmetic.perl
+#           ^^^^^^^^ source.perl string.regexp.replace.perl
 #                   ^^ source.perl
 >my $compiled = qr/\d+\.\d+/x;
 #^^ source.perl keyword.other.perl
@@ -95,4 +87,145 @@
 #                               ^^^ source.perl
 >}
 #^^ source.perl
+>my $size = -s $file;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^ source.perl variable.other.scalar.perl
+#        ^ source.perl
+#         ^ source.perl keyword.operator.assignment.perl
+#          ^ source.perl
+#           ^ source.perl keyword.operator.arithmetic.perl
+#            ^^ source.perl
+#              ^^^^^ source.perl variable.other.scalar.perl
+#                   ^^ source.perl
+>if (-s $fh) { say "nonempty"; }
+#^^ source.perl keyword.control.perl
+#  ^^ source.perl
+#    ^ source.perl keyword.operator.arithmetic.perl
+#     ^^ source.perl
+#       ^^^ source.perl variable.other.scalar.perl
+#          ^^^^ source.perl
+#              ^^^ source.perl support.function.builtin.perl
+#                 ^ source.perl
+#                  ^ source.perl string.quoted.double.perl
+#                   ^^^^^^^^ source.perl string.quoted.double.perl
+#                           ^ source.perl string.quoted.double.perl
+#                            ^^^^ source.perl
+>my %h = (x => 1, y => 2);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^ source.perl variable.other.hash.perl
+#     ^ source.perl
+#      ^ source.perl keyword.operator.assignment.perl
+#       ^^ source.perl
+#         ^ source.perl keyword.operator.string.perl
+#          ^ source.perl
+#           ^^ source.perl keyword.operator.fat-comma.perl
+#             ^ source.perl
+#              ^ source.perl constant.numeric.integer.perl
+#               ^^^^ source.perl
+#                   ^^ source.perl keyword.operator.fat-comma.perl
+#                     ^ source.perl
+#                      ^ source.perl constant.numeric.integer.perl
+#                       ^^^ source.perl
+>$h{s} = 1;
+#^^ source.perl variable.other.scalar.perl
+#  ^^^^ source.perl
+#      ^ source.perl keyword.operator.assignment.perl
+#       ^ source.perl
+#        ^ source.perl constant.numeric.integer.perl
+#         ^^ source.perl
+>my %r = (s => 1, tr => 2, y => 3);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^ source.perl variable.other.hash.perl
+#     ^ source.perl
+#      ^ source.perl keyword.operator.assignment.perl
+#       ^^^^ source.perl
+#           ^^ source.perl keyword.operator.fat-comma.perl
+#             ^ source.perl
+#              ^ source.perl constant.numeric.integer.perl
+#               ^^^^^ source.perl
+#                    ^^ source.perl keyword.operator.fat-comma.perl
+#                      ^ source.perl
+#                       ^ source.perl constant.numeric.integer.perl
+#                        ^^^^ source.perl
+#                            ^^ source.perl keyword.operator.fat-comma.perl
+#                              ^ source.perl
+#                               ^ source.perl constant.numeric.integer.perl
+#                                ^^^ source.perl
+>s/cat/dog/;
+#^ source.perl string.regexp.replace.perl keyword.other.perl
+# ^ source.perl string.regexp.replace.perl
+#  ^^^^^^^^ source.perl string.regexp.replace.perl
+#          ^^ source.perl
+>$_ =~ s/^\s+|\s+$//g;
+#^^ source.perl variable.language.perl
+#  ^ source.perl
+#   ^ source.perl keyword.operator.assignment.perl
+#    ^ source.perl keyword.operator.bitwise.perl
+#     ^ source.perl
+#      ^ source.perl string.regexp.replace.perl keyword.other.perl
+#       ^ source.perl string.regexp.replace.perl
+#        ^^^^^^^^^^^^ source.perl string.regexp.replace.perl
+#                    ^^ source.perl
+>s{old}{new}g;
+#^ source.perl string.regexp.replace.perl keyword.other.perl
+# ^ source.perl string.regexp.replace.perl
+#  ^^^ source.perl string.regexp.replace.perl
+#     ^^^^^^^ source.perl string.regexp.replace.perl
+#            ^^ source.perl
+>s{a{b}c}{d}g;
+#^ source.perl string.regexp.replace.perl keyword.other.perl
+# ^ source.perl string.regexp.replace.perl
+#  ^ source.perl string.regexp.replace.perl
+#   ^ source.perl string.regexp.replace.perl
+#    ^ source.perl string.regexp.replace.perl
+#     ^ source.perl string.regexp.replace.perl
+#      ^ source.perl string.regexp.replace.perl
+#       ^^^^^ source.perl string.regexp.replace.perl
+#            ^^ source.perl
+>s#foo#bar#g;
+#^ source.perl string.regexp.replace.perl keyword.other.perl
+# ^ source.perl string.regexp.replace.perl
+#  ^^^^^^^^^ source.perl string.regexp.replace.perl
+#           ^^ source.perl
+>my $u = $text =~ s/x/y/gr;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^ source.perl variable.other.scalar.perl
+#     ^ source.perl
+#      ^ source.perl keyword.operator.assignment.perl
+#       ^ source.perl
+#        ^^^^^ source.perl variable.other.scalar.perl
+#             ^ source.perl
+#              ^ source.perl keyword.operator.assignment.perl
+#               ^ source.perl keyword.operator.bitwise.perl
+#                ^ source.perl
+#                 ^ source.perl string.regexp.replace.perl keyword.other.perl
+#                  ^ source.perl string.regexp.replace.perl
+#                   ^^^^^^ source.perl string.regexp.replace.perl
+#                         ^^ source.perl
+>my $q = $x / 2;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^ source.perl variable.other.scalar.perl
+#     ^ source.perl
+#      ^ source.perl keyword.operator.assignment.perl
+#       ^ source.perl
+#        ^^ source.perl variable.other.scalar.perl
+#          ^ source.perl
+#           ^ source.perl keyword.operator.arithmetic.perl
+#            ^ source.perl
+#             ^ source.perl constant.numeric.integer.perl
+#              ^^ source.perl
+>map {s/x/y/} @list;
+#^^^ source.perl support.function.builtin.perl
+#   ^^ source.perl
+#     ^ source.perl string.regexp.replace.perl keyword.other.perl
+#      ^ source.perl string.regexp.replace.perl
+#       ^^^^ source.perl string.regexp.replace.perl
+#           ^^ source.perl
+#             ^^^^^ source.perl variable.other.array.perl
+#                  ^^ source.perl
 >
