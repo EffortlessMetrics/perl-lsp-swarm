@@ -91,11 +91,63 @@ fn walk(node: &Node, out: &mut Vec<GradedCall>) {
                         nested_start: Some(inner.location.start),
                     });
                 }
+                // `like($@, MATCHER)` after an `eval { ... }` observes the
+                // trapped exception through the same matcher (#18498).
+                if let Some(first) = args.first()
+                    && matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "@")
+                {
+                    out.push(GradedCall {
+                        name: "like",
+                        start: node.location.start,
+                        grade: grade_matcher(args.get(1)),
+                        nested_start: None,
+                    });
+                }
             }
             _ => {}
         }
     }
     node.for_each_child(|child| walk(child, out));
+}
+
+/// For each `like($@, ...)` statement directly after an `eval { ... }`
+/// statement in the same block, the start byte of the `like` call and the
+/// source text of the trapped block (#18498). The oracle observes the error the
+/// block raised, so the callee names inside that block are what the oracle is
+/// about; the `like` call text itself names none of them.
+pub(crate) fn trapped_error_scopes(ast: &Node, source: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    collect_trapped(ast, source, &mut out);
+    out
+}
+
+fn statement_expr(node: &Node) -> &Node {
+    match &node.kind {
+        NodeKind::ExpressionStatement { expression } => expression,
+        _ => node,
+    }
+}
+
+fn collect_trapped(node: &Node, source: &str, out: &mut Vec<(usize, String)>) {
+    if let NodeKind::Program { statements } | NodeKind::Block { statements } = &node.kind {
+        let mut previous_eval: Option<&Node> = None;
+        for statement in statements {
+            let expr = statement_expr(statement);
+            if let (Some(eval), NodeKind::FunctionCall { name, args }) = (previous_eval, &expr.kind)
+                && name == "like"
+                && matches!(
+                    args.first().map(|arg| &arg.kind),
+                    Some(NodeKind::Variable { sigil, name }) if sigil == "$" && name == "@"
+                )
+                && let Some(text) = source.get(eval.location.start..eval.location.end)
+            {
+                out.push((expr.location.start, text.to_owned()));
+            }
+            previous_eval =
+                if matches!(expr.kind, NodeKind::Eval { .. }) { Some(expr) } else { None };
+        }
+    }
+    node.for_each_child(|child| collect_trapped(child, source, out));
 }
 
 /// The regex source between its delimiters. The parser keeps the delimiters in
@@ -204,6 +256,43 @@ mod tests {
             grades("like(dies { die 1 }, $re, 'n');"),
             [("like", MatcherGrade::Broad, true)]
         );
+    }
+
+    #[test]
+    fn like_over_the_trapped_error_is_graded_by_its_matcher() {
+        // #18498: `eval { ... }; like($@, MATCHER)` observes the exception.
+        for src in ["eval { die 1 }; like($@, qr/boom/, 'n');", "eval { die 1 }; like($@, 'boom');"]
+        {
+            assert_eq!(grades(src), [("like", MatcherGrade::Pinned, false)], "src: {src}");
+        }
+        for src in [
+            "eval { die 1 }; like($@, qr/.*/, 'n');",
+            "eval { die 1 }; like($@, $re);",
+            "eval { die 1 }; like($@, qr//);",
+        ] {
+            assert_eq!(grades(src), [("like", MatcherGrade::Broad, false)], "src: {src}");
+        }
+    }
+
+    fn trapped(src: &str) -> Vec<String> {
+        let mut parser = Parser::new(src);
+        let ast = parser.parse().expect("test source parses");
+        trapped_error_scopes(&ast, src).into_iter().map(|(_, text)| text).collect()
+    }
+
+    #[test]
+    fn like_on_the_error_pairs_with_the_adjacent_eval_block() {
+        let found = trapped("eval { Foo::bar(0) };\nlike($@, qr/x/, 'n');");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].contains("Foo::bar"), "trapped text: {found:?}");
+        assert_eq!(trapped("eval { Foo::bar(0) }; like($@, 'x');").len(), 1);
+    }
+
+    #[test]
+    fn like_on_the_error_needs_the_eval_to_be_the_previous_statement() {
+        assert!(trapped("eval { Foo::bar(0) };\nmy $x = 1;\nlike($@, qr/x/);").is_empty());
+        assert!(trapped("like($@, qr/x/);").is_empty());
+        assert!(trapped("eval { Foo::bar(0) };\nlike($got, qr/x/);").is_empty());
     }
 
     #[test]

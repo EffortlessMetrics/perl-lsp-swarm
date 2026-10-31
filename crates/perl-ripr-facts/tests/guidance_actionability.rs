@@ -27,7 +27,7 @@ const ALL_FACT_CLASSES: &str = "files,owners,changes,tests,oracles,relations,dyn
 /// A2 bars from #17154: verify-command argv-parse >= 95%, anchors 100%.
 const MIN_ARGV_PARSE_RATE: f64 = 0.95;
 
-const APP_PM: &str = "package App;\nuse strict;\nuse warnings;\n\nsub discount {\n    my ($amount) = @_;\n    if ($amount > 100) {\n        return $amount * 0.9;\n    }\n    return $amount;\n}\n\nsub risky {\n    eval { die \"boom\" };\n    return 1;\n}\n\n1;\n";
+const APP_PM: &str = "package App;\nuse strict;\nuse warnings;\n\nsub discount {\n    my ($amount) = @_;\n    if ($amount > 100) {\n        return $amount * 0.9;\n    }\n    return $amount;\n}\n\nsub risky {\n    eval \"die 'boom'\";\n    return 1;\n}\n\n1;\n";
 
 const OTHER_PM: &str = "package Other;\n\nsub other_sub {\n    return 1;\n}\n\n1;\n";
 

@@ -6,10 +6,10 @@
       "confidence": "high",
       "file_id": "file:lib/App.pm",
       "kind": "eval_or_string_code",
-      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "provenance_refs": [],
       "range": {
-        "end_column": 10,
+        "end_column": 8,
         "end_line": 14,
         "start_column": 4,
         "start_line": 14
@@ -18,7 +18,7 @@
   ],
   "files": [
     {
-      "digest": "sha256:caa60376a6a6ae0039fae62095662e6d8e6ad92f49ae59844ea3340d77e568b1",
+      "digest": "sha256:e0169bbc5ee2746b4ad517d02fd7dc8a8199de3a9d9f615d963955ed8dbe1be6",
       "file_id": "file:lib/App.pm",
       "package_names": [
         "App"
@@ -90,11 +90,11 @@
   "limitations": [
     {
       "evidence_refs": [
-        "owner:lib/App.pm:sub:App::risky:163-215"
+        "owner:lib/App.pm:sub:App::risky:163-213"
       ],
       "kind": "eval_or_string_code",
       "limitation_id": "limitation:boundary:lib/App.pm:eval_or_string_code:1",
-      "message": "Dynamic boundary `eval {` detected in lib/App.pm; ripr fails closed on this boundary kind."
+      "message": "Dynamic boundary `eval <whitespace>` detected in lib/App.pm; ripr fails closed on this boundary kind."
     },
     {
       "evidence_refs": [],
@@ -263,7 +263,7 @@
       "file_id": "file:lib/App.pm",
       "kind": "sub",
       "name": "risky",
-      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "package": "App",
       "provenance_refs": [
         "prov:syntax:file:lib/App.pm"
@@ -310,7 +310,7 @@
       }
     }
   ],
-  "packet_fingerprint": "sha256:32e2d25ccdd806bf479d9953065844a1c1faa3f1772233315fed5fb13598328c",
+  "packet_fingerprint": "sha256:0288a6a5c6a86a41197cb70b3704a874d6e97caab1c0ac667cc5246e77938654",
   "packet_id": "perl-lsp-ripr-facts-ripr-perl-facts-v1-target/ripr-characterization/no-diff-files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance",
   "packet_status": "partial",
   "producer": {
@@ -406,10 +406,10 @@
       "change_id": "change:unresolved",
       "confidence": "medium",
       "oracle_id": null,
-      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "provenance_refs": [],
       "reachability_hint": "reachable",
-      "relation_id": "relation:file:t/app.t:lib/App.pm:owner_lib/App.pm_sub_App__risky_163-215",
+      "relation_id": "relation:file:t/app.t:lib/App.pm:owner_lib/App.pm_sub_App__risky_163-213",
       "relation_kind": "direct_owner_call",
       "test_id": "test:t/app.t"
     },

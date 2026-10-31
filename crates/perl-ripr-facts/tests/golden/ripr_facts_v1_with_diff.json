@@ -20,10 +20,10 @@
       "behavior_hint": "exception_path",
       "change_id": "change:file:lib/App.pm:15:16",
       "changed_observable": "boom\" if $x < 0",
-      "changed_text_digest": "fnv64:aab3376966267fd5",
+      "changed_text_digest": "fnv64:53a739725284e31f",
       "file_id": "file:lib/App.pm",
       "missing_discriminator": null,
-      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "provenance_refs": [],
       "range": {
         "end_column": 25,
@@ -39,10 +39,10 @@
       "confidence": "high",
       "file_id": "file:lib/App.pm",
       "kind": "eval_or_string_code",
-      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "provenance_refs": [],
       "range": {
-        "end_column": 10,
+        "end_column": 8,
         "end_line": 14,
         "start_column": 4,
         "start_line": 14
@@ -51,7 +51,7 @@
   ],
   "files": [
     {
-      "digest": "sha256:caa60376a6a6ae0039fae62095662e6d8e6ad92f49ae59844ea3340d77e568b1",
+      "digest": "sha256:e0169bbc5ee2746b4ad517d02fd7dc8a8199de3a9d9f615d963955ed8dbe1be6",
       "file_id": "file:lib/App.pm",
       "package_names": [
         "App"
@@ -123,11 +123,11 @@
   "limitations": [
     {
       "evidence_refs": [
-        "owner:lib/App.pm:sub:App::risky:163-215"
+        "owner:lib/App.pm:sub:App::risky:163-213"
       ],
       "kind": "eval_or_string_code",
       "limitation_id": "limitation:boundary:lib/App.pm:eval_or_string_code:1",
-      "message": "Dynamic boundary `eval {` detected in lib/App.pm; ripr fails closed on this boundary kind."
+      "message": "Dynamic boundary `eval <whitespace>` detected in lib/App.pm; ripr fails closed on this boundary kind."
     },
     {
       "evidence_refs": [],
@@ -158,12 +158,12 @@
     {
       "evidence_refs": [
         "change:file:lib/App.pm:15:16",
-        "owner:lib/App.pm:sub:App::risky:163-215",
+        "owner:lib/App.pm:sub:App::risky:163-213",
         "file:lib/App.pm"
       ],
       "kind": "eval_or_string_code",
       "limitation_id": "diff-dynamic-boundary:change:file:lib/App.pm:15:16:eval_or_string_code",
-      "message": "diff-added dynamic boundary `eval {` detected in `lib/App.pm`; ripr fails closed on this boundary kind."
+      "message": "diff-added dynamic boundary `eval <whitespace>` detected in `lib/App.pm`; ripr fails closed on this boundary kind."
     },
     {
       "evidence_refs": [
@@ -244,7 +244,7 @@
         "start_line": 8
       },
       "strength": "weak_smoke",
-      "target_owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "target_owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "test_id": "test:t/app.t"
     },
     {
@@ -328,7 +328,7 @@
       "file_id": "file:lib/App.pm",
       "kind": "sub",
       "name": "risky",
-      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "package": "App",
       "provenance_refs": [
         "prov:syntax:file:lib/App.pm"
@@ -375,7 +375,7 @@
       }
     }
   ],
-  "packet_fingerprint": "sha256:8fc37c160dc0bb48ce47c7eb4544202a5413ccce1b0f3c5c0456b176820ea3dd",
+  "packet_fingerprint": "sha256:f71a3a15b2bee5715d9a8b173ec8674149205527fd250c604e2fca038d7162a1",
   "packet_id": "perl-lsp-ripr-facts-ripr-perl-facts-v1-target/ripr-characterization/with-diff-files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance",
   "packet_status": "partial",
   "producer": {
@@ -471,10 +471,10 @@
       "change_id": "change:file:lib/App.pm:15:16",
       "confidence": "medium",
       "oracle_id": "oracle:t/app.t:ok:176-214",
-      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-213",
       "provenance_refs": [],
       "reachability_hint": "reachable",
-      "relation_id": "relation:file:t/app.t:lib/App.pm:owner_lib/App.pm_sub_App__risky_163-215:change:file:lib/App.pm:15:16",
+      "relation_id": "relation:file:t/app.t:lib/App.pm:owner_lib/App.pm_sub_App__risky_163-213:change:file:lib/App.pm:15:16",
       "relation_kind": "direct_owner_call",
       "test_id": "test:t/app.t"
     },
