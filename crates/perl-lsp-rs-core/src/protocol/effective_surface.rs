@@ -1479,6 +1479,8 @@ fn project_server_capabilities(
                 "quickfix",
                 "refactor",
                 "refactor.extract",
+                "refactor.extract.variable",
+                "refactor.extract.subroutine",
                 "refactor.rewrite",
                 "source.fixAll",
                 "source.modernize",
@@ -1702,9 +1704,9 @@ const SEMANTIC_TOKEN_MODIFIERS: &[&str] = &[
 ];
 
 /// Completion trigger characters; multi-character Perl operators advertise
-/// their component characters.
+/// their final characters so a partial `-` does not request completion.
 const COMPLETION_TRIGGER_CHARACTERS: &[&str] =
-    &["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"];
+    &["$", "@", "%", ">", ":", ".", "/", "\\", "\"", "'"];
 
 #[cfg(test)]
 mod tests;

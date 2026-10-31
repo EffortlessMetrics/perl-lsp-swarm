@@ -169,7 +169,7 @@ try {
     $CustomPathConfigured = $false
     foreach ($Case in $Cases) {
         $CaseTarget = Join-Path $Targets '17413-fixture'
-        # Preflight creates an empty directory only; refuse unexpected contents.
+        # Successful writer checks must not allocate an unadmitted Cargo target.
         if (Test-Path -LiteralPath $CaseTarget) { Remove-Item -LiteralPath $CaseTarget }
         # Change only this disposable repository's configuration. The parent
         # directory exists for every configured path, including paths with spaces.
@@ -213,7 +213,13 @@ try {
         if ($Case.Expected -eq 7) {
             $Valid = $Valid -and $Text.Contains('bash scripts/install-githooks.sh') -and -not $Text.Contains('agent preflight ok') -and -not (Test-Path -LiteralPath $CaseTarget)
         }
-        if ($Case.Expected -eq 0) { $Valid = $Valid -and (Test-Path -LiteralPath $CaseTarget -PathType Container) }
+        if ($Case.Expected -eq 0) {
+            $Valid = $Valid -and -not (Test-Path -LiteralPath $CaseTarget) -and
+                $Text.Contains('Cargo build capacity was not assessed') -and
+                $Text.Contains('python scripts/cargo_admitted.py --preflight <exact Cargo command>') -and
+                -not $Text.Contains('export CARGO_TARGET_DIR=') -and
+                -not $Text.Contains('$env:CARGO_TARGET_DIR =')
+        }
         if ($Valid) { Write-Output "PASS $($Case.Name)"; $Passed++ }
         else { Write-Output "FAIL $($Case.Name): expected=$($Case.Expected), actual=$Status`n$Text"; $Failed++ }
     }

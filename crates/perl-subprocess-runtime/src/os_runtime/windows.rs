@@ -5,7 +5,9 @@ use super::path_selection::select_path_candidate;
 // (`invocation.rs`) can import everything from `super::windows` as before.
 // The implementations live in `cmd_quote.rs` so they are tested on all
 // platforms, not just Windows CI runners (#5012).
-pub(crate) use super::cmd_quote::{windows_quote_for_cmd, windows_requires_cmd_shell};
+pub(crate) use super::cmd_quote::{
+    windows_has_expandable_percent_ref, windows_quote_for_cmd, windows_requires_cmd_shell,
+};
 
 /// Resolve a program name to an absolute path by searching the `PATH`
 /// environment variable directories.

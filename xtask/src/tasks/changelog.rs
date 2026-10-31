@@ -3490,7 +3490,7 @@ changelog = "vscode-extension/CHANGELOG.md"
     }
 
     fn run_git(dir: &Path, args: &[&str]) -> std::result::Result<(), String> {
-        let status = Command::new("git")
+        let status = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(dir)
             .args(args)
             .status()
@@ -3502,7 +3502,7 @@ changelog = "vscode-extension/CHANGELOG.md"
     }
 
     fn run_git_output(dir: &Path, args: &[&str]) -> std::result::Result<String, String> {
-        let out = Command::new("git")
+        let out = xtask::git_environment::isolate(Command::new("git"))
             .current_dir(dir)
             .args(args)
             .output()

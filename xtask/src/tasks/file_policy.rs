@@ -3983,7 +3983,7 @@ review_after = "2026-06-01"
     }
 
     fn run_git(root: &Path, args: &[&str]) -> Result<()> {
-        let output = std::process::Command::new("git")
+        let output = xtask::git_environment::isolate(std::process::Command::new("git"))
             .current_dir(root)
             .args(args)
             .output()
@@ -4653,7 +4653,7 @@ review_after = "2026-11-13"
         // whole point of the typed rule. #9680's conflicts came from both
         // candidates appending a row to this one file.
         for branch in ["candidate-a", "candidate-b"] {
-            let output = std::process::Command::new("git")
+            let output = xtask::git_environment::isolate(std::process::Command::new("git"))
                 .current_dir(root)
                 .args(["diff", "--name-only", "base", branch])
                 .output()
