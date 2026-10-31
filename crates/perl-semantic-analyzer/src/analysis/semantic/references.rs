@@ -7,7 +7,7 @@ use super::SemanticAnalyzer;
 
 impl SemanticAnalyzer {
     /// Resolve a reference to its symbol definitions, handling cross-package lookups.
-    pub(super) fn resolve_reference_to_symbols(
+    pub(crate) fn resolve_reference_to_symbols(
         &self,
         reference: &crate::symbol::SymbolReference,
     ) -> Vec<&Symbol> {

@@ -183,15 +183,25 @@ nix develop -c just ci-gate
 
 Useful command choices:
 
+For new agent Cargo work, use `scripts/cargo-admitted` after host admission.
+Start with `scripts/cargo-admitted --preflight <exact Cargo command>`, preserving
+the package, target, profile and flags you intend to execute. The direct Cargo
+examples above and generic doctor/preflight commands do not establish admission.
+Follow [Cargo storage admission](docs/agents/CARGO_STORAGE.md) for private target
+and intermediate paths, resource ownership and supported commands; see
+[constrained-host guidance](docs/how-to/CONSTRAINED_CARGO_BUILDS.md) if capacity
+refuses the request. Do not lower limits merely to pass.
+
 | Situation | Command |
 | --- | --- |
 | Tool or environment problem | `just devex` |
 | Repository health or generated drift | `just doctor` |
 | Fast inner loop | `just pr-fast` |
 | Full local merge gate | `just ci-gate` |
-| Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
-| Multi-worktree shared build cache | `just cached <cargo args>` — see [Multi-Worktree Build Caching](docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md) |
-| Build disk grew / stale target trees | `just target-gc` (dry-run report), then `just target-gc --apply` |
+| New agent package check/test | `scripts/cargo-admitted check -p <package> --locked` / `scripts/cargo-admitted test -p <package> --locked`, after exact-command preflight |
+| Agent Clippy | Follow the separately qualified [staged native Clippy route](docs/agents/CARGO_STORAGE.md#staged-native-clippy): Linux, installed repository pin 1.95.0, exact supported command |
+| Legacy compatibility callers | `just cached <cargo args>`, `just agent-check`, `just agent-test`, `just agent-clippy`, `just agent-nextest`, `just agent-pr-fast` — retain existing behavior; not host admission or the route for new agent work |
+| Build disk grew / stale target trees | `just target-gc` (advisory report), then request an exact owner-verified cleanup proposal; `--apply` is retired |
 | Parser or generated status changed | `just status-update` then `just status-check` |
 | Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
 | Release/version surfaces changed | `just version-check` then `just release-check` |
@@ -199,6 +209,15 @@ Useful command choices:
 
 Do not run broad workspace proof after every edit. Escalate when the dependency graph,
 risk, changed public surface, or selected merge gate requires it.
+
+The compatibility recipes still delegate to `scripts/cargo-safe`; they do not
+establish the admitted route's isolation or lifecycle guarantees. Do not mechanically
+replace that wrapper in recipes: aliases such as `xtask` and external commands such
+as `nextest` are not admitted. Unsupported commands need a separately admitted route,
+not a raw-Cargo fallback. See [legacy build caching](docs/how-to/MULTI_WORKTREE_BUILD_CACHING.md)
+for the compatibility boundary. This guidance does not qualify the host or activate
+the ordinary build loop; host-owner qualification remains a prerequisite under
+[#3230](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3230).
 
 ### 5. Inspect the proposed change
 

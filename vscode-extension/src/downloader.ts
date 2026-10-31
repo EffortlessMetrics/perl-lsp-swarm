@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import * as https from 'https';
-import * as http from 'http';
+import type * as https from 'https';
+import type * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -10,15 +10,23 @@ import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
 import { downloadBoundedFile, unlinkPartialDownloadDest } from './boundedFileDownload';
 import { extractManagedArchive } from './managedArchiveExtract';
 import {
+  createManagedHttpRequest,
+  MANAGED_PROXY_ERROR_PREFIX,
+  redactCredentialUrl,
+  type ManagedProxySources,
+} from './managedHttpTransport';
+import {
   MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
   MANAGED_CHECKSUM_FILE_MAX_BYTES,
 } from './managedArchiveSafetyPolicy';
 import type { ManagedCandidateManifest } from './managedCacheProtocol';
 import {
+  MANAGED_CURRENT_SELECTION_FILE,
   collectStaleManagedCandidates,
   commitManagedCandidateSelection,
   enumerateManagedCandidateCatalog,
   readManagedCurrentSelection,
+  readInstalledManagedCandidateManifest,
   readSessionManagedHostReference,
   writeInstalledManagedCandidateManifest,
 } from './managedCandidateRuntime';
@@ -229,6 +237,26 @@ let activeManagedInstall: ActiveManagedInstall | undefined;
 
 export function __resetManagedInstallSingleflightForTesting(): void {
   activeManagedInstall = undefined;
+}
+
+/** Progress label for a first-run (or repair) managed download. */
+const DOWNLOAD_PROGRESS_TITLE = 'Downloading Perl Language Server';
+/**
+ * Progress label for an update install (#16531). An update that looks exactly
+ * like a first-run download gives an autoUpdate user no signal that the
+ * feature — not a stray download — is doing the work.
+ */
+const UPDATE_PROGRESS_TITLE = 'Updating Perl Language Server';
+
+/**
+ * Session guard for the `versionTag`-ignored warning (#16533). One warning per
+ * extension-host session: the mismatch is configuration, not progress, so it
+ * must not repeat on every update check or download.
+ */
+let versionTagIgnoredWarningShown = false;
+
+export function __resetVersionTagIgnoredWarningForTesting(): void {
+  versionTagIgnoredWarningShown = false;
 }
 
 function delay(ms: number): Promise<void> {
@@ -477,8 +505,34 @@ function describeManagedReleaseRefusal(
     case 'configured_incompatible':
       return `Configured release is not compatible: ${refusal.detail}`;
     case 'invalid_policy':
+      // A tag channel with no configured tag is half-finished pin configuration
+      // (#16533). The actionable remedy is the versionTag setting; the generic
+      // policy wrapper and the generic banner's manual-binary fallback both
+      // point somewhere that cannot fix it. The typed `configuredTag` field,
+      // not the selector's detail prose, identifies this case so the selector
+      // can reword its message without silently dropping the remedy.
+      if (channel === 'tag' && (refusal.configuredTag ?? '').trim() === '') {
+        return (
+          'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+          'set versionTag (for example v0.12.1) to pin a release.'
+        );
+      }
       return `Invalid managed release policy: ${refusal.detail}`;
   }
+}
+
+/**
+ * Whether an error means "GitHub has no release record for this exact request"
+ * (HTTP 404, as a status or as a Not Found response body).
+ *
+ * `fetchReleaseMetadata` converts both shapes to `No releases found`
+ * (#16533); the tag route rewrites that message to name the configured pin.
+ */
+function isMissingReleaseRecordError(error: unknown): boolean {
+  if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
+    return true;
+  }
+  return error instanceof Error && error.message === 'No releases found';
 }
 
 /**
@@ -763,7 +817,11 @@ export function isDownloadCancellationMessage(message: string): boolean {
  * failures (ENOTFOUND, EAI_AGAIN), unreachable networks and resets, and TLS
  * certificate failures — Node surfaces those with "cert"/"certificate" in the
  * message (or in codes like SELF_SIGNED_CERT_IN_CHAIN), so a lowercase
- * substring check covers both spellings.
+ * substring check covers both spellings. "ssl" covers TLS-protocol failures
+ * such as handshakes answered with non-TLS bytes. "managed download proxy" is
+ * the stable prefix of the proxy-aware transport's bounded dispositions
+ * (unsupported configuration, refused CONNECT, unreachable proxy) so proxy
+ * failures reach the same guidance (#7804).
  */
 const NETWORK_ERROR_PATTERNS = [
   'econnrefused',
@@ -774,6 +832,8 @@ const NETWORK_ERROR_PATTERNS = [
   'econnreset',
   'timeout',
   'cert',
+  'ssl',
+  MANAGED_PROXY_ERROR_PREFIX.toLowerCase(),
 ] as const;
 
 export function isNetworkErrorMessage(message: string): boolean {
@@ -850,7 +910,10 @@ export class BinaryDownloader {
     );
   }
 
-  async ensureBinary(forceDownload = false): Promise<string | null> {
+  async ensureBinary(
+    forceDownload = false,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     this.lastErrorMessage = undefined;
     const myReason: ManagedInstallReason = forceDownload ? 'force' : 'ensure';
 
@@ -880,7 +943,7 @@ export class BinaryDownloader {
     // its own metadata disposition. Resetting on entry would both leak that
     // value into this run's remedy and wipe the in-flight run's own record.
     this.releaseMetadata403Disposition = undefined;
-    const promise = this.runEnsureBinary(forceDownload);
+    const promise = this.runEnsureBinary(forceDownload, progressTitle);
     activeManagedInstall = { promise, reason: myReason, owner: this };
     try {
       return await promise;
@@ -891,16 +954,22 @@ export class BinaryDownloader {
     }
   }
 
-  private async runEnsureBinary(forceDownload: boolean): Promise<string | null> {
+  private async runEnsureBinary(
+    forceDownload: boolean,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     this.ownedDownloadRunActive = true;
     try {
-      return await this.runEnsureBinaryInner(forceDownload);
+      return await this.runEnsureBinaryInner(forceDownload, progressTitle);
     } finally {
       this.ownedDownloadRunActive = false;
     }
   }
 
-  private async runEnsureBinaryInner(forceDownload: boolean): Promise<string | null> {
+  private async runEnsureBinaryInner(
+    forceDownload: boolean,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -934,7 +1003,7 @@ export class BinaryDownloader {
       // needed depends on whether the target release carries a native ARM64
       // asset, which is not known until the release is fetched; rejecting up
       // front refused installs that would have succeeded natively (#6196).
-      return await this.downloadWithProgress();
+      return await this.downloadWithProgress(progressTitle);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.lastErrorMessage = errorMsg;
@@ -943,7 +1012,7 @@ export class BinaryDownloader {
         void vscode.window.showInformationMessage('Perl LSP download cancelled.');
         return null;
       }
-      this.outputChannel.appendLine(`Failed to download binary: ${errorMsg}`);
+      this.outputChannel.appendLine(`Managed binary install failed: ${errorMsg}`);
 
       const manualInstallUrl = 'https://github.com/EffortlessMetrics/perl-lsp#install';
       const manualInstallNote =
@@ -952,7 +1021,12 @@ export class BinaryDownloader {
       let message: string;
       let buttons: string[];
 
-      if (errorMsg.includes('Windows ARM64 x64 emulation')) {
+      if (
+        errorMsg.includes('Managed binary was downloaded and verified, but selecting it failed')
+      ) {
+        message = `perl-lsp: ${errorMsg} Check the Perl Language Server output and retry the update.`;
+        buttons = ['View Logs'];
+      } else if (errorMsg.includes('Windows ARM64 x64 emulation')) {
         message = `perl-lsp: ${errorMsg} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
       } else if (isNetworkErrorMessage(errorMsg)) {
@@ -1059,11 +1133,13 @@ export class BinaryDownloader {
     }
   }
 
-  private async downloadWithProgress(): Promise<string> {
+  private async downloadWithProgress(
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string> {
     return vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: 'Downloading Perl Language Server',
+        title: progressTitle,
         cancellable: true,
       },
       async (progress, token) => {
@@ -1308,7 +1384,11 @@ export class BinaryDownloader {
           // the versioned selection record alongside it gives collectors and
           // host selection the policy-governed view. Stale generations are
           // then pruned only through the landed retention policy.
-          this.commitVersionedInstall(installDirName, compatibilityKey, manifest);
+          if (!this.commitVersionedInstall(installDirName, compatibilityKey, manifest)) {
+            throw new Error(
+              'Managed binary was downloaded and verified, but selecting it failed; the current selection was not changed.',
+            );
+          }
           this.collectStaleManagedCandidates(baseDir);
 
           progress.report({ increment: 5, message: 'Complete!' });
@@ -1360,6 +1440,17 @@ export class BinaryDownloader {
     }
     const channel: ManagedReleaseChannel = channelSetting;
 
+    // A pinned tag only takes effect on the tag channel (#16533). A user who
+    // set versionTag expecting a pin must not silently keep tracking the
+    // recency channel, so say so once per session.
+    if (versionTag && channel !== 'tag' && !versionTagIgnoredWarningShown) {
+      versionTagIgnoredWarningShown = true;
+      this.outputChannel.appendLine(
+        `[config] perl-lsp.versionTag "${versionTag}" is ignored unless perl-lsp.channel is "tag" ` +
+          `(current channel: "${channel}"). Set channel to "tag" to pin this release.`,
+      );
+    }
+
     const expectation = this.managedReleaseExpectation();
     const isWindowsArm64 = process.platform === 'win32' && process.arch === 'arm64';
     // On Windows ARM64 a release can serve this host natively or through the
@@ -1386,7 +1477,22 @@ export class BinaryDownloader {
 
     let releases: Release[] = [];
     if (url) {
-      const parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      let parsed: unknown;
+      try {
+        parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      } catch (error) {
+        if (channel === 'tag' && isMissingReleaseRecordError(error)) {
+          // On the exact-tag route a 404 means the configured pin has no
+          // release record (#16533) — not that the project publishes nothing.
+          // Name the pin so the one wrong setting is identifiable; the
+          // selector's own refusal is unreachable because the 404 throws
+          // before selection.
+          throw new Error(
+            `No release found for the configured tag "${versionTag}"; check the perl-lsp.versionTag setting.`,
+          );
+        }
+        throw error;
+      }
       if (channel === 'tag') {
         if (!isReleaseShape(parsed)) {
           throw new Error('Release metadata response has an invalid schema');
@@ -1469,7 +1575,10 @@ export class BinaryDownloader {
     timeoutMs: number,
     cancellationToken?: vscode.CancellationToken,
   ): Promise<unknown> {
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // transport and the redirect-downgrade guard must classify `HTTPS://`
+    // identically instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
     const authDisposition = resolveGitHubAuthDisposition({
@@ -1614,7 +1723,10 @@ export class BinaryDownloader {
       headers: { 'User-Agent': 'vscode-perl-lsp' },
       rejectUnauthorized: proxyStrictSSL,
     };
-    const isHttps = url.startsWith('https:');
+    // Case-insensitive: URL normalization lowercases the scheme, so the
+    // HTTPS→HTTP redirect-downgrade guard below must classify `HTTPS://`
+    // identically to the transport instead of trusting the raw string's case.
+    const isHttps = /^https:/i.test(url);
     const bounded: Parameters<typeof downloadBoundedFile>[0] = {
       requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
       dest,
@@ -1623,15 +1735,27 @@ export class BinaryDownloader {
       operationName: 'Archive download',
       maxRedirects,
       followRedirect: async (location, remainingRedirects) => {
-        if (
-          isHttps &&
-          location.toLowerCase().startsWith('http:') &&
-          !location.toLowerCase().startsWith('https:')
-        ) {
+        // Location may be relative (RFC 7231 §7.1.2): resolve it against the
+        // URL this hop was made for instead of feeding a baseless reference to
+        // the next downloadFile, which threw `Invalid URL format` (#7804).
+        let resolvedRedirect: URL;
+        try {
+          resolvedRedirect = new URL(location, url);
+        } catch {
+          throw new Error(
+            `Security violation: Redirect location is not a resolvable URL: ${redactCredentialUrl(location)}`,
+          );
+        }
+        if (resolvedRedirect.protocol !== 'http:' && resolvedRedirect.protocol !== 'https:') {
+          throw new Error(
+            `Security violation: Redirect to unsupported protocol: ${resolvedRedirect.protocol}`,
+          );
+        }
+        if (isHttps && resolvedRedirect.protocol === 'http:') {
           throw new Error('Security violation: Redirect from HTTPS to HTTP prevented');
         }
         await this.downloadFile(
-          location,
+          resolvedRedirect.toString(),
           dest,
           timeoutMs,
           remainingRedirects,
@@ -1649,10 +1773,11 @@ export class BinaryDownloader {
   }
 
   /**
-   * Transport seam: the actual network GET, extracted so tests can stub it
-   * without mocking Node's `http`/`https` core modules (whose `get` exports
-   * are non-configurable). Behaviour is identical to calling the module's
-   * `get` directly.
+   * Transport seam: the actual network GET. Routes every managed request
+   * through the proxy-aware transport (#7804/#7851) so release metadata and
+   * artifact fetches share one proxy resolution, TLS policy, and failure
+   * classification. Extracted so tests can stub it without mocking Node's
+   * `http`/`https` core modules (whose `get` exports are non-configurable).
    */
   private httpGet(
     isHttps: boolean,
@@ -1660,7 +1785,31 @@ export class BinaryDownloader {
     options: https.RequestOptions,
     callback: (response: http.IncomingMessage) => void,
   ): http.ClientRequest {
-    return isHttps ? https.get(url, options, callback) : http.get(url, options, callback);
+    return createManagedHttpRequest({
+      isHttps,
+      url,
+      options,
+      callback,
+      proxySources: this.managedProxySources(),
+    });
+  }
+
+  /**
+   * The supported VS Code proxy sources for the managed transport, read from
+   * the `http.*` settings once per request. The transport itself resolves the
+   * route with VS Code's documented precedence (`http.noProxy`/`NO_PROXY`,
+   * then `http.proxy`, then the proxy environment variables) so plain-Node
+   * contexts and the patched extension host agree on one authority.
+   */
+  private managedProxySources(): ManagedProxySources {
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const settingProxyUrl = httpConfig.get<string>('proxy', '').trim();
+    const settingNoProxy = httpConfig.get<string[]>('noProxy', []);
+    return {
+      settingProxyUrl: settingProxyUrl || undefined,
+      settingNoProxy: Array.isArray(settingNoProxy) ? settingNoProxy : undefined,
+      env: process.env,
+    };
   }
 
   private createWriteStream(dest: string): fs.WriteStream {
@@ -1978,7 +2127,7 @@ export class BinaryDownloader {
 
   /**
    * Commits a freshly populated install dir: the versioned
-   * `managed_current_selection.v1` record first, then the legacy `current`
+   * `managed_current_selection.v1` record, then the legacy `current`
    * dir pointer. Ordering is the consistency contract (#10083): when the
    * selection record cannot be written (transient lock, full disk), the
    * pointer is left unmoved so the previous selection stays authoritative
@@ -1992,7 +2141,7 @@ export class BinaryDownloader {
     installDirName: string,
     compatibilityKey?: string,
     manifest?: ManagedCandidateManifest | null,
-  ): void {
+  ): boolean {
     const baseDir =
       compatibilityKey === undefined
         ? this.getManagedBaseDir()
@@ -2007,8 +2156,15 @@ export class BinaryDownloader {
         `Note: managed candidate manifest is absent for ${installDirName}; ` +
           'activation refused, the previous selection stays authoritative.',
       );
-      return;
+      return false;
     }
+    const tmpPath = `${pointerPath}.tmp`;
+    // A failed pointer-temp write must not advance the policy selection.
+    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
+    const previousSelection = readManagedCurrentSelection(baseDir);
+    const previousPointer = fs.existsSync(pointerPath)
+      ? fs.readFileSync(pointerPath, 'utf8').trim()
+      : null;
     if (manifest !== undefined) {
       const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
         this.outputChannel.appendLine(`Note: ${message}`),
@@ -2020,16 +2176,51 @@ export class BinaryDownloader {
         this.outputChannel.appendLine(
           `Note: managed selection commit refused; activation pointer left unchanged (${installDirName} remains inactive).`,
         );
-        return;
+        fs.rmSync(tmpPath, { force: true });
+        return false;
       }
       this.outputChannel.appendLine(
         `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
       );
     }
-    const tmpPath = `${pointerPath}.tmp`;
-    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
-    fs.renameSync(tmpPath, pointerPath);
+    try {
+      fs.renameSync(tmpPath, pointerPath);
+    } catch (error: unknown) {
+      fs.rmSync(tmpPath, { force: true });
+      // A failed rename follows the selection write. Restore the old
+      // candidate as a new generation; if that cannot be proven, surface
+      // uncertainty rather than claiming the previous selection survived.
+      let restored = manifest === undefined;
+      if (manifest !== undefined && previousSelection !== null && previousPointer !== null) {
+        const oldManifest = readInstalledManagedCandidateManifest(
+          path.join(baseDir, previousPointer),
+        );
+        if (oldManifest?.candidate_id === previousSelection.candidate_id) {
+          restored =
+            commitManagedCandidateSelection(baseDir, oldManifest, (message) =>
+              this.outputChannel.appendLine(`Note: ${message}`),
+            ) !== null;
+        }
+      } else if (manifest !== undefined && previousSelection === null && previousPointer === null) {
+        try {
+          fs.rmSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
+          restored = true;
+        } catch {
+          // Report uncertain state below.
+        }
+      }
+      if (!restored) {
+        throw new Error(
+          `Managed activation pointer failed and selection state is uncertain: ${String(error)}`,
+        );
+      }
+      this.outputChannel.appendLine(
+        `Note: managed activation pointer failed; previous selection restored: ${String(error)}`,
+      );
+      return false;
+    }
     this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
+    return true;
   }
 
   /**
@@ -2237,9 +2428,9 @@ export class BinaryDownloader {
       const autoUpdate = config.get<boolean>('autoUpdate', false);
       if (autoUpdate) {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);
-        const installed = await this.ensureBinary(true);
-        if (force && installed) {
-          void vscode.window.showInformationMessage(`Perl LSP ${remoteVersion} was downloaded.`);
+        const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
+        if (installed) {
+          await this.confirmStagedUpdate(installed);
         }
         return;
       }
@@ -2268,7 +2459,10 @@ export class BinaryDownloader {
       );
 
       if (choice === 'Update') {
-        await this.ensureBinary(true);
+        const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
+        if (installed) {
+          await this.confirmStagedUpdate(installed);
+        }
       } else if (choice === "Don't ask again") {
         // Scope the suppression to the prompt (#16536): writing
         // `updateCheckInterval: 0` here used to also disable interval checks
@@ -2290,6 +2484,46 @@ export class BinaryDownloader {
           });
       }
     }
+  }
+
+  /**
+   * Confirm a successful update install and offer the one action that switches
+   * the running server to it (#16531).
+   *
+   * An update install stages a versioned directory and moves the shared
+   * `current` pointer, but the running client stays bound to the exact binary
+   * it launched (`bound_running`) until the host restarts. Reusing the reload
+   * affordance keeps that handoff honest without duplicating the Reinstall
+   * command's stop/restart flow.
+   */
+  private async confirmStagedUpdate(installedPath: string): Promise<void> {
+    const version = await this.getLocalVersion(installedPath);
+    if (!version) {
+      this.outputChannel.appendLine(
+        `[update-check] Installed binary at ${installedPath} has no readable version; reload confirmation withheld.`,
+      );
+      void vscode.window
+        .showWarningMessage(
+          'perllsp update was downloaded, but its installed version could not be verified. The running server is unchanged; check the Perl Language Server output before reloading.',
+          'View Logs',
+        )
+        .then((choice) => {
+          if (choice === 'View Logs') {
+            this.outputChannel.show();
+          }
+        });
+      return;
+    }
+    void vscode.window
+      .showInformationMessage(
+        `perllsp ${version} downloaded. Reload the window to switch to it.`,
+        'Reload Window',
+      )
+      .then((choice) => {
+        if (choice === 'Reload Window') {
+          void vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+      });
   }
 
   private async getLocalVersion(binaryPath: string): Promise<string | null> {

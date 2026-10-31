@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Accepting a workspace-symbol, in-file function, or method completion with the cursor in the middle of a name no longer duplicates the rest of the name. Previously the completion replaced only the typed prefix, so completing `reg` inside `register` produced `registerister`; the edit now replaces the whole token."
+time: 2026-10-21T00:00:00Z
+custom:
+  PR: "18123"
+  Slug: workspace-method-midtoken-suffix
+  Breaking: "no"

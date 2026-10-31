@@ -87,7 +87,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "00000000000000000000000000000000000075f9",
               "content_digest": "0000000000000000000000000000000000000000000000000000000000049bc1",
-              "reference": "cargo xtask pr-close-proof --pr 3100"
+              "reference": "cargo xtask pr-close-proof --pr 3100",
+              "schema_version": "landing_proof.v1"
             }
           },
           "violation.detector.coverage": {
@@ -96,7 +97,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "00000000000000000000000000000000000075fa",
               "content_digest": "0000000000000000000000000000000000000000000000000000000000049bcb",
-              "reference": "cargo xtask pr-close-proof --pr 3100"
+              "reference": "cargo xtask pr-close-proof --pr 3100",
+              "schema_version": "landing_proof.v1"
             }
           }
         },

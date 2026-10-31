@@ -20,11 +20,31 @@ pub struct PerlLexer<'a> {
     pub(crate) delimiter_stack: Vec<char>,
     pub(crate) in_prototype: bool,
     pub(crate) prototype_depth: usize,
+    /// Set when the current post-`sub` window has shown signature evidence
+    /// (a sigil-named parameter or a default assignment), so quote-like
+    /// words in it are expression operators, not prototype payload.
+    pub(crate) prototype_signature_seen: bool,
     pub(crate) after_sub: bool,
     pub(crate) after_arrow: bool,
     pub(crate) hash_brace_depth: usize,
     pub(crate) after_var_subscript: bool,
     pub(crate) paren_depth: usize,
+    /// Depth of currently-open parens that were opened by `print` invoked as a
+    /// list operator with parens (i.e., `print(...)` at term position, with no
+    /// preceding `->` or `&`). Inside those parens, in `ExpectOperator` mode,
+    /// `<<` is recognized as a heredoc opener; the same `<<` outside those
+    /// parens is the left-shift operator. Tracked for #16163.
+    /// Open `print(...)` list-operator parens as `(enclosing_paren_depth,
+    /// seen_top_level_comma)` pairs, ordered innermost-last (#16163
+    /// review). The enclosing depth is the `paren_depth` at which the
+    /// print opener's `(` was consumed, so a nested `)` pops only the
+    /// entry it actually closes.
+    pub(crate) print_list_parens: Vec<(usize, bool, bool)>,
+    /// Set by the identifier-or-keyword handler when a `print` keyword/identifier
+    /// at term position is immediately followed (after horizontal whitespace) by
+    /// `(`. Consumed by the `(` handler in `try_delimiter` to record that the
+    /// open paren belongs to a `print(...)` list-operator call.
+    pub(crate) pending_print_list_paren: bool,
     // Preserved for checkpoint restoration even when a tokenization path does not read it directly.
     #[allow(dead_code)]
     pub(crate) current_pos: Position,
@@ -35,6 +55,8 @@ pub struct PerlLexer<'a> {
     pub(crate) current_quote_op: Option<quote_handler::QuoteOperatorInfo>,
     pub(crate) qw_recovery_enabled: bool,
     pub(crate) eof_emitted: bool,
+    /// Memo of the next line-start `=cut`: `(scanned_from, position)`; `None` position means none.
+    pub(crate) pod_cut_cache: Option<(usize, Option<usize>)>,
     /// Temporary upper bound used while segmenting a heredoc body.
     pub(crate) scan_limit: Option<usize>,
     /// Optional logical source bound by a producer (#4851 / #7747).

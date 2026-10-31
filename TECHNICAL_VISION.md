@@ -1,5 +1,9 @@
 # Technical Vision
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Agent and maintainer authority status](docs/agents/AUTHORITY_STATUS.md); current product status: [Current product status](docs/project/CURRENT_STATUS.md).
+> Retained as historical or aspirational evidence. Internal wording below that calls this document current, definitive, a north star, or an acceptance authority is historical and must not route current work. See [Agent and maintainer authority status](docs/agents/AUTHORITY_STATUS.md).
+
 > **The Definitive Perl Development Tooling Platform**
 >
 > **Version**: v0.12.0 | **Last Updated**: 2026-03-28

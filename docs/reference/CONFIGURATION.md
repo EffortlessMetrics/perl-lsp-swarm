@@ -196,7 +196,7 @@ The LSP server itself uses whichever `perl` is on your `PATH`. To use a custom P
       "request": "launch",
       "name": "Debug with perlbrew Perl",
       "program": "${workspaceFolder}/script.pl",
-      "perlPath": "/home/you/.perlbrew/perls/perl-5.38.0/bin/perl",
+      "perlPath": "/home/user/.perlbrew/perls/perl-5.38.0/bin/perl",
       "includePaths": ["${workspaceFolder}/lib"],
       "cwd": "${workspaceFolder}"
     }

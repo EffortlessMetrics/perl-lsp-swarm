@@ -5,11 +5,11 @@ This note traces a specific pattern in the project docs: CI is not treated as a 
 
 The evidence is spread across the validation, cost-tracking, quality, and performance docs:
 
-- [`docs/project/CI_TEST_LANES.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_TEST_LANES.md)
-- [`docs/project/CI_COST_TRACKING.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_COST_TRACKING.md)
-- [`docs/project/CI_LOCAL_VALIDATION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_LOCAL_VALIDATION.md)
-- [`docs/project/QUALITY_INFRASTRUCTURE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/QUALITY_INFRASTRUCTURE.md)
-- [`docs/reference/PERFORMANCE_MONITORING.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/PERFORMANCE_MONITORING.md)
+- [`docs/project/CI_TEST_LANES.md`](../../project/CI_TEST_LANES.md)
+- [`docs/project/CI_COST_TRACKING.md`](../../project/CI_COST_TRACKING.md)
+- [`docs/project/CI_LOCAL_VALIDATION.md`](../../project/CI_LOCAL_VALIDATION.md)
+- [`docs/project/QUALITY_INFRASTRUCTURE.md`](../../project/QUALITY_INFRASTRUCTURE.md)
+- [`docs/reference/PERFORMANCE_MONITORING.md`](../../reference/PERFORMANCE_MONITORING.md)
 
 Taken together, they show a repo that made CI budget discipline part of its operating model.
 
@@ -17,7 +17,7 @@ Taken together, they show a repo that made CI budget discipline part of its oper
 
 ## 1. CI Is Structured As Lanes, Not One Blob
 
-[`CI_TEST_LANES.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_TEST_LANES.md) is the clearest statement of the lane model.
+[`CI_TEST_LANES.md`](../../project/CI_TEST_LANES.md) is the clearest statement of the lane model.
 
 The default lanes are intentionally small:
 
@@ -44,7 +44,7 @@ The archaeology point is simple: the repo does not wait for CI to discover wheth
 
 ## 2. Cost Tracking Is Part Of Design
 
-[`CI_COST_TRACKING.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_COST_TRACKING.md) turns the abstract lane model into a cost model.
+[`CI_COST_TRACKING.md`](../../project/CI_COST_TRACKING.md) turns the abstract lane model into a cost model.
 
 It does three important things:
 
@@ -67,7 +67,7 @@ The docs even frame Issue `#211` as a cost-optimization target, with savings bro
 
 ## 3. Local-First Validation Is The Default Discipline
 
-[`CI_LOCAL_VALIDATION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_LOCAL_VALIDATION.md) makes the philosophy explicit:
+[`CI_LOCAL_VALIDATION.md`](../../project/CI_LOCAL_VALIDATION.md) makes the philosophy explicit:
 
 - CI is a confirmation step, not the iteration loop
 - validation should run locally before pushing
@@ -88,7 +88,7 @@ This is the cheapest place to catch failure, and the repo knows it.
 
 ## 4. Quality Infrastructure Turns Spend Into A System
 
-[`QUALITY_INFRASTRUCTURE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/QUALITY_INFRASTRUCTURE.md) shows why the budget discipline exists in the first place.
+[`QUALITY_INFRASTRUCTURE.md`](../../project/QUALITY_INFRASTRUCTURE.md) shows why the budget discipline exists in the first place.
 
 The repo is enforcing more than ordinary test correctness:
 
@@ -113,7 +113,7 @@ The architecture is cost-aware because the validation stack is expensive enough 
 
 ## 5. Performance Monitoring Is Budget Discipline In Another Form
 
-[`PERFORMANCE_MONITORING.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/PERFORMANCE_MONITORING.md) extends the same design logic into runtime behavior.
+[`PERFORMANCE_MONITORING.md`](../../reference/PERFORMANCE_MONITORING.md) extends the same design logic into runtime behavior.
 
 The performance model is:
 
@@ -159,8 +159,8 @@ That is how CI spend becomes an engineering problem instead of an afterthought.
 
 ## Evidence Pointers
 
-- [`docs/project/CI_TEST_LANES.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_TEST_LANES.md)
-- [`docs/project/CI_COST_TRACKING.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_COST_TRACKING.md)
-- [`docs/project/CI_LOCAL_VALIDATION.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/CI_LOCAL_VALIDATION.md)
-- [`docs/project/QUALITY_INFRASTRUCTURE.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/project/QUALITY_INFRASTRUCTURE.md)
-- [`docs/reference/PERFORMANCE_MONITORING.md`](/home/steven/code/Rust/perl-lsp/tree-sitter-perl-rs/docs/reference/PERFORMANCE_MONITORING.md)
+- [`docs/project/CI_TEST_LANES.md`](../../project/CI_TEST_LANES.md)
+- [`docs/project/CI_COST_TRACKING.md`](../../project/CI_COST_TRACKING.md)
+- [`docs/project/CI_LOCAL_VALIDATION.md`](../../project/CI_LOCAL_VALIDATION.md)
+- [`docs/project/QUALITY_INFRASTRUCTURE.md`](../../project/QUALITY_INFRASTRUCTURE.md)
+- [`docs/reference/PERFORMANCE_MONITORING.md`](../../reference/PERFORMANCE_MONITORING.md)

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use color_eyre::eyre::{Context, Result, bail, ensure};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -978,7 +978,7 @@ fn parse_default_branch(raw: &str) -> Result<String> {
 /// "branch not found" diagnostic.
 fn branch_exists(root: &Path, branch: &str) -> Result<bool> {
     let repo = parse_repo_info(root)?;
-    let endpoint = format!("repos/{}/{}/branches/{}", repo.owner.login, repo.name, branch,);
+    let endpoint = format!("repos/{}/{}/branches/{}", repo.owner.login, repo.name, branch);
 
     let status = Command::new("gh")
         .current_dir(root)
@@ -1121,6 +1121,7 @@ fn build_baseline_markdown(report: &BaselineReport) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
     use color_eyre::eyre::eyre;
     use serde_json::json;
     use tempfile::TempDir;

@@ -10,7 +10,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use cli::srp::{SrpCommand, SrpMicrocratesArgs, UnwiredScanArgs};
 use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod allocation_tracker;
 mod cli;
@@ -18,7 +18,7 @@ mod tasks;
 #[cfg(test)]
 mod test_support;
 mod types;
-mod utils;
+use tasks::cargo_failure_digest;
 #[cfg(feature = "legacy")]
 use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
@@ -55,34 +55,41 @@ use tasks::{
     kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
     memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
     native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
-    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
-    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
-    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, standalone_diagnostics, standalone_vectors, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    no_publish_side_effects, oneliner_capability_matrix, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
+    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
+    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
+    supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
+    targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
+    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
+    workflow_authority_inventory, workflow_policy_lint, workflow_trigger_lint,
+    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
 use types::TestSuite;
 #[cfg(any(feature = "legacy", feature = "parser-tasks"))]
 use types::*;
+use xtask::utils;
 
 #[derive(Parser)]
 #[command(name = "xtask")]
 #[command(about = "Custom tasks for perl-lsp")]
 struct Cli {
+    /// Select a validated runtime worktree (or a directory inside it).
+    /// Relative task paths and child commands are resolved from its Git root.
+    /// Without this option, existing compiled-source defaults are preserved.
+    #[arg(long, global = true)]
+    worktree_root: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -174,12 +181,10 @@ enum Commands {
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
-    /// Generate, validate, and list the versioned activation inventory
-    /// (`activation_inventory.v1`, #9204): a deterministic classified catalog
-    /// of product, preview, compatibility-shim, test-api, lab, oracle,
-    /// benchmark, and gate surfaces derived from existing authorities plus a
-    /// narrow, typed, owner/expiry-bound override ledger. Does not implement
-    /// activation checking (#9205).
+    /// Generate, validate, list, and fail-closed check the versioned
+    /// activation inventory (`activation_inventory.v1`, #9204/#9205): a
+    /// classified catalog plus class-specific connection checking.
+    /// Cargo dependency membership is topology evidence only.
     Activation {
         /// Operation to run against the activation inventory.
         #[command(subcommand)]
@@ -412,6 +417,20 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Validate a `no_publish_side_effects.v1` surface inventory against
+    /// caller-supplied release-topology bytes (#9414; self-consistent
+    /// projection, canonical admission out of scope).
+    #[command(name = "no-publish-side-effects")]
+    NoPublishSideEffects {
+        /// Path to the inventory JSON document.
+        #[arg(long)]
+        inventory: std::path::PathBuf,
+        /// Path to the caller-supplied release-topology.json artifact
+        /// (canonical admission out of scope).
+        #[arg(long)]
+        topology: std::path::PathBuf,
     },
 
     /// Reconcile `policy/tree-sitter-compat-inventory.toml` against the real
@@ -829,6 +848,9 @@ enum Commands {
         /// Head revision used for diff-scoped RIPR receipt commands.
         #[arg(long, default_value = "HEAD")]
         ripr_head: String,
+        /// Raw PR head, independently binding the integration comparison.
+        #[arg(long)]
+        ripr_pr_head: Option<String>,
         /// Commit the repo-wide RIPR+ total-debt receipt may be bound to
         /// instead of the head, for `--mode enforce-new-ripr` only. Normally
         /// the merge base the pull request is measured against. Must name the
@@ -908,6 +930,23 @@ enum Commands {
         /// Validate the generated summary instead of rewriting it.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Render each non-success gate's failing tests, panic location and repro
+    /// command from a merge-gate shard summary and its per-gate logs.
+    GateFailureDigest {
+        /// Shard summary written by scripts/ci/run_gate_shard.py.
+        #[arg(long)]
+        summary: PathBuf,
+        /// Directory holding <gate>.log for each executed gate.
+        #[arg(long, default_value = "target/receipts/logs")]
+        logs: PathBuf,
+        /// Markdown destination; replaced, never appended to.
+        #[arg(long, default_value = "target/receipts/gate-failure-digest.md")]
+        out: PathBuf,
+        /// Also print the digest to stdout.
+        #[arg(long)]
+        print: bool,
     },
 
     /// Report the RIPR suppression ledger's own lifecycle dates against today.
@@ -1713,6 +1752,40 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Observe LIVE GitHub release-control enforcement, read-only (#9403).
+    ///
+    /// Distinguishes source policy from what GitHub's branch protection,
+    /// rulesets, environments, and release posture actually enforce right
+    /// now. Fails closed to `NOT_PROVEN` on anything it cannot conclusively
+    /// establish; never infers an unobserved half. Issues only `gh api` GET
+    /// reads — nothing here mutates a live setting.
+    #[command(name = "release-live-controls")]
+    ReleaseLiveControls {
+        /// Repository root used to resolve `policy/product-identity.toml`.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Explicit `owner/name` repositories, overriding the
+        /// product-identity defaults. May be repeated.
+        #[arg(long = "repository")]
+        repositories: Vec<String>,
+
+        /// Branch to observe. Explicit `--repository` targets default to
+        /// `main`; without an explicit repository, each configured subject
+        /// uses its contributor-topology branch (the development default or
+        /// the publication branch), which may differ per subject.
+        #[arg(long)]
+        branch: Option<String>,
+
+        /// Write the complete receipt as pretty JSON to this path.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Emit the receipt as JSON to stdout instead of a human summary.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Enforce source-authority and instruction/data boundaries for the Zed
     /// agent stage packets.
     ZedTrain {
@@ -2133,18 +2206,20 @@ enum Commands {
         version: String,
     },
 
-    /// Publish crates to crates.io
+    /// Non-publishing package rehearsal; does not establish release readiness
+    ///
+    /// Direct publication is disabled. Follow the reviewed release transaction
+    /// (#13768 / #6055) through `release-orchestration.yml`; see docs/release/RUNBOOK.md.
     PublishCrates {
-        /// Skip confirmation
-        #[arg(long)]
-        yes: bool,
-
-        /// Dry run (don't actually publish)
+        /// Dry run (nothing is published)
         #[arg(long)]
         dry_run: bool,
     },
 
-    /// Dispatch the "Publish to crates.io" workflow for a release
+    /// Legacy workflow dispatch request; does not verify publication or completion
+    ///
+    /// This helper does not supply sealed-handoff eligibility inputs. Use the
+    /// reviewed release transaction (#13768 / #6055); run correlation is #16799.
     PublishRelease {
         /// Release version (for example 0.x.y)
         version: String,
@@ -2187,16 +2262,11 @@ enum Commands {
         date: Option<String>,
     },
 
-    /// Publish VSCode extension to marketplace
-    PublishVscode {
-        /// Skip confirmation
-        #[arg(long)]
-        yes: bool,
-
-        /// PAT token for authentication
-        #[arg(long)]
-        token: Option<String>,
-    },
+    /// Refuse direct marketplace publication (workflow-gated)
+    ///
+    /// Direct local publication is disabled: the gated
+    /// `publish-extension.yml` workflow owns marketplace publication.
+    PublishVscode,
 
     /// Verify transitive normal-dep closure of published crates contains only publishable deps
     PublishClosure {
@@ -2496,7 +2566,8 @@ enum Commands {
     /// Enforce crate layer-dependency constraints.
     LayerCheck,
 
-    /// Scan for built-but-not-wired crates.
+    /// Scan Cargo topology (tests present, not a direct dep of perl-lsp-rs).
+    /// Not product activation; see `activation check`.
     UnwiredScan {
         #[command(flatten)]
         args: UnwiredScanArgs,
@@ -2516,6 +2587,13 @@ enum Commands {
     CompilerProfile {
         #[command(subcommand)]
         command: CompilerProfileCommand,
+    },
+
+    /// Validate and report versioned executable-profile manifests (#4773).
+    #[command(name = "executable-profile")]
+    ExecutableProfile {
+        #[command(subcommand)]
+        command: ExecutableProfileCommand,
     },
 
     /// Upstream-derived semantic conformance surfaces (#12532).
@@ -4523,6 +4601,23 @@ enum CompilerProfileCommand {
     List,
     /// Validate one profile document and print its stable identity.
     Check { path: PathBuf },
+    /// Validate the unsupported-fact catalog or print its deterministic summary (#4770 slice 2).
+    Unsupported {
+        /// Validate a catalog and fail closed on any violation (default: the landed seed catalog).
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "CATALOG")]
+        check: Option<String>,
+        /// Print a deterministic summary of a catalog (default: the landed seed catalog).
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "CATALOG")]
+        report: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExecutableProfileCommand {
+    /// Validate one manifest document and print its stable identity.
+    Check { path: PathBuf },
+    /// Validate one manifest document and print its deterministic subset summary.
+    Report { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -5489,6 +5584,9 @@ fn run_cli_main() -> Result<()> {
 }
 
 fn run_cli(cli: Cli) -> Result<()> {
+    if let Some(root) = cli.worktree_root {
+        utils::select_worktree_root(&root)?;
+    }
     match cli.command {
         Commands::List => {
             print_top_level_commands();
@@ -5987,6 +6085,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
+        Commands::NoPublishSideEffects { inventory, topology } => {
+            no_publish_side_effects::run(inventory, topology)
+        }
         Commands::CompatInventory { check } => compat_inventory::run(check),
         Commands::KwaliteeInventory { check, scaffold, root } => {
             kwalitee_namespace_inventory::run(check, scaffold, root)
@@ -6149,6 +6250,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_pr_head,
             ripr_baseline_commit,
             receipt,
             summary,
@@ -6164,6 +6266,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_pr_head: ripr_pr_head.filter(|head| !head.trim().is_empty()),
             ripr_baseline_commit,
             receipt,
             summary,
@@ -6190,6 +6293,14 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::RiprSuppressionAudit { suppressions, out, json, print } => {
             ripr_evidence::ripr_suppression_audit(&suppressions, &out, &json, print)
         }
+        Commands::GateFailureDigest { summary, logs, out, print } => {
+            cargo_failure_digest::run(cargo_failure_digest::GateFailureDigestConfig {
+                summary,
+                logs,
+                out,
+                print,
+            })
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }
@@ -6201,7 +6312,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             benchmarks::run_benchmarks(output, quick, category)
         }
         Commands::BenchCompare { fail_on_regression } => {
-            benchmarks::compare_benchmarks(fail_on_regression)
+            let code = benchmarks::compare_benchmarks(fail_on_regression)?;
+            if code != 0 {
+                // The comparator already explained an input refusal or verdict.
+                // This CLI boundary propagates its status without an eyre
+                // backtrace; launch failures still use the normal error path.
+                std::process::exit(code);
+            }
+            Ok(())
         }
         Commands::BenchFormat { receipt, markdown } => {
             benchmarks::format_benchmarks(receipt, markdown)
@@ -6669,6 +6787,27 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }
+        Commands::ReleaseLiveControls { repo_root, repositories, branch, out, json } => {
+            // `.` means the workspace root, not the shell's cwd: the observer
+            // reads `policy/product-identity.toml` relative to it.
+            let repo_root = if repo_root.as_os_str() == "." {
+                utils::project_root().map_err(|error| eyre!(error.to_string()))?
+            } else {
+                repo_root
+            };
+            let verdict =
+                xtask::release_live_controls::run(xtask::release_live_controls::ObserveOptions {
+                    repo_root,
+                    repositories,
+                    branch,
+                    out,
+                    json,
+                })?;
+            if verdict == xtask::release_live_controls::Verdict::NotProven {
+                std::process::exit(xtask::release_live_controls::NOT_PROVEN_EXIT_CODE);
+            }
+            Ok(())
+        }
         Commands::ZedTrain { command } => match command {
             ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {
                 xtask::source_authority::run_with_paths(fixture, repo_root, out)
@@ -6876,7 +7015,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             test_lsp::run(create_only, test, cleanup)
         }
         Commands::BumpVersion { version } => bump_version::run(version),
-        Commands::PublishCrates { yes, dry_run } => publish::publish_crates(yes, dry_run),
+        Commands::PublishCrates { dry_run } => publish::publish_crates(dry_run),
         Commands::PublishRelease { version, dry_run, git_ref } => {
             publish::publish_release(version, dry_run, git_ref)
         }
@@ -6885,7 +7024,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::HookTests => hook_checks::run_hook_tests(),
         Commands::ForbidFatalConstructs { args } => forbid_fatal_constructs::run(args),
         Commands::CiHygiene { command, args } => ci_hygiene::run(command, args),
-        Commands::PublishVscode { yes, token } => publish::publish_vscode(yes, token),
+        Commands::PublishVscode => publish::publish_vscode(),
         Commands::PublishClosure { crate_name } => publish_closure::run(crate_name),
         Commands::PublishedCrateCount => count_ratchet::run(),
         Commands::PublishManifestCheck => publish_manifest_check::run(),
@@ -7266,8 +7405,38 @@ fn run_cli(cli: Cli) -> Result<()> {
                 CompilerProfileCommand::Check { path } => {
                     tasks::compiler_profile::check(&path).map_err(|error| eyre!(error.to_string()))
                 }
+                CompilerProfileCommand::Unsupported { check, report } => {
+                    if check.is_none() && report.is_none() {
+                        bail!("compiler-profile unsupported requires --check and/or --report");
+                    }
+                    if let Some(path) = check.as_deref() {
+                        let resolved = tasks::compiler_profile::unsupported_catalog_path(
+                            &root,
+                            Path::new(path),
+                        );
+                        tasks::compiler_profile::unsupported_check(&resolved)
+                            .map_err(|error| eyre!(error.to_string()))?;
+                    }
+                    if let Some(path) = report.as_deref() {
+                        let resolved = tasks::compiler_profile::unsupported_catalog_path(
+                            &root,
+                            Path::new(path),
+                        );
+                        tasks::compiler_profile::unsupported_report(&resolved)
+                            .map_err(|error| eyre!(error.to_string()))?;
+                    }
+                    Ok(())
+                }
             }
         }
+        Commands::ExecutableProfile { command } => match command {
+            ExecutableProfileCommand::Check { path } => {
+                tasks::executable_profile::check(&path).map_err(|error| eyre!("{error:#}"))
+            }
+            ExecutableProfileCommand::Report { path } => {
+                tasks::executable_profile::report(&path).map_err(|error| eyre!("{error:#}"))
+            }
+        },
         Commands::Compiler { command } => match command {
             CompilerUpstreamCommand::Upstream { command } => match command {
                 CompilerUpstreamStatusGroup::Status { command } => {
@@ -8137,9 +8306,12 @@ mod tests {
         ];
 
         for (command, expected) in cases {
-            let err = run_cli(Cli { command: Commands::PerlCoreHarness { command } })
-                .err()
-                .ok_or_else(|| std::io::Error::other("perl-core-harness command should fail"))?;
+            let err = run_cli(Cli {
+                worktree_root: None,
+                command: Commands::PerlCoreHarness { command },
+            })
+            .err()
+            .ok_or_else(|| std::io::Error::other("perl-core-harness command should fail"))?;
 
             assert!(err.to_string().contains(expected), "expected {expected:?}, got {err:?}");
         }
@@ -8153,6 +8325,7 @@ mod tests {
         let missing_tree = temp.path().join("missing-perl-tree");
 
         let err = run_cli(Cli {
+            worktree_root: None,
             command: Commands::PerlCoreHarness {
                 command: PerlCoreHarnessCommand::Discover {
                     perl_tree: missing_tree,

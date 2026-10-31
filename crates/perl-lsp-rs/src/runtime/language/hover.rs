@@ -176,11 +176,49 @@ impl LspServer {
         value
     }
 
+    /// Decode escapes written by `escape_table_token`: `\\` -> `\`,
+    /// `\|` -> `|`, a lone `\` (or `\` before any other char) is kept.
+    fn decode_regex_table_escapes(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.clone().next() {
+                    Some('\\') => {
+                        chars.next();
+                        out.push('\\');
+                    }
+                    Some('|') => {
+                        chars.next();
+                        out.push('|');
+                    }
+                    _ => out.push('\\'),
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
     /// Minimal markdown-to-plaintext conversion for clients without markdown
     /// support. Strips common markdown formatting while preserving readability.
     fn markdown_to_plaintext(md: &str) -> String {
+        let mut in_regex_card = false;
+        let mut seen_table_row = false;
         md.lines()
             .map(|line| {
+                if line.trim() == "**Regex Pattern**" {
+                    in_regex_card = true;
+                    seen_table_row = false;
+                }
+                let is_table_row = line.trim_start().starts_with('|');
+                let decode_row = in_regex_card && is_table_row;
+                if is_table_row {
+                    seen_table_row = true;
+                } else if in_regex_card && seen_table_row && !line.trim().is_empty() {
+                    in_regex_card = false;
+                }
                 // Strip markdown headers (# ... ######)
                 let line = line.trim_start_matches('#').trim_start();
                 // Strip bold/italic markers
@@ -188,6 +226,9 @@ impl LspServer {
                 let line = line.replace(['*', '_'], "");
                 // Strip inline code backticks
                 let line = line.replace('`', "");
+                // Undo table escapes only inside the Regex Pattern card;
+                // unrelated content keeps its genuine backslashes.
+                let line = if decode_row { Self::decode_regex_table_escapes(&line) } else { line };
                 // Strip link syntax: [text](url) -> text
                 regex_lite_strip_links(&line)
             })
@@ -788,6 +829,19 @@ impl LspServer {
                 if token == sym.name || token.is_empty() {
                     return true; // keep — cursor is directly on the symbol
                 }
+                // #17296: `find_definition` falls back to the enclosing sub for
+                // tokens it cannot resolve (built-ins, call-site package names).
+                // Presenting that sub as the hovered entity is confidently wrong:
+                // drop it so the generic token/builtin fallback can answer (or
+                // decline) for the actual token. A qualified symbol still matches
+                // through its last `::` segment (`Foo::bar` hovered as `bar`).
+                if matches!(
+                    sym.kind,
+                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                ) && sym.name.rsplit("::").next() != Some(token.as_str())
+                {
+                    return false;
+                }
                 true
             })
         } else {
@@ -1252,8 +1306,8 @@ impl LspServer {
                 return HoverExtracted::Complete(hover);
             }
 
-            let bare = hover_text.trim_start_matches(['$', '@', '%']);
-            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(bare) {
+            // Preserve variable sigils: `$length` is not the `length` builtin.
+            if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(&hover_text) {
                 return HoverExtracted::Complete(json!({
                     "contents": {
                         "kind": "markdown",
@@ -1271,6 +1325,7 @@ impl LspServer {
             }
 
             // Check Test::More/Test2 function hover when source imports a test framework
+            let bare = hover_text.trim_start_matches(['$', '@', '%']);
             let is_test_source = text.contains("use Test::More") || text.contains("use Test2");
             if is_test_source
                 && let Some((sig, desc)) = crate::completion::get_test_more_documentation(bare)
@@ -2990,5 +3045,39 @@ Not found in workspace or configured include paths.
                 "value": text,
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod plaintext_tests {
+    use super::LspServer;
+
+    #[test]
+    fn plaintext_hover_undoes_table_pipe_escapes() {
+        // Rows inside the generated Regex Pattern card decode exactly the
+        // encoder inverse: `\|` -> `|`, `\\` -> `\`.
+        let md = "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n| `\\| ` | Alternation (OR) |\n| `[a\\|b]` | Character class |\n| `[\\\\\\|]` | Character class |\n| `[\\\\\\\\\\|]` | Character class |\n| `\\\\d` | Any decimal digit (0-9) |";
+        let plain = LspServer::markdown_to_plaintext(md);
+        assert!(plain.contains("| |  | Alternation (OR) |"), "{plain}");
+        assert!(plain.contains("[a|b]"), "{plain}");
+        assert!(plain.contains(r"[\|]"), "{plain}");
+        assert!(plain.contains(r"[\\|]"), "{plain}");
+        assert!(plain.contains(r"\d"), "{plain}");
+        assert!(!plain.contains(r"\\d"), "{plain}");
+    }
+
+    #[test]
+    fn plaintext_hover_keeps_genuine_backslashes_outside_regex_card() {
+        // Unrelated content (e.g. a POD synopsis fence) passes through
+        // byte-identical for backslash-pipe sequences.
+        let md = r"my $re = qr{[\|]}; also [a\|b] and \\| here";
+        assert_eq!(LspServer::markdown_to_plaintext(md), md);
+        let fenced = "```perl\nmy $re = qr{[\\|]};\n```";
+        let plain = LspServer::markdown_to_plaintext(fenced);
+        assert!(plain.contains(r"qr{[\|]}"), "{plain}");
+        // A lone backslash inside a card row is kept, not dropped.
+        let card = "**Regex Pattern**\n\n| Token | Meaning |\n|-------|-------|\n| `\\d` | digit |";
+        let plain = LspServer::markdown_to_plaintext(card);
+        assert!(plain.contains(r"\d"), "{plain}");
     }
 }

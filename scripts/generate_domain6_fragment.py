@@ -11,6 +11,7 @@ byte-identical output (proven by scripts/tests/test_domain6_fragment.py).
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import hashlib
 import json
 import re
@@ -2721,8 +2722,9 @@ SEEDS = {
             "usage and scripts/install.sh routed MINGW/MSYS/CYGWIN users "
             "to the exact command known to 404; the scan widens from "
             "1283 to 1604 files",
-            "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying "
-            "the #5461/#4348 reason; only the executable piped form is "
+            "new FORBIDDEN_PATTERNS entry for the install.ps1 piped-to-iex "
+            "one-liner carrying the #5461/#4348 reason; only the executable "
+            "piped form is "
             "forbidden, prose explaining the breakage stays clean "
             "(test-pinned), and installer_scripts_are_in_scan_scope pins "
             "all three paths so a scan-root edit cannot drop the "
@@ -2742,10 +2744,10 @@ SEEDS = {
 }
 
 
-def git(*args: str) -> str:
+def git(*args: str, cwd: Path = REPO_ROOT) -> str:
     proc = subprocess.run(
         ["git", *args],
-        cwd=REPO_ROOT,
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -2938,13 +2940,38 @@ def tree_blob(commit: str, path: str) -> str | None:
         ) from exc
 
 
-def range_holders(blob_id: str, path: str) -> list[str]:
-    """In-range non-merge commits whose tree holds this exact blob at path."""
-    raw = git(
-        "log", "--format=%H", f"--find-object={blob_id}",
-        f"{START_SHA}..{OBSERVED_HEAD}", "--", path,
-    )
-    return sorted({line for line in raw.splitlines() if line.strip()})
+class RangeHolderCache:
+    """Bounded, render-local memoization for exact range-holder queries."""
+
+    def __init__(self, repo_root: Path, start_sha: str, observed_head: str,
+                 query=git, max_entries: int = 1024) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be positive")
+        self.repo_root = repo_root.resolve()
+        self.start_sha = start_sha
+        self.observed_head = observed_head
+        self.query = query
+        self.max_entries = max_entries
+        self._values: OrderedDict[tuple, tuple[object, tuple[str, ...]]] = OrderedDict()
+
+    def holders(self, blob_id: str, path: str) -> tuple[str, ...]:
+        key = (str(self.repo_root), self.start_sha, self.observed_head,
+               blob_id, path, id(self.query))
+        if key in self._values:
+            self._values.move_to_end(key)
+            return self._values[key][1]
+        raw = self.query(
+            "log", "--format=%H", f"--find-object={blob_id}",
+            f"{self.start_sha}..{self.observed_head}", "--", path,
+            cwd=self.repo_root,
+        )
+        value = tuple(sorted({line for line in raw.splitlines() if line.strip()}))
+        # Keep the callable alive until eviction so its numeric identity cannot
+        # be recycled while a result for it remains cached.
+        self._values[key] = (self.query, value)
+        if len(self._values) > self.max_entries:
+            self._values.popitem(last=False)
+        return value
 
 
 def subject_shape(subject: str) -> str:
@@ -2955,7 +2982,7 @@ def subject_shape(subject: str) -> str:
     return "other-shaped"
 
 
-def verify_related_remerge(non_merge_shas: set[str]) -> dict:
+def verify_related_remerge(non_merge_shas: set[str], range_cache: RangeHolderCache) -> dict:
     """Mechanically prove RELATED_MERGE_984 carries no uncovered content.
 
     Proven facts (not prose): against fb68dd94 it differs in exactly one
@@ -2984,7 +3011,7 @@ def verify_related_remerge(non_merge_shas: set[str]) -> dict:
     blob_id = tree_blob(RELATED_MERGE_984, target)
     actual = {
         h
-        for h in range_holders(blob_id, target)
+        for h in range_cache.holders(blob_id, target)
         if h in non_merge_shas
     }
     if actual != holders:
@@ -3006,7 +3033,7 @@ def verify_related_remerge(non_merge_shas: set[str]) -> dict:
 
 
 def classify_merges(
-    merges: list[dict], non_merge_shas: set[str]
+    merges: list[dict], non_merge_shas: set[str], range_cache: RangeHolderCache
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     """Sort every enumerated merge into kept / related / excluded / created.
 
@@ -3035,7 +3062,7 @@ def classify_merges(
             kept.append(merge)
             continue
         if sha == RELATED_MERGE_984:
-            related_rows.append(verify_related_remerge(non_merge_shas))
+            related_rows.append(verify_related_remerge(non_merge_shas, range_cache))
             continue
         first_parent, _second_parent = merge_parents(sha)
         files = resolution_files(sha, first_parent)
@@ -3062,7 +3089,7 @@ def classify_merges(
                 uncovered.append(f"{path} (deleted-in-merge)")
                 continue
             holders = [
-                h for h in range_holders(blob_id, path)
+                h for h in range_cache.holders(blob_id, path)
                 if h in non_merge_shas
             ]
             if holders:
@@ -3338,6 +3365,7 @@ def canonical_digest(payload: dict) -> str:
 
 def build_document() -> dict:
     resolve_range()
+    range_cache = RangeHolderCache(REPO_ROOT, START_SHA, OBSERVED_HEAD)
     records = list_non_merges()
     non_merge_shas = {r["sha"] for r in records}
     merges = list_merges()
@@ -3346,7 +3374,7 @@ def build_document() -> dict:
             f"enumerated merge count {len(merges)} != {EXPECTED_MERGES}"
         )
     kept, related_rows, excluded, created = classify_merges(
-        merges, non_merge_shas
+        merges, non_merge_shas, range_cache
     )
     if len(excluded) != EXPECTED_CONTENT_FREE + EXPECTED_BLOB_COVERED:
         raise FragmentError(

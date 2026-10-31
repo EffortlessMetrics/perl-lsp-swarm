@@ -228,6 +228,8 @@ struct SymbolInfo {
     location: SourceLocation,
     /// Containing package name, if any.
     container: Option<String>,
+    /// Declaration keyword (e.g. `has`), if any.
+    declaration: Option<String>,
 }
 
 /// Workspace symbols provider for LSP `workspace/symbol` requests.
@@ -276,6 +278,31 @@ impl WorkspaceSymbolsProvider {
                     kind: symbol.kind,
                     location: symbol.location,
                     container,
+                    declaration: symbol.declaration.clone(),
+                });
+            }
+        }
+
+        // #18111: drop the synthesized same-name `has` accessor when the
+        // attribute itself is indexed at the same span; keep distinct names,
+        // distinct spans, and explicit subs. Symbol table is untouched.
+        {
+            let attribute_keys: HashSet<(String, usize, usize)> = symbols
+                .iter()
+                .filter(|s| {
+                    s.declaration.as_deref() == Some("has") && s.kind == SymbolKind::scalar()
+                })
+                .map(|s| (s.name.clone(), s.location.start, s.location.end))
+                .collect();
+            if !attribute_keys.is_empty() {
+                symbols.retain(|s| {
+                    !(s.declaration.as_deref() == Some("has")
+                        && s.kind == SymbolKind::Subroutine
+                        && attribute_keys.contains(&(
+                            s.name.clone(),
+                            s.location.start,
+                            s.location.end,
+                        )))
                 });
             }
         }
@@ -945,6 +972,77 @@ sub baz {
             .fact_source_traces
             .first()
             .ok_or_else(|| "expected workspace-symbol fact-source trace".into())
+    }
+
+    fn indexed(source: &str) -> (WorkspaceSymbolsProvider, HashMap<String, String>) {
+        let mut provider = WorkspaceSymbolsProvider::new();
+        let mut source_map = HashMap::new();
+        source_map.insert("file:///test.pm".to_string(), source.to_string());
+        let ast = must(Parser::new(source).parse());
+        provider.index_document("file:///test.pm", &ast, source);
+        (provider, source_map)
+    }
+
+    #[test]
+    fn workspace_moose_has_not_duplicated_as_accessor() {
+        let (provider, source_map) =
+            indexed("package Widget;\nuse Moose;\nhas name => (is => 'ro', isa => 'Str');\n");
+        let results = provider.search("name", &source_map);
+        let named: Vec<_> = results.iter().filter(|s| s.name == "name").collect();
+        assert_eq!(named.len(), 1, "expected 1 hit for `name`, got: {results:?}");
+    }
+
+    #[test]
+    fn workspace_moose_has_explicit_reader_kept() {
+        let (provider, source_map) = indexed(
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro', reader => 'get_name');\n",
+        );
+        assert_eq!(
+            provider
+                .search("get_name", &source_map)
+                .iter()
+                .filter(|s| s.name == "get_name")
+                .count(),
+            1
+        );
+        assert_eq!(
+            provider.search("name", &source_map).iter().filter(|s| s.name == "name").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn workspace_moose_has_plus_explicit_sub_kept() {
+        let (provider, source_map) = indexed(
+            "package Widget;\nuse Moose;\nhas name => (is => 'ro');\nsub name { return 1; }\n",
+        );
+        assert_eq!(
+            provider.search("name", &source_map).iter().filter(|s| s.name == "name").count(),
+            2
+        );
+    }
+
+    #[test]
+    fn workspace_moose_has_list_keeps_both() {
+        let (provider, source_map) =
+            indexed("package Widget;\nuse Moose;\nhas [qw(alpha beta)] => (is => 'ro');\n");
+        assert_eq!(
+            provider.search("alpha", &source_map).iter().filter(|s| s.name == "alpha").count(),
+            1
+        );
+        assert_eq!(
+            provider.search("beta", &source_map).iter().filter(|s| s.name == "beta").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn workspace_duplicate_name_different_spans_kept() {
+        let (provider, source_map) = indexed("sub name { return 1; }\nsub name { return 2; }\n");
+        assert_eq!(
+            provider.search("name", &source_map).iter().filter(|s| s.name == "name").count(),
+            2
+        );
     }
 
     #[test]
