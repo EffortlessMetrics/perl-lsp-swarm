@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Preserve bareword autoquoting when a fat comma follows a ternary argument, without quoting grouped or qualified operands.
+time: 2026-10-11T00:00:00Z
+custom:
+  PR: "17563"
+  Slug: ternary-fat-arrow-autoquote
+  Breaking: "no"

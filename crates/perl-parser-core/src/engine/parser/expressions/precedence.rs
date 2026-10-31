@@ -308,7 +308,21 @@ impl<'a> Parser<'a> {
             // trailing fat-arrow / comma continuation stopping before `:`.
             let then_expr = self.collect_fat_arrow_ternary_branch(then_expr)?;
             self.expect(TokenKind::Colon)?;
-            let else_expr = self.parse_ternary_with_tail(collect_else_list)?;
+            // Bounding the else tail must leave `=>` for the argument owner,
+            // but Perl still quotes the bareword immediately before it. Capture
+            // that lexical shape before parsing: grouping can disappear from
+            // the AST, and `(k) =>` and qualified names must stay executable.
+            let quote_else_bareword = !collect_else_list
+                && self.tokens.peek().is_ok_and(|token| {
+                    token.kind() == TokenKind::Identifier
+                        && !token.text.contains("::")
+                        && !token.text.contains('\'')
+                })
+                && self.tokens.peek_second().is_ok_and(|token| token.kind() == TokenKind::FatArrow);
+            let mut else_expr = self.parse_ternary_with_tail(collect_else_list)?;
+            if quote_else_bareword {
+                self.auto_quote_bareword_before_fat_comma(&mut else_expr)?;
+            }
             // Likewise for the else-branch.
             let else_expr = if collect_else_list {
                 self.collect_fat_arrow_ternary_branch(else_expr)?
