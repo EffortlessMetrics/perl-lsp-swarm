@@ -1,0 +1,9 @@
+project: product
+component: LSP server
+kind: Fixed
+body: "Analyzer find-references, go-to-definition, hover, and rename for a variable no longer include uses that belong to a different variable declared with the same name inside a nested block, and an initializer right-hand side such as `my $x = $x` binds outward instead of to the lexical it declares. Previously, querying an outer `my $x` also returned uses of an inner `my $x`, scoped rename edited the initializer right-hand side, and symbol resolution at a position could pick an enclosing declaration over the nested lexical under the cursor."
+time: 2026-10-17T00:00:00Z
+custom:
+  PR: "18117"
+  Slug: shadowed-references
+  Breaking: "no"
