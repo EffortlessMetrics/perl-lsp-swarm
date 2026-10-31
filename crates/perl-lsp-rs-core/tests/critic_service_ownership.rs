@@ -125,8 +125,39 @@ fn line_declares_module(code: &str, stem: &str) -> bool {
 /// an ungated production declaration can never inherit a neighbour's gate.
 /// A declaration this reader cannot attribute cleanly is simply not gated,
 /// leaving the file in the scanned denominator (#15728).
+fn blank_block_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut depth = 0usize;
+    while index < bytes.len() {
+        if depth == 0 && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            depth = 1;
+            out.extend_from_slice(b"  ");
+            index += 2;
+        } else if depth > 0 && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            depth += 1;
+            out.extend_from_slice(b"  ");
+            index += 2;
+        } else if depth > 0 && bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+            depth -= 1;
+            out.extend_from_slice(b"  ");
+            index += 2;
+        } else if depth > 0 {
+            out.push(if bytes[index] == b'\n' { b'\n' } else { b' ' });
+            index += 1;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn gate_decides_by_declaration(declaring: &str, stem: &str) -> bool {
-    let lines: Vec<&str> = declaring.lines().collect();
+    let cleaned = blank_block_comments(declaring);
+    let lines: Vec<&str> = cleaned.lines().collect();
+    let mut found_gated = false;
     for (index, line) in lines.iter().enumerate() {
         let code = line.split("//").next().unwrap_or("").trim();
         if !line_declares_module(code, stem) {
@@ -149,10 +180,14 @@ fn gate_decides_by_declaration(declaring: &str, stem: &str) -> bool {
             break;
         }
         if gated {
-            return true;
+            found_gated = true;
+        } else {
+            // An ungated sibling declaration decides against the gate in
+            // either order; a gated twin cannot hide it.
+            return false;
         }
     }
-    false
+    found_gated
 }
 
 /// Whether `path` is only reachable through a `#[cfg(test)]`-gated `mod`
@@ -592,6 +627,22 @@ fn exclusion_requires_positive_gated_declaration_evidence() {
         !gate_decides_by_declaration("#[cfg(test)]\nmod probe_extra;\n", "probe"),
         "a same-prefix different module never gates another stem"
     );
+    assert!(
+        !gate_decides_by_declaration("#[cfg(test)]\nmod probe;\n#[cfg(not(test))]\nmod probe;\n", "probe"),
+        "an ungated sibling declaration decides against the gate"
+    );
+    assert!(
+        !gate_decides_by_declaration("#[cfg(not(test))]\nmod probe;\n#[cfg(test)]\nmod probe;\n", "probe"),
+        "an ungated sibling declaration decides against the gate in either order"
+    );
+    assert!(
+        !gate_decides_by_declaration("/*\n#[cfg(test)]\nmod probe;\n*/\n", "probe"),
+        "a block-commented declaration is not gated evidence"
+    );
+    assert!(
+        gate_decides_by_declaration("/* note */\n#[cfg(test)]\nmod probe;\n", "probe"),
+        "a block comment before a real gated declaration keeps the gate"
+    );
 }
 
 #[test]
@@ -654,18 +705,12 @@ fn production_test_named_files_stay_in_the_ownership_denominator() -> Result<(),
     // test-named files must fail the full scan; the same token inside the
     // genuinely gated module stays excluded. A filename-skip mutant leaves
     // the violation list empty and fails this test.
-    let base = std::env::temp_dir().join("critic_ownership_fixture_15728");
+    let fixture = tempfile::tempdir()
+        .map_err(|error| format!("fixture tempdir must be creatable: {error}"))?;
+    let base = fixture.path();
     let crates_dir = base.join("crates");
     let src = crates_dir.join("fixture").join("src");
     let widget_dir = src.join("widget");
-    if let Err(error) = fs::remove_dir_all(&base) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(format!(
-                "stale fixture tree {} must be removable: {error}",
-                base.display()
-            ));
-        }
-    }
     fs::create_dir_all(&widget_dir).map_err(|error| {
         format!("fixture tree {} must be creatable: {error}", widget_dir.display())
     })?;
@@ -703,7 +748,7 @@ fn production_test_named_files_stay_in_the_ownership_denominator() -> Result<(),
         !joined.contains("fixture_tests.rs"),
         "the genuinely gated module must stay excluded, got:\n{joined}"
     );
-    let _ = fs::remove_dir_all(&base);
+    drop(fixture);
     Ok(())
 }
 
