@@ -30,6 +30,12 @@ fn names_after_insertion(existing: Vec<DocumentSymbol>, inserted: DocumentSymbol
     children.into_iter().map(|symbol| symbol.name).collect()
 }
 
+fn kinds_after_insertion(existing: Vec<DocumentSymbol>, inserted: DocumentSymbol) -> Vec<u32> {
+    let mut children = existing;
+    insert_by_source_position(&mut children, inserted);
+    children.into_iter().map(|symbol| symbol.kind).collect()
+}
+
 fn assert_insertion_order(
     existing: Vec<DocumentSymbol>,
     inserted: DocumentSymbol,
@@ -37,6 +43,14 @@ fn assert_insertion_order(
 ) {
     let names = names_after_insertion(existing, inserted);
     assert_eq!(names, expected);
+}
+
+fn assert_insertion_kinds(
+    existing: Vec<DocumentSymbol>,
+    inserted: DocumentSymbol,
+    expected: &[u32],
+) {
+    assert_eq!(kinds_after_insertion(existing, inserted), expected);
 }
 
 fn discover(source: &str) -> Vec<DiscoveredSubtest> {
@@ -467,11 +481,6 @@ fn child_insertion_name_then_kind_tiebreak_matches_assembler_from_either_order()
 
     let twin_a = fixture_symbol("twin", 7, span);
     let twin_b = fixture_symbol("twin", 12, span);
-    assert_insertion_order(vec![twin_b.clone()], twin_a.clone(), &["twin", "twin"]);
-    assert_insertion_order(vec![twin_a.clone()], twin_b.clone(), &["twin", "twin"]);
-    assert_eq!(
-        names_after_insertion(vec![twin_b], twin_a),
-        vec!["twin".to_string(), "twin".to_string()],
-        "kind 7 (Property) precedes kind 12 (Function) per #18111"
-    );
+    assert_insertion_kinds(vec![twin_b.clone()], twin_a.clone(), &[7, 12]);
+    assert_insertion_kinds(vec![twin_a.clone()], twin_b.clone(), &[7, 12]);
 }
