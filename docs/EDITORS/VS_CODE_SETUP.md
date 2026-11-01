@@ -125,12 +125,26 @@ matters.
 
 ### Basic Configuration
 
-Add to your workspace `.vscode/settings.json`:
+Machine-scoped settings (`perl-lsp.serverPath`, `perl-lsp.autoDownload`,
+`perl-lsp.channel`, `perl-lsp.versionTag`, and other keys declared with
+`scope: "machine"` in the extension manifest) are read from **User** or
+**Machine** settings only. VS Code silently ignores them in
+`.vscode/settings.json`, folder settings, or a `.code-workspace` file so a
+repository cannot choose which binary runs. Run **Preferences: Open User
+Settings (JSON)** and configure installation and binary selection there:
 
 ```json
 {
   "perl-lsp.serverPath": "",
-  "perl-lsp.autoDownload": true,
+  "perl-lsp.autoDownload": true
+}
+```
+
+For project-specific **resource-scoped** settings, create
+`.vscode/settings.json` in your project root:
+
+```json
+{
   "perl-lsp.trace.server": "off",
   "perl-lsp.enableSemanticTokens": true,
   "perl-lsp.enableFormatting": true,
@@ -166,11 +180,12 @@ For global settings, open VS Code settings (`Ctrl+,` or `Cmd+,`):
 1. Search for "perl-lsp"
 2. Configure settings as needed
 
-Or edit `settings.json` directly:
+Or edit user settings JSON directly:
 
 1. Press `Ctrl+Shift+P` (Cmd+Shift+P on macOS)
-2. Type "Preferences: Open Settings (JSON)"
-3. Add your configuration
+2. Run **Preferences: Open User Settings (JSON)**
+3. Add machine-scoped keys such as `perl-lsp.serverPath` and
+   `perl-lsp.autoDownload` there (not in the workspace file)
 
 ### Common Extension Settings
 
@@ -643,15 +658,16 @@ Logs appear in the VS Code Output panel under "Perl Language Server".
 
 ## Complete Example Configuration
 
-Here is a typical `.vscode/settings.json` for a Perl project using only real extension settings:
+Here is a typical `.vscode/settings.json` for a Perl project using resource-
+and window-scoped extension settings. Configure `perl-lsp.serverPath`,
+`perl-lsp.autoDownload`, and other machine-scoped keys in **User Settings
+(JSON)** instead — workspace copies are ignored.
 
 This example adds `.` and `vendor/lib` to the defaults for projects that use
 those paths; omit either path when the project does not need it.
 
 ```json
 {
-  "perl-lsp.serverPath": "",
-  "perl-lsp.autoDownload": true,
   "perl-lsp.trace.server": "off",
   "perl-lsp.enableSemanticTokens": true,
   "perl-lsp.enableFormatting": true,
@@ -663,7 +679,6 @@ those paths; omit either path when the project does not need it.
     "local/lib/perl5",
     "vendor/lib"
   ],
-  "perl-lsp.perltidyConfig": "",
   "perl-lsp.featureProfile": "auto",
 
   "[perl]": {

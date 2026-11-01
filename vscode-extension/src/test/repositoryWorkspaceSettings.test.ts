@@ -1,9 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { declaredMachineScopedKeys } from './machineScopedManifestKeys';
+import {
+  machineScopedKeysInWorkspaceGuidance,
+  USER_FACING_SETUP_GUIDES,
+} from './userFacingSetupDocsGuard';
+
 const EXT_ROOT = path.resolve(__dirname, '..', '..');
 const REPO_ROOT = path.resolve(EXT_ROOT, '..');
-const EXTENSION_MANIFEST = path.join(EXT_ROOT, 'package.json');
 const SHARED_SETTINGS = path.join(REPO_ROOT, '.vscode', 'settings.json');
 const LOCAL_CONTRACT = path.join(REPO_ROOT, 'docs', 'contributing', 'VS_CODE_LOCAL_SERVER.md');
 
@@ -53,31 +58,6 @@ function collectStrings(value: unknown): string[] {
     return Object.values(value).flatMap((item) => collectStrings(item));
   }
   return [];
-}
-
-/**
- * The settings the extension declares as `scope: "machine"`. VS Code reads these
- * from User/Machine settings only, so no committed file can set them.
- */
-function declaredMachineScopedKeys(): string[] {
-  const manifest = readRecord(EXTENSION_MANIFEST);
-  const contributes = manifest.contributes;
-  const configuration = isRecord(contributes) ? contributes.configuration : undefined;
-  const sections = Array.isArray(configuration) ? configuration : [configuration];
-
-  const keys: string[] = [];
-  for (const section of sections) {
-    const properties = isRecord(section) ? section.properties : undefined;
-    if (!isRecord(properties)) {
-      continue;
-    }
-    for (const [key, declaration] of Object.entries(properties)) {
-      if (isRecord(declaration) && declaration.scope === 'machine') {
-        keys.push(key);
-      }
-    }
-  }
-  return keys.sort();
 }
 
 function fencedJson(markdown: string, marker: string): Record<string, unknown> {
@@ -176,5 +156,32 @@ describe('explicit local server override contract', () => {
     expect(contract).toContain('do not make it a public release');
     expect(contract).toContain('reload the window');
     expect(contract).toContain('normal installed-product lifecycle');
+  });
+});
+
+describe('user-facing setup guides', () => {
+  const machineKeys = declaredMachineScopedKeys();
+
+  test('derive a non-empty machine-scoped key set from the manifest', () => {
+    expect(machineKeys.length).toBeGreaterThan(4);
+    expect(machineKeys).toContain('perl-lsp.serverPath');
+    expect(machineKeys).toContain('perl-lsp.autoDownload');
+  });
+
+  test('do not route machine-scoped keys through workspace settings examples', () => {
+    const failures: string[] = [];
+
+    for (const relativePath of USER_FACING_SETUP_GUIDES) {
+      const absolutePath = path.join(REPO_ROOT, relativePath);
+      const markdown = readText(absolutePath);
+      const violations = machineScopedKeysInWorkspaceGuidance(markdown, machineKeys);
+      for (const violation of violations) {
+        failures.push(
+          `${relativePath}:${violation.line}: ${violation.key} (${violation.reason})`,
+        );
+      }
+    }
+
+    expect(failures).toEqual([]);
   });
 });

@@ -116,7 +116,8 @@ If you pass an unrecognized token, the server falls back to the compiled default
 
 ### VS Code
 
-Add to your workspace `.vscode/settings.json` or user settings:
+Add to your workspace `.vscode/settings.json` for project-local profile
+selection:
 
 ```json
 {
@@ -124,7 +125,11 @@ Add to your workspace `.vscode/settings.json` or user settings:
 }
 ```
 
-Or pass it as a server argument in your editor's LSP configuration. For VS Code with a custom server path:
+Or add the same key via **Preferences: Open User Settings (JSON)**.
+
+For a custom `perllsp` binary and feature profile together, use **Preferences:
+Open User Settings (JSON)** — `perl-lsp.serverPath` is machine-scoped and is
+ignored in workspace settings:
 
 ```json
 {

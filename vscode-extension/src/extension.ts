@@ -58,7 +58,7 @@ import {
 } from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
-import { FileKind } from './fileCreation';
+import { FileKind, populateCreatedFiles } from './fileCreation';
 import { createPerlScaffold } from './scaffoldCommands';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
