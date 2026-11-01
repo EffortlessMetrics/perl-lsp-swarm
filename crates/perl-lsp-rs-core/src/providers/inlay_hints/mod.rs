@@ -18,10 +18,13 @@
 //! ```
 
 mod impl_inlay_hints;
+mod output_builtin_roles;
 mod resolve_subject;
 
 pub use impl_inlay_hints::{
-    InlayHint, InlayHintKind, InlayHintsProvider, extract_param_names, inlay_hint_label_str,
-    parameter_hints, parameter_hints_with_resolver, trivial_type_hints,
+    InlayHint, InlayHintKind, extract_param_names, inlay_hint_label_str, trivial_type_hints,
+};
+pub use output_builtin_roles::{
+    InlayHintsProvider, parameter_hints, parameter_hints_with_resolver,
 };
 pub use resolve_subject::InlayHintResolveSubjectV1;
