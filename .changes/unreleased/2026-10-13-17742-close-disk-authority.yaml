@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Restore current disk symbols and cross-file navigation when an edited Perl buffer is closed with its unsaved changes discarded.
+time: 2026-10-13T01:42:49Z
+custom:
+  PR: "17742"
+  Slug: close-disk-authority
+  Breaking: "no"

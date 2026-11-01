@@ -1433,12 +1433,9 @@ fn test_did_close_removes_virtual_file_from_workspace_index()
 
 #[cfg(feature = "workspace")]
 #[test]
-fn test_did_close_preserves_workspace_index_for_existing_file()
+fn test_did_close_restores_workspace_index_from_readable_disk()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Use a real temporary file so that `source_path_from_uri(uri).map(|p| p.exists())`
-    // returns `true`, matching the "file exists on disk" branch in handle_did_close.
-    // A virtual URI (no backing file) would be treated as editor-only and removed
-    // from the workspace index on close, the opposite of what this test validates.
+    // Readable admitted disk source is restored after buffer retirement.
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("still_indexed.pl");
     let source = "package Close::Only;\nsub still_indexed { 1 }\n1;\n";
@@ -1480,11 +1477,11 @@ fn test_did_close_preserves_workspace_index_for_existing_file()
     if let Some(coordinator) = server.coordinator() {
         assert!(
             !coordinator.index().file_symbols(&uri).is_empty(),
-            "didClose is not file deletion; workspace-backed symbols for existing files must remain"
+            "readable admitted disk source must restore workspace symbols"
         );
         assert!(
             coordinator.index().document_store().get(&uri).is_some(),
-            "didClose must not remove workspace-index document store entries for existing files"
+            "successful disk reload must restore the workspace document store"
         );
     }
 
@@ -3718,5 +3715,260 @@ fn open_save_source_generation_zero_never_crosses_live_commit()
         "no workspace facts may appear for a skipped generation-zero save"
     );
 
+    Ok(())
+}
+
+/// Deterministic interposition in the real close/watcher paths; no mocked index.
+#[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_does_not_overwrite_newer_watcher_source() -> Result<(), Box<dyn std::error::Error>>
+{
+    close_watcher_interposition("changed")
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_does_not_resurrect_watcher_deleted_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    close_watcher_interposition("deleted")
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_retries_after_unrelated_watcher_write() -> Result<(), Box<dyn std::error::Error>>
+{
+    close_watcher_interposition("unrelated")
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_preserves_last_watcher_result_when_retries_exhausted()
+-> Result<(), Box<dyn std::error::Error>> {
+    close_watcher_interposition("exhausted")
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_retry_rejection_retires_intervening_watcher_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    for event in ["retry_missing", "retry_directory", "retry_binary"] {
+        close_watcher_interposition(event)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_retry_parse_failure_retires_intervening_watcher_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    close_watcher_interposition("retry_parse_failure")
+}
+
+#[cfg(feature = "workspace")]
+fn close_watcher_interposition(event: &'static str) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("Journey.pm");
+    let disk = "package Journey;\nsub old_disk { 1 }\n1;\n";
+    let newer = "package Journey;\n\nsub new_disk { 2 }\n1;\n";
+    let buffer = "package Journey;\nsub buffer_only { 3 }\n1;\n";
+    std::fs::write(&path, disk)?;
+    let url = url::Url::from_file_path(&path).map_err(|_| "invalid path")?;
+    let uri = url.to_string();
+    let server = StdArc::new(LspServer::new());
+    server.did_open(json!({"textDocument": {
+        "uri": uri, "languageId": "perl", "version": 1, "text": buffer
+    }}))?;
+    let coordinator = server.coordinator().ok_or("missing coordinator")?;
+    coordinator.index().index_initial_file(url, buffer.to_string())?;
+    assert!(coordinator.index().file_symbols(&uri).iter().any(|s| s.name == "buffer_only"));
+    let reads = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_reads = StdArc::clone(&reads);
+    let weak = StdArc::downgrade(&server);
+    let hook_path = path.clone();
+    let hook_uri = uri.clone();
+    *server.close_disk_loaded_hook.lock() = Some(Box::new(move || {
+        hook_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let server = weak.upgrade().expect("live close server");
+        match event {
+            "changed"
+            | "exhausted"
+            | "retry_missing"
+            | "retry_directory"
+            | "retry_binary"
+            | "retry_parse_failure" => {
+                std::fs::write(&hook_path, newer).expect("write newer disk");
+                server.handle_watched_file_batch(vec![hook_uri.clone()]);
+                assert!(
+                    server
+                        .coordinator()
+                        .unwrap()
+                        .index()
+                        .file_symbols(&hook_uri)
+                        .iter()
+                        .any(|s| s.name == "new_disk"),
+                    "watcher must publish B before close resumes"
+                );
+                match event {
+                    "retry_missing" => {
+                        std::fs::remove_file(&hook_path).expect("missing retry source")
+                    }
+                    "retry_directory" => {
+                        std::fs::remove_file(&hook_path).expect("remove source before directory");
+                        std::fs::create_dir(&hook_path).expect("directory retry source");
+                    }
+                    "retry_binary" => std::fs::write(&hook_path, "\0invalid binary\n")
+                        .expect("binary retry source"),
+                    "retry_parse_failure" => {
+                        // Existing WorkspaceIndex regression's deterministic
+                        // NestingTooDeep failure, without changing the parser.
+                        let too_deep = format!(
+                            "package Journey;\n{}1;{}\n",
+                            "if ($a) { ".repeat(200),
+                            "}".repeat(200)
+                        );
+                        let control = perl_workspace::workspace_index::WorkspaceIndex::new();
+                        assert!(
+                            control
+                                .index_initial_file(
+                                    url::Url::from_file_path(&hook_path).unwrap(),
+                                    too_deep.clone()
+                                )
+                                .is_err(),
+                            "fixture must exercise import Err, not ordinary diagnostics"
+                        );
+                        std::fs::write(&hook_path, too_deep).expect("unindexable retry source");
+                    }
+                    _ => {}
+                }
+                if event == "exhausted" {
+                    let weak = weak.clone();
+                    let path = hook_path.clone();
+                    let uri = hook_uri.clone();
+                    let reads = StdArc::clone(&hook_reads);
+                    *server.close_disk_loaded_hook.lock() = Some(Box::new(move || {
+                        reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let server = weak.upgrade().expect("live retry server");
+                        std::fs::write(&path, "package Journey;\n\n\nsub final_disk { 4 }\n1;\n")
+                            .expect("write final disk C");
+                        server.handle_watched_file_batch(vec![uri.clone()]);
+                        assert!(
+                            server
+                                .coordinator()
+                                .unwrap()
+                                .index()
+                                .file_symbols(&uri)
+                                .iter()
+                                .any(|s| s.name == "final_disk")
+                        );
+                        // The third sentinel rejects an extra, unhooked read
+                        // that would otherwise reimport C and pass final facts.
+                        let sentinel_reads = StdArc::clone(&reads);
+                        *server.close_disk_loaded_hook.lock() = Some(Box::new(move || {
+                            sentinel_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }));
+                    }));
+                }
+            }
+            "deleted" => {
+                std::fs::remove_file(&hook_path).expect("delete backing file");
+                server.handle_watched_file_batch(vec![hook_uri.clone()]);
+                assert!(
+                    server.coordinator().unwrap().index().document_store().get(&hook_uri).is_none()
+                );
+            }
+            "unrelated" => {
+                let other = hook_path.with_file_name("Other.pm");
+                std::fs::write(&other, "package Other;\nsub unrelated { 1 }\n")
+                    .expect("write other source");
+                let other_uri = url::Url::from_file_path(other).expect("other URI").to_string();
+                server.handle_watched_file_batch(vec![other_uri.clone()]);
+                assert!(!server.coordinator().unwrap().index().file_symbols(&other_uri).is_empty());
+            }
+            _ => unreachable!("fixed fixture event"),
+        }
+    }));
+    server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
+    let symbols = coordinator.index().file_symbols(&uri);
+    assert!(!symbols.iter().any(|s| s.name == "buffer_only"));
+    match event {
+        "changed" => {
+            assert!(!symbols.iter().any(|s| s.name == "old_disk"), "close must reject stale A");
+            let symbol = symbols.iter().find(|s| s.name == "new_disk").ok_or("new disk absent")?;
+            assert_eq!(
+                (
+                    symbol.range.start.line,
+                    symbol.range.start.column,
+                    symbol.range.end.line,
+                    symbol.range.end.column
+                ),
+                (2, 0, 2, 18)
+            );
+        }
+        "exhausted" => {
+            assert_eq!(
+                reads.load(std::sync::atomic::Ordering::SeqCst),
+                2,
+                "exactly two bounded reads must be interposed"
+            );
+            assert!(!symbols.iter().any(|s| s.name == "old_disk" || s.name == "new_disk"));
+            let symbol =
+                symbols.iter().find(|s| s.name == "final_disk").ok_or("final disk C absent")?;
+            assert_eq!(
+                (
+                    symbol.range.start.line,
+                    symbol.range.start.column,
+                    symbol.range.end.line,
+                    symbol.range.end.column
+                ),
+                (3, 0, 3, 20)
+            );
+        }
+        "deleted"
+        | "retry_missing"
+        | "retry_directory"
+        | "retry_binary"
+        | "retry_parse_failure" => {
+            assert!(
+                symbols.is_empty(),
+                "close must not retain rejected or deleted disk source: {event}"
+            );
+            assert!(coordinator.index().document_store().get(&uri).is_none());
+        }
+        "unrelated" => assert!(
+            symbols.iter().any(|s| s.name == "old_disk"),
+            "bounded fresh read must retain ordinary close availability after unrelated write"
+        ),
+        _ => unreachable!("fixed fixture event"),
+    }
+    Ok(())
+}
+
+#[cfg(feature = "workspace")]
+#[test]
+fn test_did_close_failed_reload_leaves_workspace_state_absent()
+-> Result<(), Box<dyn std::error::Error>> {
+    for replace_with_directory in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("Unavailable.pm");
+        let buffer = "package Unavailable;\nsub buffer_only { 1 }\n1;\n";
+        std::fs::write(&path, buffer)?;
+        let url = url::Url::from_file_path(&path).map_err(|_| "invalid path")?;
+        let uri = url.to_string();
+        let server = LspServer::new();
+        server.did_open(json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1, "text": buffer
+        }}))?;
+        let coordinator = server.coordinator().ok_or("missing coordinator")?;
+        coordinator.index().index_initial_file(url, buffer.to_string())?;
+        assert!(coordinator.index().document_store().get(&uri).is_some());
+        std::fs::remove_file(&path)?;
+        if replace_with_directory {
+            std::fs::create_dir(&path)?;
+        }
+        server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
+        assert!(coordinator.index().file_symbols(&uri).is_empty());
+        assert!(coordinator.index().document_store().get(&uri).is_none());
+        assert_eq!(server.memory_state_snapshot().documents, 0);
+    }
     Ok(())
 }
