@@ -157,9 +157,6 @@ pub(super) fn generate_tests_status(
     // Allow zero or None — render as UNVERIFIED instead of bailing (#5275).
     // Discovery (`cargo test -- --list`) is not execution evidence; PASS is
     // minted only from a supplied all-pass execution bundle (#14298).
-    let tier_a_tests_str =
-        tests.tier_a_lib_tests.map_or_else(|| "UNVERIFIED".to_string(), |n| n.to_string());
-
     let ignored_tests_str =
         tests.ignored_total.map_or_else(|| "UNVERIFIED".to_string(), |n| n.to_string());
 
@@ -179,8 +176,18 @@ pub(super) fn generate_tests_status(
 
     let (tier_a_result, tier_a_verdict) =
         tier_a_result_and_verdict(tests.execution_outcomes.as_deref());
+    let executed_all_pass = matches!((tier_a_result, tier_a_verdict), ("100% pass", "PASS"));
+    let (tier_a_tests_str, source_label) = if executed_all_pass {
+        let executed = tests.execution_outcomes.as_ref().map_or(0, Vec::len);
+        (executed.to_string(), "executed")
+    } else {
+        (
+            tests.tier_a_lib_tests.map_or_else(|| "UNVERIFIED".to_string(), |n| n.to_string()),
+            "discovered",
+        )
+    };
     let table_rows = format!(
-        "| **Tier A Tests** | {tier_a_tests_str} lib tests (discovered), {ignored_tests_str} ignores (tracked) | {tier_a_result} | {tier_a_verdict} |\n\
+        "| **Tier A Tests** | {tier_a_tests_str} lib tests ({source_label}), {ignored_tests_str} ignores (tracked) | {tier_a_result} | {tier_a_verdict} |\n\
          | **Tracked Test Debt** | {tracked_debt_str} ({bug_count_str} bug, {manual_count_str} manual) | 0 | Near-zero |"
     );
 
@@ -326,6 +333,10 @@ mod fail_closed_tests {
         color_eyre::eyre::ensure!(
             row.contains("100% pass") && row.contains("PASS"),
             "all-pass execution evidence must render PASS: {row}"
+        );
+        color_eyre::eyre::ensure!(
+            row.contains("3 lib tests (executed)") && !row.contains("12269"),
+            "PASS count must bind to the executed population, not discovery: {row}"
         );
         Ok(())
     }

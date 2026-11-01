@@ -588,25 +588,46 @@ fn check_evidence_verdict(
             );
         }
     }
-    if passing_verdict && !execution_backed_all_pass(evidence, &surface.id) {
-        // Form (100% / PASS) is not substance. Discovery inventory and
-        // bootstrap seed data must not authorize a passing tests row (#14298).
+    if passing_verdict && !execution_backed_all_pass(evidence, &surface.id, row) {
+        // Form (100% / PASS) is not substance. Discovery inventory, bootstrap
+        // seed data, and a smaller live_run population must not authorize a
+        // passing tests row (#14298).
         bail!(
-            "surface {}: NOT_PROVEN — {row_label} claims PASS/100% without execution-backed evidence (live_run all-pass Outcomes)",
+            "surface {}: NOT_PROVEN — {row_label} claims PASS/100% without execution-backed evidence (live_run all-pass Outcomes matching the claimed lib-test count)",
             surface.id
         );
     }
     Ok(())
 }
 
-fn execution_backed_all_pass(evidence: Option<&EvidenceBundle>, surface_id: &str) -> bool {
+/// First `N` immediately before ` lib tests` in a Tier A observation cell.
+fn claimed_lib_test_count(row: &str) -> Option<u64> {
+    const MARKER: &str = " lib tests";
+    let at = row.find(MARKER)?;
+    let prefix = row.get(..at)?;
+    let start = prefix.bytes().rposition(|b| !b.is_ascii_digit()).map_or(0, |i| i + 1);
+    prefix.get(start..)?.parse().ok().filter(|&n| n > 0)
+}
+
+fn execution_backed_all_pass(
+    evidence: Option<&EvidenceBundle>,
+    surface_id: &str,
+    row: &str,
+) -> bool {
+    let Some(claimed) = claimed_lib_test_count(row) else {
+        return false;
+    };
     let Some(evidence) = evidence else {
         return false;
     };
     if evidence.evidence_class != "live_run" {
         return false;
     }
-    evidence.cells.iter().any(|cell| cell.id == surface_id && cell_is_execution_all_pass(cell))
+    evidence.cells.iter().any(|cell| {
+        cell.id == surface_id
+            && cell_is_execution_all_pass(cell)
+            && cell.results.len() as u64 == claimed
+    })
 }
 
 fn cell_is_execution_all_pass(cell: &SourceCell) -> bool {
@@ -1092,25 +1113,32 @@ no data yet
         assert!(format!("{error:#}").contains("PASS and FAIL"));
     }
 
-    fn tests_tier_a_bundle(class: &str, outcome: Outcome) -> EvidenceBundle {
+    fn tests_tier_a_bundle(class: &str, outcomes: &[Outcome]) -> EvidenceBundle {
         let sha = "a".repeat(40);
+        let identities: Vec<String> =
+            (0..outcomes.len()).map(|index| format!("tier-a-{index}")).collect();
+        let results = identities
+            .iter()
+            .zip(outcomes)
+            .map(|(identity, outcome)| ResultRow {
+                identity: identity.clone(),
+                subject_sha: sha.clone(),
+                run_id: "run-1".into(),
+                observed_at: "2026-08-12T00:00:00Z".into(),
+                outcome: *outcome,
+            })
+            .collect();
         EvidenceBundle {
             schema_version: "generated_status_evidence.v1".into(),
             evidence_class: class.into(),
-            subject_sha: sha.clone(),
+            subject_sha: sha,
             run_id: "run-1".into(),
             observed_at: "2026-08-12T00:00:00Z".into(),
             cells: vec![SourceCell {
                 id: "tests.tier_a".into(),
                 claim_boundary: "test execution only".into(),
-                expected_population: vec!["tier-a-suite".into()],
-                results: vec![ResultRow {
-                    identity: "tier-a-suite".into(),
-                    subject_sha: sha,
-                    run_id: "run-1".into(),
-                    observed_at: "2026-08-12T00:00:00Z".into(),
-                    outcome,
-                }],
+                expected_population: identities,
+                results,
             }],
         }
     }
@@ -1151,17 +1179,38 @@ no data yet
 
     #[test]
     fn tier_a_pass_with_live_run_all_pass_evidence_is_accepted() {
+        const TESTS_PASS_MATCHED: &str = "| **Tier A Tests** | 2 lib tests (executed), 0 ignores (tracked) | 100% pass | PASS |\n";
+        let (dir, contract) = surface_fixture(&[
+            ("status/lsp.md", LSP_OK),
+            ("status/tests.md", TESTS_PASS_MATCHED),
+            ("status/quality.md", QUALITY_OK),
+        ]);
+        let evidence = tests_tier_a_bundle("live_run", &[Outcome::Pass, Outcome::Pass]);
+        let checked = must_with(
+            check_registered_surfaces(dir.path(), &contract, Some(&evidence)),
+            "PASS with live_run all-pass Outcomes matching the claimed count must be accepted",
+        );
+        assert_eq!(checked.len(), 3);
+    }
+
+    #[test]
+    fn tier_a_pass_with_mismatched_live_run_population_fails_closed() {
+        // A one-identity live_run must not certify a 10161-test PASS row.
         let (dir, contract) = surface_fixture(&[
             ("status/lsp.md", LSP_OK),
             ("status/tests.md", TESTS_PASS_FORM),
             ("status/quality.md", QUALITY_OK),
         ]);
-        let evidence = tests_tier_a_bundle("live_run", Outcome::Pass);
-        let checked = must_with(
+        let evidence = tests_tier_a_bundle("live_run", &[Outcome::Pass]);
+        let error = must_err_with(
             check_registered_surfaces(dir.path(), &contract, Some(&evidence)),
-            "PASS with live_run all-pass Outcomes must be accepted",
+            "a smaller live_run population must not authorize the claimed count",
         );
-        assert_eq!(checked.len(), 3);
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("NOT_PROVEN") && message.contains("claimed lib-test count"),
+            "rejection must name the population bind, got: {message}"
+        );
     }
 
     #[test]
@@ -1177,7 +1226,7 @@ no data yet
             ("live_run", Outcome::Fail),
             ("live_run", Outcome::NotRun),
         ] {
-            let evidence = tests_tier_a_bundle(class, outcome);
+            let evidence = tests_tier_a_bundle(class, &[outcome]);
             let error = must_err_with(
                 check_registered_surfaces(dir.path(), &contract, Some(&evidence)),
                 "PASS without live_run all-pass Outcomes must fail closed",
