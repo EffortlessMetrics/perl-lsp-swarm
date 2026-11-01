@@ -28,10 +28,12 @@
 //!
 //! # Substrate seams (documented limitations, not silent gaps)
 //!
-//! - The per-body PIR lowering ([`lower_single_body`]) models lexical
-//!   reads/writes/modifies, stash access, assignments, branches, loops, and
-//!   returns — but NOT calls or dynamic boundaries (they are recorded as
-//!   unsupported constructs in that lowering). Outbound calls and dynamic
+//! - The per-body PIR lowering ([`lower_single_body_with_unsupported`])
+//!   models lexical reads/writes/modifies, stash access, assignments,
+//!   branches, loops, and returns — but NOT calls or dynamic boundaries
+//!   (they are recorded as unsupported constructs in that lowering; the
+//!   declaration-shaped-call slice travels with the nodes into the facet
+//!   ledger). Outbound calls and dynamic
 //!   boundaries therefore come from the canonical flat HIR items
 //!   ([`HirKind::CallExpr`], [`HirKind::MethodCallExpr`],
 //!   [`HirKind::IndirectCallExpr`], [`HirKind::DynamicBoundary`]), attributed
@@ -54,10 +56,10 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    BodyOwnerKind, DeclStorageClass, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody,
-    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirScopeId, HirStmt, lower_ast,
+    BodyOwnerKind, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody, HirExpr, HirExprId,
+    HirFile, HirItem, HirKind, HirScopeId, lower_ast,
 };
-use perl_parser_core::pir::{PirNode, PirOperation, lower_single_body};
+use perl_parser_core::pir::{PirNode, PirOperation, lower_single_body_with_unsupported};
 use perl_semantic_facts::interprocedural::{
     BindingPlaceRef, BodyIdentity, BoundarySiteRef, CallResolution, CallableFactRef,
     CallableSemanticSummary, CallableSemanticSummaryRef, ClaimCeiling, CompositionPolicy,
@@ -338,9 +340,16 @@ fn assemble_one(
         return;
     };
 
-    let nodes = lower_single_body(body, perl_parser_core::hir::HirBodyId(body_idx as u32), file);
+    // The per-body receipt slice travels with the nodes: declaration-shaped
+    // calls PIR records as unsupported but emits no node for would otherwise
+    // leave no trace in the facet ledger (#14798, R2).
+    let (nodes, declaration_shaped_calls) = lower_single_body_with_unsupported(
+        body,
+        perl_parser_core::hir::HirBodyId(body_idx as u32),
+        file,
+    );
     let outbound = collect_outbound(file, ctx, decl_scope);
-    let unmodeled = count_unmodeled(body);
+    let unmodeled = count_unmodeled(body).saturating_add(declaration_shaped_calls);
     // The work law: zero useful visited operations can never satisfy a
     // summary. Visited operations are the per-body PIR nodes, the attributed
     // flat items this callable owns, and the unmodeled body expressions the
@@ -483,17 +492,12 @@ fn count_unmodeled(body: &HirBody) -> u32 {
             _ => {}
         }
     }
-    // Declaration-shaped legacy calls (`field $x = 1`) parse as a declaration
-    // but invoke an arbitrary subroutine. PIR lowers the argument effects and
-    // records the callee as unsupported, but that receipt does not reach this
-    // path: `lower_single_body` returns nodes only. Counting the statement
-    // here is what keeps Result/Place/Effect from reporting Complete over a
-    // call whose behaviour is not modelled at all.
-    for stmt in body.stmts.iter() {
-        if matches!(stmt, HirStmt::Let { storage: DeclStorageClass::Unknown, .. }) {
-            count = count.saturating_add(1);
-        }
-    }
+    // Declaration-shaped legacy calls (`field $x = 1`) need no arm here:
+    // the per-body PIR receipt already records the callee as unsupported,
+    // and that count reaches this path through
+    // `lower_single_body_with_unsupported`, which the caller adds to this
+    // total. Re-deriving it from the HIR statement shape here would count
+    // the same boundary twice (#14798, R2).
     count
 }
 
