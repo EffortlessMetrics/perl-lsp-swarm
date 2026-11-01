@@ -4,6 +4,6 @@ kind: Fixed
 body: Bind editor-UX scorecard JSON, status Markdown, and the optional embedded receipt to one publication generation so a mixed set is refused and a failed dest write rolls back to the previous generation.
 time: 2026-11-01T21:39:00Z
 custom:
-  PR: "13321"
+  PR: "18665"
   Slug: ux-scorecard-generation-coherent
   Breaking: "no"
