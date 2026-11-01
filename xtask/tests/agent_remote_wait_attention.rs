@@ -41,10 +41,22 @@ const NO_SCHEDULED_POLLING: &[(&str, &str)] = &[
 const OBLIGATIONS: &[(&str, &[(&str, &str)])] =
     &[("attention release", ATTENTION_RELEASE), ("no scheduled polling", NO_SCHEDULED_POLLING)];
 
-/// Lowercase affirmative form of the polling directive. Marker presence alone
-/// cannot reject a surface that keeps the negative sentence but adds the exact
-/// polling behavior elsewhere, so validation rejects the directive itself.
-const ADDITIVE_POLLING_DIRECTIVE: &str = "create a timer to revisit the same remote condition";
+/// Lowercase affirmative forms of same-session revisit directives. Marker presence
+/// alone cannot reject a surface that keeps the negative sentence but adds the
+/// polling behavior elsewhere, so validation rejects these directives themselves.
+const ADDITIVE_REVISIT_POLLING_DIRECTIVES: &[&str] = &[
+    "create a timer to revisit the same remote condition",
+    "create a polling child to revisit the same remote condition",
+    "create a scheduled monitor to revisit the same remote condition",
+    "create an idle watcher to revisit the same remote condition",
+];
+
+const ADDITIVE_POLLING_ERROR: &str =
+    "adds a same-session polling directive that contradicts the remote-wait invariant";
+
+fn additive_polling_error(path: &str) -> String {
+    format!("{path} {ADDITIVE_POLLING_ERROR}")
+}
 
 const SURFACES: &[&str] = &[
     "AGENTS.md",
@@ -84,10 +96,9 @@ fn validate_surface(path: &str, text: &str) -> Result<(), String> {
             return Err(format!("{path} contradicts remote-wait invariant {obligation:?}"));
         }
     }
-    if text.to_lowercase().contains(ADDITIVE_POLLING_DIRECTIVE) {
-        return Err(format!(
-            "{path} adds a same-session polling directive that contradicts the remote-wait invariant"
-        ));
+    let lowered = text.to_lowercase();
+    if ADDITIVE_REVISIT_POLLING_DIRECTIVES.iter().any(|directive| lowered.contains(directive)) {
+        return Err(additive_polling_error(path));
     }
     Ok(())
 }
@@ -129,16 +140,23 @@ fn ratchet_rejects_removal_of_each_obligation_on_every_surface() -> Result<(), D
 #[test]
 fn ratchet_rejects_additive_polling_directive() -> Result<(), DynError> {
     let root = root()?;
+    const MUTATIONS: &[&str] = &[
+        "Create a timer to revisit the same remote condition.",
+        "Create a polling child to revisit the same remote condition.",
+        "Create a scheduled monitor to revisit the same remote condition.",
+        "Create an idle watcher to revisit the same remote condition.",
+    ];
     for path in SURFACES {
         let source = read(&root, path)?;
         validate_surface(path, &source).map_err(std::io::Error::other)?;
-        let regressed = format!("{source}\nCreate a timer to revisit the same remote condition.\n");
-        assert_eq!(
-            validate_surface(path, &regressed),
-            Err(format!(
-                "{path} adds a same-session polling directive that contradicts the remote-wait invariant"
-            )),
-        );
+        for mutation in MUTATIONS {
+            let regressed = format!("{source}\n{mutation}\n");
+            assert_eq!(
+                validate_surface(path, &regressed),
+                Err(additive_polling_error(path)),
+                "{path}: {mutation}"
+            );
+        }
     }
     Ok(())
 }
