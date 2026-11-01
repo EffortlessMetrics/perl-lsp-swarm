@@ -81,8 +81,9 @@ pub fn extract_pod_from_file(path: &Path) -> io::Result<PodDoc> {
 /// source through link expansion (the `pod_extraction` fuzz invariant,
 /// #12824 family). Only `description` renders markdown links via
 /// [`strip_pod_formatting`], because its consumer renders LSP markdown;
-/// markdown expansion is legitimate there and the fuzz length invariant does
-/// not apply to it.
+/// markdown expansion is legitimate there. The `pod_extraction` fuzz target
+/// bounds DESCRIPTION by a renderer-derived ceiling rather than
+/// `<= source.len()` (#15251); it does not leave the field unbounded.
 #[must_use]
 pub fn extract_pod(source: &str) -> PodDoc {
     let mut doc = PodDoc::default();

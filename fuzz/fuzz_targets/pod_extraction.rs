@@ -3,6 +3,8 @@
 use libfuzzer_sys::fuzz_target;
 use perl_pod::{extract_pod, PodDoc};
 
+include!("../../crates/perl-pod/tests/helpers/markdown_rendered_field_bound.rs");
+
 const MAX_INPUT_BYTES: usize = 4096;
 
 fn bounded_utf8_lossy(data: &[u8]) -> std::borrow::Cow<'_, str> {
@@ -11,9 +13,9 @@ fn bounded_utf8_lossy(data: &[u8]) -> std::borrow::Cow<'_, str> {
 }
 
 fn assert_doc_well_formed(doc: &PodDoc, source: &str) {
-    // Every extracted field must be a substring-like fragment of the input, in
-    // the weak sense that it cannot exceed the source length. (POD extraction
-    // trims and concatenates - a strict substring check would over-constrain.)
+    // Display-text fields cannot exceed the source. DESCRIPTION is the sole
+    // markdown field (#17984): percent-encoded L<> targets may grow past
+    // source length, but not past the renderer-derived ceiling (#15251).
     let len = source.len();
     if let Some(name) = &doc.name {
         assert!(name.len() <= len, "name field longer than source");
@@ -21,10 +23,17 @@ fn assert_doc_well_formed(doc: &PodDoc, source: &str) {
     if let Some(syn) = &doc.synopsis {
         assert!(syn.len() <= len, "synopsis field longer than source");
     }
-    // Description is intentionally not asserted (#17984 contract): it is
-    // the sole markdown field, so percent-encoded L<> targets may
-    // legitimately expand it past its source paragraph. Name, synopsis,
-    // and method bodies are plain display text and stay bounded above.
+    if let Some(desc) = &doc.description {
+        assert!(
+            desc.len() <= markdown_rendered_field_bound(len),
+            "description field longer than renderer-derived markdown bound"
+        );
+    }
+    // Method keys and bodies are plain display text (#17984). The same
+    // expanding L<> input that DESCRIPTION renders as markdown cannot grow
+    // a method body past source (fuzz pass 2 wraps input in both
+    // `=head1 DESCRIPTION` and `=head2 method_a`), so these arms keep the
+    // strong cap rather than the markdown ceiling.
     for (key, body) in &doc.methods {
         assert!(key.len() <= len, "method key longer than source");
         assert!(body.len() <= len, "method body longer than source");
