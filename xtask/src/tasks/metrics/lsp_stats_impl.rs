@@ -168,27 +168,27 @@ impl ObservedUxRates {
 
 /// Run `cargo xtask metrics lsp-stats`, optionally aggregating scenario receipts.
 ///
-/// When `receipt_dir` is provided, the command reads `ux_scenario_run` receipts
-/// from that directory and writes the measured `.ci/metrics/editor_ux.json`
-/// scorecard when `json` is true. Without `receipt_dir`, the command preserves
+/// When `admitted` is provided, the command aggregates its validated typed
+/// receipts and writes the measured `.ci/metrics/editor_ux.json` scorecard
+/// when `json` is true. Without `admitted`, the command preserves
 /// the legacy fixture-inventory output. `output` overrides where the JSON
 /// receipt is written (reads of historical metrics stay on the default path),
 /// keeping callers such as tests off the tracked artifact.
-pub fn run_with_receipt_dir(
+pub(super) fn run_with_receipts(
     json: bool,
-    receipt_dir: Option<&Path>,
+    admitted: Option<(&Path, &[UxScenarioRunReceipt])>,
     output: Option<&Path>,
 ) -> Result<()> {
     let root = project_root()?;
 
-    if let Some(receipts_dir) = receipt_dir {
+    if let Some((receipts_dir, receipts)) = admitted {
         let fixture_matrix = root
             .join("crates")
             .join("perl-lsp-ux-tests")
             .join("fixtures")
             .join("editor_ux_fixture_matrix.json");
         let output_path = json_output_path(&root, output);
-        let scorecard = aggregate_from_receipts(receipts_dir, &fixture_matrix, None)?;
+        let scorecard = aggregate_admitted_receipts(receipts, &fixture_matrix, None)?;
 
         print_measured_scorecard_summary(&scorecard, receipts_dir);
 
@@ -828,6 +828,7 @@ fn compute_quarantine_age(
 }
 
 /// Read all `UxScenarioRunReceipt` JSON files from a directory.
+#[cfg(test)]
 fn read_receipts(receipts_dir: &Path) -> Result<Vec<UxScenarioRunReceipt>> {
     let mut receipts = Vec::new();
     if !receipts_dir.exists() {
@@ -860,8 +861,20 @@ fn read_receipts(receipts_dir: &Path) -> Result<Vec<UxScenarioRunReceipt>> {
 ///   (default: `target/receipts/editor-ux/`)
 /// - `fixture_matrix`: path to `editor_ux_fixture_matrix.json`
 /// - `flake_ledger`: optional path to `.ci/ux-flakes.json`
+#[cfg(test)]
 pub fn aggregate_from_receipts(
     receipts_dir: &Path,
+    fixture_matrix: &Path,
+    flake_ledger: Option<&Path>,
+) -> Result<MeasuredEditorUxScorecard> {
+    let receipts = read_receipts(receipts_dir)?;
+    aggregate_admitted_receipts(&receipts, fixture_matrix, flake_ledger)
+}
+
+/// Apply the historical metric definitions to already admitted receipt values.
+/// This function never reads the receipt directory or receipt files.
+pub(super) fn aggregate_admitted_receipts(
+    receipts: &[UxScenarioRunReceipt],
     fixture_matrix: &Path,
     flake_ledger: Option<&Path>,
 ) -> Result<MeasuredEditorUxScorecard> {
@@ -878,12 +891,9 @@ pub fn aggregate_from_receipts(
     // Load quarantined test names.
     let quarantined_tests = load_quarantined_tests(flake_ledger);
 
-    // Read all receipts.
-    let receipts = read_receipts(receipts_dir)?;
-
     // Group receipts by workflow_id.
     let mut buckets: BTreeMap<String, WorkflowBucket> = BTreeMap::new();
-    for receipt in &receipts {
+    for receipt in receipts {
         let bucket = buckets.entry(receipt.workflow_id.clone()).or_default();
 
         // Check if this test is quarantined — override result to Quarantined
@@ -924,7 +934,7 @@ pub fn aggregate_from_receipts(
 
     // Collect all CI tiers seen.
     let mut tiers_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for receipt in &receipts {
+    for receipt in receipts {
         let tier_str = serde_json::to_value(receipt.ci_tier)
             .ok()
             .and_then(|v| v.as_str().map(String::from))
