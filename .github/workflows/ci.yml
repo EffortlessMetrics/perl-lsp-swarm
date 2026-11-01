@@ -2220,6 +2220,17 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # CA02B needs execution, not merely compilation. Reuse the locked Node/npm
+      # setup and npm cache; no new lane or publisher-tool verification is added.
+      - name: Setup configuration binding TypeScript authority
+        uses: ./.github/actions/setup-vscode-toolchain
+
+      - name: High-risk configuration checker controls (required merge surface)
+        run: cargo test -p xtask --bin high-risk-configuration-bindings --locked
+
+      - name: High-risk production Rust and TypeScript bindings (required merge surface)
+        run: cargo run -p xtask --bin high-risk-configuration-bindings --locked -- . vscode-extension/node_modules/typescript
+
       # #17349: routed xtask library failures can prevent this integration
       # target from executing. Run its 15 retained tests independently here;
       # require the real workflow assertion and both positive/negative controls.

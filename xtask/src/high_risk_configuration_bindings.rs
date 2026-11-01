@@ -1,0 +1,1662 @@
+//! Exact, function-bound AST witnesses for the CA02B projection.
+//!
+//! A witness is a complete expression, not a bag of identifiers. Its syntax must
+//! remain in the specified production function. Comments, tests and other
+//! functions cannot satisfy it. The projection records unresolved runtime
+//! obligations separately; source agreement is not first-effect execution proof.
+use std::{collections::BTreeMap, error::Error, fs, path::Path};
+use syn::visit::{self, Visit};
+
+#[path = "../../crates/perl-lsp-rs-core/src/configuration_authority/high_risk_model.rs"]
+mod model;
+use model::{Projection, Witness};
+
+type CheckResult<T = ()> = Result<T, Box<dyn Error>>;
+const PROJECTION: &str = "fixtures/configuration_authority/high_risk_bindings.v1.json";
+
+fn type_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(path) => Some(
+            path.path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::"),
+        ),
+        _ => None,
+    }
+}
+
+fn test_only(attrs: &[syn::Attribute]) -> bool {
+    fn mentions_test(meta: &syn::Meta) -> bool {
+        match meta {
+            syn::Meta::Path(path) => path.is_ident("test"),
+            syn::Meta::List(list) => list
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                )
+                .map_or(true, |children| children.iter().any(mentions_test)),
+            syn::Meta::NameValue(_) => false,
+        }
+    }
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("test")
+            // Conservative eligibility, not compiler-resolved cfg evaluation:
+            // any test-dependent condition is outside this source witness.
+            || ((attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) && mentions_test(&attr.meta))
+    })
+}
+
+fn functions<'a>(
+    items: &'a [syn::Item],
+    prefix: &str,
+    found: &mut BTreeMap<String, Vec<&'a syn::Block>>,
+) -> CheckResult {
+    for item in items {
+        match item {
+            syn::Item::Fn(function) if !test_only(&function.attrs) => {
+                let id = format!("{prefix}{}", function.sig.ident);
+                found.entry(id).or_default().push(&function.block);
+            }
+            syn::Item::Impl(implementation) if !test_only(&implementation.attrs) => {
+                let Some(owner) = type_name(&implementation.self_ty) else { continue };
+                let trait_name = implementation
+                    .trait_
+                    .as_ref()
+                    .map(|(path, _)| {
+                        format!(
+                            "{}::",
+                            path.segments
+                                .iter()
+                                .map(|s| s.ident.to_string())
+                                .collect::<Vec<_>>()
+                                .join("::")
+                        )
+                    })
+                    .unwrap_or_default();
+                for item in &implementation.items {
+                    if let syn::ImplItem::Fn(function) = item {
+                        if test_only(&function.attrs) {
+                            continue;
+                        }
+                        let id = format!("{prefix}{owner}::{trait_name}{}", function.sig.ident);
+                        found.entry(id).or_default().push(&function.block);
+                    }
+                }
+            }
+            syn::Item::Mod(module) if !test_only(&module.attrs) => {
+                if let Some((_, items)) = &module.content {
+                    functions(items, &format!("{prefix}{}::", module.ident), found)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+struct ExpressionMatch<'a> {
+    expected: &'a syn::Expr,
+    count: usize,
+}
+impl<'ast> Visit<'ast> for ExpressionMatch<'_> {
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        if !test_only(&node.attrs) {
+            visit::visit_local(self, node);
+        }
+    }
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        if !test_only(&node.attrs) {
+            visit::visit_arm(self, node);
+        }
+    }
+    fn visit_field_value(&mut self, node: &'ast syn::FieldValue) {
+        if !test_only(&node.attrs) {
+            visit::visit_field_value(self, node);
+        }
+    }
+    fn visit_stmt_macro(&mut self, node: &'ast syn::StmtMacro) {
+        if !test_only(&node.attrs) {
+            visit::visit_stmt_macro(self, node);
+        }
+    }
+    fn visit_expr(&mut self, expression: &'ast syn::Expr) {
+        let attrs: &[syn::Attribute] = match expression {
+            syn::Expr::Array(node) => &node.attrs,
+            syn::Expr::Assign(node) => &node.attrs,
+            syn::Expr::Async(node) => &node.attrs,
+            syn::Expr::Await(node) => &node.attrs,
+            syn::Expr::Binary(node) => &node.attrs,
+            syn::Expr::Block(node) => &node.attrs,
+            syn::Expr::Break(node) => &node.attrs,
+            syn::Expr::Call(node) => &node.attrs,
+            syn::Expr::Cast(node) => &node.attrs,
+            syn::Expr::Closure(node) => &node.attrs,
+            syn::Expr::Const(node) => &node.attrs,
+            syn::Expr::Continue(node) => &node.attrs,
+            syn::Expr::Field(node) => &node.attrs,
+            syn::Expr::ForLoop(node) => &node.attrs,
+            syn::Expr::Group(node) => &node.attrs,
+            syn::Expr::If(node) => &node.attrs,
+            syn::Expr::Index(node) => &node.attrs,
+            syn::Expr::Infer(node) => &node.attrs,
+            syn::Expr::Let(node) => &node.attrs,
+            syn::Expr::Lit(node) => &node.attrs,
+            syn::Expr::Loop(node) => &node.attrs,
+            syn::Expr::Macro(node) => &node.attrs,
+            syn::Expr::Match(node) => &node.attrs,
+            syn::Expr::MethodCall(node) => &node.attrs,
+            syn::Expr::Paren(node) => &node.attrs,
+            syn::Expr::Path(node) => &node.attrs,
+            syn::Expr::Range(node) => &node.attrs,
+            syn::Expr::RawAddr(node) => &node.attrs,
+            syn::Expr::Reference(node) => &node.attrs,
+            syn::Expr::Repeat(node) => &node.attrs,
+            syn::Expr::Return(node) => &node.attrs,
+            syn::Expr::Struct(node) => &node.attrs,
+            syn::Expr::Try(node) => &node.attrs,
+            syn::Expr::TryBlock(node) => &node.attrs,
+            syn::Expr::Tuple(node) => &node.attrs,
+            syn::Expr::Unary(node) => &node.attrs,
+            syn::Expr::Unsafe(node) => &node.attrs,
+            syn::Expr::While(node) => &node.attrs,
+            syn::Expr::Yield(node) => &node.attrs,
+            // Unparsed or future syntax cannot establish a production binding.
+            _ => return,
+        };
+        if test_only(attrs) {
+            return;
+        }
+        if expression == self.expected {
+            self.count += 1;
+        }
+        visit::visit_expr(self, expression);
+    }
+    // A nested helper's expression cannot stand in for the enclosing function.
+    fn visit_item(&mut self, _: &'ast syn::Item) {}
+}
+
+fn check_witness(source: &str, witness: &Witness) -> CheckResult {
+    let parsed = syn::parse_file(source)?;
+    if let Some(identity) = witness.function.strip_prefix("@serde-field:") {
+        let (owner, member) = identity.split_once('.').ok_or("invalid serde field identity")?;
+        let structure = parsed
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == owner => Some(item),
+                _ => None,
+            })
+            .ok_or("missing serde structure")?;
+        let derives_deserialize =
+            structure.attrs.iter().filter(|attr| attr.path().is_ident("derive")).any(|attr| {
+                attr.parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+                )
+                .is_ok_and(|paths| {
+                    paths.iter().any(|path| {
+                        path.segments.last().is_some_and(|segment| segment.ident == "Deserialize")
+                    })
+                })
+            });
+        let field = structure
+            .fields
+            .iter()
+            .find(|field| field.ident.as_ref().is_some_and(|name| name == member))
+            .ok_or("missing serde field")?;
+        if !derives_deserialize
+            || structure.attrs.iter().any(|attr| {
+                !(attr.path().is_ident("doc")
+                    || attr.path().is_ident("derive")
+                    || attr.path().is_ident("non_exhaustive")
+                    || (attr.path().is_ident("serde")
+                        && attr
+                            .parse_args::<syn::Path>()
+                            .is_ok_and(|path| path.is_ident("default"))))
+            })
+            || field.ty != syn::parse_str::<syn::Type>(&witness.expression)?
+            || field.attrs.iter().any(|attr| !attr.path().is_ident("doc"))
+        {
+            return Err("serde field parse/storage contract changed".into());
+        }
+        return Ok(());
+    }
+    let mut owners = BTreeMap::new();
+    functions(&parsed.items, "", &mut owners)?;
+    if let Some(identity) = witness.function.strip_prefix("@no-key:") {
+        let bodies = owners.get(identity).ok_or("missing removed-key parser")?;
+        let mut finder = RemovedKey { key: &witness.expression, found: false };
+        for body in bodies {
+            finder.visit_block(body);
+        }
+        return if finder.found {
+            Err("removed configuration key is parsed again".into())
+        } else {
+            Ok(())
+        };
+    }
+    let function = owners
+        .get(&witness.function)
+        .ok_or_else(|| format!("missing function {}", witness.function))?;
+    let expected = syn::parse_str::<syn::Expr>(&witness.expression)?;
+    let mut matcher = ExpressionMatch { expected: &expected, count: 0 };
+    for body in function {
+        if matches!(&expected, syn::Expr::Block(block) if &block.block == *body) {
+            matcher.count += 1;
+        }
+        matcher.visit_block(body);
+    }
+    if matcher.count != 1 {
+        return Err(format!(
+            "{}: expected exactly one coupled expression, found {}",
+            witness.function, matcher.count
+        )
+        .into());
+    }
+    Ok(())
+}
+
+struct RemovedKey<'a> {
+    key: &'a str,
+    found: bool,
+}
+
+#[cfg(test)]
+struct StorageUse<'a> {
+    member: &'a str,
+    writes: bool,
+    reads: bool,
+}
+
+// matches! accepts a pattern, not an expression list. Consume the complete
+// grammar so malformed macro tokens cannot establish storage evidence.
+struct MatchesInput {
+    expression: syn::Expr,
+    guard: Option<syn::Expr>,
+}
+impl syn::parse::Parse for MatchesInput {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let expression = input.parse()?;
+        input.parse::<syn::Token![,]>()?;
+        syn::Pat::parse_multi_with_leading_vert(input)?;
+        let guard = if input.peek(syn::Token![if]) {
+            input.parse::<syn::Token![if]>()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
+        if input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("unexpected matches! tokens"));
+        }
+        Ok(Self { expression, guard })
+    }
+}
+#[cfg(test)]
+impl StorageUse<'_> {
+    // A place is written, not read. Its evaluated receiver/index expressions
+    // can still read configuration, so do not discard the entire left operand.
+    fn visit_assignment_place(&mut self, place: &syn::Expr) {
+        match place {
+            syn::Expr::Field(field) => {
+                if matches!(&field.member, syn::Member::Named(name) if name == self.member) {
+                    self.writes = true;
+                }
+                self.visit_assignment_place(&field.base);
+            }
+            syn::Expr::Index(index) => {
+                self.visit_assignment_place(&index.expr);
+                self.visit_expr(&index.index);
+            }
+            syn::Expr::Paren(paren) => self.visit_assignment_place(&paren.expr),
+            syn::Expr::Group(group) => self.visit_assignment_place(&group.expr),
+            syn::Expr::Tuple(tuple) => {
+                for element in &tuple.elems {
+                    self.visit_assignment_place(element);
+                }
+            }
+            syn::Expr::Array(array) => {
+                for element in &array.elems {
+                    self.visit_assignment_place(element);
+                }
+            }
+            syn::Expr::Struct(record) => {
+                for field in &record.fields {
+                    self.visit_assignment_place(&field.expr);
+                }
+            }
+            syn::Expr::Unary(unary) => self.visit_expr(&unary.expr),
+            syn::Expr::Call(_) | syn::Expr::MethodCall(_) => self.visit_expr(place),
+            _ => {}
+        }
+    }
+}
+#[cfg(test)]
+impl<'ast> Visit<'ast> for StorageUse<'_> {
+    fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
+        self.visit_assignment_place(&node.left);
+        self.visit_expr(&node.right);
+    }
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        if matches!(
+            node.op,
+            syn::BinOp::AddAssign(_)
+                | syn::BinOp::SubAssign(_)
+                | syn::BinOp::MulAssign(_)
+                | syn::BinOp::DivAssign(_)
+                | syn::BinOp::RemAssign(_)
+                | syn::BinOp::BitXorAssign(_)
+                | syn::BinOp::BitAndAssign(_)
+                | syn::BinOp::BitOrAssign(_)
+                | syn::BinOp::ShlAssign(_)
+                | syn::BinOp::ShrAssign(_)
+        ) {
+            self.visit_assignment_place(&node.left);
+        }
+        visit::visit_expr_binary(self, node);
+    }
+    fn visit_field_value(&mut self, node: &'ast syn::FieldValue) {
+        if matches!(&node.member, syn::Member::Named(name) if name == self.member) {
+            self.writes = true;
+        }
+        visit::visit_field_value(self, node);
+    }
+    fn visit_expr_field(&mut self, node: &'ast syn::ExprField) {
+        if matches!(&node.member, syn::Member::Named(name) if name == self.member) {
+            self.reads = true;
+        }
+        visit::visit_expr_field(self, node);
+    }
+    fn visit_expr_macro(&mut self, node: &'ast syn::ExprMacro) {
+        if node.mac.path.is_ident("matches")
+            && let Ok(arguments) = syn::parse2::<MatchesInput>(node.mac.tokens.clone())
+        {
+            self.visit_expr(&arguments.expression);
+            if let Some(guard) = &arguments.guard {
+                self.visit_expr(guard);
+            }
+        }
+    }
+}
+
+#[path = "high_risk_storage.rs"]
+mod storage;
+use storage::{StorageAnchors, check_storage_join};
+
+impl RemovedKey<'_> {
+    fn inspect_string(&mut self, value: &str) {
+        // Conservative syntax evidence, including JSON-pointer path segments.
+        // This does not resolve aliases or infer separately declared serde types.
+        self.found |= value == self.key
+            || (value.starts_with('/')
+                && value
+                    .split('/')
+                    .skip(1)
+                    .any(|segment| segment.replace("~1", "/").replace("~0", "~") == self.key));
+    }
+    fn inspect_tokens(&mut self, tokens: proc_macro2::TokenStream) {
+        for token in tokens {
+            match token {
+                proc_macro2::TokenTree::Group(group) => self.inspect_tokens(group.stream()),
+                proc_macro2::TokenTree::Literal(literal) => {
+                    if let Ok(syn::Lit::Str(value)) =
+                        syn::parse_str::<syn::Lit>(&literal.to_string())
+                    {
+                        self.inspect_string(&value.value());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+impl<'ast> Visit<'ast> for RemovedKey<'_> {
+    fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
+        if let syn::Meta::List(list) = &node.meta {
+            self.inspect_tokens(list.tokens.clone());
+        }
+        visit::visit_attribute(self, node);
+    }
+
+    fn visit_lit_str(&mut self, literal: &'ast syn::LitStr) {
+        self.inspect_string(&literal.value());
+    }
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        self.inspect_tokens(node.tokens.clone());
+    }
+}
+
+fn low_risk_schema_id(family: &str, key: &str) -> Option<&'static str> {
+    match (family, key) {
+        ("workspace", "discoveryExtensions") => Some("workspace.discovery_extra_extensions"),
+        ("workspace", "discoverySkippedDirs") => Some("workspace.discovery_extra_skipped_dirs"),
+        ("formatting", "maximumLineLength") => Some("formatting.maximum_line_length"),
+        ("formatting", "indentColumns") => Some("formatting.indent_columns"),
+        ("formatting", "tabs") => Some("formatting.tabs"),
+        ("formatting", "openingBraceOnNewLine") => Some("formatting.opening_brace_on_new_line"),
+        ("formatting", "cuddledElse") => Some("formatting.cuddled_else"),
+        ("formatting", "spaceAfterKeyword") => Some("formatting.space_after_keyword"),
+        ("formatting", "addTrailingCommas") => Some("formatting.add_trailing_commas"),
+        ("formatting", "verticalAlignment") => Some("formatting.vertical_alignment"),
+        ("formatting", "blockCommentIndentation") => Some("formatting.block_comment_indentation"),
+        _ => None,
+    }
+}
+
+fn schema_coverage(document: &serde_json::Value, projection: &Projection) -> CheckResult {
+    fn visit(
+        value: &serde_json::Value,
+        pointer: &str,
+        family: &str,
+        projection: &Projection,
+    ) -> CheckResult {
+        if let Some(properties) = value.get("properties").and_then(serde_json::Value::as_object) {
+            for (key, child) in properties {
+                let next = format!("{pointer}/properties/{key}");
+                let low_risk = low_risk_schema_id(family, key);
+                if let Some(id) = low_risk {
+                    if !projection.remaining_low_risk.iter().any(|remaining| remaining == id) {
+                        return Err(format!("unowned low-risk schema field {id}").into());
+                    }
+                    continue;
+                }
+                visit(child, &next, family, projection)?;
+            }
+        } else if !projection.rows.iter().any(|row| {
+            row.projections.iter().any(|field| {
+                field.path == "schemas/perllsp-settings.schema.json"
+                    && field.pointer == pointer
+                    && field.present
+            })
+        }) {
+            return Err(
+                format!("schema field lacks runtime/deprecation disposition: {pointer}").into()
+            );
+        }
+        Ok(())
+    }
+    for family in ["aiCompletion", "critic", "perlcritic", "limits", "formatting", "workspace"] {
+        let pointer = format!("/properties/perl/properties/{family}");
+        if let Some(value) = document.pointer(&pointer) {
+            visit(value, &pointer, family, projection)?;
+        }
+    }
+    Ok(())
+}
+
+fn docs_coverage(text: &str, projection: &Projection) -> CheckResult {
+    for line in text.lines().filter(|line| line.starts_with('#')) {
+        let Some((_, rest)) = line.split_once('`') else {
+            continue;
+        };
+        let Some((id, _)) = rest.split_once('`') else {
+            continue;
+        };
+        let Some(setting) = id.strip_prefix("perl.") else {
+            continue;
+        };
+        let Some((family, _)) = setting.split_once('.') else {
+            continue;
+        };
+        if !matches!(
+            family,
+            "aiCompletion"
+                | "critic"
+                | "perlcritic"
+                | "limits"
+                | "formatting"
+                | "workspace"
+                | "testRunner"
+        ) {
+            continue;
+        }
+        let (_, key) = setting.split_once('.').ok_or("missing documented field")?;
+        if let Some(low_risk) = low_risk_schema_id(family, key) {
+            if !projection.remaining_low_risk.iter().any(|id| id == low_risk) {
+                return Err(
+                    format!("documented low-risk field lacks explicit remainder: {id}").into()
+                );
+            }
+            continue;
+        }
+        if family == "testRunner" {
+            let explicitly_removed =
+                rest.split_once('`').is_some_and(|(_, suffix)| suffix.trim() == "(removed)");
+            if !explicitly_removed
+                || !projection.rows.iter().any(|row| {
+                    row.id == setting
+                        && row.kind == "removed"
+                        && row.disposition == "remove_false_contract"
+                })
+            {
+                return Err(format!(
+                    "documented runner field is not an explicit owned retirement: {id}"
+                )
+                .into());
+            }
+            continue;
+        }
+        let pointer =
+            format!("/properties/perl/properties/{}", setting.replace('.', "/properties/"));
+        if !projection
+            .rows
+            .iter()
+            .any(|row| row.projections.iter().any(|field| field.pointer == pointer))
+        {
+            return Err(format!("documented high-risk field lacks disposition: {id}").into());
+        }
+    }
+    Ok(())
+}
+
+pub fn check(root: &Path, typescript: Option<&Path>) -> CheckResult {
+    let projection: Projection = serde_json::from_str(&fs::read_to_string(root.join(PROJECTION))?)?;
+    model::validate(&projection)?;
+    let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        root.join("vscode-extension").join("package.json"),
+    )?)?;
+    let configurations = package
+        .pointer("/contributes/configuration")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("missing extension configuration sections")?;
+    for section in configurations {
+        if section.get("properties").and_then(serde_json::Value::as_object).is_some_and(
+            |properties| properties.keys().any(|key| key.starts_with("perl-lsp.testRunner")),
+        ) {
+            return Err("removed runner contribution resurrected".into());
+        }
+    }
+    docs_coverage(
+        &fs::read_to_string(root.join("docs").join("reference").join("CONFIGURATION_SCHEMA.md"))?,
+        &projection,
+    )?;
+    schema_coverage(
+        &serde_json::from_str(&fs::read_to_string(
+            root.join("schemas").join("perllsp-settings.schema.json"),
+        )?)?,
+        &projection,
+    )?;
+    for (id, witness) in &projection.witnesses {
+        if witness.path.ends_with(".ts") {
+            continue;
+        }
+        check_witness(&fs::read_to_string(root.join(&witness.path))?, witness)
+            .map_err(|error| format!("witness {id}: {error}"))?;
+    }
+    if projection.witnesses.values().any(|witness| witness.path.ends_with(".ts")) {
+        let compiler = typescript
+            .ok_or("TypeScript compiler module path required for client adapter witnesses")?;
+        let status = std::process::Command::new("node")
+            .arg(root.join("scripts").join("ci").join("check_high_risk_client_bindings.cjs"))
+            .arg(root)
+            .arg(compiler)
+            .status()?;
+        if !status.success() {
+            return Err("client adapter AST proof failed or unavailable".into());
+        }
+    }
+    let anchors = StorageAnchors::from_projection(root, &projection)?;
+    for row in &projection.rows {
+        check_storage_join(row, &projection, &anchors)?;
+        for reference in row.writers.iter().chain(&row.consumers) {
+            if !projection.witnesses.contains_key(reference) {
+                return Err(format!("{}: missing witness {reference}", row.id).into());
+            }
+        }
+        for field in &row.projections {
+            let document: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(root.join(&field.path))?)?;
+            if document.pointer(&field.pointer).is_some() != field.present {
+                return Err(format!(
+                    "{}: projection drift {}{}",
+                    row.id, field.path, field.pointer
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn type_identity_and_unrelated_assignment_places_remain_distinct() -> CheckResult {
+        for (source, expected) in [
+            ("Config", Some("Config")),
+            ("module::Config", Some("module::Config")),
+            ("&Config", None),
+            ("(Config, Other)", None),
+        ] {
+            let ty = syn::parse_str::<syn::Type>(source)?;
+            if type_name(&ty).as_deref() != expected {
+                return Err(format!("incorrect type identity: {source}").into());
+            }
+        }
+        for source in ["other = value", "_ = value"] {
+            let expression = syn::parse_str::<syn::Expr>(source)?;
+            let mut usage = StorageUse { member: "engine", writes: false, reads: false };
+            usage.visit_expr(&expression);
+            if usage.writes || usage.reads {
+                return Err(format!("unrelated assignment claimed storage: {source}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn serde_binding_requires_deserialize_and_ignores_unrelated_items() -> CheckResult {
+        let field = Witness {
+            path: "fixture.rs".into(),
+            function: "@serde-field:Config.engine".into(),
+            expression: "String".into(),
+        };
+        let source = "fn unrelated() {} struct Other { engine: String } #[derive(serde::Deserialize)] struct Config { engine: String }";
+        check_witness(source, &field)?;
+        for changed in [
+            source.replace("#[derive(serde::Deserialize)]", ""),
+            source.replace("serde::Deserialize", "serde::Serialize"),
+            source.replace("struct Config", "struct Missing"),
+        ] {
+            if check_witness(&changed, &field).is_ok() {
+                return Err("serde binding accepted absent owner or Deserialize".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coupled_expression_requires_exactly_one_occurrence() -> CheckResult {
+        let witness = Witness {
+            path: "fixture.rs".into(),
+            function: "consume".into(),
+            expression: "run(config.engine)".into(),
+        };
+        check_witness("fn consume() { run(config.engine); }", &witness)?;
+        for source in [
+            "fn consume() { run(other); }",
+            "fn consume() { run(config.engine); run(config.engine); }",
+        ] {
+            if check_witness(source, &witness).is_ok() {
+                return Err("accepted zero or duplicate coupled expressions".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_join_requires_both_declared_writer_and_consumer() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection
+            .rows
+            .iter()
+            .find(|row| row.kind == "active")
+            .ok_or("missing active fixture row")?
+            .clone();
+        row.rust_field = "Config.engine".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        for (id, expression) in
+            [("writer", "config.engine = value"), ("consumer", "run(config.engine)")]
+        {
+            projection.witnesses.insert(
+                id.into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: id.into(),
+                    expression: expression.into(),
+                },
+            );
+        }
+        let mut anchors = StorageAnchors::default();
+        anchors.add_items("fixture.rs", "", &syn::parse_file("struct ConfigConfig { engine: u8, other: u8 } fn writer(config: &mut ConfigConfig, value: u8) { config.engine = value; } fn consumer(config: &ConfigConfig) { run(config.engine); }")?.items)?;
+        check_storage_join(&row, &projection, &anchors)?;
+        for (id, expression) in
+            [("writer", "config.other = value"), ("consumer", "run(config.other)")]
+        {
+            let mut changed = projection.clone();
+            changed.witnesses.get_mut(id).ok_or("missing joined fixture witness")?.expression =
+                expression.into();
+            if check_storage_join(&row, &changed, &anchors).is_ok() {
+                return Err(format!("accepted missing storage {id}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_owner_rejects_another_type_with_the_same_member() -> CheckResult {
+        let projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let row = projection
+            .rows
+            .iter()
+            .find(|row| row.id == "ai.streaming.effective_enabled")
+            .ok_or("missing streaming fixture")?;
+        // Resolve the actual source from the workspace, independent of test cwd.
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing workspace root")?;
+        let anchors = StorageAnchors::from_projection(root, &projection)?;
+        check_storage_join(row, &projection, &anchors)?;
+        let mut wrong = row.clone();
+        wrong.consumers = vec!["ai.enabled.consumer".into()];
+        let result = check_storage_join(&wrong, &projection, &anchors);
+        if !matches!(&result, Err(error) if error.to_string() == "ai.streaming.effective_enabled: witness does not join canonical storage to writer/consumer")
+        {
+            return Err(format!(
+                "cross-owner same-member witness did not reject exactly: {result:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_storage_aliases_closures_and_shadowing_are_scoped() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        let mut anchors = StorageAnchors::default();
+        let sources = "use std::sync::{LazyLock, RwLock}; struct ConfigConfig { enabled: bool } struct OtherConfig { enabled: bool } static CONFIG: LazyLock<RwLock<ConfigConfig>> = make(); fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig, other: &OtherConfig) { let alias = config; run(alias.enabled); { let alias = other; run(alias.enabled); } run(alias.enabled); CONFIG.read().map(|config| config.enabled); let config = opaque(); run(config.enabled); CONFIG.read().map(|config| { let config = opaque(); config.enabled }); arbitrary().map(|config| config.enabled); }";
+        anchors.add_items("fixture.rs", "", &syn::parse_file(sources)?.items)?;
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        for (expression, accepted) in [
+            ("CONFIG.read().map(|config| config.enabled)", true),
+            ("{ let config = opaque(); config.enabled }", false),
+            ("arbitrary().map(|config| config.enabled)", false),
+            ("{ let alias = other; run(alias.enabled); }", false),
+        ] {
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: "consume".into(),
+                    expression: expression.into(),
+                },
+            );
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(format!(
+                    "unexpected owner-join disposition for {expression}: {result:?}"
+                )
+                .into());
+            }
+        }
+        // A nested shadow does not erase the outer alias, but duplicate expressions
+        // are not a unique witness; use a distinct enclosing expression here.
+        let source = "struct ConfigConfig { enabled: bool } struct OtherConfig { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig, other: &OtherConfig) { let alias = config; { let alias = other; use_other(alias.enabled); } consume_outer(alias.enabled); }";
+        let mut scoped = StorageAnchors::default();
+        scoped.add_items("fixture.rs", "", &syn::parse_file(source)?.items)?;
+        projection.witnesses.get_mut("consumer").ok_or("missing consumer")?.expression =
+            "consume_outer(alias.enabled)".into();
+        check_storage_join(&row, &projection, &scoped)?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_same_leaf_and_custom_methods_cannot_supply_storage_owner() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        let mut accepted = Vec::new();
+        for (source, expression) in [
+            (
+                "struct ConfigConfig { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &external::ConfigConfig) { observe(config.enabled); }",
+                "observe(config.enabled)",
+            ),
+            (
+                "#[derive(Clone)] struct ConfigConfig { enabled: bool } struct Other { enabled: bool } impl ConfigConfig { fn clone(&self) -> Other { make() } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig) { observe(config.clone().enabled); }",
+                "observe(config.clone().enabled)",
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } impl ConfigConfig { fn map<R>(&self, callback: impl FnOnce(&Other) -> R) -> R { callback(&make()) } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig) { config.map(|input| input.enabled); }",
+                "config.map(|input| input.enabled)",
+            ),
+        ] {
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(source)?.items)?;
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: "consume".into(),
+                    expression: expression.into(),
+                },
+            );
+            if check_storage_join(&row, &projection, &anchors).is_ok() {
+                accepted.push(expression);
+            }
+        }
+        if !accepted.is_empty() {
+            return Err(format!(
+                "unproved qualified owner or custom methods were accepted: {accepted:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generic_module_and_block_alias_shadows_cannot_supply_storage_owner() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        let mut accepted = Vec::new();
+        for (source, expression, expected) in [
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume<ConfigConfig: ::std::ops::Deref<Target=Other>>(config: &ConfigConfig) { observe(config.enabled); }",
+                "observe(config.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } mod std { pub mod sync { pub struct Mutex<T>(T); impl<T> Mutex<T> { fn lock(&self) -> ::std::result::Result<super::super::super::Other, ()> { make() } } } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &std::sync::Mutex<ConfigConfig>) { config.lock().map(|input| input.enabled); }",
+                "config.lock().map(|input| input.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(other: &Other) { use self::Other as ConfigConfig; let config: &ConfigConfig = other; observe(config.enabled); }",
+                "observe(config.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } mod std {} fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &::std::sync::Mutex<ConfigConfig>) { config.lock().map(|input| input.enabled); }",
+                "config.lock().map(|input| input.enabled)",
+                true,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig) { observe(config.enabled); }",
+                "observe(config.enabled)",
+                true,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } trait Read { fn consume(&self); } impl<ConfigConfig: ::std::ops::Deref<Target=Other>> Read for ConfigConfig { fn consume(&self) { observe(self.enabled); } } fn writer(config: &mut ConfigConfig) { config.enabled = true; }",
+                "observe(self.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } enum Option<T> { Some(T), None } impl<T> Option<T> { fn map<R>(&self, f: impl FnOnce(&Other) -> R) -> R { f(&make()) } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &Option<ConfigConfig>) { config.map(|input| input.enabled); }",
+                "config.map(|input| input.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } enum Option<T> { Some(T), None } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &::std::option::Option<ConfigConfig>) { config.map(|input| input.enabled); }",
+                "config.map(|input| input.enabled)",
+                true,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } enum Option<T> { Some(Other), None(::std::marker::PhantomData<T>) } use Option::*; fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(input: Option<ConfigConfig>) { let Some(config) = input else { return; }; observe(config.enabled); }",
+                "observe(config.enabled)",
+                false,
+            ),
+        ] {
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(source)?.items)?;
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: if source.contains("trait Read") {
+                        "ConfigConfig::Read::consume"
+                    } else {
+                        "consume"
+                    }
+                    .into(),
+                    expression: expression.into(),
+                },
+            );
+            if check_storage_join(&row, &projection, &anchors).is_ok() != expected {
+                accepted.push(expression);
+            }
+        }
+        if !accepted.is_empty() {
+            return Err(format!(
+                "unproved qualified owner or custom methods were accepted: {accepted:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn guarded_matches_cannot_supply_storage_owner() -> CheckResult {
+        let parsed: MatchesInput =
+            syn::parse_str("other, Some(config) if observe(config.enabled)")?;
+        if parsed.guard.is_none() {
+            return Err("guarded matches fixture did not populate the explicit guard".into());
+        }
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        for (expression, expected) in [
+            ("observe(matches!(other, Some(config) if config.enabled))", false),
+            ("observe(matches!(other, Some(item) if config.enabled))", false),
+            ("observe(matches!(config.enabled, true))", true),
+        ] {
+            let source = format!(
+                "struct ConfigConfig {{ enabled: bool }} struct Other {{ enabled: bool }} fn writer(config: &mut ConfigConfig) {{ config.enabled = true; }} fn consume(config: &ConfigConfig, other: Option<Other>) {{ {expression}; }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: "consume".into(),
+                    expression: expression.into(),
+                },
+            );
+            if check_storage_join(&row, &projection, &anchors).is_ok() != expected {
+                return Err(
+                    format!("unexpected guarded macro storage evidence: {expression}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pattern_shadowing_cannot_reuse_outer_storage_owner() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        projection.witnesses.insert(
+            "consumer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "consume".into(),
+                expression: "observe(config.enabled)".into(),
+            },
+        );
+        let mut mismatches = Vec::new();
+        for (body, expected) in [
+            ("if let Some(config) = other { observe(config.enabled); }", false),
+            ("match other { Some(config) => observe(config.enabled), None => {} }", false),
+            ("for config in others { observe(config.enabled); }", false),
+            ("while let Some(config) = other { observe(config.enabled); }", false),
+            ("if let whole @ Some(config) = other { observe(config.enabled); }", false),
+            ("if let Some(item) = other { observe(config.enabled); }", true),
+            ("match other { Some(item) => observe(config.enabled), None => {} }", true),
+            ("for item in others { observe(config.enabled); }", true),
+        ] {
+            let source = format!(
+                "struct ConfigConfig {{ enabled: bool }} struct Other {{ enabled: bool }} fn writer(config: &mut ConfigConfig) {{ config.enabled = true; }} fn consume(config: &ConfigConfig, other: Option<Other>, others: Vec<Other>) {{ {body} }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            if check_storage_join(&row, &projection, &anchors).is_ok() != expected {
+                mismatches.push(body);
+            }
+        }
+        if !mismatches.is_empty() {
+            return Err(format!("pattern shadow ownership mismatches: {mismatches:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_import_and_public_reexport_edges_require_the_actual_declaration() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        projection.witnesses.insert(
+            "consumer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "consume".into(),
+                expression: "CONFIG.read().map(|input| input.enabled)".into(),
+            },
+        );
+        for (import, accepted) in [
+            ("use std::sync::{LazyLock,RwLock};", true),
+            ("", false),
+            ("use external::{LazyLock,RwLock};", false),
+        ] {
+            let source = format!(
+                "{import} struct ConfigConfig {{ enabled: bool }} static CONFIG: LazyLock<RwLock<ConfigConfig>> = make(); fn writer(config: &mut ConfigConfig) {{ config.enabled = true; }} fn consume() {{ CONFIG.read().map(|input| input.enabled); }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(
+                    format!("wrong container import disposition {import}: {result:?}").into()
+                );
+            }
+        }
+        projection.witnesses.get_mut("consumer").ok_or("missing consumer")?.expression =
+            "observe(config.enabled)".into();
+        for (reexport, accepted) in [
+            ("pub use inner::*;", true),
+            ("", false),
+            ("pub use wrong::*;", false),
+            ("pub use inner::Missing;", false),
+        ] {
+            let source = format!(
+                "mod inner {{ pub struct ConfigConfig {{ pub enabled: bool }} }} {reexport} fn writer(config: &mut inner::ConfigConfig) {{ config.enabled = true; }} fn consume(config: &ConfigConfig) {{ observe(config.enabled); }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(
+                    format!("wrong source reexport disposition {reexport}: {result:?}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_capture_requires_both_real_owner_branches_and_folder_anchor() -> CheckResult {
+        let projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing workspace root")?;
+        let row = projection
+            .rows
+            .iter()
+            .find(|row| row.id == "workspace.resolution_timeout_ms")
+            .ok_or("missing timeout row")?;
+        let mut anchors = StorageAnchors::from_projection(root, &projection)?;
+        check_storage_join(row, &projection, &anchors)?;
+        anchors.remove_declaration("perl_lsp_rs::runtime::workspace_folder::WorkspaceFolderState");
+        if check_storage_join(row, &projection, &anchors).is_ok() {
+            return Err("missing real folder declaration still proved timeout owner".into());
+        }
+        let mut wrong = row.clone();
+        wrong.consumers = vec!["workspace.timeout.consume".into()];
+        if check_storage_join(&wrong, &projection, &anchors).is_ok() {
+            return Err(
+                "derived EffectiveIncContext replaced canonical WorkspaceConfig owner".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tuple_owner_requires_agreement_from_every_branch_without_annotation_fallback() -> CheckResult
+    {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Workspace.resolution_timeout_ms".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.resolution_timeout_ms = 1".into(),
+            },
+        );
+        projection.witnesses.insert(
+            "consumer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "consume".into(),
+                expression: "observe(config.resolution_timeout_ms)".into(),
+            },
+        );
+        for (selection, annotation, accepted) in [
+            ("if flag { (0, workspace) } else { (1, workspace) }", "", true),
+            ("if flag { (0, workspace) } else { (1, other) }", "", false),
+            ("if flag { (0, other) } else { (1, workspace) }", "", false),
+            ("if flag { (0, opaque()) } else { (1, workspace) }", ": (u8, WorkspaceConfig)", false),
+            ("if flag { (0, workspace) } else { (1, opaque()) }", "", false),
+        ] {
+            let source = format!(
+                "struct WorkspaceConfig {{ resolution_timeout_ms: u64 }} struct OtherConfig {{ resolution_timeout_ms: u64 }} fn writer(config: &mut WorkspaceConfig) {{ config.resolution_timeout_ms = 1; }} fn consume(workspace: &WorkspaceConfig, other: &OtherConfig, flag: bool) {{ let (_, config){annotation} = {selection}; observe(config.resolution_timeout_ms); }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(format!(
+                    "wrong all-branch tuple disposition {selection}{annotation}: {result:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn schema_coverage_requires_the_exact_present_source_projection() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let pointer = "/properties/perl/properties/formatting/properties/nested/properties/engine";
+        let row = projection.rows.first_mut().ok_or("missing fixture row")?;
+        row.projections.push(model::ProjectionField {
+            path: "schemas/perllsp-settings.schema.json".into(),
+            pointer: pointer.into(),
+            present: true,
+        });
+        let source = serde_json::json!({"properties":{"perl":{"properties":{
+            "formatting":{"properties":{"nested":{"properties":{"engine":{"type":"string"}}}}}}
+        }}});
+        schema_coverage(&source, &projection)?;
+        for change in ["path", "pointer", "presence", "missing"] {
+            let mut changed = projection.clone();
+            let fields = &mut changed.rows.first_mut().ok_or("missing fixture row")?.projections;
+            if change == "missing" {
+                fields.retain(|field| field.pointer != pointer);
+            } else {
+                let field = fields
+                    .iter_mut()
+                    .find(|field| field.pointer == pointer)
+                    .ok_or("missing nested projection")?;
+                match change {
+                    "path" => field.path = "another-schema.json".into(),
+                    "pointer" => field.pointer = format!("{pointer}/other"),
+                    "presence" => field.present = false,
+                    _ => return Err("unknown fixture change".into()),
+                }
+            }
+            if schema_coverage(&source, &changed).is_ok() {
+                return Err(format!("accepted mismatched schema projection: {change}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn low_risk_schema_fields_require_explicit_ownership_in_the_right_family() -> CheckResult {
+        let projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        for (family, key, expected) in [
+            ("workspace", "discoveryExtensions", "workspace.discovery_extra_extensions"),
+            ("workspace", "discoverySkippedDirs", "workspace.discovery_extra_skipped_dirs"),
+            ("formatting", "maximumLineLength", "formatting.maximum_line_length"),
+            ("formatting", "indentColumns", "formatting.indent_columns"),
+            ("formatting", "tabs", "formatting.tabs"),
+            ("formatting", "openingBraceOnNewLine", "formatting.opening_brace_on_new_line"),
+            ("formatting", "cuddledElse", "formatting.cuddled_else"),
+            ("formatting", "spaceAfterKeyword", "formatting.space_after_keyword"),
+            ("formatting", "addTrailingCommas", "formatting.add_trailing_commas"),
+            ("formatting", "verticalAlignment", "formatting.vertical_alignment"),
+            ("formatting", "blockCommentIndentation", "formatting.block_comment_indentation"),
+        ] {
+            if low_risk_schema_id(family, key) != Some(expected)
+                || low_risk_schema_id("limits", key).is_some()
+                || low_risk_schema_id(family, "unknownField").is_some()
+            {
+                return Err(format!("incorrect low-risk mapping: {family}.{key}").into());
+            }
+            let source = serde_json::json!({"properties":{"perl":{"properties":{
+                (family):{"properties":{(key):{"type":"string"}}}
+            }}}});
+            schema_coverage(&source, &projection)?;
+            let mut missing = projection.clone();
+            missing.remaining_low_risk.retain(|id| id != expected);
+            if schema_coverage(&source, &missing).is_ok() {
+                return Err(format!("accepted unowned low-risk field: {expected}").into());
+            }
+        }
+        Ok(())
+    }
+
+    fn witness() -> Witness {
+        Witness {
+            path: "fixture.rs".into(),
+            function: "Config::update".into(),
+            expression: "if let Some(v) = input.get(\"engine\") { self.engine = v; }".into(),
+        }
+    }
+    #[test]
+    fn parser_key_destination_and_function_are_one_binding() -> CheckResult {
+        let source = "impl Config { fn update(&mut self, input: Value) { if let Some(v) = input.get(\"engine\") { self.engine = v; } } }";
+        check_witness(source, &witness())?;
+        for changed in [
+            source.replace("get(\"engine\")", "get(\"other\")"),
+            source.replace("self.engine = v", "self.other = v"),
+            source.replace("fn update", "fn another"),
+        ] {
+            let changed = format!(
+                "{changed}\n// input.get(\"engine\"); self.engine = v;\n#[cfg(test)] mod tests {{ fn update() {{ if let Some(v) = input.get(\"engine\") {{ self.engine = v; }} }} }}"
+            );
+            if check_witness(&changed, &witness()).is_ok() {
+                return Err("accepted moved key, destination or function".into());
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn disconnected_consumer_cannot_be_replaced_by_comment_or_other_function() -> CheckResult {
+        let witness = Witness {
+            path: "fixture.rs".into(),
+            function: "consume".into(),
+            expression: "run(config.engine)".into(),
+        };
+        check_witness("fn consume(){ run(config.engine); }", &witness)?;
+        if check_witness("fn consume(){ run(default_engine); /* run(config.engine) */ } fn elsewhere(){ run(config.engine); }", &witness).is_ok() { return Err("accepted disconnected consumer".into()); }
+        if check_witness("fn consume(){ #[cfg(test)] { run(config.engine); } }", &witness).is_ok() {
+            return Err("test-only consumer satisfied production binding".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compound_test_gates_and_serde_container_mapping_cannot_satisfy_bindings() -> CheckResult {
+        let consumer = Witness {
+            path: "fixture.rs".into(),
+            function: "consume".into(),
+            expression: "run(config.engine)".into(),
+        };
+        check_witness("fn consume(){ run(config.engine); }", &consumer)?;
+        for source in [
+            "#[cfg(all(test, unix))] fn consume(){ run(config.engine); }",
+            "fn consume(){ #[cfg(any(test, feature=\"fixture\"))] { run(config.engine); } }",
+            // Eligibility deliberately excludes every test-dependent shape;
+            // ignoring all not(...) lists would admit double-negated test code.
+            "#[cfg(not(test))] fn consume(){ run(config.engine); }",
+            "#[cfg(not(not(test)))] fn consume(){ run(config.engine); }",
+        ] {
+            if check_witness(source, &consumer).is_ok() {
+                return Err("compound test gate satisfied production binding".into());
+            }
+        }
+        let field = Witness {
+            path: "fixture.rs".into(),
+            function: "@serde-field:Config.target_version".into(),
+            expression: "Option<String>".into(),
+        };
+        let source = "#[derive(serde::Deserialize)] #[serde(default)] struct Config { target_version: Option<String> }";
+        check_witness(source, &field)?;
+        for mapping in ["rename_all=\"camelCase\"", "from=\"Other\"", "transparent"] {
+            let changed = source.replace("#[serde(default)]", &format!("#[serde({mapping})]"));
+            if check_witness(&changed, &field).is_ok() {
+                return Err("serde container mapping drift accepted".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_gated_initializers_arms_and_field_values_are_not_production_bindings() -> CheckResult {
+        let witness = Witness {
+            path: "fixture.rs".into(),
+            function: "consume".into(),
+            expression: "run(config.engine)".into(),
+        };
+        for body in [
+            "ATTR let value = run(config.engine);",
+            "ATTR let Some(value) = input else { run(config.engine); return; };",
+            "match input { ATTR Some(_) => run(config.engine), _ => (), }",
+            "let value = Record { ATTR field: run(config.engine) };",
+            "ATTR return run(config.engine);",
+            "ATTR loop { run(config.engine); break; }",
+            "ATTR while ready { run(config.engine); }",
+            "ATTR for value in values { run(config.engine); }",
+            "ATTR async { run(config.engine); };",
+            "ATTR unsafe { run(config.engine); }",
+        ] {
+            let positive = format!("fn consume() {{ {} }}", body.replace("ATTR", ""));
+            check_witness(&positive, &witness)?;
+            for attribute in
+                ["#[cfg(test)]", "#[cfg(all(test, unix))]", "#[cfg_attr(test, allow(unused))]"]
+            {
+                let changed = format!(
+                    "fn consume() {{ {} }}\n// run(config.engine)\nfn elsewhere() {{ run(config.engine); }}",
+                    body.replace("ATTR", attribute)
+                );
+                if check_witness(&changed, &witness).is_ok() {
+                    return Err(format!("test-gated binding accepted: {body} {attribute}").into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn documented_high_risk_families_and_explicit_low_risk_retirements_are_checked() -> CheckResult
+    {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing repository root")?;
+        let projection: Projection =
+            serde_json::from_str(&fs::read_to_string(root.join(PROJECTION))?)?;
+        for heading in [
+            "#### `perl.formatting.engine`",
+            "#### `perl.perlcritic.enabled`",
+            "#### `perl.formatting.indentColumns`",
+            "#### `perl.workspace.discoveryExtensions`",
+            "#### `perl.testRunner.command` (removed)",
+            "#### `perl.testRunner.args` (removed)",
+        ] {
+            docs_coverage(heading, &projection)?;
+        }
+        for heading in [
+            "#### `perl.formatting.unboundNewField`",
+            "#### `perl.perlcritic.unboundNewField`",
+            "#### `perl.testRunner.unboundNewField` (removed)",
+            "#### `perl.testRunner.command`",
+            "#### `perl.testRunner.args`",
+        ] {
+            if docs_coverage(heading, &projection).is_ok() {
+                return Err(format!("unowned or resurrected docs field accepted: {heading}").into());
+            }
+        }
+        for (kind, disposition) in
+            [("active", "remove_false_contract"), ("removed", "runtime_backed")]
+        {
+            let mut changed = projection.clone();
+            let runner = changed
+                .rows
+                .iter_mut()
+                .find(|row| row.id == "testRunner.command")
+                .ok_or("missing runner fixture row")?;
+            runner.kind = kind.into();
+            runner.disposition = disposition.into();
+            if docs_coverage("#### `perl.testRunner.command` (removed)", &changed).is_ok() {
+                return Err("runner retirement accepted wrong kind or disposition".into());
+            }
+        }
+        let mut missing = projection.clone();
+        missing.remaining_low_risk.retain(|id| id != "formatting.indent_columns");
+        if docs_coverage("#### `perl.formatting.indentColumns`", &missing).is_ok() {
+            return Err("unowned low-risk docs field accepted".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn matches_storage_reads_parse_patterns_and_guards_without_accepting_residue() -> CheckResult {
+        fn reads(source: &str) -> CheckResult<bool> {
+            let expression = syn::parse_str::<syn::Expr>(source)?;
+            let mut usage = StorageUse { member: "engine", writes: false, reads: false };
+            usage.visit_expr(&expression);
+            Ok(usage.reads)
+        }
+        for source in [
+            "matches!(config.engine, _)",
+            "matches!(config.engine, Some(_))",
+            "matches!(config.engine, Some(value @ 1..=3) | None,)",
+            "matches!(config.engine, | Some(_) | None)",
+            "matches!(other, Some(value) if config.engine.accepts(value),)",
+        ] {
+            if !reads(source)? {
+                return Err(format!("valid matches! read missed: {source}").into());
+            }
+            let without_read = source.replace("config.engine", "default_engine");
+            if reads(&format!("{without_read} /* config.engine */"))? {
+                return Err("comment supplied missing macro storage read".into());
+            }
+        }
+        for source in [
+            "matches!(other, Some(engine))",
+            "matches!(config.engine, Some(_) trailing)",
+            "matches!(config.engine, Some(_) if)",
+            "matches!(config.engine, Some(_), extra)",
+        ] {
+            if reads(source)? {
+                return Err(format!(
+                    "pattern binding or malformed macro supplied storage read: {source}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn assignment_places_do_not_supply_consumer_reads() -> CheckResult {
+        for (source, writes, reads) in [
+            ("config.engine = default_engine", true, false),
+            ("(config.engine) = default_engine", true, false),
+            ("(config.engine, other) = values", true, false),
+            ("[config.engine, other] = values", true, false),
+            ("Record { field: config.engine } = value", true, false),
+            ("config.engine.option = value", true, false),
+            ("config.engine[0] = value", true, false),
+            ("config.engine[0].option = value", true, false),
+            ("config.engine.options[0] = value", true, false),
+            ("config.engine[config.engine.index] = value", true, true),
+            ("config.engine.receiver().option = value", false, true),
+            ("receiver(config.engine)[0] = value", false, true),
+            ("config.engine.option += value", true, true),
+            ("config.engine[0] += value", true, true),
+            ("config.engine = previous.engine", true, true),
+            ("config.other = config.engine", false, true),
+            ("receiver(config.engine).other = value", false, true),
+            ("values[config.engine] = value", false, true),
+            ("*config.engine = value", false, true),
+            ("config.engine += value", true, true),
+            ("run(config.engine)", false, true),
+        ] {
+            let expression = syn::parse_str::<syn::Expr>(source)?;
+            let mut usage = StorageUse { member: "engine", writes: false, reads: false };
+            usage.visit_expr(&expression);
+            if (usage.writes, usage.reads) != (writes, reads) {
+                return Err(
+                    format!("incorrect assignment read/write classification: {source}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn removed_key_literals_are_rejected_across_parser_syntax() -> CheckResult {
+        let witness = Witness {
+            path: "fixture.rs".into(),
+            function: "@no-key:parse".into(),
+            expression: "testRunner".into(),
+        };
+        for body in [
+            "let value = input.get(\"testRunner\");",
+            "let value = input[\"testRunner\"] ;",
+            "let value = input.get_mut(\"testRunner\");",
+            "let value = input.remove(\"testRunner\");",
+            "let value = input.pointer(\"/testRunner/enabled\");",
+            "let value = json!({\"testRunner\": false});",
+            "let value = input.get(r#\"testRunner\"#);",
+            "#[derive(Deserialize)] struct Payload { #[serde(rename = \"testRunner\")] runner: bool }",
+        ] {
+            let source = format!("fn parse() {{ {body} }}");
+            if check_witness(&source, &witness).is_ok() {
+                return Err(format!("removed key literal accepted: {body}").into());
+            }
+            check_witness(&source.replace("testRunner", "otherSetting"), &witness)?;
+        }
+        check_witness(
+            "fn parse() { /* input.get(\"testRunner\") */ } fn elsewhere() { input.get(\"testRunner\"); }",
+            &witness,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn required_merge_surface_executes_tests_and_actual_bindings() -> CheckResult {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing repository root")?;
+        let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(
+            root.join(".github").join("workflows").join("ci.yml"),
+        )?)?;
+        let job = workflow
+            .get("jobs")
+            .and_then(|jobs| jobs.get("check-all-targets"))
+            .ok_or("missing required merge surface")?;
+        if job.get("continue-on-error").is_some() {
+            return Err("binding job cannot be advisory".into());
+        }
+        let steps = job
+            .get("steps")
+            .and_then(serde_yaml_ng::Value::as_sequence)
+            .ok_or("missing gate steps")?;
+        fn validate_steps(steps: &[serde_yaml_ng::Value]) -> CheckResult {
+            let expected = [
+                ("uses", "./.github/actions/setup-vscode-toolchain"),
+                ("run", "cargo test -p xtask --bin high-risk-configuration-bindings --locked"),
+                (
+                    "run",
+                    "cargo run -p xtask --bin high-risk-configuration-bindings --locked -- . vscode-extension/node_modules/typescript",
+                ),
+            ];
+            let mut previous = None;
+            for (key, value) in expected {
+                let matches: Vec<_> = steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, step)| {
+                        step.get(key).and_then(serde_yaml_ng::Value::as_str) == Some(value)
+                    })
+                    .collect();
+                let (index, step) =
+                    matches.first().copied().ok_or("missing binding execution step")?;
+                if matches.len() != 1
+                    || previous.is_some_and(|earlier| earlier >= index)
+                    || step.get("if").is_some()
+                    || step.get("continue-on-error").is_some()
+                {
+                    return Err(
+                        "binding setup/execution is optional, duplicated or out of order".into()
+                    );
+                }
+                if key == "uses" && step.get("with").is_some() {
+                    return Err("binding setup must retain locked install defaults".into());
+                }
+                previous = Some(index);
+            }
+            Ok(())
+        }
+        validate_steps(steps)?;
+        let mut without_execution = steps.clone();
+        without_execution.retain(|step| {
+            !step.get("run").and_then(serde_yaml_ng::Value::as_str).is_some_and(|command| {
+                command.starts_with("cargo run -p xtask --bin high-risk-configuration-bindings")
+            })
+        });
+        if validate_steps(&without_execution).is_ok() {
+            return Err("missing actual execution accepted".into());
+        }
+        let mut reordered = steps.clone();
+        reordered.reverse();
+        if validate_steps(&reordered).is_ok() {
+            return Err("execution before setup accepted".into());
+        }
+        for guard in ["if", "continue-on-error"] {
+            let mut optional = steps.clone();
+            let step = optional
+                .iter_mut()
+                .find(|step| {
+                    step.get("run").and_then(serde_yaml_ng::Value::as_str).is_some_and(|command| {
+                        command.starts_with(
+                            "cargo run -p xtask --bin high-risk-configuration-bindings",
+                        )
+                    })
+                })
+                .and_then(serde_yaml_ng::Value::as_mapping_mut)
+                .ok_or("missing actual execution mapping")?;
+            step.insert(
+                serde_yaml_ng::Value::String(guard.into()),
+                serde_yaml_ng::Value::Bool(true),
+            );
+            if validate_steps(&optional).is_ok() {
+                return Err(format!("optional execution accepted: {guard}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn new_schema_field_requires_a_runtime_or_retirement_disposition() -> CheckResult {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing repository root")?;
+        let projection: Projection =
+            serde_json::from_str(&fs::read_to_string(root.join(PROJECTION))?)?;
+        let mut schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            root.join("schemas").join("perllsp-settings.schema.json"),
+        )?)?;
+        schema_coverage(&schema, &projection)?;
+        schema
+            .pointer_mut("/properties/perl/properties/aiCompletion/properties")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("AI schema properties missing")?
+            .insert("unboundNewField".into(), serde_json::json!({"type":"string"}));
+        if schema_coverage(&schema, &projection).is_ok() {
+            return Err("schema-only field escaped disposition check".into());
+        }
+        docs_coverage("#### `perl.limits.completionCap`", &projection)?;
+        if docs_coverage("#### `perl.limits.unboundNewField`", &projection).is_ok() {
+            return Err("docs-only field escaped disposition check".into());
+        }
+        Ok(())
+    }
+}
