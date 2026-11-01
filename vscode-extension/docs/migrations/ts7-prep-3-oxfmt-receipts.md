@@ -122,7 +122,7 @@ into exactly two commits:
 - **All 6 touched JSON/JSONC files** (`gherkin-language-configuration.json`,
   `language-configuration.json`, `snippets/launch.json`, `snippets/perl.json`,
   `tsconfig.json`, `tsconfig.test.json`) were parsed before (`git show
-HEAD~1:<path>`) and after with a JSONC-tolerant parser
+  HEAD~1:<path>`) and after with a JSONC-tolerant parser
   (`jsonc-parser`, already a transitive devDependency) and deep-compared:
 
   ```
