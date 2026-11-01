@@ -39,6 +39,7 @@ perl-module
 perl-semantic-facts
 perl-source-identity
 perl-symbol
+perl-sync-convergence
 
 # Absorbed LSP core: allowlisted, and its breaks reach releases (#14607).
 perl-lsp-rs-core
