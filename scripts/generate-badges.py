@@ -19,6 +19,7 @@ from typing import BinaryIO
 
 RIPR_TIMEOUT_SECONDS = 15 * 60
 TERMINATION_GRACE_SECONDS = 5
+WAIT_FAILED = 0xFFFFFFFF
 POST_EXIT_READER_SECONDS = 1.0
 HUNG_READER_JOIN_SECONDS = 0.05
 STDERR_DIAGNOSTIC_LIMIT = 2_048
@@ -271,6 +272,7 @@ class WindowsJob:
                 failures.append(f"TerminateJobObject failed: {ctypes.FormatError(error)}")
             # Zero accounting can precede actual exit/file release. Observe both
             # the job count and the verified members bound before termination.
+            # Each observation is best-effort: one failure must not skip the rest.
             deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
             try:
                 while self.active_processes():
@@ -278,11 +280,19 @@ class WindowsJob:
                         failures.append("Windows job settlement timed out; descendants may remain")
                         break
                     time.sleep(0.01)
-                for handle in handles:
+            except OSError as error:
+                failures.append(f"Windows job settlement unconfirmed: {error}")
+            for handle in handles:
+                try:
                     remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
                     result = self._kernel32.WaitForSingleObject(handle, remaining_ms)
+                    if result == WAIT_FAILED:
+                        self._raise_last_error("WaitForSingleObject")
                     if result != 0:  # WAIT_OBJECT_0 is the only exit proof.
                         failures.append(f"Windows job member exit unconfirmed: wait result {result}")
+                except OSError as error:
+                    failures.append(f"Windows job member exit unconfirmed: {error}")
+            try:
                 final_total = self.total_processes()
                 if initial_total is not None and final_total != initial_total:
                     failures.append(
