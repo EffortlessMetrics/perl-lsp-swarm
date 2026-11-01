@@ -842,9 +842,6 @@ fn count_matching_branch(worktrees: &[WorktreeRecord], branch: &str) -> usize {
 /// `decide` total and panic-free over arbitrary deserialized input (#11636
 /// feeds observation sets from JSON).
 ///
-/// The bin-side sibling `sha_matches` retains the older exact-equality hole;
-/// tightening it belongs to the #3957-owned consumer claim, not this
-/// lib-side leaf (cross-cutting disposition, #12059 review).
 fn sha_matches(full: &str, expected: &str) -> bool {
     const MIN_PREFIX_LEN: usize = 4;
     let hex_token = |token: &str| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit());
