@@ -38,8 +38,7 @@ const NO_SCHEDULED_POLLING: &[(&str, &str)] = &[
         "Create a timer, cron, polling child or idle watcher for ordinary work.",
     ),
 ];
-const OBLIGATIONS: &[(&str, &[(&str, &str)])] =
-    &[("attention release", ATTENTION_RELEASE), ("no scheduled polling", NO_SCHEDULED_POLLING)];
+const ATTENTION_RELEASE_NEGATIONS: &[&str] = &["A remote wait does not release root attention."];
 
 /// Shared closed vocabulary for additive revisit polling: lowercase detector phrase
 /// and the affirmative mutation line injected in ratchet controls.
@@ -69,8 +68,12 @@ fn additive_polling_error(path: &str) -> String {
     format!("{path} {ADDITIVE_POLLING_ERROR}")
 }
 
-fn contains_affirmative_revisit_directive(lowered: &str, directive: &str) -> bool {
-    lowered.match_indices(directive).any(|(index, _)| !lowered[..index].ends_with("do not "))
+const OBLIGATIONS: &[(&str, &[(&str, &str)])] =
+    &[("attention release", ATTENTION_RELEASE), ("no scheduled polling", NO_SCHEDULED_POLLING)];
+
+fn contains_affirmative_clause(lowered: &str, clause: &str) -> bool {
+    let clause = clause.to_lowercase();
+    lowered.match_indices(&clause).any(|(index, _)| !lowered[..index].ends_with("do not "))
 }
 
 const SURFACES: &[&str] = &[
@@ -102,19 +105,22 @@ fn normalized(text: &str) -> String {
 
 fn validate_surface(path: &str, text: &str) -> Result<(), String> {
     let text = normalized(text);
+    let lowered = text.to_lowercase();
     for (obligation, variants) in OBLIGATIONS {
         if !variants.iter().any(|(accepted, _)| text.contains(*accepted)) {
             return Err(format!("{path} lost remote-wait invariant {obligation:?}"));
         }
         // An accepted clause must not hide an additive contradictory clause.
-        if variants.iter().any(|(_, reversed)| text.contains(*reversed)) {
+        if variants.iter().any(|(_, reversed)| contains_affirmative_clause(&lowered, reversed)) {
             return Err(format!("{path} contradicts remote-wait invariant {obligation:?}"));
         }
     }
-    let lowered = text.to_lowercase();
+    if ATTENTION_RELEASE_NEGATIONS.iter().any(|negated| text.contains(*negated)) {
+        return Err(format!("{path} contradicts remote-wait invariant \"attention release\""));
+    }
     if ADDITIVE_REVISIT_POLLING_CASES
         .iter()
-        .any(|(directive, _)| contains_affirmative_revisit_directive(&lowered, directive))
+        .any(|(directive, _)| contains_affirmative_clause(&lowered, directive))
     {
         return Err(additive_polling_error(path));
     }
@@ -220,6 +226,24 @@ fn ratchet_accepts_current_wording_variants_and_rejects_their_reversals() -> Res
                     Err(format!("{path} contradicts remote-wait invariant {obligation:?}")),
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ratchet_rejects_negated_attention_release_on_every_surface() -> Result<(), DynError> {
+    let root = root()?;
+    for path in SURFACES {
+        let source = read(&root, path)?;
+        validate_surface(path, &source).map_err(std::io::Error::other)?;
+        for negated in ATTENTION_RELEASE_NEGATIONS {
+            let regressed = format!("{source}\n{negated}\n");
+            assert_eq!(
+                validate_surface(path, &regressed),
+                Err(format!("{path} contradicts remote-wait invariant \"attention release\"")),
+                "{path}: {negated}"
+            );
         }
     }
     Ok(())
