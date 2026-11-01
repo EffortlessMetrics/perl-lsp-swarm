@@ -24,6 +24,8 @@ ignore = [
     # repository-controlled YAML. No shipped crate depends on it and no
     # safe upgrade exists. Bounded exposure, not a claim of no risk.
     # Durable fix is the xtask YAML migration off serde_yaml_ng, #17720.
+    # The matching [bans].deny entries below fail closed if either crate leaves
+    # the xtask path; remove advisory ignore and ban entries together in #17720.
     { id = "RUSTSEC-2024-0449", reason = "unmaintained unsafe-libyaml via serde_yaml_ng in unpublished xtask only; inputs are repository-controlled; no shipped-crate exposure" },
 ]
 
@@ -64,7 +66,13 @@ highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"
 allow = []
-deny = []
+deny = [
+    # RUSTSEC-2024-0449 fail-closed: only unpublished xtask may depend on
+    # serde_yaml_ng; any shipped-crate path must fail `cargo deny check bans`.
+    # Remove together with the advisory ignore when #17720 drops serde_yaml_ng.
+    { crate = "serde_yaml_ng", wrappers = ["xtask"], reason = "RUSTSEC-2024-0449: serde_yaml_ng limited to unpublished xtask; fail closed on shipped-crate paths (#17722)" },
+    { crate = "unsafe-libyaml", wrappers = ["serde_yaml_ng"], reason = "RUSTSEC-2024-0449: unsafe-libyaml only via serde_yaml_ng on the xtask path; remove with advisory ignore in #17720 (#17722)" },
+]
 
 # Known duplicate crates caused by transitive dependency version splits.
 # Each entry is justified from the current Cargo.lock dependency graph (verified
