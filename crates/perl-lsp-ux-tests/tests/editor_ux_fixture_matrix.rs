@@ -480,6 +480,14 @@ fn source_writes_run_receipt_guard_unit_cases() {
         source_writes_run_receipt("/* it \"quoted */ run_ux_scenario(\"x\");"),
         "quotes inside block comments must not open string state"
     );
+    assert!(
+        !source_writes_run_receipt("let s = cr#\"run_ux_scenario(\\\"x\\\");\"#;"),
+        "wrapper inside raw C string must not count"
+    );
+    assert!(
+        !source_writes_run_receipt("let s = c\"run_ux_scenario(\\\"x\\\");\";"),
+        "wrapper inside C string must not count"
+    );
 }
 
 /// Stack entry for one open string literal: [`PLAIN_STRING_LITERAL`] marks a
@@ -573,7 +581,7 @@ fn stripped_rust_source_for_receipt_heuristic(source: &str) -> String {
                 }
             }
         } else if (chars[index] == 'r'
-            || (chars[index] == 'b' && chars.get(index + 1) == Some(&'r')))
+            || ((chars[index] == 'b' || chars[index] == 'c') && chars.get(index + 1) == Some(&'r')))
             && (index == 0
                 || !(chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_'))
         {
@@ -588,9 +596,10 @@ fn stripped_rust_source_for_receipt_heuristic(source: &str) -> String {
                     index += 1;
                 }
             }
-        } else if chars[index] == '"' || (chars[index] == 'b' && chars.get(index + 1) == Some(&'"'))
+        } else if chars[index] == '"'
+            || ((chars[index] == 'b' || chars[index] == 'c') && chars.get(index + 1) == Some(&'"'))
         {
-            if chars[index] == 'b' {
+            if chars[index] == 'b' || chars[index] == 'c' {
                 index += 2;
             } else {
                 index += 1;
