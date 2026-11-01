@@ -907,9 +907,9 @@ def main(args=None):
         env = os.environ.copy()
         env["RUSTUP_AUTO_INSTALL"] = "0"
         discovery_mode = env.get('CARGO_ADMITTED_CHILD_DISCOVERY', 'proc-children')
-        if discovery_mode != 'proc-children':
-            if not owned_linux:
-                raise Denied('alternate owned-child discovery requires native Linux')
+        if discovery_mode != 'proc-children' and not owned_linux:
+            raise Denied('alternate owned-child discovery requires native Linux')
+        if managed and owned_linux:
             child_discovery_capability(discovery_mode)  # before scope/lease/allocation
         worktree, slot, paths = resource_plan(env)
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):

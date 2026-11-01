@@ -251,9 +251,12 @@ Incomplete closure or failed release returns 75 and retains ownership.
 ### Explicit Linux proc-parent/pidfd discovery
 
 `CARGO_ADMITTED_CHILD_DISCOVERY=proc-parent-pidfd` explicitly selects a bounded
-alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. The default
-`proc-children` profile is unchanged; no missing-table detection silently selects
-a namespace scan. The alternate profile reads only visible numeric PID `stat`
+alternative for Linux hosts lacking `CONFIG_PROC_CHILDREN`. Linux builtin Cargo and
+staged Clippy preflight and execution check the selected profile's discovery capability
+before resource planning or lease acquisition. An unavailable default `proc-children`
+interface therefore refuses even a build that might otherwise complete normally; select
+the alternate explicitly only when its capability checks pass. No missing-table
+detection silently selects a namespace scan. The alternate profile reads only visible numeric PID `stat`
 records, including their parent and kernel starttime. It does not read process
 environments, command lines, descriptors, mappings or executable paths.
 
