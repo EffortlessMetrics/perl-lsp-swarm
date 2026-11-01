@@ -76,6 +76,18 @@ fn contains_affirmative_clause(lowered: &str, clause: &str) -> bool {
     lowered.match_indices(&clause).any(|(index, _)| !lowered[..index].ends_with("do not "))
 }
 
+fn contradicts_reversal(lowered: &str, reversed: &str) -> bool {
+    if contains_affirmative_clause(lowered, reversed) {
+        return true;
+    }
+    for segment in reversed.split(';').skip(1) {
+        if contains_affirmative_clause(lowered, segment.trim()) {
+            return true;
+        }
+    }
+    false
+}
+
 const SURFACES: &[&str] = &[
     "AGENTS.md",
     "CLAUDE.md",
@@ -111,11 +123,11 @@ fn validate_surface(path: &str, text: &str) -> Result<(), String> {
             return Err(format!("{path} lost remote-wait invariant {obligation:?}"));
         }
         // An accepted clause must not hide an additive contradictory clause.
-        if variants.iter().any(|(_, reversed)| contains_affirmative_clause(&lowered, reversed)) {
+        if variants.iter().any(|(_, reversed)| contradicts_reversal(&lowered, reversed)) {
             return Err(format!("{path} contradicts remote-wait invariant {obligation:?}"));
         }
     }
-    if ATTENTION_RELEASE_NEGATIONS.iter().any(|negated| text.contains(*negated)) {
+    if ATTENTION_RELEASE_NEGATIONS.iter().any(|negated| lowered.contains(&negated.to_lowercase())) {
         return Err(format!("{path} contradicts remote-wait invariant \"attention release\""));
     }
     if ADDITIVE_REVISIT_POLLING_CASES
@@ -238,13 +250,32 @@ fn ratchet_rejects_negated_attention_release_on_every_surface() -> Result<(), Dy
         let source = read(&root, path)?;
         validate_surface(path, &source).map_err(std::io::Error::other)?;
         for negated in ATTENTION_RELEASE_NEGATIONS {
-            let regressed = format!("{source}\n{negated}\n");
-            assert_eq!(
-                validate_surface(path, &regressed),
-                Err(format!("{path} contradicts remote-wait invariant \"attention release\"")),
-                "{path}: {negated}"
-            );
+            for variant in [negated.to_string(), negated.to_lowercase()] {
+                let regressed = format!("{source}\n{variant}\n");
+                assert_eq!(
+                    validate_surface(path, &regressed),
+                    Err(format!("{path} contradicts remote-wait invariant \"attention release\"")),
+                    "{path}: {variant}"
+                );
+            }
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn ratchet_rejects_partial_polling_reversal_on_every_surface() -> Result<(), DynError> {
+    const MUTATION: &str = "Do not use supported waits/events or bounded checks; create a polling child or scheduled monitor.";
+    let root = root()?;
+    for path in SURFACES {
+        let source = read(&root, path)?;
+        validate_surface(path, &source).map_err(std::io::Error::other)?;
+        let regressed = format!("{source}\n{MUTATION}\n");
+        assert_eq!(
+            validate_surface(path, &regressed),
+            Err(format!("{path} contradicts remote-wait invariant \"no scheduled polling\"")),
+            "{path}: partial polling reversal"
+        );
     }
     Ok(())
 }
