@@ -500,13 +500,18 @@ pub(super) fn preserve_region_lines(source: &str) -> std::collections::HashSet<u
 /// Every heredoc opener queued on one code line, in order, as
 /// `(terminator, indented)` pairs.
 fn heredoc_openers(line: &str) -> Vec<(String, bool)> {
+    let (code, _) = split_trailing_comment(line);
     let mut openers = Vec::new();
-    let mut rest = line;
+    let mut rest = code;
     while let Some((_, after_marker)) = rest.split_once("<<") {
-        let after_space = after_marker.trim_start();
-        let (indented, marker) = match after_space.strip_prefix('~') {
-            Some(stripped) => (true, stripped.trim_start()),
-            None => (false, after_space),
+        if after_marker.starts_with('<') || after_marker.starts_with(|ch: char| ch.is_whitespace())
+        {
+            rest = after_marker;
+            continue;
+        }
+        let (indented, marker) = match after_marker.strip_prefix('~') {
+            Some(stripped) => (true, stripped),
+            None => (false, after_marker),
         };
         let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
         let name: String =
@@ -1090,6 +1095,9 @@ pub(super) fn split_trailing_comment(body: &str) -> (&str, Option<&str>) {
             '"' if !in_single && !in_backtick => in_double = !in_double,
             '`' if !in_single && !in_double => in_backtick = !in_backtick,
             '#' if !in_single && !in_double && !in_backtick => {
+                if index > 0 && body.as_bytes()[index - 1] == b'$' {
+                    continue;
+                }
                 let code = body[..index].trim_end();
                 if code.trim().is_empty() {
                     return (body, None);
@@ -2590,17 +2598,22 @@ fn is_pod_start(trimmed_line: &str) -> bool {
 }
 
 fn contains_likely_heredoc_start(line: &str) -> bool {
-    let Some((_, after_marker)) = line.split_once("<<") else {
-        return false;
-    };
-    if after_marker.starts_with('<') {
-        return false;
+    let (code, _) = split_trailing_comment(line);
+    let mut rest = code;
+    while let Some((_, after_marker)) = rest.split_once("<<") {
+        if after_marker.starts_with('<') || after_marker.starts_with(|ch: char| ch.is_whitespace())
+        {
+            rest = after_marker;
+            continue;
+        }
+        let after_indent = after_marker.strip_prefix('~').unwrap_or(after_marker);
+        let marker = after_indent.strip_prefix(['\'', '"', '`']).unwrap_or(after_indent);
+        if marker.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic()) {
+            return true;
+        }
+        rest = after_marker;
     }
-
-    let after_indent = after_marker.trim_start();
-    let marker = after_indent.strip_prefix('~').unwrap_or(after_indent).trim_start();
-    let marker = marker.strip_prefix(['\'', '"', '`']).unwrap_or(marker);
-    marker.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    false
 }
 
 fn is_format_declaration_start(trimmed_line: &str) -> bool {
@@ -2633,6 +2646,20 @@ mod tests {
         let (code, comment) = split_trailing_comment("my$out=`printf '#value'`;");
         assert_eq!(code, "my$out=`printf '#value'`;");
         assert_eq!(comment, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn split_trailing_comment_treats_array_last_index_as_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (code, comment) = split_trailing_comment("if ($#ARGV >= 0) {");
+        assert_eq!(code, "if ($#ARGV >= 0) {");
+        assert_eq!(comment, None);
+
+        let (code, comment) = split_trailing_comment("my $n = $#items; # trailing");
+        assert_eq!(code, "my $n = $#items;");
+        assert_eq!(comment, Some("# trailing"));
 
         Ok(())
     }
