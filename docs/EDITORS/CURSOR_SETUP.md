@@ -49,12 +49,12 @@ cursor --install-extension EffortlessMetrics.perl-lsp-rs
 
 ### Configure the Extension
 
-The extension works without configuration using its defaults. For a workspace-specific
-setup, create or edit `.vscode/settings.json` in your project root:
+The extension works without configuration using its defaults. For
+project-specific **resource-scoped** settings, create or edit
+`.vscode/settings.json` in your project root:
 
 ```json
 {
-  "perl-lsp.autoDownload": true,
   "perl-lsp.enableSemanticTokens": true,
   "perl-lsp.enableFormatting": true,
   "perl-lsp.formatOnSave": false,
@@ -66,9 +66,15 @@ Cursor reads `.vscode/settings.json` for workspace-scoped settings, same as VS C
 User-level settings are in Cursor's own settings file (accessible via
 `Ctrl+,` / Cmd+,).
 
+Machine-scoped keys (`perl-lsp.autoDownload`, `perl-lsp.serverPath`,
+`perl-lsp.channel`, `perl-lsp.versionTag`, and others declared with
+`scope: "machine"`) are ignored in workspace files. Run **Preferences: Open
+User Settings (JSON)** to change them.
+
 ### Pin a Specific Release
 
-To avoid tracking the `latest` channel:
+To avoid tracking the `latest` channel, open **Preferences: Open User Settings
+(JSON)** and add:
 
 ```json
 {
@@ -79,7 +85,8 @@ To avoid tracking the `latest` channel:
 
 ### Use a Pre-installed Binary
 
-To disable auto-download and use a binary you installed:
+To disable auto-download and use a binary you installed, open **Preferences:
+Open User Settings (JSON)** and add:
 
 ```json
 {
@@ -90,9 +97,9 @@ To disable auto-download and use a binary you installed:
 
 ## Optional: Server Initialization Options
 
-Prefer `.perl-lsp.toml` for settings shared across all editors. Use
-workspace settings for Cursor-specific startup settings that should not apply
-everywhere.
+Prefer `.perl-lsp.toml` for settings shared across all editors. Use workspace
+`.vscode/settings.json` for resource-scoped extension settings (not machine-scoped
+keys such as `perl-lsp.serverPath`) that should not apply everywhere.
 
 ```json
 {
@@ -148,7 +155,7 @@ To restart the server without restarting Cursor:
 
 4. Confirm Cursor was launched from a shell that has `perllsp` on its `PATH`.
    If Cursor was opened from a GUI launcher, it may not inherit shell `PATH`.
-   Set an absolute `serverPath` in that case:
+   Set an absolute path in **Preferences: Open User Settings (JSON)**:
    ```json
    { "perl-lsp.serverPath": "/absolute/path/to/perllsp" }
    ```
