@@ -299,11 +299,30 @@ fn division_after_a_string_is_not_binary_repetition() {
 }
 
 #[test]
-fn angle_bracket_terms_remain_outside_this_classifier() {
-    // Word-not association is supported and protected separately by #13932.
-    for source in [r#"my $value = "x" x <>;"#, r#"my $value = "x" x <STDIN>;"#] {
-        assert_not_repetition(source);
-    }
+fn angle_terms_and_word_not_are_admitted_classifier_operands() {
+    // #13930 admits angle terms; #13932 admits word-not association. This
+    // seam pins both admissions from the classifier's side; the
+    // authoritative angle topology/ranges and ambiguity controls live in
+    // string_repetition_angle_rhs.rs, word-not coverage in
+    // string_repetition_word_not.rs.
+    assert_string_repetition(
+        r#"my $value = "x" x <>;"#,
+        "<>",
+        |kind| matches!(kind, NodeKind::Diamond),
+        "a diamond readline term",
+    );
+    assert_string_repetition(
+        r#"my $value = "x" x <STDIN>;"#,
+        "<STDIN>",
+        |kind| matches!(kind, NodeKind::Readline { filehandle: Some(handle) } if handle == "STDIN"),
+        "a STDIN readline term",
+    );
+    assert_string_repetition(
+        r#"my $value = "x" x not 1;"#,
+        "not 1",
+        |kind| matches!(kind, NodeKind::Unary { op, .. } if op == "not"),
+        "a word-not unary term",
+    );
 }
 
 #[test]
