@@ -186,49 +186,57 @@ pub fn canonical_file_facts(
     activations: &Dancer2FileActivations,
 ) -> CanonicalDancer2FileFacts {
     let mut facts = CanonicalDancer2FileFacts::default();
-    let Some(detection) = &activations.detection else {
+    // 1.x detection is not a prerequisite of 2.x comparison facts: a 2.x-only
+    // site list (empty `packages` / `detection`) must still assemble `two_x`
+    // (#14989 residual gate). Return empty only when neither contract spoke.
+    if activations.detection.is_none()
+        && activations.two_x_packages.is_empty()
+        && activations.two_x_detection.is_none()
+    {
         return facts;
-    };
+    }
 
     let route_contexts = extract_dancer2_route_contexts(ast, file_id);
     let hook_declarations: Vec<Dancer2HookDeclaration> =
         extract_dancer2_hook_declarations(ast, file_id);
 
-    for activation in &activations.packages {
-        if !activation.facts.is_exact() {
-            continue;
-        }
-        let package = Some(activation.package.as_str());
-        for declaration in &route_contexts.routes {
-            if declaration.package.as_deref() == package {
-                facts.extracted_routes.push(declaration.clone());
+    if let Some(detection) = &activations.detection {
+        for activation in &activations.packages {
+            if !activation.facts.is_exact() {
+                continue;
             }
+            let package = Some(activation.package.as_str());
+            for declaration in &route_contexts.routes {
+                if declaration.package.as_deref() == package {
+                    facts.extracted_routes.push(declaration.clone());
+                }
+            }
+            let family: Dancer2RouteFacts = dancer2_route_family_facts(
+                detection,
+                &activation.facts,
+                package,
+                &route_contexts.routes,
+                &route_contexts.prefixes,
+            );
+            facts.routes.extend(family.routes);
+            facts.prefixes.extend(family.prefixes);
+            facts.parameters.extend(family.parameters);
+            facts.handler_contexts.extend(family.handler_contexts);
+            facts.hooks.extend(dancer2_hook_facts(
+                detection,
+                &activation.facts,
+                package,
+                &hook_declarations,
+            ));
+            // Hook handler bodies join the same handler-context family as route
+            // handlers, so one query answers both (#13604).
+            facts.handler_contexts.extend(dancer2_hook_handler_context_facts(
+                detection,
+                &activation.facts,
+                package,
+                &hook_declarations,
+            ));
         }
-        let family: Dancer2RouteFacts = dancer2_route_family_facts(
-            detection,
-            &activation.facts,
-            package,
-            &route_contexts.routes,
-            &route_contexts.prefixes,
-        );
-        facts.routes.extend(family.routes);
-        facts.prefixes.extend(family.prefixes);
-        facts.parameters.extend(family.parameters);
-        facts.handler_contexts.extend(family.handler_contexts);
-        facts.hooks.extend(dancer2_hook_facts(
-            detection,
-            &activation.facts,
-            package,
-            &hook_declarations,
-        ));
-        // Hook handler bodies join the same handler-context family as route
-        // handlers, so one query answers both (#13604).
-        facts.handler_contexts.extend(dancer2_hook_handler_context_facts(
-            detection,
-            &activation.facts,
-            package,
-            &hook_declarations,
-        ));
     }
     // 2.x activations (#14989): exact packages only, plus their
     // source-level route declarations kept contract-separated.

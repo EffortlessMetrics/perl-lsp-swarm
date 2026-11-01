@@ -487,6 +487,7 @@ fn fold_package_facts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
     use perl_semantic_facts::framework_adapters::dancer2::{
         Dancer2KeywordState, DslSelection, parse_dancer2_import_args,
@@ -662,7 +663,7 @@ mod tests {
         let ast = parse(source);
         assert!(has_activation_site(&ast), "gate must admit the 2.x-only document");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
-        let activations = file_activations(
+        let mut activations = file_activations(
             &ast,
             source,
             FileId(1),
@@ -676,6 +677,16 @@ mod tests {
         assert_eq!(activations.two_x_packages.len(), 1);
         assert!(activations.two_x_packages[0].facts.is_exact());
         assert!(activations.two_x_detection.is_some(), "2.x detection is recorded");
+        // Simulate extractor divergence: 1.x detection absent, 2.x facts present.
+        // `canonical_file_facts` must still assemble comparison facts (#18659 review).
+        activations.detection = None;
+        activations.packages.clear();
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        assert!(
+            facts.has_comparison_facts(),
+            "2.x facts must assemble without a 1.x detection result"
+        );
+        assert_eq!(facts.two_x.len(), 1);
     }
 
     /// A 1.x-resolved module never reaches the 2.x carrier: version
