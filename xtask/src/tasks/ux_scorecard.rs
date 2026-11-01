@@ -412,16 +412,38 @@ fn unique_destination_paths(surfaces: &[PendingSurface]) -> Result<()> {
     Ok(())
 }
 
+fn reject_destination_sidecar_collisions(surfaces: &[PendingSurface]) -> Result<()> {
+    unique_destination_paths(surfaces)?;
+    let dests: BTreeSet<PathBuf> = surfaces.iter().map(|surface| surface.path.clone()).collect();
+    for surface in surfaces {
+        let stage = sibling_with_suffix(&surface.path, STAGING_SUFFIX)?;
+        if dests.contains(&stage) {
+            bail!("publication destination collides with a staging sidecar: {}", stage.display());
+        }
+    }
+    Ok(())
+}
+
+fn publication_lock_dir() -> PathBuf {
+    std::env::temp_dir().join("perl-lsp-ux-scorecard-locks")
+}
+
+fn publication_lock_path(dest: &Path) -> PathBuf {
+    let digest = Sha256::digest(dest.to_string_lossy().as_bytes());
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    publication_lock_dir().join(format!("{hex}{LOCK_SUFFIX}"))
+}
+
 fn acquire_publication_locks(surfaces: &[PendingSurface]) -> Result<Vec<PublicationLock>> {
+    let lock_dir = publication_lock_dir();
+    fs::create_dir_all(&lock_dir)
+        .with_context(|| format!("creating publication lock dir {}", lock_dir.display()))?;
     let mut lock_paths = BTreeSet::new();
     for surface in surfaces {
-        lock_paths.insert(sibling_with_suffix(&surface.path, LOCK_SUFFIX)?);
+        lock_paths.insert(publication_lock_path(&surface.path));
     }
     let mut locks = Vec::new();
     for lock_path in lock_paths {
-        if let Some(parent) = lock_path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
         let lock_file = fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -461,7 +483,7 @@ fn publish_coherent_generation(
     if surfaces.is_empty() {
         bail!("publication generation has no surfaces");
     }
-    unique_destination_paths(surfaces)?;
+    reject_destination_sidecar_collisions(surfaces)?;
     let _locks = acquire_publication_locks(surfaces)?;
 
     let mut staged = Vec::new();
@@ -1614,10 +1636,14 @@ mod tests {
         let generation = validate_published_generation(&output_path, &status_path, None)?;
         check_true(!generation.is_empty(), "published generation was empty")?;
         check_true(!receipt_path.exists(), "no-receipt run created a receipt")?;
-        let lock_path = sibling_with_suffix(&output_path, LOCK_SUFFIX)?;
+        let lock_path = publication_lock_path(&output_path);
         check_true(
             lock_path.exists(),
             "publication lock inode must remain so waiters cannot be bypassed",
+        )?;
+        check_true(
+            !sibling_with_suffix(&status_path, LOCK_SUFFIX)?.exists(),
+            "publication lock must not land next to the tracked status page",
         )?;
         let lock_file = fs::OpenOptions::new().write(true).open(&lock_path).with_context(|| {
             format!("opening released publication lock {}", lock_path.display())
@@ -1811,6 +1837,29 @@ mod tests {
         check_true(
             error.to_string().contains("duplicate publication destination"),
             "duplicate dest error missing diagnosis",
+        )
+    }
+
+    #[test]
+    fn publish_rejects_destination_colliding_with_staging_sidecar() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let dest = root.path().join("scorecard.json");
+        let stage = sibling_with_suffix(&dest, STAGING_SUFFIX)?;
+        let surfaces = [
+            PendingSurface { path: dest, contents: b"generation-a\n".to_vec() },
+            PendingSurface { path: stage, contents: b"generation-b\n".to_vec() },
+        ];
+        let error = match publish_coherent_generation(&AtomicFsPublisher, &surfaces) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "dest/sidecar collision must fail before staging"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("staging sidecar"),
+            "sidecar collision error missing diagnosis",
         )
     }
 
