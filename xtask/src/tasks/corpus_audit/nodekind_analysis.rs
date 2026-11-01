@@ -337,7 +337,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_nodekinds_from_legacy_encoding_corpus_fixture() {
+    fn test_extract_nodekinds_from_legacy_encoding_corpus_fixture()
+    -> Result<(), Box<dyn std::error::Error>> {
         let path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_corpus/legacy_encoding.pl");
         assert!(
@@ -345,16 +346,17 @@ mod tests {
             "repo-owned non-UTF-8 corpus fixture must exist: {}",
             path.display()
         );
-        let bytes = std::fs::read(&path).expect("legacy_encoding.pl must be readable");
+        let bytes = std::fs::read(&path)?;
         assert!(
             std::str::from_utf8(&bytes).is_err(),
             "legacy_encoding.pl must remain non-UTF-8 so this test exercises lossy decode"
         );
         let nodekinds = extract_nodekinds_from_content(&path);
         assert!(
-            !nodekinds.is_empty(),
-            "legacy_encoding.pl must contribute NodeKinds under lossy decode, got empty"
+            nodekinds.iter().any(|kind| kind == "Subroutine"),
+            "legacy_encoding.pl must contribute Subroutine under lossy decode, got: {nodekinds:?}"
         );
+        Ok(())
     }
 
     #[test]
