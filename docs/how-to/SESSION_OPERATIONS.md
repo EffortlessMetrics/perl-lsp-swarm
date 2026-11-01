@@ -104,12 +104,32 @@ After merge, update the issue body with the landed effect, remaining non-goals, 
 
 A new session must recover from GitHub and repository artifacts alone. Leave the issue or PR with:
 
-- current or landed code identity where useful;
-- commands and proof results;
-- useful review findings, dispositions, and remaining uncertainty;
-- current owner and next bounded action;
-- explicit `NOT_PROVEN` gaps;
+- repository, branch, candidate/tree and relevant base or landed identity;
+- commands, results, environment, and stable versioned evidence/run references;
+- original review subjects, directed passes or independent actor reviews, findings,
+  dispositions, and remaining uncertainty;
+- current writer, next bounded action, and any acknowledged ownership transfer;
+- explicit `NOT_PROVEN` gaps, holds and their sources, and pending wake conditions;
 - links to governing specs, evidence, and merged PRs;
-- claim boundary and non-goals.
+- claim boundary, non-goals, and useful retained worktree/cache/artifact locations.
+
+Resume the existing candidate when its identity and mutation owner are established.
+Preserve useful local changes and evidence under the existing
+[worktree protocol](../reference/WORKTREE_PROTOCOL.md). A quiet or replaced session
+does not by itself transfer writer ownership; follow the reassignment rule in
+`orchestrate-work` ([Codex](../../.agents/skills/orchestrate-work/SKILL.md#a-quiet-worker-is-not-a-result),
+[Claude](../../.claude/skills/orchestrate-work/SKILL.md#a-quiet-agent-is-not-a-result)).
+Checkpointing or ending a session does not authorize deletion of retained work or
+caches.
+
+Keep original run and review identities when carrying evidence forward, and state
+why it still applies. A replacement session does not make that evidence a new
+execution or invalidate it; refresh only affected evidence under
+[review currentness](../agents/REVIEW_CURRENTNESS.md). Resume directed staged review
+inline in the owning session's main context; a reset does not require another reviewer,
+external handoff, or routine parent payload approval. Preserve any actual independent
+actor or GitHub approval requirement. Confirm that the receiving context can read the
+needed artifacts before treating the handoff as complete; a
+sender-local path alone does not establish recovery.
 
 Do not preserve raw polling logs, head/claim receipt comments, or a second status database. The durable issue, PR, checks, reviews, threads, worktree, and branch state are the handoff.
