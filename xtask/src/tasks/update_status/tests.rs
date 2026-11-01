@@ -283,8 +283,11 @@ mod fail_closed_tests {
         Ok(())
     }
 
-    fn tier_a_row(output: &str) -> &str {
-        output.lines().find(|line| line.contains("Tier A Tests")).unwrap_or(output)
+    fn tier_a_row(output: &str) -> Result<&str> {
+        output
+            .lines()
+            .find(|line| line.contains("Tier A Tests"))
+            .ok_or_else(|| color_eyre::eyre::eyre!("Tier A row must be rendered, got: {output}"))
     }
 
     #[test]
@@ -299,7 +302,7 @@ mod fail_closed_tests {
             execution_outcomes: None,
         };
         let output = generate_tests_status(&counts, Some(0), Some(0), STATUS_TEMPLATE)?;
-        let row = tier_a_row(&output);
+        let row = tier_a_row(&output)?;
         color_eyre::eyre::ensure!(
             !row.contains("100% pass"),
             "discovery-only row must not claim 100% pass: {row}"
@@ -329,7 +332,7 @@ mod fail_closed_tests {
             ]),
         };
         let output = generate_tests_status(&counts, Some(0), Some(0), STATUS_TEMPLATE)?;
-        let row = tier_a_row(&output);
+        let row = tier_a_row(&output)?;
         color_eyre::eyre::ensure!(
             row.contains("100% pass") && row.contains("PASS"),
             "all-pass execution evidence must render PASS: {row}"
@@ -357,7 +360,7 @@ mod fail_closed_tests {
                 execution_outcomes: Some(outcomes.clone()),
             };
             let output = generate_tests_status(&counts, Some(0), Some(0), STATUS_TEMPLATE)?;
-            let row = tier_a_row(&output);
+            let row = tier_a_row(&output)?;
             color_eyre::eyre::ensure!(
                 !row.contains("100% pass") && !row.contains("PASS"),
                 "fail/skip/not-run execution evidence must not render PASS: {row} ({outcomes:?})"
