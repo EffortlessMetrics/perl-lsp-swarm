@@ -983,7 +983,7 @@ pub(crate) fn build_unavailable_packet(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::{must_some, must_some_with};
 
     /// A valid request against the crate root (`"."`, no `t/` dir → unavailable).
     fn valid_request<'a>(fact_classes: &'a str) -> RiprFactsRequest<'a> {
@@ -2211,7 +2211,7 @@ mod tests {
     }
 
     #[test]
-    fn build_packet_fingerprint_changes_with_content() {
+    fn build_packet_fingerprint_changes_with_oracle_identity() {
         // Same dir (→ same root/packet_id), different `.t` content adds oracle
         // identity tuples — not a content-only fingerprint change.
         let a = packet_for_t("fp-content", "use Test::More;\nok(1);\n", "tests,oracles");
@@ -2322,32 +2322,24 @@ mod tests {
                 p["oracles"][0]["expression"] = serde_json::json!("ok(0)");
             }),
             ("tests[]", |p| {
-                p["tests"].as_array_mut().expect("tests").push(serde_json::json!({
+                must_some_with(p["tests"].as_array_mut(), "tests").push(serde_json::json!({
                     "test_id": "test:t/other.t"
                 }));
             }),
             ("dynamic_boundaries[]", |p| {
-                p["dynamic_boundaries"]
-                    .as_array_mut()
-                    .expect("boundaries")
+                must_some_with(p["dynamic_boundaries"].as_array_mut(), "boundaries")
                     .push(serde_json::json!({ "boundary_id": "boundary:eval:2" }));
             }),
             ("verify_commands[]", |p| {
-                p["verify_commands"]
-                    .as_array_mut()
-                    .expect("commands")
+                must_some_with(p["verify_commands"].as_array_mut(), "commands")
                     .push(serde_json::json!({ "command_id": "cmd:prove:2" }));
             }),
             ("limitations[]", |p| {
-                p["limitations"]
-                    .as_array_mut()
-                    .expect("limitations")
+                must_some_with(p["limitations"].as_array_mut(), "limitations")
                     .push(serde_json::json!({ "limitation_id": "limitation:extra:1" }));
             }),
             ("provenance[]", |p| {
-                p["provenance"]
-                    .as_array_mut()
-                    .expect("provenance")
+                must_some_with(p["provenance"].as_array_mut(), "provenance")
                     .push(serde_json::json!({ "provenance_id": "prov:extra:1" }));
             }),
         ];

@@ -180,6 +180,9 @@ fn one_fact_perturbations_always_change_the_fingerprint() {
 
 const APP_PM_FOR_DIFF: &str = "package App;\nuse strict;\nuse warnings;\n\nsub compute {\n    my ($a, $b) = @_;\n    return $a + $b;\n}\n\n1;\n";
 
+/// On-disk head still has `+`; the diff rewrites the line to `-`.
+const APP_PM_HEAD_TIMES: &str = "package App;\nuse strict;\nuse warnings;\n\nsub compute {\n    my ($a, $b) = @_;\n    return $a * $b;\n}\n\n1;\n";
+
 /// Same hunk span, different added line text → identical `change_id` → stable fingerprint (#17249).
 const DIFF_RETURN_MINUS: &str =
     "+++ b/lib/App.pm\n@@ -7,1 +7,1 @@\n-return $a + $b;\n+return $a - $b;\n";
@@ -209,10 +212,17 @@ fn build_changes_packet(root: &str, pm: &str, diff: &str) -> serde_json::Value {
 fn same_span_diff_content_keeps_fingerprint_stable() {
     let minus =
         build_changes_packet("target/ripr-d2/same-span-minus", APP_PM_FOR_DIFF, DIFF_RETURN_MINUS);
-    let times =
-        build_changes_packet("target/ripr-d2/same-span-times", APP_PM_FOR_DIFF, DIFF_RETURN_TIMES);
+    let times = build_changes_packet(
+        "target/ripr-d2/same-span-times",
+        APP_PM_HEAD_TIMES,
+        DIFF_RETURN_TIMES,
+    );
     let minus_fp = fingerprint(&minus, "same-span minus diff");
     let times_fp = fingerprint(&times, "same-span times diff");
+    assert_ne!(
+        minus["files"][0]["digest"], times["files"][0]["digest"],
+        "same-span fixture must change file digest when head source differs"
+    );
     assert_eq!(
         minus["changes"][0]["change_id"], times["changes"][0]["change_id"],
         "fixture must keep the same change_id across content-only edits"
