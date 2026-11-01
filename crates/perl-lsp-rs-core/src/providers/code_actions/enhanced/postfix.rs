@@ -62,7 +62,7 @@ mod tests {
         let node = if_node_from_source(source);
         let action = convert_to_postfix(&node, source);
         assert!(action.is_some(), "expected postfix action for simple if");
-        assert_eq!(action.unwrap().title, "Convert to postfix if");
+        assert_eq!(must_some(action).title, "Convert to postfix if");
     }
 
     #[test]
@@ -91,7 +91,7 @@ mod tests {
     fn convert_to_postfix_non_char_boundary_span_returns_none() {
         let source = "if ($x) { é }";
         let mut node = if_node_from_source(source);
-        let é_start = source.find('é').expect("test source must contain é");
+        let é_start = must_some(source.find('é'));
         let inside = é_start + 1;
         assert!(!source.is_char_boundary(inside));
 
@@ -99,6 +99,21 @@ mod tests {
             if let NodeKind::Block { statements } = &mut then_branch.kind {
                 statements[0].location = SourceLocation { start: inside, end: inside + 1 };
             }
+        }
+
+        assert!(convert_to_postfix(&node, source).is_none());
+    }
+
+    #[test]
+    fn convert_to_postfix_invalid_condition_span_returns_none() {
+        let source = "if ($x) { é }";
+        let mut node = if_node_from_source(source);
+        let é_start = must_some(source.find('é'));
+        let inside = é_start + 1;
+        assert!(!source.is_char_boundary(inside));
+
+        if let NodeKind::If { condition, .. } = &mut node.kind {
+            condition.location = SourceLocation { start: inside, end: inside + 1 };
         }
 
         assert!(convert_to_postfix(&node, source).is_none());
