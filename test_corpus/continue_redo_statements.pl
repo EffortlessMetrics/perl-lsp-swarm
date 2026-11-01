@@ -14,6 +14,7 @@ while ($while_count < 3) {
     $while_count++;
     redo if $while_count == 2;
 } continue {
+    # denom-target:continue-blocks
     my $seen = $while_count;
 }
 
