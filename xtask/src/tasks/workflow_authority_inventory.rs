@@ -7,11 +7,11 @@
 //! Schema-aware v3: `id-token: write` is request authority (a permission fact),
 //! not evidence that an OIDC JWT was minted. An OIDC credential derivation is
 //! emitted only when that permission is joined to a concrete requester
-//! (admitted action, `$ACTIONS_ID_TOKEN_REQUEST_*` / `process.env` use, or
-//! `getIDToken`). A bare `--exclude-env ACTIONS_ID_TOKEN_REQUEST_*` name is not
-//! a requester. Permission without a requester, or a requester without
-//! permission, is unproven rather than credential-free. v1/v2 kinds remain
-//! independently recorded.
+//! (unconditional admitted action, `getIDToken(` call, or an HTTP client using
+//! `$ACTIONS_ID_TOKEN_REQUEST_*`). Cloud login actions and incidental mentions
+//! (echo, `--exclude-env`) are not requesters. Permission without a requester,
+//! or a requester without permission, is unproven rather than credential-free.
+//! v1/v2 kinds remain independently recorded.
 //!
 //! GitHub's `permissions: write-all` shorthand is residual, not an OIDC
 //! permission or derivation here. Vault/cloud-SDK secret-manager shapes remain
@@ -35,17 +35,11 @@ pub const SCHEMA: &str = "workflow_authority_credential.v3";
 
 const WORKFLOWS_DIR: &str = ".github/workflows";
 
-/// YAML-admitted OIDC JWT requesters. Not runtime proof: these are
-/// source-backed contracts that request an Actions OIDC token via
-/// `core.getIDToken()` or the `ACTIONS_ID_TOKEN_REQUEST_*` API.
-const KNOWN_OIDC_REQUESTER_ACTIONS: &[&str] = &[
-    "actions/deploy-pages",
-    "actions/attest",
-    "actions/attest-build-provenance",
-    "aws-actions/configure-aws-credentials",
-    "google-github-actions/auth",
-    "azure/login",
-];
+/// YAML-admitted OIDC JWT requesters whose contract requests a token
+/// unconditionally. Cloud login actions can take static keys, so their names
+/// are not admitted here.
+const KNOWN_OIDC_REQUESTER_ACTIONS: &[&str] =
+    &["actions/deploy-pages", "actions/attest", "actions/attest-build-provenance"];
 
 #[derive(Serialize)]
 struct CredentialInventoryReport<'a> {
@@ -439,6 +433,18 @@ fn oidc_requesters_in_step(step: &Value, path: &str) -> Vec<(String, String)> {
     {
         found.push((format!("{path}.run"), primitive.to_string()));
     }
+    if let Some(with) = mapping_get(step_map, "with").and_then(Value::as_mapping) {
+        for (key, value) in with {
+            let Some(name) = yaml_key(key) else {
+                continue;
+            };
+            if let Some(text) = value.as_str()
+                && let Some(primitive) = oidc_request_primitive(text)
+            {
+                found.push((format!("{path}.with.{name}"), primitive.to_string()));
+            }
+        }
+    }
     found
 }
 
@@ -455,16 +461,34 @@ fn is_known_oidc_requester(action: &str) -> bool {
 }
 
 fn oidc_request_primitive(text: &str) -> Option<&'static str> {
-    if text.contains("getIDToken") {
+    if text.contains("getIDToken(") {
         return Some("getIDToken");
     }
-    if uses_id_token_request_var(text, "ACTIONS_ID_TOKEN_REQUEST_URL") {
-        return Some("ACTIONS_ID_TOKEN_REQUEST_URL");
+    requests_oidc_http(text)
+}
+
+/// HTTP request using the Actions OIDC request API. Printing or excluding the
+/// variable names is not a requester.
+fn requests_oidc_http(text: &str) -> Option<&'static str> {
+    let uses_url = uses_id_token_request_var(text, "ACTIONS_ID_TOKEN_REQUEST_URL");
+    let uses_token = uses_id_token_request_var(text, "ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+    if !uses_url && !uses_token {
+        return None;
     }
-    if uses_id_token_request_var(text, "ACTIONS_ID_TOKEN_REQUEST_TOKEN") {
-        return Some("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+    let lower = text.to_ascii_lowercase();
+    let http_client = lower.contains("curl")
+        || lower.contains("wget")
+        || lower.contains("fetch(")
+        || lower.contains("http.get")
+        || lower.contains("http.request");
+    if !http_client {
+        return None;
     }
-    None
+    if uses_url {
+        Some("ACTIONS_ID_TOKEN_REQUEST_URL")
+    } else {
+        Some("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    }
 }
 
 /// Request-variable *use*, not a bare name. `--exclude-env ACTIONS_ID_TOKEN_REQUEST_URL`
@@ -894,6 +918,74 @@ jobs:
             classified.unproven
         );
         assert!(!kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester));
+    }
+
+    #[test]
+    fn echo_of_id_token_request_url_is_not_a_requester() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - run: 'echo "$ACTIONS_ID_TOKEN_REQUEST_URL"'
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "printing the request URL does not mint: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn github_script_get_id_token_in_with_script_joins() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: await core.getIDToken("aud")
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        let oidc =
+            must_kind(&classified.derivations, CredentialDerivationKind::OidcJoinedRequester);
+        assert_eq!(oidc.evidence, "getIDToken");
+        assert!(oidc.path.ends_with(".with.script"), "{}", oidc.path);
+        assert!(classified.unproven.is_empty(), "{:?}", classified.unproven);
+    }
+
+    #[test]
+    fn static_key_cloud_login_is_not_an_admitted_requester() {
+        let yaml = with_job_body(
+            r"
+    permissions:
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+",
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(permission_kinds(&classified).contains(&PermissionKind::IdTokenWrite));
+        assert!(
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "static-key cloud login is not an OIDC requester: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
+        );
     }
 
     #[test]
