@@ -532,6 +532,41 @@ fn rollback_committed_surfaces(
     Err(error.wrap_err(format!("publication failed and rollback also failed: {restore_summary}")))
 }
 
+fn remove_staging_files(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn stage_publication_surfaces(
+    surfaces: &[PendingSurface],
+) -> Result<Vec<(PathBuf, PathBuf, Option<Vec<u8>>, Vec<u8>)>> {
+    let mut staged = Vec::new();
+    let mut created = Vec::new();
+    let result: Result<()> = (|| {
+        for surface in surfaces {
+            let stage = sibling_with_suffix(&surface.path, STAGING_SUFFIX)?;
+            if stage.exists() {
+                fs::remove_file(&stage)
+                    .with_context(|| format!("removing stale staging {}", stage.display()))?;
+            }
+            write_atomic(&stage, &surface.contents)?;
+            created.push(stage.clone());
+            let previous =
+                if surface.path.exists() { Some(fs::read(&surface.path)?) } else { None };
+            let staged_bytes =
+                fs::read(&stage).with_context(|| format!("reading staged {}", stage.display()))?;
+            staged.push((stage, surface.path.clone(), previous, staged_bytes));
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        remove_staging_files(&created);
+        return Err(error);
+    }
+    Ok(staged)
+}
+
 fn publish_coherent_generation(
     publisher: &dyn ArtifactPublisher,
     surfaces: &[PendingSurface],
@@ -542,19 +577,7 @@ fn publish_coherent_generation(
     reject_destination_sidecar_collisions(surfaces)?;
     let _locks = acquire_publication_locks(surfaces)?;
 
-    let mut staged = Vec::new();
-    for surface in surfaces {
-        let stage = sibling_with_suffix(&surface.path, STAGING_SUFFIX)?;
-        if stage.exists() {
-            fs::remove_file(&stage)
-                .with_context(|| format!("removing stale staging {}", stage.display()))?;
-        }
-        write_atomic(&stage, &surface.contents)?;
-        let previous = if surface.path.exists() { Some(fs::read(&surface.path)?) } else { None };
-        let staged_bytes =
-            fs::read(&stage).with_context(|| format!("reading staged {}", stage.display()))?;
-        staged.push((stage, surface.path.clone(), previous, staged_bytes));
-    }
+    let staged = stage_publication_surfaces(surfaces)?;
 
     let mut committed: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
     let mut remaining_stages: Vec<PathBuf> =
@@ -562,10 +585,8 @@ fn publish_coherent_generation(
     for (stage, dest, previous, staged_bytes) in staged {
         remaining_stages.retain(|path| path != &stage);
         if let Err(error) = publisher.publish(&dest, &staged_bytes) {
-            let _ = fs::remove_file(&stage);
-            for leftover in &remaining_stages {
-                let _ = fs::remove_file(leftover);
-            }
+            remaining_stages.push(stage);
+            remove_staging_files(&remaining_stages);
             return rollback_committed_surfaces(&committed, error);
         }
         let _ = fs::remove_file(&stage);
@@ -1963,6 +1984,46 @@ mod tests {
         check_true(
             error.to_string().contains("staging sidecar"),
             "sidecar collision error missing diagnosis",
+        )
+    }
+
+    #[test]
+    fn staging_failure_after_first_surface_removes_created_stages() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("measurements.json"), measurement_json(true))?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        publish_human(root.path(), &AtomicFsPublisher)?;
+        let previous = validate_published_generation(&output_path, &status_path, None)?;
+        let previous_scorecard = fs::read_to_string(&output_path)?;
+        let previous_status = fs::read_to_string(&status_path)?;
+
+        let blocking_stage = sibling_with_suffix(&status_path, STAGING_SUFFIX)?;
+        fs::create_dir(&blocking_stage)?;
+        fs::write(root.path().join("measurements.json"), measurement_json(false))?;
+        let error = match publish_human(root.path(), &AtomicFsPublisher) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "publisher must fail when a later staging sidecar cannot be replaced"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("removing stale staging"),
+            "staging failure missing stale-sidecar context",
+        )?;
+        check(&fs::read_to_string(&output_path)?, &previous_scorecard, "scorecard dest mixed")?;
+        check(&fs::read_to_string(&status_path)?, &previous_status, "status dest mixed")?;
+        check_true(
+            !sibling_with_suffix(&output_path, STAGING_SUFFIX)?.exists(),
+            "staging failure left a scorecard staging sidecar",
+        )?;
+        check_true(blocking_stage.is_dir(), "pre-existing blocking sidecar directory was removed")?;
+        check(
+            &validate_published_generation(&output_path, &status_path, None)?,
+            &previous,
+            "rolled-back generation after staging failure",
         )
     }
 
