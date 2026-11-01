@@ -1474,6 +1474,8 @@ fn validate_unique<T: Ord>(name: &str, owner: &str, values: &[T]) -> Result<()> 
 mod tests {
     use super::*;
 
+    use perl_tdd_support::must_err_with;
+
     const POLICY: &str =
         include_str!("../../../contracts/compiler/perl_compiler_proof_policy.v1.toml");
     const CONCEPTS: &str =
@@ -1643,10 +1645,11 @@ mod tests {
             .find(|proof_class| proof_class.class_id == "composition_coverage")
             .ok_or_else(|| anyhow!("committed policy has no composition class"))?;
         mutate(composition);
-        Ok(policy
-            .validate(&concepts()?)
-            .expect_err("composition_coverage mutation must fail closed")
-            .to_string())
+        Ok(must_err_with(
+            policy.validate(&concepts()?),
+            "composition_coverage mutation must fail closed",
+        )
+        .to_string())
     }
 
     #[test]
@@ -1722,10 +1725,11 @@ mod tests {
         for campaign in &mut policy.campaigns {
             campaign.proof_classes.retain(|class| class != "recovery_gold");
         }
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("an unexercised proof class must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "an unexercised proof class must fail closed",
+        )
+        .to_string();
         assert!(error.contains("recovery_gold"), "unexpected error: {error}");
         Ok(())
     }
@@ -1737,10 +1741,11 @@ mod tests {
         // Unexercised and undispositioned is the closed-policy failure.
         let mut policy = ProofPolicy::from_str(POLICY)?;
         let disposition = retained_dimension(&mut policy);
-        let error = policy
-            .validate(&concepts)
-            .expect_err("retained vocabulary without a disposition must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts),
+            "retained vocabulary without a disposition must fail closed",
+        )
+        .to_string();
         assert!(error.contains("retained_axis"), "unexpected error: {error}");
 
         // A complete, owned, current disposition is the honest representation.
@@ -1756,10 +1761,11 @@ mod tests {
         let mut disposition = retained_dimension(&mut policy);
         disposition.owner_issue = String::new();
         policy.dispositions.push(disposition);
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("an ownerless disposition must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "an ownerless disposition must fail closed",
+        )
+        .to_string();
         assert!(error.contains("owner_issue"), "unexpected error: {error}");
         Ok(())
     }
@@ -1782,10 +1788,11 @@ mod tests {
 
         // ...but the expired row is still a command failure, so regenerating
         // the status cannot return the policy to green.
-        let error = policy
-            .check_currentness(as_of("2026-09-13")?)
-            .expect_err("an expired disposition must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.check_currentness(as_of("2026-09-13")?),
+            "an expired disposition must fail closed",
+        )
+        .to_string();
         assert!(error.contains("expired"), "unexpected error: {error}");
         policy.check_currentness(as_of("2025-12-31")?)?;
         Ok(())
@@ -1806,10 +1813,11 @@ mod tests {
             claim_effect: ClaimEffect::ExcludedFromClaims,
             claims_limited_ceiling: None,
         });
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("dispositioning an exercised item must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "dispositioning an exercised item must fail closed",
+        )
+        .to_string();
         assert!(error.contains("contradict"), "unexpected error: {error}");
         Ok(())
     }
@@ -1820,10 +1828,11 @@ mod tests {
         let mut disposition = retained_dimension(&mut policy);
         disposition.item_id = "no_such_axis".to_string();
         policy.dispositions.push(disposition);
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("a disposition for unknown vocabulary must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "a disposition for unknown vocabulary must fail closed",
+        )
+        .to_string();
         assert!(error.contains("no_such_axis"), "unexpected error: {error}");
         Ok(())
     }
@@ -1835,10 +1844,11 @@ mod tests {
         policy.dispositions.push(disposition);
         policy.complete = true;
         policy.closure_authority = Some("issue:#6689/policy_closure_v1".to_string());
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("a retained disposition must keep the policy open")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "a retained disposition must keep the policy open",
+        )
+        .to_string();
         assert!(error.contains("derives complete=false"), "unexpected error: {error}");
         Ok(())
     }
@@ -1854,10 +1864,11 @@ mod tests {
                 .ok_or_else(|| anyhow!("committed policy has no positive gold class"))?;
             proof_class.evidence_roles.push(intruder);
             proof_class.multi_role_claim_ceiling = Some("Treated as equivalent.".to_string());
-            let error = policy
-                .validate(&concepts()?)
-                .expect_err("independent gold must not admit this role")
-                .to_string();
+            let error = must_err_with(
+                policy.validate(&concepts()?),
+                "independent gold must not admit this role",
+            )
+            .to_string();
             assert!(error.contains("positive_gold"), "unexpected error: {error}");
             assert!(error.contains(intruder.stable_name()), "unexpected error: {error}");
         }
@@ -1873,10 +1884,11 @@ mod tests {
             .find(|proof_class| proof_class.class_id == "real_perl_oracle")
             .ok_or_else(|| anyhow!("committed policy has no real Perl oracle class"))?;
         proof_class.multi_role_claim_ceiling = None;
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("a multi-role class without a ceiling must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "a multi-role class without a ceiling must fail closed",
+        )
+        .to_string();
         assert!(error.contains("multi_role_claim_ceiling"), "unexpected error: {error}");
         Ok(())
     }
@@ -1903,10 +1915,11 @@ mod tests {
             .find(|proof_class| proof_class.class_id == "hir_snapshot")
             .ok_or_else(|| anyhow!("committed policy has no hir snapshot class"))?;
         proof_class.evidence_roles = vec![EvidenceRole::ImplementationDiagnosticReceipt];
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("silently retyping a reviewed role must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "silently retyping a reviewed role must fail closed",
+        )
+        .to_string();
         assert!(error.contains("evidence roles"), "unexpected error: {error}");
         Ok(())
     }
@@ -1917,10 +1930,11 @@ mod tests {
         let mut concept_index = concepts()?;
         concept_index.concepts.push(ConceptIndexRow { family: "place-s".to_string() });
         concept_index.concepts.push(ConceptIndexRow { family: "place_s".to_string() });
-        let error = policy
-            .validate(&concept_index)
-            .expect_err("aliased ledger families must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concept_index),
+            "aliased ledger families must fail closed",
+        )
+        .to_string();
         assert!(error.contains("aliases"), "unexpected error: {error}");
         Ok(())
     }
@@ -1935,10 +1949,11 @@ mod tests {
             .ok_or_else(|| anyhow!("committed policy unexpectedly has no campaign"))?;
         duplicate.campaign_id = "renamed_but_identical".to_string();
         policy.campaigns.push(duplicate);
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("two campaigns with one member set must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "two campaigns with one member set must fail closed",
+        )
+        .to_string();
         assert!(error.contains("same exact member set"), "unexpected error: {error}");
         Ok(())
     }
@@ -1988,10 +2003,11 @@ mod tests {
         let mut disposition = retained_dimension(&mut policy);
         disposition.claim_effect = ClaimEffect::ClaimsLimited;
         policy.dispositions.push(disposition.clone());
-        let error = policy
-            .validate(&concepts)
-            .expect_err("a limiting disposition without a ceiling must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts),
+            "a limiting disposition without a ceiling must fail closed",
+        )
+        .to_string();
         assert!(error.contains("claims_limited_ceiling"), "unexpected error: {error}");
 
         // An empty ceiling is the same hole spelled differently.
@@ -2019,10 +2035,11 @@ mod tests {
         let mut disposition = retained_dimension(&mut policy);
         disposition.claims_limited_ceiling = Some("Unreachable ceiling.".to_string());
         policy.dispositions.push(disposition);
-        let error = policy
-            .validate(&concepts()?)
-            .expect_err("a ceiling on a total exclusion must fail closed")
-            .to_string();
+        let error = must_err_with(
+            policy.validate(&concepts()?),
+            "a ceiling on a total exclusion must fail closed",
+        )
+        .to_string();
         assert!(error.contains("must not declare"), "unexpected error: {error}");
         Ok(())
     }
