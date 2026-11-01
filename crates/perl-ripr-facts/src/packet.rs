@@ -571,9 +571,6 @@ pub fn build_ripr_facts_packet(
         }
     }
 
-    // RIPR-SPEC-0064: match RIPR's consumer-side packet integrity recipe. The
-    // fingerprint covers stable semantic identity tuples, not host paths, temp
-    // dirs, timestamps, or serde_json object ordering.
     let fingerprint = ripr_packet_fingerprint(&packet);
     packet["packet_fingerprint"] = serde_json::Value::String(fingerprint);
 
@@ -764,6 +761,26 @@ fn callable_name_from_owner_id(owner_id: &str) -> Option<&str> {
     None
 }
 
+/// Consumer-side `packet_fingerprint` (RIPR-SPEC-0064): SHA-256 over sorted
+/// semantic **identity** tuples, not whole-packet JSON, host paths, temp dirs,
+/// timestamps, or serde object order.
+///
+/// **Hashed tuples** (missing fields hash as empty strings):
+///
+/// - `files[]` — `(file_id, slash-normalized path)` per file
+/// - `owners[]` — `owner_id` per owner
+/// - `changes[]` — `change_id` per change (line-span derived; content digests do not feed the hash)
+/// - `oracles[]` — `(oracle_id, target_owner_id, observed_sink, expected_expression)` per oracle
+/// - `relations[]` — `(relation_id, change_id, owner_id, test_id, oracle_id)` per relation
+///
+/// **Excluded** (including entire top-level arrays and non-tuple fields): `tests[]`,
+/// `dynamic_boundaries[]`, `verify_commands[]`, `limitations[]`, `provenance[]`,
+/// `packet_id`, and every digest, range, and other non-identity field on hashed rows.
+///
+/// **Consequence:** the fingerprint detects identity-tuple drift, not file or hunk
+/// content edits that leave the same ids/spans (e.g. `return 1` → `return 2` on
+/// unchanged lines). Compare `files[].digest`, `changes[].changed_text_digest`, or
+/// raw source for content-level change detection.
 fn ripr_packet_fingerprint(packet: &Value) -> String {
     let mut hasher = Sha256::new();
 
@@ -2195,8 +2212,8 @@ mod tests {
 
     #[test]
     fn build_packet_fingerprint_changes_with_content() {
-        // Same dir (→ same root/packet_id), different `.t` content: isolates
-        // "fact content differs → fingerprint differs" from any root/id change.
+        // Same dir (→ same root/packet_id), different `.t` content adds oracle
+        // identity tuples — not a content-only fingerprint change.
         let a = packet_for_t("fp-content", "use Test::More;\nok(1);\n", "tests,oracles");
         let b = packet_for_t("fp-content", "use Test::More;\nis(1, 1);\nok(2);\n", "tests,oracles");
         assert_ne!(
@@ -2234,6 +2251,169 @@ mod tests {
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "empty semantic tuples should hash to SHA-256(empty), not SHA-256(SHA-256(empty))"
         );
+    }
+
+    #[test]
+    fn packet_fingerprint_doc_contract_covered_and_excluded_fields() {
+        // Table-driven guard (#17249): README/rustdoc tuple lists must match
+        // `ripr_packet_fingerprint` — excluded mutations are stable, covered
+        // mutations always change the hash.
+        let baseline = serde_json::json!({
+            "packet_id": "packet:abc",
+            "files": [{
+                "file_id": "file:lib/App.pm",
+                "path": "lib/App.pm",
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "start_line": 0,
+                "end_line": 10
+            }],
+            "owners": [{
+                "owner_id": "owner:lib/App.pm:sub:App::run:1-5",
+                "start_line": 1,
+                "end_line": 5
+            }],
+            "changes": [{
+                "change_id": "change:file:lib/App.pm:3:3",
+                "changed_text_digest": "fnv64:bbbbbbbbbbbbbbbb"
+            }],
+            "tests": [{
+                "test_id": "test:t/app.t",
+                "framework": "Test::More"
+            }],
+            "oracles": [{
+                "oracle_id": "oracle:t/app.t:is:1-10",
+                "target_owner_id": "owner:lib/App.pm:sub:App::run:1-5",
+                "observed_sink": "return_value",
+                "expected_expression": "1",
+                "expression": "is(1, 1)"
+            }],
+            "relations": [{
+                "relation_id": "relation:direct:1",
+                "change_id": "change:file:lib/App.pm:3:3",
+                "owner_id": "owner:lib/App.pm:sub:App::run:1-5",
+                "test_id": "test:t/app.t",
+                "oracle_id": "oracle:t/app.t:is:1-10"
+            }],
+            "dynamic_boundaries": [{ "boundary_id": "boundary:eval:1" }],
+            "verify_commands": [{ "command_id": "cmd:prove:1" }],
+            "limitations": [{ "limitation_id": "limitation:example:1" }],
+            "provenance": [{ "provenance_id": "prov:syntax:1" }]
+        });
+        let base_fp = ripr_packet_fingerprint(&baseline);
+
+        let excluded: &[(&str, fn(&mut serde_json::Value))] = &[
+            ("packet_id", |p| p["packet_id"] = serde_json::json!("packet:xyz")),
+            ("files[].digest", |p| {
+                p["files"][0]["digest"] = serde_json::json!(
+                    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                );
+            }),
+            ("files[].range", |p| {
+                p["files"][0]["start_line"] = serde_json::json!(99);
+            }),
+            ("owners[].range", |p| {
+                p["owners"][0]["end_line"] = serde_json::json!(99);
+            }),
+            ("changes[].changed_text_digest", |p| {
+                p["changes"][0]["changed_text_digest"] =
+                    serde_json::json!("fnv64:dddddddddddddddd");
+            }),
+            ("oracles[].expression", |p| {
+                p["oracles"][0]["expression"] = serde_json::json!("ok(0)");
+            }),
+            ("tests[]", |p| {
+                p["tests"].as_array_mut().expect("tests").push(serde_json::json!({
+                    "test_id": "test:t/other.t"
+                }));
+            }),
+            ("dynamic_boundaries[]", |p| {
+                p["dynamic_boundaries"]
+                    .as_array_mut()
+                    .expect("boundaries")
+                    .push(serde_json::json!({ "boundary_id": "boundary:eval:2" }));
+            }),
+            ("verify_commands[]", |p| {
+                p["verify_commands"]
+                    .as_array_mut()
+                    .expect("commands")
+                    .push(serde_json::json!({ "command_id": "cmd:prove:2" }));
+            }),
+            ("limitations[]", |p| {
+                p["limitations"]
+                    .as_array_mut()
+                    .expect("limitations")
+                    .push(serde_json::json!({ "limitation_id": "limitation:extra:1" }));
+            }),
+            ("provenance[]", |p| {
+                p["provenance"]
+                    .as_array_mut()
+                    .expect("provenance")
+                    .push(serde_json::json!({ "provenance_id": "prov:extra:1" }));
+            }),
+        ];
+        for (label, mutate) in excluded {
+            let mut perturbed = baseline.clone();
+            mutate(&mut perturbed);
+            assert_eq!(
+                ripr_packet_fingerprint(&perturbed),
+                base_fp,
+                "excluded field {label} must not change packet_fingerprint"
+            );
+        }
+
+        let covered: &[(&str, fn(&mut serde_json::Value))] = &[
+            ("files[].path", |p| {
+                p["files"][0]["path"] = serde_json::json!("lib/Other.pm");
+            }),
+            ("files[].file_id", |p| {
+                p["files"][0]["file_id"] = serde_json::json!("file:lib/Other.pm");
+            }),
+            ("owners[].owner_id", |p| {
+                p["owners"][0]["owner_id"] =
+                    serde_json::json!("owner:lib/App.pm:sub:App::other:1-5");
+            }),
+            ("changes[].change_id", |p| {
+                p["changes"][0]["change_id"] = serde_json::json!("change:file:lib/App.pm:4:4");
+            }),
+            ("oracles[].oracle_id", |p| {
+                p["oracles"][0]["oracle_id"] = serde_json::json!("oracle:t/app.t:ok:2-11");
+            }),
+            ("oracles[].target_owner_id", |p| {
+                p["oracles"][0]["target_owner_id"] =
+                    serde_json::json!("owner:lib/App.pm:sub:App::other:1-5");
+            }),
+            ("oracles[].observed_sink", |p| {
+                p["oracles"][0]["observed_sink"] = serde_json::json!("exception_path");
+            }),
+            ("oracles[].expected_expression", |p| {
+                p["oracles"][0]["expected_expression"] = serde_json::json!("2");
+            }),
+            ("relations[].relation_id", |p| {
+                p["relations"][0]["relation_id"] = serde_json::json!("relation:direct:2");
+            }),
+            ("relations[].change_id", |p| {
+                p["relations"][0]["change_id"] = serde_json::json!("change:file:lib/App.pm:4:4");
+            }),
+            ("relations[].owner_id", |p| {
+                p["relations"][0]["owner_id"] =
+                    serde_json::json!("owner:lib/App.pm:sub:App::other:1-5");
+            }),
+            ("relations[].test_id", |p| {
+                p["relations"][0]["test_id"] = serde_json::json!("test:t/other.t");
+            }),
+            ("relations[].oracle_id", |p| {
+                p["relations"][0]["oracle_id"] = serde_json::json!("oracle:t/app.t:ok:2-11");
+            }),
+        ];
+        for (label, mutate) in covered {
+            let mut perturbed = baseline.clone();
+            mutate(&mut perturbed);
+            assert_ne!(
+                ripr_packet_fingerprint(&perturbed),
+                base_fp,
+                "covered tuple field {label} must change packet_fingerprint"
+            );
+        }
     }
 
     #[test]

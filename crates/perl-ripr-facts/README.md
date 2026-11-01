@@ -105,7 +105,32 @@ parser-backed `direct_owner_call` relations (PR 6), diff-owned `changes[]`
 `tests[]`/`oracles[]`, and `changes[]` come from parsing, not string scans;
 `relations[]` classify `direct_owner_call` from parsed call nodes; and the packet
 now carries a deterministic `packet_fingerprint` (a `sha256:` hash matching
-RIPR's semantic packet-fingerprint recipe) instead of `null`:
+RIPR's semantic packet-fingerprint recipe) instead of `null`.
+
+### Fingerprint contract (identity-only)
+
+The fingerprint is **not** a content-change detector. It hashes stable semantic
+**identity tuples** only (see `ripr_packet_fingerprint` in `src/packet.rs`):
+
+| Packet slice | Hashed identity tuple(s) |
+| --- | --- |
+| `files[]` | `(file_id, slash-normalized path)` |
+| `owners[]` | `owner_id` |
+| `changes[]` | `change_id` (span-derived, e.g. `change:{file}:{start}:{end}`) |
+| `oracles[]` | `(oracle_id, target_owner_id, observed_sink, expected_expression)` |
+| `relations[]` | `(relation_id, change_id, owner_id, test_id, oracle_id)` |
+
+**Excluded from the hash:** entire `tests[]`, `dynamic_boundaries[]`,
+`verify_commands[]`, `limitations[]`, and `provenance[]` arrays; top-level
+`packet_id`; and on every fact row all digests, all source ranges, and every
+other field not listed above (including oracle `expression`, file `role`, change
+`changed_text_digest`, and so on).
+
+**Consequence:** a same-span edit that keeps the same `change_id` (and leaves
+other identity tuples unchanged) yields a **byte-identical** fingerprint even
+when `files[].digest` or `changes[].changed_text_digest` differ. Use those
+digests or the underlying source/diff text when you need content-level change
+detection, not `packet_fingerprint`.
 
 - `files[]` — repo-relative path, role, a deterministic SHA-256 `digest`, and the
   declared package names, for each `.pm` / `.pl` / `.psgi` / `.t` file.
