@@ -2142,8 +2142,47 @@ mod normalize_tests {
 #[cfg(test)]
 mod strict_binary_guard_subprocess_tests {
     use super::{REQUIRE_BINARY_ENV, binary_available};
+    use std::path::Path;
     use std::process::Command;
+    use std::time::Duration;
     use tempfile::TempDir;
+
+    /// Linux returns `ETXTBSY` (26) when another thread's fork inherited a writable
+    /// descriptor for an executable this process is trying to exec. Retry is the
+    /// standard mitigation under parallel libtest.
+    fn is_executable_file_busy(error: &std::io::Error) -> bool {
+        error.kind() == std::io::ErrorKind::ExecutableFileBusy || error.raw_os_error() == Some(26)
+    }
+
+    fn spawn_isolated_strict_guard_child(
+        isolated_exe: &Path,
+    ) -> anyhow::Result<std::process::Output> {
+        const MAX_ATTEMPTS: u32 = 10;
+        const BACKOFF: Duration = Duration::from_millis(50);
+
+        for attempt in 0..MAX_ATTEMPTS {
+            match Command::new(isolated_exe)
+                .args([
+                    "strict_binary_guard_subprocess_tests::binary_available_panics_when_strict_and_missing",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env(REQUIRE_BINARY_ENV, "1")
+                .output()
+            {
+                Ok(output) => return Ok(output),
+                Err(error) if is_executable_file_busy(&error) && attempt + 1 < MAX_ATTEMPTS => {
+                    // ux-timing: product-retry — Linux ETXTBSY after copy+exec under parallel libtest (#15004)
+                    std::thread::sleep(BACKOFF);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(anyhow::anyhow!(
+            "exec of isolated test binary still ETXTBSY after {MAX_ATTEMPTS} attempts"
+        ))
+    }
 
     /// Target test invoked ONLY by name, from an isolated child process
     /// spawned by `strict_mode_fails_loud_in_subprocess_when_binary_missing`
@@ -2197,19 +2236,13 @@ mod strict_binary_guard_subprocess_tests {
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("current_exe() has no file name"))?;
         let isolated_exe = isolated_dir.path().join(exe_name);
-        std::fs::copy(&current_exe, &isolated_exe)?;
+        // Publish via scratch + rename so the final path is not held open for
+        // writing during the bulk copy (parallel tests fork frequently).
+        let scratch = isolated_dir.path().join(format!("{}.write", exe_name.to_string_lossy()));
+        std::fs::copy(&current_exe, &scratch)?;
+        std::fs::rename(&scratch, &isolated_exe)?;
 
-        let output = Command::new(&isolated_exe)
-            .args([
-                // `--exact` matches on the FULLY QUALIFIED name (module path
-                // included) — the bare function name alone matches nothing.
-                "strict_binary_guard_subprocess_tests::binary_available_panics_when_strict_and_missing",
-                "--exact",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env(REQUIRE_BINARY_ENV, "1")
-            .output()?;
+        let output = spawn_isolated_strict_guard_child(&isolated_exe)?;
 
         assert!(
             !output.status.success(),
