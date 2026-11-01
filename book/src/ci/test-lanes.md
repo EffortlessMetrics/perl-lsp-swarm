@@ -20,7 +20,7 @@ just release-check
 | Lane | Workflow | When it runs | Local equivalent |
 |------|----------|--------------|------------------|
 | PR smoke | `ci.yml` | Every PR | `just pr-fast` |
-| Merge gate | `ci.yml` | PR push types, `merge_group`, push to `main`/`master`, manual run (not PR labels) | `nix develop -c just ci-gate` |
+| Merge gate | `ci.yml` | Pull-request events (`opened`, `synchronize`, `reopened`, `ready_for_review`, `converted_to_draft`), `merge_group`, push to `main`/`master`, manual run (not PR labels) | `nix develop -c just ci-gate` |
 | Nightly / expensive jobs | `ci-nightly.yml` | Scheduled runs and label-gated PRs | `just ci-full` plus targeted helpers |
 | Security | `ci-security.yml` | Path-sensitive pushes and scheduled runs | `just security-audit` |
 
