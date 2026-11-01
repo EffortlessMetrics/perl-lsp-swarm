@@ -41,7 +41,7 @@ first provide a separate parity harness that:
 
 1. runs the same unit-test surface without mixing source and emitted files;
 2. preserves source-path targeted runs such as `--runTestsByPath
-src/test/commands.test.ts` and clean-output discovery semantics;
+   src/test/commands.test.ts` and clean-output discovery semantics;
 3. preserves VS Code module mapping, Jest-style fake timers, `jest.mock(...)`
    calls, and source-mapped failures;
 4. compares clean-install size, full-suite and focused-test time, watch
