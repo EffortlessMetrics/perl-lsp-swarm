@@ -345,6 +345,11 @@ mod tests {
             "repo-owned non-UTF-8 corpus fixture must exist: {}",
             path.display()
         );
+        let bytes = std::fs::read(&path).expect("legacy_encoding.pl must be readable");
+        assert!(
+            std::str::from_utf8(&bytes).is_err(),
+            "legacy_encoding.pl must remain non-UTF-8 so this test exercises lossy decode"
+        );
         let nodekinds = extract_nodekinds_from_content(&path);
         assert!(
             !nodekinds.is_empty(),
