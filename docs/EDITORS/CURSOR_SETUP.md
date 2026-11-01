@@ -97,9 +97,9 @@ Open User Settings (JSON)** and add:
 
 ## Optional: Server Initialization Options
 
-Prefer `.perl-lsp.toml` for settings shared across all editors. Use
-workspace settings for Cursor-specific startup settings that should not apply
-everywhere.
+Prefer `.perl-lsp.toml` for settings shared across all editors. Use workspace
+`.vscode/settings.json` for resource-scoped extension settings (not machine-scoped
+keys such as `perl-lsp.serverPath`) that should not apply everywhere.
 
 ```json
 {
@@ -155,7 +155,7 @@ To restart the server without restarting Cursor:
 
 4. Confirm Cursor was launched from a shell that has `perllsp` on its `PATH`.
    If Cursor was opened from a GUI launcher, it may not inherit shell `PATH`.
-   Set an absolute `serverPath` in that case:
+   Set an absolute path in **Preferences: Open User Settings (JSON)**:
    ```json
    { "perl-lsp.serverPath": "/absolute/path/to/perllsp" }
    ```

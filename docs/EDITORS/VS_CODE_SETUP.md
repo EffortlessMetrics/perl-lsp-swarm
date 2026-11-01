@@ -140,7 +140,7 @@ Settings (JSON)** and configure installation and binary selection there:
 }
 ```
 
-For project-specific **resource-scoped** settings, create
+For project-specific **resource- and window-scoped** settings, create
 `.vscode/settings.json` in your project root:
 
 ```json
@@ -506,7 +506,8 @@ Example:
    diagnostics. Unsupported literal-preserve regions return no edits rather
    than unsafe rewrites.
 
-3. **Set a compatibility profile path** (optional):
+3. **Set a compatibility profile path** (optional) in **Preferences: Open User
+   Settings (JSON)** — `perl-lsp.perltidyConfig` is machine-scoped:
    ```json
    {
      "perl-lsp.perltidyConfig": "/path/to/.perltidyrc"
@@ -566,7 +567,8 @@ you are testing a narrower or broader capability set.
 
 ### Release Channel
 
-Pin to a specific release or use a different download channel:
+Pin to a specific release or use a different download channel in **Preferences:
+Open User Settings (JSON)**:
 
 ```json
 {
@@ -588,7 +590,8 @@ behavior.
 
 ### Internal Deployment
 
-For teams hosting their own `perllsp` binaries:
+For teams hosting their own `perllsp` binaries, use **Preferences: Open User
+Settings (JSON)**:
 
 ```json
 {
@@ -597,7 +600,8 @@ For teams hosting their own `perllsp` binaries:
 }
 ```
 
-Or with an internal download mirror:
+Or with an internal download mirror, configure in **Preferences: Open User
+Settings (JSON)**:
 
 Setting `perl-lsp.downloadBaseUrl` bypasses the GitHub release selector. The
 extension requests artifacts for `perl-lsp.versionTag`, or uses the mirror's

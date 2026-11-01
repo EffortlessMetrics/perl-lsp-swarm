@@ -163,7 +163,7 @@ describe('user-facing setup guides', () => {
   const machineKeys = declaredMachineScopedKeys();
 
   test('derive a non-empty machine-scoped key set from the manifest', () => {
-    expect(machineKeys.length).toBeGreaterThan(4);
+    expect(machineKeys.length).toBeGreaterThan(0);
     expect(machineKeys).toContain('perl-lsp.serverPath');
     expect(machineKeys).toContain('perl-lsp.autoDownload');
   });

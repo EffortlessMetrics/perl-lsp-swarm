@@ -1,9 +1,9 @@
 project: vscode
-component: Documentation
+component: Editor behavior
 kind: Changed
 body: User-facing VS Code and Cursor setup guides now route machine-scoped extension settings to User Settings (JSON) and explain that workspace copies are ignored for security.
 time: 2026-08-16T12:00:00Z
 custom:
-  PR: 10028
-  Issue: 10028
+  PR: "10028"
+  Issue: "10028"
   Breaking: "no"

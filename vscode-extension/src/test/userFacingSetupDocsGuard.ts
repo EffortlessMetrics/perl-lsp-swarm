@@ -1,5 +1,5 @@
 const WORKSPACE_PLACEMENT =
-  /\.vscode\/settings\.json|workspace `.vscode\/settings\.json|in your test workspace/i;
+  /\.vscode\/settings\.json|\.code-workspace|workspace `.vscode\/settings\.json|in your test workspace/i;
 
 const USER_SETTINGS_DIRECTIVE =
   /Preferences:\s*Open User Settings \(JSON\)|Open User Settings \(JSON\)/i;
@@ -7,9 +7,18 @@ const USER_SETTINGS_DIRECTIVE =
 const NEGATION = /\b(?:do not|don't|never|ignored|ignores|must not|cannot)\b/i;
 
 function workspacePlacementIsNegative(lines: string[], index: number): boolean {
-  const start = Math.max(0, index - 2);
-  const slice = lines.slice(start, index + 1).join('\n');
-  return NEGATION.test(slice);
+  const line = lines[index];
+  if (line === undefined) {
+    return false;
+  }
+  if (NEGATION.test(line)) {
+    return true;
+  }
+  const previous = lines[index - 1];
+  if (previous !== undefined && NEGATION.test(previous) && WORKSPACE_PLACEMENT.test(line)) {
+    return true;
+  }
+  return false;
 }
 
 function proseDirectsToUserSettingsOnly(lines: string[], beforeLineExclusive: number): boolean {
@@ -63,6 +72,19 @@ function keysInJsonSnippet(snippet: string, machineKeys: ReadonlySet<string>): s
   return found;
 }
 
+const AFFIRMATIVE_WORKSPACE_INSTRUCTION =
+  /\b(?:add to|create or edit|create|edit)\b[^\n]*\.vscode\/settings\.json/i;
+
+function keysInInstructionProse(snippet: string, machineKeys: ReadonlySet<string>): string[] {
+  const found: string[] = [];
+  for (const key of machineKeys) {
+    if (snippet.includes(`\`${key}\``)) {
+      found.push(key);
+    }
+  }
+  return found;
+}
+
 /**
  * Finds machine-scoped setting keys documented as if they take effect from a
  * workspace `.vscode/settings.json` (or equivalent committed placement).
@@ -87,7 +109,7 @@ export function machineScopedKeysInWorkspaceGuidance(
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line === undefined || !WORKSPACE_PLACEMENT.test(line)) {
+    if (line === undefined || !AFFIRMATIVE_WORKSPACE_INSTRUCTION.test(line)) {
       continue;
     }
     if (workspacePlacementIsNegative(lines, i)) {
@@ -99,7 +121,15 @@ export function machineScopedKeysInWorkspaceGuidance(
       if (windowLine === undefined) {
         continue;
       }
-      for (const key of keysInJsonSnippet(windowLine, machineSet)) {
+      if (j > i) {
+        if (USER_SETTINGS_DIRECTIVE.test(windowLine) || /^###\s/.test(windowLine)) {
+          break;
+        }
+      }
+      for (const key of [
+        ...keysInJsonSnippet(windowLine, machineSet),
+        ...keysInInstructionProse(windowLine, machineSet),
+      ]) {
         record(key, j + 1, `within 12 lines of workspace placement at line ${i + 1}`);
       }
     }
@@ -119,7 +149,11 @@ export function machineScopedKeysInWorkspaceGuidance(
     if (userOnlyBefore && !workspaceCommentInside) {
       continue;
     }
-    if (proseDirectsToUserSettingsOnly(lines, beforeLine) && !workspaceCommentInside) {
+    if (
+      proseDirectsToUserSettingsOnly(lines, beforeLine) &&
+      !workspaceProseBefore &&
+      !workspaceCommentInside
+    ) {
       continue;
     }
     if (!workspaceCommentInside && !workspaceProseBefore) {

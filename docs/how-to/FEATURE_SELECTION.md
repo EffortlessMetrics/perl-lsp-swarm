@@ -134,7 +134,7 @@ ignored in workspace settings:
 ```json
 {
   "perl-lsp.serverPath": "/usr/local/bin/perllsp",
-  "perl-lsp.serverArgs": ["--feature-profile", "ga-lock"]
+  "perl-lsp.featureProfile": "ga-lock"
 }
 ```
 
