@@ -239,7 +239,20 @@ pub fn command_line(spec: &ChildSpec, executable: Option<&str>) -> String {
             let filter = spec.test_filter.unwrap_or_default();
             let executable = executable.unwrap_or("<unresolved-prebuilt-test-binary>");
             let exact = if spec.exact { " --exact" } else { "" };
-            format!("\"{executable}\" {filter}{exact} --test-threads=1")
+            // Plain double quotes do not stop `$` expansion; escape the
+            // expansion and quote characters inside the double quotes so
+            // both a real shell and the native command validator accept it.
+            let quoted = {
+                let mut escaped = String::with_capacity(executable.len() + 2);
+                for c in executable.chars() {
+                    if matches!(c, '\\' | '"' | '$' | '`') {
+                        escaped.push('\\');
+                    }
+                    escaped.push(c);
+                }
+                format!("\"{escaped}\"")
+            };
+            format!("{quoted} {filter}{exact} --test-threads=1")
         }
     }
 }
@@ -1283,6 +1296,26 @@ mod tests {
             "\"target/debug/deps/semantic_definition-test\" \
 semantic_definition_tests::definition_finds_scalar_variable_declaration --exact \
 --test-threads=1"
+        );
+    }
+
+    #[test]
+    fn behavior_command_quotes_dollar_paths_without_expansion() {
+        let spec = pinned_spec("semantic_definition/scalar_variable");
+        let command =
+            command_line(&spec, Some("C:/work$tree/target/debug/deps/semantic_definition-test"));
+        assert!(
+            command.starts_with("\"C:/work\\$tree/target/debug/deps/semantic_definition-test\""),
+            "dollar paths must be escaped inside double quotes so no expansion occurs: {command}"
+        );
+        let apostrophe = command_line(
+            &spec,
+            Some("C:/Users/O'Brien/target/debug/deps/semantic_definition-test"),
+        );
+        assert!(
+            apostrophe
+                .starts_with("\"C:/Users/O'Brien/target/debug/deps/semantic_definition-test\""),
+            "apostrophe paths must stay inside double quotes: {apostrophe}"
         );
     }
 
