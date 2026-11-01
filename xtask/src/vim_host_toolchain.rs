@@ -964,12 +964,7 @@ fn install_vim_executable(
     }
     let actual = file_sha256(&installed)
         .map_err(|error| unresolved(format!("hashing the pinned executable: {error:#}")))?;
-    if actual != expected_executable_sha256 {
-        return Err(mismatch(format!(
-            "extracted Vim executable digest {actual} does not match the expected \
-             {expected_executable_sha256}"
-        )));
-    }
+    refuse_executable_digest_mismatch(&actual, expected_executable_sha256)?;
     Ok(installed)
 }
 
@@ -1181,6 +1176,29 @@ fn verify_manifest_core(
     )
 }
 
+/// Shared identity-mismatch wording for a recorded or extracted executable
+/// digest that does not match the currently requested pin. The digest is
+/// intentionally not a cache-key input, so both fresh extraction and cache
+/// reuse must apply this comparison.
+fn refuse_executable_digest_mismatch(actual: &str, expected: &str) -> ToolchainResult<()> {
+    if actual != expected {
+        return Err(mismatch(format!(
+            "extracted Vim executable digest {actual} does not match the expected \
+             {expected}"
+        )));
+    }
+    Ok(())
+}
+
+fn recorded_executable_digest(manifest_bytes: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(manifest_bytes)
+        .ok()?
+        .get("vim")?
+        .get("executable_sha256")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// Upgrade a pre-runtime-digest manifest without reacquiring an already
 /// verified vim-lsp checkout. The schema version intentionally remains v1, so
 /// caches written before this field existed need a local, fully verified
@@ -1319,6 +1337,10 @@ pub fn provision(
                 && manifest.cache_key == key
                 && verify_manifest_core(&manifest, &manifest_bytes, &entry_root, probe).is_ok()
             {
+                refuse_executable_digest_mismatch(
+                    &manifest.vim.executable_sha256,
+                    &pins.executable_sha256,
+                )?;
                 return Ok(ProvisionOutcome {
                     manifest_sha256: file_sha256(&manifest_path)
                         .map_err(|error| mismatch(format!("{error:#}")))?,
@@ -1328,6 +1350,14 @@ pub fn provision(
                     vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
                     vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
                 });
+            }
+            // Current-schema parse failure is the legacy-migration admission
+            // (missing runtime_tree_sha256). Refuse a wrong requested pin
+            // before migrate can publish or provision falls through to rebuild.
+            if serde_json::from_slice::<ToolchainManifest>(&manifest_bytes).is_err()
+                && let Some(recorded) = recorded_executable_digest(&manifest_bytes)
+            {
+                refuse_executable_digest_mismatch(&recorded, &pins.executable_sha256)?;
             }
             if let Some(migrated) =
                 migrate_legacy_manifest(&manifest_path, &manifest_bytes, &key, &entry_root, probe)
@@ -1993,6 +2023,95 @@ mod tests {
         assert!(second.cache_hit, "identical rerun must be an exact-identity cache hit");
         assert_eq!(first.manifest_path, second.manifest_path);
         assert_eq!(before, fs::read(&second.manifest_path)?);
+        Ok(())
+    }
+
+    const WRONG_EXECUTABLE_PIN: &str =
+        "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+    #[test]
+    fn warm_cache_wrong_requested_executable_pin_is_refused_and_retains_manifest() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (mut inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(!first.cache_hit);
+        let before = fs::read(&first.manifest_path)?;
+        let recorded = first.manifest.vim.executable_sha256.clone();
+        let exe_before = fs::read(&first.vim_executable_role)?;
+
+        inputs.vim_executable_expected_sha256 = Some(WRONG_EXECUTABLE_PIN.to_string());
+        let error = provision(&inputs, &probe)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("wrong requested pin must refuse a warm cache hit"))?;
+        assert_class(&error, InstrumentFailureClass::IdentityMismatch);
+        assert!(
+            error.detail.contains("extracted Vim executable digest")
+                && error.detail.contains(&recorded)
+                && error.detail.contains(WRONG_EXECUTABLE_PIN),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(&first.manifest_path)?,
+            before,
+            "refusal must retain the cached manifest"
+        );
+        assert_eq!(
+            fs::read(&first.vim_executable_role)?,
+            exe_before,
+            "refusal must retain the cached executable"
+        );
+
+        inputs.vim_executable_expected_sha256 = Some(archive.executable_sha256.clone());
+        let restored = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(restored.cache_hit, "restoring the correct pin must reuse the retained entry");
+        assert_eq!(fs::read(&restored.manifest_path)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_wrong_requested_executable_pin_is_refused() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (mut inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let recorded = first.manifest.vim.executable_sha256.clone();
+        legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+        let before = fs::read(&first.manifest_path)?;
+
+        inputs.vim_lsp_source = None;
+        inputs.vim_executable_expected_sha256 = Some(WRONG_EXECUTABLE_PIN.to_string());
+        let error = provision(&inputs, &probe)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("wrong requested pin must refuse legacy migration"))?;
+        assert_class(&error, InstrumentFailureClass::IdentityMismatch);
+        assert!(
+            error.detail.contains("extracted Vim executable digest")
+                && error.detail.contains(&recorded)
+                && error.detail.contains(WRONG_EXECUTABLE_PIN),
+            "{error}"
+        );
+        let after = fs::read(&first.manifest_path)?;
+        assert_eq!(after, before, "refusal must retain the legacy manifest");
+        let still_legacy = serde_json::from_slice::<serde_json::Value>(&after)?;
+        assert!(
+            still_legacy.get("vim").and_then(|vim| vim.get("runtime_tree_sha256")).is_none(),
+            "refusal must not publish a migrated runtime digest"
+        );
+
+        inputs.vim_executable_expected_sha256 = Some(archive.executable_sha256.clone());
+        let migrated = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(migrated.cache_hit, "restoring the correct pin must migrate the retained entry");
+        assert!(migrated.manifest.vim.runtime_tree_sha256.starts_with("sha256:"));
         Ok(())
     }
 

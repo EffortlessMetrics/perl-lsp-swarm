@@ -59,7 +59,11 @@
 #              ^ source.perl
 #               ^^ source.perl string.quoted.q.perl keyword.other.perl
 #                 ^ source.perl string.quoted.q.perl
-#                  ^^^^^^^^ source.perl string.quoted.q.perl
+#                  ^^ source.perl string.quoted.q.perl constant.character.escape.perl
+#                    ^ source.perl string.quoted.q.perl
+#                     ^^ source.perl string.quoted.q.perl constant.character.escape.perl
+#                       ^^ source.perl string.quoted.q.perl constant.character.escape.perl
+#                         ^ source.perl string.quoted.q.perl
 #                          ^ source.perl string.quoted.q.perl
 #                           ^ source.perl keyword.operator.string.perl
 #                            ^^ source.perl
