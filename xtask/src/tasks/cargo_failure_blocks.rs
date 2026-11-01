@@ -1,66 +1,15 @@
-//! Shared reader for cargo's failing-test report.
+//! Xtask-facing adapters over the shared cargo failing-test reader.
 //!
-//! Cargo prints one `---- <test name> stdout ----` block per failing test in
-//! its trailing `failures:` report. Splitting on that header is what lets each
-//! failing test be read from its own evidence instead of from the whole log,
-//! where one test's wording silently reclassifies another's (#15988).
+//! The mechanical read — block spans, failing-test names, panic location — lives
+//! in [`perl_lsp_ux_tests::cargo_failure`]. This module keeps only what that
+//! reader deliberately leaves to the consumer: first-occurrence uniqueness,
+//! carriage-return status-line splitting, run-trailer trimming, and the digest's
+//! `file:line:col` panic form with the receipt's plausible-path grammar applied.
 //!
-//! This module holds only the mechanical read: where the blocks are, what the
-//! test is called, and where it panicked. What a block *means* is the caller's
-//! judgement — [`super::ux_regression_receipt`] can tell a budget overrun from
-//! a real assertion because it knows the UX harness's own markers, and
-//! [`super::cargo_failure_digest`] deliberately refuses to guess outside it.
-//!
-//! One reader, two consumers, on purpose: two parsers of the same cargo output
-//! would drift, and a diagnostic surface that disagrees with itself is worse
-//! than none.
+//! Two parsers of the same cargo output would drift, and a diagnostic surface
+//! that disagrees with itself is worse than none (#16907).
 
-use std::sync::LazyLock;
-
-use regex::Regex;
-
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-// The name capture is non-greedy up to the ` ... FAILED` anchor rather than a
-// run of non-whitespace: a doctest's name contains spaces
-// (`src/lib.rs - item::path (line 12)`), and a pattern that stopped at the
-// first one matched nothing at all for the whole line — silently reporting a
-// failing doctest gate as having no failing test.
-//
-// Widening the capture makes anchoring mandatory. libtest prints a status line
-// and nothing else on it, but a log also carries test stdout and tool prose,
-// and an unanchored `(.+?)` turns any line mentioning `test` before a
-// ` ... FAILED` into a name: `[ux] completion test for module Foo ... FAILED`
-// yielded `for module Foo`. That is worse than yielding nothing, because the
-// caller renders it into a paste-ready `cargo test <filter>` command, and a
-// filter matching no test exits 0 — the reader pastes it, sees green, and
-// concludes the CI failure does not reproduce. Anchored to a whole line, the
-// name must be the only thing between `test` and the marker.
-static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*test\s+([^\r\n]+?)\s+\.\.\.\s+FAILED\s*$")
-        .expect("failed test regex must compile")
-});
-
-// Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
-// post-1.73 format ("panicked at path:row:col:") where the location appears
-// directly after "panicked at " without a quoted message. The first character
-// class accepts a letter (relative paths like `crates/...`), `.` (`./`-relative
-// paths), or `/` (absolute paths) so panics whose frame is outside the
-// workspace root — a dependency's own `unwrap`, a `registry/src/...` frame, or
-// any build whose `CARGO_MANIFEST_DIR` is not a prefix of the compiled file —
-// are still captured. The `[^:\s]` segments forbid whitespace and inner `:`
-// across the whole path, so a token like `./ something:100:200` — whitespace
-// inside the "path" — cannot be captured as a location.
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:\s]*:\d+:\d+)")
-        .expect("panic regex must compile")
-});
-
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static FAILURE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^-{4}\s+(.+?)\s+stdout\s+-{4}\s*$")
-        .expect("failure block header regex must compile")
-});
+use perl_lsp_ux_tests::cargo_failure;
 
 /// Split a cargo log into `(test name, that test's block)` pairs, in the order
 /// cargo printed them, keeping the first block when a name repeats.
@@ -69,23 +18,13 @@ static FAILURE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// trailer starts, so the last failing test does not inherit the summary lines
 /// that follow every failure report.
 pub fn failure_blocks(raw: &str) -> Vec<(String, &str)> {
-    let headers: Vec<(String, usize, usize)> = FAILURE_BLOCK_RE
-        .captures_iter(raw)
-        .filter_map(|capture| {
-            let header = capture.get(0)?;
-            let name = capture.get(1)?;
-            Some((name.as_str().to_string(), header.end(), header.start()))
-        })
-        .collect();
-
     let mut blocks: Vec<(String, &str)> = Vec::new();
-    for (index, (name, body_start, _)) in headers.iter().enumerate() {
-        if blocks.iter().any(|(seen, _)| seen == name) {
+    for span in cargo_failure::failure_block_spans(raw) {
+        if blocks.iter().any(|(seen, _)| seen == &span.name) {
             continue;
         }
-        let body_end = headers.get(index + 1).map_or(raw.len(), |(_, _, next_start)| *next_start);
-        let block = raw.get(*body_start..body_end).unwrap_or_default();
-        blocks.push((name.clone(), trim_run_trailer(block)));
+        let body = trim_run_trailer(span.body(raw));
+        blocks.push((span.name, body));
     }
     blocks
 }
@@ -96,16 +35,13 @@ pub fn failure_blocks(raw: &str) -> Vec<(String, &str)> {
 /// Cargo can report a failure without printing a stdout block for it, so this
 /// is the fallback that keeps such a test from going unnamed.
 pub fn failing_test_names(raw: &str) -> Vec<String> {
+    // `str::lines` (and therefore the shared `failed_test_names`) splits on
+    // `\n` only, and CI logs carry bare `\r` where a progress writer rewrote a
+    // line in place. Two logical status lines then arrive as one physical line.
+    // Normalize first so each status line is its own record.
+    let normalized = raw.replace('\r', "\n");
     let mut names: Vec<String> = Vec::new();
-    // `str::lines` splits on `\n` only, and CI logs carry bare `\r` where a
-    // progress writer rewrote a line in place. Two logical status lines then
-    // arrive as one physical line, and an anchored pattern sees neither. Split
-    // on the carriage return too, so each status line is anchored on its own.
-    for line in raw.lines().flat_map(|line| line.split('\r')) {
-        let Some(name) = FAILED_TEST_RE.captures(line).and_then(|capture| capture.get(1)) else {
-            continue;
-        };
-        let name = name.as_str().to_string();
+    for name in cargo_failure::failed_test_names(&normalized) {
         if !names.contains(&name) {
             names.push(name);
         }
@@ -114,8 +50,18 @@ pub fn failing_test_names(raw: &str) -> Vec<String> {
 }
 
 /// The `file:line:col` of the first panic inside one block, if it panicked.
+///
+/// The parse is [`cargo_failure::panic_location`]; the digest then applies
+/// [`cargo_failure::is_plausible_path`] so a whitespace-bearing or
+/// first-character-junk token is not published as a location. The gate's
+/// `file:line` form does not apply that grammar — see
+/// `gates::first_failure`.
 pub fn panic_location(block: &str) -> Option<String> {
-    block.lines().find_map(|line| PANIC_RE.captures(line).map(|capture| capture[1].to_string()))
+    block.lines().find_map(|line| {
+        cargo_failure::panic_location(line)
+            .filter(|location| cargo_failure::is_plausible_path(&location.path))
+            .map(|location| location.with_column())
+    })
 }
 
 /// Trim cargo's run-level trailer off the end of a block.
@@ -475,6 +421,68 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored
         ensure!(
             located.as_deref() == Some("./xtask/src/a.rs:100:200"),
             "a genuine ./-relative location must still match, got {located:?}"
+        );
+        Ok(())
+    }
+
+    /// The drift #16907 names is a disagreement between two surfaces on a
+    /// doctest-shaped name. After the adapters share one reader, both entry
+    /// points must recover the same name and the same `./`-relative panic.
+    #[test]
+    fn doctest_name_and_dot_relative_panic_agree_with_the_shared_reader() -> Result<()> {
+        let raw = concat!(
+            "test src/lib.rs - foo (line 3) ... FAILED\n",
+            "\nfailures:\n\n",
+            "---- src/lib.rs - foo (line 3) stdout ----\n",
+            "thread 'main' panicked at ./src/lib.rs:4:1:\n",
+            "assertion failed: false\n",
+        );
+        let doctest = "src/lib.rs - foo (line 3)";
+        let panic_line = "thread 'main' panicked at ./src/lib.rs:4:1:";
+
+        let adapter_names = failing_test_names(raw);
+        let shared_names = cargo_failure::failed_test_names(raw);
+        ensure!(
+            adapter_names == shared_names,
+            "adapter names {adapter_names:?} must equal shared names {shared_names:?}"
+        );
+        ensure!(
+            adapter_names == vec![doctest.to_string()],
+            "the doctest name must be read whole, got {adapter_names:?}"
+        );
+
+        let adapter_blocks = failure_blocks(raw);
+        let shared_blocks = cargo_failure::failure_block_spans(raw);
+        ensure!(
+            adapter_blocks.len() == 1 && shared_blocks.len() == 1,
+            "one failure block on both surfaces, adapter {} shared {}",
+            adapter_blocks.len(),
+            shared_blocks.len()
+        );
+        let adapter_block = at(&adapter_blocks, 0, "failure_blocks")?;
+        let shared_block = at(&shared_blocks, 0, "failure_block_spans")?;
+        ensure!(
+            adapter_block.0 == shared_block.name,
+            "adapter block name {:?} must equal shared block name {:?}",
+            adapter_block.0,
+            shared_block.name
+        );
+        ensure!(
+            adapter_block.0 == doctest,
+            "the block carries the whole doctest name, got {:?}",
+            adapter_block.0
+        );
+
+        let adapter_panic = panic_location(adapter_block.1);
+        let shared_panic =
+            cargo_failure::panic_location(panic_line).map(|location| location.with_column());
+        ensure!(
+            adapter_panic == shared_panic,
+            "adapter panic {adapter_panic:?} must equal shared panic {shared_panic:?}"
+        );
+        ensure!(
+            adapter_panic.as_deref() == Some("./src/lib.rs:4:1"),
+            "a ./-relative panic location must be captured, got {adapter_panic:?}"
         );
         Ok(())
     }

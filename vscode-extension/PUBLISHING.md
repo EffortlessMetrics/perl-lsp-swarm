@@ -4,8 +4,8 @@
 
 1. **Node.js 26.x (CI pins 26.5.0) and npm 11.18.0** installed
 2. **Visual Studio Code** installed
-Publisher credentials belong to the reviewed release workflow; local preparation
-does not require or authorize ambient registry tokens.
+   Publisher credentials belong to the reviewed release workflow; local preparation
+   does not require or authorize ambient registry tokens.
 
 ## Build Process
 
