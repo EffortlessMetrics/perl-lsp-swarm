@@ -74,10 +74,18 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 for name in publish_topo.derive_publish_list(meta):
     print(name)
 PY
+    local py_status=$?
     rm -f "${meta_out}"
+    return "${py_status}"
 }
 
-mapfile -t ALL_CRATES < <(derive_publishable_crates)
+crate_list="$(derive_publishable_crates)"
+mapfile -t ALL_CRATES <<< "${crate_list}"
+
+if [[ ${#ALL_CRATES[@]} -eq 0 ]]; then
+    echo "verify-docs-rs: REFUSED: derived publishable crate list is empty." >&2
+    exit 1
+fi
 
 if [[ "${LIST_MODE}" == "1" ]]; then
     printf '%s\n' "${ALL_CRATES[@]}"

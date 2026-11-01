@@ -24,6 +24,8 @@ import unittest
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
 VERIFY_SCRIPT = os.path.join(SCRIPTS_DIR, "verify-docs-rs.sh")
+CARGO_METADATA_TIMEOUT_SECONDS = 120
+VERIFY_SCRIPT_TIMEOUT_SECONDS = 60
 
 _spec = importlib.util.spec_from_file_location(
     "publish_topo", os.path.join(SCRIPTS_DIR, "publish-topo.py")
@@ -34,31 +36,43 @@ _spec.loader.exec_module(publish_topo)  # type: ignore[union-attr]
 
 
 def _cargo_metadata() -> dict:
-    completed = subprocess.run(
-        [
-            "cargo",
-            "metadata",
-            "--no-deps",
-            "--format-version",
-            "1",
-            "--manifest-path",
-            os.path.join(REPO_ROOT, "Cargo.toml"),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "cargo",
+                "metadata",
+                "--no-deps",
+                "--format-version",
+                "1",
+                "--manifest-path",
+                os.path.join(REPO_ROOT, "Cargo.toml"),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=CARGO_METADATA_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"cargo metadata timed out after {CARGO_METADATA_TIMEOUT_SECONDS}s"
+        ) from exc
     return json.loads(completed.stdout)
 
 
 def _list_from_script() -> list[str]:
-    completed = subprocess.run(
-        ["bash", VERIFY_SCRIPT, "--list"],
-        check=True,
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-    )
+    try:
+        completed = subprocess.run(
+            ["bash", VERIFY_SCRIPT, "--list"],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            timeout=VERIFY_SCRIPT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"verify-docs-rs.sh --list timed out after {VERIFY_SCRIPT_TIMEOUT_SECONDS}s"
+        ) from exc
     lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     return lines
 
