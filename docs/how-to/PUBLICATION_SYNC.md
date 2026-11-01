@@ -226,18 +226,55 @@ Freeze the exact ledger bytes/digest used by the publication packet.
 The projection starts from the complete tree of `S`. Every intended difference
 must be declared in the release's projection manifest before the join.
 
-The swarm currently provides `cargo xtask sync-divergence scaffold` and
-`cargo xtask sync-divergence check` for reconciliation. It does not currently
-provide a `publication-sync` projection subcommand or a swarm-owned producer for
-`P`.
+The swarm provides `cargo xtask sync-divergence scaffold` and
+`cargo xtask sync-divergence check` for reconciliation, and
+`cargo xtask publication-sync plan` for the manifest (#7972):
 
-This runbook therefore treats projection generation as a hard prerequisite, not
-as an operation that this checkout can perform. Before a release transaction,
-identify a separately reviewed producer whose output is bound to `R`, `S`, the
-reconciliation evidence, and the manifest. If no accepted producer is
-available, stop here. Do not infer one from a command name, invoke an
-unimplemented `cargo xtask` path, or replace the missing producer with a manual
-exclusion checklist.
+```bash
+cargo xtask publication-sync plan \
+  --manifest <publication_sync_manifest.v1.json> \
+  --repo-root . \
+  --receipt target/receipts/publication-sync-plan.json
+```
+
+`plan` is read-only. It validates the manifest against
+`schemas/publication_sync_manifest.v1.schema.json`, verifies every declared
+release-input digest, proves the declared reconciliation receipt passed and
+reconciled exactly this `S` against this `R`, checks each projection row, and
+emits a deterministic `pass|blocked|not_proven` receipt carrying the canonical
+manifest digest. It changes no branch, worktree, or tree.
+
+**`plan` is not a producer for `P`.** It judges a manifest you already have; it
+does not derive the projected tree, and it does not yet inventory candidate
+destination-context translations from the live `R` and `S` trees (#7973).
+
+This runbook therefore still treats projection generation as a hard
+prerequisite, not as an operation that this checkout can perform. Before a
+release transaction, identify a separately reviewed producer whose output is
+bound to `R`, `S`, the reconciliation evidence, and the manifest. If no accepted
+producer is available, stop here. Do not infer one from a command name, invoke
+an unimplemented `cargo xtask` path, or replace the missing producer with a
+manual exclusion checklist. A `pass` from `plan` is evidence about the manifest
+only; it is not authorization to publish.
+
+Concretely, a `pass` does **not** establish any of the following. A consumer
+that treats the receipt as publication evidence owns each one:
+
+- **Row completeness.** `plan` judges the rows a manifest declares. It cannot
+  see a difference from `S` that nobody wrote down, so an undeclared exclusion
+  is invisible to it.
+- **Blob identity.** Row paths are checked for shape and product classification
+  against the checkout, not compared against Git blob hashes in `S` or `R`.
+- **Plan currentness.** Freshness is judged against the manifest's `planned_at`
+  so replay is deterministic — the same manifest and inputs always yield the
+  same receipt. That determinism is exactly why `plan` cannot notice that a
+  receipt has aged: a plan whose live-control evidence was fresh when it was
+  written stays `pass` forever. The gate that consumes the receipt must bound
+  how old a plan may be at the moment of publication.
+
+`plan` does bind its own answers to the commit it was run against: the
+repository root must be at the manifest's `prepared_swarm_sha`, or the receipt
+is `not_proven` rather than a judgment about some other tree.
 
 The final manifest must cover, where applicable:
 
@@ -509,3 +546,77 @@ later `master` by accident.
 - Do not squash or rebase the publication-sync PR.
 - Do not use exact-head review receipts or status comments as review evidence.
 - Do not tag or publish from this runbook.
+## Staged engineering source profile (#17225)
+
+This extension is prepared against #14570 at
+`b10269ee297ecb295b4d4fd185868a344765ec5a`. It must consume that carrier's landed
+authority and pass the focused tests before ordinary integration. This section
+does not claim the prerequisite is merged or enable a source admission pass.
+
+`source_sync_manifest.v1` is the closed non-release shape in the existing
+`publication_sync` model. Its `profile` is `source`; its direction is swarm main
+to public master. It binds semantic boundary B, destination base R and exact
+engineering subject S, four digest-bound producer inputs, the complete-tree
+`take_swarm` basis, the existing projection rows and expected projection P.
+
+Required inputs, each exactly once:
+
+- `reconciliation`: the complete public-work receipt/ledger for exact B/R/S;
+  #17226/#17238 retain native reconciliation and adapter semantics;
+- `product_proof`: applicable product/build/test evidence for exact covered bytes;
+- `projection_policy`: ownership/context policy used by #7973/#7976;
+- `protected_source_controls`: authentic/current applicable source enforcement.
+
+There is no release identity, track, prepared/frozen S, release notes, API
+publication audit, release environment or chosen invariant set in this shape.
+`published_channels` is empty and `release_cut` is false. A candidate cannot add
+pass summaries or change only a legacy profile string to escape release proof.
+The historical `publication_sync_manifest.v1` schema and its evaluator retain
+their requirements.
+
+Both profiles use the same Rust `PathRow`, `DefaultAction` and `Blocker`. The
+source schema references the existing release schema's row and primitive
+definitions; the planner resolves only those fixed compiled-in definitions,
+without fetching a schema or accepting a candidate-selected policy. The row's
+legacy `release_base_digest` name still denotes bytes in R, which is the public
+destination base here. It does not claim that source S is release-prepared.
+Receipt alias and Git-metadata protections apply to the staged source shape too.
+Alias paths are collected before strict model/schema validation, so an extra
+rejected claim cannot make declared input/row paths disappear from the guard.
+If raw JSON, path-bearing slots or their identities cannot be established, no
+receipt is written. The same path extraction protects known slots on an unknown
+profile. The evaluator still creates a diagnostic unevaluated receipt for an
+unparsable manifest; the CLI refuses to write it when aliases are ambiguous.
+
+Current ceiling: a valid source shape deterministically returns
+`source_profile_not_proven` / NOT_PROVEN. The source fixture contains shape-only
+digest placeholders; it is not evidence, a product qualification or a live
+observation. Digests alone never authenticate their producer. Self-declared
+control/result strings have no authority. Missing, stale, cross-subject,
+inaccessible or unauthenticated required evidence must remain blocked.
+
+Enabling source success requires landed producer validation and reviewed
+trusted-base policy, complete reconciliation/required-port survival, independent
+complete-tree changed-path enumeration, exact Git modes and object identities,
+literal path queries and worktree integrity, public context/governance and
+truthful claims, and applicable source enforcement. Product proof may be reused
+only for identical covered bytes; a shared-product transformation requires fresh
+qualification. Release-only observer qualification is a separate release claim.
+
+Public #10126/#10121 consumes the `source_sync.v1` packet envelope and remains
+NOT_PROVEN until this one model and the actual producers are ready. The prepared
+extension implements no projection engine, ledger interpreter, join, wrapper,
+merge, release, publication or live-settings change. Actual history-preserving
+joins remain #17227/coordinator-owned.
+
+Focused command after the parent grants serial native allocation:
+
+```sh
+cargo test -p xtask --bins publication_sync
+```
+
+The eight new source controls include real Git B/R/S, cross-profile substitution,
+mandatory inputs, candidate proof claims, shared row shapes, receipt aliases on
+rejected documents, and refusal to write when JSON or alias slots are malformed.
+They supplement every existing #14570 test; they do not replace them. No Cargo
+execution is claimed by the preparation receipt.
