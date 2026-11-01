@@ -124,7 +124,7 @@ jobs:
       - run: cargo mutants --timeout 60 --no-shuffle || true
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: mutation-results-${{ github.sha }}
           path: mutants.out/mutants.json
@@ -425,7 +425,7 @@ jobs:
 
     - name: Upload benchmark artifacts
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
       with:
         name: benchmark-results-${{ github.sha }}
         path: |
@@ -441,7 +441,7 @@ jobs:
 
     - name: Upload native pipeline measurement sidecar
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
       with:
         name: native-pipeline-measurements-${{ github.sha }}-${{ github.run_id }}
         path: target/criterion/native-pipeline-measurements.v1.json
@@ -486,7 +486,7 @@ jobs:
 
     - name: Upload real-repo latency artifacts
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
       with:
         name: real-project-latency-${{ github.sha }}
         path: |
@@ -530,7 +530,7 @@ jobs:
 
     - name: Upload corpus differential report
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
       with:
         name: corpus-differential-${{ github.sha }}
         path: corpus-differential-report.txt
@@ -679,7 +679,7 @@ jobs:
 
       - name: Upload memory plateau artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: lsp-memory-plateau-${{ github.sha }}
           path: |
@@ -832,7 +832,7 @@ jobs:
 
       - name: Upload coverage proof artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: coverage-proof-${{ github.sha }}
           path: |
@@ -966,7 +966,7 @@ jobs:
 
       - name: Upload breaking changes report
         if: ${{ !cancelled() && steps.baseline.outcome == 'success' && steps.baseline.outputs.baseline != '' && steps.baseline.outputs.baseline != 'none' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: semver-breaking-changes-report
           path: target/semver-reports/breaking-changes.json
@@ -1191,7 +1191,7 @@ jobs:
 
       - name: Upload Kwalitee receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: perl-kwalitee-${{ github.sha }}
           # Upload the whole receipt directories rather than enumerating files:
@@ -1279,7 +1279,7 @@ jobs:
     # and the reproducer was lost with the job (#17028).
     - name: Upload crash artifacts
       if: ${{ failure() || cancelled() }}
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
       with:
         name: fuzz-artifacts-${{ matrix.target }}-${{ github.sha }}
         path: |
