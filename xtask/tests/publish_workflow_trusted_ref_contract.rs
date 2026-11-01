@@ -35,7 +35,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde_yaml_ng::Value;
 
 const GATE_JOB: &str = "resolve-trusted-anchor";
