@@ -853,12 +853,25 @@ Flags passed when launching the `perllsp` executable. Source:
 
 ### Diagnostic and info
 
+Flags in this group exit immediately and do not start the LSP server (source:
+`crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs`).
+
 | Flag | Description |
 |---|---|
 | `--health` | Print `ok <version>` and exit |
 | `--info` | Print version, parser, profile, feature count, and executable path |
 | `--version` | Print version string and exit |
 | `--features-json` | Print the active feature catalog as JSON and exit |
+| `--doctor [dir]` | Explain Perl path, config, and effective `@INC` roots for a workspace directory (defaults to `.` when omitted). Conflicts with `--check` and `--check-project`. |
+| `--external-tools` | With `--doctor`: registry-driven native-first external tooling report. Requires `--doctor`; mutually exclusive with `--critic-compatibility` and `--dev-environment`. |
+| `--critic-compatibility` | With `--doctor`: `.perlcriticrc` compatibility report (process-free). Requires `--doctor`; mutually exclusive with `--external-tools` and `--dev-environment`. |
+| `--dev-environment` | With `--doctor`: development-environment prerequisite report (symlink privilege, shells, toolchain pin, Perl identity). Requires `--doctor`; mutually exclusive with `--external-tools` and `--critic-compatibility`. |
+| `--json` | Machine-readable JSON output when paired with `--doctor`. With `--info`, forms the composed one-shot identity output (see below). |
+| `--identity` | Print the installed-binary identity packet and exit. One-shot: must be the only argument. |
+| `--identity-json` | Print the same packet as `perl_lsp.binary_identity.v1` JSON and exit. One-shot: must be the only argument. |
+| `--info --json` | Composed one-shot identity JSON (`--info` and `--json` only; either order). |
+| `--perltidy-compat-report <profile>` | Report native formatter compatibility for a `.perltidyrc` profile and exit. Mutually exclusive with `--perlcritic-compat-report`. |
+| `--perlcritic-compat-report <profile>` | Report native critic compatibility for a `.perlcriticrc` profile and exit. Mutually exclusive with `--perltidy-compat-report`. |
 
 ### Tool mode (no editor required)
 
@@ -880,6 +893,9 @@ perllsp --stdio --feature-profile prod  # production feature profile
 perllsp --check lib/MyModule.pm         # native listed-file parser check
 perllsp --check-project lib/            # native parsability report (80%)
 perllsp --info                          # print server information
+perllsp --doctor .                      # first-run setup report
+perllsp --doctor --json                 # same report as JSON
+perllsp --identity                      # installed-binary identity packet
 perllsp --completion bash >> ~/.bashrc  # install bash completions
 ```
 
@@ -1184,14 +1200,24 @@ Example `launch.json`:
 
 ### Attach Configuration
 
-Attach to a running Perl process via TCP (requires the target to load
-`Perl::LanguageServer` or a compatible debug bridge).
+TCP **attach** connects **outbound** from the debug adapter to a compatible
+debugger peer that is already **listening** on `host`/`port`. The adapter
+exchanges DAP over TCP using Content-Length–framed JSON (see
+`crates/perl-dap/src/tcp_attach/`). This path does not require
+`Perl::LanguageServer` or any bundled third-party debug bridge in the target
+process ([Native stack policy](NATIVE_STACK_POLICY.md) / PLSP-SPEC-0015).
+
+**Refused attach shapes:** `processId` (PID) attach, and `stopOnEntry: true` in
+attach launch configurations. Stock `perl -d` with `PERLDB_OPTS=RemotePort=…`
+is not documented here as a verified end-to-end attach recipe; a working attach
+journey needs a separately proven compatible transport or bridge, not a
+documentation-only assertion.
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `host` | `string` | `"localhost"` | Hostname or IP of the running debugger. |
-| `port` | `number` | `13603` | TCP port the debugger is listening on. |
-| `timeout` | `number` (ms) | `5000` | Connection timeout in milliseconds. |
+| `host` | `string` | `"localhost"` | Hostname or IP where the compatible debugger peer is listening. |
+| `port` | `number` | `13603` | TCP port the peer is listening on. |
+| `timeout` | `number` (ms) | `5000` | Outbound connection timeout in milliseconds (default `5000` in `tcp_attach/config.rs`). |
 
 Example:
 
