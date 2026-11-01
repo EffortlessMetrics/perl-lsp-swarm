@@ -445,7 +445,7 @@ fn ensure_publication_lock_dir(lock_dir: &Path) -> Result<()> {
     {
         use std::io::ErrorKind;
         use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-        if let Err(error) = fs::DirBuilder::new().mode(0o700).create(lock_dir) {
+        if let Err(error) = fs::DirBuilder::new().recursive(true).mode(0o700).create(lock_dir) {
             if error.kind() != ErrorKind::AlreadyExists {
                 return Err(error).with_context(|| {
                     format!("creating publication lock dir {}", lock_dir.display())
@@ -1783,6 +1783,15 @@ mod tests {
             publication_lock_dir().as_os_str()
                 != std::env::temp_dir().join("perl-lsp-ux-scorecard-locks").as_os_str(),
             "lock dir must not be the shared unkeyed temp path",
+        )?;
+
+        let nested = tmp.path().join("missing").join("parent").join("locks");
+        ensure_publication_lock_dir(&nested)?;
+        check_true(nested.is_dir(), "lock dir parent chain was not created")?;
+        check(
+            &(fs::metadata(&nested)?.permissions().mode() & 0o777),
+            &0o700,
+            "nested lock dir mode",
         )
     }
 
