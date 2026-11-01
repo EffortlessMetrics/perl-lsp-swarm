@@ -452,6 +452,34 @@ fn source_writes_run_receipt_guard_unit_cases() {
         !source_writes_run_receipt("//! run_ux_scenario(\"x\");"),
         "wrapper in line doc comment must not count"
     );
+    assert!(
+        source_writes_run_receipt("fn f<'a>(x: &'a str) { run_ux_scenario(\"x\"); }"),
+        "lifetimes must not swallow following source"
+    );
+    assert!(
+        !source_writes_run_receipt("/* /* run_ux_scenario(\"x\"); */ run_ux_scenario(\"y\"); */"),
+        "nested block comment must hide the wrapper"
+    );
+    assert!(
+        source_writes_run_receipt("// /*\nrun_ux_scenario(\"x\");"),
+        "line comment must take precedence over block-comment opener"
+    );
+    assert!(
+        !source_writes_run_receipt("/* run_ux_scenario(\"x\");"),
+        "unterminated block comment must hide the wrapper"
+    );
+    assert!(
+        source_writes_run_receipt("let c = '\\''; run_ux_scenario(\"x\");"),
+        "escaped quote in char literal must not desynchronize the scanner"
+    );
+    assert!(
+        source_writes_run_receipt("let _ = ' '; run_ux_scenario(\"x\");"),
+        "space char literal must be recognized"
+    );
+    assert!(
+        source_writes_run_receipt("/* it \"quoted */ run_ux_scenario(\"x\");"),
+        "quotes inside block comments must not open string state"
+    );
 }
 
 /// Stack entry for one open string literal: [`PLAIN_STRING_LITERAL`] marks a
@@ -463,16 +491,11 @@ fn char_literal_close(chars: &[char], open: usize) -> Option<usize> {
     match chars.get(open + 1)? {
         '\\' => {
             let limit = (open + 15).min(chars.len());
-            ((open + 2)..limit).find(|&probe| chars[probe] == '\'')
+            // Skip the escaped character so `'\\''` closes at the real quote.
+            ((open + 3)..limit).find(|&probe| chars[probe] == '\'')
         }
-        ch if !ch.is_whitespace() && *ch != '\'' => {
-            if chars.get(open + 2) == Some(&'\'') {
-                Some(open + 2)
-            } else {
-                None
-            }
-        }
-        _ => None,
+        '\'' | '\n' => None,
+        _ => (chars.get(open + 2) == Some(&'\'')).then_some(open + 2),
     }
 }
 
@@ -536,6 +559,8 @@ fn stripped_rust_source_for_receipt_heuristic(source: &str) -> String {
         } else if block_depth > 0 && chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
             block_depth -= 1;
             index += 2;
+        } else if block_depth > 0 {
+            index += 1;
         } else if chars[index] == '\''
             || (chars[index] == 'b' && chars.get(index + 1) == Some(&'\''))
         {
@@ -571,8 +596,6 @@ fn stripped_rust_source_for_receipt_heuristic(source: &str) -> String {
                 index += 1;
             }
             literal_hashes.push(PLAIN_STRING_LITERAL);
-        } else if block_depth > 0 {
-            index += 1;
         } else {
             out.push(chars[index]);
             index += 1;
