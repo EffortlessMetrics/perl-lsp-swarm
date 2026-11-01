@@ -44,6 +44,52 @@
 #                   ^ source.perl string.quoted.q.perl
 #                    ^ source.perl string.quoted.q.perl
 #                     ^^ source.perl
+>my $bracket = q[ [x] ] ok;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^ source.perl variable.other.scalar.perl
+#           ^ source.perl
+#            ^ source.perl keyword.operator.assignment.perl
+#             ^ source.perl
+#              ^ source.perl string.quoted.q.perl keyword.other.perl
+#               ^ source.perl string.quoted.q.perl
+#                ^ source.perl string.quoted.q.perl
+#                 ^ source.perl string.quoted.q.perl
+#                  ^ source.perl string.quoted.q.perl
+#                   ^ source.perl string.quoted.q.perl
+#                    ^ source.perl string.quoted.q.perl
+#                     ^ source.perl string.quoted.q.perl
+#                      ^^^^^ source.perl
+>my $angle = q< <tag> > end;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^ source.perl variable.other.scalar.perl
+#         ^ source.perl
+#          ^ source.perl keyword.operator.assignment.perl
+#           ^ source.perl
+#            ^ source.perl string.quoted.q.perl keyword.other.perl
+#             ^ source.perl string.quoted.q.perl
+#              ^ source.perl string.quoted.q.perl
+#               ^ source.perl string.quoted.q.perl
+#                ^^^ source.perl string.quoted.q.perl
+#                   ^ source.perl string.quoted.q.perl
+#                    ^ source.perl string.quoted.q.perl
+#                     ^ source.perl string.quoted.q.perl
+#                      ^^^^^^ source.perl
+>my $slash = q/a\/b/ tail;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^ source.perl variable.other.scalar.perl
+#         ^ source.perl
+#          ^ source.perl keyword.operator.assignment.perl
+#           ^ source.perl
+#            ^ source.perl string.quoted.q.perl keyword.other.perl
+#             ^ source.perl string.quoted.q.perl
+#              ^ source.perl string.quoted.q.perl
+#               ^^ source.perl string.quoted.q.perl constant.character.escape.perl
+#                 ^ source.perl string.quoted.q.perl
+#                  ^ source.perl string.quoted.q.perl
+#                   ^^^^^^^ source.perl
 >my $early = q(a) b);
 #^^ source.perl keyword.other.perl
 #  ^ source.perl
