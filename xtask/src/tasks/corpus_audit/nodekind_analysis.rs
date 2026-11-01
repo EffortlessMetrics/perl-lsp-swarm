@@ -337,6 +337,22 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_nodekinds_from_legacy_encoding_corpus_fixture() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test_corpus/legacy_encoding.pl");
+        assert!(
+            path.is_file(),
+            "repo-owned non-UTF-8 corpus fixture must exist: {}",
+            path.display()
+        );
+        let nodekinds = extract_nodekinds_from_content(&path);
+        assert!(
+            !nodekinds.is_empty(),
+            "legacy_encoding.pl must contribute NodeKinds under lossy decode, got empty"
+        );
+    }
+
+    #[test]
     fn test_extract_nodekinds_from_non_utf8_content() -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::with_suffix(".pl")?;
