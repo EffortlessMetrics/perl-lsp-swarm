@@ -4,6 +4,6 @@ kind: Changed
 body: Dancer2 request gating now takes the earliest 1.x or 2.x `use Dancer2` site before resolving the module, so a 2.x-shaped document is not skipped as Dancer2-free.
 time: 2026-11-01T21:45:00Z
 custom:
-  PR: "14989"
+  PR: "18659"
   Slug: dancer2-2x-activation-gate
   Breaking: "no"
