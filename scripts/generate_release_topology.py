@@ -364,7 +364,7 @@ def checksum_candidate_steps(release_text: str) -> list[str]:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable (master)
         with:
           toolchain: stable
 
