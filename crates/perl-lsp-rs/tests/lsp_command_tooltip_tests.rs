@@ -7,7 +7,7 @@
 mod support;
 
 use serde_json::{Value, json};
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -68,8 +68,9 @@ fn executable_code_action_commands() -> std::collections::BTreeSet<String> {
 
 #[test]
 fn offered_code_action_commands_are_executable_and_carry_tooltips() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
     harness.open(
         "file:///executable-commands.pl",
         "sub calculate {\n    my ($a, $b) = @_;\n    return $a + $b;\n}\n",
@@ -116,8 +117,9 @@ fn offered_code_action_commands_are_executable_and_carry_tooltips() -> TestResul
 
 #[test]
 fn explain_diagnostic_command_includes_lsp_318_tooltip() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
     harness.open("file:///explain.pl", "use Missing::Payload;\n")?;
 
     let actions = harness.request(
@@ -162,14 +164,18 @@ fn explain_diagnostic_command_includes_lsp_318_tooltip() -> TestResult {
 
 #[test]
 fn code_action_documentation_commands_include_lsp_318_tooltip() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    let init = harness.initialize(Some(json!({
-        "textDocument": {
-            "codeAction": {
-                "documentationSupport": true
+    let init = harness.initialize_with_root(
+        &workspace.root_uri,
+        Some(json!({
+            "textDocument": {
+                "codeAction": {
+                    "documentationSupport": true
+                }
             }
-        }
-    })))?;
+        })),
+    )?;
     let docs = init
         .pointer("/capabilities/codeActionProvider/documentation")
         .cloned()
@@ -215,8 +221,9 @@ fn code_action_documentation_commands_include_lsp_318_tooltip() -> TestResult {
 
 #[test]
 fn completion_and_document_link_do_not_produce_lsp_commands() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
     harness.open("file:///no-command.pl", "use strict;\nprint 1;\n")?;
 
     let completion = harness.request(
@@ -245,8 +252,9 @@ fn completion_and_document_link_do_not_produce_lsp_commands() -> TestResult {
 
 #[test]
 fn inline_completion_items_do_not_produce_lsp_commands() -> TestResult {
+    let workspace = TempWorkspace::new()?;
     let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    harness.initialize_with_root(&workspace.root_uri, None)?;
     harness.open("file:///inline-no-command.pl", "use ")?;
 
     let result = harness.request(
