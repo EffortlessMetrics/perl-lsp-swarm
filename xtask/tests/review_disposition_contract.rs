@@ -1187,3 +1187,48 @@ fn sweep_rejects_graphql_payloads_with_errors() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+/// Empty stdin/file is not a zero-thread sweep. A recorded `{threads:[]}`
+/// document is the honest empty result and must still emit selected/skipped.
+#[cfg(unix)]
+#[test]
+fn sweep_rejects_empty_payload_but_accepts_empty_thread_list() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let temp = tempfile::tempdir()?;
+    let empty_path = temp.path().join("empty.json");
+    fs::write(&empty_path, "")?;
+
+    let (bin, log) = write_poison_gh(temp.path())?;
+    let mut path = OsString::from(bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH is unavailable")?);
+
+    let empty = Command::new("bash")
+        .arg(disposition_script(&root))
+        .args(["--sweep-bot-outdated", "--pr", "42", "--threads-json"])
+        .arg(&empty_path)
+        .args(["--repo", "owner/repo", "--head", SWEEP_HEAD, "--by", "tester", "--dry-run"])
+        .env("PATH", &path)
+        .env("GH_STUB_LOG", &log)
+        .output()?;
+    assert!(!empty.status.success(), "empty payload must fail closed: {}", output_text(&empty));
+    assert!(
+        output_text(&empty).contains("failed to classify"),
+        "expected a classify refusal for empty input: {}",
+        output_text(&empty)
+    );
+    assert!(
+        fs::read_to_string(&log).unwrap_or_default().trim().is_empty(),
+        "empty payload must not invoke gh"
+    );
+
+    let zero = serde_json::json!({"pr": 42, "repo": "owner/repo", "threads": []});
+    let (ok, ok_calls) = run_sweep(&root, &zero, &["--dry-run"], true)?;
+    assert!(ok.status.success(), "empty thread list is a valid zero: {}", output_text(&ok));
+    assert!(ok_calls.trim().is_empty(), "empty-list dry-run invoked gh: {ok_calls}");
+    let summary = first_json_line(&output_text(&ok))?;
+    assert_eq!(summary.pointer("/selected").and_then(Value::as_array).map(Vec::len), Some(0));
+    assert_eq!(summary.pointer("/skipped").and_then(Value::as_array).map(Vec::len), Some(0));
+
+    Ok(())
+}

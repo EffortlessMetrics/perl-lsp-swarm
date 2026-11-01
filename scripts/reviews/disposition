@@ -237,9 +237,21 @@ _sweep_bot_outdated() {
         echo "ERROR: failed to classify sweep payload for PR #$PR" >&2
         exit 2
     fi
+    # jq succeeds with empty stdin; an empty classified document is not a
+    # zero-thread sweep ({selected:[],skipped:[]}) and must not print a blank
+    # success line.
+    if ! jq -e '
+        type == "object"
+        and (.selected | type) == "array"
+        and (.skipped | type) == "array"
+    ' "$classified_file" >/dev/null; then
+        rm -rf "$work"
+        echo "ERROR: failed to classify sweep payload for PR #$PR" >&2
+        exit 2
+    fi
     # Keep the classified document off argv: large PRs already blew --argjson
     # in scripts/reviews/threads (#6178).
-    if ! summary="$(jq -c --arg pr "$PR" --arg head "$HEAD" --argjson dry "$DRY_RUN" '
+    if ! summary="$(jq -e -c --arg pr "$PR" --arg head "$HEAD" --argjson dry "$DRY_RUN" '
         {
             mode: "sweep-bot-outdated",
             pr: (try ($pr | tonumber) catch $pr),
@@ -248,7 +260,7 @@ _sweep_bot_outdated() {
             selected: .selected,
             skipped: .skipped
         }
-    ' "$classified_file")"; then
+    ' "$classified_file")" || [[ -z "$summary" ]]; then
         rm -rf "$work"
         echo "ERROR: failed to render sweep selection for PR #$PR" >&2
         exit 2
