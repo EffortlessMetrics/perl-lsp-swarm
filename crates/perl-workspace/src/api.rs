@@ -17,10 +17,12 @@
 //!
 //! ```rust
 //! use perl_workspace::api::{
-//!     discover_perl_files, extract_workspace_folder_uris, is_skipped_dir_name,
+//!     admit_workspace_folder_uris, discover_perl_files, extract_workspace_folder_uris,
+//!     is_skipped_dir_name,
 //! };
 //!
 //! let _folders = extract_workspace_folder_uris(&[]);
+//! let _admitted = admit_workspace_folder_uris(&[]);
 //! let _is_noise = is_skipped_dir_name("target");
 //! let _result = discover_perl_files(std::path::Path::new("."));
 //! ```
@@ -34,8 +36,10 @@ pub use crate::discovery::{
 
 // Folder public API
 pub use crate::folder::{
-    WorkspaceFolderChange, extract_workspace_folder_change, extract_workspace_folder_uris,
-    root_path_to_file_uri, workspace_folder_to_path,
+    WorkspaceFolderAdmission, WorkspaceFolderChange, WorkspaceFolderRejection,
+    WorkspaceFolderRejectionKind, admit_workspace_folder_uris, classify_workspace_folder_entry,
+    extract_workspace_folder_change, extract_workspace_folder_uris, root_path_to_file_uri,
+    workspace_folder_to_path,
 };
 
 // Ignore public API
