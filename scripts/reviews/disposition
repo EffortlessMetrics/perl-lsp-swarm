@@ -134,10 +134,16 @@ fi
 # author __typename == Bot. Fail closed on unrecognized shapes.
 _sweep_classify() {
     jq -c '
+        # Match scripts/reviews/threads page validation: a nodes array with
+        # top-level GraphQL errors is an incomplete result, not a sweep input.
+        def graphql_errors_ok:
+            (has("errors") | not) or .errors == [];
         def items:
             if type == "array" then .
             elif type == "object" then
-                if (.threads | type) == "array" then .threads
+                if graphql_errors_ok | not then
+                    error("GraphQL errors in thread payload")
+                elif (.threads | type) == "array" then .threads
                 elif (.data.repository.pullRequest.reviewThreads.nodes | type) == "array" then
                     .data.repository.pullRequest.reviewThreads.nodes
                 else error("unrecognized thread payload")

@@ -815,8 +815,12 @@ fn sweep_selects_unresolved_bot_outdated_only() -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let threads = fs::read_to_string(root.join("scripts/reviews/threads"))?;
     assert!(
-        threads.contains("__typename"),
+        threads.contains("author { __typename login }"),
         "scripts/reviews/threads must request author __typename so Bot selection is not a login heuristic"
+    );
+    assert!(
+        threads.contains("author_typename:"),
+        "scripts/reviews/threads must project author_typename; a GraphQL __typename query alone does not expose the field the sweep selects on"
     );
 
     for payload in [sweep_graphql_fixture(), sweep_threads_json_fixture()] {
@@ -1127,6 +1131,64 @@ fn sweep_live_threads_json_requires_matching_pr() -> Result<(), Box<dyn Error>> 
         !unbound_calls.contains("resolveReviewThread"),
         "unbound payload must not mutate; log={unbound_calls}"
     );
+
+    Ok(())
+}
+
+/// Recorded GraphQL payloads with top-level `errors` are incomplete; do not
+/// select or mutate from a partial nodes array.
+#[cfg(unix)]
+#[test]
+fn sweep_rejects_graphql_payloads_with_errors() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+
+    let mut nonempty = sweep_graphql_fixture();
+    nonempty["errors"] = serde_json::json!([{"message": "partial page"}]);
+    let (dry, dry_calls) = run_sweep(&root, &nonempty, &["--dry-run"], true)?;
+    assert!(
+        !dry.status.success(),
+        "nonempty GraphQL errors must fail closed: {}",
+        output_text(&dry)
+    );
+    let dry_text = output_text(&dry);
+    assert!(
+        dry_text.contains("failed to classify") || dry_text.contains("GraphQL errors"),
+        "expected a classify/errors refusal: {dry_text}"
+    );
+    assert!(dry_calls.trim().is_empty(), "errors payload must not invoke gh: {dry_calls}");
+
+    let mut malformed = sweep_graphql_fixture();
+    malformed["errors"] = serde_json::json!("not-an-array");
+    let (bad, bad_calls) = run_sweep(&root, &malformed, &["--dry-run"], true)?;
+    assert!(
+        !bad.status.success(),
+        "malformed GraphQL errors must fail closed: {}",
+        output_text(&bad)
+    );
+    assert!(bad_calls.trim().is_empty(), "malformed errors must not invoke gh: {bad_calls}");
+
+    let (live, live_calls) = run_sweep(&root, &nonempty, &[], false)?;
+    assert!(
+        !live.status.success(),
+        "live sweep must refuse a GraphQL errors payload: {}",
+        output_text(&live)
+    );
+    assert!(
+        !live_calls.contains("addPullRequestReviewThreadReply")
+            && !live_calls.contains("resolveReviewThread"),
+        "errors payload must not mutate; log={live_calls}"
+    );
+
+    let mut empty = sweep_graphql_fixture();
+    empty["errors"] = serde_json::json!([]);
+    let (ok, ok_calls) = run_sweep(&root, &empty, &["--dry-run"], true)?;
+    assert!(
+        ok.status.success(),
+        "empty GraphQL errors array is a complete payload: {}",
+        output_text(&ok)
+    );
+    assert!(ok_calls.trim().is_empty(), "empty-errors dry-run invoked gh: {ok_calls}");
+    assert_selection_matrix(&first_json_line(&output_text(&ok))?)?;
 
     Ok(())
 }
