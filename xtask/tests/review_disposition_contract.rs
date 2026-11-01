@@ -722,9 +722,19 @@ fn run_sweep(
     extra: &[&str],
     poison_gh: bool,
 ) -> Result<(Output, String), Box<dyn Error>> {
+    run_sweep_bytes(root, &serde_json::to_vec_pretty(payload)?, extra, poison_gh)
+}
+
+#[cfg(unix)]
+fn run_sweep_bytes(
+    root: &Path,
+    payload: &[u8],
+    extra: &[&str],
+    poison_gh: bool,
+) -> Result<(Output, String), Box<dyn Error>> {
     let temp = tempfile::tempdir()?;
     let payload_path = temp.path().join("threads.json");
-    fs::write(&payload_path, serde_json::to_vec_pretty(payload)?)?;
+    fs::write(&payload_path, payload)?;
 
     let log = temp.path().join("gh.log");
     fs::write(&log, "")?;
@@ -1229,6 +1239,56 @@ fn sweep_rejects_empty_payload_but_accepts_empty_thread_list() -> Result<(), Box
     let summary = first_json_line(&output_text(&ok))?;
     assert_eq!(summary.pointer("/selected").and_then(Value::as_array).map(Vec::len), Some(0));
     assert_eq!(summary.pointer("/skipped").and_then(Value::as_array).map(Vec::len), Some(0));
+
+    Ok(())
+}
+
+/// Concatenated JSON values and selected rows without an id must fail closed
+/// rather than silently skipping or sweeping unintended thread IDs.
+#[cfg(unix)]
+#[test]
+fn sweep_rejects_concatenated_payloads_and_missing_ids() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let one = serde_json::to_vec(&sweep_threads_json_fixture())?;
+    let mut concatenated = one.clone();
+    concatenated.push(b'\n');
+    concatenated.extend_from_slice(&one);
+
+    let (dup, dup_calls) = run_sweep_bytes(&root, &concatenated, &["--dry-run"], true)?;
+    assert!(
+        !dup.status.success(),
+        "concatenated JSON payloads must fail closed: {}",
+        output_text(&dup)
+    );
+    assert!(
+        output_text(&dup).contains("failed to classify"),
+        "expected a classify refusal for multiple JSON values: {}",
+        output_text(&dup)
+    );
+    assert!(dup_calls.trim().is_empty(), "concatenated payload must not invoke gh: {dup_calls}");
+
+    let missing_id = serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
+        "threads": [{
+            "isResolved": false,
+            "isOutdated": true,
+            "author": "coderabbitai",
+            "author_typename": "Bot"
+        }]
+    });
+    let (noid, noid_calls) = run_sweep(&root, &missing_id, &["--dry-run"], true)?;
+    assert!(
+        !noid.status.success(),
+        "selected thread without id must fail closed: {}",
+        output_text(&noid)
+    );
+    assert!(
+        output_text(&noid).contains("failed to classify"),
+        "expected a classify refusal for a missing id: {}",
+        output_text(&noid)
+    );
+    assert!(noid_calls.trim().is_empty(), "missing-id payload must not invoke gh: {noid_calls}");
 
     Ok(())
 }

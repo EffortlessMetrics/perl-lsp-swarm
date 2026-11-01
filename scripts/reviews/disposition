@@ -237,13 +237,21 @@ _sweep_bot_outdated() {
         echo "ERROR: failed to classify sweep payload for PR #$PR" >&2
         exit 2
     fi
-    # jq succeeds with empty stdin; an empty classified document is not a
-    # zero-thread sweep ({selected:[],skipped:[]}) and must not print a blank
-    # success line.
-    if ! jq -e '
-        type == "object"
-        and (.selected | type) == "array"
-        and (.skipped | type) == "array"
+    # jq succeeds with empty stdin and streams one result per input value.
+    # Require exactly one classified document whose selected/skipped rows
+    # all carry a non-empty string id. Empty arrays remain a valid zero.
+    if ! jq -s -e '
+        length == 1
+        and (.[0] |
+            type == "object"
+            and (.selected | type) == "array"
+            and (.skipped | type) == "array"
+            and all((.selected + .skipped)[];
+                type == "object"
+                and ((.id | type) == "string")
+                and ((.id | length) > 0)
+            )
+        )
     ' "$classified_file" >/dev/null; then
         rm -rf "$work"
         echo "ERROR: failed to classify sweep payload for PR #$PR" >&2
@@ -251,8 +259,8 @@ _sweep_bot_outdated() {
     fi
     # Keep the classified document off argv: large PRs already blew --argjson
     # in scripts/reviews/threads (#6178).
-    if ! summary="$(jq -e -c --arg pr "$PR" --arg head "$HEAD" --argjson dry "$DRY_RUN" '
-        {
+    if ! summary="$(jq -s -e -c --arg pr "$PR" --arg head "$HEAD" --argjson dry "$DRY_RUN" '
+        .[0] | {
             mode: "sweep-bot-outdated",
             pr: (try ($pr | tonumber) catch $pr),
             head: $head,
@@ -267,7 +275,7 @@ _sweep_bot_outdated() {
     fi
     printf '%s\n' "$summary"
 
-    mapfile -t ids < <(jq -r '.selected[].id // empty' "$classified_file")
+    mapfile -t ids < <(jq -s -r '.[0].selected[].id' "$classified_file")
     rm -rf "$work"
     reply="$(printf '%s\n' \
         "Disposition: superseded" \
