@@ -800,12 +800,12 @@ mod tests {
     }
 
     #[test]
-    fn substring_assertions_use_full_text_past_the_render_bound() {
+    fn substring_assertions_use_full_text_past_the_render_bound() -> Result<(), String> {
         let prefix = "a".repeat(HOVER_RENDERED_TEXT_BOUND);
         let observation = observe_hover_response(&markup(&format!("{prefix}NEEDLE")));
         let content = match &observation {
             HoverObservation::Content(content) => content,
-            other => panic!("expected content, got {other:?}"),
+            other => return Err(format!("expected content, got {other:?}")),
         };
         assert!(content.rendered_text.ends_with('…'));
         assert!(!content.rendered_text.contains("NEEDLE"));
@@ -823,6 +823,7 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
     }
 
     #[test]

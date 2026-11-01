@@ -38,6 +38,7 @@ tracing.workspace = true
 toml = "1.1.2"
 
 [dev-dependencies]
+perl-test-must = { workspace = true }
 proptest.workspace = true
 perl-tdd-support = { workspace = true }
 tempfile.workspace = true
