@@ -56,7 +56,9 @@ fn resolve_scope_analysis_owned<'a>(
     }
 }
 
-/// Native rule that requires a file-level `use strict;` pragma.
+/// Native rule that requires a parsed `use strict` import in the file.
+///
+/// This is an import-presence policy, not proof of lexical pragma coverage.
 ///
 /// This is the first built-in rule expressed through the native critic
 /// contract. It deliberately does not replace the existing legacy built-in
@@ -78,7 +80,7 @@ impl CriticRule for RequireUseStrictRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        if has_use_statement(ctx.source, "strict") || test2_provides_pragma(ctx.source, "strict") {
+        if has_use_statement(ctx.ast, "strict") || test2_provides_pragma(ctx.source, "strict") {
             return;
         }
 
@@ -102,7 +104,9 @@ impl CriticRule for RequireUseStrictRule {
     }
 }
 
-/// Native rule that requires a file-level `use warnings;` pragma.
+/// Native rule that requires a parsed `use warnings` import in the file.
+///
+/// Like the strict rule, this does not prove lexical pragma coverage.
 ///
 /// Like [`RequireUseStrictRule`], this is exposed through the native critic
 /// contract without replacing the existing legacy built-in analyzer yet.
@@ -122,9 +126,7 @@ impl CriticRule for RequireUseWarningsRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        if has_use_statement(ctx.source, "warnings")
-            || test2_provides_pragma(ctx.source, "warnings")
-        {
+        if has_use_statement(ctx.ast, "warnings") || test2_provides_pragma(ctx.source, "warnings") {
             return;
         }
 
@@ -2505,8 +2507,13 @@ fn split_sigil(name: &str) -> (&str, &str) {
     (&name[..sigil_len], bare)
 }
 
-fn has_use_statement(content: &str, feature: &str) -> bool {
-    content.lines().any(|line| has_use_statement_line(line, feature))
+/// Use the accepted parse, so documentation and literal payload cannot act
+/// as imports. Preserve the existing coarse file-presence policy: an import
+/// in a nested scope still counts; effective lexical state belongs to the
+/// canonical pragma-fact migration (#6981).
+fn has_use_statement(ast: &Node, feature: &str) -> bool {
+    matches!(&ast.kind, NodeKind::Use { module, .. } if module == feature)
+        || ast.children().into_iter().any(|child| has_use_statement(child, feature))
 }
 
 /// Whether a Test2 bundle in `content` provides the named pragma
@@ -2515,21 +2522,6 @@ fn has_use_statement(content: &str, feature: &str) -> bool {
 /// ordinary Test2 test must not trip the require-use-strict/warnings rules.
 fn test2_provides_pragma(content: &str, feature: &str) -> bool {
     crate::providers::testing::test2::Test2Facts::from_source(content).provides_pragma(feature)
-}
-
-fn has_use_statement_line(line: &str, feature: &str) -> bool {
-    let code_portion = line.split('#').next().unwrap_or_default();
-    let mut tokens = code_portion.split_whitespace();
-    let Some(first) = tokens.next() else {
-        return false;
-    };
-    if first != "use" {
-        return false;
-    }
-    let Some(module) = tokens.next() else {
-        return false;
-    };
-    module.trim_end_matches(';') == feature
 }
 
 fn missing_pod_sections(source: &str) -> Vec<MissingPodSection> {
@@ -3341,6 +3333,71 @@ mod tests {
         assert_eq!(NativeCriticProfile::parse("unknown"), None);
     }
 
+    fn require_pragma_findings(source: &str) -> Vec<String> {
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        NativeCriticRegistry::with_rules(vec![
+            Box::new(RequireUseStrictRule),
+            Box::new(RequireUseWarningsRule),
+        ])
+        .check(&ctx)
+        .into_iter()
+        .map(|finding| finding.rule_id)
+        .collect()
+    }
+
+    fn assert_missing_pragmas(source: &str) {
+        assert_eq!(
+            require_pragma_findings(source),
+            ["native.testing.require_use_strict", "native.testing.require_use_warnings"],
+            "payload must not establish a pragma: {source:?}"
+        );
+    }
+
+    #[test]
+    fn native_require_use_ignores_heredoc_payload() {
+        assert_missing_pragmas(
+            "my $example = <<'END';\nuse strict;\nuse warnings;\nEND\nprint $example;\n",
+        );
+    }
+
+    #[test]
+    fn native_require_use_ignores_quoted_payload() {
+        assert_missing_pragmas("my $example = qq{\nuse strict;\nuse warnings;\n};\n");
+    }
+
+    #[test]
+    fn native_require_use_preserves_nested_import_presence_policy() {
+        assert!(
+            require_pragma_findings("{\nuse strict;\nuse warnings;\n}\nmy $x = 1;\n").is_empty()
+        );
+    }
+
+    #[test]
+    fn native_require_use_ignores_pod_payload() {
+        assert_missing_pragmas("=pod\nuse strict;\nuse warnings;\n=cut\nmy $x = 1;\n");
+    }
+
+    #[test]
+    fn native_require_use_ignores_data_payload() {
+        for marker in ["__DATA__", "__END__"] {
+            assert_missing_pragmas(&format!("my $x = 1;\n{marker}\nuse strict;\nuse warnings;\n"));
+        }
+    }
+
+    #[test]
+    fn native_require_use_accepts_real_imports_around_payload() {
+        for source in [
+            "use strict; use warnings;\nmy $example = <<'END';\nuse strictures;\nEND\n",
+            "my $example = <<'END';\nuse strictures;\nEND\nuse strict;\nuse warnings;\n",
+            "=pod\nuse strictures;\n=cut\nuse strict;\nuse warnings;\n",
+            "use strict;\nuse warnings;\n__DATA__\nuse strictures;\n",
+        ] {
+            assert!(require_pragma_findings(source).is_empty(), "real imports: {source:?}");
+        }
+    }
+
     #[test]
     fn native_require_use_strict_rule_emits_safe_fix_when_missing() {
         let ast = empty_program_node();
@@ -3368,16 +3425,17 @@ mod tests {
 
     #[test]
     fn native_require_use_strict_rule_accepts_exact_pragma_only() {
-        let ast = empty_program_node();
         let config = CriticConfig::default();
-        let exact_ctx = CriticContext::new("use strict;\nmy $x = 1;\n", &ast, &config);
-        let similar_ctx = CriticContext::new("use strictures;\nmy $x = 1;\n", &ast, &config);
-        let commented_ctx = CriticContext::new("# use strict;\nmy $x = 1;\n", &ast, &config);
         let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequireUseStrictRule)]);
-
-        assert!(registry.check(&exact_ctx).is_empty());
-        assert_eq!(registry.check(&similar_ctx).len(), 1);
-        assert_eq!(registry.check(&commented_ctx).len(), 1);
+        for (source, expected_count) in [
+            ("use strict;\nmy $x = 1;\n", 0),
+            ("use strictures;\nmy $x = 1;\n", 1),
+            ("# use strict;\nmy $x = 1;\n", 1),
+        ] {
+            let ast = parse_source(source);
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert_eq!(registry.check(&ctx).len(), expected_count, "{source:?}");
+        }
     }
 
     #[test]
@@ -3446,16 +3504,17 @@ mod tests {
 
     #[test]
     fn native_require_use_warnings_rule_accepts_exact_pragma_only() {
-        let ast = empty_program_node();
         let config = CriticConfig::default();
-        let exact_ctx = CriticContext::new("use warnings;\nmy $x = 1;\n", &ast, &config);
-        let similar_ctx = CriticContext::new("use warningsx;\nmy $x = 1;\n", &ast, &config);
-        let commented_ctx = CriticContext::new("# use warnings;\nmy $x = 1;\n", &ast, &config);
         let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequireUseWarningsRule)]);
-
-        assert!(registry.check(&exact_ctx).is_empty());
-        assert_eq!(registry.check(&similar_ctx).len(), 1);
-        assert_eq!(registry.check(&commented_ctx).len(), 1);
+        for (source, expected_count) in [
+            ("use warnings;\nmy $x = 1;\n", 0),
+            ("use warningsx;\nmy $x = 1;\n", 1),
+            ("# use warnings;\nmy $x = 1;\n", 1),
+        ] {
+            let ast = parse_source(source);
+            let ctx = CriticContext::new(source, &ast, &config);
+            assert_eq!(registry.check(&ctx).len(), expected_count, "{source:?}");
+        }
     }
 
     #[test]
