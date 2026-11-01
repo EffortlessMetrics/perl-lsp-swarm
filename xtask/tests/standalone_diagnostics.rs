@@ -800,6 +800,31 @@ fn rejects_a_widened_input_contract_the_registry_does_not_cover() -> TestResult 
 }
 
 #[test]
+fn rejects_a_widened_route_mode_the_projection_does_not_render() -> TestResult {
+    // `read_packet` admits whatever the input schema's `route_mode` enum
+    // allows. `project_combination` still rejects anything outside
+    // `ROUTE_MODES`. If the schema widens first, admission succeeds and
+    // projection then fails — unless this agreement check fails the
+    // manifest gate first.
+    let root = staged_root("widened-route-mode")?;
+    let schema_path = root.join(diagnostics::INPUT_SCHEMA_PATH);
+    let mut schema: Value = serde_json::from_slice(&std::fs::read(&schema_path)?)?;
+    schema["properties"]["route_mode"]["enum"]
+        .as_array_mut()
+        .ok_or("route_mode enum missing")?
+        .push(json!("first_party_cmd"));
+    std::fs::write(&schema_path, format!("{}\n", serde_json::to_string_pretty(&schema)?))?;
+
+    let error = validation_error(diagnostics::validate_manifest_file(&root));
+    std::fs::remove_dir_all(&root).ok();
+    assert!(
+        error.contains("`route_mode` domain drifted"),
+        "a widened route_mode contract must fail the registry, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn rejects_a_non_canonical_registry_file() -> TestResult {
     let root = staged_root("noncanonical")?;
     let manifest_path = root.join(MANIFEST_PATH);
@@ -1684,9 +1709,9 @@ fn a_top_level_non_string_typed_field_is_not_reported_as_missing() -> TestResult
 }
 
 #[test]
-fn an_absent_typed_field_is_still_reported_as_missing() -> TestResult {
-    // Negative control: the missing-key message must survive for genuinely
-    // absent keys, which is the case the ill-shaped arm could have swallowed.
+fn an_absent_typed_field_is_rejected_by_the_input_schema() -> TestResult {
+    // Negative control: a genuinely absent required key still fails admission.
+    // The schema-derived message names the field; it need not say "missing".
     let mut subject = valid_packet();
     subject
         .as_object_mut()
@@ -1868,7 +1893,7 @@ fn a_present_but_non_object_outcome_dimensions_is_not_reported_as_missing() -> T
     let error = admission_error(&subject);
     assert_input_schema_rejection(&error, "outcome_dimensions");
     assert!(
-        error.contains("not of type") || error.contains("null"),
+        error.contains("not of type"),
         "expected an ill-shaped-container diagnostic, got:\n{error}"
     );
     assert!(
@@ -1879,7 +1904,7 @@ fn a_present_but_non_object_outcome_dimensions_is_not_reported_as_missing() -> T
 }
 
 #[test]
-fn an_absent_outcome_dimensions_is_still_reported_as_missing() -> TestResult {
+fn an_absent_outcome_dimensions_is_rejected_by_the_input_schema() -> TestResult {
     let mut subject = valid_packet();
     subject
         .as_object_mut()

@@ -497,6 +497,7 @@ fn validate_input_schema_agreement(root: &Path, violations: &mut Vec<String>) ->
     let schema = parse_json(&bytes, INPUT_SCHEMA_PATH)?;
 
     let properties = schema.get("properties");
+    compare_enum(properties, &["route_mode"], ROUTE_MODES, "route_mode", violations);
     compare_enum(properties, &["operation"], OPERATIONS, "operation", violations);
     compare_enum(properties, &["disposition"], DISPOSITIONS, "disposition", violations);
 
