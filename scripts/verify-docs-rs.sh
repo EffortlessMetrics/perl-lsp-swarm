@@ -80,12 +80,13 @@ PY
 }
 
 crate_list="$(derive_publishable_crates)"
-mapfile -t ALL_CRATES <<< "${crate_list}"
 
-if [[ ${#ALL_CRATES[@]} -eq 0 ]]; then
+if [[ -z "${crate_list//[[:space:]]/}" ]]; then
     echo "verify-docs-rs: REFUSED: derived publishable crate list is empty." >&2
     exit 1
 fi
+
+mapfile -t ALL_CRATES <<< "${crate_list}"
 
 if [[ "${LIST_MODE}" == "1" ]]; then
     printf '%s\n' "${ALL_CRATES[@]}"

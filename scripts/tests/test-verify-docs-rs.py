@@ -86,10 +86,10 @@ class VerifyDocsRsTests(unittest.TestCase):
 
     def test_every_listed_crate_exists_under_crates(self) -> None:
         for name in _list_from_script():
-            crate_dir = os.path.join(REPO_ROOT, "crates", name)
+            crate_manifest = os.path.join(REPO_ROOT, "crates", name, "Cargo.toml")
             self.assertTrue(
-                os.path.isdir(crate_dir),
-                f"verify-docs-rs --list names missing crate directory: {name}",
+                os.path.isfile(crate_manifest),
+                f"verify-docs-rs --list names missing crate manifest: {name}",
             )
 
 
