@@ -895,14 +895,9 @@ fn sweep_live_replies_then_resolves_only_selected_threads() -> Result<(), Box<dy
     assert!(output.status.success(), "sweep live fixture run failed: {}", output_text(&output));
 
     let reply_count = calls.matches("addPullRequestReviewThreadReply").count();
-    let resolve_count = calls
-        .lines()
-        .filter(|line| {
-            line.contains(" resolveReviewThread") || line.contains("resolveReviewThread")
-        })
-        .count();
+    let resolve_count = calls.matches("resolveReviewThread").count();
     assert_eq!(reply_count, 1, "exactly one selected thread may be replied to; log={calls}");
-    assert!(resolve_count >= 1, "selected thread must be resolved after the reply; log={calls}");
+    assert_eq!(resolve_count, 1, "exactly one selected thread may be resolved; log={calls}");
     assert!(
         calls.contains("addPullRequestReviewThreadReply"),
         "convergence requires a real reply before resolve; log={calls}"

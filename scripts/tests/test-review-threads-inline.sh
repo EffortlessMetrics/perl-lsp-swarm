@@ -272,6 +272,20 @@ test_threads_usage_error() {
     fi
 }
 
+test_threads_help_is_header_only() {
+    reset_stub
+    run_threads --help
+    if [[ "$RUN_EXIT" -eq 0 \
+        && "$RUN_OUT" == *author_typename* \
+        && "$RUN_OUT" != *die_usage* \
+        && "$RUN_OUT" != *'set -euo pipefail'* \
+        && ! -s "$GH_STUB_LOG" ]]; then
+        pass "threads --help prints the header comment only"
+    else
+        fail "threads help — exit=$RUN_EXIT out=$RUN_OUT log=$(cat "$GH_STUB_LOG")"
+    fi
+}
+
 # A crafted repo argument must fail closed before any gh call: OWNER/NAME are
 # interpolated into the GraphQL query, so quote-bearing values are rejected.
 test_threads_rejects_crafted_repo() {
@@ -825,8 +839,9 @@ It can run forever on malformed input.' Bot)" \
         > "$STUB_DIR/threads_page1.json"
     jq -n \
         --argjson c "$(thread_node PRRT_page2_outdated false true 'crates/c/src/x.rs' null 44 gemini 'This hunk moved.' Bot)" \
+        --argjson d "$(thread_node PRRT_page2_human_outdated false true 'crates/d/src/y.rs' null 55 alice 'This hunk moved too.' User)" \
         '{data:{repository:{pullRequest:{reviewThreads:{
-            nodes: [$c],
+            nodes: [$c, $d],
             pageInfo: {hasNextPage: false, endCursor: null}}}}}}' \
         > "$STUB_DIR/threads_page2.json"
     local d_exit=0 d_out summary
@@ -839,7 +854,8 @@ It can run forever on malformed input.' Bot)" \
                   and .dry_run == true
                   and .head == "feedfacedeadbeeffeedfacedeadbeeffeedface"
                   and (.selected | map(.id) == ["PRRT_page2_outdated"])
-                  and (.skipped | map(select(.id == "PRRT_page1_active") | .reason) == ["not-outdated"])' \
+                  and (.skipped | map(select(.id == "PRRT_page1_active") | .reason) == ["not-outdated"])
+                  and (.skipped | map(select(.id == "PRRT_page2_human_outdated") | .reason) == ["not-bot"])' \
              >/dev/null <<<"$summary" \
         && grep -q 'disposition:v1' <<<"$d_out" \
         && grep -q 'Disposition: superseded' <<<"$d_out" \
@@ -872,6 +888,7 @@ test_threads_json_shape
 test_threads_id_feeds_disposition
 test_threads_human_output_is_actionable
 test_threads_usage_error
+test_threads_help_is_header_only
 test_threads_rejects_crafted_repo
 test_threads_is_read_only
 test_threads_refuses_truncation
