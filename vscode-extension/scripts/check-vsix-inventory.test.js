@@ -13,6 +13,7 @@ const {
   compareInventory,
   currentSourceBundleFile,
   currentSourceBundleFiles,
+  formatViolations,
   parseArgs,
   platformForPackagedFile,
   summarizeInventory,
@@ -54,6 +55,42 @@ void test('rejects package growth and inventory drift', () => {
     'new packaged file: new.js',
     'baseline packaged file is missing: old.js',
   ]);
+});
+
+/**
+ * A red packaging step must say *which* file exceeded *which* baseline, not
+ * only that something failed. These assertions are the content contract the
+ * #16570 origin investigation lacked.
+ */
+void test('an over-sized packaged file names the file, its baseline, and its actual size', () => {
+  const violations = compareInventory(
+    { total_files: 1, total_bytes: 27000, files: { 'readme.md': 27000 } },
+    { total_files: 1, total_bytes: 26678, files: { 'readme.md': 26678 } },
+  );
+
+  const rendered = formatViolations(violations);
+  assert.match(rendered, /readme\.md/);
+  assert.match(rendered, /26678/);
+  assert.match(rendered, /27000/);
+  // Every violation keeps its own line, so one bad file cannot hide another.
+  assert.equal(
+    rendered.split('\n').filter((line) => line.trim().length > 0).length,
+    violations.length,
+  );
+});
+
+void test('a missing packaged file names the file rather than only that one is', () => {
+  const violations = compareInventory(
+    { total_files: 0, total_bytes: 0, files: {} },
+    { total_files: 1, total_bytes: 10, files: { 'extension/package.json': 10 } },
+  );
+
+  assert.deepEqual(violations, ['baseline packaged file is missing: extension/package.json']);
+  assert.match(formatViolations(violations), /extension\/package\.json/);
+});
+
+void test('an empty violation set renders no misleading bullet list', () => {
+  assert.equal(formatViolations([]), '');
 });
 
 void test('classifies byte-only growth separately from structural package drift', () => {

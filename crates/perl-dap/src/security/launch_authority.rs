@@ -529,50 +529,64 @@ impl LaunchAuthority {
         }
     }
 
-    /// Canonical of the first current trusted root validating `program`.
+    /// Canonical of the most specific current trusted root validating `program`.
     ///
     /// Lets the spawner align its defense-in-depth boundary with the root
     /// that actually admitted the launch, instead of a stale or preset
-    /// legacy root. Unbounded authority admits everything and names no
-    /// root, so this returns `None` for it.
+    /// legacy root. Nested or overlapping roots select the deepest canonical
+    /// match so this agrees with [`Self::narrow_launch_root`]. Unbounded
+    /// authority admits everything and names no root, so this returns `None`
+    /// for it.
     pub fn root_for_program(&self, program: &Path) -> Option<PathBuf> {
         match self.mode {
             LaunchAuthorityMode::ExplicitUnbounded => None,
             LaunchAuthorityMode::WorkspaceBound => self
-                .roots
-                .iter()
-                .find(|root| {
-                    trusted_root_is_current(root)
-                        && crate::security::validate_path(program, root.canonical()).is_ok()
-                })
+                .most_specific_current_root_validating(program)
                 .map(|root| root.canonical().to_path_buf()),
         }
     }
 
     /// Narrow a launch-args `workspaceRoot` against the authority.
     ///
-    /// Returns the validated narrowing root for workspace-bound authority.
-    /// Unbounded authority never creates a boundary from launch arguments and
-    /// returns `None`.
+    /// Returns the most specific current trusted root under which `requested`
+    /// validates. Unbounded authority never creates a boundary from launch
+    /// arguments and returns `None`.
     pub fn narrow_launch_root(&self, requested: &Path) -> Result<Option<PathBuf>, String> {
         match self.mode {
             LaunchAuthorityMode::ExplicitUnbounded => Ok(None),
             LaunchAuthorityMode::WorkspaceBound => {
-                for root in &self.roots {
-                    if !trusted_root_is_current(root) {
-                        continue;
-                    }
-                    if let Ok(narrowed) =
-                        crate::security::validate_path(requested, root.canonical())
-                    {
-                        return Ok(Some(narrowed));
-                    }
+                match self.most_specific_current_root_validating(requested) {
+                    Some(root) => Ok(Some(root.canonical().to_path_buf())),
+                    None => Err(
+                        "the launch 'workspaceRoot' is outside every trusted root configured at \
+                         startup and cannot create or widen authority"
+                            .to_string(),
+                    ),
                 }
-                Err("the launch 'workspaceRoot' is outside every trusted root configured at \
-                     startup and cannot create or widen authority"
-                    .to_string())
             }
         }
+    }
+
+    /// Current trusted root that validates `path`, preferring the deepest
+    /// canonical directory when several nested or overlapping roots match.
+    ///
+    /// Identity-sorted storage is not a preference: the first validating root
+    /// can be an outer parent of a more specific owner. Depth is the owner
+    /// proxy that does not require a program-aware caller signature.
+    fn most_specific_current_root_validating(&self, path: &Path) -> Option<&TrustedRoot> {
+        self.roots
+            .iter()
+            .filter(|root| {
+                trusted_root_is_current(root)
+                    && crate::security::validate_path(path, root.canonical()).is_ok()
+            })
+            .max_by(|left, right| {
+                left.canonical()
+                    .components()
+                    .count()
+                    .cmp(&right.canonical().components().count())
+                    .then_with(|| left.canonical().cmp(right.canonical()))
+            })
     }
 
     /// Bounded receipt for the current session (never private absolute paths).
@@ -942,6 +956,83 @@ mod tests {
         let anywhere = std::env::temp_dir().join("anywhere.pl");
         assert!(authority.admits_launch_path(&anywhere).is_ok());
         assert_eq!(authority.narrow_launch_root(&anywhere).expect("narrow"), None);
+        assert_eq!(authority.root_for_program(&anywhere), None);
+    }
+
+    #[test]
+    fn nested_roots_select_most_specific_regardless_of_order() {
+        // Identity sort can put the outer root first. First-match would then
+        // return /ws for a path under /ws/sub; most-specific must still pick
+        // the inner owner, and both seams must agree.
+        let mut saw_outer_first = false;
+        let mut saw_inner_first = false;
+        for attempt in 0..24 {
+            let ws = make_root(&format!("nested-ws-{attempt}"));
+            let sub = ws.join("sub");
+            std::fs::create_dir_all(&sub).expect("nested sub root");
+            let requested = sub.join("x");
+            std::fs::create_dir_all(&requested).expect("requested nested path");
+            let program = requested.join("app.pl");
+            std::fs::write(&program, b"print 1;").expect("nested program");
+            let only_outer = ws.join("sibling");
+            std::fs::create_dir_all(&only_outer).expect("outer-only path");
+            let outside = make_root(&format!("nested-outside-{attempt}"));
+
+            let roots = if attempt % 2 == 0 {
+                vec![ws.clone(), sub.clone()]
+            } else {
+                vec![sub.clone(), ws.clone()]
+            };
+            let startup = LaunchAuthorityStartup { trusted_roots: roots, allow_unbounded: None };
+            let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+            let expected_inner = std::fs::canonicalize(&sub).expect("canonical inner root");
+            let expected_outer = std::fs::canonicalize(&ws).expect("canonical outer root");
+            let first_is_outer = authority
+                .trusted_roots()
+                .first()
+                .is_some_and(|root| root.canonical() == expected_outer.as_path());
+            if first_is_outer {
+                saw_outer_first = true;
+            } else {
+                saw_inner_first = true;
+            }
+
+            assert_eq!(
+                authority.narrow_launch_root(&requested).expect("nested narrow"),
+                Some(expected_inner.clone()),
+                "narrow_launch_root must pick /ws/sub for requested /ws/sub/x (attempt {attempt})"
+            );
+            assert_eq!(
+                authority.root_for_program(&program),
+                Some(expected_inner),
+                "root_for_program must agree on the inner owner (attempt {attempt})"
+            );
+            assert_eq!(
+                authority.narrow_launch_root(&only_outer).expect("outer-only narrow"),
+                Some(expected_outer.clone()),
+                "a path outside the inner root still selects the outer root (attempt {attempt})"
+            );
+            assert_eq!(
+                authority.root_for_program(&only_outer),
+                Some(expected_outer),
+                "root_for_program must agree on the outer-only path (attempt {attempt})"
+            );
+            assert!(
+                authority.narrow_launch_root(&outside).is_err(),
+                "outside every nested root must still err (attempt {attempt})"
+            );
+            assert_eq!(authority.root_for_program(&outside), None);
+
+            cleanup(&ws);
+            cleanup(&outside);
+            if saw_outer_first && saw_inner_first {
+                break;
+            }
+        }
+        assert!(
+            saw_outer_first && saw_inner_first,
+            "need both identity-sort orders so first-match cannot hide behind a lucky inner-first sort"
+        );
     }
 
     #[test]

@@ -102,7 +102,26 @@ CWD="$(pwd -P)"
 
 if [[ -n "$MAIN_REPO" && "$CWD" = "$MAIN_REPO" ]]; then
     err "cwd is the main repo root ($MAIN_REPO). Agents must run from their worktree."
-    echo "    Fix: cd \$(git worktree list | grep \$(git branch --show-current) | awk '{print \$1}')"
+    RECOVERY_WT=""
+    while IFS= read -r wt_line || [[ -n "$wt_line" ]]; do
+        if [[ "$wt_line" == worktree\ * ]]; then
+            wt_candidate="${wt_line#worktree }"
+            wt_resolved=""
+            if wt_resolved="$(cd "$wt_candidate" 2>/dev/null && pwd -P)"; then
+                if [[ "$wt_resolved" != "$MAIN_REPO" ]]; then
+                    RECOVERY_WT="$wt_resolved"
+                    break
+                fi
+            fi
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null || true)
+    if [[ -n "$RECOVERY_WT" ]]; then
+        echo "    Fix: run git worktree list --porcelain, pick an isolated worktree other than the main checkout, then:"
+        echo "    cd \"$RECOVERY_WT\""
+    else
+        echo "    Fix: Spawn agent with isolation: worktree in the agent definition"
+        echo "    The main checkout is: $GIT_COMMON_DIR"
+    fi
     CWD_OK=false
 else
     ok "cwd is not the main repo root"
