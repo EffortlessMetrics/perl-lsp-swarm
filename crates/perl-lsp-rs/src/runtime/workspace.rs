@@ -1495,6 +1495,15 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Gate unadvertised feature (#18464): resolve only enriches items
+        // returned by the parent workspace/symbol request, so it must refuse
+        // with the same method-not-advertised error whenever the parent
+        // workspaceSymbolProvider is not advertised (e.g. after
+        // `disabledFeatures: ["lsp.workspace_symbol"]`).
+        if !self.advertised_features.lock().workspace_symbol {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
         let params = params.ok_or_else(|| {
             crate::protocol::invalid_params(
                 "workspace/symbol/resolve: missing required parameter 'params'",
