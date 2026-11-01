@@ -22,6 +22,10 @@ impl<'a> Parser<'a> {
                 break; // Stop parsing but preserve earlier nodes
             }
 
+            if self.consume_deferred_orphan_closer()? {
+                continue;
+            }
+
             // Parse statement with error recovery
             let stmt_result = self.parse_statement();
             match stmt_result {
@@ -1958,6 +1962,10 @@ impl<'a> Parser<'a> {
             while s.peek_kind() != Some(TokenKind::RightBrace) && !s.tokens.is_eof() {
                 s.check_cancelled()?;
 
+                if s.consume_deferred_orphan_closer()? {
+                    continue;
+                }
+
                 // Parse statement with error recovery (AC3: Panic Mode Recovery inside blocks)
                 let stmt_result = s.parse_statement();
                 match stmt_result {
@@ -2030,6 +2038,15 @@ impl<'a> Parser<'a> {
 
             // Handle unclosed block at EOF: emit error but return partial block
             if s.peek_kind() == Some(TokenKind::RightBrace) {
+                // This brace may be the real closer deferred from an
+                // unterminated quote-like frame inside the block.
+                if let Some(position) = s
+                    .deferred_orphan_closers
+                    .iter()
+                    .rposition(|&pending| pending == TokenKind::RightBrace)
+                {
+                    s.deferred_orphan_closers.remove(position);
+                }
                 s.expect(TokenKind::RightBrace)?;
             } else {
                 // Missing closing brace (EOF or recovery break). Anchor the
