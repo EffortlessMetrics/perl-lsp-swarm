@@ -27,6 +27,28 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 
+/// A method-name text query carries no receiver/package identity. Restrict it
+/// to the actual method token: argument words can have the same spelling.
+#[cfg(feature = "workspace")]
+fn method_text_name_at_cursor<'a>(
+    ast: &perl_parser::ast::Node,
+    source: &'a str,
+    offset: usize,
+) -> Option<&'a str> {
+    let node = crate::declaration::find_node_at_offset(ast, offset)?;
+    let perl_parser::ast::NodeKind::MethodCall { object, method, .. } = &node.kind else {
+        return None;
+    };
+    let tail = source.get(object.location.end..node.location.end)?;
+    let after_arrow = tail.trim_start().strip_prefix("->")?;
+    let name_and_args = after_arrow.trim_start();
+    let start = node.location.end.checked_sub(name_and_args.len())?;
+    let end = start.checked_add(method.len())?;
+    source.get(start..end).filter(|name| {
+        !name.is_empty() && *name == method.as_str() && offset >= start && offset <= end
+    })
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
@@ -983,6 +1005,58 @@ impl LspServer {
                         match access_mode {
                             IndexAccessMode::Full(coordinator) => {
                                 let index = coordinator.index();
+                                // Unknown receivers deliberately have no symbol key (#18122).
+                                // Keep bounded name-based candidates without inventing an
+                                // identity for find_refs/find_def or the semantic tier.
+                                if workspace_symbol_key.is_none()
+                                    && parsed
+                                        .as_ref()
+                                        .is_some_and(|parsed| parsed.parse_errors().is_empty())
+                                    && let Some(method_name) =
+                                        method_text_name_at_cursor(ast, &doc.text, offset)
+                                {
+                                    let docs_snapshot = self.bounded_open_document_snapshot(
+                                        uri,
+                                        &doc.text,
+                                        &fallback_budget,
+                                        &mut fallback_receipt,
+                                        typed_request_id.as_ref(),
+                                    )?;
+                                    let locations = if start.elapsed() >= deadline {
+                                        fallback_receipt.deadline_exhausted = true;
+                                        fallback_receipt.fallback_completeness = "partial";
+                                        fallback_receipt.fallback_reason = Some(
+                                            "reference_scan_deadline_before_text_search".to_owned(),
+                                        );
+                                        Vec::new()
+                                    } else {
+                                        self.search_open_document_references(
+                                            &docs_snapshot,
+                                            TextReferenceQuery {
+                                                needle: method_name,
+                                                package: None,
+                                                sigil: None,
+                                                include_declaration,
+                                            },
+                                            cap,
+                                        )
+                                    };
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
+                                    let text_count = locations.len();
+                                    return Ok((
+                                        Some(Value::Array(locations)),
+                                        ReferencesAnsweringTier::WorkspaceText,
+                                        index_state,
+                                        0,
+                                        text_count,
+                                        start.elapsed().as_micros(),
+                                        source_backed_attempt.clone(),
+                                        fallback_receipt.clone(),
+                                    ));
+                                }
                                 if let Some(symbol_key) = workspace_symbol_key.as_ref() {
                                     // Guard: sigil-prefixed lexical variables may use the semantic
                                     // source-backed tier only for the Phase 2 P8 slice:
@@ -2421,6 +2495,36 @@ mod tests {
     use super::*;
     use crate::protocol::CONTENT_MODIFIED;
     use std::error::Error;
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn references_unknown_method_text_query_is_token_only() -> Result<(), Box<dyn Error>> {
+        let source = "$dispatch -> dispatch(dispatch => 'dispatch');";
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = parser.parse()?;
+        let method_start = source.find("-> dispatch").ok_or("missing method")? + 3;
+        if method_text_name_at_cursor(&ast, source, method_start) != Some("dispatch") {
+            return Err("method token must name the text query".into());
+        }
+        let method_end = method_start + "dispatch".len();
+        if method_text_name_at_cursor(&ast, source, method_end) != Some("dispatch") {
+            return Err("cursor immediately after method must retain its token query".into());
+        }
+        if method_text_name_at_cursor(&ast, source, method_end + 1).is_some() {
+            return Err("argument start must not inherit the preceding method token".into());
+        }
+        for (offset, _) in source.match_indices("dispatch") {
+            if offset != method_start {
+                if method_text_name_at_cursor(&ast, source, offset).is_some() {
+                    return Err(format!(
+                        "receiver, argument and string tokens must not name the method at {offset}"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
 
     // ── ReferencesAnsweringTier unit tests ─────────────────────────────────
 
