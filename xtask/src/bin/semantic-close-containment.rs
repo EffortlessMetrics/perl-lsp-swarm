@@ -21,6 +21,14 @@
 //! A pure declaration (a relation keyword and issue references only) is
 //! ignored by the rule; a declaration qualified with additional prose stays
 //! subject to it.
+//!
+//! # Locally negated closing keywords
+//!
+//! A supported negation immediately before a closing keyword in prose does
+//! not remove the relation: GitHub can still act on the keyword/reference
+//! token. CP00-NEGATED-TERMINAL diagnoses that contradiction and recommends
+//! non-closing wording. This is a same-line, adjacent-token check, not general
+//! natural-language inference; the existing relation grammar stays unchanged.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use clap::{Parser, ValueEnum};
@@ -92,6 +100,7 @@ enum ResultCode {
     FailControllerPacketMissing,
     FailPredecessorSuccessorCollapse,
     FailProofLevelContradiction,
+    FailNegatedTerminalRelation,
     NotProvenGithub,
     InstrumentFailure,
 }
@@ -106,6 +115,7 @@ impl ResultCode {
                 | Self::FailControllerPacketMissing
                 | Self::FailPredecessorSuccessorCollapse
                 | Self::FailProofLevelContradiction
+                | Self::FailNegatedTerminalRelation
         )
     }
 
@@ -132,6 +142,7 @@ impl ResultCode {
             Self::FailControllerPacketMissing => "FAIL_CONTROLLER_PACKET_MISSING",
             Self::FailPredecessorSuccessorCollapse => "FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE",
             Self::FailProofLevelContradiction => "FAIL_PROOF_LEVEL_CONTRADICTION",
+            Self::FailNegatedTerminalRelation => "FAIL_NEGATED_TERMINAL_RELATION",
             Self::NotProvenGithub => "NOT_PROVEN_GITHUB",
             Self::InstrumentFailure => "INSTRUMENT_FAILURE",
         }
@@ -146,6 +157,7 @@ enum RuleId {
     ControllerPacketMissing,
     PredecessorSuccessorCollapse,
     ProofLevelContradiction,
+    NegatedTerminal,
 }
 
 impl RuleId {
@@ -157,6 +169,7 @@ impl RuleId {
             Self::ControllerPacketMissing => "CP00-CONTROLLER-PACKET-MISSING",
             Self::PredecessorSuccessorCollapse => "CP00-PREDECESSOR-SUCCESSOR-COLLAPSE",
             Self::ProofLevelContradiction => "CP00-PROOF-LEVEL-CONTRADICTION",
+            Self::NegatedTerminal => "CP00-NEGATED-TERMINAL",
         }
     }
 
@@ -170,11 +183,12 @@ impl RuleId {
                 "CP03 proposition identity and successor-retirement evaluation"
             }
             Self::ProofLevelContradiction => "CP03 required proof-level evaluation",
+            Self::NegatedTerminal => "CP03 terminal-relation intent evaluation",
         }
     }
 
     #[cfg(test)]
-    fn all() -> [Self; 6] {
+    fn all() -> [Self; 7] {
         [
             Self::PhaseTerminal,
             Self::ExplicitlyNotProven,
@@ -182,6 +196,7 @@ impl RuleId {
             Self::ControllerPacketMissing,
             Self::PredecessorSuccessorCollapse,
             Self::ProofLevelContradiction,
+            Self::NegatedTerminal,
         ]
     }
 }
@@ -245,6 +260,7 @@ struct ClosingRelation {
     keyword: String,
     source_line: String,
     line_number: usize,
+    locally_negated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -964,6 +980,16 @@ fn evaluate_relation(
         }
     };
 
+    if rules.enabled(RuleId::NegatedTerminal) && relation.locally_negated {
+        return failed_row(
+            &relation,
+            ResultCode::FailNegatedTerminalRelation,
+            RuleId::NegatedTerminal,
+            "the closing keyword is explicitly negated in adjacent prose, but its keyword/reference token can still close the issue on GitHub; replace that token with non-closing wording",
+            suggested_refs(&relation.key, &pull.repository),
+        );
+    }
+
     let controlling = section_text(sections, &[SectionKind::ControllingIssue]);
     let claim_boundary = section_text(sections, &[SectionKind::ClaimBoundary]);
     let scoped_to_issue = relation_count == 1
@@ -1210,11 +1236,18 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
         r"(?i)\b(close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?):?\s+(?:https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[0-9]+)\b|(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[0-9]+)\b)",
     )
     .context("compiling closing-relation parser")?;
+    // Only the suffix immediately before this exact keyword may donate
+    // negation. Do not scan a sentence/window or propagate through a list.
+    let negation_re = Regex::new(
+        r"(?i)(?:^|[^\p{L}\p{N}_'’\-])(?:not|never|without|cannot|no[ \t]+longer|(?:do|does|did|wo|would|ca|could|should|must|is|are|was|were|has|have|had|need)n['’]t)[ \t]+$",
+    )
+    .context("compiling local closing-keyword negation parser")?;
     let mut relations = Vec::new();
     let mut fence: Option<Fence> = None;
     let mut in_blockquote = false;
+    let lines: Vec<&str> = body.lines().collect();
 
-    for (index, line) in body.lines().enumerate() {
+    for (index, line) in lines.iter().enumerate() {
         if line.len() > MAX_SOURCE_LINE_BYTES {
             bail!("PR body contains a line larger than the relation-parser bound");
         }
@@ -1246,10 +1279,10 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
             if relations.len() >= MAX_RELATIONS {
                 bail!("PR body exceeds the supported terminal-relation count");
             }
-            let keyword = capture
-                .get(1)
-                .map(|value| value.as_str().to_ascii_lowercase())
-                .context("closing relation omitted keyword")?;
+            let keyword_match = capture.get(1).context("closing relation omitted keyword")?;
+            let keyword = keyword_match.as_str().to_ascii_lowercase();
+            let locally_negated = negation_re.is_match(&line[..keyword_match.start()])
+                && closing_keyword_is_prose(&lines, index, keyword_match.start());
             let repository = match capture.name("url_repo").or_else(|| capture.name("repo")) {
                 Some(value) => canonical_repository(value.as_str())?,
                 None => current_repository.to_string(),
@@ -1269,10 +1302,169 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
                 keyword,
                 source_line: sanitize_for_output(line.trim(), MAX_SOURCE_LINE_BYTES),
                 line_number: index + 1,
+                locally_negated,
             });
         }
     }
     Ok(relations)
+}
+
+/// Keep inline examples from donating a prose contradiction while preserving
+/// the existing relation parser's treatment of their keyword/reference tokens.
+fn closing_keyword_is_prose(lines: &[&str], line_index: usize, keyword_start: usize) -> bool {
+    // Inline spans can cross soft line breaks, but cannot borrow delimiters
+    // from another paragraph, heading, fenced example, quote, or list item.
+    let boundary = |line: &str| {
+        let trimmed = line.trim();
+        let after_hashes = trimmed.trim_start_matches('#');
+        let hashes = trimmed.len() - after_hashes.len();
+        let heading = (1..=6).contains(&hashes)
+            && (after_hashes.is_empty() || after_hashes.starts_with(char::is_whitespace));
+        // Setext underlines are contiguous; only thematic breaks permit
+        // internal spaces/tabs (GFM example 58).
+        let setext = !trimmed.is_empty()
+            && ['=', '-'].into_iter().any(|marker| trimmed.chars().all(|c| c == marker));
+        let separator: String = trimmed.chars().filter(|c| !matches!(c, ' ' | '\t')).collect();
+        let thematic = separator.len() >= 3
+            && ['-', '*', '_'].into_iter().any(|marker| separator.chars().all(|c| c == marker));
+        trimmed.is_empty()
+            || fence_marker(trimmed).is_some()
+            || trimmed.starts_with('>')
+            || heading
+            || setext
+            || thematic
+    };
+    let mut paragraph_open = false;
+    let mut active_list_kind = None;
+    let list_starts: Vec<bool> = lines
+        .iter()
+        .map(|line| {
+            if boundary(line) {
+                paragraph_open = false;
+                active_list_kind = None;
+                return false;
+            }
+            let mut words = line.split_whitespace();
+            let marker = words.next().unwrap_or_default();
+            let has_content = words.next().is_some();
+            let ordered = marker.strip_suffix(['.', ')']).filter(|digits| {
+                (1..=9).contains(&digits.len()) && digits.bytes().all(|c| c.is_ascii_digit())
+            });
+            let bullet = matches!(marker, "-" | "+" | "*");
+            let kind = if bullet {
+                marker.chars().next()
+            } else {
+                ordered.and_then(|_| marker.chars().last())
+            };
+            // A later numeral can split established siblings, but only 1 may
+            // interrupt an ordinary paragraph (GFM example 284).
+            let starts = kind.is_some()
+                && (!paragraph_open
+                    || kind == active_list_kind
+                    || (has_content
+                        && (bullet
+                            || ordered.is_some_and(|digits| digits.parse::<u32>() == Ok(1)))));
+            if starts {
+                active_list_kind = kind;
+            }
+            paragraph_open = true;
+            starts
+        })
+        .collect();
+    let mut start = line_index;
+    if !boundary(lines[line_index]) && !list_starts[line_index] {
+        while start > 0 && !boundary(lines[start - 1]) {
+            start -= 1;
+            if list_starts[start] {
+                break;
+            }
+        }
+    }
+    let mut end = line_index + 1;
+    if !boundary(lines[line_index]) {
+        while end < lines.len() && !boundary(lines[end]) && !list_starts[end] {
+            end += 1;
+        }
+    }
+
+    // Recognize pipe-delimited tables only after a header/delimiter pair
+    // with matching cell counts. Inlines belong to a cell, never to a row
+    // or the surrounding paragraph. Pipes outside tables remain prose.
+    for delimiter in (start + 1..end.min(line_index + 2)).rev() {
+        let Some(header) = pipe_table_cells(lines[delimiter - 1]) else { continue };
+        let Some(cells) = pipe_table_cells(lines[delimiter]) else { continue };
+        if header.len() != cells.len()
+            || !cells.iter().all(|cell| {
+                let text = lines[delimiter][cell.clone()].trim();
+                let text = text.strip_prefix(':').unwrap_or(text);
+                let text = text.strip_suffix(':').unwrap_or(text);
+                !text.is_empty() && text.bytes().all(|byte| byte == b'-')
+            })
+        {
+            continue;
+        }
+        // A body row without pipes is still the first cell (GFM example 202).
+        let cells =
+            pipe_table_cells(lines[line_index]).unwrap_or_else(|| vec![0..lines[line_index].len()]);
+        if let Some(cell) = cells.into_iter().find(|cell| cell.contains(&keyword_start)) {
+            return inline_keyword_is_prose(
+                &lines[line_index][cell.clone()],
+                keyword_start - cell.start,
+            );
+        }
+    }
+    let keyword_start =
+        keyword_start + lines[start..line_index].iter().map(|line| line.len() + 1).sum::<usize>();
+    let paragraph = lines[start..end].join("\n");
+    inline_keyword_is_prose(&paragraph, keyword_start)
+}
+
+/// Raw cell ranges for the bounded pipe-table form. Escaped pipes are cell
+/// content even inside code; they use the same odd-backslash rule as backticks.
+fn pipe_table_cells(line: &str) -> Option<Vec<std::ops::Range<usize>>> {
+    let pipes: Vec<usize> = line
+        .match_indices('|')
+        .map(|(index, _)| index)
+        .filter(|index| !backtick_is_escaped(line, *index))
+        .collect();
+    if pipes.is_empty() {
+        return None;
+    }
+    let mut cells = Vec::new();
+    let mut start = 0;
+    for pipe in pipes {
+        cells.push(start..pipe);
+        start = pipe + 1;
+    }
+    cells.push(start..line.len());
+    if cells.first().is_some_and(|cell| line[cell.clone()].trim().is_empty()) {
+        cells.remove(0);
+    }
+    if cells.last().is_some_and(|cell| line[cell.clone()].trim().is_empty()) {
+        cells.pop();
+    }
+    (!cells.is_empty()).then_some(cells)
+}
+
+fn inline_keyword_is_prose(line: &str, keyword_start: usize) -> bool {
+    let mut index = 0;
+    while index < keyword_start {
+        let Some(character) = line[index..].chars().next() else { break };
+        if character == '`' && !backtick_is_escaped(line, index) {
+            let run = line[index..].chars().take_while(|next| *next == '`').count();
+            if let Some(end) = matching_inline_code_span_end(line, index, run) {
+                if keyword_start < end {
+                    return false;
+                }
+                index = end;
+                continue;
+            }
+            index += run;
+            continue;
+        }
+        index += character.len_utf8();
+    }
+    true
 }
 
 fn parse_sections(body: &str, max_body_bytes: usize) -> Result<BTreeMap<SectionKind, Section>> {
@@ -2637,7 +2829,21 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 29] = [
+    const FIXTURES: [(&str, &str); 31] = [
+        (
+            "negated-terminal-mixed-controls",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/negated-terminal-mixed-controls.json"
+            )),
+        ),
+        (
+            "invalid-negated-terminal-17556",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-negated-terminal-17556.json"
+            )),
+        ),
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2923,6 +3129,7 @@ mod tests {
             ResultCode::FailControllerPacketMissing,
             ResultCode::FailPredecessorSuccessorCollapse,
             ResultCode::FailProofLevelContradiction,
+            ResultCode::FailNegatedTerminalRelation,
             ResultCode::NotProvenGithub,
             ResultCode::InstrumentFailure,
         ] {
@@ -3407,6 +3614,341 @@ mod tests {
         let body = "```text\nCloses #123\nCloses https://github.com/org/repo/issues/124\n```\n> Fixes #456\nRefs #789\n";
         let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
         assert!(relations.is_empty());
+        Ok(())
+    }
+
+    fn negated_terminal_report(body: &str) -> Result<Report> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 17556,
+            title: "bounded local-negation control".into(),
+            body: body.into(),
+        };
+        evaluate(&pull, |key| {
+            IssueEvidence::Available(IssueSubject {
+                number: key.number,
+                title: "bounded issue subject".into(),
+                body: "## Acceptance\nThe named work is established.".into(),
+            })
+        })
+    }
+
+    #[test]
+    fn negated_terminal_incident_retains_only_the_direct_token_and_line() -> Result<()> {
+        let sentence = "This does not close #8639 or #9551";
+        let report = negated_terminal_report(&format!("{}{sentence}", "\n".repeat(33)))?;
+        assert_eq!(report.rows.len(), 1, "negation must not erase or expand closing relations");
+        let row = &report.rows[0];
+        assert_eq!(row.issue_number, 8639);
+        assert_eq!(row.line_number, 34);
+        assert_eq!(row.source_line, sentence);
+        assert_eq!(row.keyword, "close");
+        assert_eq!(row.rule_id.as_deref(), Some("CP00-NEGATED-TERMINAL"));
+        assert_eq!(row.suggested_relation.as_deref(), Some("Refs #8639"));
+        assert!(row.reason.contains("GitHub"));
+        assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation);
+        assert_eq!(report.exit_code(), EXIT_CONTRADICTION);
+        assert!(!report.semantic_completion_proven);
+        let repaired = negated_terminal_report("Refs #8639; #8639 and #9551 remain open.")?;
+        assert_eq!(repaired.aggregate_code, ResultCode::PassNotApplicable);
+        assert!(repaired.rows.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_adjacent_forms_preserve_all_closing_keywords() -> Result<()> {
+        for prefix in [
+            "This does not",
+            "Do not",
+            "NEVER",
+            "without",
+            "no longer",
+            "cannot",
+            "doesn't",
+            "don't",
+            "didn't",
+            "won't",
+            "can't",
+            "shouldn’t",
+            "wouldn't",
+            "couldn't",
+            "mustn't",
+            "isn't",
+            "aren't",
+            "wasn't",
+            "weren't",
+            "hasn't",
+            "haven't",
+            "hadn't",
+            "needn't",
+            "(not",
+            "例: not\t",
+        ] {
+            for keyword in [
+                "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves",
+                "resolved",
+            ] {
+                let body = format!("{prefix} {keyword}: #42");
+                let report = negated_terminal_report(&body)?;
+                assert_eq!(report.rows.len(), 1, "{body}");
+                assert_eq!(
+                    report.aggregate_code,
+                    ResultCode::FailNegatedTerminalRelation,
+                    "{body}"
+                );
+                assert_eq!(report.exit_code(), EXIT_CONTRADICTION, "{body}");
+                let positive = negated_terminal_report(&format!("{keyword}: #42"))?;
+                assert_eq!(positive.rows.len(), 1);
+                assert_eq!(positive.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_does_not_borrow_negation_or_reclassify_inline_examples() -> Result<()> {
+        for body in [
+            "Closes #42",
+            "Not only closes #42",
+            "not merely fixes #42",
+            "No longer needed; closes #42",
+            "Do not regress; closes #42",
+            "Do not\nclose #42",
+            "does not really close #42",
+            "cannot yet close #42",
+            "not: close #42",
+            "not-close #42",
+            "cannot-close #42",
+            "not_not close #42",
+            "why-not close #42",
+            "cannotnot close #42",
+            "`not close #42`",
+            "``does not close #42``",
+            "Example: `does not close #42\nexample`",
+            "Example: `example\ndoes not close #42`",
+            "- Example: `example\ndoes not close #42`",
+            "`not` close #42",
+            "not `close #42`",
+            "`example` closes #42",
+            "This closes #42, not #43",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "existing detection must remain: {body}");
+            assert_eq!(
+                report.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "{body}"
+            );
+            assert_eq!(report.exit_code(), 0, "{body}");
+            assert!(!report.semantic_completion_proven);
+        }
+        for body in [
+            "\\`not close #42\\`",
+            "`unmatched not close #42",
+            "`example\ncontinued` does not close #42",
+            "`unmatched\n\ndoes not close #42`",
+            "`unmatched\n## Heading\ndoes not close #42`",
+            "`unmatched\n# Heading\ndoes not close #42`",
+            "`unmatched\n---\ndoes not close #42`",
+            "`unmatched\n===\ndoes not close #42`",
+            "`unmatched\n***\ndoes not close #42`",
+            "- `unmatched\n- does not close #42`",
+            "+ `unmatched\n+ does not close #42`",
+            "1) `unmatched\n2) does not close #42`",
+            "```text\n`unmatched\n```\ndoes not close #42`",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation, "{body}");
+        }
+        for body in [
+            "```text\nnot close #42\n```",
+            "~~~~\nnot close #42\n~~~~",
+            "> does not close #42",
+            "> example\ndoes not close #42",
+            "does not close:#42",
+            "does not close issue #42",
+            "not closing #42",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.aggregate_code, ResultCode::PassNotApplicable, "{body}");
+            assert!(report.rows.is_empty(), "{body}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_spaced_equals_does_not_split_inline_code() -> Result<()> {
+        // GFM example 58: internal whitespace is not a setext underline.
+        for separator in ["= =", "=\t="] {
+            let report = negated_terminal_report(&format!(
+                "Example: `before\n{separator}\ndoes not close #42`"
+            ))?;
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        }
+        for separator in ["=", "===", "-", "---", "* * *", "_ _ _", "- - -"] {
+            let report = negated_terminal_report(&format!(
+                "Example: `before\n{separator}\ndoes not close #42`"
+            ))?;
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_table_cells_do_not_share_inline_code_delimiters() -> Result<()> {
+        // GFM tables parse inlines separately in each cell.
+        for body in [
+            "| A | B |\n| --- | --- |\n| `unmatched | does not close #42` |",
+            "| A | B |\n| --- | --- |\n| `unmatched | B |\n| does not close #42` | B |",
+            "| `unmatched | does not close #42` |\n| --- | --- |",
+            "| A | B |\n| --- | --- |\n| `unmatched | B |\ndoes not close #42`",
+            "Intro text\n| A | B |\n| --- | --- |\n| `unmatched | does not close #42` |",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation, "{body}");
+        }
+        for body in [
+            "| A | B |\n| --- | --- |\n| A | `does not close #42` |",
+            "| A | B |\n| --- | --- |\n| A | `before \\| does not close #42` |",
+            "Example: `before | does not close #42`",
+            "| A | B |\n| --- |\n| `before | does not close #42` |",
+            "| A \\| B |\n| --- | --- |\n| `before | does not close #42` |",
+            "| A | B |\n\n| --- | --- |\n| `before | does not close #42` |",
+            "| A | B |\n| --- | --- |\n\n| `before | does not close #42` |",
+            "| A | B |\n| --- | --- |\n# Heading\n| `before | does not close #42` |",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(
+                report.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "{body}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_non_one_ordered_marker_does_not_interrupt_inline_code() -> Result<()> {
+        // GFM example 284: only an ordered list starting with 1 can interrupt a paragraph.
+        for body in [
+            "Example: `before\n2. does not close #42`",
+            "Example: `before\n2) does not close #42`",
+            "Example: `before\n1.\ndoes not close #42`",
+            "Example: `before\n+\ndoes not close #42`",
+            "Example: `before\n*\ndoes not close #42`",
+            "1. Example: `before\n2) does not close #42`",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(
+                report.aggregate_code,
+                ResultCode::PassNoHighConfidenceContradiction,
+                "{body}"
+            );
+        }
+        for body in [
+            "Example: `before\n1. does not close #42`",
+            "Example: `before\n1) does not close #42`",
+            "1. `before\n2. does not close #42`",
+            "2. `before\n3. does not close #42`",
+            "1) `before\n2) does not close #42`",
+            "2) `before\n3) does not close #42`",
+            "* `before\n*\ndoes not close #42`",
+            "+ `before\n+\ndoes not close #42`",
+        ] {
+            let report = negated_terminal_report(body)?;
+            assert_eq!(report.rows.len(), 1, "{body}");
+            assert_eq!(report.aggregate_code, ResultCode::FailNegatedTerminalRelation, "{body}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_is_bound_to_each_exact_repository_and_keyword() -> Result<()> {
+        let report = negated_terminal_report(
+            "Closes #42; does not fix OtherOrg/OtherRepo#42; resolves #43.\nNever resolves https://github.com/OtherOrg/ThirdRepo/issues/42; closes #42.",
+        )?;
+        let rows = report
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.repository.as_str(),
+                    row.issue_number,
+                    row.code,
+                    row.suggested_relation.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "effortlessmetrics/perl-lsp-swarm",
+                    42,
+                    ResultCode::PassNoHighConfidenceContradiction,
+                    None
+                ),
+                (
+                    "otherorg/otherrepo",
+                    42,
+                    ResultCode::FailNegatedTerminalRelation,
+                    Some("Refs otherorg/otherrepo#42")
+                ),
+                (
+                    "effortlessmetrics/perl-lsp-swarm",
+                    43,
+                    ResultCode::PassNoHighConfidenceContradiction,
+                    None
+                ),
+                (
+                    "otherorg/thirdrepo",
+                    42,
+                    ResultCode::FailNegatedTerminalRelation,
+                    Some("Refs otherorg/thirdrepo#42")
+                ),
+                (
+                    "effortlessmetrics/perl-lsp-swarm",
+                    42,
+                    ResultCode::PassNoHighConfidenceContradiction,
+                    None
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn negated_terminal_preserves_issue_lookup_uncertainty() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 17556,
+            title: "lookup control".into(),
+            body: "does not close #42".into(),
+        };
+        for (evidence, expected) in [
+            (
+                IssueEvidence::LookupFailed("transport unavailable".into()),
+                ResultCode::InstrumentFailure,
+            ),
+            (IssueEvidence::Unavailable("absent issue".into()), ResultCode::NotProvenGithub),
+            (
+                IssueEvidence::Available(IssueSubject {
+                    number: 43,
+                    title: "wrong subject".into(),
+                    body: String::new(),
+                }),
+                ResultCode::InstrumentFailure,
+            ),
+        ] {
+            let report = evaluate(&pull, |_| evidence.clone())?;
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.aggregate_code, expected);
+        }
         Ok(())
     }
 
@@ -4924,6 +5466,7 @@ mod tests {
     #[test]
     fn mutation_controls_prove_each_rule_owns_its_fixture_disposition() -> Result<()> {
         let controls = [
+            (RuleId::NegatedTerminal, "invalid-negated-terminal-17556", None),
             (
                 RuleId::PhaseTerminal,
                 "invalid-phase-terminal-5023-5001",
