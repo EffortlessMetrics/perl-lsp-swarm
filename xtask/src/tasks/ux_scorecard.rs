@@ -8,7 +8,7 @@ use perl_lsp_ux_tests::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -358,14 +358,10 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
 }
 
 struct PublicationLock {
+    /// Held open so the flock stays exclusive until this publisher returns.
+    /// The pathname is left in place: unlinking it would let a third process
+    /// create a new inode while a waiter still holds the old one.
     _file: fs::File,
-    path: PathBuf,
-}
-
-impl Drop for PublicationLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }
 
 fn sibling_with_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
@@ -408,6 +404,59 @@ fn restore_previous_surface(path: &Path, previous: Option<&[u8]>) -> Result<()> 
     }
 }
 
+fn unique_destination_paths(surfaces: &[PendingSurface]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for surface in surfaces {
+        if !seen.insert(&surface.path) {
+            bail!("duplicate publication destination: {}", surface.path.display());
+        }
+    }
+    Ok(())
+}
+
+fn acquire_publication_locks(surfaces: &[PendingSurface]) -> Result<Vec<PublicationLock>> {
+    let mut lock_paths = BTreeSet::new();
+    for surface in surfaces {
+        lock_paths.insert(sibling_with_suffix(&surface.path, LOCK_SUFFIX)?);
+    }
+    let mut locks = Vec::new();
+    for lock_path in lock_paths {
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("opening publication lock {}", lock_path.display()))?;
+        lock_file
+            .lock()
+            .with_context(|| format!("acquiring publication lock {}", lock_path.display()))?;
+        locks.push(PublicationLock { _file: lock_file });
+    }
+    Ok(locks)
+}
+
+fn rollback_committed_surfaces(
+    committed: &[(PathBuf, Option<Vec<u8>>)],
+    error: color_eyre::eyre::Report,
+) -> Result<()> {
+    let mut rollback_error = None;
+    for (done_dest, done_previous) in committed.iter().rev() {
+        if let Err(restore_error) = restore_previous_surface(done_dest, done_previous.as_deref()) {
+            rollback_error = Some(restore_error);
+            break;
+        }
+    }
+    if let Some(restore_error) = rollback_error {
+        return Err(
+            error.wrap_err(format!("publication failed and rollback also failed: {restore_error}"))
+        );
+    }
+    Err(error)
+}
+
 fn publish_coherent_generation(
     publisher: &dyn ArtifactPublisher,
     surfaces: &[PendingSurface],
@@ -415,20 +464,8 @@ fn publish_coherent_generation(
     if surfaces.is_empty() {
         bail!("publication generation has no surfaces");
     }
-    let lock_path = sibling_with_suffix(&surfaces[0].path, LOCK_SUFFIX)?;
-    if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let lock_file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("opening publication lock {}", lock_path.display()))?;
-    lock_file
-        .lock()
-        .with_context(|| format!("acquiring publication lock {}", lock_path.display()))?;
-    let _lock = PublicationLock { _file: lock_file, path: lock_path };
+    unique_destination_paths(surfaces)?;
+    let _locks = acquire_publication_locks(surfaces)?;
 
     let mut staged = Vec::new();
     for surface in surfaces {
@@ -439,29 +476,22 @@ fn publish_coherent_generation(
         }
         write_atomic(&stage, &surface.contents)?;
         let previous = if surface.path.exists() { Some(fs::read(&surface.path)?) } else { None };
-        staged.push((stage, surface.path.clone(), previous));
+        let staged_bytes =
+            fs::read(&stage).with_context(|| format!("reading staged {}", stage.display()))?;
+        staged.push((stage, surface.path.clone(), previous, staged_bytes));
     }
 
     let mut committed: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
-    for (stage, dest, previous) in staged {
-        let staged_bytes =
-            fs::read(&stage).with_context(|| format!("reading staged {}", stage.display()))?;
+    let mut remaining_stages: Vec<PathBuf> =
+        staged.iter().map(|(stage, _, _, _)| stage.clone()).collect();
+    for (stage, dest, previous, staged_bytes) in staged {
+        remaining_stages.retain(|path| path != &stage);
         if let Err(error) = publisher.publish(&dest, &staged_bytes) {
-            let mut rollback_error = None;
-            for (done_dest, done_previous) in committed.iter().rev() {
-                if let Err(restore_error) =
-                    restore_previous_surface(done_dest, done_previous.as_deref())
-                {
-                    rollback_error = Some(restore_error);
-                    break;
-                }
+            let _ = fs::remove_file(&stage);
+            for leftover in &remaining_stages {
+                let _ = fs::remove_file(leftover);
             }
-            if let Some(restore_error) = rollback_error {
-                return Err(error.wrap_err(format!(
-                    "publication failed and rollback also failed: {restore_error}"
-                )));
-            }
-            return Err(error);
+            return rollback_committed_surfaces(&committed, error);
         }
         let _ = fs::remove_file(&stage);
         committed.push((dest, previous));
@@ -540,7 +570,7 @@ fn validate_published_generation(
         );
     }
 
-    if let Some(receipt_path) = receipt_path.filter(|path| path.exists()) {
+    if let Some(receipt_path) = receipt_path {
         let receipt_raw = fs::read_to_string(receipt_path)
             .with_context(|| format!("reading {}", receipt_path.display()))?;
         let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)
@@ -1577,9 +1607,17 @@ mod tests {
         let generation = validate_published_generation(&output_path, &status_path, None)?;
         check_true(!generation.is_empty(), "published generation was empty")?;
         check_true(!receipt_path.exists(), "no-receipt run created a receipt")?;
+        let lock_path = sibling_with_suffix(&output_path, LOCK_SUFFIX)?;
         check_true(
-            !sibling_with_suffix(&output_path, LOCK_SUFFIX)?.exists(),
-            "successful publication left a lock file",
+            lock_path.exists(),
+            "publication lock inode must remain so waiters cannot be bypassed",
+        )?;
+        let lock_file = fs::OpenOptions::new().write(true).open(&lock_path).with_context(|| {
+            format!("opening released publication lock {}", lock_path.display())
+        })?;
+        check_true(
+            lock_file.try_lock().is_ok(),
+            "previous publisher still holds the publication flock",
         )?;
         let scorecard: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&output_path)?)?;
@@ -1641,6 +1679,12 @@ mod tests {
         check(&fs::read_to_string(&output_path)?, &previous_scorecard, "scorecard dest mixed")?;
         check(&fs::read_to_string(&status_path)?, &previous_status, "status dest mixed")?;
         check(&fs::read_to_string(&receipt_path)?, &previous_receipt, "receipt dest mixed")?;
+        check_true(
+            !sibling_with_suffix(&output_path, STAGING_SUFFIX)?.exists()
+                && !sibling_with_suffix(&status_path, STAGING_SUFFIX)?.exists()
+                && !sibling_with_suffix(&receipt_path, STAGING_SUFFIX)?.exists(),
+            "dest-commit failure left staging files next to published dests",
+        )?;
         check(
             &validate_published_generation(&output_path, &status_path, Some(&receipt_path))?,
             &previous,
@@ -1738,6 +1782,52 @@ mod tests {
         check_true(
             third_generation != first_generation,
             "changed input reused the previous generation",
+        )
+    }
+
+    #[test]
+    fn publish_rejects_duplicate_destination_paths() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("same.json");
+        let surfaces = [
+            PendingSurface { path: path.clone(), contents: b"generation-a\n".to_vec() },
+            PendingSurface { path, contents: b"generation-b\n".to_vec() },
+        ];
+        let error = match publish_coherent_generation(&AtomicFsPublisher, &surfaces) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "duplicate destinations must fail before staging"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("duplicate publication destination"),
+            "duplicate dest error missing diagnosis",
+        )
+    }
+
+    #[test]
+    fn validator_requires_expected_receipt_file() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("measurements.json"), measurement_json(true))?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        publish_human(root.path(), &AtomicFsPublisher)?;
+        let missing_receipt = root.path().join("target/receipts/receipt.json");
+        let error =
+            match validate_published_generation(&output_path, &status_path, Some(&missing_receipt))
+            {
+                Ok(generation) => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "missing expected receipt was accepted as {generation}"
+                    ));
+                }
+                Err(error) => error,
+            };
+        check_true(
+            error.to_string().contains("reading"),
+            "missing expected receipt error missing read context",
         )
     }
 
