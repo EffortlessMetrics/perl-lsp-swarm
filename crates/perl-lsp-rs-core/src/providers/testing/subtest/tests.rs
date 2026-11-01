@@ -491,6 +491,15 @@ fn child_insertion_name_then_kind_tiebreak_matches_assembler_from_either_order()
     assert_insertion_order(vec![beta.clone()], alpha.clone(), &["alpha", "beta"]);
     assert_insertion_order(vec![alpha.clone()], beta.clone(), &["alpha", "beta"]);
 
+    let alpha_high_kind = fixture_symbol("alpha", 12, span);
+    let beta_low_kind = fixture_symbol("beta", 7, span);
+    assert_insertion_order(
+        vec![beta_low_kind.clone()],
+        alpha_high_kind.clone(),
+        &["alpha", "beta"],
+    );
+    assert_insertion_order(vec![alpha_high_kind], beta_low_kind, &["alpha", "beta"]);
+
     let twin_a = fixture_symbol("twin", 7, span);
     let twin_b = fixture_symbol("twin", 12, span);
     assert_insertion_kinds(vec![twin_b.clone()], twin_a.clone(), &[7, 12]);
