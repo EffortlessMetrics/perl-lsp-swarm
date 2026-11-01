@@ -1,6 +1,8 @@
 #![warn(missing_docs)]
 //! Text helpers for code-action style source edits.
 
+use perl_parser_core::ast::{Node, NodeKind};
+
 /// Helper wrapper for source text and pre-split lines.
 pub struct TextEditHelpers<'a> {
     source: &'a str,
@@ -59,17 +61,38 @@ impl<'a> TextEditHelpers<'a> {
     /// of the preceding statement.
     #[must_use]
     pub fn find_statement_start(&self, pos: usize) -> usize {
-        let after_semi = self
-            .source
-            .char_indices()
-            .take_while(|(idx, _)| *idx < pos)
-            .filter(|(_, ch)| *ch == ';')
-            .map(|(idx, _)| idx + 1)
-            .last()
-            .unwrap_or(0);
-        // Skip a single newline that immediately follows the semicolon so the
-        // insertion point is the first real character of the next line.
-        self.skip_line_ending(after_semi)
+        self.find_statement_start_brace_aware(pos)
+    }
+
+    /// Resolve the start of the statement that should receive an extracted
+    /// variable declaration, using the program AST when available.
+    #[must_use]
+    pub(crate) fn find_statement_start_with_ast(&self, pos: usize, ast_root: &Node) -> usize {
+        if let Some(start) = enclosing_statement_start(ast_root, pos) {
+            return start;
+        }
+        self.find_statement_start_brace_aware(pos)
+    }
+
+    /// Semicolon scan that ignores statement terminators inside `{...}` blocks
+    /// that are fully closed before `pos`.
+    fn find_statement_start_brace_aware(&self, pos: usize) -> usize {
+        let search_end = pos.min(self.source.len());
+        let bytes = self.source.as_bytes();
+        let mut depth = 0i32;
+        let mut idx = search_end;
+        while idx > 0 {
+            idx -= 1;
+            match bytes[idx] {
+                b'}' => depth += 1,
+                b'{' if depth > 0 => depth -= 1,
+                b';' if depth == 0 => {
+                    return self.skip_line_ending(idx + 1);
+                }
+                _ => {}
+            }
+        }
+        0
     }
 
     /// Find where to insert an extracted subroutine near `current_pos`.
@@ -148,5 +171,87 @@ impl<'a> TextEditHelpers<'a> {
     #[must_use]
     pub fn has_non_ascii_content(&self) -> bool {
         !self.source.is_ascii()
+    }
+}
+
+fn enclosing_statement_start(root: &Node, pos: usize) -> Option<usize> {
+    enclosing_statement_node(root, pos).map(|node| node.location.start)
+}
+
+fn enclosing_statement_node<'a>(node: &'a Node, pos: usize) -> Option<&'a Node> {
+    if !node.contains_offset(pos) {
+        return None;
+    }
+
+    if let Some(statements) = statement_list(&node.kind) {
+        for stmt in statements {
+            if stmt.contains_offset(pos) {
+                return enclosing_statement_node(stmt, pos).or(Some(stmt));
+            }
+        }
+        return None;
+    }
+
+    for child in node.children() {
+        if child.contains_offset(pos)
+            && let Some(found) = enclosing_statement_node(child, pos)
+        {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+fn statement_list(kind: &NodeKind) -> Option<&[Node]> {
+    match kind {
+        NodeKind::Program { statements } | NodeKind::Block { statements } => Some(statements),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_parser_core::Parser;
+    use perl_tdd_support::must;
+
+    #[test]
+    fn find_statement_start_with_ast_skips_semicolon_in_preceding_sub() {
+        let source = "sub other { my $r = 1; }\nmy $t = 2 + 3;";
+        let lines: Vec<String> = source.lines().map(ToString::to_string).collect();
+        let helpers = TextEditHelpers::new(source, &lines);
+
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+
+        let expr_pos = source.find("2 + 3").unwrap_or(0);
+        let my_t_pos = source.find("my $t").unwrap_or(0);
+        assert!(
+            my_t_pos > source.find(';').unwrap_or(0),
+            "test precondition: unrelated sub semicolon precedes the target statement"
+        );
+
+        let start = helpers.find_statement_start_with_ast(expr_pos, &ast);
+        assert_eq!(
+            start, my_t_pos,
+            "declaration must be inserted at the enclosing statement, not inside `sub other`"
+        );
+    }
+
+    #[test]
+    fn find_statement_start_with_ast_matches_brace_aware_for_sibling_statements() {
+        let source = "my $a = 1;\nmy $b = length($x);\n";
+        let lines: Vec<String> = source.lines().map(ToString::to_string).collect();
+        let helpers = TextEditHelpers::new(source, &lines);
+
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+
+        let pos = source.find("length").unwrap_or(0);
+        assert_eq!(
+            helpers.find_statement_start(pos),
+            helpers.find_statement_start_with_ast(pos, &ast)
+        );
     }
 }
