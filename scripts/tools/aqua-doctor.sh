@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 AQUA_CONFIG_PATH="${AQUA_CONFIG:-${REPO_ROOT}/aqua.yaml}"
 
 if ! command -v aqua >/dev/null 2>&1; then
-    if [[ -x "${HOME}/.local/bin/aqua" ]]; then
+    if [[ -n "${HOME:-}" && -x "${HOME}/.local/bin/aqua" ]]; then
         cat >&2 <<EOF
 portable toolchain: NOT PROVEN — aqua is not found on PATH
 

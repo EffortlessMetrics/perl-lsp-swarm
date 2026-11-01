@@ -308,6 +308,10 @@ assert_contains "off-PATH Aqua names PATH resolution" "not found on PATH"
 assert_contains "off-PATH Aqua supplies PATH activation" 'export PATH="$HOME/.local/bin:$PATH"'
 assert_lacks "off-PATH Aqua is not mislabeled as absent" "aqua is not installed"
 
+run_capture env HOME="${DOCTOR_HOME}" PATH="${DOCTOR_HOME}/.local/bin:${DOCTOR_PATH}" bash -c 'command -v aqua'
+assert_status "PATH activation resolves Aqua" 0
+assert_contains "PATH activation resolves fixture Aqua" "${DOCTOR_HOME}/.local/bin/aqua"
+
 printf '\n%d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ "${FAIL}" -ne 0 ]]; then
     exit 1
