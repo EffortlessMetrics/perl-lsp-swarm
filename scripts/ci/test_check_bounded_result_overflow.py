@@ -84,7 +84,10 @@ class OverflowErrorsTests(unittest.TestCase):
         self.assertTrue(any("must equal total" in error for error in errors))
 
     def test_exponent_encoded_sum_mismatch(self) -> None:
-        packet = overflow_packet(truncated=True, selected=2e0, omitted=1e0, total=9e0)
+        packet = json.loads(
+            '{"overflow":[{"truncated":true,"counts":{"selected":2e0,"omitted":1e0,"total":9e0}}]}',
+            parse_float=Decimal,
+        )
         errors = overflow_errors(packet)
         self.assertTrue(any("must equal total" in error for error in errors))
 

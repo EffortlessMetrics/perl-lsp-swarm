@@ -76,6 +76,18 @@ def main() -> int:
         if case["valid"] and (errors := overflow_errors(case["packet"])):
             raise SystemExit(f"{case['name']}: unexpected overflow errors: {errors}")
     print(f"checked {len(fixtures['cases'])} bounded-result fixtures")
+
+    import subprocess
+    import sys
+
+    test_dir = Path(__file__).resolve().parent
+    unit = subprocess.run(
+        [sys.executable, "-m", "unittest", "test_check_bounded_result_overflow"],
+        cwd=test_dir,
+        check=False,
+    )
+    if unit.returncode != 0:
+        raise SystemExit(unit.returncode)
     return 0
 
 
