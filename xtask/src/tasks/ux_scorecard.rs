@@ -424,8 +424,58 @@ fn reject_destination_sidecar_collisions(surfaces: &[PendingSurface]) -> Result<
     Ok(())
 }
 
+fn current_unix_uid() -> u32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: `getuid` has no preconditions and cannot fail.
+        unsafe { libc::getuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 fn publication_lock_dir() -> PathBuf {
-    std::env::temp_dir().join("perl-lsp-ux-scorecard-locks")
+    std::env::temp_dir().join(format!("perl-lsp-ux-scorecard-locks-{}", current_unix_uid()))
+}
+
+fn ensure_publication_lock_dir(lock_dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::ErrorKind;
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        if let Err(error) = fs::DirBuilder::new().mode(0o700).create(lock_dir) {
+            if error.kind() != ErrorKind::AlreadyExists {
+                return Err(error).with_context(|| {
+                    format!("creating publication lock dir {}", lock_dir.display())
+                });
+            }
+        }
+        let meta = fs::symlink_metadata(lock_dir)
+            .with_context(|| format!("inspecting publication lock dir {}", lock_dir.display()))?;
+        if meta.file_type().is_symlink() {
+            bail!("publication lock dir is a symlink: {}", lock_dir.display());
+        }
+        if !meta.file_type().is_dir() {
+            bail!("publication lock dir is not a directory: {}", lock_dir.display());
+        }
+        if meta.uid() != current_unix_uid() {
+            bail!("publication lock dir is not owned by the current user: {}", lock_dir.display());
+        }
+        let mode = meta.permissions().mode() & 0o777;
+        if mode != 0o700 {
+            fs::set_permissions(lock_dir, fs::Permissions::from_mode(0o700)).with_context(
+                || format!("restricting publication lock dir {}", lock_dir.display()),
+            )?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(lock_dir)
+            .with_context(|| format!("creating publication lock dir {}", lock_dir.display()))
+    }
 }
 
 fn publication_lock_path(dest: &Path) -> PathBuf {
@@ -436,8 +486,7 @@ fn publication_lock_path(dest: &Path) -> PathBuf {
 
 fn acquire_publication_locks(surfaces: &[PendingSurface]) -> Result<Vec<PublicationLock>> {
     let lock_dir = publication_lock_dir();
-    fs::create_dir_all(&lock_dir)
-        .with_context(|| format!("creating publication lock dir {}", lock_dir.display()))?;
+    ensure_publication_lock_dir(&lock_dir)?;
     let mut lock_paths = BTreeSet::new();
     for surface in surfaces {
         lock_paths.insert(publication_lock_path(&surface.path));
@@ -450,6 +499,13 @@ fn acquire_publication_locks(surfaces: &[PendingSurface]) -> Result<Vec<Publicat
             .truncate(false)
             .open(&lock_path)
             .with_context(|| format!("opening publication lock {}", lock_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            lock_file
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("restricting publication lock {}", lock_path.display()))?;
+        }
         lock_file
             .lock()
             .with_context(|| format!("acquiring publication lock {}", lock_path.display()))?;
@@ -1641,6 +1697,16 @@ mod tests {
             lock_path.exists(),
             "publication lock inode must remain so waiters cannot be bypassed",
         )?;
+        check(
+            &lock_path.parent().map(Path::to_path_buf),
+            &Some(publication_lock_dir()),
+            "publication lock must live in the uid-private temp dir",
+        )?;
+        check_true(
+            publication_lock_dir().file_name().and_then(|name| name.to_str())
+                != Some("perl-lsp-ux-scorecard-locks"),
+            "publication lock dir must not use the shared unkeyed temp name",
+        )?;
         check_true(
             !sibling_with_suffix(&status_path, LOCK_SUFFIX)?.exists(),
             "publication lock must not land next to the tracked status page",
@@ -1659,6 +1725,43 @@ mod tests {
             &parse_status_generation(&fs::read_to_string(&status_path)?)?,
             &generation,
             "status generation",
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_lock_dir_is_uid_private_mode_700_and_rejects_symlink() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir()?;
+        let dir = tmp.path().join("locks");
+        ensure_publication_lock_dir(&dir)?;
+        check(&(fs::metadata(&dir)?.permissions().mode() & 0o777), &0o700, "fresh lock dir mode")?;
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777))?;
+        ensure_publication_lock_dir(&dir)?;
+        check(
+            &(fs::metadata(&dir)?.permissions().mode() & 0o777),
+            &0o700,
+            "repaired lock dir mode",
+        )?;
+
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link)?;
+        let error = match ensure_publication_lock_dir(&link) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!("symlink lock dir was accepted"));
+            }
+            Err(error) => error,
+        };
+        check_true(error.to_string().contains("symlink"), "symlink lock dir rejection")?;
+
+        let expected = std::env::temp_dir()
+            .join(format!("perl-lsp-ux-scorecard-locks-{}", current_unix_uid()));
+        check(&publication_lock_dir(), &expected, "uid-keyed lock dir")?;
+        check_true(
+            publication_lock_dir().as_os_str()
+                != std::env::temp_dir().join("perl-lsp-ux-scorecard-locks").as_os_str(),
+            "lock dir must not be the shared unkeyed temp path",
         )
     }
 
