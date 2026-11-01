@@ -4,7 +4,7 @@ const REGRESS_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/_proptest-regressions/prop_deletion");
 
 // Include the shared utilities
-include!("prop_test_utils.rs");
+include!("support/prop_test_utils.rs");
 
 /// Delete whitespace between tokens that can be safely joined
 pub fn delete_on_breakable(src: &str) -> String {

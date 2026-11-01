@@ -8,7 +8,7 @@ use proptest::{
 };
 
 // Pull in the shared helpers (delims, extract_ast_shape, etc.)
-include!("prop_test_utils.rs");
+include!("support/prop_test_utils.rs");
 
 const REGRESS_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/_proptest-regressions/prop_qw");
