@@ -8,6 +8,7 @@ and triggered on changes to the schema, fixtures, or this script.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,8 @@ def integer_count(value: Any) -> int | None:
         return None
     if isinstance(value, int):
         return value
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        return int(value)
     if isinstance(value, float) and value.is_integer():
         return int(value)
     return None
@@ -51,7 +54,10 @@ def overflow_errors(packet: dict[str, Any]) -> list[str]:
 
 def main() -> int:
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
-    fixtures = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    fixtures = json.loads(
+        FIXTURES.read_text(encoding="utf-8"),
+        parse_float=Decimal,
+    )
     invariant = schema["definitions"]["overflow_counts"]["x-bounded-result-invariants"][0]
     if invariant != {"id": "overflow-counts-sum", "expression": "selected + omitted == total"}:
         raise SystemExit("overflow sum invariant declaration drifted")
