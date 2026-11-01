@@ -27,7 +27,7 @@ SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 THREADS_BIN="$SCRIPT_DIR/threads"
 
 PR="" THREAD="" CLASS="" REPLY="" COMMIT="" ISSUE="" SUPERSEDED_BY="" ARGUMENT=""
-REPO="" HEAD="" BY="" DRY_RUN=0 SWEEP_BOT_OUTDATED=0 THREADS_JSON=""
+REPO="" HEAD="" BY="" DRY_RUN=0 SWEEP_BOT_OUTDATED=0 THREADS_JSON="" NO_REAPPLY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr)            PR="${2:-}"; shift 2 ;;
@@ -44,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run)       DRY_RUN=1; shift ;;
         --sweep-bot-outdated) SWEEP_BOT_OUTDATED=1; shift ;;
         --threads-json)  THREADS_JSON="${2:-}"; shift 2 ;;
+        --no-reapply)    NO_REAPPLY=1; shift ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
@@ -151,11 +152,17 @@ _sweep_classify() {
             if (.author | type) == "string" then .author
             else (.comments.nodes[0].author.login // null)
             end;
+        def has_disposition_marker:
+            any(
+                ((.comments.nodes // [])[] | (.body // ""));
+                test("<!-- disposition:v[0-9]+ ")
+            );
         def skip_reason:
             if .isResolved != false then "already-resolved"
             elif .isOutdated != true then "not-outdated"
             elif (author_typename | type) != "string" then "missing-author"
             elif author_typename != "Bot" then "not-bot"
+            elif has_disposition_marker then "already-disposed"
             else null
             end;
         [items[] | {
@@ -186,29 +193,64 @@ _sweep_load_payload() {
     "$THREADS_BIN" "$PR" "$REPO" --unresolved-only --json
 }
 
+_sweep_assert_payload_identity() {
+    local payload_file="$1" payload_pr payload_repo
+    payload_pr="$(jq -r 'if has("pr") then (.pr | tostring) else empty end' "$payload_file")"
+    payload_repo="$(jq -r 'if has("repo") and (.repo | type) == "string" then .repo else empty end' "$payload_file")"
+    [[ "$DRY_RUN" -eq 0 ]] || return 0
+    if [[ -z "$payload_pr" ]]; then
+        echo "ERROR: live sweep with --threads-json requires a threads document whose pr matches --pr; GraphQL-only payloads are --dry-run only" >&2
+        return 1
+    fi
+    if [[ "$payload_pr" != "$PR" ]]; then
+        echo "ERROR: --threads-json pr $payload_pr does not match --pr $PR; refusing live mutation" >&2
+        return 1
+    fi
+    if [[ -n "$payload_repo" && -n "$REPO" && "$payload_repo" != "$REPO" ]]; then
+        echo "ERROR: --threads-json repo $payload_repo does not match --repo $REPO; refusing live mutation" >&2
+        return 1
+    fi
+}
+
 _sweep_bot_outdated() {
-    local classified summary thread_id reply
+    local work payload_file classified_file summary thread_id reply
     local -a ids child_args
-    classified="$(_sweep_load_payload | _sweep_classify)" || {
+    work="$(mktemp -d)"
+    payload_file="$work/payload.json"
+    classified_file="$work/classified.json"
+    if ! _sweep_load_payload > "$payload_file"; then
+        rm -rf "$work"
+        echo "ERROR: failed to load sweep payload for PR #$PR" >&2
+        exit 2
+    fi
+    if [[ -n "$THREADS_JSON" ]]; then
+        _sweep_assert_payload_identity "$payload_file" || { rm -rf "$work"; exit 2; }
+    fi
+    if ! _sweep_classify < "$payload_file" > "$classified_file"; then
+        rm -rf "$work"
         echo "ERROR: failed to classify sweep payload for PR #$PR" >&2
         exit 2
-    }
-    summary="$(jq -cn --argjson classified "$classified" --arg pr "$PR" --arg head "$HEAD" --argjson dry "$DRY_RUN" '
+    fi
+    # Keep the classified document off argv: large PRs already blew --argjson
+    # in scripts/reviews/threads (#6178).
+    if ! summary="$(jq -c --arg pr "$PR" --arg head "$HEAD" --argjson dry "$DRY_RUN" '
         {
             mode: "sweep-bot-outdated",
             pr: (try ($pr | tonumber) catch $pr),
             head: $head,
             dry_run: ($dry == 1),
-            selected: $classified.selected,
-            skipped: $classified.skipped
+            selected: .selected,
+            skipped: .skipped
         }
-    ')" || {
+    ' "$classified_file")"; then
+        rm -rf "$work"
         echo "ERROR: failed to render sweep selection for PR #$PR" >&2
         exit 2
-    }
+    fi
     printf '%s\n' "$summary"
 
-    mapfile -t ids < <(jq -r '.selected[].id // empty' <<<"$classified")
+    mapfile -t ids < <(jq -r '.selected[].id // empty' "$classified_file")
+    rm -rf "$work"
     reply="$(printf '%s\n' \
         "Disposition: superseded" \
         "" \
@@ -225,6 +267,7 @@ _sweep_bot_outdated() {
             --reply "$reply"
             --head "$HEAD"
             --by "$BY"
+            --no-reapply
         )
         [[ -n "$REPO" ]] && child_args+=(--repo "$REPO")
         [[ "$DRY_RUN" -eq 1 ]] && child_args+=(--dry-run)
@@ -337,6 +380,10 @@ if ! MARKER_STATE="$(jq -ce --arg class "$CLASS" --argjson evidence "$EVIDENCE" 
               $parsed[]
               | select(. != null and ((.v // null) == 1) and .class == $class and .evidence == $evidence)
             ] | length),
+            v1: ([
+              $parsed[]
+              | select(. != null and ((.v // null) == 1))
+            ] | length),
             latest_matching: (($parsed[-1] // {}) |
               .v == 1 and .class == $class and .evidence == $evidence),
             is_resolved: ($node.isResolved == true)
@@ -349,9 +396,10 @@ fi
 
 INVALID="$(jq -r '.invalid' <<<"$MARKER_STATE")"
 EXISTING="$(jq -r '.matching' <<<"$MARKER_STATE")"
+V1="$(jq -r '.v1' <<<"$MARKER_STATE")"
 IS_RESOLVED="$(jq -r '.is_resolved' <<<"$MARKER_STATE")"
 LATEST_MATCHING="$(jq -r '.latest_matching' <<<"$MARKER_STATE")"
-if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ || ! "$IS_RESOLVED" =~ ^(true|false)$ || ! "$LATEST_MATCHING" =~ ^(true|false)$ ]]; then
+if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ || ! "$V1" =~ ^[0-9]+$ || ! "$IS_RESOLVED" =~ ^(true|false)$ || ! "$LATEST_MATCHING" =~ ^(true|false)$ ]]; then
     echo "ERROR: invalid disposition state values for thread $THREAD" >&2
     exit 2
 fi
@@ -366,6 +414,13 @@ fi
 if [[ "$EXISTING" -gt 0 && "$LATEST_MATCHING" != "true" ]]; then
     echo "ERROR: superseded disposition on thread $THREAD; inspect the latest finding and provide current evidence before retrying" >&2
     exit 2
+fi
+
+# Sweep must not re-resolve a reopened thread from a prior matching marker.
+# A later human comment at the same head stays open for manual disposition.
+if [[ "$NO_REAPPLY" -eq 1 && "$V1" -gt 0 ]]; then
+    echo "OK skip already-disposed thread $THREAD (leaving GitHub state unchanged)"
+    exit 0
 fi
 
 # For a live blocker, restore truthful GitHub state before doing anything that

@@ -642,6 +642,8 @@ fn sweep_graphql_fixture() -> Value {
         })
     };
     serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
         "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
             node("PRRT_bot_outdated", false, true, Some(("Bot", "coderabbitai"))),
             node("PRRT_bot_current", false, false, Some(("Bot", "gemini-code-assist"))),
@@ -927,6 +929,8 @@ fn sweep_live_replies_then_resolves_only_selected_threads() -> Result<(), Box<dy
 fn sweep_unsupported_marker_versions_fail_closed() -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let payload = serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
         "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [{
             "id": "PRRT_test",
             "isResolved": false,
@@ -987,6 +991,141 @@ fn sweep_unsupported_marker_versions_fail_closed() -> Result<(), Box<dyn Error>>
     assert!(
         !calls.contains("resolveReviewThread"),
         "v2 sweep must not resolve the thread; log={calls}"
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn sweep_skips_already_disposed_and_does_not_reapply() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let marker = serde_json::json!({
+        "v": 1,
+        "class": "superseded",
+        "thread_id": "PRRT_bot_outdated",
+        "by": "tester",
+        "head": SWEEP_HEAD,
+        "evidence": {"superseded_by": SWEEP_HEAD},
+        "thread_transition": "resolve",
+    });
+    let payload = serde_json::json!({
+        "pr": 42,
+        "repo": "owner/repo",
+        "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [{
+            "id": "PRRT_bot_outdated",
+            "isResolved": false,
+            "isOutdated": true,
+            "path": "src/lib.rs",
+            "comments": {"nodes": [
+                {"author": {"__typename": "Bot", "login": "coderabbitai"}, "body": "finding"},
+                {"author": {"__typename": "User", "login": "tester"},
+                 "body": format!("prior\n<!-- disposition:v1 {} -->", marker)}
+            ]}
+        }]}}}}
+    });
+
+    let (dry, dry_calls) = run_sweep(&root, &payload, &["--dry-run"], true)?;
+    assert!(dry.status.success(), "already-disposed dry-run failed: {}", output_text(&dry));
+    assert!(dry_calls.trim().is_empty(), "dry-run invoked gh: {dry_calls}");
+    let summary = first_json_line(&output_text(&dry))?;
+    let skipped = summary.pointer("/skipped").and_then(Value::as_array).ok_or("missing skipped")?;
+    assert!(
+        skipped.iter().any(|row| {
+            row.get("id").and_then(Value::as_str) == Some("PRRT_bot_outdated")
+                && row.get("reason").and_then(Value::as_str) == Some("already-disposed")
+        }),
+        "reopened/already-disposed bot thread must be skipped: {summary}"
+    );
+    assert_eq!(summary.pointer("/selected").and_then(Value::as_array).map(Vec::len), Some(0));
+
+    let (live, live_calls) = run_sweep(&root, &payload, &[], false)?;
+    assert!(live.status.success(), "already-disposed live skip failed: {}", output_text(&live));
+    assert!(
+        !live_calls.contains("addPullRequestReviewThreadReply"),
+        "already-disposed thread must not be replied to; log={live_calls}"
+    );
+    assert!(
+        !live_calls.contains("resolveReviewThread"),
+        "already-disposed thread must not be re-resolved; log={live_calls}"
+    );
+
+    // threads --json does not carry comment bodies; --no-reapply must still
+    // refuse to re-resolve when the child observes an existing v1 marker.
+    let temp = tempfile::tempdir()?;
+    let payload_path = temp.path().join("threads.json");
+    fs::write(&payload_path, serde_json::to_vec_pretty(&sweep_threads_json_fixture())?)?;
+    let stub_bin = write_gh_stub(temp.path())?;
+    let log = temp.path().join("gh.log");
+    let mut path = OsString::from(stub_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH is unavailable")?);
+    let output = Command::new("bash")
+        .arg(disposition_script(&root))
+        .args(["--sweep-bot-outdated", "--pr", "42", "--threads-json"])
+        .arg(&payload_path)
+        .args(["--repo", "owner/repo", "--head", SWEEP_HEAD, "--by", "tester"])
+        .env("PATH", path)
+        .env("GH_STUB_LOG", &log)
+        .env("GH_STUB_RESOLVED", "false")
+        .env("GH_STUB_MARKER", marker.to_string())
+        .output()?;
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(output.status.success(), "threads-json reapply skip failed: {}", output_text(&output));
+    assert!(
+        output_text(&output).contains("skip already-disposed"),
+        "expected --no-reapply skip: {}",
+        output_text(&output)
+    );
+    assert!(
+        !calls.contains("addPullRequestReviewThreadReply")
+            && !calls.contains("resolveReviewThread"),
+        "reopened matching marker must not be mutated; log={calls}"
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn sweep_live_threads_json_requires_matching_pr() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let mut foreign = sweep_graphql_fixture();
+    foreign["pr"] = serde_json::json!(99);
+
+    let (mismatch, mismatch_calls) = run_sweep(&root, &foreign, &[], false)?;
+    assert!(
+        !mismatch.status.success(),
+        "live sweep must refuse a foreign --threads-json pr: {}",
+        output_text(&mismatch)
+    );
+    assert!(
+        output_text(&mismatch).contains("does not match --pr"),
+        "expected a PR identity error: {}",
+        output_text(&mismatch)
+    );
+    assert!(
+        !mismatch_calls.contains("addPullRequestReviewThreadReply")
+            && !mismatch_calls.contains("resolveReviewThread"),
+        "foreign payload must not mutate; log={mismatch_calls}"
+    );
+
+    let mut unbound = sweep_graphql_fixture();
+    unbound.as_object_mut().ok_or("graphql fixture is not an object")?.remove("pr");
+    let (unbound_out, unbound_calls) = run_sweep(&root, &unbound, &[], false)?;
+    assert!(
+        !unbound_out.status.success(),
+        "live GraphQL-only --threads-json must be refused: {}",
+        output_text(&unbound_out)
+    );
+    assert!(
+        output_text(&unbound_out).contains("dry-run only"),
+        "expected GraphQL-only live refusal: {}",
+        output_text(&unbound_out)
+    );
+    assert!(
+        !unbound_calls.contains("resolveReviewThread"),
+        "unbound payload must not mutate; log={unbound_calls}"
     );
 
     Ok(())
