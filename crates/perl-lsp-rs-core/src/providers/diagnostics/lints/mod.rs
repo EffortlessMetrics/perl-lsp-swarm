@@ -11,7 +11,7 @@
 //! - **strict_warnings**: Missing `use strict` / `use warnings` advisories and
 //!   misspelled pragma detection
 //! - **common_mistakes**: Frequent programming errors (assignment in conditions, etc.)
-//! - **security**: Security anti-patterns (two-arg open, string eval, backtick execution, global signal handlers)
+//! - **security**: Security anti-patterns (two-arg open, string eval, backtick execution, global signal handlers, PL607 DBI SQL-text composition)
 //! - **eval_error_flow**: Conservative `$@` / `$EVAL_ERROR` flow checks after `eval` / `try`
 //! - **goto_label**: Conservative `goto LABEL` validation when no matching label exists in-file
 //!
@@ -78,6 +78,7 @@
 //! | `security-string-eval` | Warning | `eval "$string"` is a security risk |
 //! | `security-backtick-exec` | Information | Backtick/qx command execution detected |
 //! | `security-signal-handler` | Warning | Global `$SIG{__DIE__}` / `$SIG{__WARN__}` assignment |
+//! | `PL607` | Warning | Interpolated/concatenated SQL text at reviewed DBI SQL-text sinks |
 //!
 //! ## Package / subroutine (`package_subroutine.rs`)
 //!
