@@ -17,11 +17,7 @@ Runs on every pull request for fast feedback.
 
 ### Merge Gate
 
-Runs on pull request activity against `main` or `master` (`opened`,
-`synchronize`, `reopened`, `ready_for_review`, `converted_to_draft`), merge
-queue events, pushes to `main` or `master`, and manual workflow runs. PR labels
-(including `merge-ready`) do not trigger the Merge Gate or `ci.yml`; `ci.yml` deliberately excludes
-`labeled` and `unlabeled`.
+Runs on `merge-ready`, pushes to `main` or `master`, and manual workflow runs.
 This is the server-side equivalent of the local `nix develop -c just ci-gate`
 gate.
 
