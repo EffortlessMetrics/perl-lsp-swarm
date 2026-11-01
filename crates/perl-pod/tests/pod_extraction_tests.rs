@@ -1,6 +1,6 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_pod::{extract_pod, extract_pod_from_file};
-use perl_test_must::must_some;
+use perl_test_must::{must_some, must_some_with};
 use std::io::Write as _;
 use std::path::Path;
 
@@ -615,6 +615,136 @@ fn link_target_with_unicode_module_name_is_percent_encoded() {
     assert!(
         description.contains("perldoc://%C3%9Cber::Module"),
         "expected non-ASCII bytes in target to be percent-encoded; got: {description}"
+    );
+}
+
+// ── #15251: renderer-derived markdown length bound ──────────────────────
+
+/// Markdown wrapper `extract_link_display` puts around every rendered `L<>`.
+const MARKDOWN_LINK_WRAPPER: &str = "[](perldoc://)";
+/// Fewest source bytes that can emit one wrapper: unmatched `L<`.
+const MIN_LINK_MARKUP: &str = "L<";
+
+/// Upper bound on a Markdown-rendered POD field (`description` today).
+///
+/// Derived from `strip_pod_formatting` / `extract_link_display`, not chosen
+/// as a corpus-passing multiplier:
+///
+/// - `encode_pod_link_target` emits at most 3 bytes per source byte (`%XX`).
+/// - `escape_markdown_link_text` emits at most 2 bytes per display character
+///   (`\\`, `[`, `]`). Display and target are both taken from the link inner
+///   text, so a byte may contribute to both expansions.
+/// - Each rendered link adds a 14-byte wrapper (`[](perldoc://)`).
+/// - A link consumes at least 2 source bytes (`L<`). The wrapper-dominated
+///   empty unmatched link `L<` → `[](perldoc://)` is 14/2 = 7 output bytes
+///   per source byte, which also covers `3n + 2n` content expansion plus
+///   wrapper (`5n + 4` for a single covering link; `7n` for many minimum
+///   links). Nested `L<>` is display-text-stripped then wrapped once
+///   (#18135), so nesting cannot beat this linear ceiling. `=item` injects
+///   `"- "` (2 bytes) in place of a `=item` directive (≥5 bytes).
+///
+/// Closed form: `bound(n) = n * (wrapper_len / min_link_markup_len) = 7n`.
+fn markdown_rendered_field_bound(source_len: usize) -> usize {
+    source_len.saturating_mul(MARKDOWN_LINK_WRAPPER.len() / MIN_LINK_MARKUP.len())
+}
+
+fn markdown_field_within_bound(rendered: &str, source_len: usize) -> bool {
+    rendered.len() <= markdown_rendered_field_bound(source_len)
+}
+
+/// Compact DESCRIPTION whose percent-encoded markdown is longer than the
+/// whole source, yet stays inside the derived ceiling.
+fn expanding_description_source() -> &'static str {
+    "=head1 DESCRIPTION\n\nSee L<日本語> L<café> L<foo bar> and L<[x]>.\n\n=cut\n"
+}
+
+#[test]
+fn description_markdown_expansion_exceeds_source_but_stays_within_derived_bound() {
+    let source = expanding_description_source();
+    let doc = extract_pod(source);
+    let desc = must_some_with(doc.description.as_deref(), "DESCRIPTION with expanding L<> links");
+
+    assert!(
+        desc.contains("[日本語](perldoc://") && desc.contains("%20") && desc.contains("\\[x\\]"),
+        "expected unicode, percent-encoded, and escaped-display markdown; got: {desc}"
+    );
+    assert!(
+        desc.len() > source.len(),
+        "fixture must expand past the whole source (old `<= len` oracle is false): desc={} source={}",
+        desc.len(),
+        source.len()
+    );
+    assert!(
+        markdown_field_within_bound(desc, source.len()),
+        "DESCRIPTION {}B exceeded derived bound {}B for {}B source: {desc}",
+        desc.len(),
+        markdown_rendered_field_bound(source.len()),
+        source.len()
+    );
+}
+
+#[test]
+fn duplicated_markdown_rendering_violates_derived_bound() {
+    let source = expanding_description_source();
+    let doc = extract_pod(source);
+    let desc =
+        must_some_with(doc.description.as_deref(), "DESCRIPTION for negative-control mutant");
+    let bound = markdown_rendered_field_bound(source.len());
+    assert!(
+        markdown_field_within_bound(desc, source.len()),
+        "control must first sit inside the bound"
+    );
+
+    let copies = bound / desc.len().max(1) + 1;
+    let runaway = desc.repeat(copies);
+    assert!(runaway.len() > bound, "mutant must exceed the bound: {} vs {bound}", runaway.len());
+    assert!(
+        !markdown_field_within_bound(&runaway, source.len()),
+        "duplicating a rendered DESCRIPTION must fail the replacement oracle"
+    );
+}
+
+#[test]
+fn method_body_with_links_keeps_display_text_source_cap() {
+    // #17984: method bodies are display text, not markdown. The same L<>
+    // payload that expands DESCRIPTION stays `<= source` here, so the
+    // method-body fuzz arm does not need the markdown ceiling.
+    let source = "=head2 method_a\n\nSee L<日本語> L<café> L<foo bar> and L<[x]>.\n\n=cut\n";
+    let doc = extract_pod(source);
+    let body = must_some_with(doc.methods.get("method_a").map(String::as_str), "method_a body");
+
+    assert_eq!(body, "See 日本語 café foo bar and [x].", "got: {body}");
+    assert!(
+        body.len() <= source.len(),
+        "display-text method body {}B must not exceed {}B source",
+        body.len(),
+        source.len()
+    );
+    assert!(!body.contains("perldoc://"), "method body must not render markdown: {body}");
+    assert!(
+        markdown_field_within_bound(body, source.len()),
+        "display-text output is also inside the looser markdown ceiling"
+    );
+}
+
+#[test]
+fn markdown_bound_helper_matches_wrapper_dominated_empty_link() {
+    // Unmatched empty `L<` → `[](perldoc://)` is the ratio that sets 7n.
+    assert_eq!(MARKDOWN_LINK_WRAPPER.len() / MIN_LINK_MARKUP.len(), 7);
+    assert_eq!(markdown_rendered_field_bound(0), 0);
+    assert_eq!(markdown_rendered_field_bound(2), MARKDOWN_LINK_WRAPPER.len());
+    assert!(markdown_field_within_bound(MARKDOWN_LINK_WRAPPER, MIN_LINK_MARKUP.len()));
+    assert!(!markdown_field_within_bound(
+        &format!("{MARKDOWN_LINK_WRAPPER}x"),
+        MIN_LINK_MARKUP.len()
+    ));
+    // Concatenating two worst-case renders (28B) must miss a 7n ceiling on a
+    // 2-byte source (14B) and would still fit an arbitrary 16n multiplier.
+    let duplicated_worst_case = MARKDOWN_LINK_WRAPPER.repeat(2);
+    assert_eq!(duplicated_worst_case.len(), 28);
+    assert!(
+        !markdown_field_within_bound(&duplicated_worst_case, MIN_LINK_MARKUP.len()),
+        "7n must reject duplicated wrapper-dominated output; a looser multiplier would not"
     );
 }
 

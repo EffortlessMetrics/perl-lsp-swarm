@@ -10,10 +10,37 @@ fn bounded_utf8_lossy(data: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(capped)
 }
 
+/// Markdown wrapper `extract_link_display` puts around every rendered `L<>`.
+const MARKDOWN_LINK_WRAPPER: &str = "[](perldoc://)";
+/// Fewest source bytes that can emit one wrapper: unmatched `L<`.
+const MIN_LINK_MARKUP: &str = "L<";
+
+/// Upper bound on a Markdown-rendered POD field (`description` today).
+///
+/// Derived from `perl-pod`'s `strip_pod_formatting` / `extract_link_display`,
+/// not chosen as a corpus-passing multiplier. Keep in lockstep with
+/// `markdown_rendered_field_bound` in
+/// `crates/perl-pod/tests/pod_extraction_tests.rs` (#15251):
+///
+/// - `encode_pod_link_target` emits at most 3 bytes per source byte (`%XX`).
+/// - `escape_markdown_link_text` emits at most 2 bytes per display character
+///   (`\\`, `[`, `]`). Display and target both come from the link inner text.
+/// - Each rendered link adds a 14-byte wrapper (`[](perldoc://)`).
+/// - A link consumes at least 2 source bytes (`L<`). The wrapper-dominated
+///   empty unmatched link `L<` → `[](perldoc://)` is 14/2 = 7 output bytes
+///   per source byte, which also covers `3n + 2n` content expansion plus
+///   wrapper. Nested `L<>` is display-text-stripped then wrapped once
+///   (#18135), so nesting cannot beat this linear ceiling.
+///
+/// Closed form: `bound(n) = n * (wrapper_len / min_link_markup_len) = 7n`.
+fn markdown_rendered_field_bound(source_len: usize) -> usize {
+    source_len.saturating_mul(MARKDOWN_LINK_WRAPPER.len() / MIN_LINK_MARKUP.len())
+}
+
 fn assert_doc_well_formed(doc: &PodDoc, source: &str) {
-    // Every extracted field must be a substring-like fragment of the input, in
-    // the weak sense that it cannot exceed the source length. (POD extraction
-    // trims and concatenates - a strict substring check would over-constrain.)
+    // Display-text fields cannot exceed the source. DESCRIPTION is the sole
+    // markdown field (#17984): percent-encoded L<> targets may grow past
+    // source length, but not past the renderer-derived ceiling (#15251).
     let len = source.len();
     if let Some(name) = &doc.name {
         assert!(name.len() <= len, "name field longer than source");
@@ -21,10 +48,17 @@ fn assert_doc_well_formed(doc: &PodDoc, source: &str) {
     if let Some(syn) = &doc.synopsis {
         assert!(syn.len() <= len, "synopsis field longer than source");
     }
-    // Description is intentionally not asserted (#17984 contract): it is
-    // the sole markdown field, so percent-encoded L<> targets may
-    // legitimately expand it past its source paragraph. Name, synopsis,
-    // and method bodies are plain display text and stay bounded above.
+    if let Some(desc) = &doc.description {
+        assert!(
+            desc.len() <= markdown_rendered_field_bound(len),
+            "description field longer than renderer-derived markdown bound"
+        );
+    }
+    // Method keys and bodies are plain display text (#17984). The same
+    // expanding L<> input that DESCRIPTION renders as markdown cannot grow
+    // a method body past source (fuzz pass 2 wraps input in both
+    // `=head1 DESCRIPTION` and `=head2 method_a`), so these arms keep the
+    // strong cap rather than the markdown ceiling.
     for (key, body) in &doc.methods {
         assert!(key.len() <= len, "method key longer than source");
         assert!(body.len() <= len, "method body longer than source");
