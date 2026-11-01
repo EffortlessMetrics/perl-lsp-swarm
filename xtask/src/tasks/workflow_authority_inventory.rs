@@ -1,17 +1,22 @@
 //! Credential derivation inventory for GitHub workflow YAML.
 //!
-//! First slice of #14867 and the credential column of #9448. This surface is
-//! diagnostic: it classifies credential shapes already present in
-//! `.github/workflows/*.yml` and does not change workflow behavior.
+//! Credential column of #14867 / #9448. Diagnostic only: it classifies shapes
+//! already present in `.github/workflows/*.yml` and does not change workflow
+//! behavior.
 //!
-//! Schema-aware v2: new derivation kinds are added alongside v1 kinds. An
-//! env-injected `${{ github.token }}` keeps `GithubToken` and also records
-//! `EnvInjectedToken`. OIDC `id-token: write` is a new kind, not a re-label of
-//! `secrets.*`.
+//! Schema-aware v3: `id-token: write` is request authority (a permission fact),
+//! not evidence that an OIDC JWT was minted. An OIDC credential derivation is
+//! emitted only when that permission is joined to a concrete requester
+//! (unconditional admitted action, `run:` / `actions/github-script` `with.script`
+//! `getIDToken(` call, or an HTTP client using `$ACTIONS_ID_TOKEN_REQUEST_*`).
+//! Cloud login actions, inert `with:` strings, and incidental mentions (echo,
+//! `--exclude-env`) are not requesters. Permission without a requester, or a
+//! requester without permission, is unproven rather than credential-free.
+//! v1/v2 kinds remain independently recorded.
 //!
-//! This slice recognizes explicit mapping `id-token: write` at workflow or job
-//! scope. GitHub's `permissions: write-all` shorthand is residual, not an OIDC
-//! derivation here.
+//! GitHub's `permissions: write-all` shorthand is residual, not an OIDC
+//! permission or derivation here. Vault/cloud-SDK secret-manager shapes remain
+//! residual on #14867.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -24,11 +29,18 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::utils::project_root;
 
-/// Schema id for this credential-column slice. Generation 2 adds kinds;
-/// generation 1 kinds remain independently recorded.
-pub const SCHEMA: &str = "workflow_authority_credential.v2";
+/// Schema id for this credential-column slice. Generation 3 splits OIDC
+/// request authority from joined requester derivation; generation 1/2 kinds
+/// remain independently recorded.
+pub const SCHEMA: &str = "workflow_authority_credential.v3";
 
 const WORKFLOWS_DIR: &str = ".github/workflows";
+
+/// YAML-admitted OIDC JWT requesters whose contract requests a token
+/// unconditionally. Cloud login actions can take static keys, so their names
+/// are not admitted here.
+const KNOWN_OIDC_REQUESTER_ACTIONS: &[&str] =
+    &["actions/deploy-pages", "actions/attest", "actions/attest-build-provenance"];
 
 #[derive(Serialize)]
 struct CredentialInventoryReport<'a> {
@@ -49,8 +61,9 @@ pub enum CredentialDerivationKind {
     TokenBackedMutation,
     /// v2: `env:` bindings whose values are credential expressions.
     EnvInjectedToken,
-    /// v2: `permissions: id-token: write` (OIDC token minting).
-    OidcIdTokenWrite,
+    /// v3: OIDC JWT request joined to a concrete requester. Not emitted from
+    /// `id-token: write` alone.
+    OidcJoinedRequester,
 }
 
 impl CredentialDerivationKind {
@@ -58,9 +71,28 @@ impl CredentialDerivationKind {
     pub const fn generation(self) -> u8 {
         match self {
             Self::SecretExpression | Self::GithubToken | Self::TokenBackedMutation => 1,
-            Self::EnvInjectedToken | Self::OidcIdTokenWrite => 2,
+            Self::EnvInjectedToken => 2,
+            Self::OidcJoinedRequester => 3,
         }
     }
+}
+
+/// YAML permission / request-authority fact. Distinct from credential derivation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionKind {
+    /// Explicit mapping `id-token: write` at workflow or job scope.
+    IdTokenWrite,
+}
+
+/// Source-backed OIDC facts that are not proven credential-bearing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnprovenKind {
+    /// Effective `id-token: write` with no admitted requester on that job.
+    OidcPermissionWithoutRequester,
+    /// Admitted requester (or request primitive) without effective `id-token: write`.
+    OidcRequesterWithoutPermission,
 }
 
 /// One recognized credential derivation at a YAML path.
@@ -74,11 +106,41 @@ pub struct CredentialDerivation {
     pub evidence: String,
 }
 
-/// Per-workflow credential column.
+/// One declared permission / request-authority fact.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct PermissionFact {
+    pub kind: PermissionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    pub path: String,
+    pub evidence: String,
+}
+
+/// One OIDC fact that is not proven credential-bearing.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct UnprovenFact {
+    pub kind: UnprovenKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    pub path: String,
+    pub evidence: String,
+}
+
+/// Per-workflow credential column: permissions, derivations, and unproven OIDC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkflowCredentialRow {
     pub workflow: String,
+    pub permissions: Vec<PermissionFact>,
     pub derivations: Vec<CredentialDerivation>,
+    pub unproven: Vec<UnprovenFact>,
+}
+
+/// Classified facts for one parsed workflow document.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkflowClassification {
+    pub permissions: Vec<PermissionFact>,
+    pub derivations: Vec<CredentialDerivation>,
+    pub unproven: Vec<UnprovenFact>,
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +165,30 @@ impl<'a> ScanCtx<'a> {
 
     fn with_with_key(self, with_key: &'a str) -> Self {
         Self { with_key: Some(with_key), ..self }
+    }
+}
+
+struct ScanOut {
+    permissions: BTreeSet<PermissionFact>,
+    derivations: BTreeSet<CredentialDerivation>,
+    unproven: BTreeSet<UnprovenFact>,
+}
+
+impl ScanOut {
+    fn new() -> Self {
+        Self {
+            permissions: BTreeSet::new(),
+            derivations: BTreeSet::new(),
+            unproven: BTreeSet::new(),
+        }
+    }
+
+    fn into_classification(self) -> WorkflowClassification {
+        WorkflowClassification {
+            permissions: self.permissions.into_iter().collect(),
+            derivations: self.derivations.into_iter().collect(),
+            unproven: self.unproven.into_iter().collect(),
+        }
     }
 }
 
@@ -179,25 +265,32 @@ pub fn classify_workflow_file(path: &Path) -> Result<WorkflowCredentialRow> {
         .with_context(|| format!("parsing workflow YAML {}", path.display()))?;
     let workflow_name =
         path.file_name().and_then(|name| name.to_str()).unwrap_or("unknown.yml").to_string();
-    Ok(WorkflowCredentialRow { workflow: workflow_name, derivations: classify_workflow(&workflow) })
+    let classified = classify_workflow(&workflow);
+    Ok(WorkflowCredentialRow {
+        workflow: workflow_name,
+        permissions: classified.permissions,
+        derivations: classified.derivations,
+        unproven: classified.unproven,
+    })
 }
 
 /// Classify an already-parsed workflow document.
-pub fn classify_workflow(workflow: &Value) -> Vec<CredentialDerivation> {
-    let mut found = BTreeSet::new();
-    scan_document(workflow, &mut found);
-    found.into_iter().collect()
+pub fn classify_workflow(workflow: &Value) -> WorkflowClassification {
+    let mut out = ScanOut::new();
+    scan_document(workflow, &mut out);
+    out.into_classification()
 }
 
-fn scan_document(workflow: &Value, out: &mut BTreeSet<CredentialDerivation>) {
+fn scan_document(workflow: &Value, out: &mut ScanOut) {
     let Some(root) = workflow.as_mapping() else {
         return;
     };
-    if let Some(permissions) = mapping_get(root, "permissions") {
-        scan_permissions(permissions, ScanCtx::root(), "permissions", out);
-    }
+    let workflow_id_token_write = match mapping_get(root, "permissions") {
+        Some(permissions) => scan_permissions(permissions, ScanCtx::root(), "permissions", out),
+        None => false,
+    };
     if let Some(env) = mapping_get(root, "env") {
-        scan_env(env, ScanCtx::root(), "env", out);
+        scan_env(env, ScanCtx::root(), "env", &mut out.derivations);
     }
     let Some(jobs) = mapping_get(root, "jobs").and_then(Value::as_mapping) else {
         return;
@@ -211,59 +304,201 @@ fn scan_document(workflow: &Value, out: &mut BTreeSet<CredentialDerivation>) {
         };
         let ctx = ScanCtx::root().with_job(job_name);
         let job_path = format!("jobs.{job_name}");
-        if let Some(permissions) = mapping_get(job, "permissions") {
-            scan_permissions(permissions, ctx, &format!("{job_path}.permissions"), out);
-        }
+        let declared_permissions = mapping_get(job, "permissions");
+        let job_id_token_write = match declared_permissions {
+            Some(permissions) => {
+                scan_permissions(permissions, ctx, &format!("{job_path}.permissions"), out)
+            }
+            None => false,
+        };
         if let Some(env) = mapping_get(job, "env") {
-            scan_env(env, ctx, &format!("{job_path}.env"), out);
+            scan_env(env, ctx, &format!("{job_path}.env"), &mut out.derivations);
         }
+        let mut requesters = Vec::new();
         if let Some(steps) = mapping_get(job, "steps").and_then(Value::as_sequence) {
             for (index, step) in steps.iter().enumerate() {
-                scan_step(step, ctx, &format!("{job_path}.steps[{index}]"), out);
+                scan_step(
+                    step,
+                    ctx,
+                    &format!("{job_path}.steps[{index}]"),
+                    &mut requesters,
+                    &mut out.derivations,
+                );
             }
         }
         // Remaining job fields (run scripts, names, `if:`) still carry v1 expressions.
-        scan_value(job_value, ctx, &job_path, out);
+        scan_value(job_value, ctx, &job_path, &mut out.derivations);
+        let effective_id_token_write = if declared_permissions.is_some() {
+            job_id_token_write
+        } else {
+            workflow_id_token_write
+        };
+        join_job_oidc(job_name, &job_path, effective_id_token_write, &requesters, out);
     }
 }
 
-fn scan_step(step: &Value, ctx: ScanCtx<'_>, path: &str, out: &mut BTreeSet<CredentialDerivation>) {
+fn scan_step(
+    step: &Value,
+    ctx: ScanCtx<'_>,
+    path: &str,
+    requesters: &mut Vec<(String, String)>,
+    derivations: &mut BTreeSet<CredentialDerivation>,
+) {
+    requesters.extend(oidc_requesters_in_step(step, path));
     let Some(step_map) = step.as_mapping() else {
-        scan_value(step, ctx, path, out);
+        scan_value(step, ctx, path, derivations);
         return;
     };
     if let Some(env) = mapping_get(step_map, "env") {
-        scan_env(env, ctx, &format!("{path}.env"), out);
+        scan_env(env, ctx, &format!("{path}.env"), derivations);
     }
     if let Some(with) = mapping_get(step_map, "with") {
-        scan_with(with, ctx, &format!("{path}.with"), out);
+        scan_with(with, ctx, &format!("{path}.with"), derivations);
     }
-    scan_value(step, ctx, path, out);
+    scan_value(step, ctx, path, derivations);
 }
 
-fn scan_permissions(
-    permissions: &Value,
-    ctx: ScanCtx<'_>,
-    path: &str,
-    out: &mut BTreeSet<CredentialDerivation>,
-) {
+fn scan_permissions(permissions: &Value, ctx: ScanCtx<'_>, path: &str, out: &mut ScanOut) -> bool {
     let Some(map) = permissions.as_mapping() else {
-        return;
+        return false;
     };
+    let mut id_token_write = false;
     for (key, value) in map {
         let Some(scope) = yaml_key(key) else {
             continue;
         };
         if scope == "id-token" && is_write_scope(value) {
-            push(
-                out,
-                CredentialDerivationKind::OidcIdTokenWrite,
-                ctx.job,
-                format!("{path}.{scope}"),
-                "id-token: write",
-            );
+            id_token_write = true;
+            out.permissions.insert(PermissionFact {
+                kind: PermissionKind::IdTokenWrite,
+                job: ctx.job.map(str::to_string),
+                path: format!("{path}.{scope}"),
+                evidence: "id-token: write".to_string(),
+            });
         }
     }
+    id_token_write
+}
+
+fn join_job_oidc(
+    job: &str,
+    job_path: &str,
+    effective_id_token_write: bool,
+    requesters: &[(String, String)],
+    out: &mut ScanOut,
+) {
+    if effective_id_token_write {
+        if requesters.is_empty() {
+            out.unproven.insert(UnprovenFact {
+                kind: UnprovenKind::OidcPermissionWithoutRequester,
+                job: Some(job.to_string()),
+                path: job_path.to_string(),
+                evidence: "id-token: write with no admitted requester".to_string(),
+            });
+        } else {
+            for (path, evidence) in requesters {
+                push(
+                    &mut out.derivations,
+                    CredentialDerivationKind::OidcJoinedRequester,
+                    Some(job),
+                    path.clone(),
+                    evidence.clone(),
+                );
+            }
+        }
+        return;
+    }
+    for (path, evidence) in requesters {
+        out.unproven.insert(UnprovenFact {
+            kind: UnprovenKind::OidcRequesterWithoutPermission,
+            job: Some(job.to_string()),
+            path: path.clone(),
+            evidence: format!("{evidence} without id-token: write"),
+        });
+    }
+}
+
+fn oidc_requesters_in_step(step: &Value, path: &str) -> Vec<(String, String)> {
+    let Some(step_map) = step.as_mapping() else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    if let Some(uses) = mapping_get(step_map, "uses").and_then(Value::as_str)
+        && let Some(action) = action_identity(uses)
+        && is_known_oidc_requester(action)
+    {
+        found.push((format!("{path}.uses"), format!("uses: {action}")));
+    }
+    if let Some(run) = mapping_get(step_map, "run").and_then(Value::as_str)
+        && let Some(primitive) = oidc_request_primitive(run)
+    {
+        found.push((format!("{path}.run"), primitive.to_string()));
+    }
+    if mapping_get(step_map, "uses").and_then(Value::as_str).and_then(action_identity)
+        == Some("actions/github-script")
+        && let Some(script) = mapping_get(step_map, "with")
+            .and_then(Value::as_mapping)
+            .and_then(|with| mapping_get(with, "script"))
+            .and_then(Value::as_str)
+        && let Some(primitive) = oidc_request_primitive(script)
+    {
+        found.push((format!("{path}.with.script"), primitive.to_string()));
+    }
+    found
+}
+
+fn action_identity(uses: &str) -> Option<&str> {
+    let uses = uses.trim();
+    if uses.is_empty() || uses.starts_with("./") || uses.starts_with("docker://") {
+        return None;
+    }
+    uses.split('@').next().map(str::trim).filter(|action| !action.is_empty())
+}
+
+fn is_known_oidc_requester(action: &str) -> bool {
+    KNOWN_OIDC_REQUESTER_ACTIONS.contains(&action)
+}
+
+fn oidc_request_primitive(text: &str) -> Option<&'static str> {
+    if text.contains("getIDToken(") {
+        return Some("getIDToken");
+    }
+    requests_oidc_http(text)
+}
+
+/// HTTP request using the Actions OIDC request API. Printing or excluding the
+/// variable names is not a requester.
+fn requests_oidc_http(text: &str) -> Option<&'static str> {
+    let uses_url = uses_id_token_request_var(text, "ACTIONS_ID_TOKEN_REQUEST_URL");
+    let uses_token = uses_id_token_request_var(text, "ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+    if !uses_url && !uses_token {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    let http_client = lower.contains("curl")
+        || lower.contains("wget")
+        || lower.contains("fetch(")
+        || lower.contains("http.get")
+        || lower.contains("http.request")
+        || lower.contains("https.get")
+        || lower.contains("https.request");
+    if !http_client {
+        return None;
+    }
+    if uses_url {
+        Some("ACTIONS_ID_TOKEN_REQUEST_URL")
+    } else {
+        Some("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    }
+}
+
+/// Request-variable *use*, not a bare name. `--exclude-env ACTIONS_ID_TOKEN_REQUEST_URL`
+/// names the API in order to deny it and is not a requester.
+fn uses_id_token_request_var(text: &str, name: &str) -> bool {
+    let dollar = format!("${name}");
+    let braced = format!("${{{name}}}");
+    let process_env = format!("process.env.{name}");
+    text.contains(&dollar) || text.contains(&braced) || text.contains(&process_env)
 }
 
 fn scan_env(env: &Value, ctx: ScanCtx<'_>, path: &str, out: &mut BTreeSet<CredentialDerivation>) {
@@ -464,12 +699,11 @@ jobs:
     }
 
     #[test]
-    fn schema_is_v2() {
-        assert_eq!(SCHEMA, "workflow_authority_credential.v2");
+    fn schema_is_v3() {
+        assert_eq!(SCHEMA, "workflow_authority_credential.v3");
         assert_eq!(CredentialDerivationKind::EnvInjectedToken.generation(), 2);
-        assert_eq!(CredentialDerivationKind::OidcIdTokenWrite.generation(), 2);
+        assert_eq!(CredentialDerivationKind::OidcJoinedRequester.generation(), 3);
         assert_eq!(CredentialDerivationKind::GithubToken.generation(), 1);
-        assert_eq!(CredentialDerivationKind::EnvInjectedToken.generation(), 2);
     }
 
     #[test]
@@ -493,7 +727,7 @@ jobs:
             "env-injected github.token must add the v2 kind: {kinds:?}"
         );
         assert!(
-            !kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
+            !kinds.contains(&CredentialDerivationKind::OidcJoinedRequester),
             "env injection is not OIDC: {kinds:?}"
         );
         let env = must_kind(&derivations_of(&yaml), CredentialDerivationKind::EnvInjectedToken);
@@ -541,7 +775,7 @@ jobs:
     }
 
     #[test]
-    fn oidc_id_token_write_is_a_new_kind_not_a_secret() {
+    fn id_token_write_without_requester_is_permission_not_minted_credential() {
         let yaml = with_job_body(
             r"
     permissions:
@@ -551,41 +785,319 @@ jobs:
       - run: echo federated
 ",
         );
-        let kinds = kinds_of(&yaml);
-        assert!(
-            kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "id-token: write must be recognized: {kinds:?}"
+        let classified = classify_yaml(&yaml);
+        assert_eq!(
+            permission_kinds(&classified),
+            [PermissionKind::IdTokenWrite].into_iter().collect(),
+            "id-token: write is request authority: {:?}",
+            classified.permissions
         );
         assert!(
-            !kinds.contains(&CredentialDerivationKind::SecretExpression),
-            "OIDC write must not be reclassified as secrets.*: {kinds:?}"
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "permission alone must not mint an OIDC credential: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect(),
+            "permission without requester is unproven, not credential-free: {:?}",
+            classified.unproven
         );
         assert!(
-            !kinds.contains(&CredentialDerivationKind::GithubToken),
-            "OIDC write is not github.token: {kinds:?}"
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::SecretExpression),
+            "OIDC permission must not be reclassified as secrets.*: {:?}",
+            classified.derivations
         );
-        let oidc = must_kind(&derivations_of(&yaml), CredentialDerivationKind::OidcIdTokenWrite);
-        assert_eq!(oidc.generation, 2);
-        assert!(oidc.path.ends_with("permissions.id-token"), "{}", oidc.path);
+        let permission = must_permission(&classified, PermissionKind::IdTokenWrite);
+        assert!(permission.path.ends_with("permissions.id-token"), "{}", permission.path);
+        assert_eq!(permission.job.as_deref(), Some("example"));
     }
 
     #[test]
-    fn workflow_level_oidc_id_token_write_is_recognized() {
+    fn id_token_write_plus_known_requester_joins_oidc_derivation() {
+        let yaml = with_job_body(
+            r"
+    permissions:
+      id-token: write
+      pages: write
+    steps:
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
+",
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(
+            permission_kinds(&classified).contains(&PermissionKind::IdTokenWrite),
+            "permission axis remains: {:?}",
+            classified.permissions
+        );
+        let oidc =
+            must_kind(&classified.derivations, CredentialDerivationKind::OidcJoinedRequester);
+        assert_eq!(oidc.generation, 3);
+        assert_eq!(oidc.job.as_deref(), Some("example"));
+        assert_eq!(oidc.evidence, "uses: actions/deploy-pages");
+        assert!(oidc.path.ends_with(".uses"), "{}", oidc.path);
+        assert!(
+            classified.unproven.is_empty(),
+            "joined requester is not unproven: {:?}",
+            classified.unproven
+        );
+    }
+
+    #[test]
+    fn known_requester_without_permission_is_unproven_cannot_mint() {
+        let yaml = with_job_body(
+            r"
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/deploy-pages@v5
+",
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(
+            classified.permissions.is_empty(),
+            "no id-token write was declared: {:?}",
+            classified.permissions
+        );
+        assert!(
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "requester without permission cannot mint: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcRequesterWithoutPermission].into_iter().collect(),
+            "requester without permission is unproven: {:?}",
+            classified.unproven
+        );
+        let unproven = &classified.unproven[0];
+        assert!(unproven.evidence.contains("uses: actions/deploy-pages"), "{}", unproven.evidence);
+        assert!(unproven.evidence.contains("without id-token: write"), "{}", unproven.evidence);
+    }
+
+    #[test]
+    fn get_id_token_primitive_joins_when_permission_is_present() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - run: node -e "require('@actions/core').getIDToken('aud')"
+"#,
+        );
+        let oidc = must_kind(&derivations_of(&yaml), CredentialDerivationKind::OidcJoinedRequester);
+        assert_eq!(oidc.evidence, "getIDToken");
+        assert!(oidc.path.ends_with(".run"), "{}", oidc.path);
+    }
+
+    #[test]
+    fn id_token_request_url_primitive_joins_when_permission_is_present() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - run: 'curl "$ACTIONS_ID_TOKEN_REQUEST_URL"'
+"#,
+        );
+        let oidc = must_kind(&derivations_of(&yaml), CredentialDerivationKind::OidcJoinedRequester);
+        assert_eq!(oidc.evidence, "ACTIONS_ID_TOKEN_REQUEST_URL");
+    }
+
+    #[test]
+    fn exclude_env_id_token_request_name_is_not_a_requester() {
+        let yaml = with_job_body(
+            r"
+    steps:
+      - run: awf --exclude-env ACTIONS_ID_TOKEN_REQUEST_TOKEN --exclude-env ACTIONS_ID_TOKEN_REQUEST_URL
+",
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(
+            classified.unproven.is_empty(),
+            "excluding the request env vars is not an OIDC requester: {:?}",
+            classified.unproven
+        );
+        assert!(!kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester));
+    }
+
+    #[test]
+    fn echo_of_id_token_request_url_is_not_a_requester() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - run: 'echo "$ACTIONS_ID_TOKEN_REQUEST_URL"'
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "printing the request URL does not mint: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn inert_with_get_id_token_mention_is_not_a_requester() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - uses: some/action@v1
+        with:
+          description: "docs: call core.getIDToken(\"aud\")"
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "inert with input is not executable source: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn https_get_with_id_token_request_url_joins() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - run: node -e "https.get(process.env.ACTIONS_ID_TOKEN_REQUEST_URL)"
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        let oidc =
+            must_kind(&classified.derivations, CredentialDerivationKind::OidcJoinedRequester);
+        assert_eq!(oidc.evidence, "ACTIONS_ID_TOKEN_REQUEST_URL");
+        assert!(classified.unproven.is_empty(), "{:?}", classified.unproven);
+    }
+
+    #[test]
+    fn github_script_get_id_token_in_with_script_joins() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: await core.getIDToken("aud")
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        let oidc =
+            must_kind(&classified.derivations, CredentialDerivationKind::OidcJoinedRequester);
+        assert_eq!(oidc.evidence, "getIDToken");
+        assert!(oidc.path.ends_with(".with.script"), "{}", oidc.path);
+        assert!(classified.unproven.is_empty(), "{:?}", classified.unproven);
+    }
+
+    #[test]
+    fn static_key_cloud_login_is_not_an_admitted_requester() {
+        let yaml = with_job_body(
+            r"
+    permissions:
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+",
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(permission_kinds(&classified).contains(&PermissionKind::IdTokenWrite));
+        assert!(
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "static-key cloud login is not an OIDC requester: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn workflow_level_id_token_write_is_inherited_by_jobs_without_permissions() {
         let yaml = r"
 permissions:
   contents: read
   id-token: write
 jobs:
-  example:
+  inherit:
     runs-on: ubuntu-latest
     steps:
-      - run: echo federated
+      - uses: actions/deploy-pages@v5
+  idle:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo no requester
+  override:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/deploy-pages@v5
 ";
-        let oidc = must_kind(&derivations_of(yaml), CredentialDerivationKind::OidcIdTokenWrite);
-        assert_eq!(oidc.generation, 2);
-        assert!(oidc.job.is_none(), "workflow-level OIDC has no job: {:?}", oidc.job);
-        assert_eq!(oidc.path, "permissions.id-token");
-        assert!(!kinds_of(yaml).contains(&CredentialDerivationKind::SecretExpression));
+        let classified = classify_yaml(yaml);
+        let permission = must_permission(&classified, PermissionKind::IdTokenWrite);
+        assert!(
+            permission.job.is_none(),
+            "workflow-level permission has no job: {:?}",
+            permission.job
+        );
+        assert_eq!(permission.path, "permissions.id-token");
+
+        let inherit = classified.derivations.iter().find(|row| {
+            row.kind == CredentialDerivationKind::OidcJoinedRequester
+                && row.job.as_deref() == Some("inherit")
+        });
+        let Some(inherit) = inherit else {
+            panic!("inherited job with requester must join OIDC: {:?}", classified.derivations);
+        };
+        assert_eq!(inherit.evidence, "uses: actions/deploy-pages");
+
+        assert!(
+            classified.derivations.iter().all(|row| {
+                row.kind != CredentialDerivationKind::OidcJoinedRequester
+                    || row.job.as_deref() == Some("inherit")
+            }),
+            "override/idle must not mint OIDC: {:?}",
+            classified.derivations
+        );
+
+        let idle = classified.unproven.iter().find(|row| {
+            row.kind == UnprovenKind::OidcPermissionWithoutRequester
+                && row.job.as_deref() == Some("idle")
+        });
+        assert!(
+            idle.is_some(),
+            "inherited permission without requester is unproven: {:?}",
+            classified.unproven
+        );
+
+        let override_job = classified.unproven.iter().find(|row| {
+            row.kind == UnprovenKind::OidcRequesterWithoutPermission
+                && row.job.as_deref() == Some("override")
+        });
+        assert!(
+            override_job.is_some(),
+            "job-level permissions replace workflow-level; requester cannot mint: {:?}",
+            classified.unproven
+        );
     }
 
     #[test]
@@ -598,10 +1110,13 @@ jobs:
     steps:
       - run: echo residual
 ";
+        let classified = classify_yaml(yaml);
         assert!(
-            !kinds_of(yaml).contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "permissions: write-all is residual, not a silent OIDC kind"
+            classified.permissions.is_empty(),
+            "permissions: write-all is residual, not a silent OIDC permission"
         );
+        assert!(!kinds_of(yaml).contains(&CredentialDerivationKind::OidcJoinedRequester));
+        assert!(classified.unproven.is_empty());
     }
 
     #[test]
@@ -614,10 +1129,9 @@ jobs:
       - run: echo no mint
 ",
         );
-        assert!(
-            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "id-token: read must not mint the v2 OIDC-write kind"
-        );
+        let classified = classify_yaml(&yaml);
+        assert!(classified.permissions.is_empty());
+        assert!(!kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester));
     }
 
     #[test]
@@ -630,7 +1144,10 @@ jobs:
       - run: echo no oidc
 ",
         );
+        let classified = classify_yaml(&yaml);
+        assert!(classified.permissions.is_empty());
         assert!(kinds_of(&yaml).is_empty());
+        assert!(classified.unproven.is_empty());
     }
 
     #[test]
@@ -641,10 +1158,41 @@ jobs:
       - run: 'echo "permissions: id-token: write"'
 "#,
         );
+        let classified = classify_yaml(&yaml);
         assert!(
-            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "string mention of id-token: write must not count as OIDC"
+            classified.permissions.is_empty(),
+            "string mention of id-token: write must not count as permission"
         );
+        assert!(!kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester));
+    }
+
+    #[test]
+    fn unknown_action_is_not_an_admitted_requester() {
+        let yaml = with_job_body(
+            r"
+    permissions:
+      id-token: write
+    steps:
+      - uses: some-org/not-an-oidc-action@v1
+",
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(permission_kinds(&classified).contains(&PermissionKind::IdTokenWrite));
+        assert!(!kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester));
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn action_identity_strips_pin_and_rejects_local_or_docker() {
+        assert_eq!(
+            action_identity("actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346"),
+            Some("actions/deploy-pages")
+        );
+        assert_eq!(action_identity("./local-action"), None);
+        assert_eq!(action_identity("docker://alpine:3"), None);
     }
 
     #[test]
@@ -721,16 +1269,39 @@ jobs:
 
     #[test]
     fn credential_free_workflow_stays_empty() {
+        let classified = classify_yaml(MINIMAL_JOB);
         assert!(kinds_of(MINIMAL_JOB).is_empty());
+        assert!(classified.permissions.is_empty());
+        assert!(classified.unproven.is_empty());
     }
 
     #[test]
-    fn live_docs_deploy_records_oidc_write_and_env_injected_token() -> Result<()> {
+    fn live_docs_deploy_joins_oidc_requester_and_keeps_env_injected_token() -> Result<()> {
         let row = live_row("docs-deploy.yml")?;
         let kinds = live_kinds(&row);
         assert!(
-            kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "docs-deploy.yml deploy job grants id-token: write: {kinds:?}"
+            row.permissions.iter().any(|fact| fact.kind == PermissionKind::IdTokenWrite),
+            "docs-deploy.yml deploy job grants id-token: write: {:?}",
+            row.permissions
+        );
+        assert!(
+            kinds.contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "docs-deploy.yml deploy-pages is an admitted OIDC requester: {kinds:?}"
+        );
+        let oidc = row
+            .derivations
+            .iter()
+            .find(|row| row.kind == CredentialDerivationKind::OidcJoinedRequester)
+            .cloned();
+        let Some(oidc) = oidc else {
+            panic!("missing joined OIDC derivation: {:?}", row.derivations);
+        };
+        assert_eq!(oidc.evidence, "uses: actions/deploy-pages");
+        assert_eq!(oidc.job.as_deref(), Some("deploy"));
+        assert!(
+            !row.unproven.iter().any(|fact| fact.job.as_deref() == Some("deploy")),
+            "deploy job is joined, not unproven: {:?}",
+            row.unproven
         );
         assert!(
             kinds.contains(&CredentialDerivationKind::EnvInjectedToken),
@@ -744,16 +1315,61 @@ jobs:
     }
 
     #[test]
+    fn live_release_candidate_joins_attest_requester() -> Result<()> {
+        let row = live_row("release.yml")?;
+        assert!(
+            row.permissions.iter().any(|fact| {
+                fact.kind == PermissionKind::IdTokenWrite
+                    && fact.job.as_deref() == Some("candidate")
+            }),
+            "release.yml candidate job grants id-token: write: {:?}",
+            row.permissions
+        );
+        let oidc = row.derivations.iter().find(|row| {
+            row.kind == CredentialDerivationKind::OidcJoinedRequester
+                && row.job.as_deref() == Some("candidate")
+        });
+        let Some(oidc) = oidc else {
+            panic!("release.yml candidate must join actions/attest: {:?}", row.derivations);
+        };
+        assert_eq!(oidc.evidence, "uses: actions/attest");
+        Ok(())
+    }
+
+    #[test]
+    fn live_minimax_lock_exclude_env_is_not_an_oidc_requester() -> Result<()> {
+        let row = live_row("minimax-coding-agent.lock.yml")?;
+        assert!(
+            row.unproven.is_empty(),
+            "minimax-coding-agent.lock.yml excludes ACTIONS_ID_TOKEN_REQUEST_* from the sandbox; that is not a requester: {:?}",
+            row.unproven
+        );
+        assert!(
+            !row.derivations
+                .iter()
+                .any(|row| row.kind == CredentialDerivationKind::OidcJoinedRequester),
+            "minimax-coding-agent.lock.yml must not join OIDC from exclude-env: {:?}",
+            row.derivations
+        );
+        Ok(())
+    }
+
+    #[test]
     fn live_droid_records_no_oidc_write() -> Result<()> {
         let row = live_row("droid.yml")?;
         let kinds = live_kinds(&row);
         assert!(
-            !kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "droid.yml no longer grants id-token: write: {kinds:?}"
+            !row.permissions.iter().any(|fact| fact.kind == PermissionKind::IdTokenWrite),
+            "droid.yml no longer grants id-token: write: {:?}",
+            row.permissions
+        );
+        assert!(
+            !kinds.contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "droid.yml has no joined OIDC requester: {kinds:?}"
         );
         assert!(
             kinds.contains(&CredentialDerivationKind::EnvInjectedToken),
-            "droid.yml workflow env injects MINIMAX_API_KEY: {kinds:?}"
+            "droid.yml injects GH_TOKEN: {kinds:?}"
         );
         Ok(())
     }
@@ -765,8 +1381,8 @@ jobs:
         assert!(kinds.contains(&CredentialDerivationKind::GithubToken));
         assert!(kinds.contains(&CredentialDerivationKind::EnvInjectedToken));
         assert!(
-            !kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "pr-candidate-set.yml has no OIDC write: {kinds:?}"
+            !kinds.contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "pr-candidate-set.yml has no joined OIDC requester: {kinds:?}"
         );
         Ok(())
     }
@@ -794,9 +1410,9 @@ jobs:
     fn live_workflow_trigger_lint_is_credential_free() -> Result<()> {
         let row = live_row("workflow-trigger-lint.yml")?;
         assert!(
-            row.derivations.is_empty(),
+            row.derivations.is_empty() && row.permissions.is_empty() && row.unproven.is_empty(),
             "workflow-trigger-lint.yml should stay a negative live control: {:?}",
-            row.derivations
+            row
         );
         Ok(())
     }
@@ -808,9 +1424,15 @@ jobs:
         let with_oidc = rows
             .iter()
             .filter(|row| {
-                row.derivations
-                    .iter()
-                    .any(|derivation| derivation.kind == CredentialDerivationKind::OidcIdTokenWrite)
+                row.derivations.iter().any(|derivation| {
+                    derivation.kind == CredentialDerivationKind::OidcJoinedRequester
+                })
+            })
+            .count();
+        let with_permission = rows
+            .iter()
+            .filter(|row| {
+                row.permissions.iter().any(|fact| fact.kind == PermissionKind::IdTokenWrite)
             })
             .count();
         let with_env = rows
@@ -822,8 +1444,12 @@ jobs:
             })
             .count();
         assert!(
+            with_permission >= 2,
+            "origin/main has at least docs-deploy.yml and release.yml id-token write; found {with_permission}"
+        );
+        assert!(
             with_oidc >= 2,
-            "origin/main has at least docs-deploy.yml and droid.yml OIDC write; found {with_oidc}"
+            "docs-deploy.yml (deploy-pages) and release.yml (attest) join OIDC requesters; found {with_oidc}"
         );
         assert!(
             with_env >= 10,
@@ -839,6 +1465,28 @@ jobs:
 
     fn live_kinds(row: &WorkflowCredentialRow) -> BTreeSet<CredentialDerivationKind> {
         row.derivations.iter().map(|row| row.kind).collect()
+    }
+
+    fn classify_yaml(yaml: &str) -> WorkflowClassification {
+        classify_workflow(&parse_fixture(yaml))
+    }
+
+    fn permission_kinds(classified: &WorkflowClassification) -> BTreeSet<PermissionKind> {
+        classified.permissions.iter().map(|row| row.kind).collect()
+    }
+
+    fn unproven_kinds(classified: &WorkflowClassification) -> BTreeSet<UnprovenKind> {
+        classified.unproven.iter().map(|row| row.kind).collect()
+    }
+
+    fn must_permission(
+        classified: &WorkflowClassification,
+        kind: PermissionKind,
+    ) -> PermissionFact {
+        match classified.permissions.iter().find(|row| row.kind == kind) {
+            Some(row) => row.clone(),
+            None => panic!("missing permission kind {kind:?} in {:?}", classified.permissions),
+        }
     }
 
     fn must_kind(
@@ -859,10 +1507,10 @@ jobs:
     }
 
     fn kinds_of(yaml: &str) -> BTreeSet<CredentialDerivationKind> {
-        classify_workflow(&parse_fixture(yaml)).into_iter().map(|row| row.kind).collect()
+        classify_yaml(yaml).derivations.into_iter().map(|row| row.kind).collect()
     }
 
     fn derivations_of(yaml: &str) -> Vec<CredentialDerivation> {
-        classify_workflow(&parse_fixture(yaml))
+        classify_yaml(yaml).derivations
     }
 }
