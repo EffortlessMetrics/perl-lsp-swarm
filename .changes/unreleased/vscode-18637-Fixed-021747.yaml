@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "The retired local publisher entrypoint (`vscode-extension/scripts/refuse-local-publication.cjs`) now writes its refusal message to `process.stderr` directly instead of routing it through `scripts/reporter.js`. The publication-containment control bans `require(` in that file, so the reporter seam was unreachable there and the `require` token failed the `meta` CI shard's candidate meta self-tests. Writing to stderr directly satisfies that control and the oxlint `no-console` budget of 0 at the same time, so the entrypoint still refuses local extension publication with exit code 1 without weakening either control."
+time: 2026-11-01T02:17:47Z
+custom:
+  PR: "18637"
+  Slug: npm-refusal-stderr
+  Breaking: "no"
