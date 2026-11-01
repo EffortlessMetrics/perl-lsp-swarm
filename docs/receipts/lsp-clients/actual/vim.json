@@ -35,7 +35,7 @@
   ],
   "artifact": {
     "path": "docs/receipts/lsp-clients/actual/vim-host-initialize-capability-snapshot.json",
-    "sha256": "5e0d31b1004eb370012eda0b3d4341b61c312d4497c350cb6776557f0c93ae13",
-    "size_bytes": 2692
+    "sha256": "0a7e2322d1341a46e23c537cc6db402e136ea6fd8cf9cc01bc031ed3ecd43e2a",
+    "size_bytes": 2688
   }
 }
