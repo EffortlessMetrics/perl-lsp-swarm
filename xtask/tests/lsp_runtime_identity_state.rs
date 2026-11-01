@@ -272,7 +272,10 @@ fn relationship_semantics_reject_unlisted_extra_key() -> Result<()> {
     extra.insert("kind".into(), Value::String("permits".into()));
     extra.insert("to".into(), Value::String("client_consumed".into()));
     relations.push(Value::Object(extra.clone()));
-    reject(&changed, "relationship semantics denominator mismatch")
+    // The per-relation binding refusal fires before the denominator
+    // comparison: an unlisted id names no binding, so it is rejected here
+    // rather than at the tuple-set check.
+    reject(&changed, "relationship extra_relationship is bound to")
 }
 
 #[test]
@@ -293,7 +296,9 @@ fn relationship_ids_cannot_be_renamed_with_references_updated() -> Result<()> {
             }
         }
     }
-    reject(&changed, "relations denominator mismatch")
+    // The renamed id names no binding, so the per-relation refusal fires
+    // before the id-set denominator comparison.
+    reject(&changed, "relationship renamed_flush_requires_write is bound to")
 }
 
 #[test]
