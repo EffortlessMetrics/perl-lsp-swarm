@@ -84,6 +84,10 @@ on:
       - 'scripts/ci/check-pr-review-convergence-core'
       - 'scripts/tests/test-paginate-accumulator-argjson-portability.sh'
       - 'scripts/reviews/**'
+      # Feedback acquisition shares the review-helper lane. Test-only changes
+      # must select both its regression suite and this routing contract (#18154).
+      - 'scripts/tests/test_review_feedback.py'
+      - 'scripts/ci/test_ci_gate_self_test_routing.py'
       # Subject-bound semantic review currentness. The policy-surface suite
       # asserts against the skill trees, the shared contract, and pre-merge, so
       # a change to any of them can regress the gate that reads them.
@@ -582,6 +586,12 @@ jobs:
 
       - name: Run review threads/inline self-test
         run: bash scripts/tests/test-review-threads-inline.sh
+
+      - name: Run review feedback self-test
+        run: python3 scripts/tests/test_review_feedback.py -v
+
+      - name: Prove review helper self-test routing
+        run: python3 scripts/ci/test_ci_gate_self_test_routing.py -v
 
       - name: Summary
         if: always()
