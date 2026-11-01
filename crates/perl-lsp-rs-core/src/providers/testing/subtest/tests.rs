@@ -467,7 +467,19 @@ fn child_insertion_orders_siblings_by_end_character_matching_assembler() {
 
     assert_insertion_order(vec![make_long(longer_end)], shorter.clone(), &["short", "long"]);
     assert_insertion_order(vec![shorter.clone()], make_long(longer_end), &["short", "long"]);
-    assert_insertion_order(vec![make_long(longer_end)], shorter, &["short", "long"]);
+
+    let mut incumbent = fixture_symbol("short", 12, shorter_end);
+    incumbent.detail = "incumbent".to_string();
+    let mut newcomer = fixture_symbol("short", 12, shorter_end);
+    newcomer.detail = "newcomer".to_string();
+    let mut children = vec![incumbent];
+    insert_by_source_position(&mut children, newcomer);
+    assert_eq!(children.len(), 2);
+    assert_eq!(
+        children[0].detail, "incumbent",
+        "partition_point `<=` must keep an equal-key sibling before a later insert"
+    );
+    assert_eq!(children[1].detail, "newcomer");
 }
 
 /// #18379: full-span ties break on name, then kind, like the assembler.
