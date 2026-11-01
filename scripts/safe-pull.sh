@@ -7,7 +7,12 @@
 # scripts that rely on it to fail silently.
 #
 # Colliding untracked files are moved to a timestamped salvage packet under the
-# git dir (never deleted) before the merge is retried, so the pull is recoverable.
+# git common dir (never deleted) before the merge is retried, so the pull is
+# recoverable after linked-worktree removal (#17409). Each packet records
+# origin-worktree provenance in `.safe-pull-origin`. After a packet is created,
+# sibling packets matching `YYYY-MM-DDTHH-MM-SSZ-XXXXXX` and older than
+# SAFE_PULL_SALVAGE_RETENTION_DAYS (default 30) are pruned; `0` or `off`
+# disables pruning. A prune failure warns and never fails the pull.
 #
 # Usage:
 #   scripts/safe-pull.sh              # pull from origin/main
@@ -16,6 +21,76 @@ set -euo pipefail
 
 BRANCH="${1:-main}"
 REMOTE="origin"
+# Reserved packet-root filename. Salvage layout is ${SALVAGE_DIR}/${f}, so a
+# colliding worktree path of this exact name would clobber provenance.
+SAFE_PULL_ORIGIN_NAME=".safe-pull-origin"
+
+# Best-effort retention for common-dir packets. Never fails the caller, never
+# follows symlinks, never deletes the packet that was just created.
+prune_expired_safe_pull_packets() {
+  local parent="$1"
+  local current="$2"
+  local raw="${SAFE_PULL_SALVAGE_RETENTION_DAYS:-30}"
+  local days now_epoch limit_secs sibling base year month day hour minute second
+  local created_epoch packet_re
+
+  case "${raw}" in
+    0|off|Off|OFF)
+      return 0
+      ;;
+  esac
+  if ! printf '%s' "${raw}" | grep -Eq '^[0-9]+$'; then
+    echo "WARNING: SAFE_PULL_SALVAGE_RETENTION_DAYS=${raw} is not a non-negative integer or 'off'; skipping salvage prune."
+    return 0
+  fi
+  days="${raw}"
+  now_epoch="$(date -u +%s 2>/dev/null || true)"
+  if [ -z "${now_epoch}" ]; then
+    echo "WARNING: Could not read the current UTC time; skipping salvage prune."
+    return 0
+  fi
+  limit_secs=$((days * 86400))
+  packet_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z-[A-Za-z0-9]{6}$'
+
+  for sibling in "${parent}"/*; do
+    if [ ! -e "${sibling}" ] && [ ! -L "${sibling}" ]; then
+      continue
+    fi
+    base="${sibling##*/}"
+    if [[ ! "${base}" =~ ${packet_re} ]]; then
+      continue
+    fi
+    # A matching name that is a symlink must be left alone: `rm -rf` on a
+    # symlink-to-directory would delete the target.
+    if [ -L "${sibling}" ]; then
+      continue
+    fi
+    if [ ! -d "${sibling}" ]; then
+      continue
+    fi
+    if [ "${sibling}" -ef "${current}" ]; then
+      continue
+    fi
+    year="${base:0:4}"
+    month="${base:5:2}"
+    day="${base:8:2}"
+    hour="${base:11:2}"
+    minute="${base:14:2}"
+    second="${base:17:2}"
+    created_epoch="$(date -u -d "${year}-${month}-${day} ${hour}:${minute}:${second}" +%s 2>/dev/null || true)"
+    if [ -z "${created_epoch}" ]; then
+      continue
+    fi
+    if [ $((now_epoch - created_epoch)) -le "${limit_secs}" ]; then
+      continue
+    fi
+    echo "    prune ${sibling}"
+    if ! rm -rf -- "${sibling}"; then
+      echo "WARNING: Could not prune expired salvage packet ${sibling}; continuing."
+    fi
+  done
+  return 0
+}
 
 # Ensure we are inside a git repository
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -108,20 +183,43 @@ if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; th
     exit 1
   fi
 
-  # Salvage boundary (issue #17403): colliding paths are UNTRACKED, so git has
-  # no record of their content. Move each one into a timestamped salvage packet
-  # (same packet convention as clean-worktrees.sh recovery packets) instead of
-  # deleting it, so the pull stays recoverable. The packet lives under the git
-  # dir so the merge retry below can never collide with it.
-  GIT_DIR="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
-  if [ -z "${GIT_DIR}" ]; then
-    echo "ERROR: Could not resolve the git dir; refusing to touch conflicting files."
+  # Packet provenance lives at ${SALVAGE_DIR}/.safe-pull-origin. Refuse a
+  # colliding path of that exact name before creating a packet, so salvage
+  # cannot clobber provenance and nothing else is moved.
+  RESERVED_OFFENDERS=""
+  while IFS= read -r f; do
+    if [ "${f}" = "${SAFE_PULL_ORIGIN_NAME}" ]; then
+      RESERVED_OFFENDERS="${RESERVED_OFFENDERS}${f}
+"
+    fi
+  done <<< "${CONFLICTING_FILES}"
+  if [ -n "${RESERVED_OFFENDERS}" ]; then
+    echo "ERROR: Refusing to salvage reserved path ${SAFE_PULL_ORIGIN_NAME}; it would clobber packet provenance."
+    echo "Rename or remove that untracked file before pulling; nothing was moved."
+    printf '%s' "${RESERVED_OFFENDERS}"
+    exit 1
+  fi
+
+  # Salvage boundary (issue #17403/#17409): colliding paths are UNTRACKED, so
+  # git has no record of their content. Move each one into a timestamped
+  # salvage packet instead of deleting it. Packets live under the git common
+  # dir so they survive `git worktree remove` of a linked worktree, and so the
+  # merge retry below can never collide with them (the common dir is inside
+  # `.git`, outside the worktree). Git older than 2.31 lacks `--path-format`;
+  # refuse rather than silently falling back to the per-worktree git dir.
+  if ! git rev-parse --path-format=absolute HEAD >/dev/null 2>&1; then
+    echo "ERROR: git is too old for --path-format=absolute (Git 2.31+ required); refusing to salvage under a per-worktree dir that worktree removal would delete."
+    exit 1
+  fi
+  GIT_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -z "${GIT_COMMON_DIR}" ]; then
+    echo "ERROR: Could not resolve the git common dir; refusing to touch conflicting files."
     exit 1
   fi
   # mktemp -d (not timestamp-pid mkdir) so two salvages can never share a
   # packet: a reused packet dir would let the second mv silently overwrite the
   # first salvage's same-named file.
-  SALVAGE_PARENT="${GIT_DIR}/safe-pull-salvage"
+  SALVAGE_PARENT="${GIT_COMMON_DIR}/safe-pull-salvage"
   if ! mkdir -p "${SALVAGE_PARENT}"; then
     echo "ERROR: Could not create salvage parent ${SALVAGE_PARENT}; refusing to touch conflicting files."
     exit 1
@@ -129,6 +227,23 @@ if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; th
   SALVAGE_DIR="$(mktemp -d "${SALVAGE_PARENT}/$(date -u +%Y-%m-%dT%H-%M-%SZ)-XXXXXX" 2>/dev/null || true)"
   if [ -z "${SALVAGE_DIR}" ] || [ ! -d "${SALVAGE_DIR}" ]; then
     echo "ERROR: Could not create salvage directory under ${SALVAGE_PARENT}; refusing to touch conflicting files."
+    exit 1
+  fi
+  ORIGIN_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -z "${ORIGIN_BRANCH}" ]; then
+    ORIGIN_BRANCH="unknown"
+  fi
+  ORIGIN_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  if [ -z "${ORIGIN_UTC}" ]; then
+    echo "ERROR: Could not stamp salvage provenance; refusing to touch conflicting files."
+    exit 1
+  fi
+  if ! {
+    printf 'worktree=%s\n' "${TOPLEVEL}"
+    printf 'branch=%s\n' "${ORIGIN_BRANCH}"
+    printf 'utc=%s\n' "${ORIGIN_UTC}"
+  } > "${SALVAGE_DIR}/${SAFE_PULL_ORIGIN_NAME}"; then
+    echo "ERROR: Could not write salvage provenance ${SALVAGE_DIR}/${SAFE_PULL_ORIGIN_NAME}; refusing to touch conflicting files."
     exit 1
   fi
   echo "==> Salvaging conflicting untracked files:"
@@ -150,6 +265,10 @@ if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; th
       fi
     fi
   done <<< "${CONFLICTING_FILES}"
+
+  # Retention runs only after this packet exists. Failures warn; they must not
+  # fail the pull.
+  prune_expired_safe_pull_packets "${SALVAGE_PARENT}" "${SALVAGE_DIR}" || true
 
   # Retry the merge after salvaging conflicts
   echo "==> Retrying merge..."

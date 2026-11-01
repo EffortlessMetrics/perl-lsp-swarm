@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # scripts/tests/test-safe-pull.sh
 #
-# Regression tests for issue #17403: safe-pull.sh must never irrecoverably
-# delete colliding untracked files. Colliding content must survive
-# byte-identical (in place or in the named salvage packet), and
-# collision-free pulls must keep working (no-collision control).
+# Regression tests for issues #17403/#17409: safe-pull.sh must never
+# irrecoverably delete colliding untracked files. Colliding content must
+# survive byte-identical (in place or in the named salvage packet), packets
+# must live under the git common dir so they survive linked-worktree
+# removal, and collision-free pulls must keep working (no-collision control).
 #
 # Usage:
 #   bash scripts/tests/test-safe-pull.sh
@@ -127,6 +128,18 @@ run_safe_pull() {
   return "$rc"
 }
 
+extract_salvage_dir() {
+  grep -F 'salvage -> ' <<<"$1" | head -n 1 | sed 's/.*salvage -> //' || true
+}
+
+advance_origin_notes() {
+  local content="${1:-REMOTE-NOTES}"
+  printf '%s\n' "$content" > "${ADV}/notes.txt"
+  git -C "$ADV" add notes.txt
+  git -C "$ADV" commit -qm "add notes"
+  git -C "$ADV" push -q origin main
+}
+
 test_colliding_untracked_file_survives_with_content() {
   setup_repos
 
@@ -171,6 +184,18 @@ test_colliding_untracked_file_survives_with_content() {
     return
   fi
   pass "collision: salvage directory is printed"
+
+  local common_dir
+  common_dir="$(git -C "$WORK" rev-parse --path-format=absolute --git-common-dir)"
+  case "${salvage_dir}" in
+    "${common_dir}/safe-pull-salvage/"*)
+      pass "collision: packet lives under the git common dir (retry cannot collide)"
+      ;;
+    *)
+      fail "collision: packet lives under the git common dir (retry cannot collide)"
+      printf 'salvage_dir=%s common_dir=%s\n' "$salvage_dir" "$common_dir"
+      ;;
+  esac
 
   # Content must be byte-identical either in place or in the named salvage
   # packet (per the Builder Spec: in place wins when the helper keeps it).
@@ -338,11 +363,280 @@ test_staged_delete_collision_refuses_without_moving() {
   fi
 }
 
+test_linked_worktree_packet_survives_removal() {
+  setup_repos
+
+  local linked="${TMPDIR_BASE}/linked-wt"
+  git -C "$WORK" worktree add -q -b linked-wt "$linked"
+  git -C "$linked" config user.email "safe-pull-test@example.com"
+  git -C "$linked" config user.name "safe-pull-test"
+  git -C "$linked" config commit.gpgsign false
+
+  printf 'LINKED-KNOWN-17409\n' > "${linked}/notes.txt"
+  cp "${linked}/notes.txt" "${TMPDIR_BASE}/expected-linked.txt"
+  advance_origin_notes "REMOTE-LINKED"
+
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$linked")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "linked: safe-pull exits 0"
+  else
+    fail "linked: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    git -C "$WORK" worktree remove --force "$linked" >/dev/null 2>&1 || true
+    return
+  fi
+
+  local salvage_dir
+  salvage_dir="$(extract_salvage_dir "$out")"
+  if [[ -z "${salvage_dir:-}" ]]; then
+    fail "linked: salvage directory is printed"
+    git -C "$WORK" worktree remove --force "$linked" >/dev/null 2>&1 || true
+    return
+  fi
+  pass "linked: salvage directory is printed"
+
+  local common_dir wt_git_dir
+  common_dir="$(git -C "$linked" rev-parse --path-format=absolute --git-common-dir)"
+  wt_git_dir="$(git -C "$linked" rev-parse --absolute-git-dir)"
+  case "${salvage_dir}" in
+    "${common_dir}/safe-pull-salvage/"*)
+      pass "linked: packet lives under the git common dir"
+      ;;
+    *)
+      fail "linked: packet lives under the git common dir"
+      printf 'salvage_dir=%s common_dir=%s\n' "$salvage_dir" "$common_dir"
+      ;;
+  esac
+  case "${salvage_dir}" in
+    "${wt_git_dir}/"*)
+      fail "linked: packet does not live under the per-worktree git dir"
+      printf 'salvage_dir=%s wt_git_dir=%s\n' "$salvage_dir" "$wt_git_dir"
+      ;;
+    *)
+      pass "linked: packet does not live under the per-worktree git dir"
+      ;;
+  esac
+
+  assert_byte_identical "linked: content salvaged byte-identical" \
+    "${salvage_dir}/notes.txt" "${TMPDIR_BASE}/expected-linked.txt"
+  if [[ -f "${salvage_dir}/.safe-pull-origin" ]] \
+    && grep -qF "worktree=${linked}" "${salvage_dir}/.safe-pull-origin" \
+    && grep -qF "branch=linked-wt" "${salvage_dir}/.safe-pull-origin"; then
+    pass "linked: provenance names the originating worktree"
+  else
+    fail "linked: provenance names the originating worktree"
+    printf 'provenance:\n'
+    cat "${salvage_dir}/.safe-pull-origin" 2>/dev/null || printf '(missing)\n'
+  fi
+
+  git -C "$WORK" worktree remove --force "$linked"
+  if [[ -e "$linked" ]]; then
+    fail "linked: worktree remove deleted the worktree checkout"
+  else
+    pass "linked: worktree remove deleted the worktree checkout"
+  fi
+  assert_byte_identical "linked: packet survives worktree removal" \
+    "${salvage_dir}/notes.txt" "${TMPDIR_BASE}/expected-linked.txt"
+  if [[ -f "${salvage_dir}/.safe-pull-origin" ]] \
+    && grep -qF "worktree=${linked}" "${salvage_dir}/.safe-pull-origin"; then
+    pass "linked: provenance survives worktree removal"
+  else
+    fail "linked: provenance survives worktree removal"
+  fi
+}
+
+test_main_worktree_salvage_uses_common_dir() {
+  setup_repos
+
+  printf 'MAIN-KNOWN-17409\n' > "${WORK}/notes.txt"
+  cp "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-main.txt"
+  advance_origin_notes "REMOTE-MAIN"
+
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "main-wt: safe-pull exits 0"
+  else
+    fail "main-wt: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+
+  local salvage_dir common_dir git_dir
+  salvage_dir="$(extract_salvage_dir "$out")"
+  if [[ -z "${salvage_dir:-}" ]]; then
+    fail "main-wt: salvage directory is printed"
+    return
+  fi
+  pass "main-wt: salvage directory is printed"
+
+  common_dir="$(git -C "$WORK" rev-parse --path-format=absolute --git-common-dir)"
+  git_dir="$(git -C "$WORK" rev-parse --absolute-git-dir)"
+  if [[ "$common_dir" == "$git_dir" ]]; then
+    pass "main-wt: common dir equals git dir"
+  else
+    fail "main-wt: common dir equals git dir"
+    printf 'common_dir=%s git_dir=%s\n' "$common_dir" "$git_dir"
+  fi
+  case "${salvage_dir}" in
+    "${common_dir}/safe-pull-salvage/"*)
+      pass "main-wt: packet lives under the common dir (unchanged in practice)"
+      ;;
+    *)
+      fail "main-wt: packet lives under the common dir (unchanged in practice)"
+      printf 'salvage_dir=%s common_dir=%s\n' "$salvage_dir" "$common_dir"
+      ;;
+  esac
+  assert_byte_identical "main-wt: content salvaged byte-identical" \
+    "${salvage_dir}/notes.txt" "${TMPDIR_BASE}/expected-main.txt"
+  assert_byte_identical "main-wt: pull delivers remote content" \
+    "${WORK}/notes.txt" "${ADV}/notes.txt"
+}
+
+test_retention_prunes_only_expired_matching_packets() {
+  setup_repos
+
+  local parent="${WORK}/.git/safe-pull-salvage"
+  mkdir -p "$parent"
+  local old="${parent}/2020-01-01T00-00-00Z-aaaaaa"
+  mkdir -p "$old"
+  printf 'old-payload\n' > "${old}/stale.txt"
+  local nonmatch="${parent}/not-a-packet"
+  mkdir -p "$nonmatch"
+  printf 'nonmatch\n' > "${nonmatch}/stay.txt"
+  local target="${TMPDIR_BASE}/symlink-target"
+  mkdir -p "$target"
+  printf 'symlink-payload\n' > "${target}/precious.txt"
+  ln -s "$target" "${parent}/2020-01-01T00-00-00Z-bbbbbb"
+
+  printf 'RETENTION-KNOWN-17409\n' > "${WORK}/notes.txt"
+  cp "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-retention.txt"
+  advance_origin_notes "REMOTE-RETENTION"
+
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "retention: safe-pull exits 0"
+  else
+    fail "retention: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+
+  local salvage_dir
+  salvage_dir="$(extract_salvage_dir "$out")"
+  if [[ -z "${salvage_dir:-}" ]]; then
+    fail "retention: salvage directory is printed"
+    return
+  fi
+  pass "retention: salvage directory is printed"
+  assert_contains "retention: prune prints the expired packet path" "$out" "$old"
+  if [[ -e "$old" ]]; then
+    fail "retention: expired matching packet is pruned"
+  else
+    pass "retention: expired matching packet is pruned"
+  fi
+  if [[ -d "$salvage_dir" ]] && [[ -f "${salvage_dir}/notes.txt" ]]; then
+    pass "retention: fresh packet survives"
+  else
+    fail "retention: fresh packet survives"
+  fi
+  if [[ -f "${nonmatch}/stay.txt" ]]; then
+    pass "retention: non-matching directory survives"
+  else
+    fail "retention: non-matching directory survives"
+  fi
+  if [[ -L "${parent}/2020-01-01T00-00-00Z-bbbbbb" ]]; then
+    pass "retention: matching-name symlink is not removed"
+  else
+    fail "retention: matching-name symlink is not removed"
+  fi
+  if [[ -f "${target}/precious.txt" ]] && grep -qF 'symlink-payload' "${target}/precious.txt"; then
+    pass "retention: symlink target survives"
+  else
+    fail "retention: symlink target survives"
+  fi
+}
+
+test_retention_zero_prunes_nothing() {
+  setup_repos
+
+  local parent="${WORK}/.git/safe-pull-salvage"
+  local old="${parent}/2020-01-01T00-00-00Z-cccccc"
+  mkdir -p "$old"
+  printf 'keep-me\n' > "${old}/stay.txt"
+
+  printf 'RETENTION-ZERO-17409\n' > "${WORK}/notes.txt"
+  advance_origin_notes "REMOTE-ZERO"
+
+  local out rc
+  rc=0
+  out="$(SAFE_PULL_SALVAGE_RETENTION_DAYS=0 run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "retention-0: safe-pull exits 0"
+  else
+    fail "retention-0: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  assert_not_contains "retention-0: no prune output" "$out" "prune "
+  if [[ -f "${old}/stay.txt" ]]; then
+    pass "retention-0: expired matching packet is kept"
+  else
+    fail "retention-0: expired matching packet is kept"
+  fi
+}
+
+test_reserved_origin_path_is_refused() {
+  setup_repos
+
+  printf 'LOCAL-ORIGIN-17409\n' > "${WORK}/.safe-pull-origin"
+  cp "${WORK}/.safe-pull-origin" "${TMPDIR_BASE}/expected-origin.txt"
+  printf 'LOCAL-NOTES-17409\n' > "${WORK}/notes.txt"
+  cp "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-notes-reserved.txt"
+  printf 'REMOTE-ORIGIN\n' > "${ADV}/.safe-pull-origin"
+  printf 'REMOTE-NOTES\n' > "${ADV}/notes.txt"
+  git -C "$ADV" add .safe-pull-origin notes.txt
+  git -C "$ADV" commit -qm "add reserved and notes"
+  git -C "$ADV" push -q origin main
+
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    pass "reserved: safe-pull refuses with nonzero exit"
+  else
+    fail "reserved: safe-pull refuses with nonzero exit (got 0)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  assert_contains "reserved: output names the reserved path" "$out" ".safe-pull-origin"
+  assert_contains "reserved: output says nothing was moved" "$out" "nothing was moved"
+  assert_byte_identical "reserved: .safe-pull-origin stays in place" \
+    "${WORK}/.safe-pull-origin" "${TMPDIR_BASE}/expected-origin.txt"
+  assert_byte_identical "reserved: other collider stays in place" \
+    "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-notes-reserved.txt"
+  if [[ -d "${WORK}/.git/safe-pull-salvage" ]]; then
+    fail "reserved: no salvage packet is created on refusal"
+  else
+    pass "reserved: no salvage packet is created on refusal"
+  fi
+}
+
 test_colliding_untracked_file_survives_with_content
 test_clean_pull_still_succeeds
 test_tracked_blockage_aborts_without_moving
 test_nested_invocation_salvages_from_root
 test_staged_delete_collision_refuses_without_moving
+test_linked_worktree_packet_survives_removal
+test_main_worktree_salvage_uses_common_dir
+test_retention_prunes_only_expired_matching_packets
+test_retention_zero_prunes_nothing
+test_reserved_origin_path_is_refused
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -ne 0 ]]; then
