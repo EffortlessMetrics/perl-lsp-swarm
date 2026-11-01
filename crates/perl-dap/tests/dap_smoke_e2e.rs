@@ -13,6 +13,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 mod common;
+mod common_self_tests;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
