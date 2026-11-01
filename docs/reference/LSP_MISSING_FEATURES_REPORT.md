@@ -11,7 +11,7 @@
 ## Summary
 
 - **Advertised LSP features** are tracked in `features.toml` and should be GA/production.
-- **Missing/not-advertised LSP surfaces** include preview notebook support, formatting routes withdrawn under #11955, and other catalog rows with `advertised = false` (see sections below). Whole-document formatting (`lsp.formatting`) remains **advertised** and live.
+- **Missing/not-advertised LSP surfaces** include preview notebook support, formatting routes withdrawn under #11955, and other LSP catalog rows with `advertised = false` (see sections below). Related DAP rows with `advertised = false` are listed in the DAP section. Whole-document formatting (`lsp.formatting`) remains **advertised** and live.
 - For **coverage metrics**, see `docs/project/CURRENT_STATUS.md` (do not restate numbers here).
 
 ---
@@ -32,10 +32,6 @@ Every row below matches a catalog entry with `advertised = false`. Restoration o
    - Implemented: executionSummary tracking
    - Tests: `tests/lsp_comprehensive_3_17_test.rs`
 
-3. **`lsp.notebook_document_filter_relative_pattern`** - Notebook document-filter relative patterns (LSP 3.18)
-   - Status: unsupported, not advertised
-   - Tests: `crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs`
-
 ### LSP 3.17 / 3.18 unadvertised capability surfaces
 
 1. **`lsp.file_watcher_relative_pattern`** - Relative-pattern watcher globs (`workspace/didChangeWatchedFiles`)
@@ -46,11 +42,15 @@ Every row below matches a catalog entry with `advertised = false`. Restoration o
    - Status: unsupported, not advertised
    - Tests: `crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs`
 
+3. **`lsp.notebook_document_filter_relative_pattern`** - Notebook document-filter relative patterns (LSP 3.18)
+   - Status: unsupported, not advertised
+   - Tests: `crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs`
+
 ---
 
-## Withdrawn formatting routes (#11955)
+## Withdrawn formatting and save routes (#11955)
 
-These catalog rows stay `advertised = false`; live dispatch refuses direct requests (see `live_dispatch_keeps_document_live_and_refuses_withdrawn_surfaces` in formatting policy tests). Whole-document formatting remains **advertised** (see the lsp.formatting row in the catalog) and is intentionally omitted from the inventory below.
+These catalog rows stay `advertised = false`; live dispatch refuses direct requests (see `live_dispatch_keeps_document_live_and_refuses_withdrawn_surfaces` in formatting policy tests and `lsp_text_sync_tests.rs` / lifecycle coverage for `willSaveWaitUntil`). Whole-document formatting remains **advertised** (see the lsp.formatting row in the catalog) and is intentionally omitted from the inventory below.
 
 | Feature id | Route | Restoration owner |
 | --- | --- | --- |
@@ -89,4 +89,5 @@ For DAP roadmap items and the broader advertised DAP surface, see `features.toml
 1. Update `features.toml` (capability status is the source of truth).
 2. Run `just status-update` to refresh computed docs.
 3. Re-align this file if any items changed.
-4. Run `python3 -m unittest scripts.tests.test_lsp_missing_features_report` to verify catalog parity.
+4. Run `python3 -m unittest scripts.tests.test_lsp_missing_features_report` to verify catalog parity against this file.
+5. Run `bash scripts/ci/validate_book_copy_freshness.sh` after refreshing the mdBook mirror via `scripts/populate-book.sh`.
