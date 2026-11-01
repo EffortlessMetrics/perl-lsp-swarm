@@ -69,6 +69,8 @@ allow = []
 deny = [
     # RUSTSEC-2024-0449 fail-closed: only unpublished xtask may depend on
     # serde_yaml_ng; any shipped-crate path must fail `cargo deny check bans`.
+    # Uses the [graph] default (all-features = false); optional features on
+    # shipped crates that add these deps are not in this gate's scanned graph.
     # Remove together with the advisory ignore when #17720 drops serde_yaml_ng.
     { crate = "serde_yaml_ng", wrappers = ["xtask"], reason = "RUSTSEC-2024-0449: serde_yaml_ng limited to unpublished xtask; fail closed on shipped-crate paths (#17722)" },
     { crate = "unsafe-libyaml", wrappers = ["serde_yaml_ng"], reason = "RUSTSEC-2024-0449: unsafe-libyaml only via serde_yaml_ng on the xtask path; remove with advisory ignore in #17720 (#17722)" },
