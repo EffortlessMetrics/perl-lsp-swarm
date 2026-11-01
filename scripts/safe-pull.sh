@@ -196,11 +196,13 @@ if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; th
   fi
 
   # Packet provenance lives at ${SALVAGE_DIR}/.safe-pull-origin. Refuse a
-  # colliding path of that exact name before creating a packet, so salvage
-  # cannot clobber provenance and nothing else is moved.
+  # colliding path of that exact name, or under that directory prefix, before
+  # creating a packet, so salvage cannot clobber provenance and nothing else
+  # is moved. Names are matched literally (Linux, case-sensitive).
   RESERVED_OFFENDERS=""
   while IFS= read -r f; do
-    if [ "${f}" = "${SAFE_PULL_ORIGIN_NAME}" ]; then
+    if [ "${f}" = "${SAFE_PULL_ORIGIN_NAME}" ] \
+      || [[ "${f}" == "${SAFE_PULL_ORIGIN_NAME}/"* ]]; then
       RESERVED_OFFENDERS="${RESERVED_OFFENDERS}${f}
 "
     fi

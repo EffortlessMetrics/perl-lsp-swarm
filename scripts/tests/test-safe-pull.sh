@@ -423,7 +423,8 @@ test_linked_worktree_packet_survives_removal() {
     "${salvage_dir}/notes.txt" "${TMPDIR_BASE}/expected-linked.txt"
   if [[ -f "${salvage_dir}/.safe-pull-origin" ]] \
     && grep -qF "worktree=${linked}" "${salvage_dir}/.safe-pull-origin" \
-    && grep -qF "branch=linked-wt" "${salvage_dir}/.safe-pull-origin"; then
+    && grep -qF "branch=linked-wt" "${salvage_dir}/.safe-pull-origin" \
+    && grep -qE '^utc=[0-9]{4}-' "${salvage_dir}/.safe-pull-origin"; then
     pass "linked: provenance names the originating worktree"
   else
     fail "linked: provenance names the originating worktree"
@@ -583,11 +584,81 @@ test_retention_zero_prunes_nothing() {
     printf 'output:\n%s\n' "$out"
     return
   fi
+  local salvage_dir
+  salvage_dir="$(extract_salvage_dir "$out")"
+  if [[ -z "${salvage_dir:-}" ]]; then
+    fail "retention-0: salvage directory is printed"
+    return
+  fi
+  pass "retention-0: salvage directory is printed"
   assert_not_contains "retention-0: no prune output" "$out" "prune "
   if [[ -f "${old}/stay.txt" ]]; then
     pass "retention-0: expired matching packet is kept"
   else
     fail "retention-0: expired matching packet is kept"
+  fi
+}
+
+test_retention_off_prunes_nothing() {
+  setup_repos
+
+  local parent="${WORK}/.git/safe-pull-salvage"
+  local old="${parent}/2020-01-01T00-00-00Z-eeeeee"
+  mkdir -p "$old"
+  printf 'keep-off\n' > "${old}/stay.txt"
+  printf 'RETENTION-OFF-17409\n' > "${WORK}/notes.txt"
+  advance_origin_notes "REMOTE-OFF"
+
+  local out rc
+  rc=0
+  out="$(SAFE_PULL_SALVAGE_RETENTION_DAYS=off run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "retention-off: safe-pull exits 0"
+  else
+    fail "retention-off: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  local salvage_dir
+  salvage_dir="$(extract_salvage_dir "$out")"
+  if [[ -z "${salvage_dir:-}" ]]; then
+    fail "retention-off: salvage directory is printed"
+    return
+  fi
+  pass "retention-off: salvage directory is printed"
+  assert_not_contains "retention-off: no prune output" "$out" "prune "
+  if [[ -f "${old}/stay.txt" ]]; then
+    pass "retention-off: expired matching packet is kept"
+  else
+    fail "retention-off: expired matching packet is kept"
+  fi
+}
+
+test_retention_invalid_skips_prune_without_aborting() {
+  setup_repos
+
+  local parent="${WORK}/.git/safe-pull-salvage"
+  local old="${parent}/2020-01-01T00-00-00Z-ffffff"
+  mkdir -p "$old"
+  printf 'keep-invalid\n' > "${old}/stay.txt"
+  printf 'RETENTION-ABC-17409\n' > "${WORK}/notes.txt"
+  advance_origin_notes "REMOTE-ABC"
+
+  local out rc
+  rc=0
+  out="$(SAFE_PULL_SALVAGE_RETENTION_DAYS=abc run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "retention-abc: safe-pull exits 0"
+  else
+    fail "retention-abc: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  assert_contains "retention-abc: warns and skips prune" "$out" "not a non-negative integer or 'off'"
+  if [[ -f "${old}/stay.txt" ]]; then
+    pass "retention-abc: expired packet is kept when prune is skipped"
+  else
+    fail "retention-abc: expired packet is kept when prune is skipped"
   fi
 }
 
@@ -713,6 +784,44 @@ test_reserved_origin_path_is_refused() {
   fi
 }
 
+test_reserved_origin_prefix_is_refused() {
+  setup_repos
+
+  mkdir -p "${WORK}/.safe-pull-origin"
+  printf 'LOCAL-NESTED-ORIGIN-17409\n' > "${WORK}/.safe-pull-origin/nested.txt"
+  cp "${WORK}/.safe-pull-origin/nested.txt" "${TMPDIR_BASE}/expected-nested-origin.txt"
+  printf 'LOCAL-NOTES-PREFIX-17409\n' > "${WORK}/notes.txt"
+  cp "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-notes-prefix.txt"
+  mkdir -p "${ADV}/.safe-pull-origin"
+  printf 'REMOTE-NESTED-ORIGIN\n' > "${ADV}/.safe-pull-origin/nested.txt"
+  printf 'REMOTE-NOTES\n' > "${ADV}/notes.txt"
+  git -C "$ADV" add .safe-pull-origin/nested.txt notes.txt
+  git -C "$ADV" commit -qm "add reserved prefix and notes"
+  git -C "$ADV" push -q origin main
+
+  local out rc
+  rc=0
+  out="$(run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    pass "reserved-prefix: safe-pull refuses with nonzero exit"
+  else
+    fail "reserved-prefix: safe-pull refuses with nonzero exit (got 0)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  assert_contains "reserved-prefix: output names the reserved path" "$out" ".safe-pull-origin/nested.txt"
+  assert_contains "reserved-prefix: output says nothing was moved" "$out" "nothing was moved"
+  assert_byte_identical "reserved-prefix: nested collider stays in place" \
+    "${WORK}/.safe-pull-origin/nested.txt" "${TMPDIR_BASE}/expected-nested-origin.txt"
+  assert_byte_identical "reserved-prefix: other collider stays in place" \
+    "${WORK}/notes.txt" "${TMPDIR_BASE}/expected-notes-prefix.txt"
+  if [[ -d "${WORK}/.git/safe-pull-salvage" ]]; then
+    fail "reserved-prefix: no salvage packet is created on refusal"
+  else
+    pass "reserved-prefix: no salvage packet is created on refusal"
+  fi
+}
+
 test_colliding_untracked_file_survives_with_content
 test_clean_pull_still_succeeds
 test_tracked_blockage_aborts_without_moving
@@ -722,10 +831,13 @@ test_linked_worktree_packet_survives_removal
 test_main_worktree_salvage_uses_common_dir
 test_retention_prunes_only_expired_matching_packets
 test_retention_zero_prunes_nothing
+test_retention_off_prunes_nothing
+test_retention_invalid_skips_prune_without_aborting
 test_retention_leading_zero_ten_is_decimal
 test_retention_leading_zero_eight_does_not_abort
 test_retention_oversized_skips_prune_without_aborting
 test_reserved_origin_path_is_refused
+test_reserved_origin_prefix_is_refused
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -ne 0 ]]; then
