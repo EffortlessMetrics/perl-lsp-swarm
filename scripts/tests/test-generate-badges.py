@@ -1057,8 +1057,9 @@ class WindowsJobSettlementTests(unittest.TestCase):
     def test_one_member_wait_failure_still_waits_remaining_handles(self):
         job = self.job(iter([0]))
         job.process_handles.return_value = [111, 222, 333]
-        job._kernel32.WaitForSingleObject.side_effect = [OSError("wait refused"), 0, 0]
-        failures = job.terminate()
+        job._kernel32.WaitForSingleObject.side_effect = [generator.WAIT_FAILED, 0, 0]
+        with mock.patch.object(generator.WindowsJob, "_raise_last_error", side_effect=OSError("wait refused")):
+            failures = job.terminate()
         self.assertTrue(any("wait refused" in failure for failure in failures), failures)
         self.assertEqual(
             job._kernel32.WaitForSingleObject.call_args_list,
@@ -1079,7 +1080,7 @@ class WindowsJobSettlementTests(unittest.TestCase):
         job = self.job(iter([0]))
         job.process_handles.return_value = [123, 456]
         job._kernel32.WaitForSingleObject.return_value = 0
-        with mock.patch.object(generator.time, "monotonic", side_effect=[0, 2, 2]):
+        with mock.patch.object(generator.time, "monotonic", side_effect=[0] + [2] * 20):
             job.terminate()
         waits = [call.args[1] for call in job._kernel32.WaitForSingleObject.call_args_list]
         self.assertEqual(waits, [3000, 3000])
@@ -1089,7 +1090,7 @@ class WindowsJobSettlementTests(unittest.TestCase):
         job = self.job(iter([0]))
         job.process_handles.return_value = [123, 456]
         job._kernel32.WaitForSingleObject.return_value = 0
-        with mock.patch.object(generator.time, "monotonic", side_effect=[0, 10, 10]):
+        with mock.patch.object(generator.time, "monotonic", side_effect=[0] + [10] * 20):
             job.terminate()
         waits = [call.args[1] for call in job._kernel32.WaitForSingleObject.call_args_list]
         self.assertEqual(waits, [0, 0])

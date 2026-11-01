@@ -19,6 +19,7 @@ from typing import BinaryIO
 
 RIPR_TIMEOUT_SECONDS = 15 * 60
 TERMINATION_GRACE_SECONDS = 5
+WAIT_FAILED = 0xFFFFFFFF
 POST_EXIT_READER_SECONDS = 1.0
 HUNG_READER_JOIN_SECONDS = 0.05
 STDERR_DIAGNOSTIC_LIMIT = 2_048
@@ -285,6 +286,8 @@ class WindowsJob:
                 try:
                     remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
                     result = self._kernel32.WaitForSingleObject(handle, remaining_ms)
+                    if result == WAIT_FAILED:
+                        self._raise_last_error("WaitForSingleObject")
                     if result != 0:  # WAIT_OBJECT_0 is the only exit proof.
                         failures.append(f"Windows job member exit unconfirmed: wait result {result}")
                 except OSError as error:

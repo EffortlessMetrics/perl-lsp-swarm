@@ -1,5 +1,5 @@
 project: product
-component: Editor behavior
+component: Developer experience
 kind: Fixed
 body: "Windows badge RIPR cleanup now treats active accounting polling, each bound member wait, and terminal lifetime sampling as independent best-effort observations so one query failure cannot skip the remaining settlement checks."
 time: 2026-11-01T21:45:00Z
