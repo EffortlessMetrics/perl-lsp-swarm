@@ -7,11 +7,17 @@ use perl_lsp_ux_tests::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
+
+const PUBLICATION_GENERATION_PREFIX: &str = "sha256:";
+const STATUS_GENERATION_LABEL: &str = "Publication generation:";
+const STAGING_SUFFIX: &str = ".ux-gen-stage";
+const LOCK_SUFFIX: &str = ".ux-gen.lock";
 
 const DEFAULT_INPUT: &str =
     "crates/perl-lsp-ux-tests/fixtures/editor_ux_scorecard_measurements.json";
@@ -70,6 +76,29 @@ struct UxScorecardArtifact {
     rows: BTreeMap<String, PercentMetric>,
     latency_by_request_class: BTreeMap<String, LatencyPercentiles>,
     provenance: serde_json::Value,
+    /// Identity of this publication generation, derived from candidate inputs.
+    /// Empty only in unit fixtures that never go through the publisher.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    publication_generation: String,
+}
+
+/// Injected dest-commit seam so tests can fail between published surfaces
+/// without sleeping or racing the scheduler (#13321).
+trait ArtifactPublisher {
+    fn publish(&self, path: &Path, contents: &[u8]) -> Result<()>;
+}
+
+struct AtomicFsPublisher;
+
+impl ArtifactPublisher for AtomicFsPublisher {
+    fn publish(&self, path: &Path, contents: &[u8]) -> Result<()> {
+        write_atomic(path, contents)
+    }
+}
+
+struct PendingSurface {
+    path: PathBuf,
+    contents: Vec<u8>,
 }
 
 pub fn run(
@@ -90,6 +119,18 @@ fn run_at(
     output: Option<PathBuf>,
     status_md: Option<PathBuf>,
     ratchet_check: bool,
+) -> Result<()> {
+    run_at_using(root, format, input, output, status_md, ratchet_check, &AtomicFsPublisher)
+}
+
+fn run_at_using(
+    root: &Path,
+    format: UxScorecardFormat,
+    input: Option<PathBuf>,
+    output: Option<PathBuf>,
+    status_md: Option<PathBuf>,
+    ratchet_check: bool,
+    publisher: &dyn ArtifactPublisher,
 ) -> Result<()> {
     let input_path = root.join(input.unwrap_or_else(|| PathBuf::from(DEFAULT_INPUT)));
     let output_path = root.join(output.unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT)));
@@ -150,7 +191,7 @@ fn run_at(
         PercentMetric { value: scorecard.cross_file_success_pct },
     );
 
-    let artifact = UxScorecardArtifact {
+    let mut artifact = UxScorecardArtifact {
         schema_version: 1,
         measured_at: Utc::now().to_rfc3339(),
         subsystem: "editor_ux",
@@ -164,7 +205,9 @@ fn run_at(
             "ratchet_policy": "regression_only",
             "declared_scenario_count": declared_scenario_count
         }),
+        publication_generation: String::new(),
     };
+    artifact.publication_generation = compute_publication_generation(&artifact)?;
 
     if ratchet_check {
         let baseline = baseline
@@ -182,18 +225,47 @@ fn run_at(
         return Ok(());
     }
 
+    run_at_with_publisher(
+        root,
+        format,
+        &output_path,
+        &status_path,
+        &artifact,
+        baseline.as_ref(),
+        publisher,
+    )
+}
+
+fn run_at_with_publisher(
+    root: &Path,
+    format: UxScorecardFormat,
+    output_path: &Path,
+    status_path: &Path,
+    artifact: &UxScorecardArtifact,
+    baseline: Option<&SubsystemBaseline>,
+    publisher: &dyn ArtifactPublisher,
+) -> Result<()> {
     // Prepare every publication payload, including the optional receipt, before
     // replacing any existing artifact. In particular, a malformed receipt must
     // fail while the old scorecard and status remain intact.
-    let scorecard_payload = serde_json::to_string_pretty(&artifact)? + "\n";
-    let status_payload = render_status_markdown(&artifact, baseline.as_ref());
-    let receipt_payload = prepare_receipt_payload(root, &artifact)?;
+    let scorecard_payload = serde_json::to_string_pretty(artifact)? + "\n";
+    let status_payload = render_status_markdown(artifact, baseline);
+    let receipt_payload = prepare_receipt_payload(root, artifact)?;
 
-    write_atomic(&output_path, scorecard_payload.as_bytes())?;
-    write_atomic(&status_path, status_payload.as_bytes())?;
+    let mut surfaces = vec![
+        PendingSurface {
+            path: output_path.to_path_buf(),
+            contents: scorecard_payload.into_bytes(),
+        },
+        PendingSurface { path: status_path.to_path_buf(), contents: status_payload.into_bytes() },
+    ];
+    let published_receipt = receipt_payload.as_ref().map(|(path, _)| path.clone());
     if let Some((receipt_path, payload)) = receipt_payload {
-        write_atomic(&receipt_path, payload.as_bytes())?;
+        surfaces.push(PendingSurface { path: receipt_path, contents: payload.into_bytes() });
     }
+
+    publish_coherent_generation(publisher, &surfaces)?;
+    validate_published_generation(output_path, status_path, published_receipt.as_deref())?;
 
     match format {
         UxScorecardFormat::Human => {
@@ -201,7 +273,7 @@ fn run_at(
             println!("Status page updated: {}", status_path.display());
         }
         UxScorecardFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&artifact)?);
+            println!("{}", serde_json::to_string_pretty(artifact)?);
         }
     }
 
@@ -285,6 +357,205 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
+struct PublicationLock {
+    _file: fs::File,
+    path: PathBuf,
+}
+
+impl Drop for PublicationLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn sibling_with_suffix(path: &Path, suffix: &str) -> Result<PathBuf> {
+    let name = path.file_name().ok_or_else(|| {
+        color_eyre::eyre::eyre!("publication path has no file name: {}", path.display())
+    })?;
+    let mut name = name.to_os_string();
+    name.push(suffix);
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    Ok(parent.join(name))
+}
+
+fn compute_publication_generation(artifact: &UxScorecardArtifact) -> Result<String> {
+    // measured_at is intentionally time-bound and excluded so identical
+    // candidate inputs produce the same generation identity.
+    let payload = json!({
+        "schema_version": artifact.schema_version,
+        "subsystem": artifact.subsystem,
+        "scenario_count": artifact.scenario_count,
+        "scenario_ids": artifact.scenario_ids,
+        "rows": artifact.rows,
+        "latency_by_request_class": artifact.latency_by_request_class,
+        "provenance": artifact.provenance,
+    });
+    let bytes =
+        serde_json::to_vec(&payload).context("serializing publication generation inputs")?;
+    let digest = Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!("{PUBLICATION_GENERATION_PREFIX}{hex}"))
+}
+
+fn restore_previous_surface(path: &Path, previous: Option<&[u8]>) -> Result<()> {
+    match previous {
+        Some(bytes) => write_atomic(path, bytes),
+        None if path.exists() => {
+            fs::remove_file(path).with_context(|| format!("rolling back {}", path.display()))
+        }
+        None => Ok(()),
+    }
+}
+
+fn publish_coherent_generation(
+    publisher: &dyn ArtifactPublisher,
+    surfaces: &[PendingSurface],
+) -> Result<()> {
+    if surfaces.is_empty() {
+        bail!("publication generation has no surfaces");
+    }
+    let lock_path = sibling_with_suffix(&surfaces[0].path, LOCK_SUFFIX)?;
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening publication lock {}", lock_path.display()))?;
+    lock_file
+        .lock()
+        .with_context(|| format!("acquiring publication lock {}", lock_path.display()))?;
+    let _lock = PublicationLock { _file: lock_file, path: lock_path };
+
+    let mut staged = Vec::new();
+    for surface in surfaces {
+        let stage = sibling_with_suffix(&surface.path, STAGING_SUFFIX)?;
+        if stage.exists() {
+            fs::remove_file(&stage)
+                .with_context(|| format!("removing stale staging {}", stage.display()))?;
+        }
+        write_atomic(&stage, &surface.contents)?;
+        let previous = if surface.path.exists() { Some(fs::read(&surface.path)?) } else { None };
+        staged.push((stage, surface.path.clone(), previous));
+    }
+
+    let mut committed: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
+    for (stage, dest, previous) in staged {
+        let staged_bytes =
+            fs::read(&stage).with_context(|| format!("reading staged {}", stage.display()))?;
+        if let Err(error) = publisher.publish(&dest, &staged_bytes) {
+            let mut rollback_error = None;
+            for (done_dest, done_previous) in committed.iter().rev() {
+                if let Err(restore_error) =
+                    restore_previous_surface(done_dest, done_previous.as_deref())
+                {
+                    rollback_error = Some(restore_error);
+                    break;
+                }
+            }
+            if let Some(restore_error) = rollback_error {
+                return Err(error.wrap_err(format!(
+                    "publication failed and rollback also failed: {restore_error}"
+                )));
+            }
+            return Err(error);
+        }
+        let _ = fs::remove_file(&stage);
+        committed.push((dest, previous));
+    }
+    Ok(())
+}
+
+fn parse_status_generation(status: &str) -> Result<String> {
+    for line in status.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix(STATUS_GENERATION_LABEL) else {
+            continue;
+        };
+        let rest = rest.trim().trim_matches('`');
+        if is_publication_generation(rest) {
+            return Ok(rest.to_string());
+        }
+        bail!("status markdown has a malformed publication generation marker");
+    }
+    bail!("status markdown is missing a publication generation marker")
+}
+
+fn parse_scorecard_generation(scorecard: &serde_json::Value) -> Result<String> {
+    let generation =
+        scorecard.get("publication_generation").and_then(|value| value.as_str()).ok_or_else(
+            || color_eyre::eyre::eyre!("scorecard JSON is missing publication_generation"),
+        )?;
+    if is_publication_generation(generation) {
+        Ok(generation.to_string())
+    } else {
+        bail!("scorecard JSON has a malformed publication_generation")
+    }
+}
+
+fn parse_receipt_generation(receipt: &serde_json::Value) -> Result<String> {
+    let generation = receipt
+        .get("ux_scorecard")
+        .and_then(|block| block.get("publication_generation"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "embedded receipt ux_scorecard block is missing publication_generation"
+            )
+        })?;
+    if is_publication_generation(generation) {
+        Ok(generation.to_string())
+    } else {
+        bail!("embedded receipt ux_scorecard block has a malformed publication_generation")
+    }
+}
+
+fn is_publication_generation(value: &str) -> bool {
+    value.starts_with(PUBLICATION_GENERATION_PREFIX)
+        && value.len() == PUBLICATION_GENERATION_PREFIX.len() + 64
+        && value[PUBLICATION_GENERATION_PREFIX.len()..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Reader-side validator: refuse a mixed-generation published set.
+fn validate_published_generation(
+    scorecard_path: &Path,
+    status_path: &Path,
+    receipt_path: Option<&Path>,
+) -> Result<String> {
+    let scorecard_raw = fs::read_to_string(scorecard_path)
+        .with_context(|| format!("reading {}", scorecard_path.display()))?;
+    let scorecard: serde_json::Value = serde_json::from_str(&scorecard_raw)
+        .with_context(|| format!("parsing {}", scorecard_path.display()))?;
+    let scorecard_generation = parse_scorecard_generation(&scorecard)?;
+
+    let status_raw = fs::read_to_string(status_path)
+        .with_context(|| format!("reading {}", status_path.display()))?;
+    let status_generation = parse_status_generation(&status_raw)?;
+    if scorecard_generation != status_generation {
+        bail!(
+            "mixed publication generation: scorecard has {scorecard_generation}, status has {status_generation}"
+        );
+    }
+
+    if let Some(receipt_path) = receipt_path.filter(|path| path.exists()) {
+        let receipt_raw = fs::read_to_string(receipt_path)
+            .with_context(|| format!("reading {}", receipt_path.display()))?;
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)
+            .with_context(|| format!("parsing {}", receipt_path.display()))?;
+        let receipt_generation = parse_receipt_generation(&receipt)?;
+        if scorecard_generation != receipt_generation {
+            bail!(
+                "mixed publication generation: scorecard has {scorecard_generation}, receipt has {receipt_generation}"
+            );
+        }
+    }
+
+    Ok(scorecard_generation)
+}
+
 fn render_status_markdown(
     artifact: &UxScorecardArtifact,
     baseline: Option<&SubsystemBaseline>,
@@ -309,6 +580,12 @@ fn render_status_markdown(
     let mut text = String::new();
     text.push_str("# Editor UX Scorecard\n\n");
     text.push_str(&format!("Measured: `{}`  \n", artifact.measured_at));
+    if !artifact.publication_generation.is_empty() {
+        text.push_str(&format!(
+            "{STATUS_GENERATION_LABEL} `{}`  \n",
+            artifact.publication_generation
+        ));
+    }
     text.push_str(&coverage_line);
 
     if !artifact.scenario_ids.is_empty() {
@@ -410,19 +687,25 @@ fn prepare_receipt_payload(
     validate_receipt_with(&validator, root, &json_value)?;
     if let Some(object) = json_value.as_object_mut() {
         let row = |k: &str| artifact.rows.get(k).and_then(|m| m.value);
-        object.insert(
-            "ux_scorecard".to_string(),
-            json!({
-                "hover_correctness_pct": row("hover_correctness_pct"),
-                "completion_top1_pct": row("completion_top1_pct"),
-                "completion_top5_pct": row("completion_top5_pct"),
-                "definition_exact_hit_pct": row("definition_exact_hit_pct"),
-                "symbol_correctness_pct": row("symbol_correctness_pct"),
-                "diagnostics_correct_pct": row("diagnostics_correct_pct"),
-                "rename_success_pct": row("rename_success_pct"),
-                "cross_file_success_pct": row("cross_file_success_pct"),
-            }),
-        );
+        let mut block = json!({
+            "hover_correctness_pct": row("hover_correctness_pct"),
+            "completion_top1_pct": row("completion_top1_pct"),
+            "completion_top5_pct": row("completion_top5_pct"),
+            "definition_exact_hit_pct": row("definition_exact_hit_pct"),
+            "symbol_correctness_pct": row("symbol_correctness_pct"),
+            "diagnostics_correct_pct": row("diagnostics_correct_pct"),
+            "rename_success_pct": row("rename_success_pct"),
+            "cross_file_success_pct": row("cross_file_success_pct"),
+        });
+        if !artifact.publication_generation.is_empty()
+            && let Some(block) = block.as_object_mut()
+        {
+            block.insert(
+                "publication_generation".to_string(),
+                json!(artifact.publication_generation),
+            );
+        }
+        object.insert("ux_scorecard".to_string(), block);
     }
     validate_receipt_with(&validator, root, &json_value)?;
     Ok(Some((receipt_path, format!("{}\n", serde_json::to_string_pretty(&json_value)?))))
@@ -885,6 +1168,7 @@ mod tests {
             ]),
             latency_by_request_class: BTreeMap::new(),
             provenance: json!({}),
+            publication_generation: String::new(),
         };
 
         let loaded_baseline = load_baseline(root.path())?;
@@ -1219,6 +1503,244 @@ mod tests {
         )
     }
 
+    struct FailAfterPublisher {
+        succeed_before_fail: usize,
+        published: std::cell::Cell<usize>,
+    }
+
+    impl ArtifactPublisher for FailAfterPublisher {
+        fn publish(&self, path: &Path, contents: &[u8]) -> Result<()> {
+            let n = self.published.get();
+            if n >= self.succeed_before_fail {
+                bail!("injected publication failure after {n} successful dest write(s)");
+            }
+            write_atomic(path, contents)?;
+            self.published.set(n + 1);
+            Ok(())
+        }
+    }
+
+    fn install_receipt_schema(root: &Path) -> Result<()> {
+        let schema_path = root.join(".ci/receipt.schema.json");
+        let schema_parent = schema_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt schema path has no parent"))?;
+        fs::create_dir_all(schema_parent)?;
+        fs::write(&schema_path, include_str!("../../../.ci/receipt.schema.json"))?;
+        Ok(())
+    }
+
+    fn install_valid_receipt(root: &Path) -> Result<PathBuf> {
+        install_receipt_schema(root)?;
+        let receipt_path = root.join("target/receipts/receipt.json");
+        fs::create_dir_all(
+            receipt_path
+                .parent()
+                .ok_or_else(|| color_eyre::eyre::eyre!("receipt path has no parent"))?,
+        )?;
+        fs::write(&receipt_path, include_str!("../../../.ci/examples/receipt-pr-fast.json"))?;
+        Ok(receipt_path)
+    }
+
+    fn measurement_json(hover_correct: bool) -> String {
+        format!(
+            r#"[{{"scenario_id":"malformed-input-regression","hover_correct":{hover_correct},"completion_top1_correct":null,"completion_top5_correct":null,"definition_exact_hit":null,"symbol_correct":null,"diagnostics_correct":null,"rename_success":null,"cross_file_success":null,"latency_ms_by_request":{{}}}}]"#
+        )
+    }
+
+    fn fake_generation(nibble: char) -> String {
+        format!("{PUBLICATION_GENERATION_PREFIX}{}", nibble.to_string().repeat(64))
+    }
+
+    fn publish_human(root: &Path, publisher: &dyn ArtifactPublisher) -> Result<()> {
+        run_at_using(
+            root,
+            UxScorecardFormat::Human,
+            Some(PathBuf::from("measurements.json")),
+            Some(PathBuf::from("scorecard.json")),
+            Some(PathBuf::from("status.md")),
+            false,
+            publisher,
+        )
+    }
+
+    #[test]
+    fn published_surfaces_share_one_generation_without_receipt() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("measurements.json"), measurement_json(true))?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let receipt_path = root.path().join("target/receipts/receipt.json");
+
+        publish_human(root.path(), &AtomicFsPublisher)?;
+
+        let generation = validate_published_generation(&output_path, &status_path, None)?;
+        check_true(!generation.is_empty(), "published generation was empty")?;
+        check_true(!receipt_path.exists(), "no-receipt run created a receipt")?;
+        check_true(
+            !sibling_with_suffix(&output_path, LOCK_SUFFIX)?.exists(),
+            "successful publication left a lock file",
+        )?;
+        let scorecard: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&output_path)?)?;
+        check(&parse_scorecard_generation(&scorecard)?, &generation, "scorecard generation")?;
+        check(
+            &parse_status_generation(&fs::read_to_string(&status_path)?)?,
+            &generation,
+            "status generation",
+        )
+    }
+
+    #[test]
+    fn published_surfaces_share_one_generation_with_receipt() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("measurements.json"), measurement_json(true))?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let receipt_path = install_valid_receipt(root.path())?;
+
+        publish_human(root.path(), &AtomicFsPublisher)?;
+
+        let generation =
+            validate_published_generation(&output_path, &status_path, Some(&receipt_path))?;
+        let receipt: serde_json::Value = serde_json::from_str(&fs::read_to_string(&receipt_path)?)?;
+        check(&parse_receipt_generation(&receipt)?, &generation, "receipt generation")?;
+        validate_receipt_schema(root.path(), &receipt)
+    }
+
+    #[test]
+    fn injected_failure_after_first_dest_write_preserves_previous_generation() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("measurements.json"), measurement_json(true))?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let receipt_path = install_valid_receipt(root.path())?;
+        publish_human(root.path(), &AtomicFsPublisher)?;
+        let previous =
+            validate_published_generation(&output_path, &status_path, Some(&receipt_path))?;
+        let previous_scorecard = fs::read_to_string(&output_path)?;
+        let previous_status = fs::read_to_string(&status_path)?;
+        let previous_receipt = fs::read_to_string(&receipt_path)?;
+
+        fs::write(root.path().join("measurements.json"), measurement_json(false))?;
+        let error = match publish_human(
+            root.path(),
+            &FailAfterPublisher { succeed_before_fail: 1, published: std::cell::Cell::new(0) },
+        ) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "publisher must fail after the first dest write"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("injected publication failure"),
+            "missing injected failure context",
+        )?;
+        check(&fs::read_to_string(&output_path)?, &previous_scorecard, "scorecard dest mixed")?;
+        check(&fs::read_to_string(&status_path)?, &previous_status, "status dest mixed")?;
+        check(&fs::read_to_string(&receipt_path)?, &previous_receipt, "receipt dest mixed")?;
+        check(
+            &validate_published_generation(&output_path, &status_path, Some(&receipt_path))?,
+            &previous,
+            "rolled-back generation",
+        )
+    }
+
+    #[test]
+    fn injected_failure_before_receipt_write_preserves_previous_generation() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("measurements.json"), measurement_json(true))?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let receipt_path = install_valid_receipt(root.path())?;
+        publish_human(root.path(), &AtomicFsPublisher)?;
+        let previous =
+            validate_published_generation(&output_path, &status_path, Some(&receipt_path))?;
+
+        fs::write(root.path().join("measurements.json"), measurement_json(false))?;
+        let error = match publish_human(
+            root.path(),
+            &FailAfterPublisher { succeed_before_fail: 2, published: std::cell::Cell::new(0) },
+        ) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "publisher must fail after the status dest write"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("injected publication failure"),
+            "missing injected failure context",
+        )?;
+        check(
+            &validate_published_generation(&output_path, &status_path, Some(&receipt_path))?,
+            &previous,
+            "rolled-back generation after status dest write",
+        )
+    }
+
+    #[test]
+    fn validator_rejects_hand_mixed_scorecard_and_status_generations() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let generation_a = fake_generation('a');
+        let generation_b = fake_generation('b');
+        fs::write(&output_path, format!("{{\"publication_generation\":\"{generation_a}\"}}\n"))?;
+        fs::write(&status_path, format!("{STATUS_GENERATION_LABEL} `{generation_b}`  \n"))?;
+
+        let error = match validate_published_generation(&output_path, &status_path, None) {
+            Ok(generation) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "mixed generations were accepted as {generation}"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("mixed publication generation"),
+            "mixed-set error missing mix diagnosis",
+        )
+    }
+
+    #[test]
+    fn identical_inputs_reuse_generation_and_changed_input_does_not() -> Result<()> {
+        let first = tempfile::tempdir()?;
+        fs::write(first.path().join("measurements.json"), measurement_json(true))?;
+        publish_human(first.path(), &AtomicFsPublisher)?;
+        let first_generation = validate_published_generation(
+            &first.path().join("scorecard.json"),
+            &first.path().join("status.md"),
+            None,
+        )?;
+
+        let second = tempfile::tempdir()?;
+        fs::write(second.path().join("measurements.json"), measurement_json(true))?;
+        publish_human(second.path(), &AtomicFsPublisher)?;
+        let second_generation = validate_published_generation(
+            &second.path().join("scorecard.json"),
+            &second.path().join("status.md"),
+            None,
+        )?;
+        check(&second_generation, &first_generation, "identical inputs must reuse generation")?;
+
+        let third = tempfile::tempdir()?;
+        fs::write(third.path().join("measurements.json"), measurement_json(false))?;
+        publish_human(third.path(), &AtomicFsPublisher)?;
+        let third_generation = validate_published_generation(
+            &third.path().join("scorecard.json"),
+            &third.path().join("status.md"),
+            None,
+        )?;
+        check_true(
+            third_generation != first_generation,
+            "changed input reused the previous generation",
+        )
+    }
+
     #[test]
     fn schema_invalid_receipt_is_rejected_before_enrichment() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1265,6 +1787,7 @@ mod tests {
             rows: BTreeMap::new(),
             latency_by_request_class: BTreeMap::new(),
             provenance: json!({}),
+            publication_generation: String::new(),
         };
         let (_, payload) = prepare_receipt_payload(root.path(), &artifact)?
             .ok_or_else(|| color_eyre::eyre::eyre!("existing receipt was not prepared"))?;
@@ -1289,6 +1812,7 @@ mod tests {
             rows,
             latency_by_request_class: BTreeMap::new(),
             provenance: serde_json::json!({"declared_scenario_count": 22}),
+            publication_generation: String::new(),
         };
         let md = render_status_markdown(&artifact, None);
         assert!(md.contains("8` of `22"), "expected coverage fraction, got:\n{md}");
@@ -1314,6 +1838,7 @@ mod tests {
             rows,
             latency_by_request_class,
             provenance: serde_json::json!({"declared_scenario_count": 22}),
+            publication_generation: String::new(),
         };
         let mut floor_metrics = BTreeMap::new();
         floor_metrics.insert("latency_hover_p50_ms".to_string(), Some(24.0_f64));
@@ -1348,6 +1873,7 @@ mod tests {
             rows,
             latency_by_request_class: BTreeMap::new(),
             provenance: serde_json::json!({}),
+            publication_generation: String::new(),
         };
 
         let md = render_status_markdown(&artifact, None);
@@ -1449,6 +1975,7 @@ mod tests {
             rows,
             latency_by_request_class: latencies,
             provenance: serde_json::json!({"input": "fixture", "generator": "test", "declared_scenario_count": 22}),
+            publication_generation: String::new(),
         };
 
         let json_str =
