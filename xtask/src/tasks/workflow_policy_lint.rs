@@ -427,6 +427,10 @@ fn lint_workflow_file_with_just(
         }
     }
 
+    for (job_name, job) in job_mappings(&workflow) {
+        lint_job_auth(&job_name, job, &workflow, &workflow_name, issues);
+    }
+
     if POLICY_WARN_UNPINNED_ACTIONS {
         for action in collect_unpinned_actions(&workflow) {
             issues.push(LintIssue {
@@ -1172,6 +1176,693 @@ fn default_write_scopes(workflow: &Value) -> Vec<String> {
             .filter_map(|(scope, _)| scope.as_str().map(str::to_string))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ineffective workflow auth (#16263)
+//
+// Calibration for the UB-review miss class from PR #16243: a probe that read
+// `GH_TOKEN` no step ever exported (auth silently empty) against a job whose
+// `permissions:` lacked `pull-requests: read` (silent 403 into the fallback).
+// Both findings needed a human-driven review to catch; these rules catch the
+// class statically, per job, before the workflow ships.
+// ---------------------------------------------------------------------------
+
+/// Access level one `permissions:` entry grants for one scope. `Write`
+/// subsumes `Read`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ScopeAccess {
+    Read,
+    Write,
+}
+
+impl ScopeAccess {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// The authority a job effectively holds: either its own `permissions:`
+/// declaration, or the workflow-level one it falls back to.
+#[derive(Clone, Debug)]
+enum PermissionGrants {
+    /// `permissions: read-all` / `write-all`.
+    Everything(ScopeAccess),
+    /// Explicit per-scope grants; a scope absent from the map is ungranted.
+    Scoped(std::collections::BTreeMap<String, ScopeAccess>),
+}
+
+impl PermissionGrants {
+    /// Parse one `permissions:` value. Returns `None` for an absent or
+    /// unrecognizable declaration so callers skip the check instead of
+    /// guessing.
+    fn parse(value: &Value) -> Option<Self> {
+        match value {
+            Value::String(text) => match text.as_str() {
+                "read-all" => Some(Self::Everything(ScopeAccess::Read)),
+                "write-all" => Some(Self::Everything(ScopeAccess::Write)),
+                _ => None,
+            },
+            Value::Mapping(mapping) => {
+                let mut scopes = std::collections::BTreeMap::new();
+                for (key, level) in mapping {
+                    let (Some(scope), Some(level)) = (key.as_str(), level.as_str()) else {
+                        continue;
+                    };
+                    if let Some(level) = ScopeAccess::parse(level) {
+                        scopes.insert(scope.to_string(), level);
+                    }
+                }
+                Some(Self::Scoped(scopes))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this grant satisfies a required scope access.
+    fn grants(&self, scope: &str, required: ScopeAccess) -> bool {
+        match self {
+            Self::Everything(granted) => *granted >= required,
+            Self::Scoped(scopes) => scopes.get(scope).is_some_and(|granted| *granted >= required),
+        }
+    }
+}
+
+/// Token-shaped shell variable names the auth rules reason about.
+///
+/// Restricting the shape to `TOKEN` / `*_TOKEN` keeps the rule away from
+/// ordinary shell variables while still covering `GH_TOKEN`, `GITHUB_TOKEN`,
+/// and third-party service tokens.
+fn is_token_variable(name: &str) -> bool {
+    name == "TOKEN" || name.ends_with("_TOKEN")
+}
+
+/// The leading `[A-Za-z0-9_]+` run of one string.
+fn leading_identifier(text: &str) -> &str {
+    let end = text
+        .find(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .unwrap_or(text.len());
+    &text[..end]
+}
+
+/// Jobs of one workflow as `(name, mapping)` pairs, in declaration order.
+fn job_mappings(workflow: &Value) -> Vec<(String, &Mapping)> {
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
+    jobs.iter()
+        .filter_map(|(name, job)| Some((name.as_str()?.to_string(), job.as_mapping()?)))
+        .collect()
+}
+
+/// Names defined by an `env:` mapping.
+fn env_mapping_names(value: Option<&Value>) -> HashSet<String> {
+    value
+        .and_then(Value::as_mapping)
+        .map(|mapping| {
+            mapping.iter().filter_map(|(key, _)| key.as_str().map(str::to_string)).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Token-shaped `$NAME` / `${NAME}` references in a shell script as
+/// `(line index, name)` pairs. `${NAME:-default}` and friends are recognized by
+/// taking the leading identifier; `$(...)` command substitution holds no
+/// direct reference at its `$` and is skipped.
+fn token_references(script: &str) -> Vec<(usize, String)> {
+    let mut references = Vec::new();
+    for (line_index, line) in script.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        // Shell lexical state (#16263 review): a single-quoted region or
+        // an unquoted comment tail carries literal text, so a `$NAME`
+        // there is no expansion and must not read as a token reference.
+        // Double quotes still expand, so they stay scanned.
+        let mut in_single_quote = false;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if in_single_quote {
+                if byte == b'\'' {
+                    in_single_quote = false;
+                }
+                index += 1;
+                continue;
+            }
+            match byte {
+                b'\'' => {
+                    in_single_quote = true;
+                    index += 1;
+                    continue;
+                }
+                b'\\' => {
+                    index += 2;
+                    continue;
+                }
+                b'#' if index == 0
+                    || matches!(bytes[index - 1], b' ' | b'\t' | b';' | b'&' | b'|') =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+            if byte != b'$' || index + 1 >= bytes.len() {
+                index += 1;
+                continue;
+            }
+            let mut cursor = index + 1;
+            match bytes[cursor] {
+                b'{' => cursor += 1,
+                b'(' => {
+                    index += 2;
+                    continue;
+                }
+                _ => {}
+            }
+            let name = leading_identifier(&line[cursor..]);
+            if is_token_variable(name) {
+                references.push((line_index, name.to_string()));
+            }
+            index = cursor + name.len().max(1);
+        }
+    }
+    references
+}
+
+/// Line-start token exports within one script — `NAME=...` and
+/// `export NAME=...` assignments — as `(line index, name)` pairs. Such an
+/// assignment supplies references on its own line and any later line.
+fn script_export_lines(script: &str) -> Vec<(usize, String)> {
+    let mut exports = Vec::new();
+    for (line_index, line) in script.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed).trim_start();
+        let name = leading_identifier(trimmed);
+        if is_token_variable(name) && trimmed[name.len()..].starts_with('=') {
+            exports.push((line_index, name.to_string()));
+        }
+    }
+    exports
+}
+
+/// Token names a script writes to `$GITHUB_ENV`; those exports become visible
+/// to every later step of the job. Every `NAME=` occurrence on the line
+/// counts: a single `printf "A=%s\nB=%s"` format string writes several names.
+fn github_env_exports(script: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for line in script.lines() {
+        if !line.contains("GITHUB_ENV") {
+            continue;
+        }
+        for (offset, _) in line.match_indices('=') {
+            let bytes = line.as_bytes();
+            let mut start = offset;
+            while start > 0
+                && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+            {
+                start -= 1;
+            }
+            let name = &line[start..offset];
+            // A printf format escape (`"A=%s\nB=%s"`) leaves a literal `n`
+            // glued to the second identifier; the backslash before it marks
+            // the real boundary.
+            let name = if name.starts_with('n') && start > 0 && bytes[start - 1] == b'\\' {
+                &name[1..]
+            } else {
+                name
+            };
+            if is_token_variable(name) {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+/// `env.NAME` expression references in one step value string.
+fn env_expression_references(value: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = value;
+    while let Some(position) = rest.find("${{ env.") {
+        let tail = &rest[position + "${{ env.".len()..];
+        let name = leading_identifier(tail.trim_start());
+        if !name.is_empty() {
+            names.push(name.to_string());
+        }
+        rest = tail;
+    }
+    names
+}
+
+/// String values carried by a step's `env:` and `with:` mappings.
+fn step_env_and_with_values(step: &Value) -> Vec<String> {
+    let mut values = Vec::new();
+    for section in ["env", "with"] {
+        if let Some(mapping) =
+            step.get(Value::String(section.to_string())).and_then(Value::as_mapping)
+        {
+            for (_, value) in mapping {
+                if let Some(text) = value.as_str() {
+                    values.push(text.to_string());
+                }
+            }
+        }
+    }
+    values
+}
+
+/// The permissions a job runs under: its own `permissions:` when declared,
+/// otherwise the workflow-level declaration. A workflow that declares nothing
+/// resolves to `None` — the effective authority is then the repository
+/// default, which a static lint cannot see, so scope checking stays silent
+/// rather than guessing (`INHERITED_JOB_WRITE` already covers the
+/// write-inheritance half of that case).
+fn effective_job_permissions(workflow: &Value, job: &Mapping) -> Option<PermissionGrants> {
+    if let Some(declared) = job.get(Value::String("permissions".to_string())) {
+        return PermissionGrants::parse(declared);
+    }
+    workflow.get("permissions").and_then(PermissionGrants::parse)
+}
+
+/// Per-job ineffective-auth calibration (#16263).
+///
+/// Rule A — a step that reads a token variable through shell expansion or an
+/// `env.` expression which no env mapping, same-script export, or earlier
+/// `$GITHUB_ENV` write supplies is dead auth: GitHub never exports
+/// `GH_TOKEN`/`GITHUB_TOKEN` as shell variables, so the credential is the
+/// empty string while the workflow pretends otherwise.
+///
+/// Rule B — a GitHub REST operation whose required scope is absent from the
+/// declared permissions (job-level override, else workflow-level) fails with a
+/// silent 403 and degrades into whatever fallback the script has.
+fn lint_job_auth(
+    job_name: &str,
+    job: &Mapping,
+    workflow: &Value,
+    workflow_name: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    // What `${{ env.X }}` expressions can see: workflow env, job env, and
+    // `$GITHUB_ENV` writes from earlier steps. A step's own `env:` mapping is
+    // not in its own expression context.
+    let mut expression_exports = env_mapping_names(workflow.get("env"));
+    expression_exports.extend(env_mapping_names(job.get(Value::String("env".to_string()))));
+
+    let grants = effective_job_permissions(workflow, job);
+    let Some(steps) = job.get(Value::String("steps".to_string())).and_then(Value::as_sequence)
+    else {
+        return;
+    };
+
+    for step in steps {
+        let step_name = step
+            .get(Value::String("name".to_string()))
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>");
+
+        for value in step_env_and_with_values(step) {
+            for name in env_expression_references(&value) {
+                if is_token_variable(&name) && !expression_exports.contains(&name) {
+                    issues.push(LintIssue {
+                        level: "error",
+                        code: "INEFFECTIVE_TOKEN_REFERENCE",
+                        workflow: workflow_name.to_string(),
+                        message: format!(
+                            "job '{job_name}' step '{step_name}' references env.{name} but no \
+                             env mapping or earlier $GITHUB_ENV write defines it; the token \
+                             reference resolves to nothing"
+                        ),
+                    });
+                }
+            }
+        }
+
+        let Some(script) = step.get(Value::String("run".to_string())).and_then(Value::as_str)
+        else {
+            continue;
+        };
+
+        // Shell references additionally see the step's own `env:` mapping.
+        let mut shell_exports = expression_exports.clone();
+        shell_exports.extend(env_mapping_names(step.get(Value::String("env".to_string()))));
+        check_script_token_references(
+            script,
+            &shell_exports,
+            step_name,
+            job_name,
+            workflow_name,
+            issues,
+        );
+
+        let mut env_values = std::collections::HashMap::new();
+        collect_env_values(workflow.get("env"), &mut env_values);
+        collect_env_values(job.get(Value::String("env".to_string())), &mut env_values);
+        collect_env_values(step.get(Value::String("env".to_string())), &mut env_values);
+
+        if let Some(grants) = &grants {
+            check_rest_scopes(script, grants, &env_values, job_name, workflow_name, issues);
+        }
+
+        expression_exports.extend(github_env_exports(script));
+    }
+}
+
+/// Rule A for one run script: flag token references nothing supplies at their
+/// use point.
+fn check_script_token_references(
+    script: &str,
+    enclosing: &HashSet<String>,
+    step_name: &str,
+    job_name: &str,
+    workflow_name: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    let exports = script_export_lines(script);
+    for (line_index, name) in token_references(script) {
+        if enclosing.contains(&name) {
+            continue;
+        }
+        if exports
+            .iter()
+            .any(|(export_line, export_name)| *export_name == name && *export_line <= line_index)
+        {
+            continue;
+        }
+        issues.push(LintIssue {
+            level: "error",
+            code: "INEFFECTIVE_TOKEN_REFERENCE",
+            workflow: workflow_name.to_string(),
+            message: format!(
+                "job '{job_name}' step '{step_name}' reads ${name} but nothing exports it \
+                 (no env mapping, same-script export, or earlier $GITHUB_ENV write); the \
+                 auth is silently empty"
+            ),
+        });
+    }
+}
+
+/// The scope one GitHub REST path requires, if the calibration models it.
+///
+/// Method other than GET/HEAD upgrades the requirement to write. Paths whose
+/// segments match nothing here need only the always-present metadata grant,
+/// so they impose no requirement.
+fn required_rest_scope(path: &str, method: Option<&str>) -> Option<(&'static str, ScopeAccess)> {
+    let write = method.is_some_and(|method| {
+        !method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("HEAD")
+    });
+    let access = if write { ScopeAccess::Write } else { ScopeAccess::Read };
+    let segment = path.split(['/', '?', '#']).find(|segment| {
+        matches!(
+            *segment,
+            "pulls"
+                | "issues"
+                | "actions"
+                | "check-runs"
+                | "check-suites"
+                | "statuses"
+                | "deployments"
+                | "pages"
+                | "releases"
+                | "contents"
+        )
+    })?;
+    let scope = match segment {
+        "pulls" => "pull-requests",
+        "issues" => "issues",
+        "actions" => "actions",
+        "check-runs" | "check-suites" => "checks",
+        "statuses" => "statuses",
+        "deployments" => "deployments",
+        "pages" => "pages",
+        "releases" | "contents" => "contents",
+        _ => return None,
+    };
+    Some((scope, access))
+}
+
+/// The HTTP method one script line spells, when it does. `-X`/`--request` /
+/// `--method` name a method; curl `-d*` and `gh api` `-f`/`-F`/`--field` /
+/// `--input` imply POST. Method detection reads the same line only: a method
+/// spelled on a shell continuation line defaults to GET (documented
+/// limitation).
+fn line_method(line: &str) -> Option<String> {
+    let mut tokens = line.split_whitespace().peekable();
+    while let Some(token) = tokens.next() {
+        if token == "-X" || matches!(token, "--request" | "--method") {
+            if let Some(next) = tokens.peek().filter(|next| !next.starts_with('-')) {
+                return Some(next.trim_matches('"').to_string());
+            }
+            continue;
+        }
+        // Equals-spelled options carry the method in the same token
+        // (#16263 review): `--method=DELETE`, `--request=POST`, `-XGET`.
+        if let Some(name) =
+            token.strip_prefix("--method=").or_else(|| token.strip_prefix("--request="))
+        {
+            return Some(name.trim_matches('"').to_string());
+        }
+        if let Some(name) = token.strip_prefix("-X").filter(|name| !name.is_empty()) {
+            return Some(name.trim_matches('"').to_string());
+        }
+        if matches!(
+            token,
+            "-d" | "--data" | "--data-raw" | "--data-binary" | "-f" | "-F" | "--field" | "--input"
+        ) {
+            return Some("POST".to_string());
+        }
+    }
+    None
+}
+
+/// GitHub REST operations visible in one script line as paths: every
+/// `https://api.github.com/<path>` URL and every `gh api <path>` target.
+fn rest_operations(line: &str) -> Vec<String> {
+    let mut operations = Vec::new();
+    let mut rest = line;
+    while let Some(position) = rest.find("api.github.com/") {
+        let tail = &rest[position + "api.github.com/".len()..];
+        let end = tail
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '"' | '\'' | '\\')
+            })
+            .unwrap_or(tail.len());
+        if end > 0 {
+            operations.push(tail[..end].to_string());
+        }
+        rest = &tail[end..];
+    }
+    // `gh api <path>` with a relative path; absolute URLs were already taken
+    // by the branch above.
+    if let Some(position) = line.find("gh api") {
+        let tail = line[position + "gh api".len()..].trim_start();
+        let mut tokens = tail.split_whitespace().peekable();
+        while let Some(token) = tokens.next() {
+            if token.starts_with('-') {
+                // Value-taking options must skip their value too, or the
+                // value (`-X GET`, `--method DELETE`, a field) is mistaken
+                // for the endpoint and the real path is never checked
+                // (#16263 review).
+                if matches!(
+                    token,
+                    "-X" | "--method"
+                        | "-H"
+                        | "--header"
+                        | "-F"
+                        | "--field"
+                        | "-f"
+                        | "--raw-field"
+                        | "-q"
+                        | "--jq"
+                        | "-t"
+                        | "--template"
+                        | "--input"
+                ) {
+                    // A quoted value may itself contain whitespace
+                    // (`-H "Accept: x"`), so consume until the closing
+                    // quote before resuming.
+                    if let Some(value) = tokens.next() {
+                        if value.starts_with('"') && !(value.len() >= 2 && value.ends_with('"')) {
+                            for extra in tokens.by_ref() {
+                                if extra.ends_with('"') {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            let path = token.trim_matches(|c| c == '"' || c == '\'');
+            if !path.starts_with("http") && !path.is_empty() {
+                operations.push(path.to_string());
+            }
+            break;
+        }
+    }
+    operations
+}
+
+/// How the credential a REST call authenticates with relates to the workflow
+/// token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BearerAuth {
+    /// The credential is the workflow's `GITHUB_TOKEN`; the declared
+    /// `permissions:` governs what it can do.
+    WorkflowToken,
+    /// The credential is some other secret; its own scopes govern, which a
+    /// static lint cannot see and must not model.
+    ExternalToken,
+    /// The credential's origin is not statically visible.
+    Unknown,
+}
+
+/// The bearer credential variable one script line authenticates with:
+/// `Authorization: Bearer $NAME` and `Authorization: token $NAME` spellings.
+fn bearer_variable(line: &str) -> Option<String> {
+    let lowered = line.to_ascii_lowercase();
+    // The slice offset must come from the marker that matched: "token " is
+    // one character shorter than "bearer ", and hard-coding the longer
+    // length silently dropped the first character of the variable name
+    // (#16263 review).
+    let (position, marker) = lowered
+        .find("bearer ")
+        .map(|position| (position, "bearer "))
+        .or_else(|| lowered.find("token ").map(|position| (position, "token ")))?;
+    let tail = line[position + marker.len()..].trim_start();
+    // Both `$NAME` and `${NAME}` spellings must resolve; a bare `$` left
+    // in place makes `leading_identifier` return an empty name and the
+    // reference vanish (#16263 review).
+    let tail = tail.strip_prefix("${").or_else(|| tail.strip_prefix('$')).unwrap_or(tail);
+    let name = leading_identifier(tail);
+    if name.is_empty() { None } else { Some(name.to_string()) }
+}
+
+/// Classify the credential one script line authenticates with. A bearer
+/// expression naming the workflow token directly
+/// (`${{ secrets.GITHUB_TOKEN }}` / `${{ github.token }}`) counts immediately;
+/// otherwise the spelled variable is resolved through the env mappings in
+/// scope. `gh api` lines authenticate from `GH_TOKEN` / `GITHUB_TOKEN` env.
+fn line_bearer_auth(
+    line: &str,
+    env_values: &std::collections::HashMap<String, String>,
+) -> BearerAuth {
+    let lowered = line.to_ascii_lowercase();
+    let spelled = lowered.contains("bearer ") || lowered.contains("token ");
+    if !spelled && !line.contains("gh api") {
+        return BearerAuth::Unknown;
+    }
+    if line.contains("secrets.GITHUB_TOKEN") || line.contains("github.token") {
+        return BearerAuth::WorkflowToken;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(name) = bearer_variable(line) {
+        candidates.push(name);
+    }
+    if line.contains("gh api") {
+        candidates.push("GH_TOKEN".to_string());
+        candidates.push("GITHUB_TOKEN".to_string());
+    }
+    for name in candidates {
+        let Some(value) = env_values.get(&name) else {
+            continue;
+        };
+        if value.contains("secrets.GITHUB_TOKEN") || value.contains("github.token") {
+            return BearerAuth::WorkflowToken;
+        }
+        if value.contains("secrets.") {
+            return BearerAuth::ExternalToken;
+        }
+    }
+    BearerAuth::Unknown
+}
+
+/// Collect an `env:` mapping's name-to-value pairs into one map; later
+/// mappings override earlier ones, matching GitHub's scoping order.
+fn collect_env_values(
+    value: Option<&Value>,
+    values: &mut std::collections::HashMap<String, String>,
+) {
+    if let Some(mapping) = value.and_then(Value::as_mapping) {
+        for (key, value) in mapping {
+            if let (Some(key), Some(value)) = (key.as_str(), value.as_str()) {
+                values.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+}
+
+/// Rule B for one run script: flag REST operations whose required scope the
+/// declared permissions do not grant. Only calls authenticated with the
+/// workflow token are judged: a `permissions:` block governs `GITHUB_TOKEN`
+/// alone, so a call carrying another secret is governed by scopes a static
+/// lint cannot see and is left alone.
+/// Physical script lines joined through trailing-backslash continuations,
+/// so one shell command is judged as one line (#16263 review): the Pages
+/// probe in docs-deploy.yml places its bearer header and its `/pages` URL on
+/// separate continuation lines, and per-physical-line parsing associates
+/// neither with the other.
+fn logical_shell_lines(script: &str) -> Vec<String> {
+    let mut logical: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in script.lines() {
+        let trimmed_end = line.trim_end();
+        if trimmed_end.ends_with('\\') {
+            current.push_str(trimmed_end[..trimmed_end.len() - 1].trim_end());
+            current.push(' ');
+            continue;
+        }
+        current.push_str(line);
+        logical.push(std::mem::take(&mut current));
+    }
+    if !current.is_empty() {
+        logical.push(current);
+    }
+    logical
+}
+
+fn check_rest_scopes(
+    script: &str,
+    grants: &PermissionGrants,
+    env_values: &std::collections::HashMap<String, String>,
+    job_name: &str,
+    workflow_name: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    for line in logical_shell_lines(script) {
+        if line_bearer_auth(&line, env_values) != BearerAuth::WorkflowToken {
+            continue;
+        }
+        let method = line_method(&line);
+        for path in rest_operations(&line) {
+            let Some((scope, access)) = required_rest_scope(&path, method.as_deref()) else {
+                continue;
+            };
+            if grants.grants(scope, access) {
+                continue;
+            }
+            issues.push(LintIssue {
+                level: "error",
+                code: "REST_SCOPE_GAP",
+                workflow: workflow_name.to_string(),
+                message: format!(
+                    "job '{job_name}' calls GitHub REST {path} requiring {scope}: {} but the \
+                     declared permissions do not grant that scope; the call fails with a \
+                     silent 403",
+                    access.label()
+                ),
+            });
+        }
     }
 }
 
@@ -2587,7 +3278,7 @@ fn check_self_hosted_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ensure;
+    use color_eyre::eyre::{bail, ensure};
 
     const CLEAN_SUBJECT_WORKFLOW: &str = "on: push\npermissions: read-all\njobs:\n  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo checked\n";
 
@@ -3211,6 +3902,294 @@ mod tests {
         lint_workflow_file(&path, true, &mut issues)?;
         assert!(issues.iter().all(|issue| issue.code != "INHERITED_JOB_WRITE"));
         Ok(())
+    }
+
+    #[test]
+    fn fixture_ineffective_token_reference_fails() -> Result<()> {
+        let path = fixture_path("ineffective_token_reference.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        let findings: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "INEFFECTIVE_TOKEN_REFERENCE").collect();
+        assert_eq!(findings.len(), 1, "one dead reference in the one step: {issues:?}");
+        assert_eq!(findings[0].level, "error");
+        assert!(findings[0].message.contains("GITHUB_TOKEN"), "names the token: {issues:?}");
+        assert!(findings[0].message.contains("Probe ref"), "names the step: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_exported_token_reference_passes() -> Result<()> {
+        let path = fixture_path("exported_token_reference.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(
+            issues.iter().all(|issue| issue.level != "error"),
+            "a step env export supplies the reference: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_rest_scope_gap_fails() -> Result<()> {
+        let path = fixture_path("rest_scope_gap.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        let findings: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "REST_SCOPE_GAP").collect();
+        assert_eq!(findings.len(), 1, "{issues:?}");
+        assert!(findings[0].message.contains("pull-requests"), "names the scope: {issues:?}");
+        assert!(findings[0].message.contains("probe"), "names the job: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_rest_scope_granted_passes() -> Result<()> {
+        let path = fixture_path("rest_scope_granted.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(
+            issues.iter().all(|issue| issue.level != "error"),
+            "a granted pull-requests scope accepts the call: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_rest_scope_job_override_gap_fails() -> Result<()> {
+        // Job-level `permissions:` replace the workflow-level grant, so the
+        // workflow's pull-requests read does not rescue the job.
+        let path = fixture_path("rest_scope_job_override_gap.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(
+            issues.iter().any(|issue| issue.code == "REST_SCOPE_GAP"),
+            "the job-scoped grant is the effective one: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rest_scope_gap_requires_declared_permissions() -> Result<()> {
+        // Without any declared permissions the effective grant is the
+        // repository default, invisible statically; the lint stays silent
+        // instead of guessing.
+        let workflow: Value = serde_yaml_ng::from_str(
+            r#"
+name: undeclared
+on: push
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: gh api "repos/org/repo/pulls"
+"#,
+        )?;
+        let mut issues = Vec::new();
+        for (name, job) in job_mappings(&workflow) {
+            lint_job_auth(&name, job, &workflow, "inline.yml", &mut issues);
+        }
+        assert!(issues.is_empty(), "undeclared permissions impose no modeled grant: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn github_env_write_supplies_token_to_later_steps() -> Result<()> {
+        let workflow: Value = serde_yaml_ng::from_str(
+            r#"
+name: github env supply
+on: push
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Mint
+        run: |
+          echo "GH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> "$GITHUB_ENV"
+      - name: Consume
+        run: |
+          curl -sS -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user
+"#,
+        )?;
+        let mut issues = Vec::new();
+        for (name, job) in job_mappings(&workflow) {
+            lint_job_auth(&name, job, &workflow, "inline.yml", &mut issues);
+        }
+        assert!(
+            issues.iter().all(|issue| issue.code != "INEFFECTIVE_TOKEN_REFERENCE"),
+            "an earlier $GITHUB_ENV write supplies later steps: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rest_scope_model_covers_method_and_grant_levels() -> Result<()> {
+        let Some((scope, access)) = required_rest_scope("repos/org/repo/pulls?state=open", None)
+        else {
+            bail!("pulls endpoints must model a requirement");
+        };
+        assert_eq!((scope, access), ("pull-requests", ScopeAccess::Read));
+        let Some((_, access)) = required_rest_scope("repos/org/repo/issues/9", Some("POST")) else {
+            bail!("issue endpoints must model a requirement");
+        };
+        assert_eq!(access, ScopeAccess::Write);
+        ensure!(
+            required_rest_scope("orgs/org/teams", None).is_none(),
+            "metadata-only paths impose no requirement"
+        );
+
+        let mapping: Value = serde_yaml_ng::from_str("pull-requests: read")?;
+        let Some(grants) = PermissionGrants::parse(&mapping) else {
+            bail!("a scoped permissions mapping must parse");
+        };
+        ensure!(grants.grants("pull-requests", ScopeAccess::Read), "read satisfies read");
+        ensure!(!grants.grants("pull-requests", ScopeAccess::Write), "read is not write");
+        ensure!(!grants.grants("actions", ScopeAccess::Read), "unlisted scope is ungranted");
+
+        let Some(everything) = PermissionGrants::parse(&Value::String("read-all".to_string()))
+        else {
+            bail!("read-all must parse");
+        };
+        ensure!(everything.grants("actions", ScopeAccess::Read), "read-all satisfies read");
+        ensure!(!everything.grants("actions", ScopeAccess::Write), "read-all is not write");
+        Ok(())
+    }
+
+    #[test]
+    fn rest_scope_gap_skips_externally_authenticated_calls() -> Result<()> {
+        // `permissions:` governs GITHUB_TOKEN alone; a call carrying another
+        // secret is out of the block's reach and out of the rule's.
+        let workflow: Value = serde_yaml_ng::from_str(
+            r#"
+name: external token
+on: push
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.ORG_RUNNER_TOKEN }}
+        run: |
+          curl -sS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/orgs/org/actions/runners?per_page=100"
+"#,
+        )?;
+        let mut issues = Vec::new();
+        for (name, job) in job_mappings(&workflow) {
+            lint_job_auth(&name, job, &workflow, "inline.yml", &mut issues);
+        }
+        assert!(
+            issues.iter().all(|issue| issue.code != "REST_SCOPE_GAP"),
+            "an external-token call is not judged against permissions: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rust_standard_capability_pool() -> Result<()> {
+        let yaml = r#"
+group: em-ci-small
+labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
+"#;
+        let v: Value = serde_yaml_ng::from_str(yaml)?;
+        assert_eq!(normalize_runs_on(&v), Some("self_hosted_rust_standard".to_string()));
+        Ok(())
+    }
+
+    fn line_method_spelled_forms_are_recognized() {
+        assert_eq!(
+            line_method(r#"curl -X POST -H "x" https://api.github.com/x"#).as_deref(),
+            Some("POST")
+        );
+        assert_eq!(line_method("gh api --method DELETE repos/o/r/x").as_deref(), Some("DELETE"));
+        assert_eq!(line_method("curl -d '{}' https://api.github.com/x").as_deref(), Some("POST"));
+        assert_eq!(line_method("curl -sS https://api.github.com/x"), None);
+        // Equals-spelled methods (#16263 review).
+        assert_eq!(line_method("gh api --method=DELETE repos/o/r/x").as_deref(), Some("DELETE"));
+        assert_eq!(
+            line_method("curl --request=POST https://api.github.com/x").as_deref(),
+            Some("POST")
+        );
+        assert_eq!(line_method("curl -XGET https://api.github.com/x").as_deref(), Some("GET"));
+    }
+
+    #[test]
+    fn bearer_variable_parses_both_markers_and_dollar_spellings() {
+        // #16263 review: the "token " marker is one character shorter than
+        // "bearer "; hard-coding the longer offset dropped the first
+        // character of the name.
+        assert_eq!(bearer_variable("Authorization: token $GH_TOKEN").as_deref(), Some("GH_TOKEN"));
+        assert_eq!(
+            bearer_variable("Authorization: Bearer $GITHUB_TOKEN").as_deref(),
+            Some("GITHUB_TOKEN")
+        );
+        assert_eq!(
+            bearer_variable("Authorization: Bearer ${GH_TOKEN}").as_deref(),
+            Some("GH_TOKEN")
+        );
+        assert_eq!(
+            bearer_variable("Authorization: token ${GH_TOKEN}").as_deref(),
+            Some("GH_TOKEN")
+        );
+        assert_eq!(bearer_variable("Authorization: Bearer ${{ secrets.X }}"), None);
+    }
+
+    #[test]
+    fn rest_operations_skips_value_taking_gh_api_options() {
+        // #16263 review: `-X GET` / `--method DELETE` values were mistaken
+        // for the endpoint, so the real path was never scope-checked.
+        assert_eq!(
+            rest_operations(r#"gh api --method DELETE repos/o/r/issues/9"#),
+            vec!["repos/o/r/issues/9".to_string()]
+        );
+        assert_eq!(
+            rest_operations(r#"gh api -X GET repos/o/r/pulls"#),
+            vec!["repos/o/r/pulls".to_string()]
+        );
+        assert_eq!(
+            rest_operations(r#"gh api -H "Accept: x" -f title=t repos/o/r/issues"#),
+            vec!["repos/o/r/issues".to_string()]
+        );
+    }
+
+    #[test]
+    fn token_references_skip_single_quotes_comments_and_escapes() {
+        // #16263 review: literal text does not expand, so it is not a
+        // reference.
+        assert!(token_references("echo 'configure $GH_TOKEN before use'").is_empty());
+        assert!(token_references("# check $GH_TOKEN docs").is_empty());
+        assert!(token_references("echo done # uses $GH_TOKEN").is_empty());
+        assert!(token_references(r"echo \$GH_TOKEN").is_empty());
+        // Double-quoted and bare expansions still count.
+        assert_eq!(
+            token_references(r#"echo "send $GH_TOKEN""#),
+            vec![(0usize, "GH_TOKEN".to_string())]
+        );
+        assert_eq!(token_references("echo $GH_TOKEN"), vec![(0usize, "GH_TOKEN".to_string())]);
+    }
+
+    #[test]
+    fn rest_scope_check_joins_backslash_continuations() {
+        // #16263 review: one curl command split across continuation lines
+        // must be judged as one logical line. docs-deploy.yml's Pages probe
+        // uses exactly this shape.
+        let script = concat!(
+            "curl -sS -X POST \\\n",
+            "  -H \"Authorization: token $GH_TOKEN\" \\\n",
+            "  https://api.github.com/repos/o/r/pages\n",
+        );
+        let mut issues = Vec::new();
+        let grants = PermissionGrants::Scoped(std::collections::BTreeMap::new());
+        let mut env_values = std::collections::HashMap::new();
+        env_values.insert("GH_TOKEN".to_string(), r#"${{ github.token }}"#.to_string());
+        check_rest_scopes(script, &grants, &env_values, "probe", "probe.yml", &mut issues);
+        assert!(
+            issues.iter().any(|issue| issue.code == "REST_SCOPE_GAP"),
+            "the joined command must reach the scope check: {issues:?}"
+        );
     }
 
     /// The claim #5989 actually makes, asserted against the shipped workflow
