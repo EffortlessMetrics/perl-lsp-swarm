@@ -259,13 +259,11 @@ fn run_at_with_publisher(
         },
         PendingSurface { path: status_path.to_path_buf(), contents: status_payload.into_bytes() },
     ];
-    let published_receipt = receipt_payload.as_ref().map(|(path, _)| path.clone());
     if let Some((receipt_path, payload)) = receipt_payload {
         surfaces.push(PendingSurface { path: receipt_path, contents: payload.into_bytes() });
     }
 
     publish_coherent_generation(publisher, &surfaces)?;
-    validate_published_generation(output_path, status_path, published_receipt.as_deref())?;
 
     match format {
         UxScorecardFormat::Human => {
@@ -442,19 +440,18 @@ fn rollback_committed_surfaces(
     committed: &[(PathBuf, Option<Vec<u8>>)],
     error: color_eyre::eyre::Report,
 ) -> Result<()> {
-    let mut rollback_error = None;
+    let mut rollback_errors = Vec::new();
     for (done_dest, done_previous) in committed.iter().rev() {
         if let Err(restore_error) = restore_previous_surface(done_dest, done_previous.as_deref()) {
-            rollback_error = Some(restore_error);
-            break;
+            rollback_errors.push(restore_error);
         }
     }
-    if let Some(restore_error) = rollback_error {
-        return Err(
-            error.wrap_err(format!("publication failed and rollback also failed: {restore_error}"))
-        );
+    if rollback_errors.is_empty() {
+        return Err(error);
     }
-    Err(error)
+    let restore_summary =
+        rollback_errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
+    Err(error.wrap_err(format!("publication failed and rollback also failed: {restore_summary}")))
 }
 
 fn publish_coherent_generation(
@@ -495,6 +492,16 @@ fn publish_coherent_generation(
         }
         let _ = fs::remove_file(&stage);
         committed.push((dest, previous));
+    }
+    let Some(scorecard) = surfaces.first() else {
+        bail!("publication generation has no surfaces");
+    };
+    let Some(status) = surfaces.get(1) else {
+        bail!("publication generation is missing the status surface");
+    };
+    let receipt = surfaces.get(2).map(|surface| surface.path.as_path());
+    if let Err(error) = validate_published_generation(&scorecard.path, &status.path, receipt) {
+        return rollback_committed_surfaces(&committed, error);
     }
     Ok(())
 }
@@ -1828,6 +1835,49 @@ mod tests {
         check_true(
             error.to_string().contains("reading"),
             "missing expected receipt error missing read context",
+        )
+    }
+
+    #[test]
+    fn validation_failure_after_dest_commit_restores_previous_generation() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("measurements.json"), measurement_json(true))?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        publish_human(root.path(), &AtomicFsPublisher)?;
+        let previous = validate_published_generation(&output_path, &status_path, None)?;
+        let previous_scorecard = fs::read_to_string(&output_path)?;
+        let previous_status = fs::read_to_string(&status_path)?;
+
+        let surfaces = [
+            PendingSurface {
+                path: output_path.clone(),
+                contents: b"{\"not\":\"a generation\"}\n".to_vec(),
+            },
+            PendingSurface {
+                path: status_path.clone(),
+                contents: b"# no generation marker\n".to_vec(),
+            },
+        ];
+        let error = match publish_coherent_generation(&AtomicFsPublisher, &surfaces) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "invalid dest payloads must fail validation under the publication lock"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("publication_generation")
+                || error.to_string().contains("generation marker"),
+            "validation failure missing generation diagnosis",
+        )?;
+        check(&fs::read_to_string(&output_path)?, &previous_scorecard, "scorecard dest mixed")?;
+        check(&fs::read_to_string(&status_path)?, &previous_status, "status dest mixed")?;
+        check(
+            &validate_published_generation(&output_path, &status_path, None)?,
+            &previous,
+            "rolled-back generation after validation failure",
         )
     }
 
