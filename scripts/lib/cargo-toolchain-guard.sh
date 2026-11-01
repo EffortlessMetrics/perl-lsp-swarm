@@ -191,7 +191,14 @@ cargo_toolchain_guard() {
   resolved="$(command -v cargo 2>/dev/null || true)"
   if [ -z "$resolved" ]; then
     printf 'cargo-toolchain-guard: REFUSED: no cargo found on PATH; this entrypoint requires a Rust toolchain >= %s (rust-toolchain.toml pin: %s).\n' "$required" "${pin:-none}" >&2
-    printf '  fix: install rustup (https://rustup.rs) so the shim in ~/.cargo/bin resolves first, then retry.\n' >&2
+    local candidate_dir
+    for candidate_dir in "${CARGO_HOME:+$CARGO_HOME/bin}" "${HOME:+$HOME/.cargo/bin}"; do
+      if [ -n "$candidate_dir" ] && [ -f "$candidate_dir/cargo" ] && [ -x "$candidate_dir/cargo" ]; then
+        printf '  found an executable Cargo at %s, outside PATH (not probed). Add its bin directory to PATH and ensure CARGO_HOME and RUSTUP_HOME select the intended installation.\n' "$candidate_dir/cargo" >&2
+        break
+      fi
+    done
+    printf '  next: locate an existing Rust installation and configure PATH, CARGO_HOME and RUSTUP_HOME as needed; install rustup only if no suitable installation exists (https://rustup.rs).\n' >&2
     exit "$CARGO_GUARD_EXIT_CODE"
   fi
 
