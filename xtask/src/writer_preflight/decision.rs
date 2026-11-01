@@ -842,7 +842,7 @@ fn count_matching_branch(worktrees: &[WorktreeRecord], branch: &str) -> usize {
 /// `decide` total and panic-free over arbitrary deserialized input (#11636
 /// feeds observation sets from JSON).
 ///
-fn sha_matches(full: &str, expected: &str) -> bool {
+pub(crate) fn sha_matches(full: &str, expected: &str) -> bool {
     const MIN_PREFIX_LEN: usize = 4;
     let hex_token = |token: &str| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit());
     if !hex_token(full) || !hex_token(expected) {

@@ -1585,23 +1585,8 @@ mod tests {
         assert!(!sha_matches("deadbeef", "dead-bad"), "non-hex characters must not match");
     }
 
-    /// Reference copy of `writer_preflight::decision::sha_matches` (private);
-    /// parity table below must keep bin-side and lib-side verdicts identical.
-    fn lib_side_sha_matches_reference(full: &str, expected: &str) -> bool {
-        const MIN_PREFIX_LEN: usize = 4;
-        let hex_token =
-            |token: &str| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit());
-        if !hex_token(full) || !hex_token(expected) {
-            return false;
-        }
-        if expected.len() < MIN_PREFIX_LEN || full.len() < expected.len() {
-            return false;
-        }
-        full[..expected.len()].eq_ignore_ascii_case(expected)
-    }
-
     #[test]
-    fn sha_matches_bin_side_matches_lib_side_reference_table() {
+    fn sha_matches_bin_side_matches_writer_preflight_table() {
         let cases: [(&str, &str, bool); 12] = [
             ("deadbeef", "deadbeef", true),
             ("deadbeef", "DEADBEEF", true),
@@ -1624,7 +1609,7 @@ mod tests {
             );
             assert_eq!(
                 sha_matches(remote, selected),
-                lib_side_sha_matches_reference(remote, selected),
+                xtask::writer_preflight::sha_matches_bin_parity(remote, selected),
                 "bin/lib mismatch for remote={remote:?} selected={selected:?}"
             );
         }
