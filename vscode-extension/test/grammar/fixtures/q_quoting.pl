@@ -5,3 +5,4 @@ my $bracket = q[ [x] ]; ok;
 my $angle = q< <tag> >; end;
 my $slash = q/a\/b/; tail;
 my $early = q(a) . (b);
+my $unbalanced = q(a

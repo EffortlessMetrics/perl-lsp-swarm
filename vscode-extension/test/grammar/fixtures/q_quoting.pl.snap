@@ -104,4 +104,14 @@
 #                ^ source.perl
 #                 ^ source.perl keyword.operator.string.perl
 #                  ^^^^^^ source.perl
+>my $unbalanced = q(a
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^^^^ source.perl variable.other.scalar.perl
+#              ^ source.perl
+#               ^ source.perl keyword.operator.assignment.perl
+#                ^ source.perl
+#                 ^ source.perl string.quoted.q.perl keyword.other.perl
+#                  ^ source.perl string.quoted.q.perl
+#                   ^^ source.perl string.quoted.q.perl
 >
