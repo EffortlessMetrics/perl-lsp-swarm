@@ -130,10 +130,11 @@ export async function showWorkspaceStatusCommand(dependencies: {
     status.mode === 'stopped'
       ? (['Restart Server', 'Run Health Check', 'Show Output', 'Open Actions'] as const)
       : (['Run Health Check', 'Show Output', 'Open Actions'] as const);
+  const modalOptions: vscode.MessageOptions = { modal: true };
   const selection =
     status.mode === 'stopped'
-      ? await vscode.window.showWarningMessage(lines.join('\n'), ...actions)
-      : await vscode.window.showInformationMessage(lines.join('\n'), ...actions);
+      ? await vscode.window.showWarningMessage(lines.join('\n'), modalOptions, ...actions)
+      : await vscode.window.showInformationMessage(lines.join('\n'), modalOptions, ...actions);
 
   if (selection === 'Restart Server') {
     void vscode.commands.executeCommand('perl-lsp.restart');
