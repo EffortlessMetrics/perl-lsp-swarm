@@ -134,16 +134,23 @@ command string. Keep `--body` only for simple callers with safe argument transpo
 For a clean review, write `[]` to the findings file; do not fabricate an inline
 finding. Non-empty findings still require addressable diff anchors.
 
+Before examining the candidate, record its full immutable PR head SHA. Use that
+same value for `<reviewed-sha>` in marker generation and both submission examples
+below; do not resolve a fresh head independently at either step. If marker generation
+refuses head drift, inspect the changed candidate and refresh affected review before
+generating a new marker. The marker head must equal the submitted review's commit.
+
 ```bash
 bash scripts/reviews/inline --pr <pr> --repo <owner/repo> \
-  --body-file /path/to/review.md --findings /path/to/findings.json --event COMMENT
+  --body-file /path/to/review.md --findings /path/to/findings.json --event COMMENT \
+  --commit <reviewed-sha>
 ```
 
 From native PowerShell, use WSL's direct executable route and Bash-visible paths
 (translate Windows paths separately with `wsl.exe --exec wslpath -a -u <path>`):
 
 ```powershell
-wsl.exe --exec bash /mnt/h/path/to/repo/scripts/reviews/inline --pr <pr> --repo <owner/repo> --body-file /mnt/h/path/to/review.md --findings /mnt/h/path/to/findings.json --event COMMENT
+wsl.exe --exec bash /mnt/h/path/to/repo/scripts/reviews/inline --pr <pr> --repo <owner/repo> --body-file /mnt/h/path/to/review.md --findings /mnt/h/path/to/findings.json --event COMMENT --commit <reviewed-sha>
 ```
 
 Only file paths cross this boundary; the body never becomes shell syntax.
@@ -157,7 +164,7 @@ findings, and the already-appended marker — so the submitted review itself car
 
 ```bash
 python3 scripts/ci/check-pr-semantic-review-currentness.py \
-  <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
+  <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT --expected-head <reviewed-sha>
 ```
 
 The emitted `semantic-review:v1` marker — an HTML comment bound to the current
