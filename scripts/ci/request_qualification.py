@@ -182,8 +182,9 @@ class Adapter:
         return {'status': decision.classification, 'reason': decision.reason, 'subject': plan,
                 'qualification_result': 'NOT_PROVEN', 'effects': []}
 
-    def matches(self, run: dict, plan: dict) -> bool:
+    def matches(self, run: dict, plan: dict, *, run_id: int | None = None) -> bool:
         return (positive(run.get('id')) and positive(run.get('run_attempt'))
+                and (run_id is None or run.get('id') == run_id)
                 and run.get('event') == 'workflow_dispatch'
                 and run.get('repository', {}).get('id') == plan['repository_id']
                 and run.get('workflow_id') == plan['workflow_id']
@@ -204,7 +205,7 @@ class Adapter:
 
     def accepted(self, run: dict, plan: dict) -> dict:
         observed = self.api.get(f'{self.root}/actions/runs/{run["id"]}')
-        if not self.matches(observed, plan) or observed['run_attempt'] != run['run_attempt']:
+        if not self.matches(observed, plan, run_id=run['id']) or observed['run_attempt'] != run['run_attempt']:
             raise Refused('run or attempt changed during read-back')
         self.current(plan)
         if observed.get('status') == 'completed':
@@ -264,7 +265,7 @@ class Adapter:
             raise Refused('invalid saved run identity')
         plan = self.snapshot()
         run = self.api.get(f'{self.root}/actions/runs/{run_id}')
-        if not self.matches(run, plan) or run['run_attempt'] != attempt:
+        if not self.matches(run, plan, run_id=run_id) or run['run_attempt'] != attempt:
             raise Refused('saved run/attempt does not match this request')
         self.current(plan)
         if run.get('status') != 'completed':
@@ -331,7 +332,7 @@ class Adapter:
             raise Refused('approved check/app/head/run/attempt association mismatch')
         self.current(plan)
         latest = self.api.get(f'{self.root}/actions/runs/{run_id}')
-        if latest.get('run_attempt') != attempt or not self.matches(latest, plan) or latest.get('conclusion') != run.get('conclusion') or latest.get('status') != 'completed':
+        if latest.get('run_attempt') != attempt or not self.matches(latest, plan, run_id=run_id) or latest.get('conclusion') != run.get('conclusion') or latest.get('status') != 'completed':
             raise Refused('result attempt changed during acquisition')
         if outcome == 'product_failure':
             return {'status': 'PRODUCT_OR_TEST_FAILURE', 'qualification_result': 'FAILURE',

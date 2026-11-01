@@ -56,7 +56,7 @@ def prepare(adapter, run_id: int, run_attempt: int, proof: VerifiedQualification
             or not proof.authenticated_producer_reference):
         raise Refused('publisher lacks exact authenticated canonical proof')
     run = adapter.api.get(f'{adapter.root}/actions/runs/{run_id}')
-    if not adapter.matches(run, plan) or run['run_attempt'] != run_attempt:
+    if not adapter.matches(run, plan, run_id=run_id) or run['run_attempt'] != run_attempt:
         raise Refused('publisher native control run/attempt mismatch')
     if run.get('status') != 'in_progress' or run.get('conclusion') is not None:
         raise Refused('publisher must belong to the live native control attempt')
@@ -74,7 +74,7 @@ def prepare(adapter, run_id: int, run_attempt: int, proof: VerifiedQualification
         raise Refused('publisher cannot certify rehearsal/cancellation/incomplete proof')
     adapter.current(plan)
     latest = adapter.api.get(f'{adapter.root}/actions/runs/{run_id}')
-    if (not adapter.matches(latest, plan) or latest['run_attempt'] != run_attempt
+    if (not adapter.matches(latest, plan, run_id=run_id) or latest['run_attempt'] != run_attempt
             or latest.get('status') != 'in_progress' or latest.get('conclusion') is not None):
         raise Refused('publisher native control attempt moved during preparation')
     external = f'{plan["request_key"]}:{run_id}:{run_attempt}'
