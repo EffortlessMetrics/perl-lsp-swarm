@@ -3,9 +3,12 @@
 //! Builds the canonical registry-activated Dancer2 activation facts
 //! (#8914) for one document from runtime evidence:
 //!
-//! 1. the canonical activation-site extractor
-//!    (`extract_dancer2_activation_sites`) supplies the exact `use Dancer2`
-//!    sites and their parsed import evidence — this module adds no grammar;
+//! 1. the canonical activation-site extractors
+//!    (`extract_dancer2_activation_sites` and
+//!    `extract_dancer2_two_x_activation_sites`) supply the exact `use Dancer2`
+//!    sites — this module adds no grammar. The cheap in-memory gate takes the
+//!    earliest site across both extractors so a 2.x-shaped document still
+//!    reaches filesystem module resolution;
 //! 2. the runtime supplies a [`RuntimeDancer2Module`]: the `Dancer2` module
 //!    resolved through the request's effective `@INC` plus its declared
 //!    `$VERSION`, read by the bounded generic module-metadata scanner
@@ -169,22 +172,42 @@ impl Dancer2FileActivations {
 /// The anchoring point for position-aware effective-`@INC` evaluation
 /// (#12776): only `use lib` / `no lib` operations active at or before this
 /// offset may contribute to the request's include roots. Returns `None`
-/// when the AST has no activation site, which keeps the cheap in-memory
-/// gate (`has_activation_site`) the sole discriminator for skipping all
-/// filesystem module resolution on Dancer2-free documents.
+/// when the AST has no 1.x or 2.x activation site, which keeps the cheap
+/// in-memory gate (`has_activation_site`) the sole discriminator for skipping
+/// all filesystem module resolution on Dancer2-free documents.
+///
+/// The offset is the minimum across both extractors. Today they select the
+/// same `use Dancer2` / `use Dancer2 <numeric version>` nodes (identical
+/// module-name predicates); consulting both keeps a future 2.x-only site
+/// from skipping module resolution. Site offsets come from AST spans — the
+/// 2.x extractor's source-dependent evidence is unused here.
 #[must_use]
 pub fn first_activation_site_offset(ast: &Node) -> Option<usize> {
-    let sites = extract_dancer2_activation_sites(ast, FileId(0));
-    sites.into_iter().map(|site| site.span_start_byte as usize).min()
+    earliest_activation_site_offset(
+        extract_dancer2_activation_sites(ast, FileId(0))
+            .into_iter()
+            .map(|site| site.span_start_byte),
+        extract_dancer2_two_x_activation_sites(ast, "", FileId(0), SourceGeneration::Unknown)
+            .into_iter()
+            .map(|site| site.span_start_byte),
+    )
 }
 
-/// Whether the AST contains any exact `use Dancer2` activation site.
+/// Whether the AST contains any exact `use Dancer2` activation site (1.x or 2.x).
 ///
 /// Cheap in-memory gate: documents without an activation site skip the
 /// filesystem module resolution entirely on the provider paths.
 #[must_use]
 pub fn has_activation_site(ast: &Node) -> bool {
     first_activation_site_offset(ast).is_some()
+}
+
+/// Earliest byte offset among 1.x and 2.x activation-site spans.
+fn earliest_activation_site_offset(
+    one_x: impl IntoIterator<Item = u32>,
+    two_x: impl IntoIterator<Item = u32>,
+) -> Option<usize> {
+    one_x.into_iter().chain(two_x).map(|offset| offset as usize).min()
 }
 
 /// Bounded human reason for the current activation state of a package.
@@ -239,78 +262,81 @@ pub fn file_activations(
 ) -> Dancer2FileActivations {
     let sites = extract_dancer2_activation_sites(ast, file_id);
     let mut activations = Dancer2FileActivations::default();
-    if sites.is_empty() {
-        return activations;
-    }
+    // 1.x facts are independent of the 2.x path: an empty 1.x site list must
+    // not skip dual-adapter arbitration. A 2.x-only site still has to mint
+    // 2.x facts for a resolved 2.x module (#14989 residual gate).
+    if !sites.is_empty() {
+        let detection = match module {
+            Some(module) => {
+                let activation =
+                    ModuleActivationIdentity::new("Dancer2", Some(file_id), generation.clone())
+                        .with_observed_version(ModuleVersionEvidence::new(
+                            module.declared_version.clone(),
+                            generation.clone(),
+                        ));
+                let observation = perl_semantic_facts::framework::ModuleObservationReceipt::new(
+                    RUNTIME_RESOLVER_IDENTITY,
+                    format!("module-file:{}", module.resolved_path),
+                    RUNTIME_ENVIRONMENT_IDENTITY,
+                    generation.clone(),
+                    stable_digest(&[&module.resolved_path, &module.declared_version]),
+                    vec![ModuleSelectorEvaluation::new(
+                        "Dancer2",
+                        ModuleSelectorOutcome::Matched {
+                            activation,
+                            evidence_class: DetectionEvidenceClass::ResolvedModule,
+                        },
+                    )],
+                );
+                let input = AdapterDetectionInput::new(
+                    dancer2_descriptor(),
+                    observation,
+                    None,
+                    perl_semantic_facts::framework::AdapterCancellation::active(),
+                );
+                detect_dancer2(&input)
+            }
+            None => {
+                // No runtime module observation: the required selector was never
+                // evaluated, which the registry contract records as unavailable.
+                let observation = perl_semantic_facts::framework::ModuleObservationReceipt::new(
+                    RUNTIME_RESOLVER_IDENTITY,
+                    "unresolved:Dancer2",
+                    RUNTIME_ENVIRONMENT_IDENTITY,
+                    generation.clone(),
+                    stable_digest(&["unresolved"]),
+                    vec![ModuleSelectorEvaluation::new(
+                        "Dancer2",
+                        ModuleSelectorOutcome::Unavailable {
+                            reason: "no runtime module resolution".to_string(),
+                        },
+                    )],
+                );
+                let input = AdapterDetectionInput::new(
+                    dancer2_descriptor(),
+                    observation,
+                    None,
+                    perl_semantic_facts::framework::AdapterCancellation::active(),
+                );
+                detect_dancer2(&input)
+            }
+        };
 
-    let detection = match module {
-        Some(module) => {
-            let activation =
-                ModuleActivationIdentity::new("Dancer2", Some(file_id), generation.clone())
-                    .with_observed_version(ModuleVersionEvidence::new(
-                        module.declared_version.clone(),
-                        generation.clone(),
-                    ));
-            let observation = perl_semantic_facts::framework::ModuleObservationReceipt::new(
-                RUNTIME_RESOLVER_IDENTITY,
-                format!("module-file:{}", module.resolved_path),
-                RUNTIME_ENVIRONMENT_IDENTITY,
-                generation.clone(),
-                stable_digest(&[&module.resolved_path, &module.declared_version]),
-                vec![ModuleSelectorEvaluation::new(
-                    "Dancer2",
-                    ModuleSelectorOutcome::Matched {
-                        activation,
-                        evidence_class: DetectionEvidenceClass::ResolvedModule,
-                    },
-                )],
-            );
-            let input = AdapterDetectionInput::new(
-                dancer2_descriptor(),
-                observation,
-                None,
-                perl_semantic_facts::framework::AdapterCancellation::active(),
-            );
-            detect_dancer2(&input)
+        for site in &sites {
+            let package = site.package.clone().unwrap_or_else(|| "main".to_string());
+            let facts =
+                dancer2_activation_facts(&detection, site.package.as_deref(), &site.evidence);
+            if activations.for_package(&package).is_none() {
+                activations.packages.push(Dancer2PackageActivation {
+                    package: package.clone(),
+                    facts: facts.clone(),
+                });
+                activations.evidence.insert(package, site.evidence.clone());
+            }
         }
-        None => {
-            // No runtime module observation: the required selector was never
-            // evaluated, which the registry contract records as unavailable.
-            let observation = perl_semantic_facts::framework::ModuleObservationReceipt::new(
-                RUNTIME_RESOLVER_IDENTITY,
-                "unresolved:Dancer2",
-                RUNTIME_ENVIRONMENT_IDENTITY,
-                generation.clone(),
-                stable_digest(&["unresolved"]),
-                vec![ModuleSelectorEvaluation::new(
-                    "Dancer2",
-                    ModuleSelectorOutcome::Unavailable {
-                        reason: "no runtime module resolution".to_string(),
-                    },
-                )],
-            );
-            let input = AdapterDetectionInput::new(
-                dancer2_descriptor(),
-                observation,
-                None,
-                perl_semantic_facts::framework::AdapterCancellation::active(),
-            );
-            detect_dancer2(&input)
-        }
-    };
-
-    for site in &sites {
-        let package = site.package.clone().unwrap_or_else(|| "main".to_string());
-        let facts = dancer2_activation_facts(&detection, site.package.as_deref(), &site.evidence);
-        if activations.for_package(&package).is_none() {
-            activations
-                .packages
-                .push(Dancer2PackageActivation { package: package.clone(), facts: facts.clone() });
-            activations.evidence.insert(package, site.evidence.clone());
-        }
+        activations.detection = Some(detection);
+        activations.module = module.cloned();
     }
-    activations.detection = Some(detection);
-    activations.module = module.cloned();
 
     // Dual-adapter arbitration (#14989): the resolved version decides which
     // contract owns the document. A 2.x-resolved module fails the 1.x
@@ -472,7 +498,85 @@ mod tests {
         must_with(parser.parse(), "fixture must parse")
     }
 
+    fn one_x_site_offsets(source: &str) -> Vec<u32> {
+        extract_dancer2_activation_sites(&parse(source), FileId(0))
+            .into_iter()
+            .map(|site| site.span_start_byte)
+            .collect()
+    }
+
+    fn two_x_site_offsets(source: &str) -> Vec<u32> {
+        extract_dancer2_two_x_activation_sites(
+            &parse(source),
+            source,
+            FileId(0),
+            SourceGeneration::known("gate-test"),
+        )
+        .into_iter()
+        .map(|site| site.span_start_byte)
+        .collect()
+    }
+
     const VERSIONED_MODULE: &str = "package Dancer2;\nour $VERSION = '1.1.1';\n1;\n";
+
+    #[test]
+    fn dancer2_earliest_activation_site_offset_takes_the_minimum_across_both_extractors() {
+        // Discriminator for a 1.x-only min: a lone earlier 2.x offset must win.
+        assert_eq!(earliest_activation_site_offset(std::iter::empty(), [12]), Some(12));
+        assert_eq!(earliest_activation_site_offset([8], std::iter::empty()), Some(8));
+        assert_eq!(earliest_activation_site_offset([10, 30], [4, 40]), Some(4));
+        assert_eq!(earliest_activation_site_offset([3], [9]), Some(3));
+        assert_eq!(
+            earliest_activation_site_offset(std::iter::empty::<u32>(), std::iter::empty()),
+            None
+        );
+    }
+
+    #[test]
+    fn dancer2_two_x_only_document_opens_the_activation_gate_at_the_earliest_two_x_site() {
+        let source = "package App;\nuse Dancer2 2.0.1;\nget '/x' => sub { 1 };\n";
+        let ast = parse(source);
+        let two_x = two_x_site_offsets(source);
+        assert!(!two_x.is_empty(), "2.x extractor must see the versioned import");
+        let expected = two_x.iter().copied().map(|offset| offset as usize).min();
+        assert_eq!(first_activation_site_offset(&ast), expected);
+        assert!(has_activation_site(&ast), "a 2.x-only document must reach module resolution");
+    }
+
+    #[test]
+    fn dancer2_one_x_document_keeps_its_activation_gate_offset() {
+        let source = "package App;\nuse Dancer2 1.1.1;\nget '/x' => sub { 1 };\n";
+        let ast = parse(source);
+        let one_x = one_x_site_offsets(source);
+        assert!(!one_x.is_empty(), "1.x extractor must see the versioned import");
+        let expected = one_x.iter().copied().map(|offset| offset as usize).min();
+        assert_eq!(first_activation_site_offset(&ast), expected);
+        assert!(has_activation_site(&ast));
+    }
+
+    #[test]
+    fn dancer2_mixed_one_x_and_two_x_sites_use_the_minimum_offset() {
+        let two_x_first = "use Dancer2 2.0.1;\nuse Dancer2 1.1.1;\n";
+        let one_x_first = "use Dancer2 1.1.1;\nuse Dancer2 2.0.1;\n";
+        for source in [two_x_first, one_x_first] {
+            let ast = parse(source);
+            let expected = earliest_activation_site_offset(
+                one_x_site_offsets(source),
+                two_x_site_offsets(source),
+            );
+            assert_eq!(first_activation_site_offset(&ast), expected, "{source}");
+            assert!(has_activation_site(&ast), "{source}");
+        }
+    }
+
+    #[test]
+    fn dancer2_free_document_does_not_open_the_activation_gate() {
+        for source in ["print 1;\n", "use strict;\n", "use Dancer2::Core;\n", ""] {
+            let ast = parse(source);
+            assert_eq!(first_activation_site_offset(&ast), None, "{source:?}");
+            assert!(!has_activation_site(&ast), "{source:?}");
+        }
+    }
 
     #[test]
     fn read_declared_module_version_handles_standard_forms() {
@@ -547,6 +651,31 @@ mod tests {
             get.state,
             perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::Imported
         ));
+    }
+
+    /// End-to-end through `file_activations` (not just the extractor): a
+    /// 2.x-only versioned import against a resolved 2.x module still mints
+    /// typed 2.x facts at the provider seam (#14989 residual gate).
+    #[test]
+    fn dancer2_file_activations_emits_two_x_facts_for_a_resolved_two_x_module() {
+        let source = "package App;\nuse Dancer2 2.0.1;\nget '/x' => sub { 1 };\n";
+        let ast = parse(source);
+        assert!(has_activation_site(&ast), "gate must admit the 2.x-only document");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        assert!(
+            activations.packages.iter().all(|p| !p.facts.is_exact()),
+            "1.x facts refuse a 2.x module"
+        );
+        assert_eq!(activations.two_x_packages.len(), 1);
+        assert!(activations.two_x_packages[0].facts.is_exact());
+        assert!(activations.two_x_detection.is_some(), "2.x detection is recorded");
     }
 
     /// A 1.x-resolved module never reaches the 2.x carrier: version
