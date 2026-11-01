@@ -26,6 +26,3 @@ export function scaffoldContent(
   if (!segments.every((part) => /^[A-Za-z_]\w*$/.test(part))) return null;
   return `package ${segments.join('::')};\nuse strict;\nuse warnings;\n\n\n\n1;\n`;
 }
-
-/** File-creation listener registered at activation; explicit scaffold commands own content (#14451). */
-export async function populateCreatedFiles(_event: unknown): Promise<void> {}

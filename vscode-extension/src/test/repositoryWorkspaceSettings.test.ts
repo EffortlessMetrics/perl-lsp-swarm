@@ -176,9 +176,7 @@ describe('user-facing setup guides', () => {
       const markdown = readText(absolutePath);
       const violations = machineScopedKeysInWorkspaceGuidance(markdown, machineKeys);
       for (const violation of violations) {
-        failures.push(
-          `${relativePath}:${violation.line}: ${violation.key} (${violation.reason})`,
-        );
+        failures.push(`${relativePath}:${violation.line}: ${violation.key} (${violation.reason})`);
       }
     }
 
