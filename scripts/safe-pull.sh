@@ -43,13 +43,25 @@ prune_expired_safe_pull_packets() {
     echo "WARNING: SAFE_PULL_SALVAGE_RETENTION_DAYS=${raw} is not a non-negative integer or 'off'; skipping salvage prune."
     return 0
   fi
-  days="${raw}"
+  # Strip leading zeros before any arithmetic or `[` test. Bash treats a
+  # leading-zero token as octal (`010` → 8 days; `08` is not a valid octal
+  # digit and aborts the function). `000` disables like `0`.
+  days="${raw#"${raw%%[!0]*}"}"
+  if [ -z "${days}" ]; then
+    return 0
+  fi
+  # Cap before multiplying so $((days * 86400)) cannot wrap signed 64-bit.
+  # 36500 days (~100 years) is far beyond any intended salvage window.
+  if [ "${#days}" -gt 5 ] || [ "${days}" -gt 36500 ]; then
+    echo "WARNING: SAFE_PULL_SALVAGE_RETENTION_DAYS=${raw} exceeds 36500 days; skipping salvage prune."
+    return 0
+  fi
   now_epoch="$(date -u +%s 2>/dev/null || true)"
   if [ -z "${now_epoch}" ]; then
     echo "WARNING: Could not read the current UTC time; skipping salvage prune."
     return 0
   fi
-  limit_secs=$((days * 86400))
+  limit_secs=$((10#${days} * 86400))
   packet_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z-[A-Za-z0-9]{6}$'
 
   for sibling in "${parent}"/*; do

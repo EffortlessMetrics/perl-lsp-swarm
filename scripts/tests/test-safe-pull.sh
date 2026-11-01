@@ -591,6 +591,92 @@ test_retention_zero_prunes_nothing() {
   fi
 }
 
+nine_day_packet_basename() {
+  printf '%s-aaaaaa' "$(date -u -d '9 days ago' +%Y-%m-%dT%H-%M-%SZ)"
+}
+
+test_retention_leading_zero_ten_is_decimal() {
+  setup_repos
+
+  local parent="${WORK}/.git/safe-pull-salvage"
+  local old="${parent}/$(nine_day_packet_basename)"
+  mkdir -p "$old"
+  printf 'keep-under-ten\n' > "${old}/stay.txt"
+  printf 'OCTAL-TEN-17409\n' > "${WORK}/notes.txt"
+  advance_origin_notes "REMOTE-OCTAL-TEN"
+
+  local out rc
+  rc=0
+  out="$(SAFE_PULL_SALVAGE_RETENTION_DAYS=010 run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "retention-010: safe-pull exits 0"
+  else
+    fail "retention-010: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  if [[ -f "${old}/stay.txt" ]]; then
+    pass "retention-010: 9-day-old packet kept under decimal 10-day retention"
+  else
+    fail "retention-010: 9-day-old packet kept under decimal 10-day retention"
+  fi
+}
+
+test_retention_leading_zero_eight_does_not_abort() {
+  setup_repos
+
+  local parent="${WORK}/.git/safe-pull-salvage"
+  local old="${parent}/$(nine_day_packet_basename)"
+  mkdir -p "$old"
+  printf 'prune-under-eight\n' > "${old}/stale.txt"
+  printf 'OCTAL-EIGHT-17409\n' > "${WORK}/notes.txt"
+  advance_origin_notes "REMOTE-OCTAL-EIGHT"
+
+  local out rc
+  rc=0
+  out="$(SAFE_PULL_SALVAGE_RETENTION_DAYS=08 run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "retention-08: safe-pull exits 0"
+  else
+    fail "retention-08: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  if [[ -e "$old" ]]; then
+    fail "retention-08: 9-day-old packet pruned under decimal 8-day retention"
+  else
+    pass "retention-08: 9-day-old packet pruned under decimal 8-day retention"
+  fi
+}
+
+test_retention_oversized_skips_prune_without_aborting() {
+  setup_repos
+
+  local parent="${WORK}/.git/safe-pull-salvage"
+  local old="${parent}/2020-01-01T00-00-00Z-dddddd"
+  mkdir -p "$old"
+  printf 'keep-when-skipping\n' > "${old}/stay.txt"
+  printf 'OVERSIZE-17409\n' > "${WORK}/notes.txt"
+  advance_origin_notes "REMOTE-OVERSIZE"
+
+  local out rc
+  rc=0
+  out="$(SAFE_PULL_SALVAGE_RETENTION_DAYS=999999999999 run_safe_pull "$WORK")" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    pass "retention-oversize: safe-pull exits 0"
+  else
+    fail "retention-oversize: safe-pull exits 0 (got $rc)"
+    printf 'output:\n%s\n' "$out"
+    return
+  fi
+  assert_contains "retention-oversize: warns and skips prune" "$out" "exceeds 36500 days"
+  if [[ -f "${old}/stay.txt" ]]; then
+    pass "retention-oversize: expired packet is kept when prune is skipped"
+  else
+    fail "retention-oversize: expired packet is kept when prune is skipped"
+  fi
+}
+
 test_reserved_origin_path_is_refused() {
   setup_repos
 
@@ -636,6 +722,9 @@ test_linked_worktree_packet_survives_removal
 test_main_worktree_salvage_uses_common_dir
 test_retention_prunes_only_expired_matching_packets
 test_retention_zero_prunes_nothing
+test_retention_leading_zero_ten_is_decimal
+test_retention_leading_zero_eight_does_not_abort
+test_retention_oversized_skips_prune_without_aborting
 test_reserved_origin_path_is_refused
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
