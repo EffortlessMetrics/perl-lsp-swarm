@@ -3,38 +3,13 @@
 use libfuzzer_sys::fuzz_target;
 use perl_pod::{extract_pod, PodDoc};
 
+include!("../../crates/perl-pod/tests/helpers/markdown_rendered_field_bound.rs");
+
 const MAX_INPUT_BYTES: usize = 4096;
 
 fn bounded_utf8_lossy(data: &[u8]) -> std::borrow::Cow<'_, str> {
     let capped = if data.len() <= MAX_INPUT_BYTES { data } else { &data[..MAX_INPUT_BYTES] };
     String::from_utf8_lossy(capped)
-}
-
-/// Markdown wrapper `extract_link_display` puts around every rendered `L<>`.
-const MARKDOWN_LINK_WRAPPER: &str = "[](perldoc://)";
-/// Fewest source bytes that can emit one wrapper: unmatched `L<`.
-const MIN_LINK_MARKUP: &str = "L<";
-
-/// Upper bound on a Markdown-rendered POD field (`description` today).
-///
-/// Derived from `perl-pod`'s `strip_pod_formatting` / `extract_link_display`,
-/// not chosen as a corpus-passing multiplier. Keep in lockstep with
-/// `markdown_rendered_field_bound` in
-/// `crates/perl-pod/tests/pod_extraction_tests.rs` (#15251):
-///
-/// - `encode_pod_link_target` emits at most 3 bytes per source byte (`%XX`).
-/// - `escape_markdown_link_text` emits at most 2 bytes per display character
-///   (`\\`, `[`, `]`). Display and target both come from the link inner text.
-/// - Each rendered link adds a 14-byte wrapper (`[](perldoc://)`).
-/// - A link consumes at least 2 source bytes (`L<`). The wrapper-dominated
-///   empty unmatched link `L<` → `[](perldoc://)` is 14/2 = 7 output bytes
-///   per source byte, which also covers `3n + 2n` content expansion plus
-///   wrapper. Nested `L<>` is display-text-stripped then wrapped once
-///   (#18135), so nesting cannot beat this linear ceiling.
-///
-/// Closed form: `bound(n) = n * (wrapper_len / min_link_markup_len) = 7n`.
-fn markdown_rendered_field_bound(source_len: usize) -> usize {
-    source_len.saturating_mul(MARKDOWN_LINK_WRAPPER.len() / MIN_LINK_MARKUP.len())
 }
 
 fn assert_doc_well_formed(doc: &PodDoc, source: &str) {

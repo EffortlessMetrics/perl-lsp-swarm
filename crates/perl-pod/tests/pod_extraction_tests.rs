@@ -1,6 +1,8 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
-use perl_pod::{extract_pod, extract_pod_from_file};
+use perl_pod::{extract_pod, extract_pod_from_file, strip_pod_formatting};
 use perl_test_must::{must_some, must_some_with};
+
+include!("helpers/markdown_rendered_field_bound.rs");
 use std::io::Write as _;
 use std::path::Path;
 
@@ -620,34 +622,6 @@ fn link_target_with_unicode_module_name_is_percent_encoded() {
 
 // ── #15251: renderer-derived markdown length bound ──────────────────────
 
-/// Markdown wrapper `extract_link_display` puts around every rendered `L<>`.
-const MARKDOWN_LINK_WRAPPER: &str = "[](perldoc://)";
-/// Fewest source bytes that can emit one wrapper: unmatched `L<`.
-const MIN_LINK_MARKUP: &str = "L<";
-
-/// Upper bound on a Markdown-rendered POD field (`description` today).
-///
-/// Derived from `strip_pod_formatting` / `extract_link_display`, not chosen
-/// as a corpus-passing multiplier:
-///
-/// - `encode_pod_link_target` emits at most 3 bytes per source byte (`%XX`).
-/// - `escape_markdown_link_text` emits at most 2 bytes per display character
-///   (`\\`, `[`, `]`). Display and target are both taken from the link inner
-///   text, so a byte may contribute to both expansions.
-/// - Each rendered link adds a 14-byte wrapper (`[](perldoc://)`).
-/// - A link consumes at least 2 source bytes (`L<`). The wrapper-dominated
-///   empty unmatched link `L<` → `[](perldoc://)` is 14/2 = 7 output bytes
-///   per source byte, which also covers `3n + 2n` content expansion plus
-///   wrapper (`5n + 4` for a single covering link; `7n` for many minimum
-///   links). Nested `L<>` is display-text-stripped then wrapped once
-///   (#18135), so nesting cannot beat this linear ceiling. `=item` injects
-///   `"- "` (2 bytes) in place of a `=item` directive (≥5 bytes).
-///
-/// Closed form: `bound(n) = n * (wrapper_len / min_link_markup_len) = 7n`.
-fn markdown_rendered_field_bound(source_len: usize) -> usize {
-    source_len.saturating_mul(MARKDOWN_LINK_WRAPPER.len() / MIN_LINK_MARKUP.len())
-}
-
 fn markdown_field_within_bound(rendered: &str, source_len: usize) -> bool {
     rendered.len() <= markdown_rendered_field_bound(source_len)
 }
@@ -728,23 +702,51 @@ fn method_body_with_links_keeps_display_text_source_cap() {
 }
 
 #[test]
-fn markdown_bound_helper_matches_wrapper_dominated_empty_link() {
-    // Unmatched empty `L<` → `[](perldoc://)` is the ratio that sets 7n.
-    assert_eq!(MARKDOWN_LINK_WRAPPER.len() / MIN_LINK_MARKUP.len(), 7);
-    assert_eq!(markdown_rendered_field_bound(0), 0);
-    assert_eq!(markdown_rendered_field_bound(2), MARKDOWN_LINK_WRAPPER.len());
-    assert!(markdown_field_within_bound(MARKDOWN_LINK_WRAPPER, MIN_LINK_MARKUP.len()));
-    assert!(!markdown_field_within_bound(
-        &format!("{MARKDOWN_LINK_WRAPPER}x"),
-        MIN_LINK_MARKUP.len()
-    ));
-    // Concatenating two worst-case renders (28B) must miss a 7n ceiling on a
-    // 2-byte source (14B) and would still fit an arbitrary 16n multiplier.
-    let duplicated_worst_case = MARKDOWN_LINK_WRAPPER.repeat(2);
-    assert_eq!(duplicated_worst_case.len(), 28);
+fn markdown_bound_uses_reached_renderer_outputs_as_conservative_7n() {
+    // Two-byte `L<` never enters the formatter (`i + 2 < len`); it is literal.
+    assert_eq!(strip_pod_formatting("L<"), "L<");
+    assert!(!strip_pod_formatting("L<").contains("perldoc://"));
+
+    // Reached empty wrap: matched `L<>` → `[](perldoc://)` (14B from 3B).
+    let empty = strip_pod_formatting("L<>");
+    assert_eq!(empty, MARKDOWN_LINK_WRAPPER);
+    assert!(markdown_field_within_bound(&empty, 3), "14B L<> must sit inside bound(3)=21");
+
+    // Reached unmatched escape/percent wrap stays inside 7n on 3 source bytes.
+    let unmatched = strip_pod_formatting("L<\\");
+    assert!(unmatched.contains("perldoc://"), "got: {unmatched}");
     assert!(
-        !markdown_field_within_bound(&duplicated_worst_case, MIN_LINK_MARKUP.len()),
-        "7n must reject duplicated wrapper-dominated output; a looser multiplier would not"
+        markdown_field_within_bound(&unmatched, 3),
+        "unmatched L<\\ {}B exceeded bound(3)={}",
+        unmatched.len(),
+        markdown_rendered_field_bound(3)
+    );
+
+    assert_eq!(markdown_rendered_field_bound(0), 0);
+    assert_eq!(markdown_rendered_field_bound(3), 21);
+
+    // Duplicating a reached `L<>` render (28B) misses bound(3)=21 and would
+    // still fit an arbitrary 16n multiplier (48).
+    let duplicated = empty.repeat(2);
+    assert_eq!(duplicated.len(), 28);
+    assert!(
+        !markdown_field_within_bound(&duplicated, 3),
+        "7n must reject duplicated reached wrapper output; a looser multiplier would not"
+    );
+}
+
+#[test]
+fn fuzz_target_asserts_description_against_the_shared_bound() {
+    let fuzz = include_str!("../../../fuzz/fuzz_targets/pod_extraction.rs");
+    assert!(
+        fuzz.contains(
+            "include!(\"../../crates/perl-pod/tests/helpers/markdown_rendered_field_bound.rs\")"
+        ),
+        "fuzz target must include the shared bound helper"
+    );
+    assert!(
+        fuzz.contains("desc.len() <= markdown_rendered_field_bound(len)"),
+        "fuzz target must apply the shared helper to DESCRIPTION"
     );
 }
 
