@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use assert_cmd::cargo::cargo_bin_cmd;
+use std::fs;
 use std::path::PathBuf;
 
 fn workspace_root() -> Result<PathBuf> {
@@ -41,6 +42,35 @@ fn unsupported_check_defaults_to_landed_catalog() -> Result<()> {
         .assert()
         .success()
         .stdout("unsupported_fact_catalog.v1: 14 classes, 0 violations\n");
+    Ok(())
+}
+
+#[test]
+fn unsupported_check_rejects_dangling_nearest_neighbor() -> Result<()> {
+    let seed =
+        fs::read_to_string(workspace_root()?.join("policy/compiler/unsupported-facts.v1.toml"))
+            .context("read seed catalog for dangling-neighbor CLI fixture")?;
+    let dangling = seed.replacen(
+        "nearest_neighbor = \"generated_no_source\"",
+        "nearest_neighbor = \"not_a_catalog_class\"",
+        1,
+    );
+    assert_ne!(dangling, seed, "seed catalog must contain autoload's generated_no_source neighbor");
+    let dir = tempfile::tempdir().context("create dangling-neighbor fixture dir")?;
+    let path = dir.path().join("dangling-neighbor.toml");
+    fs::write(&path, dangling).context("write dangling-neighbor fixture")?;
+    let fixture = path.to_str().context("dangling-neighbor fixture path should be UTF-8")?;
+    let output = cargo_bin_cmd!("xtask")
+        .args(["compiler-profile", "unsupported", "--check", fixture])
+        .output()?;
+    assert!(!output.status.success(), "dangling nearest_neighbor must fail --check");
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("nearest_neighbor")
+            && stderr.contains("not_a_catalog_class")
+            && stderr.contains("autoload"),
+        "rejection must name the dangling neighbor: {stderr}"
+    );
     Ok(())
 }
 

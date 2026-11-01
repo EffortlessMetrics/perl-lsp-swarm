@@ -165,8 +165,9 @@ pub fn load_catalog_file(root: &Path) -> Result<UnsupportedFactCatalog> {
 
 /// Check the catalog contract (SPEC-0038 X1), collecting one violation per
 /// defect. An empty return means the catalog satisfies the contract. Slice 1
-/// contributed the shape rules; slice 2 adds the consumer-behavior and
-/// blocking-combination rules the `--check` CLI enforces.
+/// contributed the shape rules; slice 2 adds the consumer-behavior,
+/// blocking-combination, and nearest-neighbor cross-reference rules the
+/// `--check` CLI enforces.
 pub fn validate_catalog(catalog: &UnsupportedFactCatalog) -> Vec<String> {
     let mut violations = Vec::new();
     validate_schema_version(catalog, &mut violations);
@@ -176,6 +177,7 @@ pub fn validate_catalog(catalog: &UnsupportedFactCatalog) -> Vec<String> {
     validate_oracle_unknown_projection(catalog, &mut violations);
     validate_consumer_behavior(catalog, &mut violations);
     validate_blocking_combinations(catalog, &mut violations);
+    validate_cross_references(catalog, &mut violations);
     violations
 }
 
@@ -273,6 +275,23 @@ fn validate_blocking_combinations(catalog: &UnsupportedFactCatalog, violations: 
             violations.push(format!(
                 "class '{}': compile_acceptance_blocks requires downstream_blocks; a class that blocks acceptance cannot leave downstream facts unblocked (E2/X1)",
                 entry.class_id
+            ));
+        }
+    }
+}
+
+/// Fail closed when `distinctions.nearest_neighbor` names a class that is
+/// not in this catalog (SPEC-0038 E1/X1). `outside_profile` is an I4
+/// suffix on catalog class IDs, not a license to cite a neighbor outside
+/// the catalog.
+fn validate_cross_references(catalog: &UnsupportedFactCatalog, violations: &mut Vec<String>) {
+    let class_ids: BTreeSet<&str> =
+        catalog.entries.iter().map(|entry| entry.class_id.as_str()).collect();
+    for entry in &catalog.entries {
+        if !class_ids.contains(entry.distinctions.nearest_neighbor.as_str()) {
+            violations.push(format!(
+                "class '{}': nearest_neighbor '{}' is not a catalog class_id (E1/X1)",
+                entry.class_id, entry.distinctions.nearest_neighbor
             ));
         }
     }
@@ -803,6 +822,32 @@ mod tests {
                 .contains("compile_acceptance_blocks requires downstream_blocks")
                 && violation.contains("source_filter")),
             "incompatible blocking combination must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_dangling_nearest_neighbor() -> TestResult {
+        let mut catalog = parse_seed()?;
+        find_entry_mut(&mut catalog, "autoload")?.distinctions.nearest_neighbor =
+            "not_a_catalog_class".to_string();
+        let violations = validate_round_tripped(&catalog)?;
+        assert!(
+            violations.iter().any(|violation| violation.contains("nearest_neighbor")
+                && violation.contains("not_a_catalog_class")
+                && violation.contains("autoload")),
+            "dangling neighbor must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn seed_catalog_nearest_neighbors_resolve() -> TestResult {
+        let catalog = parse_seed()?;
+        let violations = validate_catalog(&catalog);
+        assert!(
+            violations.is_empty(),
+            "seed catalog must pass cross-reference validation: {violations:?}"
         );
         Ok(())
     }
