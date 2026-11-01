@@ -56,6 +56,24 @@ mod tests {
         }
     }
 
+    fn set_first_statement_location(node: &mut Node, location: SourceLocation) {
+        let NodeKind::If { then_branch, .. } = &mut node.kind else {
+            panic!("fixture must parse as If");
+        };
+        let NodeKind::Block { statements } = &mut then_branch.kind else {
+            panic!("fixture must have block then-branch");
+        };
+        assert_eq!(statements.len(), 1, "fixture must be a single-statement if body");
+        statements[0].location = location;
+    }
+
+    fn set_condition_location(node: &mut Node, location: SourceLocation) {
+        let NodeKind::If { condition, .. } = &mut node.kind else {
+            panic!("fixture must parse as If");
+        };
+        condition.location = location;
+    }
+
     #[test]
     fn convert_to_postfix_normal_simple_if() {
         let source = "if ($debug) { print \"Debug\\n\"; }";
@@ -95,11 +113,7 @@ mod tests {
         let inside = é_start + 1;
         assert!(!source.is_char_boundary(inside));
 
-        if let NodeKind::If { then_branch, .. } = &mut node.kind {
-            if let NodeKind::Block { statements } = &mut then_branch.kind {
-                statements[0].location = SourceLocation { start: inside, end: inside + 1 };
-            }
-        }
+        set_first_statement_location(&mut node, SourceLocation { start: inside, end: inside + 1 });
 
         assert!(convert_to_postfix(&node, source).is_none());
     }
@@ -112,9 +126,7 @@ mod tests {
         let inside = é_start + 1;
         assert!(!source.is_char_boundary(inside));
 
-        if let NodeKind::If { condition, .. } = &mut node.kind {
-            condition.location = SourceLocation { start: inside, end: inside + 1 };
-        }
+        set_condition_location(&mut node, SourceLocation { start: inside, end: inside + 1 });
 
         assert!(convert_to_postfix(&node, source).is_none());
     }
