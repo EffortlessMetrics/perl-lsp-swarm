@@ -1824,3 +1824,141 @@ fn receipts_fail_closed_through_the_production_validator() -> Result<()> {
     );
     Ok(())
 }
+
+/// Build a receipt that satisfies the production validator's not-proven gate
+/// while carrying the run plan's identity verbatim, so the binding seam (the
+/// only thing `validate_receipt_binding` exercises) can be asserted in
+/// isolation.
+fn binding_receipt(
+    plan: &emacs_host_runner::EmacsHostRunPlan,
+    observation: &emacs_host_runner::ProcessObservation,
+) -> xtask::editor_client_compat::EditorClientCompatReceipt {
+    emacs_host_runner::build_receipt(
+        plan,
+        observation,
+        not_proven_capabilities(),
+        default_not_proven_diagnostics(),
+        vec![JourneyCell {
+            id: plan.identity.journey_selector.clone(),
+            capability_basis: CapabilityBasis::NotApplicable,
+            observed: observation.passed_process_boundary(),
+            result: ObservationResult::NotProven,
+            evidence: Vec::new(),
+            limitation: Some(
+                "binding-test fixture: production validator's not-proven gate carries the receipt"
+                    .to_string(),
+            ),
+        }],
+        ObservationResult::NotProven,
+        Some(FailureClass::Cleanup),
+        vec!["binding-test fixture: validate_receipt_binding under test".to_string()],
+        "binding-test fixture: validate_receipt_binding under test (#15338)".to_string(),
+    )
+}
+
+/// The emacs producer must enforce the same binding seams at its producer
+/// boundary the four vim siblings do (#15338). A receipt composed by the
+/// helper above with the very plan the helper binds it against satisfies
+/// every fresh-binding check.
+#[test]
+fn validate_receipt_binding_accepts_a_receipt_for_the_run_that_emitted_it() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, observation) = run_fake_scenario(root.path(), "binding", "bindingaccept", 30_000)?;
+    let receipt = binding_receipt(&plan, &observation);
+    ensure!(
+        receipt.validate().is_ok(),
+        "the binding-test receipt must satisfy the production validator"
+    );
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&receipt, &plan).is_ok(),
+        "a receipt composed for the run that emitted it must satisfy its own binding law"
+    );
+    Ok(())
+}
+
+/// Each binding seam must refuse a stale receipt independently. Mutating one
+/// field at a time proves every check is a real gate, not a vacuous
+/// aggregate that fails for unrelated reasons.
+#[test]
+fn validate_receipt_binding_rejects_every_stale_seam_independently() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, observation) = run_fake_scenario(root.path(), "binding", "bindingseam", 30_000)?;
+    let receipt = binding_receipt(&plan, &observation);
+
+    let mut wrong_product = receipt.clone();
+    wrong_product.host.product = "vim".to_string();
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_product, &plan).is_err(),
+        "a foreign host product must refuse the binding"
+    );
+
+    let mut wrong_client_id = receipt.clone();
+    wrong_client_id.host.client_id = "not_eglot_subject".to_string();
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_client_id, &plan).is_err(),
+        "a mismatched client_id must refuse the binding"
+    );
+
+    let mut wrong_emacs_version = receipt.clone();
+    wrong_emacs_version.host.version = "GNU Emacs 99.99 (not the plan pin)".to_string();
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_emacs_version, &plan).is_err(),
+        "an emacs version mismatch must refuse the binding"
+    );
+
+    let mut wrong_emacs_build = receipt.clone();
+    wrong_emacs_build.host.executable_sha256 = format!("sha256:{}", "b".repeat(64));
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_emacs_build, &plan).is_err(),
+        "an emacs executable sha256 mismatch must refuse the binding"
+    );
+
+    let mut wrong_candidate_sha = receipt.clone();
+    wrong_candidate_sha.candidate_sha = String::from("0000000000000000000000000000000000000000");
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_candidate_sha, &plan).is_err(),
+        "a candidate_sha mismatch must refuse the binding"
+    );
+
+    let mut wrong_artifact_sha = receipt.clone();
+    wrong_artifact_sha.server.artifact_sha256 = format!("sha256:{}", "c".repeat(64));
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_artifact_sha, &plan).is_err(),
+        "a candidate_artifact_sha256 mismatch must refuse the binding"
+    );
+
+    let mut wrong_fixture = receipt.clone();
+    wrong_fixture.workspace_fixture.digest = format!("sha256:{}", "d".repeat(64));
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_fixture, &plan).is_err(),
+        "a workspace_fixture.digest mismatch must refuse the binding"
+    );
+
+    let mut wrong_driver = receipt.clone();
+    wrong_driver.integration.driver_sha256 = format!("sha256:{}", "e".repeat(64));
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&wrong_driver, &plan).is_err(),
+        "an integration.driver_sha256 mismatch must refuse the binding"
+    );
+
+    Ok(())
+}
+
+/// A receipt produced by one run must refuse a plan from another run, even
+/// when both plans are individually valid. The binding is two-sided: the
+/// foreign plan never satisfies a fresh-from-its-plan sibling.
+#[test]
+fn validate_receipt_binding_rejects_a_plan_from_another_run() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, observation) = run_fake_scenario(root.path(), "binding", "bindingfirst", 30_000)?;
+    let receipt = binding_receipt(&plan, &observation);
+
+    let second_root = tempfile::tempdir()?;
+    let (other_plan, _other_observation) =
+        run_fake_scenario(second_root.path(), "binding", "bindingsecond", 30_000)?;
+    ensure!(
+        emacs_host_runner::validate_receipt_binding(&receipt, &other_plan).is_err(),
+        "a receipt from another run must refuse a foreign plan"
+    );
+    Ok(())
+}
