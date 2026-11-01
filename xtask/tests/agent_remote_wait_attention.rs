@@ -41,14 +41,25 @@ const NO_SCHEDULED_POLLING: &[(&str, &str)] = &[
 const OBLIGATIONS: &[(&str, &[(&str, &str)])] =
     &[("attention release", ATTENTION_RELEASE), ("no scheduled polling", NO_SCHEDULED_POLLING)];
 
-/// Lowercase affirmative forms of same-session revisit directives. Marker presence
-/// alone cannot reject a surface that keeps the negative sentence but adds the
-/// polling behavior elsewhere, so validation rejects these directives themselves.
-const ADDITIVE_REVISIT_POLLING_DIRECTIVES: &[&str] = &[
-    "create a timer to revisit the same remote condition",
-    "create a polling child to revisit the same remote condition",
-    "create a scheduled monitor to revisit the same remote condition",
-    "create an idle watcher to revisit the same remote condition",
+/// Shared closed vocabulary for additive revisit polling: lowercase detector phrase
+/// and the affirmative mutation line injected in ratchet controls.
+const ADDITIVE_REVISIT_POLLING_CASES: &[(&str, &str)] = &[
+    (
+        "create a timer to revisit the same remote condition",
+        "Create a timer to revisit the same remote condition.",
+    ),
+    (
+        "create a polling child to revisit the same remote condition",
+        "Create a polling child to revisit the same remote condition.",
+    ),
+    (
+        "create a scheduled monitor to revisit the same remote condition",
+        "Create a scheduled monitor to revisit the same remote condition.",
+    ),
+    (
+        "create an idle watcher to revisit the same remote condition",
+        "Create an idle watcher to revisit the same remote condition.",
+    ),
 ];
 
 const ADDITIVE_POLLING_ERROR: &str =
@@ -56,6 +67,10 @@ const ADDITIVE_POLLING_ERROR: &str =
 
 fn additive_polling_error(path: &str) -> String {
     format!("{path} {ADDITIVE_POLLING_ERROR}")
+}
+
+fn contains_affirmative_revisit_directive(lowered: &str, directive: &str) -> bool {
+    lowered.match_indices(directive).any(|(index, _)| !lowered[..index].ends_with("do not "))
 }
 
 const SURFACES: &[&str] = &[
@@ -97,7 +112,10 @@ fn validate_surface(path: &str, text: &str) -> Result<(), String> {
         }
     }
     let lowered = text.to_lowercase();
-    if ADDITIVE_REVISIT_POLLING_DIRECTIVES.iter().any(|directive| lowered.contains(directive)) {
+    if ADDITIVE_REVISIT_POLLING_CASES
+        .iter()
+        .any(|(directive, _)| contains_affirmative_revisit_directive(&lowered, directive))
+    {
         return Err(additive_polling_error(path));
     }
     Ok(())
@@ -140,21 +158,36 @@ fn ratchet_rejects_removal_of_each_obligation_on_every_surface() -> Result<(), D
 #[test]
 fn ratchet_rejects_additive_polling_directive() -> Result<(), DynError> {
     let root = root()?;
-    const MUTATIONS: &[&str] = &[
-        "Create a timer to revisit the same remote condition.",
-        "Create a polling child to revisit the same remote condition.",
-        "Create a scheduled monitor to revisit the same remote condition.",
-        "Create an idle watcher to revisit the same remote condition.",
-    ];
     for path in SURFACES {
         let source = read(&root, path)?;
         validate_surface(path, &source).map_err(std::io::Error::other)?;
-        for mutation in MUTATIONS {
+        for (_, mutation) in ADDITIVE_REVISIT_POLLING_CASES {
             let regressed = format!("{source}\n{mutation}\n");
             assert_eq!(
                 validate_surface(path, &regressed),
                 Err(additive_polling_error(path)),
                 "{path}: {mutation}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ratchet_accepts_negated_revisit_directive_and_rejects_mixed_polarity() -> Result<(), DynError> {
+    let root = root()?;
+    for path in SURFACES {
+        let source = read(&root, path)?;
+        validate_surface(path, &source).map_err(std::io::Error::other)?;
+        for (directive, affirmative) in ADDITIVE_REVISIT_POLLING_CASES {
+            let negated = format!("Do not {directive}.");
+            let negated_only = format!("{source}\n{negated}\n");
+            validate_surface(path, &negated_only).map_err(std::io::Error::other)?;
+            let mixed = format!("{source}\n{negated}\n{affirmative}\n");
+            assert_eq!(
+                validate_surface(path, &mixed),
+                Err(additive_polling_error(path)),
+                "{path}: mixed polarity for {directive}"
             );
         }
     }
