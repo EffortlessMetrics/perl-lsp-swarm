@@ -654,9 +654,12 @@ const RECOVERY_ROWS: &[RecoveryCase<'static>] = &[
     // perl -Mstrict -e "use feature 'postderef'; my \$href={}; my @x = \$href->@{};"
     // prints `syntax error ... near "{}"`; empty selectors are not valid Perl
     // and therefore belong here rather than in the valid matrix.
-    RecoveryCase { source: "$href->@{}", diagnostics: 2 },
-    RecoveryCase { source: "$href->%{}", diagnostics: 2 },
-    RecoveryCase { source: "$aref->@[]", diagnostics: 2 },
+    // One failed statement records one diagnostic (#16605): the second
+    // diagnostic these rows used to pin was the synthetic
+    // `expected statement` recovery duplicate at the same position.
+    RecoveryCase { source: "$href->@{}", diagnostics: 1 },
+    RecoveryCase { source: "$href->%{}", diagnostics: 1 },
+    RecoveryCase { source: "$aref->@[]", diagnostics: 1 },
 ];
 
 fn assert_surviving_declaration(
@@ -733,9 +736,12 @@ fn malformed_postfix_dereference_rows_pin_recovery_outcomes() -> TestResult {
     let empty_source = "$href->@{};\nmy $next = 1;\n";
     let mut empty_parser = Parser::new(empty_source);
     let empty_output = empty_parser.parse_with_recovery();
-    if empty_output.diagnostics.len() != 2 {
+    // One failed statement records one diagnostic (#16605): the count here
+    // dropped from 2 because the synthetic `expected statement` recovery
+    // duplicate at the same position is gone.
+    if empty_output.diagnostics.len() != 1 {
         return Err(format!(
-            "empty-selector following-statement row diagnostics={}, expected 2\n{}",
+            "empty-selector following-statement row diagnostics={}, expected 1\n{}",
             empty_output.diagnostics.len(),
             empty_output.ast.to_sexp()
         ));
