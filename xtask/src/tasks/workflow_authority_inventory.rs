@@ -7,10 +7,11 @@
 //! Schema-aware v3: `id-token: write` is request authority (a permission fact),
 //! not evidence that an OIDC JWT was minted. An OIDC credential derivation is
 //! emitted only when that permission is joined to a concrete requester
-//! (unconditional admitted action, `getIDToken(` call, or an HTTP client using
-//! `$ACTIONS_ID_TOKEN_REQUEST_*`). Cloud login actions and incidental mentions
-//! (echo, `--exclude-env`) are not requesters. Permission without a requester,
-//! or a requester without permission, is unproven rather than credential-free.
+//! (unconditional admitted action, `run:` / `actions/github-script` `with.script`
+//! `getIDToken(` call, or an HTTP client using `$ACTIONS_ID_TOKEN_REQUEST_*`).
+//! Cloud login actions, inert `with:` strings, and incidental mentions (echo,
+//! `--exclude-env`) are not requesters. Permission without a requester, or a
+//! requester without permission, is unproven rather than credential-free.
 //! v1/v2 kinds remain independently recorded.
 //!
 //! GitHub's `permissions: write-all` shorthand is residual, not an OIDC
@@ -433,17 +434,15 @@ fn oidc_requesters_in_step(step: &Value, path: &str) -> Vec<(String, String)> {
     {
         found.push((format!("{path}.run"), primitive.to_string()));
     }
-    if let Some(with) = mapping_get(step_map, "with").and_then(Value::as_mapping) {
-        for (key, value) in with {
-            let Some(name) = yaml_key(key) else {
-                continue;
-            };
-            if let Some(text) = value.as_str()
-                && let Some(primitive) = oidc_request_primitive(text)
-            {
-                found.push((format!("{path}.with.{name}"), primitive.to_string()));
-            }
-        }
+    if mapping_get(step_map, "uses").and_then(Value::as_str).and_then(action_identity)
+        == Some("actions/github-script")
+        && let Some(script) = mapping_get(step_map, "with")
+            .and_then(Value::as_mapping)
+            .and_then(|with| mapping_get(with, "script"))
+            .and_then(Value::as_str)
+        && let Some(primitive) = oidc_request_primitive(script)
+    {
+        found.push((format!("{path}.with.script"), primitive.to_string()));
     }
     found
 }
@@ -480,7 +479,9 @@ fn requests_oidc_http(text: &str) -> Option<&'static str> {
         || lower.contains("wget")
         || lower.contains("fetch(")
         || lower.contains("http.get")
-        || lower.contains("http.request");
+        || lower.contains("http.request")
+        || lower.contains("https.get")
+        || lower.contains("https.request");
     if !http_client {
         return None;
     }
@@ -940,6 +941,47 @@ jobs:
             unproven_kinds(&classified),
             [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
         );
+    }
+
+    #[test]
+    fn inert_with_get_id_token_mention_is_not_a_requester() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - uses: some/action@v1
+        with:
+          description: "docs: call core.getIDToken(\"aud\")"
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        assert!(
+            !kinds_of(&yaml).contains(&CredentialDerivationKind::OidcJoinedRequester),
+            "inert with input is not executable source: {:?}",
+            classified.derivations
+        );
+        assert_eq!(
+            unproven_kinds(&classified),
+            [UnprovenKind::OidcPermissionWithoutRequester].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn https_get_with_id_token_request_url_joins() {
+        let yaml = with_job_body(
+            r#"
+    permissions:
+      id-token: write
+    steps:
+      - run: node -e "https.get(process.env.ACTIONS_ID_TOKEN_REQUEST_URL)"
+"#,
+        );
+        let classified = classify_yaml(&yaml);
+        let oidc =
+            must_kind(&classified.derivations, CredentialDerivationKind::OidcJoinedRequester);
+        assert_eq!(oidc.evidence, "ACTIONS_ID_TOKEN_REQUEST_URL");
+        assert!(classified.unproven.is_empty(), "{:?}", classified.unproven);
     }
 
     #[test]
