@@ -112,10 +112,12 @@ pub use perl_ast_v2 as v2;
 /// Primary AST node -- the building block of every syntax tree.
 pub use ast::{
     AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
-    AstReadResult, AstReadTruncation, AstReadWork, DeepestContainingMatch, FieldId,
-    NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
-    NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
-    NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
+    AstReadResult, AstReadTruncation, AstReadWork, DeclarationVersionDisposition,
+    DeclarationVersionForm, DeclarationVersionSyntax, DeclarationVersionSyntaxError,
+    DeepestContainingMatch, FieldId, NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER,
+    NATIVE_DEBUG_SEXP_GRAMMAR, NativeDebugSexpInstrumentCause, NativeDebugSexpLimits,
+    NativeDebugSexpOmitted, NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork,
+    Node, NodeKind,
 };
 /// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
 pub use ast::{GotoTargetForm, RegexSurfaceForm};
