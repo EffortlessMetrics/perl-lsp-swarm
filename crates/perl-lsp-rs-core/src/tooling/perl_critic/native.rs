@@ -4879,6 +4879,24 @@ mod tests {
     }
 
     #[test]
+    fn native_require_pod_sections_rule_accepts_verbatim_heredoc_examples() {
+        // A plain heredoc shown in indented POD is documentation, including
+        // its indented terminator. It must not hide the later NAME heading.
+        let source = "=head1 DESCRIPTION\n\n    my $x = <<'EOF';\n    hello\n    EOF\n\n=head1 NAME\n\nApp::Demo\n\n=cut\n\n1;\n";
+        for source in [source.to_string(), source.replace('\n', "\r\n")] {
+            let ast = parse_source(&source);
+            let config = CriticConfig::default();
+            let ctx = CriticContext::new(&source, &ast, &config);
+            let registry = NativeCriticRegistry::with_rules(vec![Box::new(RequirePodSectionsRule)]);
+
+            assert!(
+                registry.check(&ctx).is_empty(),
+                "verbatim POD examples must not hide real required headings"
+            );
+        }
+    }
+
+    #[test]
     fn native_require_pod_sections_rule_ignores_head1_inside_heredoc() {
         // =head1 lines in a heredoc body are string data, not POD: they must
         // not mark the file as having POD at all.
