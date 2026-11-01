@@ -115,7 +115,8 @@ fn main() -> Result<()> {
         a.max_age_hours,
         chrono::Utc::now(),
     )?;
-    let checked_surfaces = check_surfaces(&root, &root.join(&a.contract))?;
+    let checked_surfaces =
+        check_registered_surfaces(&root, &root.join(&a.contract), Some(&evidence))?;
     let projection = construct(&evidence)?;
     let json = format!("{}\n", serde_json::to_string_pretty(&projection)?);
     let md = render_markdown(&projection);
@@ -327,6 +328,14 @@ struct SurfaceRow {
 }
 
 fn check_surfaces(root: &Path, contract_path: &Path) -> Result<Vec<String>> {
+    check_registered_surfaces(root, contract_path, None)
+}
+
+fn check_registered_surfaces(
+    root: &Path,
+    contract_path: &Path,
+    evidence: Option<&EvidenceBundle>,
+) -> Result<Vec<String>> {
     let raw = fs::read_to_string(contract_path)
         .with_context(|| format!("reading surface registry {}", contract_path.display()))?;
     let contract: SurfaceContract = toml::from_str(&raw)
@@ -346,7 +355,7 @@ fn check_surfaces(root: &Path, contract_path: &Path) -> Result<Vec<String>> {
             .with_context(|| format!("surface {}: cannot read {}", surface.id, surface.path))?;
         match surface.kind.as_str() {
             "ratio_projection" => check_ratio_projection(surface, &text)?,
-            "evidence_verdict" => check_evidence_verdict(surface, &text)?,
+            "evidence_verdict" => check_evidence_verdict(surface, &text, evidence)?,
             "attribution_table" => check_attribution_table(surface, &text)?,
             "not_proven_navigation" => check_not_proven_navigation(surface, &text)?,
             other => bail!("surface {}: unknown kind {other:?}", surface.id),
@@ -528,7 +537,11 @@ fn row_quantities(line: &str) -> (Vec<u64>, Vec<(u64, u64)>) {
     (percents, ratios)
 }
 
-fn check_evidence_verdict(surface: &SurfaceRow, text: &str) -> Result<()> {
+fn check_evidence_verdict(
+    surface: &SurfaceRow,
+    text: &str,
+    evidence: Option<&EvidenceBundle>,
+) -> Result<()> {
     let row_label = surface.row_label.as_deref().ok_or_else(|| {
         color_eyre::eyre::eyre!("surface {}: evidence_verdict needs row_label", surface.id)
     })?;
@@ -575,7 +588,41 @@ fn check_evidence_verdict(surface: &SurfaceRow, text: &str) -> Result<()> {
             );
         }
     }
+    if passing_verdict && !execution_backed_all_pass(evidence, &surface.id) {
+        // Form (100% / PASS) is not substance. Discovery inventory and
+        // bootstrap seed data must not authorize a passing tests row (#14298).
+        bail!(
+            "surface {}: NOT_PROVEN — {row_label} claims PASS/100% without execution-backed evidence (live_run all-pass Outcomes)",
+            surface.id
+        );
+    }
     Ok(())
+}
+
+fn execution_backed_all_pass(evidence: Option<&EvidenceBundle>, surface_id: &str) -> bool {
+    let Some(evidence) = evidence else {
+        return false;
+    };
+    if evidence.evidence_class != "live_run" {
+        return false;
+    }
+    evidence.cells.iter().any(|cell| cell.id == surface_id && cell_is_execution_all_pass(cell))
+}
+
+fn cell_is_execution_all_pass(cell: &SourceCell) -> bool {
+    if cell.expected_population.is_empty() || cell.results.is_empty() {
+        return false;
+    }
+    if cell.results.len() != cell.expected_population.len() {
+        return false;
+    }
+    let expected: BTreeSet<_> = cell.expected_population.iter().collect();
+    if expected.len() != cell.expected_population.len() {
+        return false;
+    }
+    cell.results
+        .iter()
+        .all(|row| matches!(row.outcome, Outcome::Pass) && expected.contains(&row.identity))
 }
 
 fn check_attribution_table(surface: &SurfaceRow, text: &str) -> Result<()> {
@@ -866,6 +913,9 @@ claim_boundary = "fixture"
 | **Overall** | **123** | **125** | **98%** |
 ";
     const TESTS_OK: &str =
+        "| **Tier A Tests** | 10161 lib tests (discovered), 15 ignores (tracked) | not executed | UNVERIFIED |
+";
+    const TESTS_PASS_FORM: &str =
         "| **Tier A Tests** | 10161 lib tests (discovered), 15 ignores (tracked) | 100% pass | PASS |
 ";
     const TESTS_BAD: &str = "| **Tier A Tests** | UNVERIFIED | 100% pass | PASS |
@@ -1040,6 +1090,104 @@ no data yet
             "contradictory surfaces must fail closed",
         );
         assert!(format!("{error:#}").contains("PASS and FAIL"));
+    }
+
+    fn tests_tier_a_bundle(class: &str, outcome: Outcome) -> EvidenceBundle {
+        let sha = "a".repeat(40);
+        EvidenceBundle {
+            schema_version: "generated_status_evidence.v1".into(),
+            evidence_class: class.into(),
+            subject_sha: sha.clone(),
+            run_id: "run-1".into(),
+            observed_at: "2026-08-12T00:00:00Z".into(),
+            cells: vec![SourceCell {
+                id: "tests.tier_a".into(),
+                claim_boundary: "test execution only".into(),
+                expected_population: vec!["tier-a-suite".into()],
+                results: vec![ResultRow {
+                    identity: "tier-a-suite".into(),
+                    subject_sha: sha,
+                    run_id: "run-1".into(),
+                    observed_at: "2026-08-12T00:00:00Z".into(),
+                    outcome,
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn tier_a_pass_without_execution_evidence_fails_closed() {
+        // #14298: form-only 100% pass | PASS is the hole. Discovery counts are
+        // not execution-backed evidence.
+        let (dir, contract) = surface_fixture(&[
+            ("status/lsp.md", LSP_OK),
+            ("status/tests.md", TESTS_PASS_FORM),
+            ("status/quality.md", QUALITY_OK),
+        ]);
+        let error = must_err_with(
+            check_surfaces(dir.path(), &contract),
+            "PASS without execution evidence must fail closed",
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("NOT_PROVEN") && message.contains("execution"),
+            "rejection must name missing execution evidence, got: {message}"
+        );
+    }
+
+    #[test]
+    fn tier_a_discovery_honest_row_is_accepted() {
+        const TESTS_DISCOVERY: &str =
+            "| **Tier A Tests** | 10161 lib tests discovered | not executed | UNVERIFIED |\n";
+        let (dir, contract) = surface_fixture(&[
+            ("status/lsp.md", LSP_OK),
+            ("status/tests.md", TESTS_DISCOVERY),
+            ("status/quality.md", QUALITY_OK),
+        ]);
+        let checked =
+            must_with(check_surfaces(dir.path(), &contract), "discovery-honest row must pass");
+        assert_eq!(checked.len(), 3);
+    }
+
+    #[test]
+    fn tier_a_pass_with_live_run_all_pass_evidence_is_accepted() {
+        let (dir, contract) = surface_fixture(&[
+            ("status/lsp.md", LSP_OK),
+            ("status/tests.md", TESTS_PASS_FORM),
+            ("status/quality.md", QUALITY_OK),
+        ]);
+        let evidence = tests_tier_a_bundle("live_run", Outcome::Pass);
+        let checked = must_with(
+            check_registered_surfaces(dir.path(), &contract, Some(&evidence)),
+            "PASS with live_run all-pass Outcomes must be accepted",
+        );
+        assert_eq!(checked.len(), 3);
+    }
+
+    #[test]
+    fn tier_a_pass_with_bootstrap_or_non_pass_outcomes_fails_closed() {
+        let (dir, contract) = surface_fixture(&[
+            ("status/lsp.md", LSP_OK),
+            ("status/tests.md", TESTS_PASS_FORM),
+            ("status/quality.md", QUALITY_OK),
+        ]);
+        for (class, outcome) in [
+            ("bootstrap", Outcome::Pass),
+            ("live_run", Outcome::Skip),
+            ("live_run", Outcome::Fail),
+            ("live_run", Outcome::NotRun),
+        ] {
+            let evidence = tests_tier_a_bundle(class, outcome);
+            let error = must_err_with(
+                check_registered_surfaces(dir.path(), &contract, Some(&evidence)),
+                "PASS without live_run all-pass Outcomes must fail closed",
+            );
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("NOT_PROVEN") && message.contains("execution"),
+                "{class}/{outcome:?} must not authorize PASS, got: {message}"
+            );
+        }
     }
 
     #[test]
