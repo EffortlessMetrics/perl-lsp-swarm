@@ -142,14 +142,16 @@ has 'profile' => (
 
     let table = extract_symbols(code);
 
-    for method in
-        ["profile", "_build_profile", "has_profile", "clear_profile", "full_name", "timezone"]
-    {
+    for method in ["profile", "has_profile", "clear_profile", "full_name", "timezone"] {
         assert!(
             has_symbol(&table, method, SymbolKind::Subroutine),
             "expected generated Moo method `{method}`"
         );
     }
+    assert!(
+        !has_symbol(&table, "_build_profile", SymbolKind::Subroutine),
+        "builder hook must not be synthesized as a subroutine symbol (#1649)"
+    );
 }
 
 #[test]
