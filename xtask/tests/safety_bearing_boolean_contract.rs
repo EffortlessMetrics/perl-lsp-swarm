@@ -42,13 +42,10 @@ fn xtask_agents_md_points_at_adr_and_review_gate() {
 fn working_tree_disposition_has_no_pass_permitting_default() {
     let observation = read("xtask/src/writer_preflight/observation.rs");
     let struct_marker = "pub struct WorkingTreeDisposition";
-    let start = observation
-        .find(struct_marker)
-        .expect("WorkingTreeDisposition struct");
+    let start = observation.find(struct_marker).expect("WorkingTreeDisposition struct");
     let prefix = &observation[..start];
-    let derive_start = prefix
-        .rfind("#[derive")
-        .expect("WorkingTreeDisposition should have a derive attribute");
+    let derive_start =
+        prefix.rfind("#[derive").expect("WorkingTreeDisposition should have a derive attribute");
     let derive_block = &observation[derive_start..start];
     assert!(
         !derive_block.contains("Default"),
@@ -85,8 +82,5 @@ fn closeout_regression_pins_executed_against_head_bind() {
 #[test]
 fn adr_readme_indexes_plsp_adr_0009() {
     let readme = read("docs/adr/README.md");
-    assert!(
-        readme.contains("PLSP-ADR-0009"),
-        "ADR index must list PLSP-ADR-0009"
-    );
+    assert!(readme.contains("PLSP-ADR-0009"), "ADR index must list PLSP-ADR-0009");
 }
