@@ -32,7 +32,7 @@ export function evaluateMiddlewareProviderSettlementInventory(source: string): {
     'settleResolveMiddlewareProviderCall',
     'settleFormattingProviderCall',
   ];
-  const providerHooks = block.match(/provide[A-Z][A-Za-z]+:/g) ?? [];
+  const providerHooks = block.match(/(?:provide|resolve)[A-Z][A-Za-z]+:/g) ?? [];
   const exemptHooks = new Set(['provideInlineCompletionItems:']);
   for (const hook of providerHooks) {
     if (exemptHooks.has(hook)) {
