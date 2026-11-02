@@ -16,13 +16,13 @@
 //! qualified, dereference, slice, repeated-sigil, digit, `^`-control,
 //! punctuation, and `::`-qualified forms).
 
+use super::interpolation_scan::is_perl_punctuation_variable;
+use crate::quote_handler;
 use crate::token::{StringPart, StringPartKind};
 use crate::{
     PerlLexer,
     unicode::{is_perl_identifier_continue, is_perl_identifier_start},
 };
-use super::interpolation_scan::is_perl_punctuation_variable;
-use crate::quote_handler;
 
 impl PerlLexer<'_> {
     pub(crate) fn push_string_part(
