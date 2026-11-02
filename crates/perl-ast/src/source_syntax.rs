@@ -113,7 +113,7 @@
 //! | Escape              | allowed | allowed | segment-allowed; [`ProvenValueOverDynamicSegments`] when payload proven (#8608) | allowed |
 //! | Normalization       | allowed | allowed | segment-allowed; [`ProvenValueOverDynamicSegments`] when payload proven (#8608) | allowed |
 //! | Interpolation       | forbidden | allowed | segment may be Dynamic; [`ProvenValueOverDynamicSegments`] when payload proven | allowed when payload not proven |
-//! | Recovery            | forbidden | allowed | segment-level Dynamic N/A; [`ProvenValueOverRecoverySegment`] when payload proven | allowed when payload not proven |
+//! | Recovery            | forbidden | allowed | segment-allowed; [`ProvenValueOverDynamicSegments`] if fragment Dynamic and payload proven; [`ProvenValueOverRecoverySegment`] when payload proven | allowed when payload not proven |
 //!
 //! The literal/escape/normalization Dynamic column stays *unconstrained* only
 //! for payloads whose cooked value is not proven (#8608 populator evidence).
