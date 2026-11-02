@@ -881,7 +881,8 @@ pub type perl_parser_core::engine::regex_retention::RegexParseOutput::Target = p
 pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::deref(&self) -> &perl_parser_core::engine::regex_retention::RegexParseOutput::Target
 pub struct perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>
-pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> core::result::Result<perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch>
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish_or_unbound(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::engine::regex_retention::parse_source_with_cancellation_and_regex_analysis(source: &str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::regex_retention::RegexParseOutput
 pub fn perl_parser_core::engine::regex_retention::parse_source_with_regex_analysis(source: &str) -> perl_parser_core::engine::regex_retention::RegexParseOutput
@@ -4362,6 +4363,14 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::clone(&sel
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch
+pub const fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::expected(&self) -> core::option::Option<perl_parser_core::syntax::regex_analysis::RegexParseIdentity>
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::into_unbound_table(self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub const fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::observed(&self) -> core::option::Option<perl_parser_core::syntax::regex_analysis::RegexParseIdentity>
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::unbound_table(&self) -> &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::clone(&self) -> perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::eq(&self, other: &perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::syntax::regex_analysis::RegexAnalysisId(_)
 pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisId::index(self) -> usize
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisId::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisId
@@ -4401,13 +4410,33 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_enclos
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::len(&self) -> usize
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::matches_ast(&self, ast: &perl_ast::ast::Node) -> bool
+pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::parse_identity(&self) -> core::option::Option<perl_parser_core::syntax::regex_analysis::RegexParseIdentity>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::record(&self, id: perl_parser_core::syntax::regex_analysis::RegexAnalysisId) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::require_ast(&self, ast: &perl_ast::ast::Node) -> core::result::Result<&perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::source_matches(&self, source: &str) -> bool
 pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::unknown() -> Self
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::default() -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::syntax::regex_analysis::RegexAstDigest(_)
+pub const fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::as_bytes(self) -> [u8; 16]
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::from_ast(ast: &perl_ast::ast::Node) -> perl_parser_core::syntax::regex_analysis::RegexAstDigest
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAstDigest
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAstDigest) -> core::cmp::Ordering
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAstDigest) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::partial_cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAstDigest) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_parser_core::syntax::regex_analysis::RegexParseIdentity
+pub const fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::operation_id(self) -> core::option::Option<u64>
+pub const fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::session_id(self) -> u64
+pub const fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::tree_digest(self) -> perl_parser_core::syntax::regex_analysis::RegexAstDigest
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexParseIdentity
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexParseIdentity) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_parser_core::syntax::regex_analysis::RegexSourceDigest(_)
 pub const fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::as_bytes(self) -> [u8; 16]
 pub fn perl_parser_core::syntax::regex_analysis::RegexSourceDigest::for_source(source: &str) -> perl_parser_core::syntax::regex_analysis::RegexSourceDigest
@@ -5066,6 +5095,14 @@ pub fn perl_parser_core::tokens::trivia::Trivia::kind_name(&self) -> &'static st
 pub fn perl_parser_core::tokens::trivia::Trivia::clone(&self) -> perl_parser_core::tokens::trivia::Trivia
 pub fn perl_parser_core::tokens::trivia::Trivia::eq(&self, other: &perl_parser_core::tokens::trivia::Trivia) -> bool
 pub fn perl_parser_core::tokens::trivia::Trivia::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::AstProvenanceMismatch
+pub const fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::expected(&self) -> core::option::Option<perl_parser_core::syntax::regex_analysis::RegexParseIdentity>
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::into_unbound_table(self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub const fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::observed(&self) -> core::option::Option<perl_parser_core::syntax::regex_analysis::RegexParseIdentity>
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::unbound_table(&self) -> &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::clone(&self) -> perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::eq(&self, other: &perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::BudgetTracker
 pub perl_parser_core::BudgetTracker::current_depth: usize
 pub perl_parser_core::BudgetTracker::errors_emitted: usize
@@ -5220,13 +5257,33 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_enclos
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::len(&self) -> usize
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::matches_ast(&self, ast: &perl_ast::ast::Node) -> bool
+pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::parse_identity(&self) -> core::option::Option<perl_parser_core::syntax::regex_analysis::RegexParseIdentity>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::record(&self, id: perl_parser_core::syntax::regex_analysis::RegexAnalysisId) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::require_ast(&self, ast: &perl_ast::ast::Node) -> core::result::Result<&perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::source_matches(&self, source: &str) -> bool
 pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::unknown() -> Self
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::default() -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::RegexAstDigest(_)
+pub const fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::as_bytes(self) -> [u8; 16]
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::from_ast(ast: &perl_ast::ast::Node) -> perl_parser_core::syntax::regex_analysis::RegexAstDigest
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAstDigest
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAstDigest) -> core::cmp::Ordering
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAstDigest) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::partial_cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAstDigest) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::regex_analysis::RegexAstDigest::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_parser_core::RegexParseIdentity
+pub const fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::operation_id(self) -> core::option::Option<u64>
+pub const fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::session_id(self) -> u64
+pub const fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::tree_digest(self) -> perl_parser_core::syntax::regex_analysis::RegexAstDigest
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexParseIdentity
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexParseIdentity) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::regex_analysis::RegexParseIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub struct perl_parser_core::RegexParseOutput
 pub perl_parser_core::RegexParseOutput::parse_output: perl_parser_core::syntax::error::ParseOutput
 pub perl_parser_core::RegexParseOutput::regex_analysis: perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
@@ -5253,7 +5310,8 @@ pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::e
 pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::RetainedRegexSession<'source>
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>
-pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> core::result::Result<perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, perl_parser_core::syntax::regex_analysis::AstProvenanceMismatch>
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish_or_unbound(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
 pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::SourceRegion
 pub perl_parser_core::SourceRegion::end: usize
