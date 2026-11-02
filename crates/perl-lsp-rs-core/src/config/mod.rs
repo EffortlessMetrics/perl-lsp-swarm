@@ -35,8 +35,9 @@ pub use dependency_detection::{
     detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
 };
 pub(crate) use formatting_bounds::{
-    FORMATTING_BLOCK_COMMENT_INDENTATION_RANGE, FORMATTING_INDENT_COLUMNS_RANGE,
-    FORMATTING_MAXIMUM_LINE_LENGTH_RANGE, clamp_project_formatting_u32, try_admit_formatting_u32,
+    FORMATTING_BLOCK_COMMENT_INDENTATION_RANGE, FORMATTING_EDITOR_TAB_SIZE_RANGE,
+    FORMATTING_INDENT_COLUMNS_RANGE, FORMATTING_MAXIMUM_LINE_LENGTH_RANGE,
+    clamp_project_formatting_u32, try_admit_formatting_u32,
 };
 pub use metadata_dependencies::{
     DeclaredDependency, DeclaredDependencySource, MetadataSourceRead,

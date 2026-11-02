@@ -5,7 +5,7 @@
 
 use std::ops::RangeInclusive;
 
-pub use perl_lsp_perltidy::{MAX_INDENT_WIDTH, MAX_LINE_WIDTH, MIN_INDENT_WIDTH, MIN_LINE_WIDTH};
+pub use perl_lsp_perltidy::{MAX_INDENT_WIDTH, MAX_LINE_WIDTH, MIN_INDENT_WIDTH};
 
 /// Client/project `indentColumns` / `perltidy_indent_columns` product range.
 pub const FORMATTING_INDENT_COLUMNS_RANGE: RangeInclusive<u32> =

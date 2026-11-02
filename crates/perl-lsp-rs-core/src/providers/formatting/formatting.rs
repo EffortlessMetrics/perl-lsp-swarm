@@ -8,6 +8,7 @@
 #[path = "legacy.rs"]
 mod legacy;
 
+use crate::config::FORMATTING_EDITOR_TAB_SIZE_RANGE;
 use crate::hashing::fnv1a64_hex;
 use crate::providers::formatting::range_admission::{
     AdmittedFormatRange, RangePositionError, SourceGeometry, admit_format_range,
@@ -826,8 +827,11 @@ fn native_format_config(
     perltidy_config: Option<&PerlTidyConfig>,
     allow_final_newline: bool,
 ) -> FormatConfig {
+    let tab_size = options
+        .tab_size
+        .clamp(*FORMATTING_EDITOR_TAB_SIZE_RANGE.start(), *FORMATTING_EDITOR_TAB_SIZE_RANGE.end());
     let mut config = FormatConfig {
-        indent_width: effective_indent_width(options.tab_size),
+        indent_width: effective_indent_width(tab_size),
         use_tabs: !options.insert_spaces,
         final_newline: if allow_final_newline {
             if options.trim_final_newlines.unwrap_or(false) {
