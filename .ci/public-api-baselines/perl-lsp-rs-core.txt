@@ -6400,6 +6400,9 @@ pub fn perl_lsp_rs_core::providers::references_shadow::find_references_live_sour
 pub fn perl_lsp_rs_core::providers::references_shadow::find_references_shadow<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_locations: alloc::vec::Vec<perl_workspace::workspace::workspace_index::Location>, semantic_queries: &Q, symbol: &str, entity_id: perl_semantic_facts::EntityId) -> perl_lsp_rs_core::providers::references_shadow::ReferencesShadowResult
 pub mod perl_lsp_rs_core::providers::regex_canonical
 pub fn perl_lsp_rs_core::providers::regex_canonical::project_canonical_regex_diagnostics(table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
+pub mod perl_lsp_rs_core::providers::regex
+pub use perl_lsp_rs_core::providers::regex::hover_projection_at
+pub fn perl_lsp_rs_core::providers::regex::hover_projection_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize) -> core::option::Option<alloc::string::String>
 pub mod perl_lsp_rs_core::providers::rename
 pub struct perl_lsp_rs_core::providers::rename::RenameOptions
 pub perl_lsp_rs_core::providers::rename::RenameOptions::rename_in_comments: bool
