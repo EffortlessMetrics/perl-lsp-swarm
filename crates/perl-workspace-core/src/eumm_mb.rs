@@ -204,7 +204,12 @@ pub fn detect_eumm_mb(workspace_root: &Path) -> EummMbDetection {
             (BLIB_ARCH, IncludeEntryRole::BlibArch, 2_u32),
             (BLIB_LIB, IncludeEntryRole::BlibLib, 3_u32),
         ] {
-            roots.push(reject_generated_without_build_system(relative, role, order));
+            roots.push(reject_generated_without_build_system(
+                workspace_root,
+                relative,
+                role,
+                order,
+            ));
         }
     } else {
         roots.push(evaluate_generated_root(
@@ -314,7 +319,7 @@ fn evaluate_source_root(
             source_order,
             source_canonical_over_generated,
         },
-        DirectoryState::Present { .. } => EummMbRootCandidate {
+        DirectoryState::Present => EummMbRootCandidate {
             relative_path: relative.to_string(),
             project_role,
             include_role,
@@ -329,16 +334,19 @@ fn evaluate_source_root(
 }
 
 fn reject_generated_without_build_system(
+    workspace_root: &Path,
     relative: &str,
     include_role: IncludeEntryRole,
     source_order: u32,
 ) -> EummMbRootCandidate {
+    let path = workspace_root.join(relative);
+    let exists = matches!(bounded_directory_state(workspace_root, &path), DirectoryState::Present,);
     EummMbRootCandidate {
         relative_path: relative.to_string(),
         project_role: ProjectRootRole::Generated,
         include_role,
         authority: EnvironmentInputAuthority::BuildMetadata,
-        exists: false,
+        exists,
         freshness: EummMbRootFreshness::NotApplicable,
         disposition: EummMbRootDisposition::Rejected {
             reason_code: REASON_GENERATED_ROOT_WITHOUT_BUILD_SYSTEM,
@@ -403,8 +411,10 @@ fn evaluate_generated_root(
             source_order,
             source_canonical_over_generated: false,
         },
-        DirectoryState::Present { mtime } => {
-            let freshness = classify_generated_freshness(mtime, anchors, limitations);
+        DirectoryState::Present => {
+            let generated_latest =
+                directory_latest_mtime_bounded(&path, 4096).or_else(|| file_mtime(&path));
+            let freshness = classify_generated_freshness(generated_latest, anchors, limitations);
             let disposition = match freshness {
                 EummMbRootFreshness::Current => EummMbRootDisposition::Selected,
                 EummMbRootFreshness::Stale => EummMbRootDisposition::Rejected {
@@ -466,35 +476,63 @@ enum DirectoryState {
     Missing,
     EscapesWorkspace,
     NotDirectory,
-    Present { mtime: Option<SystemTime> },
+    Present,
 }
 
 fn bounded_directory_state(workspace_root: &Path, path: &Path) -> DirectoryState {
     if path_exists_outside_workspace(workspace_root, path) {
         return DirectoryState::EscapesWorkspace;
     }
-    let metadata = match std::fs::symlink_metadata(path) {
+    let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(_) => return DirectoryState::Missing,
     };
     if !metadata.is_dir() {
         return DirectoryState::NotDirectory;
     }
-    DirectoryState::Present { mtime: metadata.modified().ok() }
+    DirectoryState::Present
 }
 
 fn path_exists_outside_workspace(workspace_root: &Path, path: &Path) -> bool {
     let root = lexical_normalize(workspace_root);
-    if let Ok(link_target) = std::fs::read_link(path) {
-        let link_resolved = if link_target.is_absolute() {
-            lexical_normalize(&link_target)
-        } else {
-            lexical_normalize(&path.parent().unwrap_or(workspace_root).join(link_target))
-        };
-        return !link_resolved.starts_with(root.as_path());
+    let Ok(relative) = path.strip_prefix(workspace_root) else {
+        return !lexical_normalize(path).starts_with(root.as_path());
+    };
+
+    let mut current = workspace_root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                current.pop();
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                if std::fs::symlink_metadata(&current)
+                    .ok()
+                    .is_some_and(|meta| meta.file_type().is_symlink())
+                {
+                    let Ok(link_target) = std::fs::read_link(&current) else {
+                        return true;
+                    };
+                    current = resolve_symlink_target(&current, &link_target);
+                    if !lexical_normalize(&current).starts_with(root.as_path()) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    let resolved = lexical_normalize(path);
-    !resolved.starts_with(root.as_path())
+    !lexical_normalize(&current).starts_with(root.as_path())
+}
+
+fn resolve_symlink_target(link_path: &Path, link_target: &Path) -> PathBuf {
+    if link_target.is_absolute() {
+        lexical_normalize(link_target)
+    } else {
+        lexical_normalize(&link_path.parent().unwrap_or(link_path).join(link_target))
+    }
 }
 
 fn is_marker_file(path: &Path) -> bool {
@@ -524,7 +562,15 @@ fn directory_latest_mtime_bounded(root: &Path, max_entries: usize) -> Option<Sys
             break;
         }
         let path = entry.path();
-        if path.is_dir() {
+        let entry_meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        if entry_meta.file_type().is_symlink() {
+            merge_latest(&mut latest, file_mtime(&path));
+            continue;
+        }
+        if entry_meta.is_dir() {
             merge_latest(
                 &mut latest,
                 directory_latest_mtime_bounded(&path, max_entries.saturating_sub(seen)),
