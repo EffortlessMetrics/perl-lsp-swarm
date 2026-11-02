@@ -158,6 +158,8 @@ pub struct ProviderResultEvidenceV1 {
     pub filtered_fact_count: u32,
     /// Whether the producer asserts a complete request-specific denominator.
     pub denominator_complete: bool,
+    /// Whether a complete edit denominator was observed for edit-producing requests.
+    pub edit_denominator_complete: bool,
     pub dynamic_boundary_present: bool,
     pub recovered_facts_present: bool,
     pub mixed_producer_lineage: bool,
@@ -273,11 +275,7 @@ impl ProviderEligibilityBlockerEvidence {
             ProviderEligibilityOutcome::InstrumentFailure => {
                 (None, Some(ProviderEligibilityOwnerDimension::Instrument), false)
             }
-            ProviderEligibilityOutcome::NotProven => (
-                Some(ProviderEligibilityBlockerClass::MissingRequiredField),
-                Some(ProviderEligibilityOwnerDimension::Completeness),
-                false,
-            ),
+            ProviderEligibilityOutcome::NotProven => (None, None, false),
         };
         Self {
             blocker_class,
@@ -381,8 +379,7 @@ pub(crate) fn optional_generation_matches(
     match (expected, observed) {
         (None, None) => true,
         (Some(expected), Some(observed)) => generation_matches(expected, observed),
-        (Some(expected), None) => !expected.is_known(),
-        (None, Some(observed)) => !observed.is_known(),
+        _ => false,
     }
 }
 

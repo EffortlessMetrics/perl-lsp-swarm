@@ -3,6 +3,7 @@ use super::super::semantic_port::{
     ProviderReadinessRequirement, ProviderReadinessState,
 };
 use super::super::semantic_port_adapters::ProviderSnapshotCompleteness;
+use super::ProviderEligibilityOwnerDimension;
 use super::evaluate_provider_eligibility;
 use super::model::{
     ProviderCompletenessRequirementV1, ProviderEligibilityBlockerClass,
@@ -61,6 +62,7 @@ fn aligned_evidence() -> ProviderResultEvidenceV1 {
         has_current_binding: true,
         filtered_fact_count: 2,
         denominator_complete: true,
+        edit_denominator_complete: false,
         dynamic_boundary_present: false,
         recovered_facts_present: false,
         mixed_producer_lineage: false,
@@ -384,4 +386,112 @@ fn recovered_facts_require_fallback_not_exact() {
             reason: ProviderEligibilityBlockerClass::PartialOrRecoveredFacts
         }
     ));
+}
+
+#[test]
+fn optional_generation_unknown_does_not_match_absent() {
+    let subject = aligned_subject();
+    let mut evidence = aligned_evidence();
+    evidence.semantic_contribution_generation = None;
+    let mut subject = subject;
+    subject.semantic_contribution_generation = Some(SourceGeneration::Unknown);
+    let decision =
+        evaluate_provider_eligibility(&subject, &evidence, &references_requirement(false));
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Stale {
+            reason: ProviderEligibilityBlockerClass::StaleDocumentGeneration
+        }
+    ));
+}
+
+#[test]
+fn instance_replaced_lifecycle_is_stale_when_evidence_matches_prior() {
+    let mut subject = aligned_subject();
+    subject.lifecycle = ProviderSubjectLifecycleState::InstanceReplaced {
+        prior_instance_identity: ProviderIdentity::known("doc-instance-1"),
+    };
+    let decision = evaluate_provider_eligibility(
+        &subject,
+        &aligned_evidence(),
+        &references_requirement(false),
+    );
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Stale {
+            reason: ProviderEligibilityBlockerClass::DocumentInstanceMismatch
+        }
+    ));
+}
+
+#[test]
+fn ready_limited_with_missing_binding_is_unavailable() {
+    let mut subject = aligned_subject();
+    subject.readiness_state = ProviderReadinessState::ReadyLimited;
+    let mut evidence = aligned_evidence();
+    evidence.has_current_binding = false;
+    let decision =
+        evaluate_provider_eligibility(&subject, &evidence, &references_requirement(false));
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Unavailable {
+            reason: ProviderEligibilityBlockerClass::NoMatchingEntity
+        }
+    ));
+}
+
+#[test]
+fn project_identity_mismatch_reports_project_owner() {
+    let mut evidence = aligned_evidence();
+    evidence.project_identity = ProviderIdentity::known("project-b");
+    let decision = evaluate_provider_eligibility(
+        &aligned_subject(),
+        &evidence,
+        &references_requirement(false),
+    );
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Stale {
+            reason: ProviderEligibilityBlockerClass::WrongRootOrProject
+        }
+    ));
+    assert_eq!(decision.evidence.owner_dimension, Some(ProviderEligibilityOwnerDimension::Project));
+}
+
+#[test]
+fn compiler_generation_mismatch_reports_compiler_owner() {
+    let mut evidence = aligned_evidence();
+    evidence.compiler_contribution_generation = Some(SourceGeneration::known("compiler-old"));
+    let mut subject = aligned_subject();
+    subject.compiler_contribution_generation = Some(SourceGeneration::known("compiler-1"));
+    let decision =
+        evaluate_provider_eligibility(&subject, &evidence, &references_requirement(false));
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Stale {
+            reason: ProviderEligibilityBlockerClass::StaleDocumentGeneration
+        }
+    ));
+    assert_eq!(
+        decision.evidence.owner_dimension,
+        Some(super::super::provider_eligibility::ProviderEligibilityOwnerDimension::Compiler)
+    );
+}
+
+#[test]
+fn edit_producing_requires_observed_edit_denominator() {
+    let mut subject = aligned_subject();
+    subject.profile = ProviderEligibilityRequestProfile::new(
+        "textDocument/rename",
+        ProviderQueryCapability::References,
+        ProviderReadinessRequirement::EditAuthorizing,
+        true,
+    );
+    let mut evidence = aligned_evidence();
+    evidence.edit_denominator_complete = true;
+    let mut requirement =
+        ProviderCompletenessRequirementV1::edit_producing(ProviderQueryCapability::References);
+    requirement.edit_denominator_complete = Some(true);
+    let decision = evaluate_provider_eligibility(&subject, &evidence, &requirement);
+    assert!(matches!(decision.outcome, ProviderEligibilityOutcome::ExactEligible { .. }));
 }

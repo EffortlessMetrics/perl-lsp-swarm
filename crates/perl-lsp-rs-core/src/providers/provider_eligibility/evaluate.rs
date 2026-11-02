@@ -12,6 +12,7 @@ use super::model::{
     generation_observed, identity_matches, identity_observed, optional_generation_matches,
     subject_has_required_fields,
 };
+use perl_semantic_facts::SourceGeneration;
 
 /// Pure currentness/completeness eligibility evaluation (#12154 / #6819 E01).
 #[must_use]
@@ -72,8 +73,7 @@ pub fn evaluate_provider_eligibility(
     if subject.profile.edit_producing
         || subject.profile.readiness_requirement == ProviderReadinessRequirement::EditAuthorizing
     {
-        let denominator_complete = requirement.edit_denominator_complete.unwrap_or(false);
-        if !denominator_complete {
+        if !evidence.edit_denominator_complete {
             return blocked(
                 ProviderEligibilityOutcome::Refuse {
                     reason: ProviderEligibilityBlockerClass::IncompleteEditDenominator,
@@ -134,9 +134,7 @@ pub fn evaluate_provider_eligibility(
         | ProviderSubjectLifecycleState::Current => {}
     }
 
-    if !identity_matches(&subject.configuration_identity, &evidence.configuration_identity)
-        || !identity_matches(&subject.environment_identity, &evidence.environment_identity)
-    {
+    if !identity_matches(&subject.configuration_identity, &evidence.configuration_identity) {
         return blocked(
             ProviderEligibilityOutcome::Stale {
                 reason: ProviderEligibilityBlockerClass::ConfigurationOrEnvironmentMismatch,
@@ -150,9 +148,35 @@ pub fn evaluate_provider_eligibility(
         );
     }
 
-    if !identity_matches(&subject.project_identity, &evidence.project_identity)
-        || !identity_matches(&subject.root_identity, &evidence.root_identity)
-    {
+    if !identity_matches(&subject.environment_identity, &evidence.environment_identity) {
+        return blocked(
+            ProviderEligibilityOutcome::Stale {
+                reason: ProviderEligibilityBlockerClass::ConfigurationOrEnvironmentMismatch,
+            },
+            limitations,
+            instrument_state,
+            identity_observed(&subject.environment_identity),
+            identity_observed(&evidence.environment_identity),
+            Some(ProviderEligibilityOwnerDimension::Environment),
+            None,
+        );
+    }
+
+    if !identity_matches(&subject.project_identity, &evidence.project_identity) {
+        return blocked(
+            ProviderEligibilityOutcome::Stale {
+                reason: ProviderEligibilityBlockerClass::WrongRootOrProject,
+            },
+            limitations,
+            instrument_state,
+            identity_observed(&subject.project_identity),
+            identity_observed(&evidence.project_identity),
+            Some(ProviderEligibilityOwnerDimension::Project),
+            None,
+        );
+    }
+
+    if !identity_matches(&subject.root_identity, &evidence.root_identity) {
         return blocked(
             ProviderEligibilityOutcome::Stale {
                 reason: ProviderEligibilityBlockerClass::WrongRootOrProject,
@@ -226,7 +250,31 @@ pub fn evaluate_provider_eligibility(
     if !optional_generation_matches(
         subject.semantic_contribution_generation.as_ref(),
         evidence.semantic_contribution_generation.as_ref(),
-    ) || !optional_generation_matches(
+    ) {
+        return blocked(
+            ProviderEligibilityOutcome::Stale {
+                reason: ProviderEligibilityBlockerClass::StaleDocumentGeneration,
+            },
+            limitations,
+            instrument_state,
+            generation_observed(
+                subject
+                    .semantic_contribution_generation
+                    .as_ref()
+                    .unwrap_or(&SourceGeneration::Unknown),
+            ),
+            generation_observed(
+                evidence
+                    .semantic_contribution_generation
+                    .as_ref()
+                    .unwrap_or(&SourceGeneration::Unknown),
+            ),
+            Some(ProviderEligibilityOwnerDimension::Semantic),
+            None,
+        );
+    }
+
+    if !optional_generation_matches(
         subject.compiler_contribution_generation.as_ref(),
         evidence.compiler_contribution_generation.as_ref(),
     ) {
@@ -236,9 +284,19 @@ pub fn evaluate_provider_eligibility(
             },
             limitations,
             instrument_state,
-            None,
-            None,
-            Some(ProviderEligibilityOwnerDimension::Semantic),
+            generation_observed(
+                subject
+                    .compiler_contribution_generation
+                    .as_ref()
+                    .unwrap_or(&SourceGeneration::Unknown),
+            ),
+            generation_observed(
+                evidence
+                    .compiler_contribution_generation
+                    .as_ref()
+                    .unwrap_or(&SourceGeneration::Unknown),
+            ),
+            Some(ProviderEligibilityOwnerDimension::Compiler),
             None,
         );
     }
@@ -299,6 +357,20 @@ pub fn evaluate_provider_eligibility(
         );
     }
 
+    if requirement.require_current_binding && !evidence.has_current_binding {
+        return blocked(
+            ProviderEligibilityOutcome::Unavailable {
+                reason: ProviderEligibilityBlockerClass::NoMatchingEntity,
+            },
+            limitations,
+            instrument_state,
+            None,
+            None,
+            Some(ProviderEligibilityOwnerDimension::Completeness),
+            None,
+        );
+    }
+
     if subject.readiness_state != ProviderReadinessState::Ready {
         if matches!(
             subject.readiness_state,
@@ -320,20 +392,6 @@ pub fn evaluate_provider_eligibility(
             None,
             None,
             Some(ProviderEligibilityOwnerDimension::Readiness),
-            None,
-        );
-    }
-
-    if requirement.require_current_binding && !evidence.has_current_binding {
-        return blocked(
-            ProviderEligibilityOutcome::Unavailable {
-                reason: ProviderEligibilityBlockerClass::NoMatchingEntity,
-            },
-            limitations,
-            instrument_state,
-            None,
-            None,
-            Some(ProviderEligibilityOwnerDimension::Completeness),
             None,
         );
     }
@@ -371,7 +429,15 @@ pub fn evaluate_provider_eligibility(
         );
     }
 
-    finish(ProviderEligibilityOutcome::NotProven, limitations, instrument_state)
+    blocked(
+        ProviderEligibilityOutcome::NotProven,
+        limitations,
+        instrument_state,
+        None,
+        None,
+        Some(ProviderEligibilityOwnerDimension::Completeness),
+        None,
+    )
 }
 
 fn has_adapter_exactness_limitation(limitations: &[String]) -> bool {
