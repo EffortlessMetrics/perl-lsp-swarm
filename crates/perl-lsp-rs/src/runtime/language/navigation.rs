@@ -1236,6 +1236,7 @@ fn lookup_workspace_definition(
     name: &str,
     doc_uri: Option<&str>,
     require_callable: bool,
+    allow_semantic_generated_method_fallback: bool,
 ) -> Option<Value> {
     let coord = coordinator?;
 
@@ -1311,7 +1312,8 @@ fn lookup_workspace_definition(
         return Some(json!([lsp_location]));
     }
 
-    if let Some(uri) = doc_uri
+    if allow_semantic_generated_method_fallback
+        && let Some(uri) = doc_uri
         && let Some(lsp_location) =
             semantic_method_definition_lsp_location(workspace_index, uri, pkg, name)
     {
@@ -2467,22 +2469,21 @@ impl LspServer {
                                 {
                                     return Ok(Some(Value::Null));
                                 }
+                                let qualified_role = qualified_occurrence_role(
+                                    &doc.text,
+                                    self.pos16_to_offset(doc, line, character),
+                                    parsed.as_ref().and_then(|p| p.ast()).map(|ast| ast.as_ref()),
+                                    &package,
+                                    &name,
+                                );
                                 if workspace_index_is_fresh()
                                     && let Some(result) = lookup_workspace_definition(
                                         self.coordinator(),
                                         &package,
                                         &name,
                                         Some(uri),
-                                        qualified_occurrence_role(
-                                            &doc.text,
-                                            self.pos16_to_offset(doc, line, character),
-                                            parsed
-                                                .as_ref()
-                                                .and_then(|p| p.ast())
-                                                .map(|ast| ast.as_ref()),
-                                            &package,
-                                            &name,
-                                        ) == QualifiedOccurrenceRole::Call,
+                                        qualified_role == QualifiedOccurrenceRole::Call,
+                                        qualified_role == QualifiedOccurrenceRole::Call,
                                     )
                                     && workspace_index_is_fresh()
                                 {
@@ -2546,6 +2547,7 @@ impl LspServer {
                                 method_name,
                                 Some(uri),
                                 true,
+                                true,
                             ) && workspace_index_is_fresh()
                             {
                                 return Ok(Some(result));
@@ -2556,6 +2558,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                     true,
                                 )
                                 && workspace_index_is_fresh()
@@ -2609,6 +2612,7 @@ impl LspServer {
                                         method_name,
                                         Some(uri),
                                         true,
+                                        true,
                                     ) && workspace_index_is_fresh()
                                     {
                                         return Ok(Some(result));
@@ -2619,6 +2623,7 @@ impl LspServer {
                                             "UNIVERSAL",
                                             method_name,
                                             Some(uri),
+                                            true,
                                             true,
                                         )
                                         && workspace_index_is_fresh()
@@ -2650,6 +2655,7 @@ impl LspServer {
                                     "UNIVERSAL",
                                     method_name,
                                     Some(uri),
+                                    true,
                                     true,
                                 )
                                 && workspace_index_is_fresh()
@@ -2783,6 +2789,7 @@ impl LspServer {
                                     argument_key.name.as_ref(),
                                     Some(uri),
                                     true,
+                                    false,
                                 ) && workspace_index_is_fresh()
                                 {
                                     return Ok(Some(result));
@@ -4626,7 +4633,8 @@ mod tests {
                         "Other",
                         "compute_0",
                         Some(&caller_uri),
-                        true
+                        true,
+                        true,
                     )
                     .is_none()
                 );
