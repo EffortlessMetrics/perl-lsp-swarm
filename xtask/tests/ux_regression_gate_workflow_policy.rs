@@ -23,6 +23,8 @@ use workflow_bash::bash_executable;
 const IMMUTABLE_SUBJECT: &str =
     "github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha";
 const FIXED_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+/// Matches `perl_lsp_ux_tests::regression_receipt` emission (#15988, #15314).
+const UX_REGRESSION_RECEIPT_SCHEMA_VERSION: u64 = 2;
 const WORKFLOWS: [(&str, &str); 2] =
     [("ux-regression-gate.yml", "ux-regression-gate"), ("ci.yml", "ux-tests")];
 
@@ -428,7 +430,12 @@ fn foreign_or_malformed_receipt_sha_is_rejected_by_both_verifiers() -> Result<()
         for subject in ["foreign-candidate", "not-a-sha"] {
             fs::write(
                 &receipt,
-                serde_json::json!({ "sha": subject, "result": "pass" }).to_string(),
+                serde_json::json!({
+                    "schema_version": UX_REGRESSION_RECEIPT_SCHEMA_VERSION,
+                    "sha": subject,
+                    "result": "pass",
+                })
+                .to_string(),
             )?;
             let output = execute_verifier(verifier, temp.path())?;
             assert!(!output.status.success(), "{file} accepted subject {subject}");
@@ -438,6 +445,92 @@ fn foreign_or_malformed_receipt_sha_is_rejected_by_both_verifiers() -> Result<()
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn gate_verifier_and_summary_validate_ux_regression_schema_version() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let job_steps = steps(&wf, "ux-regression-gate")?;
+    let verifier = run_step(job_steps, "Verify receipt subject identity")?;
+    let summary = run_step(job_steps, "Summarize UX evidence")?;
+    let needle = "unsupported UX regression schema";
+    assert!(verifier.contains(needle), "verifier must reject unsupported schema_version (#15314)");
+    assert!(summary.contains(needle), "summary must reject unsupported schema_version (#15314)");
+    assert!(
+        verifier.contains(&format!(
+            "UX_REGRESSION_RECEIPT_SCHEMA_VERSION = {UX_REGRESSION_RECEIPT_SCHEMA_VERSION}"
+        )),
+        "verifier must pin the supported schema_version literal"
+    );
+    assert!(
+        summary.contains(&format!(
+            "UX_REGRESSION_RECEIPT_SCHEMA_VERSION = {UX_REGRESSION_RECEIPT_SCHEMA_VERSION}"
+        )),
+        "summary must pin the supported schema_version literal"
+    );
+    Ok(())
+}
+
+#[test]
+fn unsupported_schema_version_is_rejected_by_gate_verifier() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let verifier = run_step(steps(&wf, "ux-regression-gate")?, "Verify receipt subject identity")?;
+    let temp = tempfile::tempdir()?;
+    fs::create_dir_all(receipt_path(temp.path(), "json").parent().unwrap())?;
+    fs::write(receipt_path(temp.path(), "instrumentation.exit"), "0\n")?;
+    fs::write(
+        receipt_path(temp.path(), "json"),
+        serde_json::json!({
+            "schema_version": UX_REGRESSION_RECEIPT_SCHEMA_VERSION + 1,
+            "sha": FIXED_SHA,
+            "result": "pass",
+        })
+        .to_string(),
+    )?;
+    let output = execute_verifier(verifier, temp.path())?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unsupported UX regression schema"),
+        "verifier must identify schema drift"
+    );
+    Ok(())
+}
+
+#[test]
+fn summary_step_fails_on_invalid_receipt_json_instead_of_silent_skip() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let run = run_step(steps(&wf, "ux-regression-gate")?, "Summarize UX evidence")?;
+    assert!(
+        !run.contains("receipt = None"),
+        "summary must not swallow receipt parse failures (#15314)"
+    );
+    let source = heredoc_python(run, "ux-regression-gate.yml", "Summarize UX evidence")?;
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    fs::create_dir_all(root.join("target/receipts"))?;
+    fs::write(
+        root.join("target/receipts/ux-regression.log"),
+        "test result: ok. 1 passed; 0 failed\n",
+    )?;
+    fs::write(root.join("target/receipts/ux-regression.json"), "{not json")?;
+    let script = root.join("step.py");
+    fs::write(&script, source)?;
+    let summary = root.join("GITHUB_STEP_SUMMARY");
+    fs::write(&summary, "")?;
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg(&script)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("TESTED_SHA", FIXED_SHA)
+        .env("HARNESS_AVAILABLE", "true")
+        .env("UX_TEST_OUTCOME", "success")
+        .current_dir(root)
+        .output()?;
+    assert!(!output.status.success(), "invalid receipt JSON must fail the summary step");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not valid JSON"),
+        "summary must surface JSON parse failure"
+    );
     Ok(())
 }
 
