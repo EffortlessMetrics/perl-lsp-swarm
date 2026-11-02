@@ -109,14 +109,14 @@
 //!
 //! | Kind / disposition | Proven | Partial | Dynamic | Unavailable |
 //! |---------------------|--------|---------|---------|-------------|
-//! | Literal             | allowed | allowed | *unconstrained* (#8608) | allowed |
-//! | Escape              | allowed | allowed | *unconstrained* (#8608) | allowed |
-//! | Normalization       | allowed | allowed | *unconstrained* (#8608) | allowed |
-//! | Interpolation       | forbidden | forbidden | required at payload when whole value proven | allowed when payload not proven |
-//! | Recovery            | forbidden | forbidden | forbidden when payload proven | allowed when payload not proven |
+//! | Literal             | allowed | allowed | segment-allowed; [`ProvenValueOverDynamicSegments`] when payload proven (#8608) | allowed |
+//! | Escape              | allowed | allowed | segment-allowed; [`ProvenValueOverDynamicSegments`] when payload proven (#8608) | allowed |
+//! | Normalization       | allowed | allowed | segment-allowed; [`ProvenValueOverDynamicSegments`] when payload proven (#8608) | allowed |
+//! | Interpolation       | forbidden | allowed | segment may be Dynamic; [`ProvenValueOverDynamicSegments`] when payload proven | allowed when payload not proven |
+//! | Recovery            | forbidden | allowed | segment-level Dynamic N/A; [`ProvenValueOverRecoverySegment`] when payload proven | allowed when payload not proven |
 //!
-//! Cells marked *unconstrained* stay so until a populator shows whether the
-//! lexer ever labels a non-interpolating run [`CookedValue::Dynamic`].
+//! The literal/escape/normalization Dynamic column stays *unconstrained* only
+//! for payloads whose cooked value is not proven (#8608 populator evidence).
 //!
 //! # Compatibility projections
 //!
@@ -2870,9 +2870,7 @@ mod tests {
         invented.segmentation = SourceSegmentation::Exact(vec![SourceSegment {
             raw_range: span(2, 2),
             cooked_fragment: CookedValue::Proven("x".to_string()),
-            payload: SourceSegmentPayload::Normalization {
-                rule: NormalizationRule::HeredocIndentStrip,
-            },
+            payload: SourceSegmentPayload::Literal,
         }]);
         assert!(
             invented
@@ -2881,16 +2879,24 @@ mod tests {
         );
         assert!(!invented.is_coherent());
 
-        let mut empty_ok = invented.clone();
-        empty_ok.segmentation = SourceSegmentation::Exact(vec![SourceSegment {
-            raw_range: span(2, 2),
+        // A `<<~` indent strip over an empty range is a legitimate zero-length
+        // normalization run on an indented heredoc body.
+        let mut empty_strip = heredoc(HeredocForm::Bare, PayloadTerminal::Empty);
+        empty_strip.declaration.indented = true;
+        empty_strip.raw_body_range = Some(span(8, 8));
+        empty_strip.terminator_range = Some(span(8, 11));
+        empty_strip.full_region = Some(span(0, 11));
+        empty_strip.segmentation = SourceSegmentation::Exact(vec![SourceSegment {
+            raw_range: span(8, 8),
             cooked_fragment: CookedValue::Proven(String::new()),
             payload: SourceSegmentPayload::Normalization {
                 rule: NormalizationRule::HeredocIndentStrip,
             },
         }]);
+        empty_strip.cooked = CookedValue::Proven(String::new());
+        assert!(empty_strip.is_coherent(), "{:?}", empty_strip.contradictions());
         assert!(
-            !empty_ok
+            !empty_strip
                 .contradictions()
                 .contains(&PayloadContradiction::ZeroLengthSegmentWithNonEmptyCooked { index: 0 })
         );
