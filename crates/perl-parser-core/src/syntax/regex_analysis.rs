@@ -511,15 +511,17 @@ impl RegexAnalysisTable {
     /// # Errors
     ///
     /// [`AstProvenanceMismatch`] when the table has no bound identity or the
-    /// tree digest does not match. The mismatch's unbound table is a clone of
-    /// `self` with the parse identity cleared, so a caller cannot keep using
-    /// the bound claim.
+    /// tree digest does not match. The mismatch's unbound table keeps the
+    /// source digest so staleness against edits remains observable, and drops
+    /// every record so a caller cannot publish the refused tree's analysis.
     pub fn require_ast(&self, ast: &Node) -> Result<&Self, AstProvenanceMismatch> {
         if self.matches_ast(ast) {
             return Ok(self);
         }
         let mut unbound = self.clone();
         unbound.parse_identity = None;
+        unbound.records.clear();
+        unbound.analysis_invocations = 0;
         Err(AstProvenanceMismatch::new(
             self.parse_identity,
             Some(RegexParseIdentity::new(0, None, RegexAstDigest::from_ast(ast))),
@@ -810,6 +812,21 @@ mod tests {
         );
         let table = RegexAnalysisTable::for_source("use utf8;");
         assert!(!table.matches_ast(&use_utf8), "a table with no parse identity matches no tree");
+
+        let mut bound = RegexAnalysisTable::for_source("use utf8;");
+        bound.set_parse_identity(RegexParseIdentity::new(
+            1,
+            Some(1),
+            RegexAstDigest::from_ast(&use_utf8),
+        ));
+        let _ = bound.retain_unavailable(loc, RegexAnalysisAvailability::Analyzed, profile());
+        let mismatch = bound.require_ast(&no_utf8).expect_err("foreign tree must mismatch");
+        let unbound = mismatch.into_unbound_table();
+        assert!(unbound.source_matches("use utf8;"), "source identity survives the mismatch");
+        assert!(
+            unbound.records.is_empty(),
+            "mismatch fallback must not keep the refused tree's records"
+        );
     }
 
     #[test]

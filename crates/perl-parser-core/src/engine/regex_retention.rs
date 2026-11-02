@@ -305,20 +305,22 @@ pub(crate) fn record_operator_geometry(source: &str, start: usize) -> bool {
     })
 }
 
-/// Stamp the completing parse onto every session that owns this exact buffer.
+/// Stamp the completing parse onto the top-most session that owns this buffer.
 ///
-/// Called from [`Parser::parse`] after a successful tree is produced. Identity
-/// is recorded on the owning session even when it is not the stack top, so an
-/// out-of-order finish can still prove the tree came from its own parse.
+/// Called from [`Parser::parse`] after a successful tree is produced. The
+/// owner need not be the stack top: an out-of-order outer parse still binds
+/// its own session. Nested sessions that share the buffer do not overwrite
+/// that binding. No digest is allocated when no owner exists, so ordinary
+/// unretained parses pay only the thread-local scan.
 pub(crate) fn bind_completed_parse(source_bytes: &[u8], ast: &Node, operation_id: u64) {
-    let tree_digest = RegexAstDigest::from_ast(ast);
     ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
         let mut sessions = sessions.borrow_mut();
-        for session in sessions.iter_mut() {
-            if session.owns_bytes(source_bytes) {
-                session.bound_parse = Some(BoundParse { operation_id, tree_digest });
-            }
-        }
+        let Some(index) = sessions.iter().rposition(|session| session.owns_bytes(source_bytes))
+        else {
+            return;
+        };
+        let tree_digest = RegexAstDigest::from_ast(ast);
+        sessions[index].bound_parse = Some(BoundParse { operation_id, tree_digest });
     });
 }
 

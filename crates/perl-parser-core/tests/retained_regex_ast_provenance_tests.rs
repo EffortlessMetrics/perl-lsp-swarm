@@ -175,7 +175,19 @@ fn an_incremental_edit_invalidates_retained_analysis() {
         !table.matches_ast(&ast_b),
         "the post-edit tree must not match the pre-edit parse identity"
     );
-    assert!(table.require_ast(&ast_b).is_err(), "require_ast must reject the post-edit tree");
+    let mismatch = must_err_with(
+        table.require_ast(&ast_b).map(|_| ()),
+        "require_ast must reject the post-edit tree",
+    );
+    let unbound = mismatch.into_unbound_table();
+    assert!(
+        unbound.source_matches(NESTED_BODY),
+        "source identity survives so a consumer can still see the table is for the previous snapshot"
+    );
+    assert!(
+        unbound.records.is_empty(),
+        "mismatch fallback must not keep the pre-edit analyzed records"
+    );
 }
 
 /// Production fallback: `finish_or_unbound` never publishes stale analysis.
@@ -203,4 +215,38 @@ fn a_tree_parsed_without_the_session_is_a_mismatch() {
         "an unbound tree must not finish as if it were this parse",
     );
     assert!(mismatch.expected().is_none());
+}
+
+/// A nested session that re-parses the same buffer must not steal the outer bind.
+#[test]
+fn a_nested_session_on_the_same_buffer_does_not_invalidate_the_outer_parse() {
+    let source = NESTED_BODY;
+    let outer = RetainedRegexSession::begin(source);
+    let mut outer_parser = Parser::new(source);
+    let mut outer_ast = must_with(outer_parser.parse(), "outer fixture must parse");
+
+    let inner = RetainedRegexSession::begin(source);
+    let mut inner_parser = Parser::from_tokens(Vec::new(), source);
+    match inner_parser.parse() {
+        Ok(mut inner_ast) => {
+            let _ = inner.finish(Some(&mut inner_ast));
+        }
+        Err(_) => {
+            let _ = inner.finish(None);
+        }
+    }
+
+    let table = must_with(
+        outer.finish(Some(&mut outer_ast)),
+        "the outer tree must still bind after a nested parse of the same buffer",
+    );
+    assert!(table.matches_ast(&outer_ast));
+    let nested = table.records.iter().any(|record| {
+        record.availability == RegexAnalysisAvailability::Analyzed
+            && record
+                .pattern
+                .as_ref()
+                .is_some_and(|pattern| !pattern.structural.diagnostics.is_empty())
+    });
+    assert!(nested, "outer analysis must survive the nested parse: {table:#?}");
 }
