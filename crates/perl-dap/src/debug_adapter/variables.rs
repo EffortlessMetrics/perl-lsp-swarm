@@ -538,12 +538,12 @@ impl DebugAdapter {
 
     /// Build the perl5db `V` command for package-scoped variables in `package`.
     pub(super) fn build_package_scope_v_command(package: &str) -> String {
-        format!("V {package} ::")
+        format!("V {package}")
     }
 
-    /// Build the perl5db `V` command for Perl special/global variables.
+    /// Build the perl5db `V` command for globals rooted at `main`.
     pub(super) fn build_globals_scope_v_command() -> String {
-        "V main *".to_string()
+        "V main".to_string()
     }
 
     /// Handle setVariable request
@@ -1106,14 +1106,14 @@ mod hazard_invariant_tests {
     fn package_and_globals_v_commands_never_use_dap_frame_integers_as_package_names() {
         let frame_id = 7_i32;
         let package_cmd = DebugAdapter::build_package_scope_v_command("Foo::Bar");
-        assert_eq!(package_cmd, "V Foo::Bar ::");
+        assert_eq!(package_cmd, "V Foo::Bar");
         assert!(
             !package_cmd.contains(&format!("V {frame_id}")),
             "package query must not embed the DAP frame id: {package_cmd}"
         );
 
         let globals_cmd = DebugAdapter::build_globals_scope_v_command();
-        assert_eq!(globals_cmd, "V main *");
+        assert_eq!(globals_cmd, "V main");
         assert!(
             !globals_cmd.contains(&format!("V {frame_id}")),
             "globals query must not embed the DAP frame id: {globals_cmd}"
