@@ -216,7 +216,10 @@ impl ProjectModel {
                 out.extend(compare_dist_metadata(left, right));
             }
         }
-        out.sort_by(|a, b| a.field.cmp(&b.field));
+        out.sort_by(|a, b| {
+            (a.left_file_id.as_str(), a.field.as_str())
+                .cmp(&(b.left_file_id.as_str(), b.field.as_str()))
+        });
         out
     }
 

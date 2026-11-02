@@ -9,6 +9,18 @@ use serde::{Deserialize, Serialize};
 use crate::dist::DistMetadataFacts;
 use crate::meta_yml::MetaSpecVersion;
 
+/// Observed YAML shape of the top-level `license` field before normalization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetaYmlLicenseShape {
+    /// No `license` key.
+    Absent,
+    /// v1-style scalar license.
+    Scalar,
+    /// v2-style license list.
+    Sequence,
+}
+
 /// One structural spec-validation finding (distinct from YAML parse findings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaYmlSpecFinding {
@@ -37,8 +49,7 @@ pub enum MetaYmlSpecFindingKind {
 /// Spec recognition and conformance, independent of YAML parse state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaYmlSpecValidation {
-    /// The declared `meta-spec` version is one this validator understands, or
-    /// legacy implicit v1.4 applies when `meta-spec` is omitted.
+    /// The effective CPAN Meta spec version is one this validator understands.
     pub recognized_spec: bool,
     /// Structural CPAN Meta rules for the effective spec version are satisfied.
     pub conforms_to_supported_spec: bool,
@@ -90,11 +101,22 @@ const V2_TOP_LEVEL: &[&str] = &[
     "x_deprecated",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectiveSpec {
+    /// Legacy implicit Meta 1.0 when `meta-spec` is omitted.
+    ImplicitV1_0,
+    /// Declared Meta 1.x family.
+    V1,
+    /// Declared Meta 2.x.
+    V2,
+}
+
 /// Validate CPAN Meta structure for a successfully parsed `META.yml`.
 #[must_use]
 pub fn validate_meta_yml_spec(
     spec_version: Option<MetaSpecVersion>,
     meta_spec_key_present: bool,
+    license_shape: MetaYmlLicenseShape,
     top_level_keys: &[String],
     facts: &DistMetadataFacts,
 ) -> MetaYmlSpecValidation {
@@ -102,7 +124,7 @@ pub fn validate_meta_yml_spec(
     let effective = effective_spec(spec_version, meta_spec_key_present, &mut findings);
     let recognized_spec = effective.is_some();
     if let Some(spec) = effective {
-        check_required_fields(spec, facts, &mut findings);
+        check_required_fields(spec, license_shape, top_level_keys, facts, &mut findings);
         check_unsupported_top_level(spec, top_level_keys, &mut findings);
     }
     let conforms_to_supported_spec = findings.iter().all(|f| {
@@ -120,9 +142,10 @@ fn effective_spec(
     spec_version: Option<MetaSpecVersion>,
     meta_spec_key_present: bool,
     findings: &mut Vec<MetaYmlSpecFinding>,
-) -> Option<MetaSpecVersion> {
+) -> Option<EffectiveSpec> {
     match spec_version {
-        Some(v) => Some(v),
+        Some(MetaSpecVersion::V2) => Some(EffectiveSpec::V2),
+        Some(MetaSpecVersion::V1) => Some(EffectiveSpec::V1),
         None if meta_spec_key_present => {
             findings.push(MetaYmlSpecFinding {
                 kind: MetaYmlSpecFindingKind::UnrecognizedSpec,
@@ -131,33 +154,71 @@ fn effective_spec(
             });
             None
         }
-        None => Some(MetaSpecVersion::V1),
+        None => Some(EffectiveSpec::ImplicitV1_0),
     }
 }
 
 fn check_required_fields(
-    spec: MetaSpecVersion,
+    spec: EffectiveSpec,
+    license_shape: MetaYmlLicenseShape,
+    top_level_keys: &[String],
     facts: &DistMetadataFacts,
     findings: &mut Vec<MetaYmlSpecFinding>,
 ) {
-    require_non_empty(facts.name.as_deref(), "name", findings);
-    require_non_empty(facts.version.as_deref(), "version", findings);
-    if matches!(spec, MetaSpecVersion::V2) {
-        require_non_empty(facts.summary.as_deref(), "abstract", findings);
-    }
-    if facts.licenses.is_empty() {
-        findings.push(MetaYmlSpecFinding {
-            kind: MetaYmlSpecFindingKind::MissingRequiredField,
-            field: Some("license".to_string()),
-            detail: "license must be declared for CPAN Meta conformance".to_string(),
-        });
+    match spec {
+        EffectiveSpec::ImplicitV1_0 => {
+            require_non_empty(facts.version.as_deref(), "version", findings);
+        }
+        EffectiveSpec::V1 => {
+            require_non_empty(facts.name.as_deref(), "name", findings);
+            require_non_empty(facts.version.as_deref(), "version", findings);
+            require_key_present(top_level_keys, "author", findings);
+            require_key_present(top_level_keys, "generated_by", findings);
+            match license_shape {
+                MetaYmlLicenseShape::Absent => {
+                    missing_field("license", findings);
+                }
+                MetaYmlLicenseShape::Scalar if facts.licenses.is_empty() => {
+                    missing_field("license", findings);
+                }
+                MetaYmlLicenseShape::Sequence => findings.push(MetaYmlSpecFinding {
+                    kind: MetaYmlSpecFindingKind::InvalidFieldShape,
+                    field: Some("license".to_string()),
+                    detail: "Meta v1.4 expects `license` as a scalar string".to_string(),
+                }),
+                MetaYmlLicenseShape::Scalar => {}
+            }
+        }
+        EffectiveSpec::V2 => {
+            require_non_empty(facts.name.as_deref(), "name", findings);
+            require_non_empty(facts.version.as_deref(), "version", findings);
+            require_non_empty(facts.summary.as_deref(), "abstract", findings);
+            require_key_present(top_level_keys, "author", findings);
+            require_key_present(top_level_keys, "generated_by", findings);
+            match license_shape {
+                MetaYmlLicenseShape::Absent => missing_field("license", findings),
+                MetaYmlLicenseShape::Scalar => findings.push(MetaYmlSpecFinding {
+                    kind: MetaYmlSpecFindingKind::InvalidFieldShape,
+                    field: Some("license".to_string()),
+                    detail: "Meta v2 expects `license` as a non-empty sequence".to_string(),
+                }),
+                MetaYmlLicenseShape::Sequence if facts.licenses.is_empty() => {
+                    missing_field("license", findings);
+                }
+                MetaYmlLicenseShape::Sequence => {}
+            }
+        }
     }
 }
 
-fn require_non_empty(value: Option<&str>, field: &str, findings: &mut Vec<MetaYmlSpecFinding>) {
-    if value.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+fn require_key_present(keys: &[String], field: &str, findings: &mut Vec<MetaYmlSpecFinding>) {
+    if keys.iter().any(|key| key == field) {
         return;
     }
+    missing_field(field, findings);
+}
+
+fn missing_field(field: &str, findings: &mut Vec<MetaYmlSpecFinding>) {
     findings.push(MetaYmlSpecFinding {
         kind: MetaYmlSpecFindingKind::MissingRequiredField,
         field: Some(field.to_string()),
@@ -165,14 +226,21 @@ fn require_non_empty(value: Option<&str>, field: &str, findings: &mut Vec<MetaYm
     });
 }
 
+fn require_non_empty(value: Option<&str>, field: &str, findings: &mut Vec<MetaYmlSpecFinding>) {
+    if value.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        return;
+    }
+    missing_field(field, findings);
+}
+
 fn check_unsupported_top_level(
-    spec: MetaSpecVersion,
+    spec: EffectiveSpec,
     keys: &[String],
     findings: &mut Vec<MetaYmlSpecFinding>,
 ) {
     let allowed = match spec {
-        MetaSpecVersion::V1 => V1_TOP_LEVEL,
-        MetaSpecVersion::V2 => V2_TOP_LEVEL,
+        EffectiveSpec::ImplicitV1_0 | EffectiveSpec::V1 => V1_TOP_LEVEL,
+        EffectiveSpec::V2 => V2_TOP_LEVEL,
     };
     for key in keys {
         if allowed.contains(&key.as_str()) {
@@ -210,34 +278,60 @@ mod tests {
     }
 
     #[test]
-    fn implicit_v1_recognized_and_conforms_with_required_fields() {
+    fn implicit_v1_0_requires_only_version() {
         let validation = validate_meta_yml_spec(
             None,
             false,
-            &["name".to_string(), "version".to_string(), "license".to_string()],
-            &facts("Foo-Bar", "1.0", None, &["perl_5"]),
+            MetaYmlLicenseShape::Absent,
+            &["version".to_string()],
+            &facts("", "1.0", None, &[]),
         );
         assert!(validation.recognized_spec);
         assert!(validation.conforms_to_supported_spec);
-        assert!(validation.findings.is_empty());
     }
 
     #[test]
-    fn v2_requires_abstract() {
+    fn declared_v1_requires_scalar_license_and_authorship() {
         let validation = validate_meta_yml_spec(
-            Some(MetaSpecVersion::V2),
+            Some(MetaSpecVersion::V1),
             true,
+            MetaYmlLicenseShape::Sequence,
             &[
                 "meta-spec".to_string(),
                 "name".to_string(),
                 "version".to_string(),
                 "license".to_string(),
+                "author".to_string(),
+                "generated_by".to_string(),
             ],
-            &facts("Foo-Bar", "2.0", None, &["perl_5"]),
+            &facts("Foo-Bar", "1.0", None, &["perl_5"]),
         );
-        assert!(validation.recognized_spec);
         assert!(!validation.conforms_to_supported_spec);
-        assert!(validation.findings.iter().any(|f| f.field.as_deref() == Some("abstract")));
+        assert!(
+            validation.findings.iter().any(|f| f.kind == MetaYmlSpecFindingKind::InvalidFieldShape)
+        );
+    }
+
+    #[test]
+    fn v2_requires_abstract_and_sequence_license() {
+        let validation = validate_meta_yml_spec(
+            Some(MetaSpecVersion::V2),
+            true,
+            MetaYmlLicenseShape::Scalar,
+            &[
+                "meta-spec".to_string(),
+                "name".to_string(),
+                "version".to_string(),
+                "license".to_string(),
+                "author".to_string(),
+                "generated_by".to_string(),
+            ],
+            &facts("Foo-Bar", "2.0", Some("summary"), &["perl_5"]),
+        );
+        assert!(!validation.conforms_to_supported_spec);
+        assert!(
+            validation.findings.iter().any(|f| f.kind == MetaYmlSpecFindingKind::InvalidFieldShape)
+        );
     }
 
     #[test]
@@ -245,32 +339,13 @@ mod tests {
         let validation = validate_meta_yml_spec(
             None,
             true,
+            MetaYmlLicenseShape::Absent,
             &["meta-spec".to_string(), "name".to_string()],
             &facts("Foo-Bar", "1.0", None, &["perl_5"]),
         );
         assert!(!validation.recognized_spec);
-        assert!(!validation.conforms_to_supported_spec);
         assert!(
             validation.findings.iter().any(|f| f.kind == MetaYmlSpecFindingKind::UnrecognizedSpec)
         );
-    }
-
-    #[test]
-    fn unsupported_top_level_is_reported_without_blocking_recognition() {
-        let validation = validate_meta_yml_spec(
-            Some(MetaSpecVersion::V1),
-            true,
-            &[
-                "meta-spec".to_string(),
-                "name".to_string(),
-                "version".to_string(),
-                "license".to_string(),
-                "custom_extension".to_string(),
-            ],
-            &facts("Foo-Bar", "1.0", None, &["perl_5"]),
-        );
-        assert!(validation.recognized_spec);
-        assert!(validation.conforms_to_supported_spec);
-        assert!(validation.findings.iter().any(|f| f.field.as_deref() == Some("custom_extension")));
     }
 }

@@ -141,7 +141,8 @@ pub use meta_yml::{
     parse_meta_yml,
 };
 pub use meta_yml_spec::{
-    MetaYmlSpecFinding, MetaYmlSpecFindingKind, MetaYmlSpecValidation, validate_meta_yml_spec,
+    MetaYmlLicenseShape, MetaYmlSpecFinding, MetaYmlSpecFindingKind, MetaYmlSpecValidation,
+    validate_meta_yml_spec,
 };
 pub use model::ProjectModel;
 pub use package::PackageRecord;

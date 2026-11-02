@@ -82,6 +82,10 @@ pub enum DistMetadataAgreement {
 pub struct DistMetadataComparison {
     /// Compared field (`name`, `version`, `license`, `abstract`, `prereq:…`).
     pub field: String,
+    /// Left-hand metadata file identity.
+    pub left_file_id: FileId,
+    /// Right-hand metadata file identity.
+    pub right_file_id: FileId,
     /// Left-hand metadata source (stable ordering: `META.json` before `META.yml`).
     pub left_source: DistMetadataSource,
     /// Right-hand metadata source.
@@ -95,9 +99,6 @@ pub struct DistMetadataComparison {
 }
 
 /// Compare two staged metadata records without choosing one over the other.
-///
-/// Callers pass `left` and `right` in a stable order (typically `META.json`
-/// then `META.yml`).
 #[must_use]
 pub fn compare_dist_metadata(
     left: &DistMetadataFacts,
@@ -187,6 +188,8 @@ fn push_metadata_field(
     };
     out.push(DistMetadataComparison {
         field: field.to_string(),
+        left_file_id: left.file_id.clone(),
+        right_file_id: right.file_id.clone(),
         left_source: left.source,
         right_source: right.source,
         left_value,

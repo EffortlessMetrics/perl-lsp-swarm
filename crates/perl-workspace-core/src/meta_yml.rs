@@ -71,7 +71,7 @@ use crate::dist::{
     DistMetadataFacts, DistMetadataSource, META_V1_PHASED_REQUIRES, Prereq, RELATIONS,
 };
 use crate::id::{Digest, FileId};
-use crate::meta_yml_spec::{MetaYmlSpecValidation, validate_meta_yml_spec};
+use crate::meta_yml_spec::{MetaYmlLicenseShape, MetaYmlSpecValidation, validate_meta_yml_spec};
 
 /// Budgets bounding the parser's work. Exceeding one is a typed finding, not
 /// a panic or a silent truncation.
@@ -319,8 +319,14 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
     };
     let top_level_keys: Vec<String> = root.iter().map(|(key, _)| key.clone()).collect();
     let meta_spec_key_present = top_level_keys.iter().any(|key| key == "meta-spec");
-    let spec_validation =
-        validate_meta_yml_spec(spec_version, meta_spec_key_present, &top_level_keys, &facts);
+    let license_shape = root_license_shape(&root);
+    let spec_validation = validate_meta_yml_spec(
+        spec_version,
+        meta_spec_key_present,
+        license_shape,
+        &top_level_keys,
+        &facts,
+    );
     if findings.len() > MAX_FINDINGS {
         // The finding list itself is bounded; a pathological input must not
         // grow it without limit. Once it overflows, the remaining refusals
@@ -1337,6 +1343,17 @@ fn root_string(
 /// single string. Every declared entry that cannot become a license fact is
 /// reported rather than filtered away; see [`NullMeaning`] for why a null
 /// item is reported while a null field value is not.
+fn root_license_shape(root: &[(String, Yaml)]) -> MetaYmlLicenseShape {
+    let Some((_, value)) = root.iter().find(|(key, _)| key == "license") else {
+        return MetaYmlLicenseShape::Absent;
+    };
+    match value {
+        Yaml::Seq(_) => MetaYmlLicenseShape::Sequence,
+        Yaml::Scalar(_) => MetaYmlLicenseShape::Scalar,
+        _ => MetaYmlLicenseShape::Absent,
+    }
+}
+
 fn root_licenses(root: &[(String, Yaml)], findings: &mut Vec<MetaYmlFinding>) -> Vec<String> {
     let Some((_, value)) = root.iter().find(|(k, _)| k == "license") else {
         return Vec::new();
