@@ -21,9 +21,8 @@ pub enum IncRootKind {
     ExternalAbsolute,
     /// Paths sourced from the `PERL5LIB` environment variable.
     ///
-    /// Boundary-validated like `ExternalAbsolute` at resolution time; carries a
-    /// distinct source label so diagnostics can tell environment-supplied roots
-    /// apart from project-configured ones.
+    /// Resolved without workspace-boundary validation (trusted like
+    /// [`IncRootKind::InterpreterStartup`]) but carries a distinct source label.
     Perl5LibEnv,
     /// Startup `@INC` entries from the selected Perl interpreter.
     InterpreterStartup,
@@ -109,9 +108,8 @@ fn candidate_report(
 /// `.perl-lsp.toml` or via resource-scoped LSP client settings (issue #4998).
 /// Callers MUST NOT pass
 /// untrusted absolute entries into `include_paths`; validate/reject those
-/// before merging into the caller's `include_paths`. Resolution still
-/// workspace-boundary validates `ExternalAbsolute` and `Perl5LibEnv` roots
-/// (issue #1767). See
+/// before merging into the caller's `include_paths`. Resolution
+/// workspace-boundary validates `ExternalAbsolute` roots (issue #1767). See
 /// `perl_lsp_rs_core::config::ProjectConfig::apply_to_workspace_config`
 /// (issue #4957, precedent: issue #3729) for where that untrusted-channel
 /// sanitization happens.
@@ -396,7 +394,7 @@ fn collect_module_uri_candidates(
                     }
                 }
             }
-            IncRootKind::ExternalAbsolute | IncRootKind::Perl5LibEnv => {
+            IncRootKind::ExternalAbsolute => {
                 for workspace_folder in workspace_folders {
                     if start_time.elapsed() >= timeout {
                         return candidate_report(
@@ -438,7 +436,9 @@ fn collect_module_uri_candidates(
                     }
                 }
             }
-            IncRootKind::InterpreterStartup | IncRootKind::RuntimeDerived => {
+            IncRootKind::Perl5LibEnv
+            | IncRootKind::InterpreterStartup
+            | IncRootKind::RuntimeDerived => {
                 let full_path = inc_root.path.join(&relative_path);
                 if full_path.is_file()
                     && let Ok(url) = Url::from_file_path(&full_path)
@@ -549,13 +549,13 @@ fn full_path_for_root(
                 validate_workspace_path(&full_path, workspace_path).ok()
             }
         }
-        IncRootKind::ExternalAbsolute | IncRootKind::Perl5LibEnv => {
+        IncRootKind::ExternalAbsolute => {
             let full_path = inc_root.path.join(relative_path);
             validate_workspace_path(&full_path, workspace_path).ok()
         }
-        IncRootKind::InterpreterStartup | IncRootKind::RuntimeDerived => {
-            Some(inc_root.path.join(relative_path))
-        }
+        IncRootKind::Perl5LibEnv
+        | IncRootKind::InterpreterStartup
+        | IncRootKind::RuntimeDerived => Some(inc_root.path.join(relative_path)),
     }
 }
 

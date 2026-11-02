@@ -63,8 +63,8 @@ drifting from the internal modules.
 ## Review hotspots
 
 - `resolution.rs` -- `@INC` root ordering and kind semantics; subtle and
-  high-consequence for go-to-definition correctness. `ExternalAbsolute` and
-  `Perl5LibEnv` roots are workspace-boundary validated at resolution time;
+  high-consequence for go-to-definition correctness. `ExternalAbsolute` roots
+  are workspace-boundary validated at resolution time; `Perl5LibEnv` and
   `InterpreterStartup` roots remain trusted environment paths.
 - `rename.rs` -- edit planning must stay conservative; a false-positive
   rename edit corrupts user code.
