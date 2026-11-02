@@ -1249,188 +1249,188 @@ export class BinaryDownloader {
             }
           }
 
-        // Find checksum file (SHA256SUMS file contains all checksums)
-        const checksumAsset = release.assets.find((a) => a.name === 'SHA256SUMS');
+          // Find checksum file (SHA256SUMS file contains all checksums)
+          const checksumAsset = release.assets.find((a) => a.name === 'SHA256SUMS');
 
-        // Download to temp directory
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-'));
-        const archivePath = path.join(tempDir, assetName);
+          // Download to temp directory
+          const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-'));
+          const archivePath = path.join(tempDir, assetName);
 
-        try {
-          // Download binary archive
-          progress.report({ increment: 10, message: 'Downloading binary...' });
-          await this.downloadFile(
-            asset.browser_download_url,
-            archivePath,
-            30000,
-            5,
-            MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
-            token,
-          );
-
-          if (token.isCancellationRequested) {
-            throw new Error('Download cancelled');
-          }
-
-          // Download and verify checksum (required for security)
-          if (!checksumAsset) {
-            throw new Error('Security check failed: No SHA256SUMS file found in release assets.');
-          }
-
-          progress.report({ increment: 40, message: 'Verifying checksum...' });
-          const checksumPath = path.join(tempDir, 'SHA256SUMS');
-          await this.downloadFile(
-            checksumAsset.browser_download_url,
-            checksumPath,
-            30000,
-            5,
-            MANAGED_CHECKSUM_FILE_MAX_BYTES,
-            token,
-          );
-
-          // Find the checksum entry for our file
-          const sumsEntry = lookupSha256SumsDigest(
-            fs.readFileSync(checksumPath, 'utf8'),
-            assetName,
-          );
-
-          let expectedChecksum: string;
-          switch (sumsEntry.status) {
-            case 'found':
-              expectedChecksum = sumsEntry.digest;
-              break;
-            case 'conflicting':
-              throw new Error(
-                `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
-              );
-            case 'malformed':
-              throw new Error(
-                `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
-              );
-            case 'absent':
-              throw new Error(
-                `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
-              );
-          }
-          const actualChecksum = await this.calculateSHA256(archivePath);
-
-          if (expectedChecksum !== actualChecksum) {
-            throw new Error(
-              'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
+          try {
+            // Download binary archive
+            progress.report({ increment: 10, message: 'Downloading binary...' });
+            await this.downloadFile(
+              asset.browser_download_url,
+              archivePath,
+              30000,
+              5,
+              MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+              token,
             );
-          }
-          this.outputChannel.appendLine('Checksum verified successfully');
 
-          // Inspect then extract only the documented executables (#7432).
-          progress.report({ increment: 30, message: 'Extracting binary...' });
-          const extractDir = path.join(tempDir, 'extracted');
-          const format = assetName.endsWith('.zip')
-            ? 'zip'
-            : assetName.endsWith('.tar.gz')
-              ? 'tar.gz'
-              : null;
-          if (format === null) {
-            throw new Error(`Unsupported archive format: ${assetName}`);
-          }
-          if (token.isCancellationRequested) {
-            throw new Error('Download cancelled');
-          }
-          const extracted = await extractManagedArchive({
-            archivePath,
-            extractDir,
-            format,
-            windows: format === 'zip',
-            cancellationToken: token,
-          });
-          const extractedBinary = extracted.serverPath;
+            if (token.isCancellationRequested) {
+              throw new Error('Download cancelled');
+            }
 
-          // Move to final location. Each install lands in a unique
-          // versioned dir so a forced reinstall while perllsp.exe is
-          // running does not have to overwrite the running file. The
-          // active install is selected by an atomically-committed
-          // pointer file at the base dir.
-          progress.report({ increment: 15, message: 'Installing binary...' });
-          const installDirName = this.buildVersionedInstallDirName(release.tag_name);
-          const installDir = path.join(baseDir, installDirName);
-          fs.mkdirSync(installDir, { recursive: true });
-          this.writeInstallTargetRecord(installDir, compatibilityKey, target, emulation);
+            // Download and verify checksum (required for security)
+            if (!checksumAsset) {
+              throw new Error('Security check failed: No SHA256SUMS file found in release assets.');
+            }
 
-          const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
-          const finalPath = path.join(installDir, binaryName);
+            progress.report({ increment: 40, message: 'Verifying checksum...' });
+            const checksumPath = path.join(tempDir, 'SHA256SUMS');
+            await this.downloadFile(
+              checksumAsset.browser_download_url,
+              checksumPath,
+              30000,
+              5,
+              MANAGED_CHECKSUM_FILE_MAX_BYTES,
+              token,
+            );
 
-          await copyManagedFileWithRetry(extractedBinary, finalPath, 'perllsp', (message) =>
-            this.outputChannel.appendLine(message),
-          );
+            // Find the checksum entry for our file
+            const sumsEntry = lookupSha256SumsDigest(
+              fs.readFileSync(checksumPath, 'utf8'),
+              assetName,
+            );
 
-          // Make executable on Unix
-          if (process.platform !== 'win32') {
-            fs.chmodSync(finalPath, 0o755);
-          }
+            let expectedChecksum: string;
+            switch (sumsEntry.status) {
+              case 'found':
+                expectedChecksum = sumsEntry.digest;
+                break;
+              case 'conflicting':
+                throw new Error(
+                  `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+                );
+              case 'malformed':
+                throw new Error(
+                  `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
+                );
+              case 'absent':
+                throw new Error(
+                  `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
+                );
+            }
+            const actualChecksum = await this.calculateSHA256(archivePath);
 
-          // Best-effort: copy perl-dap when the archive carried exactly one.
-          const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
-          const extractedDap = extracted.dapPath;
-          let installedDapPath: string | null = null;
-          if (extractedDap) {
-            const dapDest = path.join(installDir, dapName);
-            try {
-              await copyManagedFileWithRetry(extractedDap, dapDest, 'perl-dap', (message) =>
-                this.outputChannel.appendLine(message),
+            if (expectedChecksum !== actualChecksum) {
+              throw new Error(
+                'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
               );
-              if (process.platform !== 'win32') {
-                fs.chmodSync(dapDest, 0o755);
+            }
+            this.outputChannel.appendLine('Checksum verified successfully');
+
+            // Inspect then extract only the documented executables (#7432).
+            progress.report({ increment: 30, message: 'Extracting binary...' });
+            const extractDir = path.join(tempDir, 'extracted');
+            const format = assetName.endsWith('.zip')
+              ? 'zip'
+              : assetName.endsWith('.tar.gz')
+                ? 'tar.gz'
+                : null;
+            if (format === null) {
+              throw new Error(`Unsupported archive format: ${assetName}`);
+            }
+            if (token.isCancellationRequested) {
+              throw new Error('Download cancelled');
+            }
+            const extracted = await extractManagedArchive({
+              archivePath,
+              extractDir,
+              format,
+              windows: format === 'zip',
+              cancellationToken: token,
+            });
+            const extractedBinary = extracted.serverPath;
+
+            // Move to final location. Each install lands in a unique
+            // versioned dir so a forced reinstall while perllsp.exe is
+            // running does not have to overwrite the running file. The
+            // active install is selected by an atomically-committed
+            // pointer file at the base dir.
+            progress.report({ increment: 15, message: 'Installing binary...' });
+            const installDirName = this.buildVersionedInstallDirName(release.tag_name);
+            const installDir = path.join(baseDir, installDirName);
+            fs.mkdirSync(installDir, { recursive: true });
+            this.writeInstallTargetRecord(installDir, compatibilityKey, target, emulation);
+
+            const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
+            const finalPath = path.join(installDir, binaryName);
+
+            await copyManagedFileWithRetry(extractedBinary, finalPath, 'perllsp', (message) =>
+              this.outputChannel.appendLine(message),
+            );
+
+            // Make executable on Unix
+            if (process.platform !== 'win32') {
+              fs.chmodSync(finalPath, 0o755);
+            }
+
+            // Best-effort: copy perl-dap when the archive carried exactly one.
+            const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+            const extractedDap = extracted.dapPath;
+            let installedDapPath: string | null = null;
+            if (extractedDap) {
+              const dapDest = path.join(installDir, dapName);
+              try {
+                await copyManagedFileWithRetry(extractedDap, dapDest, 'perl-dap', (message) =>
+                  this.outputChannel.appendLine(message),
+                );
+                if (process.platform !== 'win32') {
+                  fs.chmodSync(dapDest, 0o755);
+                }
+                installedDapPath = dapDest;
+                this.outputChannel.appendLine(`Debug adapter installed to: ${dapDest}`);
+              } catch (e) {
+                this.outputChannel.appendLine(`Note: could not install perl-dap: ${e}`);
               }
-              installedDapPath = dapDest;
-              this.outputChannel.appendLine(`Debug adapter installed to: ${dapDest}`);
+            }
+
+            // Mint the immutable candidate identity from the verified bytes
+            // (#10083): the archive checksum stands in for the release topology
+            // digest, and the installed binaries' digests bind the candidate to
+            // exactly the bytes this host will launch.
+            const perllspDigest = await this.calculateSHA256(finalPath);
+            const dapDigest =
+              installedDapPath === null ? null : await this.calculateSHA256(installedDapPath);
+            const manifest = writeInstalledManagedCandidateManifest(
+              installDir,
+              {
+                release: release.tag_name,
+                version: release.tag_name,
+                target,
+                topology_digest: actualChecksum,
+                perllsp_digest: perllspDigest,
+                perl_dap_digest: dapDigest,
+              },
+              (message) => this.outputChannel.appendLine(`Note: ${message}`),
+            );
+
+            // Atomically activate the new install. The legacy `current` dir
+            // pointer stays authoritative for path resolution and rollback;
+            // the versioned selection record alongside it gives collectors and
+            // host selection the policy-governed view. Stale generations are
+            // then pruned only through the landed retention policy.
+            if (!this.commitVersionedInstall(installDirName, compatibilityKey, manifest)) {
+              throw new Error(
+                'Managed binary was downloaded and verified, but selecting it failed; the current selection was not changed.',
+              );
+            }
+            this.collectStaleManagedCandidates(baseDir);
+
+            progress.report({ increment: 5, message: 'Complete!' });
+            this.outputChannel.appendLine(`Binary installed to: ${finalPath}`);
+
+            return finalPath;
+          } finally {
+            // Clean up temp directory
+            try {
+              fs.rmSync(tempDir, { recursive: true, force: true });
             } catch (e) {
-              this.outputChannel.appendLine(`Note: could not install perl-dap: ${e}`);
+              this.outputChannel.appendLine(`Failed to clean up temp dir: ${e}`);
             }
           }
-
-          // Mint the immutable candidate identity from the verified bytes
-          // (#10083): the archive checksum stands in for the release topology
-          // digest, and the installed binaries' digests bind the candidate to
-          // exactly the bytes this host will launch.
-          const perllspDigest = await this.calculateSHA256(finalPath);
-          const dapDigest =
-            installedDapPath === null ? null : await this.calculateSHA256(installedDapPath);
-          const manifest = writeInstalledManagedCandidateManifest(
-            installDir,
-            {
-              release: release.tag_name,
-              version: release.tag_name,
-              target,
-              topology_digest: actualChecksum,
-              perllsp_digest: perllspDigest,
-              perl_dap_digest: dapDigest,
-            },
-            (message) => this.outputChannel.appendLine(`Note: ${message}`),
-          );
-
-          // Atomically activate the new install. The legacy `current` dir
-          // pointer stays authoritative for path resolution and rollback;
-          // the versioned selection record alongside it gives collectors and
-          // host selection the policy-governed view. Stale generations are
-          // then pruned only through the landed retention policy.
-          if (!this.commitVersionedInstall(installDirName, compatibilityKey, manifest)) {
-            throw new Error(
-              'Managed binary was downloaded and verified, but selecting it failed; the current selection was not changed.',
-            );
-          }
-          this.collectStaleManagedCandidates(baseDir);
-
-          progress.report({ increment: 5, message: 'Complete!' });
-          this.outputChannel.appendLine(`Binary installed to: ${finalPath}`);
-
-          return finalPath;
-        } finally {
-          // Clean up temp directory
-          try {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          } catch (e) {
-            this.outputChannel.appendLine(`Failed to clean up temp dir: ${e}`);
-          }
-        }
         } finally {
           cacheLock.release();
         }

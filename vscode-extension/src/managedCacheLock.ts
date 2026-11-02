@@ -1,7 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
-import type { ManagedMutationAttempt, ManagedMutationLease, ManagedMutationOperation } from './managedCacheProtocol';
+import type {
+  ManagedMutationAttempt,
+  ManagedMutationLease,
+  ManagedMutationOperation,
+} from './managedCacheProtocol';
 import {
   buildManagedMutationLease,
   classifyManagedLeaseRecovery,

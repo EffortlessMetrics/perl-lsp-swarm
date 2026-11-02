@@ -25,7 +25,10 @@ describe('managed cache mutation lock', () => {
   test('resolves an installed binary through the current pointer', () => {
     const installDir = path.join(baseDir, 'v0.18.0-2026');
     fs.mkdirSync(installDir, { recursive: true });
-    const binaryPath = path.join(installDir, process.platform === 'win32' ? 'perllsp.exe' : 'perllsp');
+    const binaryPath = path.join(
+      installDir,
+      process.platform === 'win32' ? 'perllsp.exe' : 'perllsp',
+    );
     fs.writeFileSync(binaryPath, 'stub', 'utf8');
     fs.writeFileSync(path.join(baseDir, 'current'), `${path.basename(installDir)}\n`, 'utf8');
 
