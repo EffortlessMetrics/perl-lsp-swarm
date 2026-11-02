@@ -371,6 +371,13 @@ fn visible_symbol_has_import_authority(
         return import_map.get(module).is_none_or(|imported| imported.contains(&symbol.name));
     }
 
+    // `visible_symbols_at` emits `ExportTag` only when a `UseTag` import resolves
+    // against canonical `ExportSet.tags`. The legacy import map may omit tag members
+    // when `resolve_known_export_tag` misses workspace modules (#1703).
+    if matches!(symbol.source, VisibleSymbolSource::ExportTag) {
+        return !import_map.get(module).is_some_and(|imported| imported.is_empty());
+    }
+
     import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name))
 }
 
@@ -2629,6 +2636,47 @@ mod visible_symbol_completion_tests {
     fn default_export_without_module_reference_is_denied() {
         assert!(!visible_symbol_has_import_authority(
             &default_export_symbol("defaulted"),
+            &HashMap::new(),
+            &HashSet::new(),
+        ));
+    }
+
+    fn export_tag_symbol(name: &str) -> VisibleSymbol {
+        VisibleSymbol {
+            name: name.to_string(),
+            entity_id: Some(EntityId(3)),
+            source: VisibleSymbolSource::ExportTag,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("TagLib".to_string()), None, None)),
+        }
+    }
+
+    /// Tag imports may leave no legacy import-map members when the hardcoded
+    /// catalog misses; canonical `ExportTag` facts still authorize completion.
+    #[test]
+    fn export_tag_with_use_tag_import_is_authorized_without_legacy_map_members() {
+        assert!(visible_symbol_has_import_authority(
+            &export_tag_symbol("tagged_one"),
+            &HashMap::new(),
+            &HashSet::from(["TagLib".to_string()]),
+        ));
+    }
+
+    #[test]
+    fn export_tag_with_explicit_empty_import_list_is_denied() {
+        let import_map = HashMap::from([("TagLib".to_string(), HashSet::new())]);
+
+        assert!(!visible_symbol_has_import_authority(
+            &export_tag_symbol("tagged_one"),
+            &import_map,
+            &HashSet::from(["TagLib".to_string()]),
+        ));
+    }
+
+    #[test]
+    fn export_tag_without_module_reference_is_denied() {
+        assert!(!visible_symbol_has_import_authority(
+            &export_tag_symbol("tagged_one"),
             &HashMap::new(),
             &HashSet::new(),
         ));
