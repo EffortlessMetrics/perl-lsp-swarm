@@ -620,6 +620,11 @@ beforeAll(async () => {
   );
   trackEventFactory(
     vscode.workspace as unknown as Record<string, unknown>,
+    'onDidCreateFiles',
+    'health:files-created',
+  );
+  trackEventFactory(
+    vscode.workspace as unknown as Record<string, unknown>,
     'onDidChangeWorkspaceFolders',
     'watcher:workspace-folders',
   );

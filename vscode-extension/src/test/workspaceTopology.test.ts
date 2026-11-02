@@ -85,6 +85,7 @@ describe('workspace topology capability contract', () => {
     expect(untitled.mode).toBe('empty');
     expect(untitled.untitled_document_count).toBe(1);
     expect(untitled.trust).toBe('unknown');
+    expect(untitled.capabilities.language_server_documents).toBe('unsupported');
     expect(untitled.limitations.join(' ')).toMatch(/untitled documents/);
   });
 

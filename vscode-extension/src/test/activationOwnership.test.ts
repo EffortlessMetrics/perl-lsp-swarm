@@ -500,7 +500,7 @@ describe('transactional production activation (#7854)', () => {
     await activate(makeContext(extensionRoot));
 
     const registrations = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls;
-    expect(registrations.length).toBeGreaterThanOrEqual(1);
+    expect(registrations).toHaveLength(1);
     const createdFileEvent = { files: [vscode.Uri.file('/ws/lib/Wired.pm')] };
     for (const registration of registrations) {
       const onDidCreateFiles = registration[0] as (

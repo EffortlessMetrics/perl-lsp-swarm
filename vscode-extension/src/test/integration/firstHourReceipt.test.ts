@@ -515,6 +515,30 @@ suite('First-hour VS Code receipt', function () {
     try {
       activationExports = await withTimeout('extension activation', extension.activate(), 90_000);
     } catch (error: unknown) {
+      if (expectedTrust === 'untrusted') {
+        writeFirstHourReceipt({
+          ...baseReceipt,
+          outcome: 'untrusted_product_declined',
+          startup: {
+            extension_activation_status: 'declined_by_host',
+            extension_activation_ms: Math.round(monotonicNow() - activationStart),
+            language_client: {
+              lifecycle_state: 'stopped',
+              server_start_status: 'idle',
+              status: 'unavailable',
+            },
+            error: error instanceof Error ? error.message : String(error),
+          },
+          moments: null,
+          diagnostics_probe: null,
+          limitations: [
+            ...baseReceipt.limitations,
+            'Untrusted workspace smoke proves manifest decline; activation may remain disabled until trust is granted.',
+          ],
+          failures: [],
+        });
+        return;
+      }
       writeFirstHourReceipt({
         ...baseReceipt,
         outcome: 'activation_timeout',
@@ -563,6 +587,8 @@ suite('First-hour VS Code receipt', function () {
       }
       const languageClientMetrics = extensionApi?.getLanguageClientStartupMetrics?.() ?? {
         status: 'unavailable',
+        lifecycle_state: 'stopped',
+        server_start_status: 'idle',
       };
       assert.notEqual(
         languageClientMetrics.lifecycle_state,

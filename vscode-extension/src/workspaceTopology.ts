@@ -85,7 +85,7 @@ function applyManifestProductSupportGates(
     );
     return { ...UNSUPPORTED_PRODUCT_CAPABILITIES };
   }
-  if (!MANIFEST_UNTRUSTED_WORKSPACES_SUPPORTED && trust === 'untrusted') {
+  if (!MANIFEST_UNTRUSTED_WORKSPACES_SUPPORTED && (trust === 'untrusted' || trust === 'unknown')) {
     limitations.push(
       'untrusted workspaces are unsupported until Workspace Trust is granted; capability statuses are product-declined',
     );
