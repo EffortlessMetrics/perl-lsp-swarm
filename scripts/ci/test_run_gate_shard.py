@@ -307,6 +307,101 @@ def fake_sleeping_xtask(root: Path, marker: Path) -> Path:
     return path
 
 
+LEDGER_CHECKER = Path(__file__).with_name("check_source_commit_api.py")
+LEDGER_CHECKER_SPEC = importlib.util.spec_from_file_location(
+    "check_source_commit_api", LEDGER_CHECKER
+)
+assert LEDGER_CHECKER_SPEC and LEDGER_CHECKER_SPEC.loader
+ledger_checker = importlib.util.module_from_spec(LEDGER_CHECKER_SPEC)
+sys.modules[LEDGER_CHECKER_SPEC.name] = ledger_checker
+LEDGER_CHECKER_SPEC.loader.exec_module(ledger_checker)
+
+COMBINED_TREE_JOB = "source-commit-api-ledger"
+COMBINED_TREE_COMMAND = "python3 scripts/ci/check_source_commit_api.py"
+
+
+def workflow_job_block(workflow_text: str, job: str) -> str:
+    header = f"\n  {job}:\n"
+    start = workflow_text.index(header) + 1
+    rest = workflow_text[start:]
+    newline = rest.find("\n")
+    if newline < 0:
+        return rest
+    offset = newline + 1
+    while True:
+        next_nl = rest.find("\n", offset)
+        if next_nl < 0:
+            return rest
+        line = rest[next_nl + 1 :]
+        if (
+            line.startswith("  ")
+            and not line.startswith("   ")
+            and not line.startswith("  #")
+        ):
+            return rest[:next_nl]
+        offset = next_nl + 1
+
+
+def source_commit_api_combined_tree_wiring_errors(workflow_text: str) -> list[str]:
+    """Return structural gaps that would let ledger drift land un-rechecked."""
+    errors: list[str] = []
+    on_start = workflow_text.find("\non:\n")
+    if on_start < 0:
+        return ["workflow has no on: block"]
+    on_end = workflow_text.find("\nconcurrency:\n", on_start)
+    on_block = workflow_text[on_start : on_end if on_end > 0 else on_start + 800]
+    if "merge_group:" not in on_block:
+        errors.append("workflow on: is missing merge_group")
+    if not re.search(r"push:\s*\n\s*branches:\s*\[\s*main,\s*master\s*\]", on_block):
+        errors.append("workflow on: is missing push to main/master")
+    try:
+        job = workflow_job_block(workflow_text, COMBINED_TREE_JOB)
+    except ValueError:
+        return errors + [f"job {COMBINED_TREE_JOB} is missing"]
+    if_match = re.search(r"^    if: >-\n(?P<body>(?:      .+\n)+)", job, re.M)
+    if_body = if_match.group("body") if if_match else ""
+    if "github.event_name == 'merge_group'" not in if_body:
+        errors.append("combined-tree job if: is missing merge_group")
+    if "github.event_name == 'push'" not in if_body:
+        errors.append("combined-tree job if: is missing push")
+    if "refs/heads/main" not in if_body or "refs/heads/master" not in if_body:
+        errors.append("combined-tree job if: is missing push to main/master")
+    if "github.event_name == 'pull_request'" in if_body:
+        errors.append("combined-tree job must not be pull_request-gated")
+    if "continue-on-error: true" in job:
+        errors.append("combined-tree job must not continue-on-error")
+    if COMBINED_TREE_COMMAND not in job:
+        errors.append(f"combined-tree job must run {COMBINED_TREE_COMMAND}")
+    checkout_refs = [
+        line.strip()
+        for line in job.splitlines()
+        if line.strip().startswith("ref: ")
+    ]
+    if not checkout_refs:
+        errors.append("combined-tree job has no checkout ref")
+    else:
+        checkout_ref = checkout_refs[0]
+        if "github.event.merge_group.head_sha" not in checkout_ref:
+            errors.append("combined-tree checkout must name merge_group.head_sha")
+        if "github.sha" not in checkout_ref:
+            errors.append("combined-tree checkout must name github.sha for push")
+        if "github.event.pull_request.head.sha" in checkout_ref:
+            errors.append("combined-tree job must not check out the PR head")
+    shards_start = workflow_text.find("  merge-gate-shards:\n")
+    if shards_start < 0:
+        errors.append("merge-gate-shards job is missing")
+        return errors
+    shards_end = workflow_text.find("    permissions:\n", shards_start)
+    shards_matrix = workflow_text[shards_start:shards_end]
+    if "source_commit_api_check" not in shards_matrix:
+        errors.append("merge-gate-shards matrix dropped source_commit_api_check")
+    shards_header = workflow_text[shards_start : shards_start + 1200]
+    shards_if = re.search(r"^    if: (?P<body>.+)$", shards_header, re.M)
+    if shards_if and "github.event_name == 'pull_request'" in shards_if.group("body"):
+        errors.append("merge-gate-shards if: must not be pull_request-only")
+    return errors
+
+
 def extract_gate_shard_runner_step(workflow_text: str) -> str:
     """Return the body of the "Run merge-gate shard with receipts" step.
 
@@ -779,6 +874,98 @@ class GateShardTests(unittest.TestCase):
         invocation_end = runner_step.index("          status=$?", invocation_start)
         runner_invocation = runner_step[invocation_start:invocation_end]
         self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_invocation)
+
+    def test_source_commit_api_check_is_wired_for_merge_group_and_push(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
+
+    def test_source_commit_api_combined_tree_wiring_rejects_pr_only_and_head_checkout(
+        self,
+    ) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertEqual([], source_commit_api_combined_tree_wiring_errors(workflow))
+        mutants = {
+            "drop-merge-group-trigger": workflow.replace("  merge_group: {}\n", "", 1),
+            "drop-merge-group-if": workflow.replace(
+                "github.event_name == 'merge_group' ||\n", "", 1
+            ),
+            "drop-push-if": workflow.replace(
+                "(github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))",
+                "false",
+                1,
+            ),
+            "wrong-command": workflow.replace(
+                COMBINED_TREE_COMMAND, "python3 scripts/ci/missing.py", 1
+            ),
+            "pr-head-checkout": workflow.replace(
+                "ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}",
+                "ref: ${{ github.event.pull_request.head.sha }}",
+                1,
+            ),
+            "continue-on-error": workflow.replace(
+                f"  {COMBINED_TREE_JOB}:\n",
+                f"  {COMBINED_TREE_JOB}:\n    continue-on-error: true\n",
+                1,
+            ),
+            "drop-matrix-gate": workflow.replace("source_commit_api_check ", "", 1),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(
+                    mutant,
+                    workflow,
+                    "mutant must change the workflow",
+                )
+                self.assertTrue(
+                    source_commit_api_combined_tree_wiring_errors(mutant),
+                    "mutant must fail the combined-tree wiring contract",
+                )
+
+    def test_compatibility_baseline_mismatch_names_ledger_file_and_per_file_counts(
+        self,
+    ) -> None:
+        message = ledger_checker.compatibility_baseline_mismatch_message(
+            ledger_path=ledger_checker.LEDGER_RELATIVE,
+            ledger_baseline=707,
+            compatibility=[
+                ("crates/perl-workspace/benches/workspace_index_benchmark.rs", "index_file"),
+                ("crates/perl-workspace/benches/workspace_index_benchmark.rs", "index_files_batch"),
+                ("crates/perl-workspace/src/workspace/workspace_index.rs", "index_file"),
+            ],
+            owners=[
+                {
+                    "prefix": "crates/perl-workspace/benches",
+                    "removal_condition": "benchmark contract is next revised",
+                },
+                {
+                    "prefix": "crates/perl-workspace/src",
+                    "removal_condition": "initial profile and internal tests use canonical initial names",
+                },
+            ],
+        )
+        self.assertIn("ledger=707, source=3", message)
+        self.assertIn(
+            "ledger file: .spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml",
+            message,
+        )
+        self.assertIn("ledger field: compatibility_baseline=707", message)
+        self.assertIn(
+            "crates/perl-workspace/benches/workspace_index_benchmark.rs: 2",
+            message,
+        )
+        self.assertIn(
+            "crates/perl-workspace/src/workspace/workspace_index.rs: 1",
+            message,
+        )
+        self.assertIn(
+            "crates/perl-workspace/benches: benchmark contract is next revised",
+            message,
+        )
+        self.assertIn(
+            "initial profile and internal tests use canonical initial names",
+            message,
+        )
+        self.assertIn("prefer burn-down", message)
 
     def test_multiline_commands_match_actual_yaml_loader(self) -> None:
         yaml_spec = importlib.util.find_spec("yaml")
