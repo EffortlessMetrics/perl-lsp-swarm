@@ -401,11 +401,17 @@ impl RuntimeServices {
         match class {
             ApplicationTaskClass::ParseWorker => {
                 let worker = self.parse_worker_handle.lock().clone()?;
+                if worker.runs_on_worker_thread() {
+                    return Some(cancelled());
+                }
                 (!worker.is_operational()).then(cancelled)
             }
             ApplicationTaskClass::DiagnosticDebounce => {
                 let guard = self.diagnostic_debouncer.lock();
                 let debouncer = guard.as_ref()?;
+                if debouncer.runs_on_worker_thread() {
+                    return Some(cancelled());
+                }
                 if !debouncer.has_exited() {
                     return None;
                 }
@@ -419,6 +425,9 @@ impl RuntimeServices {
             }
             ApplicationTaskClass::FileWatcherDebounce => {
                 let debouncer = self.file_watcher_debouncer.lock().clone()?;
+                if debouncer.runs_on_worker_thread() {
+                    return Some(cancelled());
+                }
                 if !debouncer.has_exited() {
                     return None;
                 }

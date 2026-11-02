@@ -196,12 +196,12 @@ impl WriterCompletion {
             // terminal transition.
             Some(_) if !outcome.is_io_failure() => false,
             None => {
-                *slot = Some(outcome.clone());
+                *slot = Some(outcome);
                 true
             }
             Some(_) => {
                 // A later sink I/O failure still dominates normal close.
-                *slot = Some(outcome.clone());
+                *slot = Some(outcome);
                 true
             }
         };
