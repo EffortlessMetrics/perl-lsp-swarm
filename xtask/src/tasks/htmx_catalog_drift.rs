@@ -244,12 +244,10 @@ const SLICED_SECTIONS: &[&SectionSpec] =
 /// in the slice may contribute false-positive names (#14602).
 fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
     let slice = section_slice(document, section)?;
-    let mut names = Vec::new();
-    for token in backtick_tokens_in_slice(slice) {
+    let mut names = BTreeSet::new();
+    for token in backtick_tokens_in_slice(slice).into_iter().chain(shaped_tokens_in_slice(slice)) {
         if let Some(name) = htmx_name_from_token(&token, section) {
-            if !names.contains(&name) {
-                names.push(name);
-            }
+            names.insert(name);
         }
     }
 
@@ -262,14 +260,15 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         );
     }
 
-    Ok(names)
+    Ok(names.into_iter().collect())
 }
 
 /// Text after this section's anchored heading until the next sliced section heading.
 fn section_slice<'doc>(document: &'doc str, section: &SectionSpec) -> Result<&'doc str> {
-    let start_line = locate_section_line(document, section)?;
-    let end_line =
-        next_section_start_line(document, section).unwrap_or_else(|| document.lines().count());
+    let (start_line, heading_depth) = locate_section(document, section)?;
+    let anchor_end = next_section_start_line(document, section);
+    let structural_end = section_end_by_heading_depth(document, start_line, heading_depth);
+    let end_line = anchor_end.map_or(structural_end, |anchor| anchor.min(structural_end));
     let (start, end) = line_byte_range(document, start_line + 1, end_line)?;
     document
         .get(start..end)
@@ -284,31 +283,58 @@ fn line_byte_range(document: &str, start: usize, end: usize) -> Result<(usize, u
 
     let mut byte_start = None;
     let mut byte_end = document.len();
+    let mut line_index = 0usize;
     let mut offset = 0usize;
-    for (index, line) in document.lines().enumerate() {
-        if index == start {
+    for line in document.split_inclusive('\n') {
+        if line_index == start {
             byte_start = Some(offset);
         }
-        if index == end {
+        if line_index == end {
             byte_end = offset;
             break;
         }
-        offset += line.len() + 1;
+        offset += line.len();
+        line_index += 1;
     }
 
     match byte_start {
         Some(start) => Ok((start, byte_end)),
-        None if start == end && end == document.lines().count() => {
-            Ok((document.len(), document.len()))
-        }
+        None if start == end && end == line_index => Ok((document.len(), document.len())),
         None => bail!("internal line range start {start} out of bounds"),
     }
 }
 
-/// Line index of the one heading carrying this section's anchor.
-fn locate_section_line(document: &str, section: &SectionSpec) -> Result<usize> {
+/// First line after `start_line` whose ATX heading is at the same or shallower depth.
+fn section_end_by_heading_depth(document: &str, start_line: usize, heading_depth: usize) -> usize {
+    for (index, line) in document.lines().enumerate().skip(start_line + 1) {
+        if !is_atx_heading_line(line) {
+            continue;
+        }
+        let depth = atx_heading_depth(line.trim());
+        if depth > 0 && depth <= heading_depth {
+            return index;
+        }
+    }
+    document.lines().count()
+}
+
+fn is_atx_heading_line(line: &str) -> bool {
+    !(line.starts_with('\t') || line.starts_with("    ")) && atx_heading_depth(line.trim()) > 0
+}
+
+/// Line index and ATX depth of the one heading carrying this section's anchor.
+fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize)> {
     let mut located = None;
+    let mut in_fence = false;
     for (index, line) in document.lines().enumerate() {
+        let trimmed = line.trim();
+        if toggles_code_fence(trimmed) {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
         if !is_locatable_section_heading(line, section.anchor) {
             continue;
         }
@@ -320,7 +346,7 @@ fn locate_section_line(document: &str, section: &SectionSpec) -> Result<usize> {
                 section.anchor
             );
         }
-        located = Some(index);
+        located = Some((index, atx_heading_depth(trimmed)));
     }
 
     located.ok_or_else(|| {
@@ -333,12 +359,23 @@ fn locate_section_line(document: &str, section: &SectionSpec) -> Result<usize> {
     })
 }
 
+/// A bare ``` or ~~~ fence delimiter line at column zero toggles illustration mode.
+fn toggles_code_fence(trimmed_line: &str) -> bool {
+    let Some(marker) = trimmed_line.chars().next() else {
+        return false;
+    };
+    if marker != '`' && marker != '~' {
+        return false;
+    }
+    trimmed_line.chars().take_while(|character| *character == marker).count() >= 3
+}
+
 /// Line index of the next section heading in slice order, if any.
 fn next_section_start_line(document: &str, section: &SectionSpec) -> Option<usize> {
     let index_in_order =
         SLICED_SECTIONS.iter().position(|candidate| candidate.anchor == section.anchor)?;
     let next = SLICED_SECTIONS.get(index_in_order + 1)?;
-    locate_section_line(document, next).ok()
+    locate_section(document, next).ok().map(|(line, _depth)| line)
 }
 
 /// Does this line introduce a section heading carrying `anchor`?
@@ -386,6 +423,54 @@ fn backtick_tokens_in_slice(slice: &str) -> Vec<String> {
             }
             rest = &after_opener[end + 1..];
         }
+    }
+    tokens
+}
+
+/// Scan slice text for bare `hx-*` / `HX-*` spellings outside backticks.
+fn shaped_tokens_in_slice(slice: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < slice.len() {
+        if slice[index..].starts_with("hx-") {
+            let start = index;
+            index += 3;
+            while index < slice.len() {
+                let Some(character) = slice[index..].chars().next() else {
+                    break;
+                };
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '*' | ':') {
+                    index += character.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if slice[index..].starts_with(".md") {
+                continue;
+            }
+            tokens.push(slice[start..index].to_string());
+            continue;
+        }
+        if slice[index..].starts_with("HX-") {
+            let start = index;
+            index += 3;
+            while index < slice.len() {
+                let Some(character) = slice[index..].chars().next() else {
+                    break;
+                };
+                if character.is_ascii_alphanumeric() || character == '-' {
+                    index += character.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if slice[index..].starts_with(".md") {
+                continue;
+            }
+            tokens.push(slice[start..index].to_string());
+            continue;
+        }
+        index += 1;
     }
     tokens
 }
@@ -453,7 +538,7 @@ mod tests {
 | Attribute | Description |
 |-----------|-------------|
 | [`hx-boost`](@/attributes/hx-boost.md) | progressively enhances links |
-| [`hx-vals`](@/attributes/hx-vals.md)   | deprecated, please use `hx-vals` |
+| [`hx-vars`](@/attributes/hx-vars.md)   | deprecated, please use `hx-vals` |
 
 ## HTTP Header Reference {#headers}
 
@@ -524,8 +609,16 @@ mod tests {
         let core = section_names(EXCERPT, &CORE_ATTRIBUTES);
         let request = section_names(EXCERPT, &REQUEST_HEADERS);
 
-        assert!(core.is_ok_and(|names| names == ["hx-get", "hx-on*"]));
-        assert!(request.is_ok_and(|names| names == ["HX-Boosted", "HX-Trigger"]));
+        assert!(core.is_ok_and(|names| {
+            names.len() == 2
+                && names.iter().any(|name| name == "hx-get")
+                && names.iter().any(|name| name == "hx-on*")
+        }));
+        assert!(request.is_ok_and(|names| {
+            names.len() == 2
+                && names.iter().any(|name| name == "HX-Boosted")
+                && names.iter().any(|name| name == "HX-Trigger")
+        }));
     }
 
     #[test]
@@ -549,10 +642,11 @@ mod tests {
 
 | [`hx-boost`](@/attributes/hx-boost.md) | not part of the core section |
 ";
-        assert!(
-            section_names(&document, &CORE_ATTRIBUTES)
-                .is_ok_and(|names| names == ["hx-get", "hx-new-thing"])
-        );
+        assert!(section_names(&document, &CORE_ATTRIBUTES).is_ok_and(|names| {
+            names.len() == 2
+                && names.iter().any(|name| name == "hx-get")
+                && names.iter().any(|name| name == "hx-new-thing")
+        }));
     }
 
     #[test]
@@ -621,8 +715,75 @@ See the core attribute reference {#attributes}
 ";
         let names = section_names(&document, &CORE_ATTRIBUTES).expect("slice names");
         assert!(
-            names.contains(&"hx-phantom-sample".to_string()),
+            names.iter().any(|name| name == "hx-phantom-sample"),
             "traded false-positive direction must surface sample names: {names:?}"
+        );
+    }
+
+    #[test]
+    fn an_unquoted_attribute_row_is_still_collected() {
+        let document = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+| hx-new | added without backticks |
+
+## Additional Attribute Reference {#attributes-additional}
+";
+        assert!(
+            section_names(&document, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names.iter().any(|name| name == "hx-new")
+                    && names.iter().any(|name| name == "hx-get"))
+        );
+    }
+
+    #[test]
+    fn crlf_line_endings_do_not_truncate_the_final_name() {
+        let document = "## Core Attribute Reference {#attributes}\r\n\r\n\
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |\r\n\
+| [`hx-new`](@/attributes/hx-new.md) | added upstream |\r\n\
+## Additional Attribute Reference {#attributes-additional}\r\n";
+        assert!(
+            section_names(document, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names.iter().any(|name| name == "hx-new"))
+        );
+    }
+
+    #[test]
+    fn a_response_header_moved_below_a_shallower_heading_leaves_the_response_slice() {
+        let document = "\
+### Response Headers Reference {#response_headers}
+
+| `HX-Other` | still in the response table |
+
+## Other Headers
+
+| `HX-Redirect` | moved out of the response table |
+";
+        let response = section_names(document, &RESPONSE_HEADERS).expect("response section");
+        assert!(response.iter().any(|name| name == "HX-Other"));
+        assert!(!response.iter().any(|name| name == "HX-Redirect"));
+    }
+
+    #[test]
+    fn a_fenced_example_heading_does_not_mask_the_real_section() {
+        let document = "\
+```text
+## Core Attribute Reference {#attributes}
+| `hx-phantom` | sample only |
+```
+
+## Core Attribute Reference {#attributes}
+
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+## Additional Attribute Reference {#attributes-additional}
+";
+        assert!(
+            section_names(&document, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names.len() == 1 && names[0] == "hx-get")
         );
     }
 
@@ -684,7 +845,8 @@ Use #hashtag routing, and note that ##css-selector is not a heading.
 ";
             let names = core(&document);
             assert!(
-                names.contains(&"hx-get".to_string()) && names.contains(&"hx-post".to_string())
+                names.iter().any(|name| name == "hx-get")
+                    && names.iter().any(|name| name == "hx-post")
             );
         }
 
@@ -702,9 +864,9 @@ Use #hashtag routing, and note that ##css-selector is not a heading.
 ## Additional Attribute Reference {#attributes-additional}
 ";
             let names = core(&document);
-            assert!(names.contains(&"hx-get".to_string()));
+            assert!(names.iter().any(|name| name == "hx-get"));
             assert!(
-                names.contains(&"hx-retired".to_string()),
+                names.iter().any(|name| name == "hx-retired"),
                 "comment text stays in the slice and may report stale names loudly: {names:?}"
             );
         }
