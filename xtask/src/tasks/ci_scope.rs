@@ -113,6 +113,15 @@ const PROSE_EXTENSIONS: &[&str] = &[".md", ".txt", ".rst", ".adoc", ".org"];
 const DOCS_AS_CODE_EXTENSIONS: &[&str] =
     &[".toml", ".yaml", ".yml", ".json", ".kdl", ".ron", ".jsonc"];
 
+const LSP_RUNTIME_VOCABULARY_PATHS: &[&str] = &[
+    ".spec/11045-lsp-runtime-vocabulary/contract.v1.json",
+    ".spec/11045-lsp-runtime-vocabulary/identities.v1.json",
+    ".spec/11045-lsp-runtime-vocabulary/states.v1.json",
+    ".spec/11045-lsp-runtime-vocabulary/relations.v1.json",
+    ".spec/11045-lsp-runtime-vocabulary/journeys.v1.json",
+    "docs/architecture/lsp-runtime/identity-and-state.md",
+];
+
 /// CI config paths/prefixes.
 const CI_CONFIG_PATHS: &[&str] = &[".github/workflows/", ".ci/", "justfile", "Makefile"];
 
@@ -130,7 +139,9 @@ pub fn classify_diff(files: &[String]) -> String {
     let mut has_code = false;
 
     for file in files {
-        if is_prose_file(file) {
+        if LSP_RUNTIME_VOCABULARY_PATHS.contains(&file.as_str()) {
+            has_code = true;
+        } else if is_prose_file(file) {
             has_prose = true;
         } else if is_ci_config_file(file) {
             has_ci_config = true;
@@ -801,7 +812,17 @@ pub fn classify_files(
         .unwrap_or_default();
 
     // Map changed files → direct crate names
-    let directly_changed_set = crates_from_files(files, metadata, workspace_root)?;
+    let mut directly_changed_set = crates_from_files(files, metadata, workspace_root)?;
+    let vocabulary_path_changed =
+        files.iter().any(|file| LSP_RUNTIME_VOCABULARY_PATHS.contains(&file.as_str()));
+    if vocabulary_path_changed && !all_package_names.contains("xtask") {
+        return Err(eyre!(
+            "LSP runtime vocabulary paths require the xtask package in cargo metadata"
+        ));
+    }
+    if vocabulary_path_changed {
+        directly_changed_set.insert("xtask".to_string());
+    }
     let direct_crates: Vec<DirectCrate> = directly_changed_set
         .iter()
         .map(|name| DirectCrate { name: name.clone(), reason: "direct".to_string() })
@@ -1300,6 +1321,30 @@ mod tests {
         }
     }
 
+    /// The vocabulary path list must cover every checked fragment: a renamed
+    /// fragment that drops out of this list silently loses xtask routing.
+    #[test]
+    fn vocabulary_paths_cover_every_checked_fragment() -> Result<()> {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or_else(|| eyre!("CARGO_MANIFEST_DIR has no parent"))?
+            .to_path_buf();
+        let spec_dir = root.join(".spec/11045-lsp-runtime-vocabulary");
+        let mut expected: Vec<String> = std::fs::read_dir(&spec_dir)
+            .wrap_err("vocabulary spec dir must be readable")?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".json"))
+            .map(|name| format!(".spec/11045-lsp-runtime-vocabulary/{name}"))
+            .collect();
+        expected.push("docs/architecture/lsp-runtime/identity-and-state.md".to_string());
+        expected.sort();
+        let mut listed: Vec<&str> = LSP_RUNTIME_VOCABULARY_PATHS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(listed, expected.iter().map(String::as_str).collect::<Vec<_>>());
+        Ok(())
+    }
+
     #[test]
     fn windows_runner_ignores_unrelated_paths_and_non_shell_scripts() {
         let files = [
@@ -1684,6 +1729,28 @@ mod tests {
             !output.lanes.parser_ratchet.selected,
             "non-parser docs should not select parser ratchet"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn lsp_runtime_vocabulary_paths_route_xtask_validation() -> Result<()> {
+        let metadata = fake_metadata(&[("xtask", "xtask")]);
+        for file in LSP_RUNTIME_VOCABULARY_PATHS {
+            let files = vec![(*file).to_string()];
+            let output = classify_files(&files, &metadata, "/workspace")?;
+            assert_eq!(output.diff_class, "code");
+            assert_eq!(
+                output.direct_crates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                ["xtask"]
+            );
+        }
+        let without_xtask = fake_metadata(&[("perl-parser", "crates/perl-parser")]);
+        let first_path = LSP_RUNTIME_VOCABULARY_PATHS
+            .first()
+            .ok_or_else(|| eyre!("vocabulary path list must not be empty"))?;
+        if classify_files(&[first_path.to_string()], &without_xtask, "/workspace").is_ok() {
+            return Err(eyre!("vocabulary routing must fail when xtask metadata is absent"));
+        }
         Ok(())
     }
 
