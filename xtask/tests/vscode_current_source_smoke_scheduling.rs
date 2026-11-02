@@ -7,21 +7,14 @@ use anyhow::{Context, Result, ensure};
 
 fn repo_root() -> Result<PathBuf> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    Ok(manifest
-        .parent()
-        .context("CARGO_MANIFEST_DIR has no parent")?
-        .to_path_buf())
+    Ok(manifest.parent().context("CARGO_MANIFEST_DIR has no parent")?.to_path_buf())
 }
 
 #[test]
 fn scheduling_observer_unittest_passes() -> Result<()> {
     let root = repo_root()?;
     let status = Command::new("python3")
-        .args([
-            "-m",
-            "unittest",
-            "scripts.ci.test_vscode_current_source_smoke_scheduling",
-        ])
+        .args(["-m", "unittest", "scripts.ci.test_vscode_current_source_smoke_scheduling"])
         .current_dir(&root)
         .env("PYTHONPATH", &root)
         .status()
