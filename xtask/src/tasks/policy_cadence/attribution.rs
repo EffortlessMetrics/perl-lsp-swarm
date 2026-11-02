@@ -411,19 +411,18 @@ fn render_markdown(receipt: &AttributionReceipt) -> String {
     output
 }
 
-/// Evaluate attribution for one record without touching the filesystem (tests and fixtures).
-fn evaluate_fixture_pair(
-    base_waiver: &ScenarioWaiver,
-    candidate_waiver: &ScenarioWaiver,
-    as_of: NaiveDate,
-) -> AttributionRow {
-    let record_id = format!("{}:{}", base_waiver.project, base_waiver.journey);
-    attribute_row(&record_id, Some(base_waiver), Some(candidate_waiver), as_of, as_of, false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn evaluate_fixture_pair(
+        base_waiver: &ScenarioWaiver,
+        candidate_waiver: &ScenarioWaiver,
+        as_of: NaiveDate,
+    ) -> AttributionRow {
+        let record_id = format!("{}:{}", base_waiver.project, base_waiver.journey);
+        attribute_row(&record_id, Some(base_waiver), Some(candidate_waiver), as_of, as_of, false)
+    }
 
     fn waiver(expires_after: &str) -> ScenarioWaiver {
         ScenarioWaiver {

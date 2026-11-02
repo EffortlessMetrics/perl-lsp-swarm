@@ -7,14 +7,9 @@ use std::process::Command;
 fn policy_attribution_emits_deterministic_json_for_current_tree() -> Result<()> {
     let root = xtask::utils::project_root()?;
     let json = root.join("target/test-policy-attribution.json");
-    let output = Command::new("cargo")
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .current_dir(&root)
         .args([
-            "run",
-            "-p",
-            "xtask",
-            "--quiet",
-            "--",
             "policy",
             "attribution",
             "--as-of",
