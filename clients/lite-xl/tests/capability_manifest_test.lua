@@ -326,7 +326,6 @@ do
 
   local blocked = {
     ["lsp:view-call-hierarchy"] = "#10719",
-    ["lsp:rename-symbol"] = "#8986",
   }
   for id, owner in pairs(blocked) do
     local row = manifest.commands[id]
@@ -472,8 +471,8 @@ do
   available =
     manifest.command_availability("lsp:rename-symbol",
       { renameProvider = true })
-  ok(available == false,
-    "rename stays unavailable even with the server capability present")
+  ok(available == true,
+    "rename is available when server capability and consumer are present")
 
   available, reason =
     manifest.command_availability("lsp:show-symbol-info", {})

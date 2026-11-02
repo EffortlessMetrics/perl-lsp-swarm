@@ -84,9 +84,11 @@ local autocomplete_calls = {}
 local resolve_pushes = {}
 local rs_instances = {}
 
+local core_docs_ref = {}
+
 package.preload["core"] = function()
   return {
-    docs = {},
+    docs = core_docs_ref,
     log = function(fmt, ...) log_records[#log_records + 1] = tostring(fmt) end,
     log_quiet = function(fmt, ...) log_records[#log_records + 1] = tostring(fmt) end,
     error = function(fmt, ...) log_records[#log_records + 1] = "error:" .. tostring(fmt) end,
@@ -106,6 +108,14 @@ package.preload["core"] = function()
       end,
       open_doc = function(doc) return { doc = doc } end,
     },
+    open_doc = function(path)
+      for _, existing in ipairs(core_docs_ref) do
+        if existing.abs_filename == path then return existing end
+      end
+      local doc = make_doc(path, { path:gsub(".*[/\\]", "") .. "\n" })
+      core_docs_ref[#core_docs_ref + 1] = doc
+      return doc
+    end,
   }
 end
 
@@ -228,6 +238,7 @@ end
 package.preload["plugins.lsp.capability_manifest"] = function()
   return dofile(here .. "/../upstream/capability_manifest.lua")
 end
+-- workspace_edit is dofile'd from init.lua (#8986); no preload required.
 package.preload["plugins.lsp.diagnostics"] = function()
   -- Lifecycle seams consumed by init.lua (#11124); inert in this suite,
   -- whose subject is document-session/version behavior, not publications.
@@ -798,10 +809,8 @@ do
 end
 
 -- ===========================================================================
--- Case 10: rename is projection-gated (#11172). The server advertising
--- renameProvider is not enough: with no client application consumer (#8986)
--- the request is never sent, so stale-versus-current response semantics
--- cannot even arise at this sender.
+-- Case 10: rename computed for generation G must not mutate G+1; a
+-- current rename response still applies its edits.
 -- ===========================================================================
 do
   local lsp = fresh_module_load()
@@ -811,23 +820,48 @@ do
     renameProvider = {},
   })
   register(lsp, "perllsp", server)
-  local doc = make_doc("C:/proj/ren.pl", { "rn\n" }, 1, 3)
+  local doc = make_doc("C:/proj/ren.pl", { "old\n" }, 1, 3)
+  core_docs_ref[#core_docs_ref + 1] = doc
 
   open_admitted(lsp, doc, server)
+  lsp.request_symbol_rename(doc, 1, 3, "new_name")
+  ok(#server.outbound == 1, "case10: rename request queued")
+
   accept_edit(lsp, doc, server, 1, 3, "!")
+  local stale_edits = #doc.edits
+  local held = server.outbound[1]
+  table.remove(server.outbound, 1)
+  held.callback(server, { result = {
+    changes = {
+      ["file:///C:/proj/ren.pl"] = {
+        {
+          range = {
+            start = { line = 0, character = 0 },
+            ["end"] = { line = 0, character = 3 },
+          },
+          newText = "new",
+        },
+      },
+    },
+  } })
+  ok(#doc.edits == stale_edits,
+    "case10: stale rename edits are never applied to newer bytes")
 
   lsp.request_symbol_rename(doc, 1, 3, "new_name")
-  ok(#server.outbound == 0,
-    "case10: gated rename sends nothing under an unsupported client row")
-
-  local saw_owner_message = false
-  for _, record in ipairs(log_records) do
-    if tostring(record):find("#8986", 1, true) then
-      saw_owner_message = true
-    end
-  end
-  ok(saw_owner_message,
-    "case10: one explicit refusal message names the rename owner")
+  ok(play_response(server, "textDocument/rename", { result = {
+    changes = {
+      ["file:///C:/proj/ren.pl"] = {
+        {
+          range = {
+            start = { line = 0, character = 0 },
+            ["end"] = { line = 0, character = 4 },
+          },
+          newText = "fresh",
+        },
+      },
+    },
+  } }), "case10: current rename response played")
+  ok(#doc.edits >= 2, "case10: current rename applies its edits")
 end
 
 -- ===========================================================================
