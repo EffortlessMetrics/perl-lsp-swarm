@@ -36,9 +36,24 @@ fn representative_v1_wires_remain_byte_identical() {
         digest.as_wire(),
         "sha256:3e72a28a4048315561af696f9c5c7b2d663ee4fc0e8b486103f0962a882e85c8"
     );
+    assert_eq!(
+        project.as_wire(),
+        "project:sha256:63a294744a9a79203fb98384c20901a5c6edf8fb8b49b8b4e43e1bc60d1967f5"
+    );
+    assert_eq!(
+        root.as_wire(),
+        "root:sha256:accea0a1360d4f4239c89a77e2d87df37d86fa1a1f1332a23284c6b5cedb1955"
+    );
+    assert_eq!(
+        src.as_wire(),
+        "src:sha256:69548d78dbfaf02aa895fd250b3b65fda58a7d17d8922c6dc6e6e44534e876a5"
+    );
 }
 
 #[test]
 fn try_constructors_share_infallible_results_for_small_inputs() {
-    assert!(ProjectId::try_from_canonical_name("x").is_ok());
+    assert_eq!(
+        ProjectId::from_canonical_name("x"),
+        ProjectId::try_from_canonical_name("x").expect("small input")
+    );
 }

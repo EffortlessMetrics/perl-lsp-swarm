@@ -358,7 +358,8 @@ mod tests {
     }
 
     #[test]
-    fn try_of_bytes_rejects_field_length_above_u32_max_on_wide_usize() {
+    fn try_length_prefixed_uses_field_length_gate() {
+        assert!(try_length_prefixed(b"abc").is_ok());
         if usize::BITS <= u32::BITS {
             return;
         }
@@ -368,7 +369,15 @@ mod tests {
                 crate::field_length::field_length_u32(oversize_len),
                 Err(e) if e.actual_bytes() == oversize_len
             ),
-            "oversize length must be rejected fail-closed"
+            "length gate must reject before prefix encoding"
+        );
+    }
+
+    #[test]
+    fn try_of_bytes_delegates_to_checked_length_prefix() {
+        assert_eq!(
+            ContentDigest::try_of_bytes(b"probe").expect("small payload"),
+            ContentDigest::of_bytes(b"probe")
         );
     }
 }

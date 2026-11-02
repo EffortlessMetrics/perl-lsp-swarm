@@ -249,6 +249,18 @@ wire_id!(
 pub struct LogicalSourceId(String);
 
 impl LogicalSourceId {
+    /// Derive a logical source ID when the governed inputs fit the v1 field bound.
+    pub fn try_from_root_and_logical_path(
+        workspace_root_id: &WorkspaceRootId,
+        root_relative_path: &RootRelativeLogicalPath,
+    ) -> Result<Self, SourceIdentityFieldLengthError> {
+        // Delegates to the primitive rather than hashing again: one digest
+        // implementation means adding this constructor cannot move the wire
+        // vectors #7652 published. `logical_id_constructors_agree_on_canonical_paths`
+        // pins that equivalence.
+        Self::try_from_root_and_path(workspace_root_id, root_relative_path.as_str())
+    }
+
     /// Derive a logical source ID from its workspace root and a **validated**
     /// root-relative logical path.
     ///
@@ -257,6 +269,12 @@ impl LogicalSourceId {
     /// cannot reach a durable identity through this route.
     ///
     /// Infallible — the path argument already carries the proof.
+    ///
+    /// # Panics
+    ///
+    /// Panics when any encoded field exceeds
+    /// [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]. Use
+    /// [`Self::try_from_root_and_logical_path`] for fallible construction.
     ///
     /// # Examples
     ///
@@ -273,17 +291,6 @@ impl LogicalSourceId {
     /// assert!(id.as_wire().starts_with("src:sha256:"));
     /// # Ok::<(), perl_source_identity::LogicalPathError>(())
     /// ```
-    pub fn try_from_root_and_logical_path(
-        workspace_root_id: &WorkspaceRootId,
-        root_relative_path: &RootRelativeLogicalPath,
-    ) -> Result<Self, SourceIdentityFieldLengthError> {
-        // Delegates to the primitive rather than hashing again: one digest
-        // implementation means adding this constructor cannot move the wire
-        // vectors #7652 published. `logical_id_constructors_agree_on_canonical_paths`
-        // pins that equivalence.
-        Self::try_from_root_and_path(workspace_root_id, root_relative_path.as_str())
-    }
-
     #[must_use]
     pub fn from_root_and_logical_path(
         workspace_root_id: &WorkspaceRootId,
