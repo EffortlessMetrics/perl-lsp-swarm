@@ -1235,7 +1235,11 @@ pub fn add_method_completions(
                 kind: super::items::CompletionItemKind::Function,
                 detail: Some(Cow::Owned(detail)),
                 documentation: documentation.map(Cow::Owned),
-                insert_text: Some(Cow::Owned(format!("{}()", name))),
+                insert_text: Some(Cow::Owned(super::callable_insert_text(
+                    name,
+                    source,
+                    context.suffix_end,
+                ))),
                 sort_text: Some(Cow::Owned(format!("1_{}", name))),
                 filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
@@ -1290,7 +1294,11 @@ pub fn add_method_completions(
                 kind: super::items::CompletionItemKind::Function,
                 detail: Some(Cow::Borrowed("method")),
                 documentation: Some(Cow::Owned(desc.to_string())),
-                insert_text: Some(Cow::Owned(format!("{}()", method))),
+                insert_text: Some(Cow::Owned(super::callable_insert_text(
+                    method,
+                    source,
+                    context.suffix_end,
+                ))),
                 sort_text: Some(Cow::Owned(format!("2_{}", method))),
                 filter_text: Some(Cow::Owned(method.to_string())),
                 additional_edits: vec![],
@@ -1318,7 +1326,11 @@ pub fn add_method_completions(
                     kind: super::items::CompletionItemKind::Function,
                     detail: Some(Cow::Borrowed("method")),
                     documentation: Some(Cow::Owned(desc.to_string())),
-                    insert_text: Some(Cow::Owned(format!("{}()", method))),
+                    insert_text: Some(Cow::Owned(super::callable_insert_text(
+                        method,
+                        source,
+                        context.suffix_end,
+                    ))),
                     sort_text: Some(Cow::Owned(format!("9_{}", method))), // Lower priority
                     filter_text: Some(Cow::Owned(method.to_string())),
                     additional_edits: vec![],

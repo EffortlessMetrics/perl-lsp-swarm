@@ -32,6 +32,7 @@ pub(super) fn context_with_function_suffix(
 pub fn add_function_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
+    source: &str,
     symbol_table: &SymbolTable,
 ) {
     let prefix_without_amp = context.prefix.trim_start_matches('&');
@@ -56,7 +57,11 @@ pub fn add_function_completions(
                     (
                         super::items::CompletionItemKind::Function,
                         Some(Cow::Borrowed("sub")),
-                        Some(Cow::Owned(format!("{}()", name))),
+                        Some(Cow::Owned(super::callable_insert_text(
+                            name,
+                            source,
+                            context.suffix_end,
+                        ))),
                         "2",
                     )
                 };

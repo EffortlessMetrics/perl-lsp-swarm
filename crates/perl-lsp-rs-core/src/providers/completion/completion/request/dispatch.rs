@@ -602,6 +602,7 @@ fn complete_symbol_namespace_context(
         functions::add_function_completions(
             completions,
             &functions::context_with_function_suffix(context, source),
+            source,
             &provider.symbol_table,
         );
         return true;
@@ -695,6 +696,7 @@ fn complete_general_context(
         functions::add_function_completions(
             completions,
             &functions::context_with_function_suffix(context, source),
+            source,
             &provider.symbol_table,
         );
         if is_cancelled() {

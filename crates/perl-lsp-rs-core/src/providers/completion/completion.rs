@@ -341,6 +341,15 @@ fn word_suffix_end(source: &str, position: usize) -> usize {
     end
 }
 
+/// Insert text for a callable completion item (function or method).
+///
+/// When an open argument list already follows the replacement range, omit the
+/// synthetic `()` suffix so accepting the item does not produce `foo()(…)`.
+pub(super) fn callable_insert_text(name: &str, source: &str, edit_end: usize) -> String {
+    let rest = source.get(edit_end..).unwrap_or_default().trim_start();
+    if rest.starts_with('(') { name.to_string() } else { format!("{name}()") }
+}
+
 impl CompletionProvider {
     /// Create a new completion provider from parsed AST for Perl script analysis
     ///

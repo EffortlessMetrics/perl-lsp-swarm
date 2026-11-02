@@ -519,6 +519,65 @@ fn word_suffix_end_covers_unicode_identifier_suffix() {
     assert_eq!(word_suffix_end(spaced, 3), "caf\u{e9}".len());
 }
 
+#[test]
+fn callable_insert_text_omits_parens_when_argument_list_follows() {
+    let source = "myfunc(1, 2)";
+    let edit_end = word_suffix_end(source, 0);
+    assert_eq!(edit_end, "myfunc".len());
+    assert_eq!(callable_insert_text("myfunc", source, edit_end), "myfunc");
+    assert_eq!(callable_insert_text("myfunc", "myfunc", "myfunc".len()), "myfunc()");
+}
+
+#[test]
+fn function_completion_on_existing_call_does_not_duplicate_parens()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub myfunc { }\nmyfunc(1);\n";
+    let token_start = code.find("myfunc(").ok_or("call site missing")?;
+    let cursor = token_start + 3; // mid-token `myf|unc(1)`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item =
+        completions.iter().find(|c| c.label == "myfunc").ok_or("myfunc completion missing")?;
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("myfunc"),
+        "must not append () when an argument list already follows"
+    );
+    let (start, end) = item.text_edit_range.ok_or("text edit range missing")?;
+    let insert = item.insert_text.as_deref().ok_or("insert text missing")?;
+    let applied = format!("{}{}{}", &code[..start], insert, &code[end..]);
+    assert!(
+        !applied.contains("myfunc()(1)"),
+        "applied edit must not duplicate parentheses: {applied}"
+    );
+    Ok(())
+}
+
+#[test]
+fn method_completion_on_existing_call_does_not_duplicate_parens()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Foo;\nsub bar { }\nmy $self = bless {}, 'Foo';\n$self->bar(1);\n";
+    let receiver = "$self->bar(1)";
+    let cursor = code.find(receiver).ok_or("call site missing")?
+        + receiver.find("->bar").ok_or("arrow missing")?
+        + 2
+        + 2; // `$self->ba|r(1)`
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, cursor);
+    let item =
+        completions.iter().find(|c| c.label == "bar").ok_or("bar method completion missing")?;
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("bar"),
+        "must not append () when an argument list already follows"
+    );
+    Ok(())
+}
+
 /// Mid-token in-file function completion for a Unicode name must replace
 /// the whole token; otherwise applying `café()` after `caf` leaves a
 /// stray `é` (#18123).
