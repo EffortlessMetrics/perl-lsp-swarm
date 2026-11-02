@@ -627,7 +627,7 @@ impl DiagnosticsProvider {
                 .and_then(|suffix| suffix.chars().next())
                 .map_or(range_start, |next| range_start + next.len_utf8());
 
-            let suggestion = build_parse_error_suggestion(error);
+            let suggestion = build_parse_error_hint_with_source(error, "", source);
 
             // Surface the suggestion as relatedInformation for IDE integration
             let related_information = suggestion
@@ -917,11 +917,8 @@ fn build_enhanced_message(expected: &str, found: &str, found_display: &str) -> S
 }
 
 /// Build a contextual suggestion for a parse error based on the expected/found tokens.
-///
-/// Each suggestion is designed to be actionable: the user should be able to read
-/// the suggestion and know exactly what to change.
-fn build_parse_error_suggestion(error: &ParseError) -> Option<String> {
-    build_parse_error_hint(error, "")
+fn build_parse_error_suggestion(error: &ParseError, source: &str) -> Option<String> {
+    build_parse_error_hint_with_source(error, "", source)
 }
 
 /// Build an actionable hint for a parse error.
