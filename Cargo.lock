@@ -2024,7 +2024,6 @@ dependencies = [
  "static_assertions",
  "tempfile",
  "thiserror",
- "toml",
  "tracing",
  "url",
 ]

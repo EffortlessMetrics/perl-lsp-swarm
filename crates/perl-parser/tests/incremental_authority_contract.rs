@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -217,48 +218,97 @@ fn dependency_key_to_rust_path(key: &str) -> String {
     key.replace('-', "_")
 }
 
-fn dependency_spec_package_name(key: &str, spec: &toml::Value) -> Option<String> {
-    match spec {
-        toml::Value::String(_) | toml::Value::Integer(_) | toml::Value::Boolean(_) => {
-            Some(key.replace('_', "-"))
-        }
-        toml::Value::Table(table) => {
-            if let Some(package) = table.get("package").and_then(|value| value.as_str()) {
-                return Some(package.to_string());
-            }
-            Some(key.replace('_', "-"))
-        }
-        _ => None,
-    }
-}
-
-fn dependency_keys_targeting_package(
+fn dependency_keys_targeting_package_from_manifest_text(
     manifest_source: &str,
     package: &str,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let manifest: toml::Value = toml::from_str(manifest_source)?;
+) -> Vec<String> {
+    let package_needle = format!("package = \"{package}\"");
     let mut keys = BTreeSet::new();
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        let Some(deps) = manifest.get(section).and_then(|value| value.as_table()) else {
+    let mut in_dependency_section = false;
+    for line in manifest_source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_dependency_section =
+                matches!(trimmed, "[dependencies]" | "[dev-dependencies]" | "[build-dependencies]");
+            continue;
+        }
+        if !in_dependency_section || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, spec)) = trimmed.split_once('=') else {
             continue;
         };
-        for (key, spec) in deps {
-            let Some(resolved) = dependency_spec_package_name(key, spec) else {
-                continue;
-            };
-            if resolved == package {
-                keys.insert(dependency_key_to_rust_path(key));
-            }
+        let key = key.trim();
+        let spec = spec.trim();
+        if spec.contains(&package_needle) {
+            keys.insert(dependency_key_to_rust_path(key));
+            continue;
+        }
+        if key.replace('_', "-") == package || key == package {
+            keys.insert(dependency_key_to_rust_path(key));
         }
     }
-    Ok(keys.into_iter().collect())
+    keys.into_iter().collect()
+}
+
+fn perl_parser_core_keys_from_metadata_dependency(
+    dependency: &serde_json::Value,
+) -> Option<String> {
+    let package_name = dependency.get("name")?.as_str()?;
+    if package_name != "perl-parser-core" {
+        return None;
+    }
+    let key = dependency.get("rename").and_then(|value| value.as_str()).unwrap_or(package_name);
+    Some(dependency_key_to_rust_path(key))
+}
+
+fn lower_tier_crate_paths_by_manifest(
+    root: &Path,
+) -> Result<BTreeMap<PathBuf, Vec<String>>, Box<dyn std::error::Error>> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("cargo metadata failed: {stderr}").into());
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let packages = metadata
+        .get("packages")
+        .and_then(|value| value.as_array())
+        .ok_or("cargo metadata missing packages[]")?;
+
+    let mut by_crate_dir = BTreeMap::new();
+    for package in packages {
+        let manifest_path = package
+            .get("manifest_path")
+            .and_then(|value| value.as_str())
+            .ok_or("cargo metadata package missing manifest_path")?;
+        let crate_dir = Path::new(manifest_path)
+            .parent()
+            .ok_or("cargo metadata manifest_path has no parent")?
+            .to_path_buf();
+        let dependencies = package
+            .get("dependencies")
+            .and_then(|value| value.as_array())
+            .ok_or("cargo metadata package missing dependencies[]")?;
+        let mut keys = BTreeSet::new();
+        for dependency in dependencies {
+            if let Some(key) = perl_parser_core_keys_from_metadata_dependency(dependency) {
+                keys.insert(key);
+            }
+        }
+        by_crate_dir.insert(crate_dir, keys.into_iter().collect());
+    }
+    Ok(by_crate_dir)
 }
 
 fn lower_tier_crate_paths_for_crate(
     crate_dir: &Path,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let manifest = read(crate_dir.join("Cargo.toml"))?;
-    dependency_keys_targeting_package(&manifest, "perl-parser-core")
+    metadata_cache: &BTreeMap<PathBuf, Vec<String>>,
+) -> Vec<String> {
+    metadata_cache.get(crate_dir).cloned().unwrap_or_default()
 }
 
 fn lower_tier_paths_for_source_scanning(crate_paths: &[String]) -> Vec<String> {
@@ -389,16 +439,15 @@ fn normalized_workspace_path(path: &Path) -> Result<String, Box<dyn std::error::
 }
 
 fn discovered_lower_tier_consumers() -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let metadata_cache = lower_tier_crate_paths_by_manifest(&workspace_root())?;
     let mut consumers = BTreeSet::new();
-    let mut crate_paths_cache = BTreeMap::<PathBuf, Vec<String>>::new();
     for (path, crate_dir) in production_rust_sources()? {
-        let crate_paths = crate_paths_cache.entry(crate_dir.clone()).or_insert_with(|| {
-            lower_tier_crate_paths_for_crate(&crate_dir)
-                .map(|paths| lower_tier_paths_for_source_scanning(&paths))
-                .unwrap_or_else(|_| vec!["perl_parser_core".to_string()])
-        });
+        let crate_paths = lower_tier_paths_for_source_scanning(&lower_tier_crate_paths_for_crate(
+            &crate_dir,
+            &metadata_cache,
+        ));
         let source = read(&path)?;
-        if uses_lower_tier_incremental(&source, crate_paths) {
+        if uses_lower_tier_incremental(&source, &crate_paths) {
             consumers.insert(normalized_workspace_path(&path)?);
         }
     }
@@ -567,9 +616,18 @@ fn lower_tier_consumer_detector_covers_direct_nested_and_aliased_imports() {
 }
 
 #[test]
-fn lower_tier_consumer_detector_honors_cargo_dependency_renames() -> TestResult {
-    let fixture = crate_root().join("tests/fixtures/incremental_authority_renamed_dep/Cargo.toml");
-    let keys = dependency_keys_targeting_package(&read(fixture)?, "perl-parser-core")?;
+fn lower_tier_consumer_detector_honors_cargo_dependency_renames() {
+    const FIXTURE_MANIFEST: &str = r#"
+[package]
+name = "incremental-authority-renamed-dep-fixture"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+core_parser = { package = "perl-parser-core", path = "../../../../perl-parser-core" }
+"#;
+    let keys =
+        dependency_keys_targeting_package_from_manifest_text(FIXTURE_MANIFEST, "perl-parser-core");
     assert_eq!(keys, vec!["core_parser".to_string()]);
 
     let renamed_paths = lower_tier_paths_for_source_scanning(&keys);
@@ -581,7 +639,6 @@ fn lower_tier_consumer_detector_honors_cargo_dependency_renames() -> TestResult 
         "use core_parser as kernel; kernel::incremental::IncrementalState;",
         &renamed_paths
     ));
-    Ok(())
 }
 
 #[test]
