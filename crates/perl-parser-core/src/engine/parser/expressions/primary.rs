@@ -254,8 +254,16 @@ impl<'a> Parser<'a> {
                         quote_parser::extract_regex_family_geometry(&token.text, token.start())
                             .map(|geometry| (geometry.pattern.text, geometry.modifiers.text))
                             .unwrap_or_default();
+                    let form = if token.text.starts_with("qr") {
+                        perl_ast::RegexSurfaceForm::Qr
+                    } else if token.text.starts_with('m') {
+                        perl_ast::RegexSurfaceForm::MatchOperator
+                    } else {
+                        perl_ast::RegexSurfaceForm::BarePattern
+                    };
                     return self.charge_node(
                         NodeKind::Regex {
+                            form,
                             pattern,
                             replacement: None,
                             modifiers,

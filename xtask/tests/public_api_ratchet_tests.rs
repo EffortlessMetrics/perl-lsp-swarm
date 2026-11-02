@@ -1054,3 +1054,33 @@ fn committed_baselines_carry_no_unfolded_io_paths() -> Result<(), Box<dyn std::e
 
     Ok(())
 }
+
+/// #18295 / #18268 / #18275: an inherent `pub fn` constructor on
+/// `syntax::error::ParseError` is one public item per re-export path in the
+/// facade snapshot, so each constructor must occupy exactly four baseline lines.
+#[test]
+fn parse_error_inherent_constructors_record_four_reexport_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let baseline =
+        fs::read_to_string(project_root().join(".ci/public-api-baselines/perl-parser-core.txt"))?;
+
+    let constructors = [
+        "pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self)",
+        "pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(",
+        "pub fn perl_parser_core::syntax::error::ParseError::unterminated_quote_like_error(",
+    ];
+
+    for prefix in constructors {
+        let count = baseline.lines().filter(|line| line.starts_with(prefix)).count();
+        if prefix.contains("unterminated_quote_like_error") && count == 0 {
+            // The constructor lands with #18275; absence on trees without that API is expected.
+            continue;
+        }
+        assert_eq!(
+            count, 4,
+            "expected four re-export paths for `{prefix}` in perl-parser-core baseline, got {count}"
+        );
+    }
+
+    Ok(())
+}

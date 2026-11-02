@@ -537,6 +537,7 @@ pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unterminated_quote_like_error(operator: &str, closing_delimiter: char, location: usize, is_replacement: bool) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
@@ -1099,6 +1100,7 @@ pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unterminated_quote_like_error(operator: &str, closing_delimiter: char, location: usize, is_replacement: bool) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
@@ -4040,6 +4042,7 @@ pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unterminated_quote_like_error(operator: &str, closing_delimiter: char, location: usize, is_replacement: bool) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
@@ -4953,6 +4956,7 @@ pub fn perl_parser_core::syntax::error::ParseError::severity(&self) -> perl_pars
 pub fn perl_parser_core::syntax::error::ParseError::suggestion(&self) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::syntax::error::ParseError::syntax(message: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::unexpected(expected: impl core::convert::Into<alloc::string::String>, found: impl core::convert::Into<alloc::string::String>, location: usize) -> perl_parser_core::syntax::error::ParseError
+pub fn perl_parser_core::syntax::error::ParseError::unterminated_quote_like_error(operator: &str, closing_delimiter: char, location: usize, is_replacement: bool) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::clone(&self) -> perl_parser_core::syntax::error::ParseError
 pub fn perl_parser_core::syntax::error::ParseError::eq(&self, other: &perl_parser_core::syntax::error::ParseError) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::from(err: perl_regex::error::RegexError) -> perl_parser_core::syntax::error::ParseError
