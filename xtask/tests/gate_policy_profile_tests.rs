@@ -739,16 +739,15 @@ fn lsp_unit_lanes_partition_the_surface_exactly() -> Result<(), Box<dyn std::err
 
 /// #17714: the LSP merge_gate lanes must not read closed issues as live blockers.
 #[test]
-fn lsp_merge_gate_comments_do_not_cite_closed_red_suite_blocker(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn lsp_merge_gate_comments_do_not_cite_closed_red_suite_blocker()
+-> Result<(), Box<dyn std::error::Error>> {
     let policy = fs::read_to_string(project_root().join(".ci/gate-policy.yaml"))?;
     const STALE: &str = "blocked on the red suites in #11708";
     const STALE_RECORDED: &str = "Recorded per #11694; flipping";
 
     for gate_name in ["unit_lsp_core_full", "unit_lsp_full"] {
-        let block = policy_gate_block(&policy, gate_name).ok_or_else(|| {
-            format!("gate '{gate_name}' must exist in .ci/gate-policy.yaml")
-        })?;
+        let block = policy_gate_block(&policy, gate_name)
+            .ok_or_else(|| format!("gate '{gate_name}' must exist in .ci/gate-policy.yaml"))?;
         assert!(
             !block.contains(STALE),
             "{gate_name} must not cite #11708 as a live `--tests` blocker"
