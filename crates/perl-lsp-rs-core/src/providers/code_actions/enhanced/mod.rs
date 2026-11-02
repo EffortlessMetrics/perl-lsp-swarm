@@ -46,6 +46,7 @@ mod error_checking;
 mod extract_subroutine;
 mod extract_variable;
 mod helpers;
+mod inline_variable;
 mod loop_conversion;
 mod postfix;
 mod signature_actions;
@@ -431,6 +432,19 @@ impl EnhancedCodeActionsProvider {
                 );
             }
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                if node_reaches_selection_end
+                    && range.0 < node.location.end
+                    && range.1 > node.location.start
+                    && range.0 < variable.location.end
+                    && range.1 > variable.location.start
+                    && let Ok(action) = inline_variable::create_inline_variable_action(
+                        ast_root,
+                        &self.source,
+                        range.0.max(variable.location.start),
+                    )
+                {
+                    actions.push(action);
+                }
                 self.collect_actions_for_range(
                     variable,
                     range,
