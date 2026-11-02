@@ -59,6 +59,8 @@ pub enum ExactSuffixSyncDenial {
     WrongConfiguration,
     #[error("no synchronization candidate was available")]
     NoCandidate,
+    #[error("token-window evidence requires a non-zero window")]
+    InsufficientWindowEvidence,
 }
 
 /// Inputs required to evaluate one suffix-sync candidate.
@@ -83,8 +85,9 @@ pub fn evaluate_exact_suffix_sync(
     new_suffix: &[Token],
     candidate: ExactSuffixSyncCandidate<'_>,
 ) -> Result<ExactSuffixSyncMetrics, ExactSuffixSyncDenial> {
-    if candidate.suffix_start_old <= candidate.edit_start
-        || candidate.suffix_start_old < candidate.edit_old_end
+    if candidate.edit_old_end > candidate.edit_start
+        && candidate.suffix_start_old < candidate.edit_old_end
+        && candidate.edit_start <= candidate.suffix_start_old
     {
         return Err(ExactSuffixSyncDenial::EditIntersectsSuffix);
     }
@@ -96,11 +99,27 @@ pub fn evaluate_exact_suffix_sync(
     {
         return Err(ExactSuffixSyncDenial::RecoveryBoundary);
     }
+    if policy.window_tokens == 0 {
+        return Err(ExactSuffixSyncDenial::InsufficientWindowEvidence);
+    }
 
     candidate
         .old_checkpoint
-        .behavior_bearing_state_equal(candidate.new_checkpoint)
+        .behavior_bearing_state_equal_with_byte_shift(
+            candidate.new_checkpoint,
+            candidate.byte_shift,
+        )
         .map_err(ExactSuffixSyncDenial::StateMismatch)?;
+
+    if let (Some(old_first), Some(new_first)) = (old_suffix.first(), new_suffix.first()) {
+        if old_first.start != candidate.suffix_start_old {
+            return Err(ExactSuffixSyncDenial::WindowMismatch { index: 0 });
+        }
+        let mapped_start = apply_shift(old_first.start, candidate.byte_shift, new_source)?;
+        if new_first.start != mapped_start {
+            return Err(ExactSuffixSyncDenial::WindowMismatch { index: 0 });
+        }
+    }
 
     let compared = compare_direct_token_window(
         new_source,
@@ -111,7 +130,7 @@ pub fn evaluate_exact_suffix_sync(
     )?;
 
     Ok(ExactSuffixSyncMetrics {
-        suffix_tokens_retained: compared,
+        suffix_tokens_retained: old_suffix.len(),
         window_tokens_compared: compared,
         state_candidates_considered: 1,
         ..ExactSuffixSyncMetrics::default()
@@ -127,10 +146,10 @@ pub fn compare_direct_token_window(
     window: usize,
 ) -> Result<usize, ExactSuffixSyncDenial> {
     if window == 0 {
-        return Ok(0);
+        return Err(ExactSuffixSyncDenial::InsufficientWindowEvidence);
     }
     if old_suffix.len() < window || new_suffix.len() < window {
-        return Err(ExactSuffixSyncDenial::WindowMismatch { index: 0 });
+        return Err(ExactSuffixSyncDenial::InsufficientWindowEvidence);
     }
 
     for index in 0..window {
@@ -147,11 +166,16 @@ pub fn compare_direct_token_window(
         if !token_types_equivalent(&old.token_type, &new.token_type) {
             return Err(ExactSuffixSyncDenial::WindowMismatch { index });
         }
-        let mapped_slice = new_source
-            .get(mapped_start..mapped_end)
-            .ok_or(ExactSuffixSyncDenial::NonuniformShift)?;
-        if mapped_slice != old.text.as_ref() {
+        if old.text.as_ref() != new.text.as_ref() {
             return Err(ExactSuffixSyncDenial::WindowMismatch { index });
+        }
+        if !old.text.is_empty() {
+            let mapped_slice = new_source
+                .get(mapped_start..mapped_end)
+                .ok_or(ExactSuffixSyncDenial::NonuniformShift)?;
+            if mapped_slice != old.text.as_ref() {
+                return Err(ExactSuffixSyncDenial::WindowMismatch { index });
+            }
         }
     }
 
@@ -243,13 +267,14 @@ mod tests {
             }
             lexer.checkpoint()
         };
+        let suffix_start_old = old_suffix.first().map_or(0, |token| token.start);
         let candidate = ExactSuffixSyncCandidate {
             old_checkpoint: &old_cp,
             new_checkpoint: &new_cp,
             byte_shift: 0,
             edit_start: 14,
             edit_old_end: 15,
-            suffix_start_old: 16,
+            suffix_start_old,
         };
         let metrics = evaluate_exact_suffix_sync(
             ExactSuffixSyncPolicy { window_tokens: 3 },
@@ -258,12 +283,13 @@ mod tests {
             &new_suffix,
             candidate,
         )?;
-        assert_eq!(metrics.suffix_tokens_retained, 3);
+        assert_eq!(metrics.suffix_tokens_retained, old_suffix.len());
+        assert_eq!(metrics.window_tokens_compared, 3);
         Ok(())
     }
 
     #[test]
-    fn fingerprint_match_without_state_equality_is_not_used() -> R {
+    fn fingerprint_difference_implies_state_mismatch() -> R {
         let source = "my $a = 1;\nmy $b = 2;\n";
         let mut lexer = PerlLexer::new(source);
         let first = lexer.checkpoint();

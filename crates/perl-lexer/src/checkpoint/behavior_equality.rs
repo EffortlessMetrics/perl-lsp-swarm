@@ -88,7 +88,27 @@ impl LexerCheckpoint {
         other: &Self,
     ) -> Result<(), BehaviorBearingStateMismatch> {
         compare_policy(self.identity().policy(), other.identity().policy())?;
-        compare_replay(self.replay(), other.replay())
+        compare_replay(self.replay(), other.replay(), None)
+    }
+
+    /// Compare behavior-bearing state when the old checkpoint coordinates map to the
+    /// new source under one stable byte shift.
+    ///
+    /// When `byte_shift` is zero, every replay field including source coordinates
+    /// must match. When `byte_shift` is non-zero, source-relative coordinates are
+    /// excluded from replay comparison because the direct token window establishes
+    /// suffix alignment under the same shift.
+    pub fn behavior_bearing_state_equal_with_byte_shift(
+        &self,
+        other: &Self,
+        byte_shift: isize,
+    ) -> Result<(), BehaviorBearingStateMismatch> {
+        compare_policy(self.identity().policy(), other.identity().policy())?;
+        if byte_shift == 0 {
+            compare_replay(self.replay(), other.replay(), None)
+        } else {
+            compare_replay(self.replay(), other.replay(), Some(byte_shift))
+        }
     }
 
     /// Compute a deterministic fingerprint for candidate lookup.
@@ -112,54 +132,103 @@ fn compare_policy(
 fn compare_replay(
     left: &ReplayState,
     right: &ReplayState,
+    byte_shift: Option<isize>,
 ) -> Result<(), BehaviorBearingStateMismatch> {
-    if left.position != right.position {
-        return Err(BehaviorBearingStateMismatch::Position);
+    let ReplayState {
+        position,
+        mode,
+        delimiter_stack,
+        in_prototype,
+        prototype_depth,
+        prototype_signature_seen,
+        after_sub,
+        after_arrow,
+        hash_brace_depth,
+        after_var_subscript,
+        paren_depth,
+        print_list_parens,
+        pending_print_list_paren,
+        current_pos,
+        after_newline,
+        pending_heredocs,
+        line_start_offset,
+        current_quote_op,
+        eof_emitted,
+        context,
+    } = left;
+    let ReplayState {
+        position: position_r,
+        mode: mode_r,
+        delimiter_stack: delimiter_stack_r,
+        in_prototype: in_prototype_r,
+        prototype_depth: prototype_depth_r,
+        prototype_signature_seen: prototype_signature_seen_r,
+        after_sub: after_sub_r,
+        after_arrow: after_arrow_r,
+        hash_brace_depth: hash_brace_depth_r,
+        after_var_subscript: after_var_subscript_r,
+        paren_depth: paren_depth_r,
+        print_list_parens: print_list_parens_r,
+        pending_print_list_paren: pending_print_list_paren_r,
+        current_pos: current_pos_r,
+        after_newline: after_newline_r,
+        pending_heredocs: pending_heredocs_r,
+        line_start_offset: line_start_offset_r,
+        current_quote_op: current_quote_op_r,
+        eof_emitted: eof_emitted_r,
+        context: context_r,
+    } = right;
+
+    if byte_shift.is_none() {
+        if *position != *position_r {
+            return Err(BehaviorBearingStateMismatch::Position);
+        }
+        if *current_pos != *current_pos_r {
+            return Err(BehaviorBearingStateMismatch::CurrentPos);
+        }
+        if *line_start_offset != *line_start_offset_r {
+            return Err(BehaviorBearingStateMismatch::LineStartOffset);
+        }
     }
-    if left.mode != right.mode {
+
+    if *mode != *mode_r {
         return Err(BehaviorBearingStateMismatch::Mode);
     }
-    if left.delimiter_stack != right.delimiter_stack {
+    if delimiter_stack != delimiter_stack_r {
         return Err(BehaviorBearingStateMismatch::DelimiterStack);
     }
-    if left.in_prototype != right.in_prototype
-        || left.prototype_depth != right.prototype_depth
-        || left.prototype_signature_seen != right.prototype_signature_seen
-        || left.after_sub != right.after_sub
-        || left.after_arrow != right.after_arrow
-        || left.hash_brace_depth != right.hash_brace_depth
-        || left.after_var_subscript != right.after_var_subscript
+    if *in_prototype != *in_prototype_r
+        || *prototype_depth != *prototype_depth_r
+        || *prototype_signature_seen != *prototype_signature_seen_r
+        || *after_sub != *after_sub_r
+        || *after_arrow != *after_arrow_r
+        || *hash_brace_depth != *hash_brace_depth_r
+        || *after_var_subscript != *after_var_subscript_r
     {
         return Err(BehaviorBearingStateMismatch::PrototypeState);
     }
-    if left.paren_depth != right.paren_depth {
+    if *paren_depth != *paren_depth_r {
         return Err(BehaviorBearingStateMismatch::ParenDepth);
     }
-    if left.print_list_parens != right.print_list_parens {
+    if print_list_parens != print_list_parens_r {
         return Err(BehaviorBearingStateMismatch::PrintListParens);
     }
-    if left.pending_print_list_paren != right.pending_print_list_paren {
+    if *pending_print_list_paren != *pending_print_list_paren_r {
         return Err(BehaviorBearingStateMismatch::PendingPrintListParen);
     }
-    if left.current_pos != right.current_pos {
-        return Err(BehaviorBearingStateMismatch::CurrentPos);
-    }
-    if left.after_newline != right.after_newline {
+    if *after_newline != *after_newline_r {
         return Err(BehaviorBearingStateMismatch::NewlineContext);
     }
-    if left.pending_heredocs != right.pending_heredocs {
+    if pending_heredocs != pending_heredocs_r {
         return Err(BehaviorBearingStateMismatch::PendingHeredocs);
     }
-    if left.line_start_offset != right.line_start_offset {
-        return Err(BehaviorBearingStateMismatch::LineStartOffset);
-    }
-    if left.current_quote_op != right.current_quote_op {
+    if current_quote_op != current_quote_op_r {
         return Err(BehaviorBearingStateMismatch::QuoteOperator);
     }
-    if left.eof_emitted != right.eof_emitted {
+    if *eof_emitted != *eof_emitted_r {
         return Err(BehaviorBearingStateMismatch::EofEmitted);
     }
-    if left.context != right.context {
+    if context != context_r {
         return Err(BehaviorBearingStateMismatch::Context);
     }
     Ok(())

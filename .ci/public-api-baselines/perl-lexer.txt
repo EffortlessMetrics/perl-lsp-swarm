@@ -180,6 +180,7 @@ pub fn perl_lexer::LexerCheckpoint::rebind_to_source(&mut self, source: &str, ge
 pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
 pub fn perl_lexer::LexerCheckpoint::behavior_bearing_fingerprint(&self) -> perl_lexer::BehaviorBearingStateFingerprint
 pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal(&self, other: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal_with_byte_shift(&self, other: &perl_lexer::LexerCheckpoint, byte_shift: isize) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
 pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
 pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::LexerCheckpoint::default() -> perl_lexer::LexerCheckpoint
@@ -611,6 +612,7 @@ pub fn perl_lexer::LexerCheckpoint::rebind_to_source(&mut self, source: &str, ge
 pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
 pub fn perl_lexer::LexerCheckpoint::behavior_bearing_fingerprint(&self) -> perl_lexer::BehaviorBearingStateFingerprint
 pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal(&self, other: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
+pub fn perl_lexer::LexerCheckpoint::behavior_bearing_state_equal_with_byte_shift(&self, other: &perl_lexer::LexerCheckpoint, byte_shift: isize) -> core::result::Result<(), perl_lexer::BehaviorBearingStateMismatch>
 pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
 pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::LexerCheckpoint::default() -> perl_lexer::LexerCheckpoint

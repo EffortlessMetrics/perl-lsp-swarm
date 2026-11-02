@@ -24,7 +24,7 @@ fn behavior_bearing_state_equality_is_field_authoritative() -> R {
     );
     assert!(matches!(
         first.behavior_bearing_state_equal(&second),
-        Err(BehaviorBearingStateMismatch::Position | BehaviorBearingStateMismatch::Mode)
+        Err(BehaviorBearingStateMismatch::Position)
     ));
     Ok(())
 }
@@ -80,7 +80,7 @@ fn evaluate_requires_equal_behavior_bearing_state() -> R {
     .expect_err("misaligned checkpoints must not authorize reuse");
     assert!(matches!(
         err,
-        ExactSuffixSyncDenial::StateMismatch(_) | ExactSuffixSyncDenial::WindowMismatch { .. }
+        ExactSuffixSyncDenial::StateMismatch(BehaviorBearingStateMismatch::Position)
     ));
     Ok(())
 }
