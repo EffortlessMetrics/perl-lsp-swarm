@@ -1,4 +1,5 @@
 /** Pure starter content for an explicitly chosen new file. */
+import type * as vscode from 'vscode';
 import * as path from 'path';
 
 export const enum FileKind {
@@ -25,4 +26,9 @@ export function scaffoldContent(
   const segments = relative.slice(4, -3).split('/');
   if (!segments.every((part) => /^[A-Za-z_]\w*$/.test(part))) return null;
   return `package ${segments.join('::')};\nuse strict;\nuse warnings;\n\n\n\n1;\n`;
+}
+
+/** Workspace file creation stays inert unless the user runs an explicit scaffold command (#14451). */
+export async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
+  return undefined;
 }

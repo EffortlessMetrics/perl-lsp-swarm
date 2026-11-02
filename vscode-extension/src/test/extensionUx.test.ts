@@ -53,20 +53,31 @@ import {
 
 describe('formatting provider experience projection', () => {
   test('distinguishes edits from an already-current document', () => {
-    expect(presentFormattingProviderOutcome(2)).toEqual({
+    expect(presentFormattingProviderOutcome(2, false, true)).toEqual({
       providerOutcome: 'exact_current',
       detail: 'Formatter produced 2 document edits.',
       reasonCode: 'formatting_edits_available',
     });
-    expect(presentFormattingProviderOutcome(0)).toEqual({
+    expect(presentFormattingProviderOutcome(0, false, true)).toEqual({
       providerOutcome: 'legitimate_empty',
       detail: 'Formatter reported no edits; the document is already formatted.',
       reasonCode: 'formatting_already_current',
     });
   });
 
+  test('does not claim exact currentness when the request subject is superseded', () => {
+    expect(presentFormattingProviderOutcome(2, false, false)).toMatchObject({
+      providerOutcome: 'bounded_fallback',
+      reasonCode: 'formatting_subject_superseded',
+    });
+    expect(presentFormattingProviderOutcome(0, false, false)).toMatchObject({
+      providerOutcome: 'bounded_fallback',
+      reasonCode: 'formatting_subject_superseded',
+    });
+  });
+
   test('keeps range formatting and failures actionable', () => {
-    expect(presentFormattingProviderOutcome(1, true)).toEqual({
+    expect(presentFormattingProviderOutcome(1, true, true)).toEqual({
       providerOutcome: 'exact_current',
       detail: 'Formatter produced 1 range edit.',
       reasonCode: 'range_formatting_edits_available',
@@ -103,6 +114,12 @@ describe('production LSP provider experience projection', () => {
     expect(presentLspProviderOutcome('Completion', [{ label: 'new' }], true)).toMatchObject({
       providerOutcome: 'exact_current',
       reasonCode: 'completion_result_available',
+    });
+    expect(
+      presentLspProviderOutcome('Completion', [{ label: 'new' }], true, 'legitimate_empty', false),
+    ).toMatchObject({
+      providerOutcome: 'bounded_fallback',
+      reasonCode: 'completion_subject_superseded',
     });
     expect(presentLspProviderOutcome('References', [], true)).toMatchObject({
       providerOutcome: 'legitimate_empty',
