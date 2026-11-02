@@ -490,11 +490,7 @@ fn assert_draft_snapshot_contract(gate: Gate) -> Result<()> {
         );
     }
     if !run.summary.contains("superseded-awaiting-proof") {
-        bail!(
-            "{}: the summary must record the withhold verdict: {}",
-            gate.workflow,
-            run.summary
-        );
+        bail!("{}: the summary must record the withhold verdict: {}", gate.workflow, run.summary);
     }
 
     // A pull request that is still a draft is unchanged, and a draft state that
