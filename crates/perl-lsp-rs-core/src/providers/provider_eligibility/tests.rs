@@ -479,7 +479,7 @@ fn compiler_generation_mismatch_reports_compiler_owner() {
 }
 
 #[test]
-fn edit_producing_requires_observed_edit_denominator() {
+fn edit_producing_never_grants_exact_even_with_observed_edit_denominator() {
     let mut subject = aligned_subject();
     subject.profile = ProviderEligibilityRequestProfile::new(
         "textDocument/rename",
@@ -493,5 +493,90 @@ fn edit_producing_requires_observed_edit_denominator() {
         ProviderCompletenessRequirementV1::edit_producing(ProviderQueryCapability::References);
     requirement.edit_denominator_complete = Some(true);
     let decision = evaluate_provider_eligibility(&subject, &evidence, &requirement);
-    assert!(matches!(decision.outcome, ProviderEligibilityOutcome::ExactEligible { .. }));
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Refuse {
+            reason: ProviderEligibilityBlockerClass::IncompleteEditDenominator
+        }
+    ));
+}
+
+#[test]
+fn ready_limited_with_incomplete_denominator_is_unavailable() {
+    let mut subject = aligned_subject();
+    subject.readiness_state = ProviderReadinessState::ReadyLimited;
+    let mut evidence = aligned_evidence();
+    evidence.denominator_complete = false;
+    evidence.completeness = ProviderSnapshotCompleteness::Partial;
+    let decision =
+        evaluate_provider_eligibility(&subject, &evidence, &references_requirement(false));
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Unavailable {
+            reason: ProviderEligibilityBlockerClass::IncompleteDenominator
+        }
+    ));
+}
+
+#[test]
+fn building_with_incomplete_denominator_is_unavailable() {
+    let mut subject = aligned_subject();
+    subject.readiness_state = ProviderReadinessState::Building;
+    let mut evidence = aligned_evidence();
+    evidence.denominator_complete = false;
+    evidence.completeness = ProviderSnapshotCompleteness::Partial;
+    let decision =
+        evaluate_provider_eligibility(&subject, &evidence, &references_requirement(false));
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::Unavailable {
+            reason: ProviderEligibilityBlockerClass::IncompleteDenominator
+        }
+    ));
+}
+
+#[test]
+fn unknown_producer_lineage_blocks_exact_eligibility() {
+    let mut evidence = aligned_evidence();
+    evidence.producer_lineage = vec![SemanticProducer::Unknown];
+    let decision = evaluate_provider_eligibility(
+        &aligned_subject(),
+        &evidence,
+        &references_requirement(false),
+    );
+    assert!(matches!(decision.outcome, ProviderEligibilityOutcome::NotProven));
+}
+
+#[test]
+fn conflicting_duplicate_limitation_blocks_exact() {
+    let mut evidence = aligned_evidence();
+    evidence.limitations.push("occurrence:7:conflicting_duplicate:1".to_string());
+    let decision = evaluate_provider_eligibility(
+        &aligned_subject(),
+        &evidence,
+        &references_requirement(false),
+    );
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::FallbackRequired {
+            reason: ProviderEligibilityBlockerClass::AdapterLimitation
+        }
+    ));
+}
+
+#[test]
+fn unresolved_source_anchor_limitation_blocks_exact() {
+    let mut evidence = aligned_evidence();
+    evidence.limitations.push("occurrence:40:unresolved_source_anchor:99".to_string());
+    let decision = evaluate_provider_eligibility(
+        &aligned_subject(),
+        &evidence,
+        &references_requirement(false),
+    );
+    assert!(matches!(
+        decision.outcome,
+        ProviderEligibilityOutcome::FallbackRequired {
+            reason: ProviderEligibilityBlockerClass::AdapterLimitation
+        }
+    ));
 }

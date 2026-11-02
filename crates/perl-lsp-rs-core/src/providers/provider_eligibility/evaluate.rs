@@ -12,7 +12,7 @@ use super::model::{
     generation_observed, identity_matches, identity_observed, optional_generation_matches,
     subject_has_required_fields,
 };
-use perl_semantic_facts::SourceGeneration;
+use perl_semantic_facts::{SemanticProducer, SourceGeneration};
 
 /// Pure currentness/completeness eligibility evaluation (#12154 / #6819 E01).
 #[must_use]
@@ -371,7 +371,23 @@ pub fn evaluate_provider_eligibility(
         );
     }
 
+    let denominator_ready = evidence.denominator_complete
+        && evidence.completeness == ProviderSnapshotCompleteness::Complete;
+
     if subject.readiness_state != ProviderReadinessState::Ready {
+        if requirement.require_complete_denominator && !denominator_ready {
+            return blocked(
+                ProviderEligibilityOutcome::Unavailable {
+                    reason: ProviderEligibilityBlockerClass::IncompleteDenominator,
+                },
+                limitations,
+                instrument_state,
+                None,
+                None,
+                Some(ProviderEligibilityOwnerDimension::Completeness),
+                None,
+            );
+        }
         if matches!(
             subject.readiness_state,
             ProviderReadinessState::ReadyLimited | ProviderReadinessState::Building
@@ -396,9 +412,6 @@ pub fn evaluate_provider_eligibility(
         );
     }
 
-    let denominator_ready = evidence.denominator_complete
-        && evidence.completeness == ProviderSnapshotCompleteness::Complete;
-
     if requirement.require_complete_denominator && !denominator_ready {
         return blocked(
             ProviderEligibilityOutcome::Unavailable {
@@ -411,6 +424,26 @@ pub fn evaluate_provider_eligibility(
             Some(ProviderEligibilityOwnerDimension::Completeness),
             None,
         );
+    }
+
+    if subject.profile.edit_producing
+        || subject.profile.readiness_requirement == ProviderReadinessRequirement::EditAuthorizing
+    {
+        return blocked(
+            ProviderEligibilityOutcome::Refuse {
+                reason: ProviderEligibilityBlockerClass::IncompleteEditDenominator,
+            },
+            limitations,
+            instrument_state,
+            None,
+            None,
+            Some(ProviderEligibilityOwnerDimension::Completeness),
+            None,
+        );
+    }
+
+    if !producer_lineage_supports_exact(&evidence.producer_lineage) {
+        return finish(ProviderEligibilityOutcome::NotProven, limitations, instrument_state);
     }
 
     if denominator_ready && evidence.filtered_fact_count == 0 {
@@ -430,7 +463,9 @@ pub fn evaluate_provider_eligibility(
     }
 
     blocked(
-        ProviderEligibilityOutcome::NotProven,
+        ProviderEligibilityOutcome::Unavailable {
+            reason: ProviderEligibilityBlockerClass::IncompleteDenominator,
+        },
         limitations,
         instrument_state,
         None,
@@ -446,7 +481,13 @@ fn has_adapter_exactness_limitation(limitations: &[String]) -> bool {
             || limitation.contains("malformed_adapted_fact")
             || limitation.contains("tombstone")
             || limitation.contains("missing_source_anchor")
+            || limitation.contains("conflicting_duplicate")
+            || limitation.contains("unresolved_source_anchor")
     })
+}
+
+fn producer_lineage_supports_exact(lineage: &[SemanticProducer]) -> bool {
+    !lineage.is_empty() && lineage.iter().all(|producer| *producer != SemanticProducer::Unknown)
 }
 
 fn finish(
