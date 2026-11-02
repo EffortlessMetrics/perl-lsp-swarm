@@ -181,7 +181,7 @@ pub(super) use used_modules::collect_used_module_names;
 mod tests {
     use super::*;
     use perl_parser_core::Parser;
-    use perl_test_must::{must, must_some};
+    use perl_test_must::{must, must_some, must_some_with};
 
     /// Regression test for #1700: an unresolvable export tag must not silently
     /// discard the explicit symbols collected alongside it.
@@ -410,7 +410,10 @@ mod tests {
     #[test]
     fn recurrence_guard_rejects_completion_local_use_arg_classifier() {
         let src = include_str!("import_map.rs");
-        let production = must_some(src.split("#[cfg(test)]").next());
+        let production = must_some_with(
+            src.split("#[cfg(test)]").next(),
+            "production import_map source",
+        );
         assert!(
             !production.contains("fn collect_use_import("),
             "completion must not keep a provider-local use argument classifier"
