@@ -957,8 +957,16 @@ impl ErrorClass for ParseError {
 
 /// Error classification and diagnostic generation for parsed Perl code.
 pub mod classifier;
+/// Typed parser-operation completion, distinct from diagnostics.
+pub mod completion;
 /// Error recovery strategies and traits for the Perl parser.
 pub mod recovery;
+
+pub use completion::{
+    ParseBudgetExhaustionDimension, ParseCancellationIdentity, ParseCatastrophicCause,
+    ParseCompletion, ParseCompletionClass, ParseCompletionRange, ParseCompletionStage,
+    ParseCompletionValidationError,
+};
 
 use perl_ast::Node;
 
@@ -1253,6 +1261,16 @@ impl ParseOutput {
     /// enforced by construction (private storage + derived projection).
     pub fn stop_cause(&self) -> Option<ParseStopCause> {
         self.stop_cause
+    }
+
+    /// Typed completion of the parser operation that produced this output.
+    ///
+    /// The class is projected from [`ParseOutput::stop_cause`] and
+    /// [`ParseOutput::recovered_count`]. Diagnostic variants and message text
+    /// cannot change it.
+    #[must_use]
+    pub fn completion(&self) -> ParseCompletion {
+        ParseCompletion::from_parser_terminal(self.stop_cause, self.recovered_count, &self.ast)
     }
 
     /// Replace the terminal stop cause (checked compatibility mutation).
