@@ -22,7 +22,7 @@ pub fn create_extract_subroutine_action(
     helpers: &Helpers<'_>,
 ) -> Option<CodeAction> {
     let body_text = source.get(node.location.start..node.location.end)?;
-    if !admissible_block(node, true) {
+    if !is_admissible_extract_block(node) {
         return None;
     }
     let insert_pos = helpers.find_subroutine_insert_position(node.location.start);
@@ -189,6 +189,42 @@ fn has_simple_lexical_declaration(
                 .next()
                 .is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
     })
+}
+
+/// Whether a block's statements match the narrow syntax this generator can move.
+pub(crate) fn is_admissible_extract_block(node: &Node) -> bool {
+    admissible_block(node, true)
+}
+
+/// Whether a standalone top-level block only contains side-effect statements
+/// this basic extract-function path can move without capture analysis.
+pub(crate) fn is_admissible_standalone_extract_block(node: &Node) -> bool {
+    standalone_admissible_block(node, true)
+}
+
+fn standalone_admissible_block(node: &Node, root: bool) -> bool {
+    match &node.kind {
+        NodeKind::Block { .. } if root => {}
+        NodeKind::ExpressionStatement { .. } => {}
+        NodeKind::FunctionCall { .. } => {}
+        NodeKind::MethodCall { .. } => {}
+        NodeKind::VariableDeclaration { declarator, attributes, .. }
+            if declarator == "my" && attributes.is_empty() => {}
+        NodeKind::Variable { sigil, name } => {
+            if !is_scalar_variable(&format!("{sigil}{name}")) {
+                return false;
+            }
+        }
+        NodeKind::Binary { op, .. }
+            if matches!(
+                op.as_str(),
+                "+" | "-" | "*" | "/" | "." | "==" | "!=" | "<" | ">" | "<=" | ">="
+            ) => {}
+        NodeKind::Number { .. } | NodeKind::Undef => {}
+        NodeKind::String { value, .. } if !value.contains('$') && !value.contains('@') => {}
+        _ => return false,
+    }
+    node.children().into_iter().all(|child| standalone_admissible_block(child, false))
 }
 
 /// Admit only syntax for which the capture walk and call-site replacement have

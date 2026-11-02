@@ -522,6 +522,10 @@ fn apply_extract_workspace_edit(
     let offset = |point: &serde_json::Value| -> Result<usize, Box<dyn std::error::Error>> {
         let line = point["line"].as_u64().ok_or("Missing line")? as usize;
         let character = point["character"].as_u64().ok_or("Missing character")? as usize;
+        let line_count = source.split_inclusive('\n').count();
+        if line == line_count && character == 0 {
+            return Ok(source.len());
+        }
         let line_text = source.split_inclusive('\n').nth(line).ok_or("Line outside document")?;
         let prefix: usize = source.split_inclusive('\n').take(line).map(str::len).sum();
         let mut units = 0;
@@ -766,6 +770,108 @@ fn test_extract_function_withholds_capturing_if_body() -> Result<(), Box<dyn std
             "parameterless extracted_function captured outer $x:\n{new_text}\nactions={actions:?}"
         );
     }
+    shutdown_and_exit(&server);
+    Ok(())
+}
+
+/// #16784: admitted standalone top-level block publishes extract-function through
+/// the real codeAction handler and the applied edit preserves Perl behavior.
+#[test]
+fn test_extract_function_admits_standalone_block() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "use strict;\nuse warnings;\nuse feature \"say\";\n{ say \"ok\"; }\n\n";
+    let original = run_perl(source)?;
+    assert!(
+        original.status.success(),
+        "fixture failed perl -c: {}",
+        String::from_utf8_lossy(&original.stderr)
+    );
+
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+    let uri = "file:///standalone-extract.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 83,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 3, "character": 0 },
+                    "end": { "line": 3, "character": 14 }
+                },
+                "context": { "diagnostics": [], "only": ["refactor.extract"] }
+            }
+        }),
+    );
+
+    let actions = response["result"].as_array().ok_or("Expected codeAction result array")?;
+    let action = actions
+        .iter()
+        .find(|action| action["title"] == "Extract to function")
+        .ok_or_else(|| format!("expected Extract to function action, got: {actions:?}"))?;
+    assert_eq!(action["kind"], "refactor.extract");
+    let (edited, changes) = apply_extract_workspace_edit(source, action, uri)?;
+    assert_eq!(changes.len(), 2, "extraction must serialize insertion and replacement");
+    let result = run_perl(&edited)?;
+    assert!(
+        result.status.success(),
+        "applied edit failed at runtime: {}\n{edited}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(result.stdout, original.stdout, "applied edit changed runtime output");
+
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [{ "text": edited }]
+            }
+        }),
+    );
+
+    let repeat = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 84,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 3, "character": 0 },
+                    "end": { "line": 3, "character": 22 }
+                },
+                "context": { "diagnostics": [], "only": ["refactor.extract"] }
+            }
+        }),
+    );
+    let repeat_actions = repeat["result"].as_array().ok_or("Expected repeat codeAction array")?;
+    assert!(
+        repeat_actions.iter().all(|action| action["title"] != "Extract to function"),
+        "repeat request after applying the edit must not re-offer Extract to function: {repeat_actions:?}"
+    );
+
     shutdown_and_exit(&server);
     Ok(())
 }
