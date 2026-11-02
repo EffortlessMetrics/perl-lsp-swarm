@@ -1,4 +1,5 @@
 use super::{BuildFlags, completion_trigger_characters, get_supported_commands};
+// Capability field types are imported explicitly (#2895); avoid `lsp_types::*`.
 use lsp_types::{
     CallHierarchyServerCapability, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
     CodeLensOptions, ColorProviderCapability, CompletionOptions, CompletionOptionsCompletionItem,
