@@ -409,8 +409,9 @@ assert_not_contains "invalid duration does not invoke fuzz run" \
 
 # ── Nightly matrix ↔ fuzz/Cargo.toml [[bin]] parity (#17135) ──────────────────
 # Uses REAL_PYTHON3 so a leftover FUZZ_BOUNDED_PYTHON_MODE=drop stub cannot
-# swallow the comparison. This is the production gate: the discovery self-test
-# job executes this script on every push.
+# swallow the comparison. The discovery self-test job executes this script
+# when this test or either authority file changes. Parse [[bin]] names by
+# scanning tables so Python 3.10 (no tomllib) still runs the gate.
 
 compare_fuzz_matrix() {
   local nightly="$1"
@@ -418,7 +419,6 @@ compare_fuzz_matrix() {
   "$REAL_PYTHON3" - "$nightly" "$cargo" <<'PY'
 import re
 import sys
-import tomllib
 from pathlib import Path
 
 
@@ -426,25 +426,32 @@ class ParseError(Exception):
     pass
 
 
-def fuzz_job_text(workflow: str) -> str:
-    lines = workflow.splitlines(keepends=True)
+def block_after(text, header_pattern, sibling_pattern):
+    lines = text.splitlines(keepends=True)
     start = None
     for index, line in enumerate(lines):
-        if re.match(r"^  fuzz:\s*(#.*)?$", line):
+        if re.match(header_pattern, line):
             start = index
             break
     if start is None:
-        raise ParseError("workflow has no jobs.fuzz")
+        return ""
     end = len(lines)
     for index in range(start + 1, len(lines)):
-        if re.match(r"^  [A-Za-z0-9_-]+:", lines[index]):
+        if re.match(sibling_pattern, lines[index]):
             end = index
             break
     return "".join(lines[start:end])
 
 
-def parse_flow_names(body: str) -> list[str]:
-    names: list[str] = []
+def fuzz_job_text(workflow):
+    job = block_after(workflow, r"^  fuzz:\s*(#.*)?$", r"^  [A-Za-z0-9_-]+:")
+    if not job:
+        raise ParseError("workflow has no jobs.fuzz")
+    return job
+
+
+def parse_flow_names(body):
+    names = []
     for raw in body.split(","):
         token = raw.split("#", 1)[0].strip().strip("'\"")
         if token:
@@ -452,8 +459,8 @@ def parse_flow_names(body: str) -> list[str]:
     return names
 
 
-def parse_block_names(body: str) -> list[str]:
-    names: list[str] = []
+def parse_block_names(body):
+    names = []
     for line in body.splitlines():
         match = re.match(r"^\s+-\s+(\S+)", line)
         if match is None:
@@ -464,12 +471,18 @@ def parse_block_names(body: str) -> list[str]:
     return names
 
 
-def matrix_targets(job: str) -> list[str]:
-    flow = re.search(r"(?m)^\s+target:\s*\[(.*?)\]", job, re.S)
+def matrix_targets(job):
+    strategy = block_after(job, r"^    strategy:\s*(#.*)?$", r"^    \S")
+    if not strategy:
+        raise ParseError("jobs.fuzz.strategy not found")
+    matrix = block_after(strategy, r"^      matrix:\s*(#.*)?$", r"^      \S")
+    if not matrix:
+        raise ParseError("jobs.fuzz.strategy.matrix not found")
+    flow = re.search(r"(?m)^\s+target:\s*\[(.*?)\]", matrix, re.S)
     if flow is not None:
         names = parse_flow_names(flow.group(1))
     else:
-        block = re.search(r"(?m)^\s+target:\s*\n((?:\s+-\s+\S.*\n?)*)", job)
+        block = re.search(r"(?m)^\s+target:\s*\n((?:\s+-\s+\S.*\n?)*)", matrix)
         if block is None:
             raise ParseError("jobs.fuzz.strategy.matrix.target not found")
         names = parse_block_names(block.group(1))
@@ -478,26 +491,28 @@ def matrix_targets(job: str) -> list[str]:
     return names
 
 
-def manifest_bin_targets(path: Path) -> list[str]:
-    with path.open("rb") as handle:
-        data = tomllib.load(handle)
-    bins = data.get("bin")
-    if not isinstance(bins, list) or not bins:
-        raise ParseError(f"{path} has no [[bin]] targets")
-    names: list[str] = []
-    for entry in bins:
-        if not isinstance(entry, dict):
-            raise ParseError(f"{path} has a non-table [[bin]] entry")
-        name = entry.get("name")
-        if not isinstance(name, str) or not name:
-            raise ParseError(f"{path} has a [[bin]] without name")
-        names.append(name)
+def manifest_bin_targets(path):
+    text = path.read_text(encoding="utf-8")
+    names = []
+    in_bin = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("["):
+            in_bin = stripped == "[[bin]]"
+            continue
+        if not in_bin:
+            continue
+        match = re.match(r"^name\s*=\s*(['\"])([^'\"]+)\1", stripped)
+        if match:
+            names.append(match.group(2))
+    if not names:
+        raise ParseError("%s has no [[bin]] name entries" % (path,))
     return names
 
 
-def duplicates(names: list[str]) -> list[str]:
-    seen: set[str] = set()
-    dupes: list[str] = []
+def duplicates(names):
+    seen = set()
+    dupes = []
     for name in names:
         if name in seen and name not in dupes:
             dupes.append(name)
@@ -542,10 +557,10 @@ def main() -> int:
 try:
     sys.exit(main())
 except ParseError as exc:
-    print(f"PARSE_ERROR: {exc}")
+    print("PARSE_ERROR: %s" % (exc,))
     sys.exit(2)
-except (OSError, tomllib.TOMLDecodeError, UnicodeError) as exc:
-    print(f"PARSE_ERROR: {exc}")
+except (OSError, UnicodeError) as exc:
+    print("PARSE_ERROR: %s" % (exc,))
     sys.exit(2)
 PY
 }
@@ -610,6 +625,32 @@ assert_contains "decoy fixture reports EQUAL" \
   "EQUAL" "${TMPDIR_BASE}/parity-decoy.out"
 assert_not_contains "decoy fixture does not enroll decoy_only" \
   "decoy_only" "${TMPDIR_BASE}/parity-decoy.out"
+
+# A same-job `target:` list outside strategy.matrix must not win.
+cat > "${TMPDIR_BASE}/fixture-nightly-same-job.yml" <<'YAML'
+jobs:
+  fuzz:
+    name: Fuzz Target
+    extra:
+      target: [same_job_decoy]
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [
+          alpha,
+          beta
+        ]
+YAML
+
+run_compare_fuzz_matrix \
+  "${TMPDIR_BASE}/parity-same-job.out" "${TMPDIR_BASE}/parity-same-job.err" \
+  "${TMPDIR_BASE}/fixture-nightly-same-job.yml" "${TMPDIR_BASE}/fixture-cargo.toml"
+assert_eq "same-job extra target list is ignored" \
+  0 "$COMPARE_CODE"
+assert_contains "same-job fixture reports EQUAL" \
+  "EQUAL" "${TMPDIR_BASE}/parity-same-job.out"
+assert_not_contains "same-job fixture does not enroll same_job_decoy" \
+  "same_job_decoy" "${TMPDIR_BASE}/parity-same-job.out"
 
 # Block-style matrix lists are accepted so a later YAML reformat cannot
 # silently disable the gate.
