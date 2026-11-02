@@ -290,9 +290,9 @@ mod simulation {
             if first > 0 {
                 fixture = fixture.expect(pr_view(scenario.pr_json, first as usize, false));
             }
-            fixture = fixture.expect(pr_view(after_json, 4, false));
+            fixture = fixture.expect(pr_view(after_json, 3, false));
         } else {
-            fixture = fixture.expect(pr_view(scenario.pr_json, 4, false));
+            fixture = fixture.expect(pr_view(scenario.pr_json, 3, false));
         }
         let skip_ci = scenario.fail_pr_view
             || !initial_head_ok

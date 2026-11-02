@@ -57,6 +57,12 @@ impl FakeCommands {
             ExpectedExternalCommand::exact(program, strs(args)).reusable().stdout(output);
         if args.contains(&"--json") {
             spec = spec.json_fields_are_a_set();
+            if let Some(fields) = args.windows(2).find_map(|pair| match pair {
+                ["--json", fields] => Some(*fields),
+                _ => None,
+            }) {
+                spec = spec.json_contract(JsonFieldContract::exact_supported(fields));
+            }
         }
         self.expect(spec)
     }
@@ -160,6 +166,7 @@ fn healthy() -> FakeCommands {
             )
             .reusable()
             .json_fields_are_a_set()
+            .json_contract(JsonFieldContract::exact_supported(CHILD_JSON_FIELDS))
             .stdout("[]"),
         )
         .expect(reusable_exact(
