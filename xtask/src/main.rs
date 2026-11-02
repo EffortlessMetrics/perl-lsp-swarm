@@ -3549,6 +3549,31 @@ enum PolicyCommand {
         #[arg(long)]
         markdown: Option<PathBuf>,
     },
+
+    /// Attribute governing policy failures to base, candidate, integration, or
+    /// instrument/clock interaction under one explicit observation date (#7061).
+    Attribution {
+        /// Accepted base revision the candidate is compared against.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Observation date used for both base and candidate cadence evaluation.
+        #[arg(long)]
+        as_of: String,
+
+        /// Optional second date; when it differs from `--as-of`, rows record an
+        /// instrument/clock interaction instead of product attribution.
+        #[arg(long)]
+        candidate_as_of: Option<String>,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-attribution.json")]
+        json: PathBuf,
+
+        /// Optional deterministic Markdown summary path.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
 }
 
 /// CLI-facing output format for non-Rust migration candidate reports.
@@ -7908,6 +7933,19 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::policy_cadence::transition::run(
                     &root,
                     tasks::policy_cadence::transition::TransitionArgs { base, json, markdown },
+                )
+            }
+            PolicyCommand::Attribution { base, as_of, candidate_as_of, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::attribution::run(
+                    &root,
+                    tasks::policy_cadence::attribution::AttributionArgs {
+                        base,
+                        as_of,
+                        candidate_as_of,
+                        json,
+                        markdown,
+                    },
                 )
             }
         },
