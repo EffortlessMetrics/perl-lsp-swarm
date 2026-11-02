@@ -39,7 +39,45 @@ PREFER_GNU="${PREFER_GNU:-0}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-0}"
 PRINT_TARGET=0
 WITH_CLAUDE=0
+UNINSTALL=0
 CLAUDE_SETUP_RESULT="not_requested"
+
+standalone_uninstall_helper() {
+    printf '%s\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/standalone_uninstall.py"
+}
+
+record_owned_state_manifest() {
+    local _helper _py
+    _helper="$(standalone_uninstall_helper)"
+    if [ ! -f "$_helper" ]; then
+        warn "owned-state manifest helper missing; uninstall will require manual resolution"
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 unavailable; owned-state manifest not recorded (uninstall may refuse legacy state)"
+        return 0
+    fi
+    if ! _py="$(python3 "$_helper" record --install-dir "$INSTALL_DIR" 2>&1)"; then
+        warn "owned-state manifest recording failed: $_py"
+        return 0
+    fi
+    info "$_py"
+}
+
+run_standalone_uninstall() {
+    local _helper _status=0 _out
+    _helper="$(standalone_uninstall_helper)"
+    if [ ! -f "$_helper" ]; then
+        err "standalone uninstall helper missing: $_helper"
+    fi
+    need_cmd python3
+    _out="$(python3 "$_helper" uninstall --install-dir "$INSTALL_DIR" 2>&1)" || _status=$?
+    if [ "$_status" -ne 0 ]; then
+        say "$_out" >&2
+        exit "$_status"
+    fi
+    info "$_out"
+}
 
 # Termux (Android/bionic) is detected from TERMUX_VERSION or the Termux usr/bin
 # sentinel. Tests may point the sentinel at a temp directory via
@@ -175,9 +213,13 @@ while [ "$#" -gt 0 ]; do
             WITH_CLAUDE=1
             shift
             ;;
+        --uninstall)
+            UNINSTALL=1
+            shift
+            ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/install.sh [VERSION] [INSTALL_DIR] [--print-target] [--with-claude]
+Usage: scripts/install.sh [VERSION] [INSTALL_DIR] [--print-target] [--with-claude] [--uninstall]
 
 Positionals (optional):
   VERSION                                Same as VERSION=... Slot 1.
@@ -187,6 +229,8 @@ Positionals (optional):
 
 Options:
   --print-target                         Print selected release target and exit.
+  --uninstall                            Remove only installer-owned standalone state
+                                         recorded for this INSTALL_DIR route.
   --with-claude                          After installing/verifying perllsp, run
                                          `perllsp setup claude` through the exact
                                          installed binary.
@@ -1688,6 +1732,7 @@ Try one of:
             ;;
     esac
     info "$_receipt"
+    record_owned_state_manifest
     info "installed: $INSTALL_DIR/$BIN_NAME"
     if [ "$_dap_hash" != "-" ]; then
         info "installed: $INSTALL_DIR/$DAP_BIN_NAME"
@@ -1771,7 +1816,7 @@ configure_claude() {
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 main() {
-    if [ "$PRINT_TARGET" != "1" ]; then
+    if [ "$PRINT_TARGET" != "1" ] && [ "$UNINSTALL" != "1" ]; then
         say ""
         say "Perl LSP installer"
         say "=================="
@@ -1779,6 +1824,14 @@ main() {
     fi
 
     detect_platform
+
+    if [ "$UNINSTALL" = "1" ]; then
+        if [ "$WITH_CLAUDE" = "1" ]; then
+            err "--uninstall cannot be combined with --with-claude"
+        fi
+        run_standalone_uninstall
+        exit 0
+    fi
 
     if [ "$PRINT_TARGET" = "1" ]; then
         if [ "$INSTALL_MODE" = "release" ]; then
