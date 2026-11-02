@@ -934,7 +934,8 @@ impl LspServer {
         };
 
         let mut recorded_disposition = delivery;
-        let mut live_delivery_enabled = can_return_edit;
+        let mut live_delivery_enabled =
+            live_symbol_delete_enabled_for_plan(can_return_edit, edit_plan_ready);
         let mut edit_for_result = formatted_edit;
         let mut apply_edit_request_receipt = None;
 
@@ -2486,6 +2487,29 @@ fn runtime_blocker_descriptions(blockers: &[PlanBlocker]) -> String {
         return "none".to_string();
     }
     blockers.iter().map(|blocker| blocker.description.as_str()).collect::<Vec<_>>().join(" | ")
+}
+
+/// Live safe-delete success indicator: guards may pass while the computed edit plan is empty.
+pub(crate) fn live_symbol_delete_enabled_for_plan(
+    can_return_edit: bool,
+    edit_plan_ready: bool,
+) -> bool {
+    can_return_edit && edit_plan_ready
+}
+
+#[cfg(test)]
+mod live_symbol_delete_enabled_tests {
+    use super::live_symbol_delete_enabled_for_plan;
+
+    #[test]
+    fn live_flag_false_when_guards_pass_but_edit_plan_empty() {
+        assert!(!live_symbol_delete_enabled_for_plan(true, false));
+    }
+
+    #[test]
+    fn live_flag_true_when_guards_and_nonempty_edit_plan() {
+        assert!(live_symbol_delete_enabled_for_plan(true, true));
+    }
 }
 
 #[cfg(test)]
