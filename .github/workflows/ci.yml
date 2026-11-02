@@ -1278,6 +1278,44 @@ jobs:
       # cargo check --workspace --all-targets --locked independently of pr-smoke.
       # Adding a redundant fallback here would duplicate that work without gain.
 
+  # ── Source-commit API ledger on the evaluated combined/landed tree (#15965)
+  # The meta shard already runs `source_commit_api_check`, but PR-head
+  # evaluation can stay green while the post-merge tree drifts the
+  # `compatibility_baseline` count (d7d4c5143 / #16011, #17212). This job
+  # reuses that same checker on merge_group (queue combined tree) and push
+  # to main/master (landed tree). It is not a new required GitHub context.
+  source-commit-api-ledger:
+    name: Source-commit API ledger (combined tree)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    if: >-
+      github.event_name == 'merge_group' ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    steps:
+      - name: Checkout evaluated tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Recheck source-commit API ledger counts
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TREE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set +e
+          python3 scripts/ci/check_source_commit_api.py
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=source_commit_api_check::source-commit API ledger check failed on the ${EVENT_NAME} tree (${TREE_SHA}); see checker output for the failure."
+            exit "$status"
+          fi
+
   # ── Merge Gate shards: bounded validation lanes for every PR/push ────
   merge-gate-shards:
     name: CI Gate shard (${{ matrix.name }})
