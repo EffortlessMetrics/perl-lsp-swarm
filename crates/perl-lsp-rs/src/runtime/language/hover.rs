@@ -1339,7 +1339,8 @@ impl LspServer {
             // SQL::Abstract methods collide with Perl builtins (`select`, `delete`, …).
             if !bare.is_empty()
                 && !hover_text.starts_with(['$', '@', '%'])
-                && Self::extract_arrow_receiver(text, offset).is_some()
+                && let Some(receiver) = Self::extract_arrow_receiver(text, offset)
+                && crate::completion::sql_abstract_receiver_indicates_catalog(&receiver)
                 && crate::completion::is_sql_abstract_source(text, offset)
                 && let Some((sig, desc)) =
                     crate::completion::get_sql_abstract_method_documentation(bare)

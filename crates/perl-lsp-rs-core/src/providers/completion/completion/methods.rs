@@ -164,6 +164,19 @@ pub const SQL_ABSTRACT_METHODS: &[(&str, &str)] = &[
     ("order_by", "Generate ORDER BY clause"),
 ];
 
+/// Static methods on `SQL::Abstract` (includes constructor).
+pub const SQL_ABSTRACT_STATIC_METHODS: &[(&str, &str)] = &[
+    ("new", "Create a SQL::Abstract query builder"),
+    ("select", "Generate SELECT statement"),
+    ("insert", "Generate INSERT statement"),
+    ("update", "Generate UPDATE statement"),
+    ("delete", "Generate DELETE statement"),
+    ("where", "Generate WHERE clause"),
+    ("generate", "Generate arbitrary SQL"),
+    ("values", "Generate VALUES clause"),
+    ("order_by", "Generate ORDER BY clause"),
+];
+
 /// Parameter signatures for SQL::Abstract methods.
 pub const SQL_ABSTRACT_METHOD_SIGS: &[(&str, &str, &str)] = &[
     ("select", "select($table, $fields?, $where?, $order?)", "Generate SELECT statement"),
@@ -412,6 +425,13 @@ pub fn is_sql_abstract_source(source: &str, position: usize) -> bool {
     false
 }
 
+/// Whether an arrow receiver should use the SQL::Abstract method catalog.
+pub fn sql_abstract_receiver_indicates_catalog(receiver_hint: &str) -> bool {
+    receiver_hint == "SQL::Abstract"
+        || receiver_hint.starts_with("SQL::Abstract::")
+        || matches!(receiver_hint.strip_prefix('$'), Some("sql" | "sqla" | "sql_abs"))
+}
+
 /// Infer receiver type from context (for DBI method completion)
 pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<String> {
     // Look backwards from the position to find the receiver
@@ -423,25 +443,6 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     }
     if prefix.ends_with("$sth") {
         return Some("DBI::st".to_string());
-    }
-
-    if is_sql_abstract_source(source, context.position) {
-        if matches!(prefix, "$sql" | "$sqla" | "$sql_abs") {
-            return Some("SQL::Abstract".to_string());
-        }
-
-        if let Some(var_pos) = source.rfind(prefix) {
-            let before_var = &source[..var_pos];
-            if let Some(assign_pos) = before_var.rfind('=') {
-                let assignment = &source[assign_pos..var_pos + prefix.len()];
-                if assignment.contains("SQL::Abstract")
-                    && assignment.contains("new")
-                    && prefix != "$s"
-                {
-                    return Some("SQL::Abstract".to_string());
-                }
-            }
-        }
     }
 
     // Look at the broader context - check if variable was assigned from DBI->connect
@@ -1073,6 +1074,38 @@ fn infer_imported_constructor_receiver_type(
     })
 }
 
+fn infer_sql_abstract_named_receiver_type(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+) -> Option<&'static str> {
+    if !is_sql_abstract_source(source, context.position) {
+        return None;
+    }
+    let receiver = context.receiver_prefix().trim_end_matches("->");
+    if !matches!(receiver, "$sql" | "$sqla" | "$sql_abs") {
+        return None;
+    }
+    let source_before_cursor = source.get(..context.position).unwrap_or(source);
+    let receiver_pos = source_before_cursor.rfind(receiver)?;
+    let binding =
+        binding_at_position(symbol_table, receiver, context.cursor_scope_id, receiver_pos)?;
+    let expression = latest_assignment_for_binding(
+        symbol_table,
+        source,
+        receiver,
+        binding,
+        context.cursor_scope_id,
+        receiver_pos + receiver.len(),
+    );
+    match expression {
+        None => Some("SQL::Abstract"),
+        Some("") => None,
+        Some(expr) if expression_calls_constructor(expr, "SQL::Abstract") => Some("SQL::Abstract"),
+        Some(_) => None,
+    }
+}
+
 fn imported_static_methods(
     prefix: &str,
     source: &str,
@@ -1092,7 +1125,7 @@ fn imported_static_methods(
             if (module == "SQL::Abstract" || module.starts_with("SQL::Abstract::"))
                 && is_sql_abstract_source(source, position) =>
         {
-            Some(SQL_ABSTRACT_METHODS)
+            Some(SQL_ABSTRACT_STATIC_METHODS)
         }
         _ => None,
     }
@@ -1359,6 +1392,7 @@ pub fn add_method_completions(
     // priority over naming heuristics.
     let receiver_type = infer_imported_factory_receiver_type(context, source, symbol_table)
         .or_else(|| infer_imported_constructor_receiver_type(context, source, symbol_table))
+        .or_else(|| infer_sql_abstract_named_receiver_type(context, source, symbol_table))
         .map(str::to_owned)
         .or_else(|| infer_receiver_type(context, source));
 

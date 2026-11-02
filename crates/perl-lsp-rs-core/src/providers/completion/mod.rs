@@ -31,5 +31,5 @@ pub use completion::{
     add_xs_api_completions_for_prefix, collect_module_names_from_roots_with_cache,
     get_dbi_method_documentation, get_sql_abstract_method_documentation,
     get_test_more_documentation, get_xs_api_documentation, htmx_attribute_name_completion_admitted,
-    is_sql_abstract_source, is_xs_source,
+    is_sql_abstract_source, is_xs_source, sql_abstract_receiver_indicates_catalog,
 };

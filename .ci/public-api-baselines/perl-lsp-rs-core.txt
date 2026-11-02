@@ -3209,6 +3209,7 @@ pub fn perl_lsp_rs_core::providers::completion::get_sql_abstract_method_document
 pub fn perl_lsp_rs_core::providers::completion::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::is_sql_abstract_source(source: &str, position: usize) -> bool
+pub fn perl_lsp_rs_core::providers::completion::sql_abstract_receiver_indicates_catalog(receiver_hint: &str) -> bool
 pub fn perl_lsp_rs_core::providers::completion::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::completion::render_snippet_plaintext(body: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::providers::completion::snippet_body_defects(body: &str) -> alloc::vec::Vec<alloc::string::String>
@@ -9805,6 +9806,7 @@ pub fn perl_lsp_rs_core::providers::identity_for_code(code: &str) -> core::optio
 pub fn perl_lsp_rs_core::providers::inlay_hint_label_str(hint: &serde_json::value::Value) -> core::option::Option<&str>
 pub fn perl_lsp_rs_core::providers::is_test_file(path: &str) -> bool
 pub fn perl_lsp_rs_core::providers::is_sql_abstract_source(source: &str, position: usize) -> bool
+pub fn perl_lsp_rs_core::providers::sql_abstract_receiver_indicates_catalog(receiver_hint: &str) -> bool
 pub fn perl_lsp_rs_core::providers::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::legend() -> perl_lsp_rs_core::providers::TokensLegend
 pub fn perl_lsp_rs_core::providers::matches_query(name: &str, query: &str) -> bool

@@ -100,6 +100,24 @@ fn dollar_s_variable_should_not_trigger_sql_abstract_completion() {
 }
 
 #[test]
+fn completes_sql_abstract_static_new_after_import() {
+    let source = "use SQL::Abstract;\nSQL::Abstract->n";
+    let item_labels = labels(&completions_at_end(source));
+    assert!(has_label(&item_labels, "new"));
+}
+
+#[test]
+fn sql_abstract_name_inference_stays_bounded_after_reassignment() {
+    let source = "use SQL::Abstract;\nuse HTTP::Tiny;\nmy $sql = SQL::Abstract->new;\n$sql = HTTP::Tiny->new;\n$sql->";
+    let item_labels = labels(&completions_at_end(source));
+    assert!(
+        !has_label(&item_labels, "select"),
+        "reassigned $sql must not keep SQL::Abstract completions"
+    );
+    assert!(has_label(&item_labels, "get") || has_label(&item_labels, "post"));
+}
+
+#[test]
 fn sql_abstract_completion_items_have_documentation() -> Result<(), Box<dyn std::error::Error>> {
     let source = "use SQL::Abstract;\nmy $sql = SQL::Abstract->new;\n$sql->sel";
     let items = completions_at_end(source);

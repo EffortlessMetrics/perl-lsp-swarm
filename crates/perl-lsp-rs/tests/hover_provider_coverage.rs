@@ -1577,6 +1577,19 @@ with 'MyApp::Printable', 'MyApp::Serializable';
         Ok(())
     }
 
+    #[test]
+    fn test_hover_sql_abstract_does_not_override_unrelated_delete_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = "use SQL::Abstract;\nuse HTTP::Tiny;\nmy $ua = HTTP::Tiny->new;\n$ua->delete('/item');\n";
+        let resp = hover_at(code, "file:///sql_abstract_no_false_delete.pl", "delete", 3)?;
+        let content = hover_content(&resp).ok_or("expected hover content for delete")?;
+        assert!(
+            !content.contains("**SQL::Abstract Method**"),
+            "HTTP::Tiny delete must not show SQL::Abstract docs, got: {content}"
+        );
+        Ok(())
+    }
+
     // ── Pragma hover documentation tests ────────────────────────────────────
 
     /// Hovering over `strict` in `use strict;` should show pragma documentation.
