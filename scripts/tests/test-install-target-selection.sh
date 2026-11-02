@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOT_INSTALLER="$ROOT/install.sh"
 CANONICAL_INSTALLER="$ROOT/scripts/install.sh"
+UNINSTALL_HELPER="$ROOT/scripts/standalone_uninstall.py"
 
 PASS=0
 FAIL=0
@@ -321,13 +322,20 @@ if [[ -z "$out" ]]; then
     exit 2
 fi
 
-expected_url="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${PERL_LSP_INSTALLER_REF}/scripts/install.sh"
-if [[ "$url" != "$expected_url" ]]; then
-    echo "unexpected URL: $url" >&2
-    exit 3
-fi
-
-cp "$PERL_LSP_TEST_CANONICAL_INSTALLER" "$out"
+expected_installer_url="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${PERL_LSP_INSTALLER_REF}/scripts/install.sh"
+expected_helper_url="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${PERL_LSP_INSTALLER_REF}/scripts/standalone_uninstall.py"
+case "$url" in
+    "$expected_installer_url")
+        cp "$PERL_LSP_TEST_CANONICAL_INSTALLER" "$out"
+        ;;
+    "$expected_helper_url")
+        cp "$PERL_LSP_TEST_UNINSTALL_HELPER" "$out"
+        ;;
+    *)
+        echo "unexpected URL: $url" >&2
+        exit 3
+        ;;
+esac
 printf '200'
 FAKE_CURL
     chmod +x "$fakebin/curl"
@@ -338,6 +346,7 @@ FAKE_CURL
         env \
         PATH="$fakebin:$PATH" \
         PERL_LSP_TEST_CANONICAL_INSTALLER="$CANONICAL_INSTALLER" \
+        PERL_LSP_TEST_UNINSTALL_HELPER="$UNINSTALL_HELPER" \
         PERL_LSP_INSTALLER_REF="$ref" \
         PERL_LSP_INSTALLER_SHA256="$digest" \
         bash "$isolated/install.sh" --print-target
