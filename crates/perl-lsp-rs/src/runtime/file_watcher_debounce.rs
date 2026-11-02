@@ -314,6 +314,10 @@ struct Shared {
     /// builds.
     #[cfg(test)]
     test_progress_cv: Condvar,
+    /// Deterministic summary of the most recent sink batch; harness timeout
+    /// diagnostics only.
+    #[cfg(test)]
+    last_delivered_batch: Mutex<String>,
     /// Set when the callback closure panicked mid-dispatch. Admissions then
     /// report [`WatcherAdmission::Unavailable`] instead of pretending work is
     /// still queueable behind a dead dispatcher.
@@ -790,6 +794,8 @@ fn make_shared(
         handoff_gen: AtomicU64::new(0),
         #[cfg(test)]
         test_progress_cv: Condvar::new(),
+        #[cfg(test)]
+        last_delivered_batch: Mutex::new(String::from("(none)")),
         sink_panic: AtomicBool::new(false),
         clock,
         interval_ms,
@@ -917,6 +923,14 @@ fn intake_loop(shared: Arc<Shared>) {
     }
 }
 
+#[cfg(test)]
+fn record_test_last_delivered_batch(shared: &Shared, batch: &[String]) {
+    let mut sorted: Vec<&str> = batch.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    let head = sorted.first().copied().unwrap_or("-");
+    *shared.last_delivered_batch.lock() = format!("len={} head={head}", batch.len());
+}
+
 fn dispatch_loop<F>(shared: Arc<Shared>, sink: F)
 where
     F: Fn(Vec<String>) + Send + 'static,
@@ -939,6 +953,8 @@ where
                 // completes, success or failure.
                 drop(guard);
                 let batch_len = batch.len();
+                #[cfg(test)]
+                record_test_last_delivered_batch(&shared, &batch);
                 // A panicking callback must not masquerade as delivered work:
                 // mark the coalescer degraded so admissions route to the
                 // unavailable disposition instead of apparent success.
@@ -1037,7 +1053,33 @@ mod tests {
             self.shared.notify_handoff_all();
         }
 
-        fn wait_for(&self, predicate: impl Fn() -> bool, label: &str) {
+        fn wait_timeout_snapshot(&self, label: &str) -> String {
+            let handoff_gen = self.shared.handoff_gen.load(Ordering::SeqCst);
+            let pressure = self.debouncer.pressure();
+            let (queued_paths, outboxed_batches) = {
+                let state = self.shared.state.lock();
+                let queued_paths: usize = state.outbox.iter().map(|batch| batch.len()).sum();
+                (queued_paths, state.outbox.len())
+            };
+            let clock_now_millis = self.clock.now_millis();
+            let last_delivered_batch = self.shared.last_delivered_batch.lock().clone();
+            format!(
+                "timed out waiting for {label}; snapshot: \
+                 handoff_gen={handoff_gen} \
+                 pending_subjects={} active_subjects={} \
+                 queued_paths={queued_paths} outboxed_batches={outboxed_batches} \
+                 clock_now_millis={clock_now_millis} \
+                 last_delivered_batch={last_delivered_batch}",
+                pressure.pending_subjects, pressure.active_subjects,
+            )
+        }
+
+        fn try_wait_for_with_deadline(
+            &self,
+            predicate: impl Fn() -> bool,
+            label: &str,
+            deadline: Duration,
+        ) -> Result<(), String> {
             // Deterministic synchronization seam: the production code already
             // notifies `handoff_cv` (under the state lock) on every batch
             // produced, every outbox space freed, and on shutdown. Waiting on
@@ -1053,7 +1095,7 @@ mod tests {
             // harness exists to remove). Every generation bump broadcasts on
             // `test_progress_cv` under the same lock, so the wakeup topology
             // stays complete without touching production wakeups.
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline_instant = Instant::now() + deadline;
             loop {
                 // Predicates read pressure(), which takes the state lock, so
                 // the check cannot run under it (parking_lot mutexes are not
@@ -1062,12 +1104,14 @@ mod tests {
                 // bumped the counter under that same lock.
                 let seen = self.shared.handoff_gen.load(Ordering::SeqCst);
                 if predicate() {
-                    return;
+                    return Ok(());
                 }
-                let remaining = deadline.saturating_duration_since(Instant::now());
+                let remaining = deadline_instant.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    assert!(predicate(), "timed out waiting for {label}");
-                    return;
+                    if predicate() {
+                        return Ok(());
+                    }
+                    return Err(self.wait_timeout_snapshot(label));
                 }
                 let mut guard = self.shared.state.lock();
                 if self.shared.handoff_gen.load(Ordering::SeqCst) != seen {
@@ -1078,6 +1122,14 @@ mod tests {
                 }
                 let _timed_out = self.shared.test_progress_cv.wait_for(&mut guard, remaining);
                 drop(guard);
+            }
+        }
+
+        fn wait_for(&self, predicate: impl Fn() -> bool, label: &str) {
+            if let Err(diagnostic) =
+                self.try_wait_for_with_deadline(predicate, label, Duration::from_secs(10))
+            {
+                panic!("{diagnostic}");
             }
         }
 
@@ -1103,6 +1155,26 @@ mod tests {
         let sink_delivered = Arc::clone(&delivered);
         let sink = move |uris: Vec<String>| sink_delivered.lock().push(uris);
         (delivered, sink)
+    }
+
+    #[test]
+    fn wait_for_timeout_reports_harness_snapshot() {
+        let harness = Harness::with_sink(|_| {});
+        harness.debouncer.shutdown_now();
+        let label = "snapshot-timeout-probe";
+        let err = harness
+            .try_wait_for_with_deadline(|| false, label, Duration::from_millis(1))
+            .expect_err("predicate never becomes true");
+        for needle in [
+            "handoff_gen=",
+            "pending_subjects=",
+            "queued_paths=",
+            "clock_now_millis=",
+            "last_delivered_batch=",
+            label,
+        ] {
+            assert!(err.contains(needle), "timeout diagnostic missing {needle:?}: {err}");
+        }
     }
 
     #[test]
