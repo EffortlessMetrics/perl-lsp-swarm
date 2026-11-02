@@ -38,7 +38,12 @@ function validateDeferredDomains(domains) {
   }
 }
 
+/**
+ * @param {number} runs
+ * @returns {NodeJS.ProcessEnv}
+ */
 function baselineSampleEnv(runs) {
+  /** @type {NodeJS.ProcessEnv} */
   const env = {
     ...process.env,
     PERL_LSP_VSCODE_SAMPLE_RUNS: String(runs),

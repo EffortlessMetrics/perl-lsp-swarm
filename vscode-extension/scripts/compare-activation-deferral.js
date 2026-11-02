@@ -124,11 +124,17 @@ function compareActivationDeferral(input) {
       violations.push(`missing paired ${metricName} for behavior comparison`);
       continue;
     }
-    const baselineSlack = baseline - baselineActivation;
-    const deferredSlack = deferred - deferredActivation;
-    if (baselineActivation === null || deferredActivation === null) {
+    if (
+      baselineActivation === null ||
+      deferredActivation === null ||
+      baseline === null ||
+      deferred === null
+    ) {
+      violations.push(`missing paired ${metricName} for behavior comparison`);
       continue;
     }
+    const baselineSlack = baseline - baselineActivation;
+    const deferredSlack = deferred - deferredActivation;
     if (Math.abs(baselineSlack - deferredSlack) > IMMATERIAL_ACTIVATION_DELTA_MS) {
       violations.push(
         `${metricName} post-activation slack p50 diverged beyond immaterial noise (${baselineSlack} vs ${deferredSlack})`,
