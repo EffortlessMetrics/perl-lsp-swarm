@@ -1,8 +1,7 @@
 use super::config::FormatConfig;
 use super::counters;
 use super::layout_bounds::{
-    MAX_INDENT_WIDTH, MAX_LINE_WIDTH, effective_indent_width, effective_line_width,
-    render_indent_columns,
+    effective_indent_width, effective_line_width, render_indent_columns,
 };
 
 /// Native formatter document tree.
@@ -182,6 +181,7 @@ impl DocRenderer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::layout_bounds::{MAX_INDENT_WIDTH, MAX_LINE_WIDTH};
     use super::*;
 
     #[test]
