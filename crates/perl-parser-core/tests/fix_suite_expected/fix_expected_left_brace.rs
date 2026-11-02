@@ -1,5 +1,3 @@
-mod cpan_test_helpers;
-
 use perl_parser_core::Parser;
 
 /// Assert that parsing produces no diagnostics AND no error markers in sexp.

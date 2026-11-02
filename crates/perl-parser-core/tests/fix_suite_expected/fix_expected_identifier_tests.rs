@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use crate::cpan_test_helpers::*;
 
 // Tests for issue #2397: expected_identifier — version literals, sigil edge cases
 

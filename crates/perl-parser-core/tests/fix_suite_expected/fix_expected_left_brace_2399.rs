@@ -6,8 +6,7 @@
 //! 2. `eval $expr;` — string/expression eval
 //! 3. `do $file;` — file do (not block)
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use crate::cpan_test_helpers::*;
 
 // ---- Sub forward declarations (sub NAME;) ----
 

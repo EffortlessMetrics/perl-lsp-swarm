@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use crate::cpan_test_helpers::*;
 
 // =============================================================================
 // Ternary operator with complex middle expressions
