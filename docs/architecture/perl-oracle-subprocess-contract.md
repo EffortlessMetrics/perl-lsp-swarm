@@ -71,7 +71,8 @@ behaviour.
 | **Desired contract** | Already meets the post-#8551 contract. Explicit allow: `PERL5LIB` (user-gated), `PATH`. Explicit deny: `PERL5OPT`, `PERL_MM_OPT`, `PERL_MB_OPT`, `PERL_LOCAL_LIB_ROOT`, perlbrew/plenv vars. |
 | **Timeout** | 1 000 ms (`SYSTEM_INC_PROBE_TIMEOUT` at `mod.rs:807`) |
 | **Cache key** | `(config.use_perl5lib, config.use_system_inc, config.perl_path, workspace_folder)` — invalidated when `use_perl5lib` toggles (see `mod.rs:669`) |
-| **Internalization path** | **Retained external evidence** — bounded startup `@INC` under explicit `PerlOracleEnv`; not an unowned raw spawn. Ownership: [EffortlessMetrics/perl-lsp-swarm#7420](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7420); transitional acquisition/retirement graph: [EffortlessMetrics/perl-lsp-swarm#12950](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12950) |
+| **Internalization path** | **Bridge** — replace with modeled config + workspace heuristics; today bounded startup `@INC` under explicit `PerlOracleEnv` (retained external evidence, not an unowned raw spawn) |
+| **Ownership** | [EffortlessMetrics/perl-lsp-swarm#7420](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7420); transitional acquisition/retirement graph: [EffortlessMetrics/perl-lsp-swarm#12950](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12950) |
 
 **Perl invocation:** `perl <perl_args> -e 'print join("\n", @INC)'`
 
@@ -87,7 +88,8 @@ behaviour.
 | **Desired contract** | Same as §1.1 — already met |
 | **Timeout** | 1 000 ms (`SYSTEM_INC_PROBE_TIMEOUT`) |
 | **Cache key** | Same as §1.1 (shares the cache path in `WorkspaceConfig::get_system_inc`) |
-| **Internalization path** | Same disposition as §1.1 — alias only; shares cache and ownership |
+| **Internalization path** | **Bridge** — same classification as §1.1; alias only; collapse at cache layer |
+| **Ownership** | Same as §1.1 |
 
 **Note:** This constructor is a gated alias of `for_startup_inc_probe`. It returns `None`
 when `config.use_system_inc` is `false`, so no subprocess is spawned in that case.
@@ -141,7 +143,8 @@ contract for the execute-command seam.
 | **Desired contract** | Already meets the post-#8551 bridge contract. `perldoc` resolves from the configured Perl toolchain directory when possible, then falls back to `perldoc` on `PATH`. Long-term: replace with an in-process POD reader. |
 | **Timeout** | 10 s (via `run_command_with_timeout` at call site) |
 | **Cache key** | None currently — per-request; caching by module name would reduce subprocess churn |
-| **Internalization path** | **Bounded external fallback** — workspace/current-source POD first; installed `perldoc` only when source is unavailable (`PerlOracleEnv::for_perldoc`). Ownership: [EffortlessMetrics/perl-lsp-swarm#8223](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8223), [EffortlessMetrics/perl-lsp-swarm#8612](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8612), [EffortlessMetrics/perl-lsp-swarm#11023](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11023) |
+| **Internalization path** | **Bridge** — replace with embedded documentation tables or in-process POD reader; workspace/current-source POD first; installed `perldoc` only when source is unavailable (`PerlOracleEnv::for_perldoc`) |
+| **Ownership** | [EffortlessMetrics/perl-lsp-swarm#8223](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8223), [EffortlessMetrics/perl-lsp-swarm#8612](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8612), [EffortlessMetrics/perl-lsp-swarm#11023](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11023) |
 
 **Perl invocation:** `perldoc -T -- <module>` with the perldoc binary resolved from the
 configured Perl toolchain when possible.
@@ -383,26 +386,26 @@ infrastructure, not a production subprocess seam.
 
 Quick-reference. Sorted by internalization path priority (gaps first).
 
-| # | Call site | Mechanism | PERL5LIB | PERL5OPT | local::lib | Timeout | Internalization |
-|---|---|---|---|---|---|---|---|
-| 1.3 | `misc.rs:perl.debugFile` | `PerlOracleEnv::for_language_probe` | user-gated | ✓ denied | ✓ denied | 30 s | Permanent |
-| 1.5 | `virtual_content.rs:fetch_perldoc` | `PerlOracleEnv::for_perldoc` | user-gated | ✓ denied | ✓ denied | 10 s | #8223/#8612/#11023 |
-| 1.1 | `mod.rs:fetch_perl_inc` | `PerlOracleEnv::for_module_resolution` | user-gated | ✓ denied | ✓ denied | 1 000 ms | #7420/#12950 |
-| 1.2 | `perl_oracle_env.rs:for_module_resolution` | `PerlOracleEnv` alias of §1.1 | user-gated | ✓ denied | ✓ denied | 1 000 ms | #7420/#12950 |
-| 1.6 | `process.rs:check_syntax` | `PerlOracleEnv::for_version_probe` | ✓ denied | ✓ denied | ✓ denied | 5 s | Bridge |
-| 1.7 | `process.rs:launch_perl` | `PerlOracleEnv::for_version_probe` | ✓ denied | ✓ denied | ✓ denied | 30 s | Permanent |
-| 1.8 | `bridge_adapter.rs:build_pls_dap_command` | `PerlOracleEnv::for_dap_bridge` | configurable | configurable | ✓ denied | 30 s | Permanent |
-| 1.4 | `provider.rs` (oracle path) | `PerlOracleEnv::for_execute_command` | user-gated | ✓ allowed | ✓ allowed | 30 s | Permanent |
-| 1.9 | `perl_oracle_env.rs:for_dap_test_fixture` | `Command::new("perl")` (partial strip) | ✓ removed | ✓ removed | ✓ removed | 5 s (subsequent) | Oracle |
-| 2.1 | `test_runner.rs:hermetic_perl_command` | `Command::new` + `env_clear()` | ✓ denied | ✓ denied | ✓ denied | per-test | Oracle |
-| 3.1 | `parser_corpus_sweep.rs:get_perl_version` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | none | Oracle |
-| 3.2 | `parser_corpus_sweep.rs` (module res.) | Bare `Command::new("perl")` + explicit PERL5LIB | explicit | ⚠ ambient | ⚠ ambient | none | Oracle |
-| 3.3 | `test_lsp.rs:test_test_runner` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | none | Oracle |
-| 3.4 | `ci_doctor.rs:check_perl` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | none | Oracle |
-| 3.5 | `cpan_corpus.rs:CpanmLauncher` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | per-module | Bridge |
-| 3.6a | `cpan_corpus.rs` (test-only) | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | 2 s / 200 ms | Oracle |
-| 3.6 | `compiler_oracle.rs:run_perl_oracle` | `isolated_perl_command()` + bounded runner | ✓ removed | ✓ removed | ⚠ ambient | 10 s | Oracle |
-| 3.7 | `compiler_oracle.rs:query_perl_version` | `isolated_perl_command()` + bounded runner | ✓ removed | ✓ removed | ⚠ ambient | 10 s | Oracle |
+| # | Call site | Mechanism | PERL5LIB | PERL5OPT | local::lib | Timeout | Internalization | Owner |
+|---|---|---|---|---|---|---|---|---|
+| 1.3 | `misc.rs:perl.debugFile` | `PerlOracleEnv::for_language_probe` | user-gated | ✓ denied | ✓ denied | 30 s | Permanent | — |
+| 1.5 | `virtual_content.rs:fetch_perldoc` | `PerlOracleEnv::for_perldoc` | user-gated | ✓ denied | ✓ denied | 10 s | Bridge | #8223/#8612/#11023 |
+| 1.1 | `mod.rs:fetch_perl_inc` | `PerlOracleEnv::for_module_resolution` | user-gated | ✓ denied | ✓ denied | 1 000 ms | Bridge | #7420/#12950 |
+| 1.2 | `perl_oracle_env.rs:for_module_resolution` | `PerlOracleEnv` alias of §1.1 | user-gated | ✓ denied | ✓ denied | 1 000 ms | Bridge | #7420/#12950 |
+| 1.6 | `process.rs:check_syntax` | `PerlOracleEnv::for_version_probe` | ✓ denied | ✓ denied | ✓ denied | 5 s | Bridge | — |
+| 1.7 | `process.rs:launch_perl` | `PerlOracleEnv::for_version_probe` | ✓ denied | ✓ denied | ✓ denied | 30 s | Permanent | — |
+| 1.8 | `bridge_adapter.rs:build_pls_dap_command` | `PerlOracleEnv::for_dap_bridge` | configurable | configurable | ✓ denied | 30 s | Permanent | — |
+| 1.4 | `provider.rs` (oracle path) | `PerlOracleEnv::for_execute_command` | user-gated | ✓ allowed | ✓ allowed | 30 s | Permanent | — |
+| 1.9 | `perl_oracle_env.rs:for_dap_test_fixture` | `Command::new("perl")` (partial strip) | ✓ removed | ✓ removed | ✓ removed | 5 s (subsequent) | Oracle | — |
+| 2.1 | `test_runner.rs:hermetic_perl_command` | `Command::new` + `env_clear()` | ✓ denied | ✓ denied | ✓ denied | per-test | Oracle | — |
+| 3.1 | `parser_corpus_sweep.rs:get_perl_version` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | none | Oracle | — |
+| 3.2 | `parser_corpus_sweep.rs` (module res.) | Bare `Command::new("perl")` + explicit PERL5LIB | explicit | ⚠ ambient | ⚠ ambient | none | Oracle | — |
+| 3.3 | `test_lsp.rs:test_test_runner` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | none | Oracle | — |
+| 3.4 | `ci_doctor.rs:check_perl` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | none | Oracle | — |
+| 3.5 | `cpan_corpus.rs:CpanmLauncher` | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | per-module | Bridge | — |
+| 3.6a | `cpan_corpus.rs` (test-only) | Bare `Command::new("perl")` | ⚠ ambient | ⚠ ambient | ⚠ ambient | 2 s / 200 ms | Oracle | — |
+| 3.6 | `compiler_oracle.rs:run_perl_oracle` | `isolated_perl_command()` + bounded runner | ✓ removed | ✓ removed | ⚠ ambient | 10 s | Oracle | — |
+| 3.7 | `compiler_oracle.rs:query_perl_version` | `isolated_perl_command()` + bounded runner | ✓ removed | ✓ removed | ⚠ ambient | 10 s | Oracle | — |
 
 Legend: ✓ denied/removed = no leak · user-gated = follows `usePerl5lib` config · ⚠ ambient = inherits from LSP/xtask process
 

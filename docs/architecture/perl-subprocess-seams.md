@@ -122,7 +122,7 @@ been added.
 
 | Seam | Purpose | Ambient inputs | Timeout | Cache | Internalization |
 |---|---|---|---|---|---|
-| **Startup `@INC` probe** (`fetch_perl_inc` in `perl-lsp-rs-core/src/config/mod.rs`) | Discover interpreter startup `@INC` paths | `PATH`, selected Perl binary; `PERL5LIB` only when `usePerl5lib=true` | 1s | per (config, folder) | **Retained external evidence** — bounded `PerlOracleEnv` contract; ownership: [EffortlessMetrics/perl-lsp-swarm#7420](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7420), transitional acquisition graph: [EffortlessMetrics/perl-lsp-swarm#12950](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12950) |
+| **Startup `@INC` probe** (`fetch_perl_inc` in `perl-lsp-rs-core/src/config/mod.rs`) | Discover interpreter startup `@INC` paths | `PATH`, selected Perl binary; `PERL5LIB` only when `usePerl5lib=true` | 1s | per (config, folder) | **Bridge** — replace with modeled config + workspace heuristics (today: bounded `PerlOracleEnv`; ownership [#7420](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7420), [#12950](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12950)) |
 | **Real-Perl oracle** (parser conformance tests) | Differential test evidence: what does real Perl say about this source? | Controlled fixture env (PERL5LIB unset, HOME=test temp, locale=C) | bounded | test-local | **Oracle** — never editor-runtime |
 | **perlcritic / perltidy** (if invoked) | External tool integration | Explicit tool path, config path | bounded | per (tool, config) | **Bridge** — native critic / formatter lanes are the long-term plan |
 
