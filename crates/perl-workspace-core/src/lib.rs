@@ -65,6 +65,7 @@ pub mod id;
 pub mod import;
 mod import_walk;
 pub mod meta_yml;
+pub mod meta_yml_spec;
 pub mod model;
 pub mod package;
 pub mod pod;
@@ -90,7 +91,10 @@ pub use carmel::{
     CarmelArtifactRoot, CarmelDetection, CarmelLockAttribution, MySetupFacts, detect_carmel,
     parse_mysetup_environment,
 };
-pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
+pub use dist::{
+    DistMetadataAgreement, DistMetadataComparison, DistMetadataFacts, DistMetadataSource, Prereq,
+    compare_dist_metadata,
+};
 pub use dist_authoring::{
     AuthoringPrereq, DistAuthoringBuildTool, DistAuthoringConflict, DistAuthoringFacts,
     DistAuthoringSource, DistDeclaration, DistDeclarationKind, DistFactAgreement,
@@ -133,7 +137,12 @@ pub use file::{FileRecord, FileRole, ParseStatus};
 pub use id::{Digest, FileId, PackageId, SymbolId, fnv1a};
 pub use import::{ImportFact, ImportKind};
 pub use meta_yml::{
-    MetaYmlFinding, MetaYmlFindingKind, MetaYmlOutcome, MetaYmlParseState, parse_meta_yml,
+    MetaSpecVersion, MetaYmlFinding, MetaYmlFindingKind, MetaYmlOutcome, MetaYmlParseState,
+    parse_meta_yml,
+};
+pub use meta_yml_spec::{
+    MetaYmlLicenseShape, MetaYmlSpecFinding, MetaYmlSpecFindingKind, MetaYmlSpecValidation,
+    validate_meta_yml_spec,
 };
 pub use model::ProjectModel;
 pub use package::PackageRecord;
