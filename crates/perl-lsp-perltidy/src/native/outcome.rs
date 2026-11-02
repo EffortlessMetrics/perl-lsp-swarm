@@ -287,14 +287,7 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let result = <Self as PerlFormatter>::format_document(self, source, config);
-        classify_native_result(
-            source,
-            config,
-            context,
-            FormatRequestTarget::Document,
-            result,
-            None,
-        )
+        classify_native_result(source, config, context, FormatRequestTarget::Document, result, None)
     }
 
     /// Format a complete document recording deterministic pipeline work
@@ -1207,10 +1200,7 @@ mod tests {
 
     #[test]
     fn disabled_typed_calls_record_disabled_execution() {
-        let config = FormatConfig {
-            mode: FormatterMode::Off,
-            ..FormatConfig::default()
-        };
+        let config = FormatConfig { mode: FormatterMode::Off, ..FormatConfig::default() };
         let document = NativeFormatter::new().format_document_typed(
             "my$x=1;\n",
             &config,
