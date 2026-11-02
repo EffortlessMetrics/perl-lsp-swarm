@@ -921,8 +921,20 @@ pub fn observe_geometry_fields(kind: &NodeKind) -> Vec<ObservedGeometryField> {
                 occurrences: 1,
             }]
         }
-        NodeKind::Use { module: _, args: _, has_filter_risk: _ } => NONE,
-        NodeKind::No { module: _, args: _, has_filter_risk: _ } => NONE,
+        NodeKind::Use { module: _, args: _, module_span, syntax: _, has_filter_risk: _ } => {
+            vec![ObservedGeometryField {
+                field: "module_span",
+                shape: AstGeometryShape::Direct,
+                occurrences: 1,
+            }]
+        }
+        NodeKind::No { module: _, args: _, module_span, syntax: _, has_filter_risk: _ } => {
+            vec![ObservedGeometryField {
+                field: "module_span",
+                shape: AstGeometryShape::Direct,
+                occurrences: 1,
+            }]
+        }
         NodeKind::PhaseBlock { phase: _, phase_span, block: _ } => {
             optional_span("phase_span", phase_span.is_some())
         }

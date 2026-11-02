@@ -388,7 +388,7 @@ impl Lowerer {
                 }
                 self.exit_scope();
             }
-            NodeKind::Use { module, args, has_filter_risk } => {
+            NodeKind::Use { module, args, has_filter_risk, .. } => {
                 let item_id = self.push_item(
                     node,
                     None,
@@ -412,7 +412,7 @@ impl Lowerer {
                 self.record_use_compile_effects(module, args, node.location, Some(item_id));
                 self.record_use_stash_effects(module, args, node.location, item_id);
             }
-            NodeKind::No { module, args, has_filter_risk: _ } => {
+            NodeKind::No { module, args, has_filter_risk: _, .. } => {
                 self.record_compile_directive(
                     CompileDirectiveAction::No,
                     Some(module.clone()),

@@ -817,6 +817,8 @@ impl<'a> Parser<'a> {
     fn parse_use(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
         self.consume_token()?; // consume 'use'
+        let mut import_acc = DirectiveImportAcc::default();
+        let mut tracked_version: Option<VersionRequirementSyntax> = None;
 
         // Parse module name, version, or identifier
         let mut module = if matches!(
@@ -917,8 +919,13 @@ impl<'a> Parser<'a> {
 
         // Parse optional version number
         if module != "if" && module != "unless" && self.peek_kind() == Some(TokenKind::Number) {
+            let ver_token = self.consume_token()?;
+            tracked_version = Some(numeric_version_from_token(
+                ver_token.text.as_ref(),
+                SourceLocation { start: ver_token.start(), end: ver_token.end() },
+            ));
             module.push(' ');
-            module.push_str(&self.consume_token()?.text);
+            module.push_str(ver_token.text.as_ref());
         }
 
         if module.split_whitespace().next() == Some("Attribute::Handlers") {
@@ -955,9 +962,10 @@ impl<'a> Parser<'a> {
             }
             let end = self.previous_position();
             let has_filter_risk = Self::is_filter_module(&module);
+            let span = SourceLocation { start, end };
             return self.charge_node(
-                NodeKind::Use { module, args: cond_args, has_filter_risk },
-                SourceLocation { start, end },
+                use_kind_from_legacy(self.source_text(), span, module, cond_args, has_filter_risk),
+                span,
             );
         }
 
@@ -999,7 +1007,13 @@ impl<'a> Parser<'a> {
                 // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
                 // We use parentheses regardless of original delimiter for consistency
                 let qw_str = format!("qw({})", list.join(" "));
-                args.push(qw_str);
+                args.push(qw_str.clone());
+                let word_spans = infer_qw_word_spans(
+                    self.source_text(),
+                    SourceLocation { start, end: self.previous_position() },
+                    &list,
+                );
+                import_acc.record_qw_words(&word_spans, &qw_str);
                 // optional: qw(...) => <value>
                 if self.peek_kind() == Some(TokenKind::FatArrow) {
                     self.consume_token()?; // =>
@@ -1404,9 +1418,21 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
+        let node_span = SourceLocation { start, end };
+        let module_span = module_span_after_use_keyword(self.source_text(), start, &module);
+        let version = tracked_version.or_else(|| extract_version_syntax(self.source_text(), node_span, &module));
+        let syntax = build_directive_syntax(
+            self.source_text(),
+            node_span,
+            &module,
+            &args,
+            module_span,
+            version,
+            &import_acc,
+        );
         self.charge_node(
-            NodeKind::Use { module, args, has_filter_risk },
-            SourceLocation { start, end },
+            NodeKind::Use { module, module_span, syntax, args, has_filter_risk },
+            node_span,
         )
     }
 
@@ -1500,6 +1526,7 @@ impl<'a> Parser<'a> {
     fn parse_no(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
         self.advance_token()?; // consume 'no'
+        let mut import_acc = DirectiveImportAcc::default();
 
         // Parse module name — accepts bare identifiers or keyword-named pragmas
         // (e.g. `no if COND, warnings`, `no feature`).
@@ -1578,9 +1605,10 @@ impl<'a> Parser<'a> {
             }
             let end = self.previous_position();
             let has_filter_risk = Self::is_filter_module(&module);
+            let span = SourceLocation { start, end };
             return self.charge_node(
-                NodeKind::No { module, args: cond_args, has_filter_risk },
-                SourceLocation { start, end },
+                no_kind_from_legacy(self.source_text(), span, module, cond_args, has_filter_risk),
+                span,
             );
         }
 
@@ -1756,7 +1784,22 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
-        self.charge_node(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end })
+        let node_span = SourceLocation { start, end };
+        let module_span = module_span_after_use_keyword(self.source_text(), start, &module);
+        let version = extract_version_syntax(self.source_text(), node_span, &module);
+        let syntax = build_directive_syntax(
+            self.source_text(),
+            node_span,
+            &module,
+            &args,
+            module_span,
+            version,
+            &import_acc,
+        );
+        self.charge_node(
+            NodeKind::No { module, module_span, syntax, args, has_filter_risk },
+            node_span,
+        )
     }
 
     /// Raw import collectors must retain quote errors that the token adapter maps
