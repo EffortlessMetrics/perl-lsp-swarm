@@ -152,6 +152,30 @@ pub const DBI_ST_METHOD_SIGS: &[(&str, &str, &str)] = &[
     ("rows", "rows()", "Return the number of rows affected or returned"),
 ];
 
+/// SQL::Abstract query-builder methods (instance and class methods).
+pub const SQL_ABSTRACT_METHODS: &[(&str, &str)] = &[
+    ("select", "Generate SELECT statement"),
+    ("insert", "Generate INSERT statement"),
+    ("update", "Generate UPDATE statement"),
+    ("delete", "Generate DELETE statement"),
+    ("where", "Generate WHERE clause"),
+    ("generate", "Generate arbitrary SQL"),
+    ("values", "Generate VALUES clause"),
+    ("order_by", "Generate ORDER BY clause"),
+];
+
+/// Parameter signatures for SQL::Abstract methods.
+pub const SQL_ABSTRACT_METHOD_SIGS: &[(&str, &str, &str)] = &[
+    ("select", "select($table, $fields?, $where?, $order?)", "Generate SELECT statement"),
+    ("insert", "insert($table, $values_or_fields, $values?)", "Generate INSERT statement"),
+    ("update", "update($table, $set, $where?)", "Generate UPDATE statement"),
+    ("delete", "delete($table, $where?)", "Generate DELETE statement"),
+    ("where", "where($where)", "Generate WHERE clause"),
+    ("generate", "generate($type, @args)", "Generate arbitrary SQL"),
+    ("values", "values($table, @values)", "Generate VALUES clause"),
+    ("order_by", "order_by($table, @order)", "Generate ORDER BY clause"),
+];
+
 /// Static methods documented by `Mojo::Pg`.
 pub const MOJO_PG_METHODS: &[(&str, &str)] = &[("new", "Create a Mojo::Pg database wrapper")];
 
@@ -337,6 +361,57 @@ pub fn get_dbi_method_documentation(
     table.iter().find(|(n, _, _)| *n == method_name).map(|(_, sig, desc)| (*sig, *desc))
 }
 
+/// Look up SQL::Abstract method documentation by method name.
+pub fn get_sql_abstract_method_documentation(
+    method_name: &str,
+) -> Option<(&'static str, &'static str)> {
+    SQL_ABSTRACT_METHOD_SIGS
+        .iter()
+        .find(|(name, _, _)| *name == method_name)
+        .map(|(_, sig, desc)| (*sig, *desc))
+}
+
+/// True when the document imports SQL::Abstract (including `SQL::Abstract::Pg` variants).
+pub fn is_sql_abstract_source(source: &str, position: usize) -> bool {
+    if module_was_used_before(source, position, "SQL::Abstract") {
+        return true;
+    }
+
+    let source = source.get(..position).unwrap_or(source);
+    let mut search_start = 0usize;
+
+    while let Some(relative_use) = source[search_start..].find("use") {
+        let use_start = search_start + relative_use;
+        let after_use_start = use_start + "use".len();
+        search_start = after_use_start;
+
+        if !is_code_position(source, use_start)
+            || source[..use_start].chars().next_back().is_some_and(is_module_identifier_char)
+        {
+            continue;
+        }
+
+        let after_use = &source[after_use_start..];
+        let trimmed_after_use = after_use.trim_start_matches(char::is_whitespace);
+        if trimmed_after_use.len() == after_use.len() {
+            continue;
+        }
+
+        let module_start = after_use_start + after_use.len() - trimmed_after_use.len();
+        let module_name = source[module_start..]
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+            .next()
+            .unwrap_or("");
+        if module_name.starts_with("SQL::Abstract::") {
+            return true;
+        }
+
+        search_start = module_start + module_name.len().max(1);
+    }
+
+    false
+}
+
 /// Infer receiver type from context (for DBI method completion)
 pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<String> {
     // Look backwards from the position to find the receiver
@@ -348,6 +423,25 @@ pub fn infer_receiver_type(context: &CompletionContext, source: &str) -> Option<
     }
     if prefix.ends_with("$sth") {
         return Some("DBI::st".to_string());
+    }
+
+    if is_sql_abstract_source(source, context.position) {
+        if matches!(prefix, "$sql" | "$sqla" | "$sql_abs") {
+            return Some("SQL::Abstract".to_string());
+        }
+
+        if let Some(var_pos) = source.rfind(prefix) {
+            let before_var = &source[..var_pos];
+            if let Some(assign_pos) = before_var.rfind('=') {
+                let assignment = &source[assign_pos..var_pos + prefix.len()];
+                if assignment.contains("SQL::Abstract")
+                    && assignment.contains("new")
+                    && prefix != "$s"
+                {
+                    return Some("SQL::Abstract".to_string());
+                }
+            }
+        }
     }
 
     // Look at the broader context - check if variable was assigned from DBI->connect
@@ -966,6 +1060,13 @@ fn infer_imported_constructor_receiver_type(
         receiver_pos + receiver.len(),
     )?;
 
+    if is_sql_abstract_source(source, context.position)
+        && receiver != "$s"
+        && expression_calls_constructor(expression, "SQL::Abstract")
+    {
+        return Some("SQL::Abstract");
+    }
+
     ["HTTP::Tiny", "LWP::UserAgent"].into_iter().find(|&module| {
         module_was_used_before(source, context.position, module)
             && expression_calls_constructor(expression, module)
@@ -987,6 +1088,12 @@ fn imported_static_methods(
         "Mojo::Pg" => Some(MOJO_PG_METHODS),
         "Mojo::mysql" => Some(MOJO_MYSQL_METHODS),
         "Path::Tiny" => Some(PATH_TINY_STATIC_METHODS),
+        module
+            if (module == "SQL::Abstract" || module.starts_with("SQL::Abstract::"))
+                && is_sql_abstract_source(source, position) =>
+        {
+            Some(SQL_ABSTRACT_METHODS)
+        }
         _ => None,
     }
 }
@@ -998,6 +1105,7 @@ fn known_instance_methods(
         Some("HTTP::Tiny") => Some(HTTP_TINY_METHODS),
         Some("LWP::UserAgent") => Some(LWP_USER_AGENT_METHODS),
         Some("Path::Tiny") => Some(PATH_TINY_METHODS),
+        Some("SQL::Abstract") => Some(SQL_ABSTRACT_METHODS),
         _ => None,
     }
 }
@@ -1271,6 +1379,9 @@ pub fn add_method_completions(
         match receiver_type.as_deref() {
             Some("DBI::db") => DBI_DB_METHODS.to_vec(),
             Some("DBI::st") => DBI_ST_METHODS.to_vec(),
+            Some("SQL::Abstract") if is_sql_abstract_source(source, context.position) => {
+                SQL_ABSTRACT_METHODS.to_vec()
+            }
             _ => GENERIC_OBJECT_METHODS.to_vec(),
         }
     };

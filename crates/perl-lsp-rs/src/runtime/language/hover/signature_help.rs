@@ -125,6 +125,22 @@ impl LspServer {
                         }
                     }
 
+                    if Self::is_method_call_context(&doc.text, offset)
+                        && crate::completion::is_sql_abstract_source(&doc.text, offset)
+                        && let Some((sig, desc)) =
+                            crate::completion::get_sql_abstract_method_documentation(&function_name)
+                    {
+                        return Ok(Some(json!({
+                            "signatures": [json!({
+                                "label": sig,
+                                "documentation": desc,
+                                "parameters": []
+                            })],
+                            "activeSignature": active_signature,
+                            "activeParameter": active_param
+                        })));
+                    }
+
                     // Try to get signature from user-defined functions first (if AST exists)
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(signature) =
