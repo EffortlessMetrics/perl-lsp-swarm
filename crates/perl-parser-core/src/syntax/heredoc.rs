@@ -53,6 +53,17 @@ pub struct HeredocContent {
     pub terminated: bool,
 }
 
+/// Cooperative cancellation observed while collecting heredoc bodies.
+///
+/// The parser maps this to [`crate::ParseError::Cancelled`] and records
+/// [`crate::ParseStopCause::Cancelled`]; it is never charged as budget
+/// exhaustion (#7291 / #13786).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HeredocCollectInterrupt {
+    /// An external cancellation flag was set during collection.
+    Cancelled,
+}
+
 /// Result of collecting one or more heredocs from source.
 #[derive(Debug)]
 pub struct CollectionResult {
@@ -92,21 +103,43 @@ pub fn collect_all(
 /// order, while a declaration on a later line resets collection to that line.
 pub fn collect_at_declaration_offsets(
     src: &[u8],
-    mut pending: VecDeque<PendingHeredoc>,
+    pending: VecDeque<PendingHeredoc>,
 ) -> CollectionResult {
+    collect_at_declaration_offsets_with_probe(src, pending, || false).unwrap_or_else(|interrupt| {
+        match interrupt {
+            HeredocCollectInterrupt::Cancelled => {
+                unreachable!("probe never interrupts in collect_at_declaration_offsets")
+            }
+        }
+    })
+}
+
+/// Like [`collect_at_declaration_offsets`], but polls `probe` before each
+/// physical line while scanning bodies and before each queued declaration.
+pub(crate) fn collect_at_declaration_offsets_with_probe<F>(
+    src: &[u8],
+    mut pending: VecDeque<PendingHeredoc>,
+    mut probe: F,
+) -> Result<CollectionResult, HeredocCollectInterrupt>
+where
+    F: FnMut() -> bool,
+{
     let mut results = Vec::with_capacity(pending.len());
     let mut terminators_found = Vec::with_capacity(pending.len());
     let mut next_offset = pending.front().map_or(0, |heredoc| heredoc.body_start);
 
     while let Some(hd) = pending.pop_front() {
+        if probe() {
+            return Err(HeredocCollectInterrupt::Cancelled);
+        }
         let body_start = next_offset.max(hd.body_start);
-        let (content, offset, found) = collect_one(src, body_start, &hd);
+        let (content, offset, found) = collect_one_probed(src, body_start, &hd, &mut probe)?;
         results.push(content);
         terminators_found.push(found);
         next_offset = offset;
     }
 
-    CollectionResult { contents: results, terminators_found, next_offset }
+    Ok(CollectionResult { contents: results, terminators_found, next_offset })
 }
 
 /// Reads content lines until `label` matches after optional leading whitespace.
@@ -114,7 +147,23 @@ pub fn collect_at_declaration_offsets(
 /// and strip the longest common BYTE prefix on each content line.
 /// CRLF is normalized **only** for terminator comparison; content spans exclude
 /// CR and LF bytes by construction.
-fn collect_one(src: &[u8], mut off: usize, hd: &PendingHeredoc) -> (HeredocContent, usize, bool) {
+fn collect_one(src: &[u8], off: usize, hd: &PendingHeredoc) -> (HeredocContent, usize, bool) {
+    collect_one_probed(src, off, hd, &mut || false).unwrap_or_else(|interrupt| match interrupt {
+        HeredocCollectInterrupt::Cancelled => {
+            unreachable!("probe never interrupts in collect_one")
+        }
+    })
+}
+
+fn collect_one_probed<F>(
+    src: &[u8],
+    mut off: usize,
+    hd: &PendingHeredoc,
+    probe: &mut F,
+) -> Result<(HeredocContent, usize, bool), HeredocCollectInterrupt>
+where
+    F: FnMut() -> bool,
+{
     #[derive(Debug)]
     struct Line {
         start: usize,
@@ -128,6 +177,9 @@ fn collect_one(src: &[u8], mut off: usize, hd: &PendingHeredoc) -> (HeredocConte
 
     // Note: Use < not <= to avoid infinite loop at EOF (next_line_bounds returns same offset at EOF)
     while off < src.len() {
+        if probe() {
+            return Err(HeredocCollectInterrupt::Cancelled);
+        }
         let (ls, le, next) = next_line_bounds(src, off);
         let line = &src[ls..le];
 
@@ -171,10 +223,10 @@ fn collect_one(src: &[u8], mut off: usize, hd: &PendingHeredoc) -> (HeredocConte
 
     if !found {
         // Unterminated; return what we have (upstream should report a syntax error)
-        return (HeredocContent { segments, full_span, terminated: false }, off, false);
+        return Ok((HeredocContent { segments, full_span, terminated: false }, off, false));
     }
 
-    (HeredocContent { segments, full_span, terminated: true }, after_terminator_off, true)
+    Ok((HeredocContent { segments, full_span, terminated: true }, after_terminator_off, true))
 }
 
 /// (line_start, line_end_excluding_newline, next_offset_after_newline)

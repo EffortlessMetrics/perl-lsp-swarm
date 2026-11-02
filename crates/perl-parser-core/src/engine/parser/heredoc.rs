@@ -208,13 +208,26 @@ impl<'a> Parser<'a> {
     /// exists. Keeping the prefix also prevents sequential block statements from
     /// accumulating against the global depth cap.
     #[allow(clippy::print_stderr, reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]")]
-    fn drain_pending_heredocs_from(&mut self, pending_start: usize, root: &mut Node) {
+    fn drain_pending_heredocs_from(
+        &mut self,
+        pending_start: usize,
+        root: &mut Node,
+    ) -> ParseResult<()> {
         if pending_start >= self.pending_heredocs.len() {
-            return;
+            return Ok(());
         }
 
+        // Queue stage (#7291 / #13786): refuse to begin collection once cancelled.
+        self.check_cancelled()?;
         // Deterministic collection bound (#7291).
         //
+        // Attachment work (#7291 / #13786): each collected body is attached with
+        // at most one depth-first walk over the enclosing statement subtree.
+        // That subtree is bounded by the nodes the statement parse already
+        // constructed and by `MAX_HEREDOC_DEPTH` on queued declarations. Scan
+        // bytes already bound the collector's monotone pass over source, so
+        // attachment is not charged separately — only documented and tested
+        // here as an incidental, finite bound.
         // Heredoc collection was previously abandoned when more than five
         // wall-clock seconds had elapsed since the queue became non-empty. That
         // timer spanned the whole enclosing statement — including nested blocks
@@ -243,7 +256,7 @@ impl<'a> Parser<'a> {
                 });
             self.report_heredoc_budget_refusal(location);
             self.record_heredoc_budget_terminal();
-            return;
+            return Ok(());
         }
 
         // Keep a copy of the suffix declarations so we can match outputs back to inputs.
@@ -260,7 +273,12 @@ impl<'a> Parser<'a> {
         // configuration, never of elapsed time.
         let scan_start = pending.first().map_or(self.byte_cursor, |decl| decl.body_start);
 
-        let out = collect_at_declaration_offsets(self.src_bytes, queued);
+        let out = collect_at_declaration_offsets_with_probe(self.src_bytes, queued, || {
+            self.operation.is_pre_cancelled()
+        })
+        .map_err(|interrupt| match interrupt {
+            HeredocCollectInterrupt::Cancelled => ParseError::Cancelled,
+        })?;
 
         self.operation.record_heredoc_scan(out.next_offset.saturating_sub(scan_start));
 
@@ -289,6 +307,9 @@ impl<'a> Parser<'a> {
 
         // Zip 1:1 in order (collector preserves input order)
         for (decl, body) in pending.into_iter().zip(out.contents) {
+            // Attachment stage (#7291 / #13786).
+            self.check_cancelled()?;
+
             let mut attached = self.try_attach_heredoc_at_node(root, decl.decl_span, &body);
             if !attached {
                 // Fallback: when statement recovery mutates span boundaries, the exact
@@ -346,6 +367,30 @@ impl<'a> Parser<'a> {
         // attaches an earlier declaration. Never move the cursor backwards when the
         // parent queue is finally drained.
         self.byte_cursor = self.byte_cursor.max(out.next_offset);
+        Ok(())
+    }
+
+    /// Reify collected body bytes into AST storage for one heredoc node.
+    fn reify_heredoc_body(&self, body: &HeredocContent) -> (String, Option<SourceLocation>) {
+        let mut content = String::new();
+        for (index, segment) in body.segments.iter().enumerate() {
+            if segment.end > segment.start {
+                let bytes = &self.src_bytes[segment.start..segment.end];
+                content.push_str(std::str::from_utf8(bytes).unwrap_or_default());
+            }
+            if index + 1 < body.segments.len() {
+                content.push('\n');
+            }
+        }
+        let body_span = if body.full_span.start < body.full_span.end {
+            Some(SourceLocation {
+                start: body.full_span.start,
+                end: body.full_span.end,
+            })
+        } else {
+            None
+        };
+        (content, body_span)
     }
 
     /// Attach collected heredoc content to its declaration node by matching declaration span
@@ -375,31 +420,9 @@ impl<'a> Parser<'a> {
         if node_matches {
             // Try to attach at this node
             if let NodeKind::Heredoc { content, body_span, .. } = &mut node.kind {
-                // Reify the body bytes from src_bytes using the collector's segments
-                let mut s = String::new();
-                for (i, seg) in body.segments.iter().enumerate() {
-                    if seg.end > seg.start {
-                        let bytes = &self.src_bytes[seg.start..seg.end];
-                        // Source is valid UTF-8 (enforced by lexer)
-                        s.push_str(std::str::from_utf8(bytes).unwrap_or_default());
-                    }
-                    if i + 1 < body.segments.len() {
-                        // Normalize line breaks for AST convenience
-                        s.push('\n');
-                    }
-                }
-                *content = s;
-
-                // Store body span for breakpoint detection
-                *body_span = if body.full_span.start < body.full_span.end {
-                    Some(SourceLocation {
-                        start: body.full_span.start,
-                        end: body.full_span.end,
-                    })
-                } else {
-                    None // Empty heredoc
-                };
-
+                let (reified, span) = self.reify_heredoc_body(body);
+                *content = reified;
+                *body_span = span;
                 return true;
             }
         }
@@ -437,26 +460,9 @@ impl<'a> Parser<'a> {
         if let NodeKind::Heredoc { content, body_span, .. } = &mut node.kind {
             let unresolved = content.is_empty() && body_span.is_none();
             if unresolved {
-                let mut text = String::new();
-                for (i, seg) in body.segments.iter().enumerate() {
-                    if seg.end > seg.start {
-                        let bytes = &self.src_bytes[seg.start..seg.end];
-                        text.push_str(std::str::from_utf8(bytes).unwrap_or_default());
-                    }
-                    if i + 1 < body.segments.len() {
-                        text.push('\n');
-                    }
-                }
-
+                let (text, span) = self.reify_heredoc_body(body);
                 *content = text;
-                *body_span = if body.full_span.start < body.full_span.end {
-                    Some(SourceLocation {
-                        start: body.full_span.start,
-                        end: body.full_span.end,
-                    })
-                } else {
-                    None
-                };
+                *body_span = span;
                 return true;
             }
         }

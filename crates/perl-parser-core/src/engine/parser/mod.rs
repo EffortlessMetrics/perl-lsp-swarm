@@ -57,7 +57,10 @@
 use crate::{
     ast::{GotoTargetForm, Node, NodeKind, SourceLocation},
     error::{ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind, RecoverySite},
-    heredoc_collector::{self, HeredocContent, PendingHeredoc, collect_at_declaration_offsets},
+    heredoc_collector::{
+        self, HeredocCollectInterrupt, HeredocContent, PendingHeredoc,
+        collect_at_declaration_offsets_with_probe,
+    },
     quote_parser,
     token_stream::{ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream},
 };
