@@ -99,6 +99,8 @@ members = [
     "crates/tree-sitter-perl-c",
     "crates/tree-sitter-perl-rs",
     "crates/perl-ci-hygiene",
+    # perl-code-intelligence: transport-neutral session/document authority (#6957 / #7218).
+    "crates/perl-code-intelligence",
     "crates/perl-release-readiness",
     "crates/perl-workspace-core",
     "crates/perl-tree-sitter-compat",
@@ -253,6 +255,8 @@ perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0
 # ProjectId) — the last being its only internal one. Exact closure asserted
 # by crates/perl-evidence-envelope/tests/dependency_contract.rs.
 perl-evidence-envelope = { path = "crates/perl-evidence-envelope", version = "0.17.0" }
+# perl-code-intelligence: transport-neutral code-intelligence session (#6957 / #7218).
+perl-code-intelligence = { path = "crates/perl-code-intelligence", version = "0.17.0" }
 # perl-operation-trace: operation_trace.v1 correlation identity/event/recorder
 # contract (#15021). No internal deps.
 perl-operation-trace = { path = "crates/perl-operation-trace", version = "0.17.0" }
