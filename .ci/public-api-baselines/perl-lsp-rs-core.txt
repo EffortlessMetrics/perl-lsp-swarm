@@ -12386,5 +12386,11 @@ pub fn perl_lsp_rs_core::transport::read_message_outcome(reader: &mut dyn std::i
 pub fn perl_lsp_rs_core::transport::write_message(writer: &mut dyn std::io::Write, response: &perl_lsp_rs_core::protocol::JsonRpcResponse) -> std::io::Result<()>
 pub fn perl_lsp_rs_core::transport::write_notification(writer: &mut dyn std::io::Write, method: &str, params: serde_json::value::Value) -> std::io::Result<()>
 pub mod perl_lsp_rs_core::uri
+pub struct perl_lsp_rs_core::uri::UriStrictParseError
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::clone(&self) -> perl_lsp_rs_core::uri::UriStrictParseError
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::eq(&self, other: &perl_lsp_rs_core::uri::UriStrictParseError) -> bool
+pub fn perl_lsp_rs_core::uri::UriStrictParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::uri::parse_uri(s: &str) -> lsp_types::uri::Uri
+pub fn perl_lsp_rs_core::uri::parse_uri_or_err(s: &str) -> core::result::Result<lsp_types::uri::Uri, perl_lsp_rs_core::uri::UriStrictParseError>
+pub fn perl_lsp_rs_core::uri::try_parse_uri(s: &str) -> core::option::Option<lsp_types::uri::Uri>
 pub macro perl_lsp_rs_core::check_cancellation!
