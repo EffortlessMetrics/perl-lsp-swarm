@@ -259,7 +259,9 @@ async function prepareWorkspaceRegularFileTargetAsync(
 
   const canonicalWorkspaceRoot = await fs.promises.realpath(lexicalWorkspaceRoot);
   const parentPath = path.dirname(resolvedTarget);
-  await ensureWorkspaceDirectoryPath(lexicalWorkspaceRoot, parentPath);
+  if (parentPath !== lexicalWorkspaceRoot) {
+    await ensureWorkspaceDirectoryPath(lexicalWorkspaceRoot, parentPath);
+  }
 
   return {
     canonicalWorkspaceRoot,
