@@ -47,14 +47,20 @@ mod tests {
 
     #[test]
     fn contract_note_names_unsupported_facts_and_transitions() {
-        let note = include_str!("parser_to_semantic_contract.rs");
-        assert!(note.contains("Unsupported facts"), "contract note must name unsupported facts");
+        let source = include_str!("parser_to_semantic_contract.rs");
+        let doc_lines: Vec<&str> =
+            source.lines().map(str::trim_start).filter(|line| line.starts_with("//!")).collect();
+
         assert!(
-            note.contains("Parser-to-fact transitions"),
+            doc_lines.iter().any(|line| line.starts_with("//! ## Unsupported facts")),
+            "contract note must name unsupported facts"
+        );
+        assert!(
+            doc_lines.iter().any(|line| line.starts_with("//! ## Parser-to-fact transitions")),
             "contract note must name parser-to-fact transitions"
         );
         assert!(
-            note.contains("SemanticFactEnvelope"),
+            doc_lines.iter().any(|line| line.contains("SemanticFactEnvelope (transport)")),
             "contract note must anchor envelope transport"
         );
     }
