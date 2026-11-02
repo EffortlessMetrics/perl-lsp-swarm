@@ -2008,7 +2008,9 @@ jobs:
               # #17450: the hosted UI often shows only an early build prefix.
               # Persist the API-retrieved tail before the temp file is removed.
               if [ "$fetched" = "true" ] && [ -f scripts/ci/preserve-lane-log-tail.sh ]; then
-                bash scripts/ci/preserve-lane-log-tail.sh "$lane_log" ripr-lane-log-tail.txt
+                if ! bash scripts/ci/preserve-lane-log-tail.sh "$lane_log" ripr-lane-log-tail.txt; then
+                  echo "::warning::lane log tail for ${lane_name} (job ${lane_job_id}) was not preserved; lane classification continues"
+                fi
               fi
               if [ "$fetched" != "true" ]; then
                 # Retrieval failure is not evidence of an eviction. Preserve

@@ -17,6 +17,18 @@ fi
 src=$1
 dest=$2
 
+if [ "$src" = "$dest" ]; then
+  printf 'error: outfile must differ from logfile\n' >&2
+  exit 2
+fi
+
+src_canon=$(readlink -f "$src")
+dest_canon=$(readlink -m "$dest")
+if [ "$src_canon" = "$dest_canon" ]; then
+  printf 'error: outfile resolves to the same path as logfile\n' >&2
+  exit 2
+fi
+
 if [ ! -f "$src" ]; then
   printf 'error: logfile %s is missing\n' "$src" >&2
   exit 2

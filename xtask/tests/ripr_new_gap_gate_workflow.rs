@@ -2086,8 +2086,10 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && evaluate_step.contains("lane_job_id=${lane_job_id:-unknown}")
             && evaluate_step.contains("write_gate_classification \"configured-timeout-no-proof\"")
             && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\"")
-            && evaluate_step.contains("preserve-lane-log-tail.sh")
-            && evaluate_step.contains("ripr-lane-log-tail.txt")
+            && evaluate_step.contains(
+                "preserve-lane-log-tail.sh \"$lane_log\" ripr-lane-log-tail.txt",
+            )
+            && evaluate_step.contains("lane log tail for ${lane_name}")
             && evaluate_step.contains("workflow artifact \\`ripr-lane-log-tail\\`"),
         "the ripr gate must emit every classified lane verdict as a data file for the retry workflow"
     );

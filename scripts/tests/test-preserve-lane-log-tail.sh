@@ -15,26 +15,27 @@ require_eq() {
   fi
 }
 
-require_contains() {
-  local label=$1 needle=$2 haystack=$3
-  if ! printf '%s' "$haystack" | grep -Fq "$needle"; then
-    printf 'FAIL %s: missing %q in:\n%s\n' "$label" "$needle" "$haystack" >&2
-    exit 1
-  fi
-}
-
 # Small logs copy verbatim.
 printf 'alpha\nomega\n' >"$WORK/small.log"
 bash "$PRESERVE" "$WORK/small.log" "$WORK/small.out"
 require_eq "small copy" "$(cat "$WORK/small.log")" "$(cat "$WORK/small.out")"
 
-# Large logs keep a marked tail with the final line intact.
+# Large logs keep an exact marked 4 MiB tail.
 MAX_BYTES=$((4 * 1024 * 1024))
 head_bytes=$((MAX_BYTES + 128))
 printf '%*s\n' "$head_bytes" '' | tr ' ' 'x' >"$WORK/large.log"
 printf 'final-line-marker\n' >>"$WORK/large.log"
+size=$(wc -c <"$WORK/large.log" | tr -d ' ')
+{
+  printf '[lane log truncated to last %s bytes of %s]\n' "$MAX_BYTES" "$size"
+  tail -c "$MAX_BYTES" "$WORK/large.log"
+} >"$WORK/large.expected"
 bash "$PRESERVE" "$WORK/large.log" "$WORK/large.out"
-require_contains "truncation banner" "[lane log truncated to last ${MAX_BYTES} bytes" "$(head -1 "$WORK/large.out")"
-require_contains "tail marker" "final-line-marker" "$(tail -1 "$WORK/large.out")"
+require_eq "large tail bytes" "$(cat "$WORK/large.expected")" "$(cat "$WORK/large.out")"
+
+if bash "$PRESERVE" "$WORK/large.log" "$WORK/large.log"; then
+  printf 'FAIL same-path: preserve must refuse identical logfile and outfile\n' >&2
+  exit 1
+fi
 
 printf 'ok: preserve-lane-log-tail\n'
