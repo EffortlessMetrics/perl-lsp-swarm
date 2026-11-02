@@ -34,10 +34,14 @@
 //! The published JSON Schema is a **shape contract**: types, required fields,
 //! enumerations, and the subset of report rules JSON Schema 2020-12 can
 //! express structurally. It is not a full invariant contract. Rules that
-//! compare two numbers or reach into nested structures stay in the Rust
-//! validators. That boundary is accepted for v2, not unfinished schema work.
-//! Closing it would require a different validation language, a v3 wire
-//! format, or generating a schema that still cannot express those rules.
+//! compare two numbers — including a support claim weighed against nested
+//! rail counts — stay in the Rust validators. Structural nested checks the
+//! schema can already express, such as a clean rollup over detail
+//! observations, stay in the schema. That boundary is accepted for v2, not
+//! unfinished schema work. Closing the arithmetic gap would require a
+//! different validation language or a v3 wire format. Generating the schema
+//! from the Rust rules would only pin the expressible subset; it cannot
+//! carry those comparisons.
 //!
 //! Ingest points that must run Rust validation:
 //!
@@ -3781,6 +3785,26 @@ mod tests {
             description.contains("14177"),
             "schema description must name #14177 so the decision stays findable; got: \
              {description}"
+        );
+        let lowered = description.to_ascii_lowercase();
+        assert!(
+            !lowered.contains("reach into nested"),
+            "schema description must not claim nested structure is inexpressible; \
+             structural nested checks already live in this document. got: {description}"
+        );
+        assert!(
+            !description.contains("ResultAxes::new"),
+            "report-level description must not name ResultAxes::new; that constructor \
+             owns axis combinations. got: {description}"
+        );
+        assert!(
+            description.contains("RunAxesReport::validate"),
+            "report-level ingest must name RunAxesReport::validate; got: {description}"
+        );
+        assert!(
+            lowered.contains("cross-field numeric") || lowered.contains("compare two numbers"),
+            "schema description must name cross-field numeric comparison as the \
+             inexpressible remainder. got: {description}"
         );
         Ok(())
     }

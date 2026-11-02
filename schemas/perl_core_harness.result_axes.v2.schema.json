@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://effortlessmetrics.dev/schemas/perl_core_harness.result_axes.v2.schema.json",
   "title": "Perl core harness result axes v2",
-  "description": "Shape contract for perl_core_harness.result_axes.v2. Evidence validity, observed product outcome, compatibility admission, semantic support, and correctness mechanism are independent; the cross-axis rules in $defs.result_axes.allOf reject combinations that would overstate what the evidence establishes. Report-level rules that compare two numbers or reach into nested structures are owned by the Rust validators (ResultAxes::new, RunAxesReport::validate) and must run at every ingest point; JSON Schema 2020-12 cannot carry them (#14177). An external producer that validates only this document is laxer than RunAxesReport::validate.",
+  "description": "Shape contract for perl_core_harness.result_axes.v2. Evidence validity, observed product outcome, compatibility admission, semantic support, and correctness mechanism are independent; the cross-axis rules in $defs.result_axes.allOf reject combinations that would overstate what the evidence establishes. Report-level rules that compare two numbers (counts against denominator, files_passed against files_total, or a support claim against nested rail counts) are owned by RunAxesReport::validate and must run at every ingest point; JSON Schema 2020-12 cannot carry cross-field numeric comparisons (#14177). Structural nested checks this document already expresses, such as a clean rollup over detail observations, stay here. An external producer that validates only this document is laxer than RunAxesReport::validate.",
   "type": "object",
   "additionalProperties": false,
   "required": [
