@@ -655,13 +655,10 @@ impl PureRustPerlParser {
 
     /// Reject strict parses that would require legacy bitwise-not normalization.
     fn strict_rejection_for_normalization_only(source: &str) -> Option<StrictParseError> {
-        let Some(re) = ASSIGN_BITNOT_RE.as_ref() else {
-            return None;
-        };
+        let re = ASSIGN_BITNOT_RE.as_ref()?;
         let caps = re.captures(source)?;
         let matched = caps.get(0)?;
-        let range =
-            SourceRange::try_over_source(matched.start(), matched.end(), source).ok()?;
+        let range = SourceRange::try_over_source(matched.start(), matched.end(), source).ok()?;
         Some(StrictParseError::new(
             range,
             "strict parse does not apply source normalization substitutions",
