@@ -4,7 +4,7 @@
 
 Pilot issue #6973 (`pilot`). Missing evidence stays missing and is not inherited from aggregate native-critic transport coverage.
 
-This pilot owns the versioned rule-proof schema, typed model, generator/checker, and a sixteen-rule cohort (#6973 pilot, #17661 cohort 2, cohort 3). Issue #6979 adds nine supplementary strict regex/POD/literal cases on top of the cohort-3 five-case rows without changing critic rule semantics. It does not migrate the remaining 12 native rules, absorb #6978 variable/scope proof, or change critic rule semantics.
+This pilot owns the versioned rule-proof schema, typed model, generator/checker, and the closed strict variable/scope cohort (#6978) plus the earlier sixteen-rule pilot (#6973, #17661, #6979 supplementary regex/POD/literal cases). It does not migrate remaining native rules or change critic rule semantics.
 
 ## Pilot rules
 
@@ -26,7 +26,15 @@ This pilot owns the versioned rule-proof schema, typed model, generator/checker,
 | `native.documentation.require_pod_sections` | `critic.documentation.require_pod_sections` | `none` | present | present | present | present | present | present | present | n/a | present |
 | `native.syntax.prohibit_leading_zeros` | `critic.syntax.prohibit_leading_zeros` | `none` | present | present | present | present | present | present | present | n/a | present |
 | `native.syntax.unquoted_bareword` | `critic.syntax.unquoted_bareword` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.variables.unused_lexical` | `critic.variables.unused_lexical` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.variables.unused_parameter` | `critic.variables.unused_parameter` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.variables.duplicate_parameter` | `critic.variables.duplicate_parameter` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.variables.parameter_shadows_global` | `critic.variables.parameter_shadows_global` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.variables.duplicate_lexical` | `critic.variables.duplicate_lexical` | `automatic_candidate` | present | present | present | present | present | present | present | present | present |
+| `native.variables.shadowed_lexical` | `critic.variables.shadowed_lexical` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.variables.undeclared` | `critic.variables.undeclared` | `preview_candidate` | present | present | present | present | present | present | present | n/a | present |
+| `native.variables.uninitialized` | `critic.variables.uninitialized` | `none` | present | present | present | present | present | present | present | n/a | present |
 
 ## Catalog remainder
 
-15 catalog native rules are outside this closed PILOT_RULES cohort. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals. Extra catalog rows are rejected so missing classes stay missing on purpose.
+7 catalog native rules are outside this closed PILOT_RULES cohort. Their evidence classes remain MISSING; they do not inherit proof from transport coverage, false-positive corpus counts, or recommended/strict rule-count totals. Extra catalog rows are rejected so missing classes stay missing on purpose.

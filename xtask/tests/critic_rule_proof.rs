@@ -52,8 +52,8 @@ fn rule_mut<'a>(manifest: &'a mut Value, rule_id: &str) -> Option<&'a mut Value>
 #[test]
 fn committed_manifest_and_live_critic_proof_pass() -> TestResult {
     let manifest = proof::check(&repo_root()).map_err(|error| error.to_string())?;
-    assert_eq!(manifest.rules.len(), 16);
-    assert_eq!(manifest.cases.len(), 89);
+    assert_eq!(manifest.rules.len(), 24);
+    assert_eq!(manifest.cases.len(), 129);
     assert!(
         manifest
             .cases
@@ -539,7 +539,7 @@ fn advisory_lane_covers_execute_live_owners() -> TestResult {
             "ci-lanes critic_rule_proof paths missing execute live owner `{path}`:\n{lanes}"
         );
     }
-    assert_eq!(PILOT_RULES.len(), 16, "closed PILOT_RULES must stay the sixteen-rule cohort");
+    assert_eq!(PILOT_RULES.len(), 24, "closed PILOT_RULES must stay the twenty-four-rule cohort");
     Ok(())
 }
 
