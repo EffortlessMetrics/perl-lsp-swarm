@@ -14,6 +14,10 @@ import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, NamedTuple, Optional
 
+# Direct CLI and importlib consumers both use the shared child-only isolation.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from git_environment import isolated_git_env
+
 
 SUPPORTED_POLICY_VERSION = 2
 SUPPORTED_POLICY_SOURCE = "github-enforcement-union"
@@ -126,6 +130,7 @@ def _unquote(value: str) -> str:
 def _git(root: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(root), *args],
+        env=isolated_git_env(),
         check=True,
         capture_output=True,
         text=True,
