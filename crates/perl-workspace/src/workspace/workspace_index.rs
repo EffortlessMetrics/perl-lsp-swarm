@@ -5605,6 +5605,45 @@ fn package_edges_from_stash_graph(
         .collect()
 }
 
+fn push_hir_dynamic_boundary_occurrence(
+    uri: &str,
+    file_id: FileId,
+    span_start: usize,
+    span_end: usize,
+    boundary_kind_tag: u8,
+    anchors: &mut Vec<AnchorFact>,
+    occurrences: &mut Vec<OccurrenceFact>,
+) {
+    let mut anchor_hasher = DefaultHasher::new();
+    uri.hash(&mut anchor_hasher);
+    span_start.hash(&mut anchor_hasher);
+    span_end.hash(&mut anchor_hasher);
+    boundary_kind_tag.hash(&mut anchor_hasher);
+    let anchor_id = AnchorId(anchor_hasher.finish());
+    let mut occurrence_hasher = DefaultHasher::new();
+    anchor_id.hash(&mut occurrence_hasher);
+    1u8.hash(&mut occurrence_hasher);
+    let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+    anchors.push(AnchorFact {
+        id: anchor_id,
+        file_id,
+        span_start_byte: span_start.min(u32::MAX as usize) as u32,
+        span_end_byte: span_end.min(u32::MAX as usize) as u32,
+        scope_id: None,
+        provenance: Provenance::DynamicBoundary,
+        confidence: Confidence::Low,
+    });
+    occurrences.push(OccurrenceFact {
+        id: occurrence_id,
+        kind: OccurrenceKind::DynamicBoundary,
+        entity_id: None,
+        anchor_id,
+        scope_id: None,
+        provenance: Provenance::DynamicBoundary,
+        confidence: Confidence::Low,
+    });
+}
+
 fn dynamic_isa_facts(
     uri: &str,
     ast: &Node,
@@ -5616,34 +5655,35 @@ fn dynamic_isa_facts(
     for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
         boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
     }) {
-        let mut anchor_hasher = DefaultHasher::new();
-        uri.hash(&mut anchor_hasher);
-        boundary.range.start.hash(&mut anchor_hasher);
-        boundary.range.end.hash(&mut anchor_hasher);
-        boundary.kind.hash(&mut anchor_hasher);
-        let anchor_id = AnchorId(anchor_hasher.finish());
-        let mut occurrence_hasher = DefaultHasher::new();
-        anchor_id.hash(&mut occurrence_hasher);
-        1u8.hash(&mut occurrence_hasher);
-        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
-        anchors.push(AnchorFact {
-            id: anchor_id,
+        push_hir_dynamic_boundary_occurrence(
+            uri,
             file_id,
-            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
-            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
-            scope_id: None,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-        });
-        occurrences.push(OccurrenceFact {
-            id: occurrence_id,
-            kind: OccurrenceKind::DynamicBoundary,
-            entity_id: None,
-            anchor_id,
-            scope_id: None,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-        });
+            boundary.range.start,
+            boundary.range.end,
+            0,
+            &mut anchors,
+            &mut occurrences,
+        );
+    }
+    use perl_parser_core::hir::{DynamicBoundaryKind as HirDynamicBoundaryKind, HirKind};
+    for item in &hir.items {
+        let HirKind::DynamicBoundary(boundary) = &item.kind else {
+            continue;
+        };
+        let boundary_kind_tag = match boundary.kind {
+            HirDynamicBoundaryKind::EvalExpression => 1,
+            HirDynamicBoundaryKind::DoExpression => 2,
+            _ => continue,
+        };
+        push_hir_dynamic_boundary_occurrence(
+            uri,
+            file_id,
+            item.range.start,
+            item.range.end,
+            boundary_kind_tag,
+            &mut anchors,
+            &mut occurrences,
+        );
     }
     (anchors, occurrences)
 }
