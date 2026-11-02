@@ -1069,6 +1069,153 @@ exit 0;
 }
 
 #[test]
+fn reference_ptkdb_adapter_repeated_install_is_idempotent_without_double_wrapping_set_file()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let peer_addr = listener.local_addr()?;
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
+our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
+sub set_file { return "original:$_[2]"; }
+package main;
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "first plugin load failed: " . ($@ || $!) unless $loaded;
+my $after_first_install = \&Devel::ptkdb::set_file;
+$loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "second plugin load failed: " . ($@ || $!) unless $loaded;
+my $after_second_install = \&Devel::ptkdb::set_file;
+die "repeated install re-wrapped set_file"
+    unless $after_first_install == $after_second_install;
+my $window = bless {}, 'Devel::ptkdb';
+my $value = $window->set_file('/work/idempotent.pl', 9);
+die "wrapped set_file lost scalar return: $value" unless $value eq 'original:9';
+exit 0;
+"#;
+
+    let mut child = ChildCleanup::new(
+        Command::new("perl")
+            .arg("-e")
+            .arg(harness)
+            .env("PERL_DAP_PEER", peer_addr.to_string())
+            .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+            .env("PERL_DAP_PEER_MODE", "mirror")
+            .env("PTKDB_PLUGIN_UNDER_TEST", &plugin)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?,
+        Vec::<PathBuf>::new(),
+    );
+
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
+    let token = PeerSessionToken::try_from(PEER_TOKEN)?;
+    let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+        stream,
+        Duration::from_secs(3),
+        token,
+    )?;
+    backend.initialize(InitializeBackendParams::default())?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break child.child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stderr = child_stderr(&mut child.child);
+    assert!(status.success(), "#14088 falsifier 8 idempotent install harness failed: {stderr}");
+    Ok(())
+}
+
+#[test]
+fn reference_ptkdb_adapter_preserves_set_file_return_context_and_exceptions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let peer_addr = listener.local_addr()?;
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
+our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
+sub set_file {
+    my ($self, $path, $line) = @_;
+    die "set_file exception probe" if $path eq '/throw';
+    my $wantarray = wantarray;
+    if (!defined $wantarray) {
+        return;
+    }
+    if ($wantarray) {
+        return ($line, "list:$line");
+    }
+    return "scalar:$line";
+}
+package main;
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+my $window = bless {}, 'Devel::ptkdb';
+my $scalar = $window->set_file('/work/scalar.pl', 4);
+die "scalar return context changed: " . (defined $scalar ? $scalar : 'undef')
+    unless defined $scalar && $scalar eq 'scalar:4';
+my @list = $window->set_file('/work/list.pl', 5);
+die "list return context changed"
+    unless @list == 2 && $list[0] == 5 && $list[1] eq 'list:5';
+$window->set_file('/work/void.pl', 6);
+my $ok = eval { $window->set_file('/throw', 0); 1 };
+die "exception from original set_file was not preserved"
+    unless !$ok && $@ =~ /set_file exception probe/;
+exit 0;
+"#;
+
+    let mut child = ChildCleanup::new(
+        Command::new("perl")
+            .arg("-e")
+            .arg(harness)
+            .env("PERL_DAP_PEER", peer_addr.to_string())
+            .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+            .env("PERL_DAP_PEER_MODE", "mirror")
+            .env("PTKDB_PLUGIN_UNDER_TEST", &plugin)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?,
+        Vec::<PathBuf>::new(),
+    );
+
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
+    let token = PeerSessionToken::try_from(PEER_TOKEN)?;
+    let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+        stream,
+        Duration::from_secs(3),
+        token,
+    )?;
+    backend.initialize(InitializeBackendParams::default())?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break child.child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stderr = child_stderr(&mut child.child);
+    assert!(status.success(), "#14088 falsifier 9 return-context harness failed: {stderr}");
+    Ok(())
+}
+
+#[test]
 fn vscode_keeps_native_as_the_default_debugger_backend() -> Result<(), Box<dyn std::error::Error>> {
     let manifest = read("vscode-extension/package.json")?;
     assert!(manifest.contains("debuggerBackend"));
