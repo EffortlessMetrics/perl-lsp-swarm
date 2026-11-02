@@ -64,7 +64,10 @@ impl LaunchExecutionPolicy {
             paths.push(profile.into_perl_binary());
         }
         if paths.is_empty() {
-            return Err(LaunchExecutionError::NoAdmittedInterpreter);
+            return Ok(Self {
+                admitted_interpreter_paths: Vec::new(),
+                allow_launch_code_loading_env: startup.allow_launch_code_loading_env,
+            });
         }
 
         let mut canonical: Vec<PathBuf> = Vec::new();
@@ -74,6 +77,11 @@ impl LaunchExecutionPolicy {
             })?;
             if !is_valid_perl_basename(&resolved) {
                 return Err(LaunchExecutionError::AdmittedInterpreterInvalid { path: raw });
+            }
+            if interpreter_lies_under_trusted_roots(&resolved, _trusted_roots) {
+                return Err(LaunchExecutionError::AdmittedInterpreterUnderTrustedRoot {
+                    path: raw.clone(),
+                });
             }
             if !canonical.iter().any(|existing| existing == &resolved) {
                 canonical.push(resolved);
@@ -95,12 +103,8 @@ impl LaunchExecutionPolicy {
         env_overrides: HashMap<String, String>,
         trusted_roots: &[TrustedRoot],
     ) -> Result<AdmittedLaunchExecution, String> {
-        let launch_path = launch_args
-            .get("env")
-            .and_then(Value::as_object)
-            .and_then(|env| env.get("PATH").or_else(|| env.get("path")))
-            .and_then(|value| value.as_str());
-        let resolved = resolve_interpreter_path(requested_interpreter, launch_path)
+        let launch_path = launch_env_path_from_args(launch_args);
+        let resolved = resolve_interpreter_path(requested_interpreter, launch_path.as_deref())
             .ok_or_else(|| format_launch_interpreter_refusal(requested_interpreter))?;
 
         if interpreter_lies_under_trusted_roots(&resolved, trusted_roots) {
@@ -151,6 +155,24 @@ pub enum LaunchExecutionError {
         /// Raw startup path.
         path: PathBuf,
     },
+    #[error(
+        "admitted interpreter {path:?} cannot live inside a trusted workspace root under \
+         workspace-bound launch authority"
+    )]
+    AdmittedInterpreterUnderTrustedRoot {
+        /// Raw startup path.
+        path: PathBuf,
+    },
+}
+
+/// Case-insensitive `PATH` from launch.json `env`, if present.
+pub(crate) fn launch_env_path_from_args(args: &Value) -> Option<String> {
+    args.get("env").and_then(Value::as_object).and_then(|env| {
+        env.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+            .and_then(|(_, value)| value.as_str())
+            .map(str::to_string)
+    })
 }
 
 /// Passthrough admission for explicitly unbounded authority or legacy launches.
@@ -159,12 +181,8 @@ pub fn admit_launch_without_execution_policy(
     launch_args: &Value,
     env_overrides: HashMap<String, String>,
 ) -> Result<AdmittedLaunchExecution, String> {
-    let launch_path = launch_args
-        .get("env")
-        .and_then(Value::as_object)
-        .and_then(|env| env.get("PATH").or_else(|| env.get("path")))
-        .and_then(|value| value.as_str());
-    let perl_binary = resolve_interpreter_path(requested_interpreter, launch_path)
+    let launch_path = launch_env_path_from_args(launch_args);
+    let perl_binary = resolve_interpreter_path(requested_interpreter, launch_path.as_deref())
         .ok_or_else(|| format_launch_interpreter_refusal(requested_interpreter))?;
     if !is_valid_perl_basename(&perl_binary) {
         return Err(format!(
@@ -192,28 +210,43 @@ fn filter_launch_env_overrides(
     env_overrides: HashMap<String, String>,
     allow_code_loading: bool,
 ) -> Result<HashMap<String, String>, String> {
-    if allow_code_loading {
-        return Ok(env_overrides);
-    }
-    let mut denied = Vec::new();
+    let mut debugger_denied = Vec::new();
+    let mut code_loading_denied = Vec::new();
     let mut kept = HashMap::new();
     for (key, value) in env_overrides {
-        if is_code_loading_env_key(&key) {
-            denied.push(key);
+        if is_debugger_startup_env_key(&key) {
+            debugger_denied.push(key);
+        } else if is_code_loading_env_key(&key) && !allow_code_loading {
+            code_loading_denied.push(key);
         } else {
             kept.insert(key, value);
         }
     }
-    if denied.is_empty() {
+    if debugger_denied.is_empty() && code_loading_denied.is_empty() {
         return Ok(kept);
     }
-    denied.sort();
+    debugger_denied.sort();
+    code_loading_denied.sort();
+    if !debugger_denied.is_empty() {
+        return Err(format!(
+            "Launch environment variable(s) {} are not admitted under workspace-bound launch \
+             authority. Debugger startup variables such as PERL5DB and PERLDB_OPTS cannot be \
+             supplied through launch.json because `perl -d` evaluates them as code.",
+            debugger_denied.join(", ")
+        ));
+    }
     Err(format!(
         "Launch environment variable(s) {} are not admitted under workspace-bound launch \
          authority. Code-loading variables such as PERL5LIB and PERL5OPT require explicit \
          operator startup admission (--allow-launch-code-loading-env).",
-        denied.join(", ")
+        code_loading_denied.join(", ")
     ))
+}
+
+fn is_debugger_startup_env_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("PERL5DB")
+        || key.eq_ignore_ascii_case("PERLDB_OPTS")
+        || key.eq_ignore_ascii_case("PERL5DB_THREADED")
 }
 
 fn is_code_loading_env_key(key: &str) -> bool {
@@ -234,30 +267,65 @@ fn resolve_interpreter_path(requested: &str, launch_path: Option<&str>) -> Optio
         return None;
     }
     if trimmed.eq_ignore_ascii_case("perl") && launch_path.is_some() {
-        return resolve_perl_on_path_env(launch_path?);
+        return resolve_named_executable_on_path_env("perl", launch_path?);
     }
-    let configured = if trimmed.eq_ignore_ascii_case("perl") { None } else { Some(trimmed) };
-    match platform::find_perl_interpreter(configured) {
-        PerlInterpreterResult::ConfiguredPath(path)
-        | PerlInterpreterResult::FoundOnPath(path)
-        | PerlInterpreterResult::FoundViaFallback { path, .. } => {
-            canonicalize_existing_interpreter(&path)
+    if trimmed.eq_ignore_ascii_case("perl") {
+        return match platform::find_perl_interpreter(None) {
+            PerlInterpreterResult::ConfiguredPath(path)
+            | PerlInterpreterResult::FoundOnPath(path)
+            | PerlInterpreterResult::FoundViaFallback { path, .. } => {
+                canonicalize_existing_interpreter(&path)
+            }
+            PerlInterpreterResult::NotFound { .. } => None,
+        };
+    }
+
+    let candidate_path = PathBuf::from(trimmed);
+    if candidate_path.is_file() {
+        return canonicalize_existing_interpreter(&candidate_path);
+    }
+    if candidate_path.is_absolute()
+        || trimmed.contains('/') 
+        || trimmed.contains('\\')
+    {
+        return None;
+    }
+
+    if let Some(path_env) = launch_path {
+        if let Some(found) = resolve_named_executable_on_path_env(trimmed, path_env) {
+            return Some(found);
         }
-        PerlInterpreterResult::NotFound { .. } => None,
     }
+    if let Ok(path_env) = std::env::var("PATH") {
+        if let Some(found) = resolve_named_executable_on_path_env(trimmed, &path_env) {
+            return Some(found);
+        }
+    }
+    None
 }
 
-fn resolve_perl_on_path_env(path_env: &str) -> Option<PathBuf> {
+fn resolve_named_executable_on_path_env(executable: &str, path_env: &str) -> Option<PathBuf> {
     let separator = if cfg!(windows) { ';' } else { ':' };
+    let base = executable.strip_suffix(".exe").unwrap_or(executable);
     for entry in path_env.split(separator).map(str::trim).filter(|entry| !entry.is_empty()) {
-        let candidate = PathBuf::from(entry).join(if cfg!(windows) { "perl.exe" } else { "perl" });
-        if let Some(canonical) = canonicalize_existing_interpreter(&candidate) {
-            if is_valid_perl_basename(&canonical) {
-                return Some(canonical);
+        for name in candidate_executable_names(base) {
+            let candidate = PathBuf::from(entry).join(name);
+            if let Some(canonical) = canonicalize_existing_interpreter(&candidate) {
+                if is_valid_perl_basename(&canonical) {
+                    return Some(canonical);
+                }
             }
         }
     }
     None
+}
+
+fn candidate_executable_names(base: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![format!("{base}.exe"), base.to_string()]
+    } else {
+        vec![base.to_string()]
+    }
 }
 
 fn canonicalize_existing_interpreter(path: &Path) -> Option<PathBuf> {
@@ -293,20 +361,60 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn startup_policy_requires_an_admitted_interpreter_when_none_resolve() {
-        let err = LaunchExecutionPolicy::resolve(&LaunchExecutionStartup::default(), &[]);
+    fn startup_policy_allows_empty_interpreter_set_when_none_resolve() {
+        let outcome = LaunchExecutionPolicy::resolve(&LaunchExecutionStartup::default(), &[]);
         match (
-            err,
+            outcome,
             perl_lsp_rs_core::config::PerlToolchainProfile::resolve(
                 &perl_lsp_rs_core::config::WorkspaceConfig::default(),
             ),
         ) {
-            (Err(LaunchExecutionError::NoAdmittedInterpreter), None) => {}
-            (Ok(_), Some(_)) => {}
-            (other, toolchain) => {
-                panic!("unexpected resolve outcome: {other:?}, toolchain={toolchain:?}");
+            (Ok(policy), None) => assert!(policy.admitted_interpreter_paths.is_empty()),
+            (Ok(policy), Some(_)) => assert!(!policy.admitted_interpreter_paths.is_empty()),
+            (Err(error), toolchain) => {
+                panic!("unexpected resolve outcome: {error:?}, toolchain={toolchain:?}");
             }
         }
+    }
+
+    #[test]
+    fn workspace_bound_refuses_debugger_startup_env_without_exception() {
+        for key in ["PERL5DB", "PERLDB_OPTS", "PERL5DB_THREADED"] {
+            let err = filter_launch_env_overrides(
+                HashMap::from([(key.to_string(), "1".to_string())]),
+                true,
+            )
+            .expect_err("debugger env must stay denied even when code-loading env is admitted");
+            assert!(err.contains(key), "expected refusal to name {key}, got: {err}");
+        }
+    }
+
+    #[test]
+    fn launch_env_path_from_args_is_case_insensitive() {
+        let args = serde_json::json!({ "env": { "Path": "/custom/bin" } });
+        assert_eq!(
+            launch_env_path_from_args(&args).as_deref(),
+            Some("/custom/bin")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bare_interpreter_name_resolves_via_path_env() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin)?;
+        let named = bin.join("perl5.34.0");
+        fs::write(&named, b"#!/bin/sh\nexit 0\n")?;
+        let mut perms = fs::metadata(&named)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&named, perms)?;
+
+        let path_env = format!("{}:/usr/bin", bin.display());
+        let resolved = resolve_interpreter_path("perl5.34.0", Some(&path_env))
+            .expect("bare name must resolve on PATH");
+        assert_eq!(resolved, named.canonicalize()?);
+        Ok(())
     }
 
     #[test]

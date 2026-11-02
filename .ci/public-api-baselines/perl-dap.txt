@@ -3386,6 +3386,8 @@ pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpre
 pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterInvalid::path: std::path::PathBuf
 pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterNotFound
 pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterNotFound::path: std::path::PathBuf
+pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterUnderTrustedRoot
+pub perl_dap::security::launch_execution::LaunchExecutionError::AdmittedInterpreterUnderTrustedRoot::path: std::path::PathBuf
 pub perl_dap::security::launch_execution::LaunchExecutionError::NoAdmittedInterpreter
 pub fn perl_dap::security::launch_execution::LaunchExecutionError::eq(&self, other: &perl_dap::security::launch_execution::LaunchExecutionError) -> bool
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::from(source: perl_dap::security::launch_execution::LaunchExecutionError) -> perl_dap::security::launch_authority::LaunchAuthorityError
@@ -3452,6 +3454,8 @@ pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterInvalid
 pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterInvalid::path: std::path::PathBuf
 pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterNotFound
 pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterNotFound::path: std::path::PathBuf
+pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterUnderTrustedRoot
+pub perl_dap::security::LaunchExecutionError::AdmittedInterpreterUnderTrustedRoot::path: std::path::PathBuf
 pub perl_dap::security::LaunchExecutionError::NoAdmittedInterpreter
 pub fn perl_dap::security::launch_execution::LaunchExecutionError::eq(&self, other: &perl_dap::security::launch_execution::LaunchExecutionError) -> bool
 pub fn perl_dap::security::launch_authority::LaunchAuthorityError::from(source: perl_dap::security::launch_execution::LaunchExecutionError) -> perl_dap::security::launch_authority::LaunchAuthorityError
