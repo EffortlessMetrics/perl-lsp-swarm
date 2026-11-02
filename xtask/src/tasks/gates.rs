@@ -2386,13 +2386,12 @@ fn run_single_gate(
 
     match execution {
         Ok(execution) => {
-            let status = if execution.timed_out {
-                "timeout".to_string()
-            } else if execution.exit_code == 0 {
-                "pass".to_string()
-            } else {
-                "fail".to_string()
-            };
+            let status = classify_shell_gate_status(
+                gate,
+                execution.timed_out,
+                execution.exit_code,
+                &execution.stdout,
+            );
 
             // Extract output summary (last 10 lines or error message)
             let output_summary = extract_output_summary(&execution.stdout, 10);
@@ -3733,7 +3732,32 @@ fn has_blocking_failures(receipt: &Receipt) -> bool {
 }
 
 fn is_blocking_gate_status(status: &str) -> bool {
-    matches!(status, "fail" | "timeout" | "error")
+    matches!(status, "fail" | "timeout" | "error" | "not_evaluated")
+}
+
+/// Classify a shell gate invocation. Required gates that exit 0 while reporting
+/// they were not evaluated must not serialize as `pass` (#17707 / change_scope).
+fn classify_shell_gate_status(
+    gate: &GateDefinition,
+    timed_out: bool,
+    exit_code: i32,
+    stdout: &str,
+) -> String {
+    if timed_out {
+        return "timeout".to_string();
+    }
+    if exit_code != 0 {
+        return "fail".to_string();
+    }
+    if gate.required && vacuous_required_pass_output(stdout) {
+        return "not_evaluated".to_string();
+    }
+    "pass".to_string()
+}
+
+fn vacuous_required_pass_output(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("not evaluated") || lower.contains("gate not evaluated")
 }
 
 fn blocking_failure_gate_names(results: &[GateResult]) -> Vec<String> {
@@ -3768,8 +3792,8 @@ mod tests {
         MAX_GATE_OUTPUT_BYTES, MAX_GATE_RETRIES, MetricChange, OutputFormat, PackageTargetIndex,
         Receipt, TestExecutionAttemptEvidence, VERSION_SYNC_GATE_COMMAND, attempt_reach_evidence,
         blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
-        build_pr_fast_plan_from_scope_with_targets, commit_advisories, compare_receipts,
-        determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
+        build_pr_fast_plan_from_scope_with_targets, classify_shell_gate_status, commit_advisories,
+        compare_receipts, determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
         extend_plan_with_static_tiers, extract_output_summary, failure_guidance, filter_gates,
         is_blocking_gate_status, is_cargo_test_command, is_latest_commit,
         load_policy_for_inspection, load_receipt, log_reaches_test_execution, output_diff,
@@ -6773,8 +6797,17 @@ gates:
         assert!(is_blocking_gate_status("fail"));
         assert!(is_blocking_gate_status("timeout"));
         assert!(is_blocking_gate_status("error"));
+        assert!(is_blocking_gate_status("not_evaluated"));
         assert!(!is_blocking_gate_status("pass"));
         assert!(!is_blocking_gate_status("skip"));
+    }
+
+    #[test]
+    fn required_gate_not_evaluated_stdout_is_not_pass() {
+        let gate = tier_gate("change_scope_check", "merge_gate", "true");
+        let stdout = "change-scope gate not evaluated: no .agents/change-scope declaration\n";
+        assert_eq!(classify_shell_gate_status(&gate, false, 0, stdout), "not_evaluated");
+        assert!(is_blocking_gate_status("not_evaluated"));
     }
 
     #[test]
