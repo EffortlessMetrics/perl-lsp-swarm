@@ -467,13 +467,73 @@ fn public_api_filter_normalizes_only_io_reexport_paths() -> Result<(), Box<dyn s
     );
     assert!(filter.contains("std::io::"));
     assert!(filter.contains("grep -E"));
+    assert!(
+        filter.contains("alloc::rcs::rc::Rc"),
+        "_public-api-filter must fold `alloc::rcs::rc::Rc` to `alloc::rc::Rc` (#17121)"
+    );
+    assert!(
+        filter.contains("alloc::rcs::arc::Weak"),
+        "_public-api-filter must fold `alloc::rcs::arc::Weak` to `alloc::sync::Weak` (#17121)"
+    );
+    assert!(
+        filter.contains("alloc::rcs::rc::Weak"),
+        "_public-api-filter must fold `alloc::rcs::rc::Weak` to `alloc::rc::Weak` (#17121)"
+    );
     Ok(())
 }
 
-/// Extract the `-e '<expr>'` substitutions from the shared filter recipe, in
-/// order, so a behavioural test runs the recipe's own expressions rather than a
+/// Run the recipe's full `sed` stage (io folds plus rcs relocation loops).
+fn apply_public_api_sed_stage(text: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let exprs = parse_filter_sed_expressions()?;
+    let mut command = Command::new("sed");
+    command.arg("-E");
+    for expr in &exprs {
+        command.arg("-e").arg(expr);
+    }
+    let mut child =
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stdin = child.stdin.take().ok_or("sed stdin unavailable")?;
+    let buffer = text.to_string();
+    let writer = std::thread::spawn(move || stdin.write_all(buffer.as_bytes()));
+    let output = child.wait_with_output()?;
+    writer.join().map_err(|_| "sed writer thread panicked")??;
+    if !output.status.success() {
+        return Err(format!("sed failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+/// The rcs relocation folds must converge nested/adjacent aliases and leave
+/// unrelated paths alone, mirroring the Arc fixture in
+/// `scripts/tests/test-public-api-ratchet.sh`.
+#[test]
+fn the_rcs_relocation_fold_normalizes_rc_and_weak_aliases(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let input = "\
+pub fn Surface::nested_rc() -> alloc::rcs::rc::Rc<alloc::rcs::rc::Rc<u8>>
+pub fn Surface::arc_weak() -> alloc::rcs::arc::Weak<u8>
+pub fn Surface::rc_weak() -> alloc::rcs::rc::Weak<u8>
+pub fn Surface::owned_rc() -> owner::alloc::rcs::rc::Rc<u8>
+pub fn Surface::longer() -> alloc::rcs::rc::Rcish<u8>
+pub fn Surface::different() -> alloc::rcs::rc::UniqueRc<u8>
+";
+    let expected = "\
+pub fn Surface::nested_rc() -> alloc::rc::Rc<alloc::rc::Rc<u8>>
+pub fn Surface::arc_weak() -> alloc::sync::Weak<u8>
+pub fn Surface::rc_weak() -> alloc::rc::Weak<u8>
+pub fn Surface::owned_rc() -> owner::alloc::rcs::rc::Rc<u8>
+pub fn Surface::longer() -> alloc::rcs::rc::Rcish<u8>
+pub fn Surface::different() -> alloc::rcs::rc::UniqueRc<u8>
+";
+    let got = apply_public_api_sed_stage(input)?;
+    assert_eq!(got, expected);
+    Ok(())
+}
+
+/// Extract every `-e '<expr>'` substitution from the shared filter recipe, in
+/// order, so behavioural tests run the recipe's own expressions rather than a
 /// copy of them that can drift.
-fn filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn parse_filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let justfile = fs::read_to_string(project_root().join("justfile"))?;
     let recipe = justfile
         .split("_public-api-filter raw out:")
@@ -493,18 +553,30 @@ fn filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
         };
         exprs.push(expr.0.to_string());
     }
-    // A parse that silently found fewer expressions than the recipe carries
-    // would leave the lookalike cases below vacuously green: sed with no
-    // substitution echoes its input, which is exactly what they assert. Pin
-    // the count so a reformatted recipe fails loudly here instead.
-    if exprs.len() != 2 {
+    Ok(exprs)
+}
+
+/// The io-path fold is the first two `sed` substitutions; later rules cover
+/// stdlib rcs relocation (#17024/#17121) and must not run in io-only fixtures.
+fn filter_io_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let exprs = parse_filter_sed_expressions()?;
+    let io: Vec<String> = exprs
+        .iter()
+        .filter(|expr| expr.contains("std::io::"))
+        .cloned()
+        .collect();
+    if io.len() != 2 {
         return Err(format!(
-            "expected 2 -e substitutions in _public-api-filter, parsed {}: {exprs:?}",
-            exprs.len()
+            "expected 2 io-path substitutions in _public-api-filter, parsed {}: {io:?}",
+            io.len()
         )
         .into());
     }
-    Ok(exprs)
+    Ok(io)
+}
+
+fn filter_sed_expressions() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    filter_io_sed_expressions()
 }
 
 /// The io fold must only rewrite an external-crate path, never a user-owned one
