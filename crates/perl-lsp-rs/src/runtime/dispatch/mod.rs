@@ -483,6 +483,23 @@ mod tests {
             experimental.contains(&handler_gated),
             "handle_slow_operation_dispatch must be gated by {cfg_gate}"
         );
+
+        let barrier_routing_gated_arm = format!(
+            "{cfg_gate}\n            \"$/test/parseWorkerBarrier\" => \
+             self.handle_test_parse_worker_barrier_dispatch(request.params),"
+        );
+        assert!(
+            routing.contains(&barrier_routing_gated_arm),
+            "the $/test/parseWorkerBarrier routing arm must be gated by {cfg_gate}"
+        );
+
+        let barrier_handler_gated = format!(
+            "{cfg_gate}\n    pub(super) fn handle_test_parse_worker_barrier_dispatch("
+        );
+        assert!(
+            experimental.contains(&barrier_handler_gated),
+            "handle_test_parse_worker_barrier_dispatch must be gated by {cfg_gate}"
+        );
     }
 
     fn notification(method: &str, params: Option<Value>) -> JsonRpcRequest {
