@@ -1334,6 +1334,28 @@ impl LspServer {
             }
 
             // Preserve variable sigils: `$length` is not the `length` builtin.
+            let bare = hover_text.trim_start_matches(['$', '@', '%']);
+
+            // SQL::Abstract methods collide with Perl builtins (`select`, `delete`, …).
+            if !bare.is_empty()
+                && !hover_text.starts_with(['$', '@', '%'])
+                && let Some(receiver) = Self::extract_arrow_receiver(text, offset)
+                && crate::completion::sql_abstract_receiver_indicates_catalog(&receiver)
+                && crate::completion::is_sql_abstract_source(text, offset)
+                && let Some((sig, desc)) =
+                    crate::completion::get_sql_abstract_method_documentation(bare)
+            {
+                return HoverExtracted::Complete(json!({
+                    "contents": {
+                        "kind": "markdown",
+                        "value": format!(
+                            "**SQL::Abstract Method**\n\n```perl\n{}\n```\n\n{}",
+                            sig, desc
+                        ),
+                    },
+                }));
+            }
+
             if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(&hover_text) {
                 return HoverExtracted::Complete(json!({
                     "contents": {
@@ -1352,7 +1374,6 @@ impl LspServer {
             }
 
             // Check Test::More/Test2 function hover when source imports a test framework
-            let bare = hover_text.trim_start_matches(['$', '@', '%']);
             let is_test_source = text.contains("use Test::More") || text.contains("use Test2");
             if is_test_source
                 && let Some((sig, desc)) = crate::completion::get_test_more_documentation(bare)

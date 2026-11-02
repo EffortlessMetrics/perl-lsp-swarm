@@ -125,6 +125,51 @@ impl LspServer {
                         }
                     }
 
+                    if Self::is_method_call_context(&doc.text, offset)
+                        && crate::completion::is_sql_abstract_source(&doc.text, offset)
+                        && doc
+                            .text
+                            .get(..offset)
+                            .and_then(|prefix| {
+                                let mut depth = 0usize;
+                                for (byte_offset, ch) in prefix.char_indices().rev() {
+                                    match ch {
+                                        ')' | ']' | '}' => depth += 1,
+                                        '(' => {
+                                            if depth == 0 {
+                                                return Some(byte_offset);
+                                            }
+                                            depth = depth.saturating_sub(1);
+                                        }
+                                        '[' | '{' => depth = depth.saturating_sub(1),
+                                        _ => {}
+                                    }
+                                }
+                                None
+                            })
+                            .is_some_and(|paren_pos| {
+                                Self::extract_arrow_receiver(&doc.text, paren_pos).is_some_and(
+                                    |receiver| {
+                                        crate::completion::sql_abstract_receiver_indicates_catalog(
+                                            &receiver,
+                                        )
+                                    },
+                                )
+                            })
+                        && let Some((sig, desc)) =
+                            crate::completion::get_sql_abstract_method_documentation(&function_name)
+                    {
+                        return Ok(Some(json!({
+                            "signatures": [json!({
+                                "label": sig,
+                                "documentation": desc,
+                                "parameters": []
+                            })],
+                            "activeSignature": active_signature,
+                            "activeParameter": active_param
+                        })));
+                    }
+
                     // Try to get signature from user-defined functions first (if AST exists)
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(signature) =

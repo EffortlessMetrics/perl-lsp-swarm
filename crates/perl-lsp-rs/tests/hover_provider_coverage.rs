@@ -1534,6 +1534,62 @@ with 'MyApp::Printable', 'MyApp::Serializable';
         Ok(())
     }
 
+    // ── SQL::Abstract hover and signature help (#2979) ─────────────────────
+
+    #[test]
+    fn test_hover_sql_abstract_select_returns_documentation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code =
+            "use SQL::Abstract;\nmy $sql = SQL::Abstract->new;\n($sql, @bind) = $sql->select(";
+        let resp = hover_at(code, "file:///sql_abstract_hover.pl", "select", 2)?;
+        let content =
+            hover_content(&resp).ok_or("expected hover content for SQL::Abstract select")?;
+        assert!(
+            content.contains("SQL::Abstract") || content.contains("SELECT"),
+            "hover on SQL::Abstract select must show SQL::Abstract docs, got: {content}"
+        );
+        assert!(
+            !content.contains("**Built-in Function**"),
+            "SQL::Abstract select must not fall back to builtin select, got: {content}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_signature_help_sql_abstract_select_returns_real_signature()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = "use SQL::Abstract;\nmy $sql = SQL::Abstract->new;\n$sql->select(";
+        let uri = "file:///sql_abstract_sig.pl";
+        let server = TestServerBuilder::new().build();
+        server.open_document(uri, code);
+        // Cursor just after the opening `(` on line 2 (same convention as DBI prepare test).
+        let resp = server.get_signature_help(uri, 2, 13);
+        let label =
+            signature_label(&resp).ok_or("expected signature label for SQL::Abstract select()")?;
+        assert!(
+            label.contains("$table"),
+            "signature help for SQL::Abstract select must include $table, got: {label}"
+        );
+        assert!(
+            !label.contains("FILEHANDLE"),
+            "signature help must not use builtin select signature, got: {label}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_hover_sql_abstract_does_not_override_unrelated_delete_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = "use SQL::Abstract;\nuse HTTP::Tiny;\nmy $ua = HTTP::Tiny->new;\n$ua->delete('/item');\n";
+        let resp = hover_at(code, "file:///sql_abstract_no_false_delete.pl", "delete", 3)?;
+        let content = hover_content(&resp).ok_or("expected hover content for delete")?;
+        assert!(
+            !content.contains("**SQL::Abstract Method**"),
+            "HTTP::Tiny delete must not show SQL::Abstract docs, got: {content}"
+        );
+        Ok(())
+    }
+
     // ── Pragma hover documentation tests ────────────────────────────────────
 
     /// Hovering over `strict` in `use strict;` should show pragma documentation.

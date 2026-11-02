@@ -3205,8 +3205,11 @@ pub const perl_lsp_rs_core::providers::completion::FUNDAMENTAL_CONSTRUCT_LABELS:
 pub fn perl_lsp_rs_core::providers::completion::add_xs_api_completions_for_prefix(completions: &mut alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>, prefix: &str, prefix_start: usize, position: usize, source: &str, filepath: core::option::Option<&str>)
 pub fn perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache(prefix: &str, include_paths: &[std::path::PathBuf], system_inc_paths: &[std::path::PathBuf], include_system_inc: bool, scan_cache: core::option::Option<&perl_lsp_rs_core::providers::module_scan_cache::ModuleCompletionScanCache>, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::completion::get_dbi_method_documentation(receiver_hint: &str, method_name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::completion::get_sql_abstract_method_documentation(method_name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::completion::get_xs_api_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::completion::is_sql_abstract_source(source: &str, position: usize) -> bool
+pub fn perl_lsp_rs_core::providers::completion::sql_abstract_receiver_indicates_catalog(receiver_hint: &str) -> bool
 pub fn perl_lsp_rs_core::providers::completion::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::completion::render_snippet_plaintext(body: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::providers::completion::snippet_body_defects(body: &str) -> alloc::vec::Vec<alloc::string::String>
@@ -9793,6 +9796,7 @@ pub fn perl_lsp_rs_core::providers::find_references_with_pir_shadow(ast: &perl_a
 pub fn perl_lsp_rs_core::providers::find_symbol_at_position(position: usize, symbol_table: &perl_semantic_analyzer::analysis::symbol::SymbolTable, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::types::SymbolKind)>
 pub fn perl_lsp_rs_core::providers::format_provider_decision_explanation(explanation: &perl_lsp_rs_core::providers::ProviderDecisionExplanation) -> alloc::string::String
 pub fn perl_lsp_rs_core::providers::get_dbi_method_documentation(receiver_hint: &str, method_name: &str) -> core::option::Option<(&'static str, &'static str)>
+pub fn perl_lsp_rs_core::providers::get_sql_abstract_method_documentation(method_name: &str) -> core::option::Option<(&'static str, &'static str)>
 pub fn perl_lsp_rs_core::providers::get_shebang_lens(source: &str) -> core::option::Option<perl_lsp_rs_core::providers::CodeLens>
 pub fn perl_lsp_rs_core::providers::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<perl_position_tracking::span::SourceLocation>
 pub fn perl_lsp_rs_core::providers::get_test_more_documentation(name: &str) -> core::option::Option<(&'static str, &'static str)>
@@ -9801,6 +9805,8 @@ pub fn perl_lsp_rs_core::providers::htmx_attribute_name_context(source: &str, po
 pub fn perl_lsp_rs_core::providers::identity_for_code(code: &str) -> core::option::Option<&'static perl_lsp_rs_core::providers::DeadCodeIdentity>
 pub fn perl_lsp_rs_core::providers::inlay_hint_label_str(hint: &serde_json::value::Value) -> core::option::Option<&str>
 pub fn perl_lsp_rs_core::providers::is_test_file(path: &str) -> bool
+pub fn perl_lsp_rs_core::providers::is_sql_abstract_source(source: &str, position: usize) -> bool
+pub fn perl_lsp_rs_core::providers::sql_abstract_receiver_indicates_catalog(receiver_hint: &str) -> bool
 pub fn perl_lsp_rs_core::providers::is_xs_source(source: &str, filepath: core::option::Option<&str>) -> bool
 pub fn perl_lsp_rs_core::providers::legend() -> perl_lsp_rs_core::providers::TokensLegend
 pub fn perl_lsp_rs_core::providers::matches_query(name: &str, query: &str) -> bool
