@@ -1,36 +1,36 @@
 {
-  "fact_source_traces": [
-    {
-      "anchor_id": null,
-      "confidence": "High",
-      "fallback_state": "Blocked",
-      "freshness": "Fresh",
-      "model_version": 1,
-      "provenance": "DynamicBoundary",
-      "source": "DynamicBoundary",
-      "source_hash": null,
-      "surface": "Diagnostics"
-    }
-  ],
+  "schema_version": 2,
+  "query": "diagnostics_check",
   "input": {
     "symbol": "defined_sub"
   },
+  "old_result": {
+    "available": true,
+    "match_count": 1,
+    "identities": [
+      "warn"
+    ]
+  },
   "new_result": {
     "available": true,
-    "identities": [],
-    "match_count": 0
+    "match_count": 0,
+    "identities": []
   },
+  "verdict": "regression",
   "notes": [
     "suppressed: dynamic boundary scope"
   ],
-  "old_result": {
-    "available": true,
-    "identities": [
-      "warn"
-    ],
-    "match_count": 1
-  },
-  "query": "diagnostics_check",
-  "schema_version": 2,
-  "verdict": "regression"
+  "fact_source_traces": [
+    {
+      "surface": "Diagnostics",
+      "source": "DynamicBoundary",
+      "provenance": "DynamicBoundary",
+      "confidence": "High",
+      "freshness": "Fresh",
+      "fallback_state": "Blocked",
+      "source_hash": null,
+      "anchor_id": null,
+      "model_version": 1
+    }
+  ]
 }

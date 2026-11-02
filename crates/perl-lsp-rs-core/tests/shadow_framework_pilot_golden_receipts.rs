@@ -17,7 +17,6 @@ use perl_semantic_facts::{
 };
 use perl_workspace::semantic::queries::{DynamicCallableEvidence, QueryContext, SemanticQueries};
 use perl_workspace::semantic_shadow_compare::SemanticShadowCompareReceipt;
-use serde_json::Value;
 use std::path::PathBuf;
 
 fn fixture_dir() -> PathBuf {
@@ -29,14 +28,17 @@ fn assert_receipt_matches_golden(
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = fixture_dir().join(format!("{name}.json"));
-    let actual = serde_json::to_value(receipt)?;
+    let actual_bytes = serde_json::to_vec_pretty(receipt)?;
     if std::env::var("UPDATE_SHADOW_PILOT_GOLDENS").as_deref() == Ok("1") {
         std::fs::create_dir_all(fixture_dir())?;
-        std::fs::write(&path, serde_json::to_vec_pretty(&actual)?)?;
+        std::fs::write(&path, &actual_bytes)?;
         return Ok(());
     }
-    let expected: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-    assert_eq!(actual, expected, "receipt {name} drifted from pre-migration golden fixture");
+    let expected_bytes = std::fs::read(&path)?;
+    assert_eq!(
+        actual_bytes, expected_bytes,
+        "receipt {name} drifted from pre-migration golden fixture bytes"
+    );
     Ok(())
 }
 

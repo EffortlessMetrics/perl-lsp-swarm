@@ -80,15 +80,11 @@ pub fn safe_delete_shadow<Q: SemanticQueries>(
         },
         || {
             let plan = semantic_queries.safe_delete_plan(entity_id);
-            ShadowNewPathOutput {
-                value: plan.clone(),
-                summary: safe_delete_plan_to_summary(&plan),
-                fact_source_traces: safe_delete_plan_fact_source_traces(
-                    &plan,
-                    ProviderFallbackState::Shadow,
-                ),
-                notes: safe_delete_plan_receipt_notes(legacy_allowed, &plan, "shadow"),
-            }
+            let summary = safe_delete_plan_to_summary(&plan);
+            let fact_source_traces =
+                safe_delete_plan_fact_source_traces(&plan, ProviderFallbackState::Shadow);
+            let notes = safe_delete_plan_receipt_notes(legacy_allowed, &plan, "shadow");
+            ShadowNewPathOutput { value: plan, summary, fact_source_traces, notes }
         },
     );
 
@@ -171,15 +167,11 @@ pub fn safe_delete_cutover<Q: SemanticQueries>(
         },
         || {
             let plan = semantic_queries.safe_delete_plan(entity_id);
-            ShadowNewPathOutput {
-                value: plan.clone(),
-                summary: safe_delete_plan_to_summary(&plan),
-                fact_source_traces: safe_delete_plan_fact_source_traces(
-                    &plan,
-                    ProviderFallbackState::Primary,
-                ),
-                notes: safe_delete_plan_receipt_notes(legacy_allowed, &plan, "cutover"),
-            }
+            let summary = safe_delete_plan_to_summary(&plan);
+            let fact_source_traces =
+                safe_delete_plan_fact_source_traces(&plan, ProviderFallbackState::Primary);
+            let notes = safe_delete_plan_receipt_notes(legacy_allowed, &plan, "cutover");
+            ShadowNewPathOutput { value: plan, summary, fact_source_traces, notes }
         },
     );
 
