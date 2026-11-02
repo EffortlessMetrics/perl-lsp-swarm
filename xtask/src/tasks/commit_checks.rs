@@ -208,6 +208,7 @@ pub fn run_named_check(name: &str, tree_oid: Option<&str>) -> Result<CommitCheck
         "staged_oversized_or_binary" => staged_oversized_or_binary_at(&root, tree_oid),
         "rustfmt_staged" => rustfmt_staged_at(&root, tree_oid),
         "from_raw_staged" => from_raw_staged_at(&root, tree_oid),
+        "cargo_lock_coherence_staged" => cargo_lock_coherence_staged_at(&root, tree_oid),
         other => bail!("unknown commit-tier check '{other}'"),
     };
     Ok(result
@@ -895,6 +896,76 @@ fn rustfmt_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckO
              false-positive here"
         ),
     }))
+}
+
+fn cargo_lock_coherence_staged_at(
+    root: &Path,
+    tree_oid: Option<&str>,
+) -> Result<CommitCheckOutcome> {
+    use crate::tasks::cargo_lock_coherence::{self, CoherenceStatus, REMEDIATION};
+
+    let tree_oid = resolve_tree_oid(root, tree_oid)?;
+    let changed = staged::staged_diff_paths(root, Some(&tree_oid))?;
+    let graph_paths: Vec<String> = changed
+        .iter()
+        .filter(|path| cargo_lock_coherence::is_graph_affecting_path(path))
+        .cloned()
+        .collect();
+    if graph_paths.is_empty() {
+        return Ok(CommitCheckOutcome::Pass(
+            "no graph-affecting paths staged (NOT_APPLICABLE)".to_string(),
+        ));
+    }
+
+    let manifests_staged =
+        graph_paths.iter().any(|path| path == "Cargo.toml" || path.ends_with("/Cargo.toml"));
+    let lock_staged = graph_paths.iter().any(|path| path == "Cargo.lock");
+    if manifests_staged && !lock_staged {
+        return Ok(CommitCheckOutcome::Flagged(CheckReport {
+            check: "cargo_lock_coherence_staged".to_string(),
+            posture: Posture::Blocked,
+            result: "a manifest change is staged without a matching Cargo.lock update".to_string(),
+            why: "dependency graph inputs changed in the index but the lockfile was not staged \
+                  with them"
+                .to_string(),
+            affected: graph_paths,
+            fix: Some(REMEDIATION.to_string()),
+            rerun: rerun_for("cargo_lock_coherence_staged"),
+            what_remains: "stage an updated Cargo.lock or revert the manifest edit".to_string(),
+        }));
+    }
+
+    match cargo_lock_coherence::check_locked_resolution(root, None)? {
+        CoherenceStatus::Coherent => Ok(CommitCheckOutcome::Pass(format!(
+            "locked workspace graph resolves for staged dependency inputs ({})",
+            graph_paths.join(", ")
+        ))),
+        CoherenceStatus::StaleLock => Ok(CommitCheckOutcome::Flagged(CheckReport {
+            check: "cargo_lock_coherence_staged".to_string(),
+            posture: Posture::Blocked,
+            result: "committed manifests and Cargo.lock disagree".to_string(),
+            why: "`cargo metadata --locked` failed: the lockfile does not match the workspace \
+                  manifests on disk"
+                .to_string(),
+            affected: graph_paths,
+            fix: Some(REMEDIATION.to_string()),
+            rerun: rerun_for("cargo_lock_coherence_staged"),
+            what_remains: "regenerate and stage Cargo.lock before tests or Clippy can count as \
+                           proof"
+                .to_string(),
+        })),
+        other => Ok(CommitCheckOutcome::Flagged(CheckReport {
+            check: "cargo_lock_coherence_staged".to_string(),
+            posture: Posture::NotProven,
+            result: format!("cargo graph coherence is {}", other.as_str()),
+            why: "resolution did not complete cleanly; this is not a clean bill of health"
+                .to_string(),
+            affected: graph_paths,
+            fix: Some(REMEDIATION.to_string()),
+            rerun: rerun_for("cargo_lock_coherence_staged"),
+            what_remains: "fix manifest/lock/instrument errors, then rerun the check".to_string(),
+        })),
+    }
 }
 
 // =============================================================================

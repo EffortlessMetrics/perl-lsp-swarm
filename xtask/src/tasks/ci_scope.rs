@@ -1076,7 +1076,19 @@ fn classify_resolved_paths(
     changed_files: Vec<String>,
     immutable_subject: bool,
 ) -> Result<ScopeOutput> {
-    let metadata = load_metadata(root)?;
+    if changed_files.iter().any(|path| super::cargo_lock_coherence::is_graph_affecting_path(path)) {
+        match super::cargo_lock_coherence::check_locked_resolution(root, None)? {
+            super::cargo_lock_coherence::CoherenceStatus::Coherent => {}
+            status => {
+                return Err(eyre!(
+                    "cargo manifest/lock coherence {} before CI scope planning: {}",
+                    status.as_str(),
+                    super::cargo_lock_coherence::REMEDIATION
+                ));
+            }
+        }
+    }
+    let metadata = load_metadata_locked(root, graph_affecting_change(&changed_files))?;
     let workspace_root = root.to_string_lossy().replace('\\', "/");
     let mut output = classify_files(&changed_files, &metadata, &workspace_root)?;
     output.base = base;
@@ -1130,7 +1142,19 @@ fn validate_subject_classification(output: &ScopeOutput) -> Result<()> {
 // `targeted_checks::run`.
 
 pub(crate) fn load_metadata(root: &Path) -> Result<serde_json::Value> {
-    let output = cmd("cargo", &["metadata", "--format-version", "1"])
+    load_metadata_locked(root, false)
+}
+
+fn graph_affecting_change(changed_files: &[String]) -> bool {
+    changed_files.iter().any(|path| super::cargo_lock_coherence::is_graph_affecting_path(path))
+}
+
+fn load_metadata_locked(root: &Path, locked: bool) -> Result<serde_json::Value> {
+    let mut args = vec!["metadata", "--format-version", "1"];
+    if locked {
+        args.push("--locked");
+    }
+    let output = cmd("cargo", &args)
         .dir(root)
         .stdout_capture()
         .stderr_capture()

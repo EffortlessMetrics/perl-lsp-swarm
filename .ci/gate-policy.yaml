@@ -304,6 +304,21 @@ gates:
       - staged
       - process-policy
 
+  - name: cargo_lock_coherence_staged
+    tier: commit
+    description: "Locked Cargo graph coherence when staged manifests or lockfile change (#13411)"
+    required: true
+    command: cargo xtask commit-check cargo_lock_coherence_staged
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - lockfile
+      - staged
+      - dependencies
+
   # ===========================================================================
   # Tier: pr_fast
   # ===========================================================================
@@ -322,6 +337,23 @@ gates:
     tags:
       - formatting
       - style
+    planning:
+      role: always_on
+
+  - name: cargo_lock_coherence
+    tier: pr_fast
+    description: "Fail fast when workspace manifests and Cargo.lock disagree (#13411)"
+    required: true
+    command: cargo xtask cargo-lock-coherence
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - lockfile
+      - dependencies
+      - hygiene
     planning:
       role: always_on
 
