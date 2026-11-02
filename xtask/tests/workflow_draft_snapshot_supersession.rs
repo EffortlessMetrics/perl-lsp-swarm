@@ -409,6 +409,8 @@ fn evaluate(gate: Gate, route_result: &str, is_draft: &str, shim: GhShim) -> Res
         .env("PR_NUMBER", "16094")
         .env("HEAD_SHA", "c9bf380f4")
         .env("IS_DRAFT_PR", is_draft)
+        .env("IS_FORK_PR", "false")
+        .env("STALE_DRAFT_WITHDRAW_DRAIN_SECONDS", "0")
         // The block polls until an attempt other than its own is terminal.
         // Every fixture but the settling one answers terminally on its first
         // read, so their budget is zero and the loop reads once; the settling
