@@ -1,7 +1,7 @@
 //! `cargo xtask framework-attribute-generation-conformance` — validate #2373 truth rows.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use xtask::framework_attribute_generation_conformance as fag;
 
 #[derive(clap::Subcommand, Debug)]
