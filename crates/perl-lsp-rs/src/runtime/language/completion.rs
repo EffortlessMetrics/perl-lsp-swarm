@@ -6111,7 +6111,7 @@ our $single_root_var;
         for name in ["Thing01", "Thing09", "Thing10", "Thing20"] {
             let uri = format!("file:///project/lib/BigApp/Gen/{name}.pm");
             let source = format!("package BigApp::Gen::{name};\n1;\n");
-            let _ = coordinator.index().index_file_str(&uri, &source);
+            let _ = coordinator.index().index_initial_file_str(&uri, &source);
         }
         coordinator.transition_to_ready(4, 4);
 
