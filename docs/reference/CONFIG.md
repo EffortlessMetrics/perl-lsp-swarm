@@ -853,8 +853,12 @@ Flags passed when launching the `perllsp` executable. Source:
 
 ### Diagnostic and info
 
-Flags in this group exit immediately and do not start the LSP server (source:
-`crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs`).
+Diagnostic/info actions in this group exit immediately and do not start the LSP
+server. `--json` is an output modifier for `--doctor` and the composed
+`--info --json` identity form; `--json` alone does not select an exit action
+(source: `crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs`). One-shot
+`--identity` / `--identity-json` constraints are enforced in
+`crates/perl-lsp-rs-core/src/product_identity.rs` before the ordinary parser runs.
 
 | Flag | Description |
 |---|---|
@@ -863,12 +867,12 @@ Flags in this group exit immediately and do not start the LSP server (source:
 | `--version` | Print version string and exit |
 | `--features-json` | Print the active feature catalog as JSON and exit |
 | `--doctor [dir]` | Explain Perl path, config, and effective `@INC` roots for a workspace directory (defaults to `.` when omitted). Conflicts with `--check` and `--check-project`. |
-| `--external-tools` | With `--doctor`: registry-driven native-first external tooling report. Requires `--doctor`; mutually exclusive with `--critic-compatibility` and `--dev-environment`. |
-| `--critic-compatibility` | With `--doctor`: `.perlcriticrc` compatibility report (process-free). Requires `--doctor`; mutually exclusive with `--external-tools` and `--dev-environment`. |
-| `--dev-environment` | With `--doctor`: development-environment prerequisite report (symlink privilege, shells, toolchain pin, Perl identity). Requires `--doctor`; mutually exclusive with `--external-tools` and `--critic-compatibility`. |
+| `--external-tools` | With `--doctor`: registry-driven native-first external tooling report (ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--critic-compatibility` and `--dev-environment`. |
+| `--critic-compatibility` | With `--doctor`: `.perlcriticrc` compatibility report (process-free; ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--external-tools` and `--dev-environment`. |
+| `--dev-environment` | With `--doctor`: development-environment prerequisite report (symlink privilege, shells, toolchain pin, Perl identity; ignores `--doctor`'s optional `[dir]`). Requires `--doctor`; mutually exclusive with `--external-tools` and `--critic-compatibility`. |
 | `--json` | Machine-readable JSON output when paired with `--doctor`. With `--info`, forms the composed one-shot identity output (see below). |
-| `--identity` | Print the installed-binary identity packet and exit. One-shot: must be the only argument. |
-| `--identity-json` | Print the same packet as `perl_lsp.binary_identity.v1` JSON and exit. One-shot: must be the only argument. |
+| `--identity` | Print the installed-binary identity packet and exit (`product_identity.rs`). One-shot: must be the only argument. |
+| `--identity-json` | Print the same packet as `perl_lsp.binary_identity.v1` JSON and exit (`product_identity.rs`). One-shot: must be the only argument. |
 | `--info --json` | Composed one-shot identity JSON (`--info` and `--json` only; either order). |
 | `--perltidy-compat-report <profile>` | Report native formatter compatibility for a `.perltidyrc` profile and exit. Mutually exclusive with `--perlcritic-compat-report`. |
 | `--perlcritic-compat-report <profile>` | Report native critic compatibility for a `.perlcriticrc` profile and exit. Mutually exclusive with `--perltidy-compat-report`. |
