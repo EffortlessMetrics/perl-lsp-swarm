@@ -2068,6 +2068,8 @@ impl LspServer {
 
                     self.evict_deleted_file_state(&uri);
 
+                    self.invalidate_module_resolution_negative_cache_for_uri(&uri);
+
                     tracing::debug!(uri, "Removed deleted file from index");
 
                     #[cfg(feature = "workspace")]
@@ -2273,6 +2275,7 @@ impl LspServer {
     /// a genuinely closed file, which the next watcher event or scan
     /// recovers.
     fn process_file_watcher_uri_immediate(&self, uri: &str) {
+        self.invalidate_module_resolution_negative_cache_for_uri(uri);
         if self.document_is_open(uri) {
             self.record_backing_file_transition(uri, BackingFileTransition::Changed);
             tracing::debug!(

@@ -118,6 +118,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -336,6 +339,9 @@ impl LspServer {
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
             ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
+            ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
@@ -480,6 +486,9 @@ impl LspServer {
             semantic_tokens_cache: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
+            ),
+            module_resolution_negative_cache: Arc::new(
+                super::lifecycle::module_resolution::ModuleResolutionNegativeCache::default(),
             ),
             use_lib_hir_cache: Arc::new(Mutex::new(UseLibHirCache::default())),
             #[cfg(feature = "workspace")]
