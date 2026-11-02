@@ -7107,7 +7107,7 @@ fn initial_package_for_uri(uri: &str) -> Option<String> {
     let path = file_path.as_deref().unwrap_or_else(|| Path::new(parsed_uri.path()));
     let extension = path.extension().and_then(|extension| extension.to_str());
     if extension.is_some_and(|extension| {
-        ["pm", "ep", "tt", "tt2", "mason"]
+        ["pm", "pod", "ep", "tt", "tt2", "mason"]
             .iter()
             .any(|excluded| extension.eq_ignore_ascii_case(excluded))
     }) {
@@ -8065,6 +8065,48 @@ mod tests {
         anyhow::ensure!(
             symbols.iter().any(|symbol| symbol.qualified_name.as_deref() == Some("main::helper")),
             "scripts must retain their implicit main namespace: {symbols:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_pod_documentation_has_no_main_package() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///doc/Module.pod";
+        let pod_only = "=head1 NAME\n\nModule - docs\n\n=cut\n";
+        index
+            .index_initial_file(Url::parse(uri)?, pod_only.to_string())
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.name != "main"),
+            "POD documentation must not synthesize a main package: {symbols:?}"
+        );
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.qualified_name.as_deref() != Some("main::main")),
+            "POD documentation must not surface main-package symbols: {symbols:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_test_file_keeps_main_namespace() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///t/basic.t";
+        index
+            .index_initial_file(
+                Url::parse(uri)?,
+                "use Test::More; sub test_something { 1 }".to_string(),
+            )
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.qualified_name.as_deref() == Some("main::test_something")),
+            "test scripts must retain implicit main for subs: {symbols:?}"
         );
         Ok(())
     }
