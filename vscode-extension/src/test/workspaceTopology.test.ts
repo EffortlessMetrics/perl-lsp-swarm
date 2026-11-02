@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import packageJson from '../../package.json';
 import { describeWorkspaceTopology, WORKSPACE_CAPABILITY_MATRIX } from '../workspaceTopology';
 
@@ -51,6 +53,12 @@ describe('workspace topology capability contract', () => {
     expect(topology.mode).toBe('single-root');
     expect(topology.trust).toBe('untrusted');
     expect(topology.folder_uri_schemes).toEqual(['file']);
+    expect(topology.capabilities).toEqual({
+      workspace_root: 'unsupported',
+      file_backed_operations: 'unsupported',
+      language_server_documents: 'unsupported',
+    });
+    expect(topology.limitations.join(' ')).toMatch(/product-declined/);
   });
 
   test('classifies virtual and untitled documents with explicit limitations', () => {
@@ -67,8 +75,13 @@ describe('workspace topology capability contract', () => {
 
     expect(virtual.mode).toBe('virtual');
     expect(virtual.virtual_document_count).toBe(1);
-    expect(virtual.capabilities.file_backed_operations).toBe('unsupported');
+    expect(virtual.capabilities).toEqual({
+      workspace_root: 'unsupported',
+      file_backed_operations: 'unsupported',
+      language_server_documents: 'unsupported',
+    });
     expect(virtual.limitations.join(' ')).toMatch(/file-backed operations/);
+    expect(virtual.limitations.join(' ')).toMatch(/product-declined/);
     expect(untitled.mode).toBe('empty');
     expect(untitled.untitled_document_count).toBe(1);
     expect(untitled.trust).toBe('unknown');
@@ -86,5 +99,17 @@ describe('workspace topology capability contract', () => {
     expect(topology.host_kind).toBe('remote');
     expect(topology.remote_name).toBe('ssh-remote');
     expect(topology.limitations.join(' ')).toMatch(/remote-host receipt/);
+  });
+
+  test('workspace capability matrix doc stays aligned with manifest decline boundaries', () => {
+    const docPath = path.join(
+      __dirname,
+      '../../docs/migrations/workspace-capability-matrix.md',
+    );
+    const doc = fs.readFileSync(docPath, 'utf8');
+    expect(doc).not.toMatch(/supports virtual and untrusted workspaces/i);
+    expect(doc).toMatch(/virtualWorkspaces\.supported:\s*false/i);
+    expect(doc).toMatch(/untrustedWorkspaces\.supported:\s*false/i);
+    expect(doc).not.toMatch(/Supported with host restrictions/i);
   });
 });

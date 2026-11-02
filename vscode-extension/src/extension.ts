@@ -1529,12 +1529,8 @@ async function runExtensionActivation(
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
 
-  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    try {
-      await populateCreatedFiles(event);
-    } catch (e) {
-      outputChannel.error('File creation handler error', e);
-    }
+  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (_event) => {
+    // Perl scaffolding is an explicit create action (#14451); do not auto-populate.
   });
   activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 

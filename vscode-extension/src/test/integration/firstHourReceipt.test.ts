@@ -548,6 +548,50 @@ suite('First-hour VS Code receipt', function () {
         }
       | undefined;
 
+    if (expectedTrust === 'untrusted') {
+      assert.equal(
+        vscode.workspace.isTrusted,
+        false,
+        'untrusted capability smoke requires a genuinely untrusted workspace',
+      );
+      for (const [capability, status] of Object.entries(topology.capabilities)) {
+        assert.equal(
+          status,
+          'unsupported',
+          `untrusted workspace product capability ${capability} must be declined`,
+        );
+      }
+      const languageClientMetrics = extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+        status: 'unavailable',
+      };
+      assert.notEqual(
+        languageClientMetrics.lifecycle_state,
+        'running',
+        'language server must not reach running in an untrusted workspace smoke',
+      );
+      assert.equal(
+        languageClientMetrics.server_start_status,
+        'idle',
+        'language server startup must remain idle until trust is granted',
+      );
+      writeFirstHourReceipt({
+        ...baseReceipt,
+        outcome: 'untrusted_product_declined',
+        startup: {
+          extension_activation_status: 'ok',
+          extension_activation_ms: activationMs,
+          language_client: languageClientMetrics,
+        },
+        moments: null,
+        diagnostics_probe: null,
+        limitations: [
+          ...baseReceipt.limitations,
+          'Untrusted workspace smoke proves manifest decline and deferred startup, not provider success.',
+        ],
+      });
+      return;
+    }
+
     const commandWaitStart = monotonicNow();
     await withTimeout(
       'command registration',
