@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/framework_attribute_generation_conformance.v1.schema.json",
+  "title": "framework_attribute_generation_conformance.v1",
+  "description": "Independently reviewed static Moo/Moose attribute-generation conformance authority (#2373). Expected rows are authored from framework contracts, not implementation output.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest",
+    "issue",
+    "owner",
+    "status",
+    "updated",
+    "claim_boundary",
+    "authorities",
+    "expectation_classes",
+    "profiles",
+    "matrices",
+    "failure_probes",
+    "fixtures",
+    "cases"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "const": "framework_attribute_generation_conformance.v1" },
+    "manifest": { "const": "framework-attribute-generation-conformance" },
+    "issue": { "const": 2373 },
+    "owner": { "type": "string", "minLength": 1 },
+    "status": { "const": "proof-definition" },
+    "updated": { "type": "string", "minLength": 1 },
+    "claim_boundary": { "type": "string", "minLength": 1 },
+    "authorities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consumer_adapters",
+        "type_fact_boundary",
+        "differential_oracle",
+        "provider_reuse_rule"
+      ],
+      "properties": {
+        "consumer_adapters": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "type_fact_boundary": { "type": "string", "minLength": 1 },
+        "differential_oracle": { "type": "string", "minLength": 1 },
+        "provider_reuse_rule": { "type": "string", "minLength": 1 }
+      }
+    },
+    "expectation_classes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/expectation_class" },
+      "minItems": 6,
+      "uniqueItems": true
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 3,
+      "additionalProperties": { "$ref": "#/$defs/profile" }
+    },
+    "matrices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["moo_core", "moose_core", "extension_shortcuts"],
+      "properties": {
+        "moo_core": { "$ref": "#/$defs/matrix" },
+        "moose_core": { "$ref": "#/$defs/matrix" },
+        "extension_shortcuts": { "$ref": "#/$defs/matrix" },
+        "class_tiny": { "$ref": "#/$defs/matrix" }
+      }
+    },
+    "failure_probes": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": { "$ref": "#/$defs/failure_probe" }
+    },
+    "fixtures": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/fixture_record" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/case_record" }
+    }
+  },
+  "$defs": {
+    "expectation_class": {
+      "type": "string",
+      "enum": [
+        "attribute_declaration",
+        "access_mode",
+        "provided_generated_member",
+        "referenced_hook",
+        "constructor_input",
+        "constraint_metadata",
+        "dynamic_boundary",
+        "unsupported_boundary"
+      ]
+    },
+    "profile_kind": {
+      "type": "string",
+      "enum": ["core_framework", "extension_profile"]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "fixture_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "framework",
+        "version_identity",
+        "source_citation"
+      ],
+      "properties": {
+        "kind": { "$ref": "#/$defs/profile_kind" },
+        "framework": { "type": "string", "minLength": 1 },
+        "version_identity": { "type": "string", "minLength": 1 },
+        "source_citation": { "type": "string", "minLength": 1 },
+        "activation_required": { "type": "boolean" }
+      }
+    },
+    "matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "case_ids"],
+      "properties": {
+        "profile_id": { "type": "string", "minLength": 1 },
+        "case_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "failure_probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probe_id", "summary", "case_id"],
+      "properties": {
+        "probe_id": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "summary": { "type": "string", "minLength": 1 },
+        "case_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "member_kind": {
+      "type": "string",
+      "enum": [
+        "reader",
+        "writer",
+        "protected_writer",
+        "accessor",
+        "predicate",
+        "clearer",
+        "static_delegate"
+      ]
+    },
+    "hook_kind": {
+      "type": "string",
+      "enum": ["builder", "trigger", "role_requirement"]
+    },
+    "provided_member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "generator_anchor"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/member_kind" },
+        "name": { "type": "string", "minLength": 1 },
+        "generator_anchor": { "const": "has_declaration" },
+        "method_body_range": { "const": "none" }
+      }
+    },
+    "referenced_hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "provided_by_attribute"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/hook_kind" },
+        "name": { "type": "string", "minLength": 1 },
+        "provided_by_attribute": { "const": false }
+      }
+    },
+    "case_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "matrix",
+        "profile_id",
+        "fixture",
+        "attribute_name",
+        "expectation",
+        "source_citation_identity"
+      ],
+      "properties": {
+        "case_id": { "type": "string", "minLength": 1 },
+        "matrix": {
+          "type": "string",
+          "enum": ["moo_core", "moose_core", "extension", "failure_probe"]
+        },
+        "profile_id": { "type": "string", "minLength": 1 },
+        "fixture": { "type": "string", "minLength": 1 },
+        "attribute_name": { "type": "string", "minLength": 1 },
+        "failure_probe_ids": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 10 },
+          "uniqueItems": true
+        },
+        "expectation": { "$ref": "#/$defs/expectation" },
+        "source_citation_identity": { "type": "string", "minLength": 1 }
+      }
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "access_mode",
+        "provided_members",
+        "referenced_hooks",
+        "constructor_input",
+        "constraint",
+        "dynamic_boundary",
+        "confidence",
+        "proof_ceiling"
+      ],
+      "properties": {
+        "access_mode": { "type": ["string", "null"] },
+        "provided_members": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/provided_member" }
+        },
+        "referenced_hooks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/referenced_hook" }
+        },
+        "constructor_input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["init_arg", "disposition"],
+          "properties": {
+            "init_arg": { "type": ["string", "null"] },
+            "disposition": { "type": "string", "minLength": 1 }
+          }
+        },
+        "constraint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["spelling", "object_return_proof"],
+          "properties": {
+            "spelling": { "type": ["string", "null"] },
+            "object_return_proof": { "type": "boolean" }
+          }
+        },
+        "dynamic_boundary": { "type": ["string", "null"] },
+        "unsupported_boundary": { "type": ["string", "null"] },
+        "confidence": { "type": "string", "minLength": 1 },
+        "proof_ceiling": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

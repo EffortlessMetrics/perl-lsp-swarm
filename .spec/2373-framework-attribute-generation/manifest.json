@@ -1,0 +1,927 @@
+{
+  "schema_version": "framework_attribute_generation_conformance.v1",
+  "manifest": "framework-attribute-generation-conformance",
+  "issue": 2373,
+  "owner": "framework-semantic-conformance",
+  "status": "proof-definition",
+  "updated": "2026-11-02",
+  "claim_boundary": "Authored static-generation truth rows for reviewed Moo/Moose profiles (#2373). Validates manifest shape, profile separation, fixture digests, and expectation-class coverage only. Does not execute frameworks, change providers, or bless current ClassModelBuilder output.",
+  "authorities": {
+    "consumer_adapters": [
+      "#4908",
+      "#6824",
+      "#7648",
+      "#7790"
+    ],
+    "type_fact_boundary": "#7280/#7793 must not promote package-shaped Moo/unknown constraint spelling from this corpus without separate proof",
+    "differential_oracle": "#4766 bounded real-framework generated-member inventory comparison may reuse these fixtures test-only",
+    "provider_reuse_rule": "Provider/E2E tests may load fixture sources but must not redefine expectations authored here"
+  },
+  "expectation_classes": [
+    "attribute_declaration",
+    "access_mode",
+    "provided_generated_member",
+    "referenced_hook",
+    "constructor_input",
+    "constraint_metadata",
+    "dynamic_boundary",
+    "unsupported_boundary"
+  ],
+  "profiles": {
+    "moo_core_2_005005": {
+      "kind": "core_framework",
+      "framework": "Moo",
+      "version_identity": "2.005005",
+      "source_citation": "https://metacpan.org/pod/Moo::Manual::Attributes version 2.005005"
+    },
+    "moose_core": {
+      "kind": "core_framework",
+      "framework": "Moose",
+      "version_identity": "Moose::Manual::Attributes / Moose::Meta::Attribute",
+      "source_citation": "https://metacpan.org/pod/Moose::Manual::Attributes"
+    },
+    "moosex_attribute_shortcuts": {
+      "kind": "extension_profile",
+      "framework": "MooseX::AttributeShortcuts",
+      "version_identity": "activated_extension",
+      "source_citation": "https://metacpan.org/pod/MooseX::AttributeShortcuts",
+      "activation_required": true
+    }
+  },
+  "matrices": {
+    "moo_core": {
+      "profile_id": "moo_core_2_005005",
+      "case_ids": [
+        "FAG-MOO-001",
+        "FAG-MOO-002",
+        "FAG-MOO-003",
+        "FAG-MOO-004",
+        "FAG-MOO-005",
+        "FAG-MOO-006",
+        "FAG-MOO-007",
+        "FAG-MOO-008",
+        "FAG-MOO-009",
+        "FAG-MOO-010",
+        "FAG-MOO-011",
+        "FAG-MOO-012"
+      ]
+    },
+    "moose_core": {
+      "profile_id": "moose_core",
+      "case_ids": [
+        "FAG-MOOSE-001",
+        "FAG-MOOSE-002",
+        "FAG-MOOSE-003",
+        "FAG-MOOSE-004",
+        "FAG-MOOSE-005",
+        "FAG-MOOSE-006",
+        "FAG-MOOSE-007"
+      ]
+    },
+    "extension_shortcuts": {
+      "profile_id": "moosex_attribute_shortcuts",
+      "case_ids": [
+        "FAG-EXT-001"
+      ]
+    }
+  },
+  "failure_probes": [
+    {
+      "probe_id": 1,
+      "summary": "Must not synthesize a Moose accessor when core `has` omits `is`.",
+      "case_id": "FAG-MOOSE-004"
+    },
+    {
+      "probe_id": 2,
+      "summary": "Must not treat missing core-Moo `is` as an exact accessor declaration.",
+      "case_id": "FAG-MOO-005"
+    },
+    {
+      "probe_id": 3,
+      "summary": "Must retain Moo `rwp` protected writer `_set_<name>`.",
+      "case_id": "FAG-MOO-003"
+    },
+    {
+      "probe_id": 4,
+      "summary": "Must not admit core-Moo `is => bare` as exact.",
+      "case_id": "FAG-MOO-006"
+    },
+    {
+      "probe_id": 5,
+      "summary": "Must not apply Moo/AttributeShortcuts access modes to plain Moose without extension activation.",
+      "case_id": "FAG-MOOSE-007"
+    },
+    {
+      "probe_id": 6,
+      "summary": "Must not turn a dynamic option expression into a literal generated method name.",
+      "case_id": "FAG-MOO-009"
+    },
+    {
+      "probe_id": 7,
+      "summary": "Must not treat a named builder hook as a provided generated member.",
+      "case_id": "FAG-MOO-012"
+    },
+    {
+      "probe_id": 8,
+      "summary": "Must derive underscore-sensitive predicate/clearer names correctly.",
+      "case_id": "FAG-MOO-011"
+    },
+    {
+      "probe_id": 9,
+      "summary": "Must not treat package-like core-Moo `isa` spelling as object-return proof.",
+      "case_id": "FAG-MOO-010"
+    },
+    {
+      "probe_id": 10,
+      "summary": "Must anchor provided members on the `has` generator without inventing method-body ranges.",
+      "case_id": "FAG-PROBE-010"
+    }
+  ],
+  "fixtures": {
+    "moo/ro.pl": {
+      "digest": "sha256:f177021cc3d5e3fb0e992536b2695768807ba5ac90896f7e321074c11c72445c"
+    },
+    "moo/rw.pl": {
+      "digest": "sha256:81da4a571d6e21dc30ca3efcb78df057f630ebf85de8e93111fca43a04e6bd3d"
+    },
+    "moo/rwp.pl": {
+      "digest": "sha256:fe621ba6ddb5bbbc98233f7a463e4118c1ce7c4eb1bc9a98b337d35817e046a6"
+    },
+    "moo/lazy.pl": {
+      "digest": "sha256:68cb743a723589c364d061e4929448af3241093a6cac4012fa919e0158e82db4"
+    },
+    "moo/missing_is.pl": {
+      "digest": "sha256:077a70c995f1ec57dd413ee5b28ade8ebc2d7f8c9747ad05be5a5c14914b9a45"
+    },
+    "moo/bare.pl": {
+      "digest": "sha256:1366c893c7b8b19fe5abc20179197dd1fa37a6f4ddadf29985d2cda63b5d9904"
+    },
+    "moo/custom_reader_writer.pl": {
+      "digest": "sha256:ee9a9136e9c8da61d2cb47e19211aa1b2c32889be787f5a81c328ca0bc9aae10"
+    },
+    "moo/plus_override.pl": {
+      "digest": "sha256:2d55ed1557d2b8b1cc3bd14f682f918323dff9b62c798e9ce36c00c55510f9b6"
+    },
+    "moo/dynamic_reader.pl": {
+      "digest": "sha256:4feaf5bb90881b6b2d15b975fd2b74cf4bd5a9855837ebd403343b8f7a998571"
+    },
+    "moo/isa_spelling.pl": {
+      "digest": "sha256:4a2235989a6d6b81af19adfe9ded4250371363d67a71f28a75e6c90fe38358fb"
+    },
+    "moo/underscore_predicate.pl": {
+      "digest": "sha256:8fd4a3987a346a99795bcf65ea150e68bd284a8ebaf91d7ef2f68d9b6472c2ae"
+    },
+    "moo/builder_hook.pl": {
+      "digest": "sha256:6b541a3214398f796dd1f9ef4ab5fede4f847e74917acb67bf5d96a81c311475"
+    },
+    "moose/ro.pl": {
+      "digest": "sha256:4f9b47605341ff7c5cc6b1dd4c1cb38eef1dcc61b90ac1798db40c8c74e867f0"
+    },
+    "moose/rw.pl": {
+      "digest": "sha256:9ab441fef82f57ad3939e3eeb9d2c14cd53ea9b22d0474d045c82294be5ad5d6"
+    },
+    "moose/bare.pl": {
+      "digest": "sha256:e2b43d2fb24c138d24d8ad2eaffbda5c2aedfc4a3aba37ac6a7b38ccfc69ce9b"
+    },
+    "moose/omitted_is.pl": {
+      "digest": "sha256:b78aaca8d6a40e8c6ebbb50d6b7f29d0ba12e19814118844c094d3a7b4dacdc1"
+    },
+    "moose/lazy_option.pl": {
+      "digest": "sha256:3257a9d3d4dcd49e5348405d600bd9cbc42fbac63612fe4143b3e088adade4a9"
+    },
+    "moose/lazy_build.pl": {
+      "digest": "sha256:2dfc18b4ff605642c5525c69d1a3f636ca77546f7aedc23076daec8b34793248"
+    },
+    "moose/rwp_without_extension.pl": {
+      "digest": "sha256:820fbbdc921a0733b02ca91638a1f7c5512ab1a2867872594e326eaa25dfa4dc"
+    },
+    "probes/moosex_shortcuts_active.pl": {
+      "digest": "sha256:75b6b3a5e7fc48a72981360fa93aa414ad438743ea6761e4a52d9a3f7b68e458"
+    },
+    "probes/generator_anchor.pl": {
+      "digest": "sha256:99c77cfdc0af8aa0d94f453917331cfd4a3c269c6bdcfdc02daa21fcb0105801"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "FAG-MOO-001",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/ro.pl",
+      "attribute_name": "name",
+      "expectation": {
+        "access_mode": "ro",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "name",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "name",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "Str",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo::Manual::Attributes is=>ro default reader"
+    },
+    {
+      "case_id": "FAG-MOO-002",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/rw.pl",
+      "attribute_name": "count",
+      "expectation": {
+        "access_mode": "rw",
+        "provided_members": [
+          {
+            "kind": "accessor",
+            "name": "count",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "count",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "Int",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo::Manual::Attributes is=>rw default accessor"
+    },
+    {
+      "case_id": "FAG-MOO-003",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/rwp.pl",
+      "attribute_name": "token",
+      "expectation": {
+        "access_mode": "rwp",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "token",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          },
+          {
+            "kind": "protected_writer",
+            "name": "_set_token",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "token",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo::Manual::Attributes is=>rwp reader and _set_<name> writer",
+      "failure_probe_ids": [
+        3
+      ]
+    },
+    {
+      "case_id": "FAG-MOO-004",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/lazy.pl",
+      "attribute_name": "payload",
+      "expectation": {
+        "access_mode": "lazy",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "payload",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [
+          {
+            "kind": "builder",
+            "name": "_build_payload",
+            "provided_by_attribute": false
+          }
+        ],
+        "constructor_input": {
+          "init_arg": "payload",
+          "disposition": "lazy_with_builder_hook"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo::Manual::Attributes is=>lazy reader and builder hook"
+    },
+    {
+      "case_id": "FAG-MOO-005",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/missing_is.pl",
+      "attribute_name": "orphan",
+      "expectation": {
+        "access_mode": null,
+        "provided_members": [],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "orphan",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "Str",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": "missing_is_not_exact",
+        "unsupported_boundary": null,
+        "confidence": "bounded_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo::Manual::Attributes requires is for ordinary new attributes",
+      "failure_probe_ids": [
+        2
+      ]
+    },
+    {
+      "case_id": "FAG-MOO-006",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/bare.pl",
+      "attribute_name": "hidden",
+      "expectation": {
+        "access_mode": null,
+        "provided_members": [],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "hidden",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "Str",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": "core_moo_bare_not_admitted",
+        "confidence": "bounded_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Core Moo does not admit is=>bare",
+      "failure_probe_ids": [
+        4
+      ]
+    },
+    {
+      "case_id": "FAG-MOO-007",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/custom_reader_writer.pl",
+      "attribute_name": "title",
+      "expectation": {
+        "access_mode": "ro",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "get_title",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          },
+          {
+            "kind": "writer",
+            "name": "set_title",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "title",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo custom reader/writer names"
+    },
+    {
+      "case_id": "FAG-MOO-008",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/plus_override.pl",
+      "attribute_name": "id",
+      "expectation": {
+        "access_mode": "rw_override",
+        "provided_members": [
+          {
+            "kind": "accessor",
+            "name": "id",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "id",
+          "disposition": "override_not_fresh_default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo +attribute override retains override disposition"
+    },
+    {
+      "case_id": "FAG-MOO-009",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/dynamic_reader.pl",
+      "attribute_name": "slot",
+      "expectation": {
+        "access_mode": null,
+        "provided_members": [],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "slot",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": "dynamic_option_value",
+        "unsupported_boundary": null,
+        "confidence": "bounded_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Dynamic reader option is not a static generated name",
+      "failure_probe_ids": [
+        6
+      ]
+    },
+    {
+      "case_id": "FAG-MOO-010",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/isa_spelling.pl",
+      "attribute_name": "role_name",
+      "expectation": {
+        "access_mode": "ro",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "role_name",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "role_name",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "MyApp::Role::Name",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Core Moo isa spelling is constraint metadata only",
+      "failure_probe_ids": [
+        9
+      ]
+    },
+    {
+      "case_id": "FAG-MOO-011",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/underscore_predicate.pl",
+      "attribute_name": "_secret",
+      "expectation": {
+        "access_mode": "ro",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "_secret",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          },
+          {
+            "kind": "predicate",
+            "name": "_has__secret",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "_secret",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo underscore-sensitive predicate naming",
+      "failure_probe_ids": [
+        8
+      ]
+    },
+    {
+      "case_id": "FAG-MOO-012",
+      "matrix": "moo_core",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "moo/builder_hook.pl",
+      "attribute_name": "value",
+      "expectation": {
+        "access_mode": "lazy",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "value",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [
+          {
+            "kind": "builder",
+            "name": "_build_value",
+            "provided_by_attribute": false
+          }
+        ],
+        "constructor_input": {
+          "init_arg": "value",
+          "disposition": "lazy_with_builder_hook"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moo lazy builder hook is referenced not provided",
+      "failure_probe_ids": [
+        7
+      ]
+    },
+    {
+      "case_id": "FAG-MOOSE-001",
+      "matrix": "moose_core",
+      "profile_id": "moose_core",
+      "fixture": "moose/ro.pl",
+      "attribute_name": "name",
+      "expectation": {
+        "access_mode": "ro",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "name",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "name",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "Str",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moose::Manual::Attributes is=>ro"
+    },
+    {
+      "case_id": "FAG-MOOSE-002",
+      "matrix": "moose_core",
+      "profile_id": "moose_core",
+      "fixture": "moose/rw.pl",
+      "attribute_name": "count",
+      "expectation": {
+        "access_mode": "rw",
+        "provided_members": [
+          {
+            "kind": "accessor",
+            "name": "count",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "count",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "Int",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moose::Manual::Attributes is=>rw"
+    },
+    {
+      "case_id": "FAG-MOOSE-003",
+      "matrix": "moose_core",
+      "profile_id": "moose_core",
+      "fixture": "moose/bare.pl",
+      "attribute_name": "slot",
+      "expectation": {
+        "access_mode": "bare",
+        "provided_members": [],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "slot",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": "Str",
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moose::Manual::Attributes is=>bare"
+    },
+    {
+      "case_id": "FAG-MOOSE-004",
+      "matrix": "moose_core",
+      "profile_id": "moose_core",
+      "fixture": "moose/omitted_is.pl",
+      "attribute_name": "x",
+      "expectation": {
+        "access_mode": null,
+        "provided_members": [],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "x",
+          "disposition": "attribute_only"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moose omitted is means attribute without accessor",
+      "failure_probe_ids": [
+        1
+      ]
+    },
+    {
+      "case_id": "FAG-MOOSE-005",
+      "matrix": "moose_core",
+      "profile_id": "moose_core",
+      "fixture": "moose/lazy_option.pl",
+      "attribute_name": "payload",
+      "expectation": {
+        "access_mode": "ro",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "payload",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [
+          {
+            "kind": "builder",
+            "name": "_build_payload",
+            "provided_by_attribute": false
+          }
+        ],
+        "constructor_input": {
+          "init_arg": "payload",
+          "disposition": "lazy_with_explicit_builder"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moose lazy=>1 is separate from access mode"
+    },
+    {
+      "case_id": "FAG-MOOSE-006",
+      "matrix": "moose_core",
+      "profile_id": "moose_core",
+      "fixture": "moose/lazy_build.pl",
+      "attribute_name": "value",
+      "expectation": {
+        "access_mode": "lazy_build",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "value",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          },
+          {
+            "kind": "predicate",
+            "name": "has_value",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          },
+          {
+            "kind": "clearer",
+            "name": "clear_value",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [
+          {
+            "kind": "builder",
+            "name": "_build_value",
+            "provided_by_attribute": false
+          }
+        ],
+        "constructor_input": {
+          "init_arg": "value",
+          "disposition": "lazy_build_shortcut"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Moose lazy_build shortcut disposition"
+    },
+    {
+      "case_id": "FAG-MOOSE-007",
+      "matrix": "moose_core",
+      "profile_id": "moose_core",
+      "fixture": "moose/rwp_without_extension.pl",
+      "attribute_name": "token",
+      "expectation": {
+        "access_mode": null,
+        "provided_members": [],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "token",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": "extension_required_for_rwp",
+        "confidence": "bounded_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Plain Moose must not admit Moo rwp without extension activation",
+      "failure_probe_ids": [
+        5
+      ]
+    },
+    {
+      "case_id": "FAG-EXT-001",
+      "matrix": "extension",
+      "profile_id": "moosex_attribute_shortcuts",
+      "fixture": "probes/moosex_shortcuts_active.pl",
+      "attribute_name": "note",
+      "expectation": {
+        "access_mode": "rwp",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "note",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          },
+          {
+            "kind": "protected_writer",
+            "name": "_set_note",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "note",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "MooseX::AttributeShortcuts admits rwp only when extension profile is active"
+    },
+    {
+      "case_id": "FAG-PROBE-010",
+      "matrix": "failure_probe",
+      "profile_id": "moo_core_2_005005",
+      "fixture": "probes/generator_anchor.pl",
+      "attribute_name": "anchor",
+      "expectation": {
+        "access_mode": "ro",
+        "provided_members": [
+          {
+            "kind": "reader",
+            "name": "anchor",
+            "generator_anchor": "has_declaration",
+            "method_body_range": "none"
+          }
+        ],
+        "referenced_hooks": [],
+        "constructor_input": {
+          "init_arg": "anchor",
+          "disposition": "default"
+        },
+        "constraint": {
+          "spelling": null,
+          "object_return_proof": false
+        },
+        "dynamic_boundary": null,
+        "unsupported_boundary": null,
+        "confidence": "exact_static",
+        "proof_ceiling": "reviewed_framework_contract"
+      },
+      "source_citation_identity": "Provided members retain has generator anchor without method-body range",
+      "failure_probe_ids": [
+        10
+      ]
+    }
+  ]
+}

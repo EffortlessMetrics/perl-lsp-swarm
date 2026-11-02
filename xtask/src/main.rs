@@ -195,6 +195,13 @@ enum Commands {
         command: tasks::activation::ActivationSubcommand,
     },
 
+    /// List and validate independently reviewed Moo/Moose static attribute-generation
+    /// conformance rows (`framework_attribute_generation_conformance.v1`, #2373).
+    FrameworkAttributeGenerationConformance {
+        #[command(subcommand)]
+        command: tasks::framework_attribute_generation_conformance::FrameworkAttributeGenerationConformanceSubcommand,
+    },
+
     /// List, validate, and explain the compiler lexical cut-line cases
     /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
     CompilerLexicalCutline {
@@ -5634,6 +5641,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
+        Commands::FrameworkAttributeGenerationConformance { command } => {
+            tasks::framework_attribute_generation_conformance::run(command)
+        }
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::StandaloneDiagnostics { command } => standalone_diagnostics::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
