@@ -2227,6 +2227,7 @@ impl LspServer {
                 );
             }
         }
+        self.clear_module_resolution_negative_cache();
     }
 
     /// Discovery admission policy for a filesystem path (#14186).    ///
@@ -2584,6 +2585,7 @@ impl LspServer {
                 // event or scan recovers.
                 if self.document_is_open(uri) {
                     self.record_backing_file_transition(uri, BackingFileTransition::Changed);
+                    self.invalidate_module_resolution_negative_cache_for_uri(uri);
                     tracing::debug!(
                         uri,
                         "Explicit create for open document — buffer remains \
@@ -2638,6 +2640,9 @@ impl LspServer {
                     continue;
                 };
                 processed_any = true;
+
+                self.invalidate_module_resolution_negative_cache_for_uri(&old_uri);
+                self.invalidate_module_resolution_negative_cache_for_uri(&new_uri);
 
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
@@ -2781,6 +2786,8 @@ impl LspServer {
                 tracing::debug!("Ignoring empty workspace folder change notification");
                 return Ok(());
             }
+
+            self.clear_module_resolution_negative_cache();
 
             let _indexing_transition = self.indexing_transition_lock.lock();
 
