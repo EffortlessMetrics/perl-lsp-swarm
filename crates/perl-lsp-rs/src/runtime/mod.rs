@@ -79,6 +79,8 @@ mod runtime_services_tests;
 #[cfg(test)]
 mod session_warning_dedup_tests;
 #[cfg(test)]
+mod stale_previous_break_diagnostics_tests;
+#[cfg(test)]
 mod watched_delete_republish_tests;
 
 // Test/pressure observation of the bounded session-warning dedup store (#9769).
