@@ -157,7 +157,11 @@ never infer success from emptiness.
   classifier's `--api-evidence` mode applies the same positive-marker boundary;
   unreadable or marker-free evidence still fails closed. Every classified lane
   failure leaves a `ripr-gate-classification` artifact carrying its class and
-  reason. When the artifact is absent, the gate's classification step did not
+  reason. When the gate retrieved a lane log before classifying a configured
+  hosted timeout (`configured-timeout-no-proof`, #16980), it also uploads a
+  `ripr-lane-log-tail` artifact with the last four mebibytes of that log so
+  timeout events stay diagnosable when the hosted UI truncates to an early
+  build prefix (#17450). When the artifact is absent, the gate's classification step did not
   produce a file — which points at a gate-side failure, though it is not by
   itself proof of any single cause: paths that exit before classification and
   upload-step skip conditions also leave no artifact (the upload step ignores

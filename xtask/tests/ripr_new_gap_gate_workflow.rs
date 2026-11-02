@@ -2085,7 +2085,10 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && evaluate_step.contains("run_attempt=${GITHUB_RUN_ATTEMPT}")
             && evaluate_step.contains("lane_job_id=${lane_job_id:-unknown}")
             && evaluate_step.contains("write_gate_classification \"configured-timeout-no-proof\"")
-            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\""),
+            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\"")
+            && evaluate_step.contains("preserve-lane-log-tail.sh")
+            && evaluate_step.contains("ripr-lane-log-tail.txt")
+            && evaluate_step.contains("workflow artifact \\`ripr-lane-log-tail\\`"),
         "the ripr gate must emit every classified lane verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
@@ -2095,6 +2098,15 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && upload_step.contains("name: ripr-gate-classification")
             && upload_step.contains("if-no-files-found: ignore"),
         "the upload must keep tolerating the rare exits that precede any lane classification"
+    );
+    let lane_tail_upload = workflow_step(&gate, "Upload lane log tail")
+        .ok_or_else(|| anyhow!("missing lane log tail upload"))?;
+    assert!(
+        lane_tail_upload.contains("if: failure()")
+            && lane_tail_upload.contains("name: ripr-lane-log-tail")
+            && lane_tail_upload.contains("path: ripr-lane-log-tail.txt")
+            && lane_tail_upload.contains("if-no-files-found: ignore"),
+        "configured-timeout diagnosis must preserve the retrieved lane log tail (#17450)"
     );
 
     // The retry workflow fires on completed failing ripr runs only.
