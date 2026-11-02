@@ -926,136 +926,20 @@ fn build_parse_error_suggestion(error: &ParseError) -> Option<String> {
 
 /// Build an actionable hint for a parse error.
 ///
-/// This is the shared implementation used by both the AST-present and fallback diagnostic
-/// paths. `base_message` is the human-readable error text already derived from the error
-/// variant; it is used for pattern-matching on `SyntaxError` cases where the variant's
-/// `message` field may differ from what was already formatted for display.
-///
-/// Returns `None` when no targeted hint is available for this error pattern.
+/// Delegates to the parser-owned hint table in `perl-parser-core` (#16610).
 pub fn build_parse_error_hint(error: &ParseError, base_message: &str) -> Option<String> {
-    match error {
-        ParseError::UnexpectedToken { expected, found, .. } => {
-            // Missing semicolon: parser expected ';' or found something when ';' was expected
-            if expected.contains(';') || expected.contains("semicolon") {
-                return Some("Missing semicolon after statement. Add `;` here.".to_string());
-            }
-            // Found ';' when expecting something else often means missing expression
-            if found == ";" {
-                return Some(format!(
-                    "A {expected} is required here -- the statement appears incomplete"
-                ));
-            }
-            // Unexpected closing brace/paren
-            if found == "}" || found == ")" || found == "]" {
-                return Some(format!("Check for a missing {expected} before '{found}'"));
-            }
-            // Missing opening brace after sub/if/while/for
-            if expected.contains('{') || expected.contains("block") {
-                return Some(format!(
-                    "Add an opening '{{' to start the block (found {found})"
-                ));
-            }
-            // Missing closing paren in function call or condition
-            if expected.contains(')') {
-                return Some(
-                    "Add a closing ')' -- there may be an unmatched opening '('".to_string(),
-                );
-            }
-            // Missing closing bracket
-            if expected.contains(']') {
-                return Some(
-                    "Add a closing ']' -- there may be an unmatched opening '['".to_string(),
-                );
-            }
-            // Expected a variable (e.g. after my/our/local/state)
-            if expected.to_lowercase().contains("variable") {
-                return Some(
-                    "Expected a variable like `$foo`, `@bar`, or `%hash` after the declaration keyword".to_string(),
-                );
-            }
-            // Comma expected between list elements
-            if expected.contains(',') || expected.to_lowercase().contains("comma") {
-                return Some(
-                    "Expected `,` between list elements -- check for a missing comma".to_string(),
-                );
-            }
-            // Unexpected token that looks like a lexer failure (e.g. from an unclosed string)
-            if found.contains("unknown token") {
-                return Some(
-                    "Check for an unclosed string, regex, or heredoc near this position"
-                        .to_string(),
-                );
-            }
-            None
-        }
-        ParseError::UnexpectedEof => Some(
-            "The file ended unexpectedly -- check for unclosed delimiters or missing semicolons"
-                .to_string(),
-        ),
-        ParseError::UnclosedDelimiter { delimiter } => {
-            Some(format!("Add a matching closing '{delimiter}'"))
-        }
-        ParseError::SyntaxError { message, .. } | ParseError::Advisory { message, .. } => {
-            // Provide targeted suggestions for known syntax error patterns.
-            // Check both the stored message and the pre-formatted base_message.
-            let msg_lower = message.to_lowercase();
-            let base_lower = base_message.to_lowercase();
-            if msg_lower.contains("semicolon") || msg_lower.contains("missing ;") {
-                Some("Add a ';' at the end of the statement".to_string())
-            } else if msg_lower.contains("heredoc") || base_lower.contains("heredoc") {
-                Some(
-                    "Check that the heredoc terminator appears on its own line with no extra whitespace"
-                        .to_string(),
-                )
-            } else if msg_lower.contains("unclosed")
-                || (msg_lower.contains("block") && msg_lower.contains("expected"))
-                || msg_lower.contains("missing '}'")
-            {
-                Some(
-                    "Unclosed `{` -- check for a missing `}` to close the block".to_string(),
-                )
-            } else {
-                None
-            }
-        }
-        ParseError::LexerError { message } => {
-            let msg_lower = message.to_lowercase();
-            if msg_lower.contains("unterminated") || msg_lower.contains("unclosed") {
-                Some(
-                    "Check for an unclosed string, regex, or heredoc near this position"
-                        .to_string(),
-                )
-            } else if msg_lower.contains("invalid") && msg_lower.contains("character") {
-                Some(
-                    "Remove or replace the invalid character -- Perl source should be valid UTF-8 or the encoding declared with 'use utf8;'"
-                        .to_string(),
-                )
-            } else {
-                None
-            }
-        }
-        ParseError::RecursionLimit => Some(
-            "The code is too deeply nested -- consider refactoring into smaller subroutines"
-                .to_string(),
-        ),
-        ParseError::InvalidNumber { literal } => Some(format!(
-            "'{literal}' is not a valid number -- check for misplaced underscores or invalid digits"
-        )),
-        ParseError::InvalidString => Some(
-            "Check for a missing closing quote or an invalid escape sequence".to_string(),
-        ),
-        ParseError::InvalidRegex { .. } => Some(
-            "Check the regex pattern for unmatched delimiters, invalid quantifiers, or unescaped metacharacters"
-                .to_string(),
-        ),
-        ParseError::NestingTooDeep { .. } => Some(
-            "Reduce nesting depth by extracting inner logic into named subroutines".to_string(),
-        ),
-        ParseError::Cancelled => None,
-        // Recovered errors: the parser inserted a synthetic node and continued.
-        // No user-facing suggestion is needed — the partial AST is still usable.
-        ParseError::Recovered { .. } => None,
-        // Forward-compatible fallback for future variants (#2898)
-        _ => None,
-    }
+    perl_parser_core::syntax::error::build_parse_error_hint(error, base_message)
+}
+
+/// Source-aware hint for parse errors when the document text is available.
+pub fn build_parse_error_hint_with_source(
+    error: &ParseError,
+    base_message: &str,
+    source: &str,
+) -> Option<String> {
+    perl_parser_core::syntax::error::build_parse_error_hint_with_source(
+        error,
+        base_message,
+        Some(source),
+    )
 }

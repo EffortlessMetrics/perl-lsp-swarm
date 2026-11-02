@@ -1461,7 +1461,11 @@ impl PullDiagnosticsProvider {
         // Append the suggestion inline so users see actionable hints in the fallback path,
         // matching the behaviour of to_lsp_diagnostic for the AST-present path.
         let suggestion =
-            perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(error, &base_message);
+            perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint_with_source(
+                error,
+                &base_message,
+                text,
+            );
         let message = match suggestion.as_deref() {
             Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
             None => base_message,

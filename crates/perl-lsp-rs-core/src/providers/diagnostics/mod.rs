@@ -62,7 +62,9 @@ mod walker;
 /// production build.
 #[cfg(any(test, feature = "test-instrumentation"))]
 pub use diagnostics::parse_errors_suppress_semantic_analysis;
-pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
+pub use diagnostics::{
+    DiagnosticsProvider, build_parse_error_hint, build_parse_error_hint_with_source,
+};
 pub use document_analysis::DocumentDiagnosticAnalysis;
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{

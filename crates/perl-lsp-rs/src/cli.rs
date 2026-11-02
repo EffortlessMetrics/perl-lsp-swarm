@@ -844,7 +844,7 @@ mod tests {
         assert!(
             rendered
                 .iter()
-                .any(|line| line == "  help: add a semicolon ';' at the end of the statement")
+                .any(|line| { line == "  help: Missing semicolon after statement. Add `;` here." })
         );
         Ok(())
     }

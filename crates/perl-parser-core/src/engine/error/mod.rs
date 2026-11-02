@@ -25,6 +25,7 @@ pub mod recovery {
     pub use crate::syntax::error::recovery::*;
 }
 
+pub use crate::syntax::error::hints::{build_parse_error_hint, build_parse_error_hint_with_source};
 /// Error types and result aliases used by the parser engine.
 pub use crate::syntax::error::{
     BudgetTracker, ErrorCategory, ErrorClass, ErrorContext, InvalidSignatureOrderingKind,
