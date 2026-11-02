@@ -125,12 +125,23 @@ export class WhatsNewManager {
     for (const name of ['changelog.md', 'CHANGELOG.md']) {
       try {
         const full = fs.readFileSync(path.join(this.context.extensionPath, name), 'utf8');
-        return extractVersionSection(full, version);
+        return resolveVersionSection(full, version);
       } catch {
         // Try the development filename, then preserve the missing-file fallback.
       }
     }
     return '';
+  }
+
+  /**
+   * Returns true when auto-opening What's New would show substantive release notes.
+   */
+  hasReleaseNotesContent(): boolean {
+    const version = this.currentVersion();
+    if (!version) {
+      return false;
+    }
+    return this.extractChangelogSection(version).trim().length > 0;
   }
 
   /**
@@ -221,6 +232,28 @@ export function extractVersionSection(changelog: string, version: string): strin
   const end = nextHeading !== null ? start + match[0].length + nextHeading.index : changelog.length;
 
   return changelog.slice(start, end).trim();
+}
+
+/**
+ * Resolve changelog content for `package.json` versions that do not yet have a
+ * dedicated heading (pre-releases) or that track `## [Unreleased]` (#18432).
+ */
+export function resolveVersionSection(changelog: string, version: string): string {
+  const exact = extractVersionSection(changelog, version);
+  if (exact.trim().length > 0) {
+    return exact;
+  }
+
+  const hyphen = version.indexOf('-');
+  if (hyphen > 0) {
+    const releaseCore = version.slice(0, hyphen);
+    const fromPrerelease = extractVersionSection(changelog, releaseCore);
+    if (fromPrerelease.trim().length > 0) {
+      return fromPrerelease;
+    }
+  }
+
+  return extractVersionSection(changelog, 'Unreleased');
 }
 
 /**
