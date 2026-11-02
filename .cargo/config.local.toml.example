@@ -1,17 +1,15 @@
 # Optional machine-local Cargo settings; do not commit config.local.toml.
 #
 # Activation (pinned Cargo 1.95):
-# - Direct `cargo` from this workspace loads this file through the optional
-#   `include = ["config.local.toml"]` entry in `.cargo/config.toml`.
-# - Repository wrappers (`scripts/cargo-safe`, `scripts/cargo-admitted`) also
-#   pass `--config .cargo/config.local.toml` when this file exists.
+# - `scripts/cargo-safe` and `scripts/cargo-admitted` pass
+#   `--config .cargo/config.local.toml` when this file exists.
+# - For direct `cargo`, pass the same flag explicitly, e.g.
+#   `cargo --config .cargo/config.local.toml check -p foo`, or export the
+#   knobs you need via `CARGO_*` in your task shell.
 #
 # Precedence: admitted-route `--config` overrides (target/build paths, jobs
 # policy) win over values here; do not put target-dir, build-dir, compiler
 # wrappers, or sccache settings in this file (see docs/agents/CARGO_STORAGE.md).
-#
-# Outside those routes you can still use environment variables (`CARGO_*`) or
-# explicit `cargo --config path/to/file.toml`.
 
 [build]
 jobs = 2

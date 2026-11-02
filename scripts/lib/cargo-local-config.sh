@@ -2,10 +2,10 @@
 # scripts/lib/cargo-local-config.sh
 #
 # Per-checkout machine settings live in `.cargo/config.local.toml` (gitignored).
-# Cargo does not discover that filename through hierarchical lookup. Workspace
-# `.cargo/config.toml` optional-includes the same file for direct `cargo`
-# invocations; repository wrappers call this helper to pass `--config` when the
-# file exists.
+# Cargo does not discover that filename through hierarchical lookup. Repository
+# wrappers call this helper to pass `--config` when the file exists. Direct
+# `cargo` invocations should pass the same flag explicitly (see
+# `.cargo/config.local.toml.example`).
 
 cargo_local_config_prepare() {
   local root="${1:?worktree root required}"

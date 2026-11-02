@@ -224,6 +224,9 @@ def clippy_configuration(worktree, paths):
     except ImportError:
         raise Denied("staged Clippy requires Python 3.11+ for bounded Cargo TOML validation")
     candidates = {worktree / "clippy.toml", worktree / ".clippy.toml"}
+    local_config = worktree / ".cargo" / "config.local.toml"
+    if local_config.is_file():
+        candidates.add(local_config)
     for directory in (Path.cwd(), *Path.cwd().parents, paths["cargo_home"]):
         candidates.update(directory / ".cargo" / name for name in ("config", "config.toml"))
     candidates.update(paths["cargo_home"] / name for name in ("config", "config.toml"))
@@ -232,7 +235,7 @@ def clippy_configuration(worktree, paths):
         if not os.path.lexists(path):
             continue
         subject = file_subject(path)
-        if path.name in ("config", "config.toml"):
+        if path.name in ("config", "config.toml", "config.local.toml"):
             if path.stat().st_size > 65536:
                 raise Denied("staged Clippy Cargo configuration exceeds 64 KiB")
             try:

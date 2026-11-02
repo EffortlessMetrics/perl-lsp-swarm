@@ -3,11 +3,12 @@ xtask = "run --package xtask --"
 
 # Agent/local-safe aliases. These do not choose machine paths.
 # Select machine storage in the task shell using docs/agents/CARGO_STORAGE.md.
-# Optional machine-local overrides: copy `.cargo/config.local.toml.example` to
-# `.cargo/config.local.toml` (gitignored). Cargo 1.95 loads it via `include`
-# below; `scripts/cargo-safe` and `scripts/cargo-admitted` also pass `--config`
-# when that file exists.
-include = ["config.local.toml"]
+#
+# Optional machine-local overrides live in `.cargo/config.local.toml` (gitignored;
+# copy from `.cargo/config.local.toml.example`). Cargo does not discover that
+# filename automatically. Repository wrappers pass `--config` when it exists
+# (`scripts/cargo-safe`, `scripts/cargo-admitted`). For direct `cargo`, pass
+# `--config .cargo/config.local.toml` (or set machine-local keys via `CARGO_*`).
 agent-check = "check --workspace --all-targets --profile agent --locked"
 agent-test = "test --workspace --all-targets --profile agent --locked"
 agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs"

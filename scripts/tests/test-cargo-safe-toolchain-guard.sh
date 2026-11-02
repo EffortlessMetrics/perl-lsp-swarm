@@ -385,15 +385,17 @@ edition = "2021"
 publish = false
 EOF
 echo 'fn main() {}' > "${FIXTURE_MANIFEST}/src/main.rs"
+echo '[build]
+jobs = 3' > "${FIXTURE_MANIFEST}/.cargo/config.local.toml"
 code=0
 (
   cd "$FIXTURE_MANIFEST"
-  cargo metadata --no-deps --format-version 1 >/dev/null
-) 2> "${TMPDIR_BASE}/include-missing.err" || code=$?
+  cargo --config .cargo/config.local.toml metadata --no-deps --format-version 1 >/dev/null
+) 2> "${TMPDIR_BASE}/explicit-config.err" || code=$?
 if [[ "$code" -eq 0 ]]; then
-  pass "optional include tolerates missing config.local.toml"
+  pass "direct cargo loads local file via explicit --config"
 else
-  fail "optional include must parse when local file absent (${code})"
+  fail "explicit --config must load local file (${code}): $(cat "${TMPDIR_BASE}/explicit-config.err")"
 fi
 
 TOTAL=$((PASS + FAIL))
