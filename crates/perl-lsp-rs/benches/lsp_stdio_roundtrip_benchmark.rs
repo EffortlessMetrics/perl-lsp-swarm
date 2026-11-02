@@ -494,7 +494,7 @@ fn measure_completion_sublane(
             .with_context(|| format!("{} lane: sampled request failed", sublane.lane))?;
         validate_completion_response(&response, sublane.lane)
             .with_context(|| format!("{} lane: sampled request", sublane.lane))?;
-        samples.push(millis_since(start));
+        samples.push(duration_micros(start.elapsed()));
     }
     Ok(samples)
 }
@@ -609,7 +609,7 @@ fn measure_didchange_to_diagnostics(
             });
         match arrival {
             Ok(()) => {
-                samples.push(millis_since(start));
+                samples.push(duration_micros(start.elapsed()));
                 sampled_versions.push(i64::from(version));
             }
             Err(end) => bail!(
@@ -904,7 +904,7 @@ fn run_criterion_pass(
                                     })
                             },
                         );
-                    let elapsed = millis_since(start);
+                    let elapsed = duration_micros(start.elapsed());
                     record_criterion_outcome("didchange_to_diagnostics", &outcome);
                     black_box(elapsed);
                 })
@@ -952,7 +952,7 @@ fn criterion_completion_body<'a>(
             .client
             .request("textDocument/completion", params.clone(), REQUEST_TIMEOUT)
             .and_then(|response| validate_completion_response(&response, lane));
-        let elapsed = millis_since(start);
+        let elapsed = duration_micros(start.elapsed());
         record_criterion_outcome(lane, &outcome);
         black_box(elapsed);
     }
