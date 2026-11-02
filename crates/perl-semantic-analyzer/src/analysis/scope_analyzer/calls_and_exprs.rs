@@ -72,6 +72,7 @@ pub(super) fn handle_function_call<'a>(
                 description: format!(
                     "'{name}' requires `use feature '{feature}'` (or a `use vX.Y` bundle that enables it)"
                 ),
+                similar_names: Vec::new(),
             });
     }
 
@@ -302,5 +303,6 @@ fn check_qualified_call(
         description: format!(
             "Undefined subroutine '{name}' called under `use strict 'subs'` (package '{pkg}' is declared in this file but no sub '{sub}' is defined)"
         ),
+        similar_names: Vec::new(),
     });
 }

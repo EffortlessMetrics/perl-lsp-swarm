@@ -37,6 +37,7 @@ pub(super) fn handle_variable<'a>(
                     "Capture variable '{}' used without a preceding regex match in scope",
                     full_name
                 ),
+                similar_names: Vec::new(),
             });
         }
         return true;
@@ -65,7 +66,7 @@ pub(super) fn handle_variable<'a>(
     // Variable not found - check if we should report it
     if !variable_used {
         if strict_vars_mode {
-            analyzer.push_undeclared_variable_issue(issues, context, node, sigil, name);
+            analyzer.push_undeclared_variable_issue(issues, scope, context, node, sigil, name);
         }
     } else if !is_initialized {
         analyzer.push_uninitialized_variable_issue(issues, context, node, sigil, name);
@@ -296,6 +297,7 @@ pub(super) fn handle_identifier(
         line: context.get_line(node.location.start),
         range: (node.location.start, node.location.end),
         description: format!("Bareword '{}' not allowed under 'use strict'", name),
+        similar_names: Vec::new(),
     });
 }
 

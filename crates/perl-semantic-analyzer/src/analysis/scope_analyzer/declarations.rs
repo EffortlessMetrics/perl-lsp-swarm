@@ -138,6 +138,7 @@ pub(super) fn handle_variable_declaration<'a>(
                     line,
                     range: (variable.location.start, variable.location.end),
                     description,
+                    similar_names: Vec::new(),
                 });
             }
         }
@@ -161,6 +162,7 @@ pub(super) fn handle_variable_declaration<'a>(
                 line,
                 range: (variable.location.start, variable.location.end),
                 description,
+                similar_names: Vec::new(),
             });
         }
         None => {
@@ -249,6 +251,7 @@ pub(super) fn handle_variable_list_declaration<'a>(
                         line,
                         range: (variable.location.start, variable.location.end),
                         description,
+                        similar_names: Vec::new(),
                     });
                 }
             }
@@ -272,6 +275,7 @@ pub(super) fn handle_variable_list_declaration<'a>(
                     line,
                     range: (variable.location.start, variable.location.end),
                     description,
+                    similar_names: Vec::new(),
                 });
             }
             None => {

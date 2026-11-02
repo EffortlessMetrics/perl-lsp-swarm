@@ -51,6 +51,7 @@
 
 mod calls_and_exprs;
 mod declarations;
+mod edit_distance;
 mod interpolation;
 mod require_operand;
 mod scope_constructs;
@@ -114,6 +115,8 @@ pub struct ScopeIssue {
     pub range: (usize, usize),
     /// Human-readable explanation of the issue.
     pub description: String,
+    /// Visible symbols within edit distance of the offending name (#1770).
+    pub similar_names: Vec<String>,
 }
 
 impl ScopeIssue {
@@ -131,6 +134,7 @@ impl ScopeIssue {
             line,
             range,
             description: description.into(),
+            similar_names: Vec::new(),
         }
     }
 }
@@ -1507,7 +1511,7 @@ impl ScopeAnalyzer {
             self.use_variable_parts_in_context(scope, sigil, name, context);
         if !variable_used {
             if strict_vars_mode {
-                self.push_undeclared_variable_issue(issues, context, node, sigil, name);
+                self.push_undeclared_variable_issue(issues, scope, context, node, sigil, name);
             }
         } else if !is_initialized {
             self.push_uninitialized_variable_issue(issues, context, node, sigil, name);
@@ -1517,18 +1521,21 @@ impl ScopeAnalyzer {
     pub(super) fn push_undeclared_variable_issue(
         &self,
         issues: &mut Vec<ScopeIssue>,
+        scope: &Rc<Scope>,
         context: &AnalysisContext<'_>,
         node: &Node,
         sigil: &str,
         name: &str,
     ) {
         let full_name = format!("{}{}", sigil, name);
+        let similar_names = edit_distance::similar_variable_names(scope.as_ref(), sigil, name);
         issues.push(ScopeIssue {
             kind: IssueKind::UndeclaredVariable,
             variable_name: full_name.clone(),
             line: context.get_line(node.location.start),
             range: (node.location.start, node.location.end),
             description: format!("Variable '{}' is used but not declared", full_name),
+            similar_names,
         });
     }
 
@@ -1559,6 +1566,7 @@ impl ScopeAnalyzer {
             line: context.get_line(node.location.start),
             range: (node.location.start, node.location.end),
             description: format!("Variable '{}' is used before being initialized", full_name),
+            similar_names: Vec::new(),
         });
     }
 
@@ -1744,6 +1752,7 @@ impl ScopeAnalyzer {
                 line: context.get_line(offset),
                 range: (start, end),
                 description,
+                similar_names: Vec::new(),
             });
         });
     }

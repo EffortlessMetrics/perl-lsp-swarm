@@ -237,6 +237,7 @@ fn process_callable_scope<'a>(
                         "Duplicate parameter '{}' in subroutine signature",
                         full_name
                     ),
+                    similar_names: Vec::new(),
                 });
             }
 
@@ -251,6 +252,7 @@ fn process_callable_scope<'a>(
                         "Parameter '{}' shadows a variable from outer scope",
                         full_name
                     ),
+                    similar_names: Vec::new(),
                 });
             }
 
@@ -316,6 +318,7 @@ fn process_callable_scope<'a>(
                             "Parameter '{}' is declared but never used",
                             full_name
                         ),
+                        similar_names: Vec::new(),
                     });
                     // Mark as used to prevent double reporting
                     *var.is_used.borrow_mut() = true;
@@ -429,6 +432,7 @@ pub(super) fn handle_try<'a>(
                     line: context.get_line(catch_var_range.0),
                     range: catch_var_range,
                     description,
+                    similar_names: Vec::new(),
                 });
             }
         }
