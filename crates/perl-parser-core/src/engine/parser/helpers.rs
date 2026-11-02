@@ -381,6 +381,13 @@ impl<'a> Parser<'a> {
                 | "Filter::sh"
                 | "Filter::tee"
                 | "Filter::decrypt"
+                | "Switch"
+                | "Acme::Bleach"
+                | "Smart::Comments"
+                | "Inline::Files"
+                | "Perl6::Say"
+                | "Spiffy"
+                | "B::Hooks::OP::Check"
         )
     }
 
