@@ -148,18 +148,22 @@ impl SafeEvaluator {
         }
 
         if let Ok(re) = DEREF_RE.as_ref() {
-            if re.is_match(expression) {
-                return Err(ValidationError::DynamicSubroutineCall);
+            for mat in re.find_iter(expression) {
+                if !is_in_string_literal(expression, mat.start()) {
+                    return Err(ValidationError::DynamicSubroutineCall);
+                }
             }
         }
 
         if let Ok(re) = GLOB_RE.as_ref() {
-            if re.is_match(expression) {
-                return Err(ValidationError::GlobOperation);
+            for mat in re.find_iter(expression) {
+                if !is_in_string_literal(expression, mat.start()) {
+                    return Err(ValidationError::GlobOperation);
+                }
             }
         }
 
-        if expression.trim().starts_with('<') {
+        if filehandle_read_outside_string_literals(expression) {
             return Err(ValidationError::FileHandleRead);
         }
 
@@ -219,6 +223,10 @@ impl SafeEvaluator {
                 continue;
             }
 
+            if is_in_string_literal(expression, start) {
+                continue;
+            }
+
             if is_sigil_prefixed_identifier(expression, start) {
                 continue;
             }
@@ -235,11 +243,11 @@ impl SafeEvaluator {
                 return Err(ValidationError::CoreQualificationBypass(op.to_string()));
             }
 
-            if is_bare_dangerous_call(expression, start) {
-                continue;
+            if is_indirect_dangerous_op_use(expression, start) {
+                return Err(ValidationError::IndirectDangerousOperation(op.to_string()));
             }
 
-            return Err(ValidationError::IndirectDangerousOperation(op.to_string()));
+            // Bare deny-list call (e.g. `system('ls')`) is intentionally allowed.
         }
 
         Ok(())
@@ -402,41 +410,90 @@ fn is_escape_sequence(s: &str, match_start: usize) -> bool {
     s.as_bytes()[match_start - 1] == b'\\'
 }
 
-/// True when a deny-list operation is invoked directly, not via a bypass form.
-fn is_bare_dangerous_call(s: &str, op_start: usize) -> bool {
+/// Conservative: true when `idx` lies inside a single- or double-quoted literal.
+fn is_in_string_literal(s: &str, idx: usize) -> bool {
+    is_in_single_quotes(s, idx) || is_in_double_quotes(s, idx)
+}
+
+/// Check if a position in a string is inside double quotes (conservative).
+fn is_in_double_quotes(s: &str, idx: usize) -> bool {
+    let mut in_dq = false;
+    let mut escaped = false;
+
+    for (i, ch) in s.char_indices() {
+        if i >= idx {
+            break;
+        }
+        if in_dq {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_dq = false;
+            }
+        } else if ch == '"' {
+            in_dq = true;
+        }
+    }
+
+    in_dq
+}
+
+/// Filehandle read (`<HANDLE>`) outside string literals (glob bypass class).
+fn filehandle_read_outside_string_literals(expression: &str) -> bool {
+    let bytes = expression.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'<' {
+            continue;
+        }
+        if is_in_string_literal(expression, i) {
+            continue;
+        }
+        // Glob reads `<*...>` are handled separately.
+        if i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// True when a deny-list operation appears in a bypass form rather than a direct call.
+fn is_indirect_dangerous_op_use(s: &str, op_start: usize) -> bool {
     let bytes = s.as_bytes();
     let mut i = op_start;
     while i > 0 && bytes[i - 1].is_ascii_whitespace() {
         i -= 1;
     }
-    if i == 0 {
+    if i >= 2 && bytes[i - 1] == b'>' && bytes[i - 2] == b'-' {
         return true;
     }
 
-    let prev = bytes[i - 1];
-    if prev == b'>' && i >= 2 && bytes[i - 2] == b'-' {
-        return false;
+    let mut j = op_start;
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
     }
-    if prev == b'&' {
-        return false;
-    }
-    if prev == b'{' {
-        let mut j = i - 1;
+    if j > 0 && matches!(bytes[j - 1], b'$' | b'@' | b'%' | b'*') {
+        j -= 1;
         while j > 0 && bytes[j - 1].is_ascii_whitespace() {
             j -= 1;
         }
-        if j > 0 && bytes[j - 1] == b'&' {
-            return false;
+    }
+    if j > 0 && bytes[j - 1] == b'&' {
+        return true;
+    }
+    if j > 0 && bytes[j - 1] == b'{' {
+        let mut k = j - 1;
+        while k > 0 && bytes[k - 1].is_ascii_whitespace() {
+            k -= 1;
+        }
+        if k > 0 && bytes[k - 1] == b'&' {
+            return true;
         }
     }
-    if matches!(prev, b'$' | b'@' | b'%' | b'*') {
-        return false;
-    }
-    if i >= 2 && bytes[i - 1] == b':' && bytes[i - 2] == b':' {
-        return false;
-    }
 
-    true
+    false
 }
 
 #[cfg(test)]
@@ -603,6 +660,12 @@ mod tests {
                 "direct REPL execution should remain available: {expr}"
             );
         }
+        for expr in ["print \"system\"", "'&{evil}'", "'<*.txt>'"] {
+            assert!(
+                evaluator.validate_bypass_confinement(expr).is_ok(),
+                "quoted literal must not trigger confinement: {expr}"
+            );
+        }
     }
 
     #[test]
@@ -611,11 +674,13 @@ mod tests {
         let blocked = [
             ("$obj->system('ls')", "method-call bypass"),
             ("&$system", "code-deref bypass"),
+            ("& $system", "spaced code-deref bypass"),
             ("&{ $system }", "braced code-deref bypass"),
             ("&{'sys'.'tem'}('ls')", "dynamic subroutine bypass"),
             ("CORE::system('ls')", "CORE qualification bypass"),
             ("<*.txt>", "glob bypass"),
             ("<STDIN>", "leading filehandle read"),
+            ("1 + <STDIN>", "nested filehandle read"),
         ];
         for (expr, label) in blocked {
             assert!(
