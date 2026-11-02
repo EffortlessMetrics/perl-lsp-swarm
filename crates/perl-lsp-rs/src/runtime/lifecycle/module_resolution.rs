@@ -24,6 +24,8 @@ const MODULE_RESOLUTION_NEGATIVE_CACHE_CAP: usize = 4096;
 #[cfg(test)]
 thread_local! {
     static RESOLVE_URI_PROOF_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RESOLVE_URI_PROOF_RESULTS: std::cell::RefCell<std::collections::VecDeque<ModuleUriResolution>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 #[cfg(test)]
@@ -127,7 +129,14 @@ fn resolve_module_uri_with_negative_cache_proof(
     timeout: Duration,
 ) -> ModuleUriResolution {
     #[cfg(test)]
-    RESOLVE_URI_PROOF_CALLS.with(|calls| calls.set(calls.get() + 1));
+    {
+        RESOLVE_URI_PROOF_CALLS.with(|calls| calls.set(calls.get() + 1));
+        if let Some(result) =
+            RESOLVE_URI_PROOF_RESULTS.with(|results| results.borrow_mut().pop_front())
+        {
+            return result;
+        }
+    }
     resolve_module_uri_with_effective_inc(
         module_name,
         open_document_uris,
@@ -3077,6 +3086,18 @@ use Overlay::OpenDoc;
     #[test]
     fn negative_cache_does_not_suppress_retry_after_timeout() -> TestResult {
         reset_resolve_uri_proof_calls();
+        struct ResetInjectedResults;
+        impl Drop for ResetInjectedResults {
+            fn drop(&mut self) {
+                RESOLVE_URI_PROOF_RESULTS.with(|results| results.borrow_mut().clear());
+            }
+        }
+        let _reset = ResetInjectedResults;
+        RESOLVE_URI_PROOF_RESULTS.with(|results| {
+            results
+                .borrow_mut()
+                .extend([ModuleUriResolution::TimedOut, ModuleUriResolution::NotFound]);
+        });
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace)?;
@@ -3089,8 +3110,7 @@ use Overlay::OpenDoc;
             vec![WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone())];
         {
             let mut config = server.workspace_config.lock();
-            config.include_paths = (0..80).map(|index| format!("inc-{index}")).collect();
-            config.resolution_timeout_ms = 1;
+            config.include_paths = vec!["lib".to_string()];
             config.use_system_inc = false;
         }
 
@@ -3098,6 +3118,11 @@ use Overlay::OpenDoc;
         assert_eq!(resolve_uri_proof_calls(), 1);
         assert_eq!(server.resolve_module_to_path("Moo"), None);
         assert_eq!(resolve_uri_proof_calls(), 2, "TimedOut must not be cached as an absent module");
+        assert_eq!(server.resolve_module_to_path("Moo"), None);
+        assert_eq!(resolve_uri_proof_calls(), 2, "completed NotFound must be cached");
+        RESOLVE_URI_PROOF_RESULTS.with(|results| {
+            assert!(results.borrow().is_empty(), "both injected outcomes must be consumed");
+        });
 
         Ok(())
     }
