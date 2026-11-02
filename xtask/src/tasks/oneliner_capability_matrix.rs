@@ -2464,4 +2464,67 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             evidence.proof_tests
         );
     }
+
+    /// Token spacing that is invisible to substring scans must still resolve
+    /// once discovery is a parse.
+    #[test]
+    fn spaced_macro_and_test_declaration_tokens_are_discovered() {
+        let source = concat!(
+            "command_line_oneliner! (spaced_macro, \"-e\", \"print 1;\");\n",
+            "#[test]\nfn\nspaced_proof() {}\n",
+        );
+        let evidence = extract_corpus_evidence(source);
+        assert!(
+            evidence.switch_cases.contains_key("spaced_macro"),
+            "spaced macro invocation not found: {:?}",
+            evidence.switch_cases
+        );
+        assert!(
+            evidence.proof_tests.contains("spaced_proof"),
+            "newline-separated test fn not found: {:?}",
+            evidence.proof_tests
+        );
+    }
+
+    /// Suppression on an outer inline module hides fixtures in nested modules;
+    /// an inner module without its own suppression stays visible when the
+    /// outer module is live.
+    #[test]
+    fn nested_module_suppression_composes_from_outer_cfg_only() {
+        let outer_disabled = concat!(
+            "#[cfg(feature = \"off\")]\n",
+            "mod outer {\n",
+            "    mod inner {\n",
+            "        command_line_oneliner!(nested_ghost, \"-e\", \"print 1;\");\n",
+            "    }\n",
+            "}\n",
+        );
+        assert!(
+            reject_suppressed_modules(outer_disabled).is_err(),
+            "outer cfg mod should be refused"
+        );
+        assert!(
+            extract_corpus_evidence(outer_disabled).switch_cases.is_empty(),
+            "nested fixture leaked through outer cfg: {:?}",
+            extract_corpus_evidence(outer_disabled).switch_cases
+        );
+
+        let outer_live = concat!(
+            "mod outer {\n",
+            "    mod inner {\n",
+            "        command_line_oneliner!(nested_live, \"-e\", \"print 1;\");\n",
+            "        #[test]\n",
+            "        fn nested_proof() {}\n",
+            "    }\n",
+            "}\n",
+        );
+        must_with(reject_suppressed_modules(outer_live), "live nested modules must not be refused");
+        let evidence = extract_corpus_evidence(outer_live);
+        assert!(
+            evidence.switch_cases.contains_key("nested_live"),
+            "nested live fixture missing: {:?}",
+            evidence.switch_cases
+        );
+        assert!(evidence.proof_tests.contains("nested_proof"));
+    }
 }
