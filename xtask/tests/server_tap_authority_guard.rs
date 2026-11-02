@@ -54,13 +54,26 @@ fn workspace_root() -> PathBuf {
 }
 
 fn walk_rust_sources(dir: &Path, visit: &mut dyn FnMut(&Path, usize, &str)) -> std::io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+    let entries = fs::read_dir(dir).map_err(|error| {
+        std::io::Error::new(error.kind(), format!("read_dir failed for {}: {error}", dir.display()))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("read_dir entry failed in {}: {error}", dir.display()),
+            )
+        })?;
         let path = entry.path();
         if path.is_dir() {
             walk_rust_sources(&path, visit)?;
         } else if path.extension().is_some_and(|ext| ext == "rs") {
-            let source = fs::read_to_string(&path)?;
+            let source = fs::read_to_string(&path).map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("read failed for {}: {error}", path.display()),
+                )
+            })?;
             for (index, line) in source.lines().enumerate() {
                 visit(&path, index + 1, line);
             }
