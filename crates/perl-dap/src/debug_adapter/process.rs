@@ -750,25 +750,22 @@ impl DebugAdapter {
             // coercion by `parse_launch_typed_options` above (#18027).
 
             let requested = Self::resolve_launch_interpreter(&args);
-            let admitted_execution = match self.admit_launch_execution(
-                &args,
-                &requested,
-                env_overrides,
-            ) {
-                Ok(admitted) => admitted,
-                Err(message) => {
-                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
-                        previous_workspace_root;
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "launch".to_string(),
-                        body: None,
-                        message: Some(message),
-                    };
-                }
-            };
+            let admitted_execution =
+                match self.admit_launch_execution(&args, &requested, env_overrides) {
+                    Ok(admitted) => admitted,
+                    Err(message) => {
+                        *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                            previous_workspace_root;
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(message),
+                        };
+                    }
+                };
 
             // Launch Perl debugger
             let launch_result = self.launch_debugger(

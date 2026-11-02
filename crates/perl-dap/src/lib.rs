@@ -199,7 +199,8 @@ pub use configuration::{
 pub use debug_adapter::{DapMessage, DebugAdapter};
 pub use security::{
     LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthorityReceipt,
-    LaunchAuthoritySource, LaunchAuthorityStartup, TrustedRoot, UnboundedAcknowledgement,
+    LaunchAuthoritySource, LaunchAuthorityStartup, LaunchExecutionStartup, TrustedRoot,
+    UnboundedAcknowledgement,
 };
 pub use server::{DapConfig, DapMode, DapServer};
 

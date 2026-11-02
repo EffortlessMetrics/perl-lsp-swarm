@@ -70,6 +70,7 @@ fn test_launch_allows_valid_path() -> Result<(), Box<dyn std::error::Error>> {
         &perl_dap::LaunchAuthorityStartup {
             trusted_roots: vec![workspace_root.clone()],
             allow_unbounded: None,
+            ..Default::default()
         },
     )?);
 
@@ -265,6 +266,7 @@ fn test_workspace_bound_authority_rejects_relative_program()
         &perl_dap::LaunchAuthorityStartup {
             trusted_roots: vec![workspace_root],
             allow_unbounded: None,
+            ..Default::default()
         },
     )?);
 
@@ -310,7 +312,11 @@ fn test_sequential_launches_do_not_inherit_narrowed_root() -> Result<(), Box<dyn
     fs::write(&script_a, "print 'a';")?;
     fs::write(&script_b, "print 'b';")?;
     adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
-        &perl_dap::LaunchAuthorityStartup { trusted_roots: vec![root], allow_unbounded: None },
+        &perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![root],
+            allow_unbounded: None,
+            ..Default::default()
+        },
     )?);
 
     let first = json!({
@@ -371,7 +377,11 @@ fn test_authority_admission_overrides_preset_legacy_root() -> Result<(), Box<dyn
     fs::write(&script_b, "print 'b';")?;
     adapter.set_workspace_root(dir_a.clone());
     adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
-        &perl_dap::LaunchAuthorityStartup { trusted_roots: vec![root], allow_unbounded: None },
+        &perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![root],
+            allow_unbounded: None,
+            ..Default::default()
+        },
     )?);
 
     let args = json!({
@@ -410,6 +420,7 @@ fn test_unbounded_authority_clears_preset_legacy_root_for_launch()
                 perl_dap::LaunchAuthoritySource::CommandLine,
                 "operator accepts unbounded launches for this session",
             )),
+            ..Default::default()
         },
     )?);
 
