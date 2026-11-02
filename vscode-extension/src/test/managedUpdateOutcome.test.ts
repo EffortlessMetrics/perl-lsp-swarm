@@ -53,7 +53,9 @@ describe('managedUpdateOutcome admission refusals (#16804)', () => {
     expect(view.notification.visibility).toBe('none');
     expect(view.outputChannel.line).toContain('pinned_exact_tag');
     expect(view.outputChannel.line).toContain('v0.12.0');
-    expect(view.dedupIdentity).toBe('check_skipped:pinned_exact_tag');
+    expect(view.dedupIdentity).toBe(
+      'check_skipped:skip:pinned_exact_tag:perl-lsp.channel is pinned to the exact tag v0.12.0; automatic update checks are disabled by that pin.',
+    );
   });
 
   test('manual pinned tag is information, not mistaken for up to date', () => {
@@ -155,5 +157,26 @@ describe('ManagedUpdateOutcomeDedupe', () => {
 
     expect(dedupe.shouldEmitOutput(view)).toBe(true);
     expect(dedupe.shouldEmitOutput(view)).toBe(true);
+  });
+
+  test('background refusals with same reason but different explanation dedupe separately', () => {
+    const dedupe = new ManagedUpdateOutcomeDedupe();
+    const decisionV12 = decideManagedUpdateCheck(
+      baseFacts({ channel: 'tag', versionTag: 'v0.12.0' }),
+    );
+    const viewV12 = projectManagedUpdateOutcome(
+      composeCheckSkippedOutcome(decisionV12 as Exclude<typeof decisionV12, { kind: 'run' }>),
+    );
+    const decisionV13 = decideManagedUpdateCheck(
+      baseFacts({ channel: 'tag', versionTag: 'v0.13.0' }),
+    );
+    const viewV13 = projectManagedUpdateOutcome(
+      composeCheckSkippedOutcome(decisionV13 as Exclude<typeof decisionV13, { kind: 'run' }>),
+    );
+
+    expect(viewV12.dedupIdentity).not.toBe(viewV13.dedupIdentity);
+    expect(dedupe.shouldEmitOutput(viewV12)).toBe(true);
+    expect(dedupe.shouldEmitOutput(viewV12)).toBe(false);
+    expect(dedupe.shouldEmitOutput(viewV13)).toBe(true);
   });
 });

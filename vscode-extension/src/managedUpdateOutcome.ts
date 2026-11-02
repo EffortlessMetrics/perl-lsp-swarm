@@ -90,7 +90,7 @@ function projectCheckSkipped(
 ): ManagedUpdatePresentation {
   const explanation = decision.kind === 'skip' ? decision.detail : decision.remediation;
   const outputLine = `[update-check] ${decision.kind}: ${decision.reason} — ${explanation}`;
-  const dedupIdentity = `check_skipped:${decision.reason}`;
+  const dedupIdentity = `check_skipped:${decision.kind}:${decision.reason}:${explanation}`;
 
   if (decision.userVisibility !== 'report') {
     return {
