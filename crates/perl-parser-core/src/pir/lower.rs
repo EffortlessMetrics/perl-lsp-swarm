@@ -2329,6 +2329,21 @@ mod tests {
     #[test]
     fn nested_call_argument_precedes_enclosing_call_in_fallthrough() -> Result<(), String> {
         let graph = lower("foo(bar());");
+        let call_count = graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.operation, PirOperation::Call { .. }))
+            .count();
+        if call_count != 2 {
+            return Err(format!("expected exactly two Call nodes, got {call_count}"));
+        }
+        let fallthrough_count =
+            graph.edges.iter().filter(|edge| edge.kind == PirEdgeKind::Fallthrough).count();
+        if fallthrough_count != 1 {
+            return Err(format!(
+                "expected exactly one Fallthrough edge for foo(bar()), got {fallthrough_count}"
+            ));
+        }
         let outer_id = must_some(
             graph
                 .nodes
