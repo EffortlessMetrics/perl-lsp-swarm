@@ -254,7 +254,7 @@ mod uri_path_helpers_tests {
 
 #[cfg(test)]
 mod uri_parse_gate_tests {
-    use super::{parse_uri, parse_uri_or_err, try_parse_uri, UriStrictParseError};
+    use super::{UriStrictParseError, parse_uri, parse_uri_or_err, try_parse_uri};
     use lsp_types::Uri;
 
     /// Each literal in the ADR-0037 fallback chain must remain parseable so
