@@ -25,6 +25,13 @@ class Denied(Exception):
         self.details = details
 
 
+def local_config_cli_args(worktree):
+    path = worktree / ".cargo" / "config.local.toml"
+    if path.is_file():
+        return ["--config", str(path)]
+    return []
+
+
 def native_path(value):
     # Python on Windows does not understand Git Bash /c/... environment paths.
     if value.startswith(("\\\\", "//")):
@@ -217,6 +224,9 @@ def clippy_configuration(worktree, paths):
     except ImportError:
         raise Denied("staged Clippy requires Python 3.11+ for bounded Cargo TOML validation")
     candidates = {worktree / "clippy.toml", worktree / ".clippy.toml"}
+    local_config = worktree / ".cargo" / "config.local.toml"
+    if local_config.is_file():
+        candidates.add(local_config)
     for directory in (Path.cwd(), *Path.cwd().parents, paths["cargo_home"]):
         candidates.update(directory / ".cargo" / name for name in ("config", "config.toml"))
     candidates.update(paths["cargo_home"] / name for name in ("config", "config.toml"))
@@ -225,7 +235,7 @@ def clippy_configuration(worktree, paths):
         if not os.path.lexists(path):
             continue
         subject = file_subject(path)
-        if path.name in ("config", "config.toml"):
+        if path.name in ("config", "config.toml", "config.local.toml"):
             if path.stat().st_size > 65536:
                 raise Denied("staged Clippy Cargo configuration exceeds 64 KiB")
             try:
@@ -983,7 +993,8 @@ def main(args=None):
                 descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
                                   marker_identity=list(marker_identity))
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
-            command = ["cargo", "--config", "unstable.unstable-options=false",
+            command = ["cargo", *local_config_cli_args(worktree),
+                       "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                        "--config", 'build.rustc-wrapper=""',
                        "--config", 'build.rustc-workspace-wrapper=""',
