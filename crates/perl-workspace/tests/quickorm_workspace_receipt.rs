@@ -674,26 +674,59 @@ table users => sub {};
 }
 
 #[test]
-fn workspace_index_blocks_runtime_table_builder_inside_subroutine()
+fn workspace_index_receipts_nested_package_import_positive_control()
 -> Result<(), Box<dyn std::error::Error>> {
-    // #13314: runtime `table` calls inside the same container as a nested
-    // compile-time import must not earn a package-level generated fact.
+    // #13314: inner-package compile-time import must still authorize a builder
+    // declared in that inner package (distinct from outer-scope restoration).
     let index = WorkspaceIndex::new();
-    let uri = Url::parse("file:///lib/MyApp/Schema/BuildLater.pm")?;
+    let uri = Url::parse("file:///lib/MyApp/Schema/NestedPackageImport.pm")?;
     let source = r#"
-package MyApp::Schema::BuildLater;
-use DBIx::QuickORM type => 'table';
-sub build_later {
+package MyApp::Schema::Outer;
+sub setup {
+    package MyApp::Schema::Inner;
     use DBIx::QuickORM type => 'table';
-    table users => sub {};
 }
+package MyApp::Schema::Inner;
+table inner_users => sub {};
 1;
 "#;
 
     index.index_initial_file(uri, source.to_string())?;
-    assert!(
-        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
-        "runtime table builder inside a subroutine must not reach workspace symbols"
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    assert_eq!(generated.len(), 1);
+    assert_eq!(generated[0].qualified_name.as_deref(), Some("MyApp::Schema::Inner::qorm_table"));
+    Ok(())
+}
+
+#[test]
+fn workspace_index_blocks_runtime_table_builder_inside_subroutine()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #13314: runtime `table` calls inside the same container as a nested
+    // compile-time import must not earn a package-level generated fact. A
+    // package-level builder after the subroutine proves authority was not lost
+    // to `NotProven` (double import) while the inner runtime call stays blocked.
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/BuildLater.pm")?;
+    let source = r#"
+package MyApp::Schema::BuildLater;
+sub build_later {
+    use DBIx::QuickORM type => 'table';
+    table users => sub {};
+}
+table package_users => sub {};
+1;
+"#;
+
+    index.index_initial_file(uri, source.to_string())?;
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    assert_eq!(
+        generated.len(),
+        1,
+        "only the package-level builder after the subroutine may emit qorm_table"
+    );
+    assert_eq!(
+        generated[0].qualified_name.as_deref(),
+        Some("MyApp::Schema::BuildLater::qorm_table")
     );
     Ok(())
 }
