@@ -253,6 +253,11 @@ fn structural_code(code: RegexDiagnosticCode) -> Option<DiagnosticCode> {
         | RegexDiagnosticCode::ModifierHasNoEffect
         | RegexDiagnosticCode::ModifierRequiresPerlVersion
         | RegexDiagnosticCode::ModifierRequiresFeature => modifier_code(code),
+        RegexDiagnosticCode::EnhancedXxUnspacedCommentIntroducer
+        | RegexDiagnosticCode::EnhancedXxHashInsideComment
+        | RegexDiagnosticCode::EnhancedXxBracketInsideComment => {
+            Some(DiagnosticCode::RegexModifierNoEffect)
+        }
         _ => None,
     }
 }
