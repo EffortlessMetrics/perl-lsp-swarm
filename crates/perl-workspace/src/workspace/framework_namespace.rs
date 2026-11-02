@@ -101,11 +101,8 @@ mod tests {
         let index = WorkspaceIndex::new();
         index.index_file(uri, source.to_string())?;
 
-        let matches: Vec<_> = index
-            .search_symbols("age")
-            .into_iter()
-            .filter(|symbol| symbol.name == "age")
-            .collect();
+        let matches: Vec<_> =
+            index.search_symbols("age").into_iter().filter(|symbol| symbol.name == "age").collect();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].kind, SymbolKind::Package);
         assert_eq!(LspWorkspaceSymbol::from(&matches[0]).kind, 2);
