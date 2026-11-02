@@ -306,18 +306,27 @@ impl RenameProvider {
                 if !in_scope {
                     continue;
                 }
-                if self.is_in_shadowed_scope(ref_scope, &shadowing_scopes) {
-                    continue;
+                let mut included = !self.is_in_shadowed_scope(ref_scope, &shadowing_scopes)
+                    && !self.is_inside_target_declaring_statement(
+                        reference,
+                        &old_name,
+                        kind,
+                        declaration_scope_id,
+                    );
+                // A use inside a shadowing declaration's own statement binds
+                // outward, not to that lexical: include it when it binds to
+                // this target instead of dropping the token under the cursor
+                // (#18115, #18117). Cross-sigil references keep the legacy
+                // path: their kinds never match exactly.
+                if !included && reference.kind == kind {
+                    included = self.find_declaration_scope_up_chain(
+                        ref_scope,
+                        &old_name,
+                        kind,
+                        reference.location.start,
+                    ) == Some(declaration_scope_id);
                 }
-                // A use inside the target lexical's own declaring statement
-                // (its initializer RHS) binds outward, not to that lexical
-                // (#18115), so it is not renamed with it.
-                if self.is_inside_target_declaring_statement(
-                    reference,
-                    &old_name,
-                    kind,
-                    declaration_scope_id,
-                ) {
+                if !included {
                     continue;
                 }
                 edits.push(TextEdit {
@@ -440,7 +449,12 @@ impl RenameProvider {
                     && reference.location.start <= position
                     && position < reference.location.end
                 {
-                    return self.find_declaration_scope_up_chain(reference.scope_id, name, kind);
+                    return self.find_declaration_scope_up_chain(
+                        reference.scope_id,
+                        name,
+                        kind,
+                        position,
+                    );
                 }
             }
         }
@@ -449,17 +463,36 @@ impl RenameProvider {
     }
 
     /// Walk the scope parent chain to find the nearest scope that declares the symbol.
+    ///
+    /// A use inside a declaration's own statement (an initializer RHS) binds
+    /// outward, never to that lexical (#18117): candidate scopes whose only
+    /// same-name declaration contains `position` are skipped so rename starts
+    /// from the true binder instead of renaming the wrong lexical while
+    /// leaving the token under the cursor untouched.
     fn find_declaration_scope_up_chain(
         &self,
         start_scope: ScopeId,
         name: &str,
         kind: SymbolKind,
+        position: usize,
     ) -> Option<ScopeId> {
         let mut current = Some(start_scope);
         while let Some(scope_id) = current {
             if let Some(symbols) = self.symbol_table.symbols.get(name) {
                 for symbol in symbols {
                     if symbol.kind == kind && symbol.scope_id == scope_id {
+                        if matches!(symbol.declaration.as_deref(), Some("my" | "state"))
+                            && symbol.location.start <= position
+                            && position
+                                < self
+                                    .symbol_table
+                                    .declaration_statement_ends
+                                    .get(&symbol.location.start)
+                                    .copied()
+                                    .unwrap_or(symbol.location.end)
+                        {
+                            continue;
+                        }
                         return Some(scope_id);
                     }
                 }
@@ -753,6 +786,36 @@ mod tests {
         assert_eq!(result.edits.len(), 2, "declaration and later use only: {:?}", result.edits);
         let new_code = apply_rename_edits(code, &result.edits);
         assert_eq!(new_code, "sub run { my $renamed = $value; print $renamed; }");
+    }
+
+    #[test]
+    fn test_scoped_rename_from_initializer_rhs_targets_outer_binding() {
+        // Starting the rename on the RHS reference itself must resolve to
+        // the outer binding it actually names, not the inner lexical whose
+        // declaring statement merely contains the cursor (#18117).
+        let code = "my $value = 1;\nsub run {\n    my $value = $value;\n    print $value;\n}\nprint $value;\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let rhs =
+            code.find("my $value = $value;").expect("inner declaration") + "my $value = ".len();
+        let result = provider.scoped_rename(rhs + 1, "outer_renamed", &RenameOptions::default());
+        assert!(result.is_valid);
+        let new_code = apply_rename_edits(code, &result.edits);
+        assert!(
+            new_code.contains("my $outer_renamed = 1;"),
+            "outer declaration renamed: {new_code}"
+        );
+        assert!(
+            new_code.contains("my $value = $outer_renamed;"),
+            "RHS follows the outer binding: {new_code}"
+        );
+        assert!(new_code.contains("print $value;"), "inner use untouched: {new_code}");
+        assert_eq!(
+            new_code.matches("$outer_renamed").count(),
+            3,
+            "exactly the outer uses renamed: {new_code}"
+        );
     }
 
     #[test]

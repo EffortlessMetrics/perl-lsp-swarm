@@ -851,6 +851,16 @@ impl LspServer {
                         &doc.text,
                     );
 
+                    // One analysis serves the shadowed-lexical fast path
+                    // below and the same-file fallback: only sigiled
+                    // requests can resolve to a `my`/`state` lexical, so
+                    // anything else skips the work here and the fallback
+                    // analyzes on demand as before.
+                    let analyzer = symbol_key
+                        .as_ref()
+                        .is_some_and(|key| key.sigil.is_some())
+                        .then(|| crate::semantic::SemanticAnalyzer::analyze(ast));
+
                     // Capture the true index state BEFORE branching. Declared here (outside the
                     // cfg block) so it remains in scope for the semantic-analyzer fallback path
                     // when the workspace feature is enabled but no index path early-returned.
@@ -899,39 +909,62 @@ impl LspServer {
                         // same-name occurrence when shadowing makes entity
                         // resolution decline. Answer here instead.
                         {
-                            let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
                             // Only shadowed names need this: with a single lexical
                             // of the name, the existing tiers already answer
                             // exactly and their contracts stand.
-                            let lexical = analyzer.find_definition(offset).is_some_and(|symbol| {
-                                if !matches!(symbol.declaration.as_deref(), Some("my" | "state")) {
-                                    return false;
-                                }
-                                // Shadowing needs nested scopes: same-name lexicals
-                                // in sibling subroutines never shadow each other.
-                                let table = analyzer.symbol_table();
-                                let on_chain = |mut scope: usize, target: usize| loop {
-                                    if scope == target {
-                                        break true;
+                            let lexical = analyzer.as_ref().is_some_and(|resolved| {
+                                resolved.find_definition(offset).is_some_and(|symbol| {
+                                    if !matches!(
+                                        symbol.declaration.as_deref(),
+                                        Some("my" | "state")
+                                    ) {
+                                        return false;
                                     }
-                                    match table.scopes.get(&scope).and_then(|s| s.parent) {
-                                        Some(parent) => scope = parent,
-                                        None => break false,
-                                    }
-                                };
-                                table.symbols.get(&symbol.name).is_some_and(|candidates| {
-                                    candidates.iter().any(|candidate| {
-                                        candidate.location.start != symbol.location.start
-                                            && matches!(
-                                                candidate.declaration.as_deref(),
-                                                Some("my" | "state")
-                                            )
-                                            && (on_chain(candidate.scope_id, symbol.scope_id)
-                                                || on_chain(symbol.scope_id, candidate.scope_id))
+                                    // Shadowing needs nested scopes: same-name lexicals
+                                    // in sibling subroutines never shadow each other.
+                                    let table = resolved.symbol_table();
+                                    let on_chain = |mut scope: usize, target: usize| loop {
+                                        if scope == target {
+                                            break true;
+                                        }
+                                        match table.scopes.get(&scope).and_then(|s| s.parent) {
+                                            Some(parent) => scope = parent,
+                                            None => break false,
+                                        }
+                                    };
+                                    table.symbols.get(&symbol.name).is_some_and(|candidates| {
+                                        candidates.iter().any(|candidate| {
+                                            candidate.location.start != symbol.location.start
+                                                && matches!(
+                                                    candidate.declaration.as_deref(),
+                                                    Some("my" | "state")
+                                                )
+                                                && (on_chain(candidate.scope_id, symbol.scope_id)
+                                                    || on_chain(
+                                                        symbol.scope_id,
+                                                        candidate.scope_id,
+                                                    ))
+                                        })
                                     })
                                 })
                             });
                             if lexical {
+                                let Some(analyzer) = analyzer.as_ref() else {
+                                    // Unreachable: `lexical` is only true when
+                                    // the analyzer resolved a definition.
+                                    // Decline the fast path rather than
+                                    // inventing a failure for it.
+                                    return Ok((
+                                        None,
+                                        ReferencesAnsweringTier::SemanticAnalyzer,
+                                        index_state,
+                                        0,
+                                        0,
+                                        start.elapsed().as_micros(),
+                                        source_backed_attempt.clone(),
+                                        fallback_receipt.clone(),
+                                    ));
+                                };
                                 let references =
                                     analyzer.find_all_references(offset, include_declaration);
                                 let locations: Vec<Value> = references
@@ -1716,7 +1749,8 @@ impl LspServer {
 
                     // Fall back to same-file references.
                     // `index_state` was captured before the workspace block above.
-                    let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
+                    let analyzer =
+                        analyzer.unwrap_or_else(|| crate::semantic::SemanticAnalyzer::analyze(ast));
 
                     // Find all references at the position
                     let references = analyzer.find_all_references(offset, include_declaration);

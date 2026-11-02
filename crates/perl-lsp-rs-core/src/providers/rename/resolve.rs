@@ -73,6 +73,7 @@ mod tests {
     use super::find_symbol_at_position;
     use perl_parser::Parser;
     use perl_semantic_analyzer::symbol::{SymbolExtractor, SymbolKind};
+    use perl_test_must::{must_some_with, must_with};
 
     #[test]
     fn find_symbol_at_position_prefers_the_nested_lexical_over_the_enclosing_sub() {
@@ -80,9 +81,9 @@ mod tests {
         // lexical must resolve to the lexical at every offset of its token,
         // regardless of symbol-table iteration order (#18117).
         let code = "sub run { my $value = 1; print $value; }";
-        let ast = Parser::new(code).parse().expect("parse");
+        let ast = must_with(Parser::new(code).parse(), "parse");
         let table = SymbolExtractor::new_with_source(code).extract(&ast);
-        let decl = code.find("$value").expect("declaration") + 1;
+        let decl = must_some_with(code.find("$value"), "declaration") + 1;
         for position in decl..decl + "value".len() {
             let found = find_symbol_at_position(position, &table, code);
             assert_eq!(
@@ -92,7 +93,7 @@ mod tests {
             );
         }
         // The later use resolves to the same lexical, not the enclosing sub.
-        let use_pos = code.rfind("$value").expect("use") + 1;
+        let use_pos = must_some_with(code.rfind("$value"), "use") + 1;
         let found = find_symbol_at_position(use_pos, &table, code);
         assert_eq!(
             found.map(|(name, kind)| (name, kind)),
