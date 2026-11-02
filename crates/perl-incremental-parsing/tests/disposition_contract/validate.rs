@@ -85,10 +85,14 @@ const EXPERIMENTAL_MARKERS: &[&str] = &[
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CargoTargetSnapshot {
-    pub tests: BTreeSet<String>,
-    pub benches: BTreeSet<String>,
-    pub examples: BTreeSet<String>,
-    pub bins: BTreeSet<String>,
+    pub tests: BTreeMap<String, String>,
+    pub benches: BTreeMap<String, String>,
+    pub examples: BTreeMap<String, String>,
+    pub bins: BTreeMap<String, String>,
+}
+
+pub fn paths(snapshot: &BTreeMap<String, String>) -> BTreeSet<String> {
+    snapshot.keys().cloned().collect()
 }
 
 pub fn load_inventory_from_path(path: &Path) -> Result<Value, Box<dyn Error>> {
@@ -111,14 +115,7 @@ pub fn validate_inventory(
         package_root,
         TargetKind::IntegrationTest,
     )?;
-    validate_target_section(
-        inventory,
-        "source_test_targets",
-        TARGET_FIELDS,
-        source_tests,
-        package_root,
-        TargetKind::SourceUnitTest,
-    )?;
+    validate_source_test_section(inventory, source_tests, package_root)?;
     validate_target_section(
         inventory,
         "benchmarks",
@@ -197,12 +194,31 @@ fn listed_paths(inventory: &Value, key: &str) -> Result<BTreeSet<String>, Box<dy
 fn validate_path_only_section(
     inventory: &Value,
     key: &str,
-    actual: &BTreeSet<String>,
+    actual: &BTreeMap<String, String>,
     package_root: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let listed = listed_paths(inventory, key)?;
-    if listed != *actual {
+    if listed != paths(actual) {
         return Err(format!("{key} inventory drifted from Cargo's executable target graph").into());
+    }
+    for entry in entries(inventory, key)? {
+        let path = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{key} entry is missing a string path"))?;
+        let object = entry.as_object().ok_or_else(|| format!("{key} entry must be an object"))?;
+        let ledger_features = object
+            .get("required_features")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{key} entry {path} is missing required_features"))?;
+        let cargo_features =
+            actual.get(path).ok_or_else(|| format!("{key} entry {path} is not a Cargo target"))?;
+        if ledger_features != cargo_features {
+            return Err(format!(
+                "{key} entry {path} required_features={ledger_features:?} does not match Cargo invocation identity {cargo_features:?}"
+            )
+            .into());
+        }
     }
     for path in &listed {
         let file = package_root.join(path);
@@ -217,17 +233,58 @@ fn validate_target_section(
     inventory: &Value,
     key: &str,
     allowed_fields: &[&str],
-    actual: &BTreeSet<String>,
+    actual: &BTreeMap<String, String>,
     package_root: &Path,
     kind: TargetKind,
 ) -> Result<(), Box<dyn Error>> {
     let listed = listed_paths(inventory, key)?;
-    if listed != *actual {
+    if listed != paths(actual) {
         return Err(format!("{key} inventory drifted from the governed target inventory").into());
     }
     for entry in entries(inventory, key)? {
         let fields = require_closed_fields(entry, key, allowed_fields)?;
+        let path = fields.get("path").ok_or("entry missing path")?;
+        let cargo_features =
+            actual.get(path).ok_or_else(|| format!("{key} entry {path} is not a Cargo target"))?;
+        let ledger_features =
+            fields.get("required_features").ok_or("entry missing required_features")?;
+        if ledger_features != cargo_features {
+            return Err(format!(
+                "{key} entry {path} required_features={ledger_features:?} does not match Cargo invocation identity {cargo_features:?}"
+            )
+            .into());
+        }
         validate_target_semantics(key, &fields, &kind, package_root)?;
+    }
+    Ok(())
+}
+
+fn validate_source_test_section(
+    inventory: &Value,
+    actual: &BTreeSet<String>,
+    package_root: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let listed = listed_paths(inventory, "source_test_targets")?;
+    if listed != *actual {
+        return Err("source_test_targets inventory drifted from the source tree".into());
+    }
+    for entry in entries(inventory, "source_test_targets")? {
+        let fields = require_closed_fields(entry, "source_test_targets", TARGET_FIELDS)?;
+        let required_features =
+            fields.get("required_features").ok_or("source test row missing required_features")?;
+        if required_features != "default" {
+            return Err(format!(
+                "source_test_targets entry {} must use required_features=default (feature-gated unit tests need explicit function-level rows)",
+                fields.get("path").unwrap_or(&"<missing>".to_string())
+            )
+            .into());
+        }
+        validate_target_semantics(
+            "source_test_targets",
+            &fields,
+            &TargetKind::SourceUnitTest,
+            package_root,
+        )?;
     }
     Ok(())
 }
@@ -384,12 +441,44 @@ fn validate_target_semantics(
         }
     }
 
-    let required_features =
-        fields.get("required_features").ok_or("entry missing required_features")?;
-    if required_features.is_empty() {
-        return Err(format!("{key} entry {path} required_features must be explicit").into());
-    }
+    Ok(())
+}
 
+fn cargo_invocation_identity(target: &Value) -> Result<String, Box<dyn Error>> {
+    let required = target.get("required_features");
+    let Some(required) = required else {
+        return Ok("default".to_string());
+    };
+    let Some(features) = required.as_array() else {
+        return Err("cargo metadata target required_features must be an array when present".into());
+    };
+    let mut names = BTreeSet::new();
+    for feature in features {
+        let name = feature
+            .as_str()
+            .ok_or("cargo metadata target required_features entries must be strings")?;
+        if name.is_empty() {
+            return Err(
+                "cargo metadata target required_features must not contain empty names".into()
+            );
+        }
+        names.insert(name.to_string());
+    }
+    if names.is_empty() {
+        Ok("default".to_string())
+    } else {
+        Ok(names.into_iter().collect::<Vec<_>>().join(","))
+    }
+}
+
+fn insert_target_path(
+    map: &mut BTreeMap<String, String>,
+    relative: &str,
+    identity: String,
+) -> Result<(), Box<dyn Error>> {
+    if map.insert(relative.to_string(), identity).is_some() {
+        return Err(format!("duplicate Cargo target path in snapshot: {relative}").into());
+    }
     Ok(())
 }
 
@@ -444,19 +533,18 @@ pub fn cargo_snapshot_from_metadata(
             .to_string_lossy()
             .replace('\\', "/");
         for kind in kinds {
+            let identity = cargo_invocation_identity(target)?;
             match kind.as_str() {
                 Some("test") => {
-                    snapshot.tests.insert(relative.clone());
+                    insert_target_path(&mut snapshot.tests, &relative, identity.clone())?
                 }
                 Some("bench") => {
-                    snapshot.benches.insert(relative.clone());
+                    insert_target_path(&mut snapshot.benches, &relative, identity.clone())?
                 }
                 Some("example") => {
-                    snapshot.examples.insert(relative.clone());
+                    insert_target_path(&mut snapshot.examples, &relative, identity.clone())?
                 }
-                Some("bin") => {
-                    snapshot.bins.insert(relative.clone());
-                }
+                Some("bin") => insert_target_path(&mut snapshot.bins, &relative, identity.clone())?,
                 _ => {}
             }
         }
