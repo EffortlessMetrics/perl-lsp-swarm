@@ -1665,6 +1665,7 @@ impl<'a> Parser<'a> {
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
                 if Self::is_builtin_function(&next_text)
+                    && !self.is_declared_nullary_sub(name)
                     && let Ok(third) = self.tokens.peek_second()
                 {
                     let third_text: &str = &third.text;
