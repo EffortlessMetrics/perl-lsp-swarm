@@ -643,6 +643,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
+        "module_resolution_negative_cache",
+        WorkspaceServices,
+        "Arc",
+        "`.pm` watcher + manual clear",
+        "effective-@INC fingerprint + module name",
+        true,
+        "#18776"
+    ),
+    row!(
         "use_lib_hir_cache",
         AnalysisServices,
         "Arc<Mutex>",
