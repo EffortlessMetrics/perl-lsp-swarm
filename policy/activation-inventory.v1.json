@@ -17,8 +17,8 @@
       "rule": "cargo-test-features",
       "authority": "crates/*/Cargo.toml",
       "emits": "test_api",
-      "considered": 80,
-      "emitted": 27,
+      "considered": 81,
+      "emitted": 28,
       "not_seeded_reason": "a feature is seeded when its NAME declares test-only intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test) or its USAGE proves it (at least one cfg(feature = \"...\") site, all under tests/ or benches/). Each row records which signal settled it. A feature with no cfg sites at all is not seeded by usage: an unused feature is neither shown to gate tests nor shown not to. A feature gating both production and test code is seeded only if its name declares the intent, since gating production code is what an exposed test API does"
     },
     {
@@ -1374,6 +1374,37 @@
         "authority": "crates/perl-parser/Cargo.toml"
       },
       "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perllsp/expose_lsp_test_api",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perllsp/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perllsp/Cargo.toml#features.expose_lsp_test_api",
+      "consumers": [
+        "crates/perllsp"
+      ],
+      "compile_profiles": [
+        "expose_lsp_test_api"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perllsp/Cargo.toml",
+        "detail": "[features] expose_lsp_test_api = [perl-lsp-rs/expose_lsp_test_api]"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perllsp/Cargo.toml"
+      },
+      "owner": "perllsp",
       "promotion": {
         "state": "not_evaluated"
       },
