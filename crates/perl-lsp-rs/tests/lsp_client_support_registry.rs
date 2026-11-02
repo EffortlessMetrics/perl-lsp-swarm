@@ -905,6 +905,16 @@ fn bridge_boundaries_do_not_misrepresent_lsp_as_mcp_or_native_zed_registration()
     ensure!(codex_desktop.tier == "not_proven_unsupported");
     ensure!(codex_desktop.claim_boundary.contains("unsupported"));
 
+    let codex_ide = registry
+        .client
+        .iter()
+        .find(|client| client.id == "codex_ide")
+        .context("missing Codex IDE row")?;
+    ensure!(codex_ide.integration_mode == "agent_host_skill_and_native_mcp");
+    ensure!(codex_ide.tier == "configuration_documented");
+    ensure!(codex_ide.owner_issue == 7826);
+    ensure!(codex_ide.claim_boundary.contains("CLI/desktop receipts cannot substitute"));
+
     let zed =
         registry.client.iter().find(|client| client.id == "zed").context("missing Zed row")?;
     ensure!(
