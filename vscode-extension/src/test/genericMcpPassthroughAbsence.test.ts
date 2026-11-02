@@ -10,10 +10,18 @@ const extensionSource = fs.readFileSync(path.join(extensionRoot, 'src/extension.
 function configurationProperties(): Record<string, unknown> {
   const contributes = packageJson.contributes as Record<string, unknown> | undefined;
   const configuration = contributes?.configuration;
-  if (Array.isArray(configuration)) {
-    return (configuration[0] as { properties?: Record<string, unknown> }).properties ?? {};
+  const groups = Array.isArray(configuration) ? configuration : [configuration];
+  const properties: Record<string, unknown> = {};
+  for (const group of groups) {
+    if (!group || typeof group !== 'object') {
+      continue;
+    }
+    const groupProperties = (group as { properties?: Record<string, unknown> }).properties ?? {};
+    for (const [key, value] of Object.entries(groupProperties)) {
+      properties[key] = value;
+    }
   }
-  return (configuration as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+  return properties;
 }
 
 describe('generic MCP passthrough complete removal (#7119)', () => {
