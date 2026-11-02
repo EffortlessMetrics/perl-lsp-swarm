@@ -142,6 +142,43 @@ pub enum FormatRequestTarget {
     },
 }
 
+/// Engine path actually executed for one formatting computation.
+///
+/// This is independent from [`FormatRequestTarget`]: a range request may still
+/// execute whole-document external logic, and a document request must not be
+/// inferred from returned edit shape (#7581).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormatExecutionStrategy {
+    /// Native formatter rendered the complete document.
+    NativeDocument,
+    /// Native formatter rendered one admitted range or syntax island.
+    NativeRangeOrIsland,
+    /// Native formatter executed a canonical multi-range plan.
+    NativeMultiRangePlan,
+    /// Bounded on-type indentation adjustment.
+    BoundedOnTypeIndentation,
+    /// External Perl::Tidy compatibility adapter ran whole-document logic.
+    ExternalWholeDocument,
+    /// External adapter cannot honor a partial range safely.
+    ExternalPartialUnsupported,
+    /// Formatting was disabled before an engine ran.
+    Disabled,
+    /// No engine started for this terminal outcome.
+    NotStarted,
+}
+
+/// Derive the native execution strategy from the immutable requested target.
+#[must_use]
+pub const fn execution_for_requested_native_target(
+    target: FormatRequestTarget,
+) -> FormatExecutionStrategy {
+    match target {
+        FormatRequestTarget::Document => FormatExecutionStrategy::NativeDocument,
+        FormatRequestTarget::Range { .. } => FormatExecutionStrategy::NativeRangeOrIsland,
+    }
+}
+
 /// Stable subject, implementation, and configuration identity for one computation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatIdentity {
@@ -196,8 +233,10 @@ pub struct FormatOutcome {
     pub reason: FormatReasonCode,
     /// Source, implementation, mode, and configuration identity.
     pub identity: FormatIdentity,
-    /// Requested document or range target.
+    /// Immutable caller request target.
     pub target: FormatRequestTarget,
+    /// Engine path actually executed, recorded independently from `target`.
+    pub execution: FormatExecutionStrategy,
     /// Bounded edit and changed-source summary.
     pub change: FormatChangeSummary,
     /// Safety evidence used to authorize or refuse edits.
@@ -374,6 +413,7 @@ fn classify_native_result(
             config_fingerprint: config_fingerprint(config),
         },
         target,
+        execution: execution_for_requested_native_target(target),
         change: change_summary(source, &result.formatted, &result.edits),
         safety,
         next_action: next_action(classification.reason).map(str::to_string),
