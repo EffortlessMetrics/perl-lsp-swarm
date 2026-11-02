@@ -70,12 +70,13 @@ use tasks::{
     release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
     rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
-    supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
-    targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
-    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
-    workflow_authority_inventory, workflow_policy_lint, workflow_trigger_lint,
-    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
+    shadow_parity, source_context_conformance, srp_microcrates, standalone_diagnostics,
+    standalone_vectors, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
+    workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
+    writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -2580,6 +2581,13 @@ enum Commands {
     /// Check that test-bearing Rust files are reachable from their module tree.
     CheckTestWiring,
 
+    /// Run the #13246 completion source-context conformance matrix gates.
+    #[command(name = "source-context")]
+    SourceContext {
+        #[command(subcommand)]
+        command: SourceContextCommand,
+    },
+
     /// Emit per-subsystem engineering-health metrics.
     Metrics {
         #[command(subcommand)]
@@ -4597,6 +4605,12 @@ enum MetricsCommand {
         #[arg(long)]
         input: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum SourceContextCommand {
+    /// Run canonical, completion-policy, and serialized completion matrix gates.
+    Check,
 }
 
 #[derive(Subcommand)]
@@ -7400,6 +7414,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             check: args.check,
         }),
         Commands::CheckTestWiring => check_test_wiring::run(),
+        Commands::SourceContext { command } => match command {
+            SourceContextCommand::Check => source_context_conformance::run_check(),
+        },
         Commands::CompilerProfile { command } => {
             let root = utils::project_root()?;
             match command {
