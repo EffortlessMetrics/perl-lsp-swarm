@@ -369,6 +369,142 @@ pub(super) fn document_highlight_result(method: &str, value: &Value) -> Result<(
     Ok(())
 }
 
+/// LSP 3.17 `PublishDiagnosticsParams` (server→client notification).
+pub(super) fn publish_diagnostics_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    document_uri(method, "$.params.uri", object.get("uri"))?;
+    if let Some(version) = object.get("version")
+        && !version.is_null()
+    {
+        expect_lsp_integer(Some(method), "$.params.version", Some(version))?;
+    }
+    let diagnostics = object.get("diagnostics").ok_or_else(|| {
+        SchemaError::new(Some(method), "$.params.diagnostics", "array", "missing")
+    })?;
+    let array = diagnostics.as_array().ok_or_else(|| {
+        SchemaError::at_value(Some(method), "$.params.diagnostics", "array", diagnostics)
+    })?;
+    for (index, diagnostic) in array.iter().enumerate() {
+        diagnostic_item(method, &format!("$.params.diagnostics[{index}]"), diagnostic)?;
+    }
+    Ok(())
+}
+
+/// LSP 3.17 `Diagnostic` (string message; MarkupContent stays on a 3.18 slice).
+fn diagnostic_item(method: &str, path: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), path, value)?;
+    range(method, &format!("{path}.range"), object.get("range"))?;
+    let message = expect_string(Some(method), &format!("{path}.message"), object.get("message"))?;
+    if message.is_empty() {
+        return Err(SchemaError::new(
+            Some(method),
+            format!("{path}.message"),
+            "non-empty string",
+            "string(len=0)",
+        ));
+    }
+    if let Some(severity) = object.get("severity") {
+        let severity =
+            expect_lsp_integer(Some(method), &format!("{path}.severity"), Some(severity))?;
+        if !(1..=4).contains(&severity) {
+            return Err(SchemaError::new(
+                Some(method),
+                format!("{path}.severity"),
+                "DiagnosticSeverity 1..=4",
+                severity.to_string(),
+            ));
+        }
+    }
+    if let Some(code) = object.get("code")
+        && !code.is_string()
+        && code.as_i64().is_none()
+    {
+        return Err(SchemaError::at_value(
+            Some(method),
+            format!("{path}.code"),
+            "integer or string",
+            code,
+        ));
+    }
+    if let Some(source) = object.get("source") {
+        expect_string(Some(method), &format!("{path}.source"), Some(source))?;
+    }
+    if let Some(tags) = object.get("tags") {
+        let tags = tags.as_array().ok_or_else(|| {
+            SchemaError::at_value(Some(method), format!("{path}.tags"), "array", tags)
+        })?;
+        for (index, tag) in tags.iter().enumerate() {
+            let tag_path = format!("{path}.tags[{index}]");
+            let tag = expect_lsp_integer(Some(method), &tag_path, Some(tag))?;
+            if !(1..=2).contains(&tag) {
+                return Err(SchemaError::new(
+                    Some(method),
+                    tag_path,
+                    "DiagnosticTag 1 or 2",
+                    tag.to_string(),
+                ));
+            }
+        }
+    }
+    if let Some(related) = object.get("relatedInformation") {
+        let related = related.as_array().ok_or_else(|| {
+            SchemaError::at_value(
+                Some(method),
+                format!("{path}.relatedInformation"),
+                "array",
+                related,
+            )
+        })?;
+        for (index, info) in related.iter().enumerate() {
+            diagnostic_related_information(
+                method,
+                &format!("{path}.relatedInformation[{index}]"),
+                info,
+            )?;
+        }
+    }
+    if let Some(code_description) = object.get("codeDescription") {
+        let object =
+            expect_object(Some(method), &format!("{path}.codeDescription"), code_description)?;
+        let href = expect_string(
+            Some(method),
+            &format!("{path}.codeDescription.href"),
+            object.get("href"),
+        )?;
+        if !(href.starts_with("http://") || href.starts_with("https://")) {
+            return Err(SchemaError::new(
+                Some(method),
+                format!("{path}.codeDescription.href"),
+                "http:// or https:// URL",
+                format!("string(len={})", href.len()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn diagnostic_related_information(
+    method: &str,
+    path: &str,
+    value: &Value,
+) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), path, value)?;
+    location(method, &format!("{path}.location"), object.get("location"))?;
+    expect_string(Some(method), &format!("{path}.message"), object.get("message"))?;
+    Ok(())
+}
+
+fn location(method: &str, path: &str, value: Option<&Value>) -> Result<(), SchemaError> {
+    let object = expect_object(
+        Some(method),
+        path,
+        value.ok_or_else(|| SchemaError::new(Some(method), path, "object", "missing"))?,
+    )?;
+    document_uri(method, &format!("{path}.uri"), object.get("uri"))?;
+    range(method, &format!("{path}.range"), object.get("range"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "../../../tests/support/protocol_schema_did_save.rs"]
 mod did_save_seam_proofs;

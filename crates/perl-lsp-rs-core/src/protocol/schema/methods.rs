@@ -1,8 +1,8 @@
 use super::payloads::{
     cancel_params, did_change_params, did_close_params, did_open_params, did_save_params,
     document_highlight_params, document_highlight_result, initialize_params, initialize_result,
-    null_or_empty_object, null_params, null_result, show_message_request_params,
-    show_message_request_result, window_message_params,
+    null_or_empty_object, null_params, null_result, publish_diagnostics_params,
+    show_message_request_params, show_message_request_result, window_message_params,
 };
 use super::{Direction, MessageKind, ProtocolVersion, SchemaError};
 use serde_json::Value;
@@ -44,7 +44,8 @@ macro_rules! notification {
     };
 }
 
-/// Lifecycle, cancellation, window messages, document sync, and document highlights.
+/// Lifecycle, cancellation, window messages, document sync, document highlights,
+/// and push diagnostics (`textDocument/publishDiagnostics`).
 /// Remaining method payloads stay on #10477 so each family stays within
 /// RIPR's review budget.
 static METHOD_SCHEMAS: &[MethodSchema] = &[
@@ -76,6 +77,12 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         Lsp317,
         show_message_request_params,
         show_message_request_result
+    ),
+    notification!(
+        "textDocument/publishDiagnostics",
+        ServerToClient,
+        Lsp317,
+        publish_diagnostics_params
     ),
 ];
 
