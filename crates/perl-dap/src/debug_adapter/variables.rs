@@ -123,18 +123,15 @@ impl DebugAdapter {
         }
 
         // Scope references are bound to the exact current stopped frame.  Check
-        // this before cache lookup, parsing, or debugger I/O so old, wrong-frame,
-        // Package, and Globals references cannot be revived by representative
-        // data or a stale cache entry.
+        // this before cache lookup, parsing, or debugger I/O so old or wrong-frame
+        // references cannot be revived by representative data or a stale cache entry.
         {
             use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
             if let Some(VariableReference::Scope { frame_id, kind }) =
                 VariableReference::decode(variables_ref)
             {
                 let exact_current = self.exact_current_stopped_frame_id(i64::from(frame_id));
-                if exact_current != Some(frame_id)
-                    || matches!(kind, ScopeKind::Package | ScopeKind::Globals)
-                {
+                if exact_current != Some(frame_id) {
                     return DapMessage::Response {
                         seq,
                         request_seq,
@@ -143,6 +140,27 @@ impl DebugAdapter {
                         body: Some(json!({ "variables": [] })),
                         message: None,
                     };
+                }
+                if kind == ScopeKind::Package {
+                    let package_known = lock_or_recover(&self.session, "debug_adapter.session")
+                        .as_ref()
+                        .and_then(|session| {
+                            session.stack_frames.first().filter(|frame| frame.id == frame_id)
+                        })
+                        .and_then(|frame| {
+                            Self::observed_package_identity_from_frame_name(&frame.name)
+                        })
+                        .is_some();
+                    if !package_known {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: true,
+                            command: "variables".to_string(),
+                            body: Some(json!({ "variables": [] })),
+                            message: None,
+                        };
+                    }
                 }
             }
         }
@@ -241,43 +259,57 @@ impl DebugAdapter {
                             message: None,
                         };
                     }
-                    if scope_kind == Some(ScopeKind::Locals) {
-                        let frame_is_current = captured_frame_id.is_some_and(|frame_id| {
-                            session.state == DebugState::Stopped
-                                && session
-                                    .stack_frames
-                                    .first()
-                                    .is_some_and(|frame| frame.id == frame_id)
-                        });
-                        if !frame_is_current {
-                            return DapMessage::Response {
-                                seq,
-                                request_seq,
-                                success: true,
-                                command: "variables".to_string(),
-                                body: Some(json!({ "variables": [] })),
-                                message: None,
-                            };
+                    let frame_is_current = captured_frame_id.is_some_and(|frame_id| {
+                        session.state == DebugState::Stopped
+                            && session
+                                .stack_frames
+                                .first()
+                                .is_some_and(|frame| frame.id == frame_id)
+                    });
+                    if !frame_is_current {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: true,
+                            command: "variables".to_string(),
+                            body: Some(json!({ "variables": [] })),
+                            message: None,
+                        };
+                    }
+                    let stopped_generation = session.stopped_generation;
+                    let broker_generation = self.operation_broker.current_session_generation();
+                    let scope_commands = match scope_kind {
+                        Some(ScopeKind::Locals) => Some(vec![Self::build_locals_b_eval_cmd()]),
+                        Some(ScopeKind::Package) => session
+                            .stack_frames
+                            .first()
+                            .filter(|frame| captured_frame_id == Some(frame.id))
+                            .and_then(|frame| {
+                                Self::observed_package_identity_from_frame_name(&frame.name)
+                            })
+                            .map(|package| vec![Self::build_package_scope_v_command(&package)]),
+                        Some(ScopeKind::Globals) => {
+                            Some(vec![Self::build_globals_scope_v_command()])
                         }
-                        let stopped_generation = session.stopped_generation;
-                        let broker_generation = self.operation_broker.current_session_generation();
-                        if let Some(stdin) = session.process.stdin.as_mut() {
-                            let commands = vec![Self::build_locals_b_eval_cmd()];
-                            match self.send_framed_debugger_query_bound(
-                                stdin,
-                                &commands,
-                                DEBUGGER_QUERY_WAIT_MS * 8,
-                                Some(stopped_generation),
-                                Some(broker_generation),
-                            ) {
-                                Ok((operation, begin, end)) => {
-                                    framed_scope_query = Some((operation, begin, end));
-                                    captured_locals_identity =
-                                        Some((stopped_generation, broker_generation));
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%error, "Failed to send framed locals command; locals unavailable");
-                                }
+                        Some(ScopeKind::Arguments) | None => None,
+                    };
+                    if let Some(commands) = scope_commands
+                        && let Some(stdin) = session.process.stdin.as_mut()
+                    {
+                        match self.send_framed_debugger_query_bound(
+                            stdin,
+                            &commands,
+                            DEBUGGER_QUERY_WAIT_MS * 8,
+                            Some(stopped_generation),
+                            Some(broker_generation),
+                        ) {
+                            Ok((operation, begin, end)) => {
+                                framed_scope_query = Some((operation, begin, end));
+                                captured_locals_identity =
+                                    Some((stopped_generation, broker_generation));
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "Failed to send framed scope command; scope unavailable");
                             }
                         }
                     }
@@ -487,6 +519,31 @@ impl DebugAdapter {
             ),
             frame = 0,
         )
+    }
+
+    /// Resolve the observed Perl package name for a stopped frame display label.
+    ///
+    /// perl5db stack labels use `Package::sub` for named packages and a bare sub
+    /// name for file-scope `main`. Unknown or empty labels remain unknown.
+    pub(super) fn observed_package_identity_from_frame_name(name: &str) -> Option<String> {
+        if name.is_empty() || name == "<unknown>" {
+            return None;
+        }
+        if let Some((package, _subroutine)) = name.rsplit_once("::") {
+            if package.is_empty() { None } else { Some(package.to_string()) }
+        } else {
+            Some("main".to_string())
+        }
+    }
+
+    /// Build the perl5db `V` command for package-scoped variables in `package`.
+    pub(super) fn build_package_scope_v_command(package: &str) -> String {
+        format!("V {package} ::")
+    }
+
+    /// Build the perl5db `V` command for Perl special/global variables.
+    pub(super) fn build_globals_scope_v_command() -> String {
+        "V main *".to_string()
     }
 
     /// Handle setVariable request
@@ -988,12 +1045,7 @@ mod hazard_invariant_tests {
         )]);
 
         let before_queries = a.debugger_query_count_for_test();
-        for (frame_id, kind) in [
-            (7, ScopeKind::Package),
-            (7, ScopeKind::Globals),
-            (8, ScopeKind::Locals),
-            (8, ScopeKind::Arguments),
-        ] {
+        for (frame_id, kind) in [(8, ScopeKind::Locals), (8, ScopeKind::Arguments)] {
             let wire = must_some(VariableReference::Scope { frame_id, kind }.encode());
             assert!(
                 variables_body_is_empty(&mut a, i64::from(wire)),
@@ -1003,7 +1055,99 @@ mod hazard_invariant_tests {
         assert_eq!(
             a.debugger_query_count_for_test(),
             before_queries,
-            "unadmitted scope references must perform zero framed debugger queries"
+            "non-current scope references must perform zero framed debugger queries"
+        );
+
+        let package_wire =
+            must_some(VariableReference::Scope { frame_id: 7, kind: ScopeKind::Package }.encode());
+        let globals_wire =
+            must_some(VariableReference::Scope { frame_id: 7, kind: ScopeKind::Globals }.encode());
+        let _package_response = a.handle_variables(
+            2,
+            2,
+            Some(json!({ "variablesReference": i64::from(package_wire) })),
+        );
+        let _globals_response = a.handle_variables(
+            3,
+            3,
+            Some(json!({ "variablesReference": i64::from(globals_wire) })),
+        );
+        assert!(
+            a.debugger_query_count_for_test() > before_queries,
+            "current-frame Package/Globals must issue framed V queries bound to package identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_package_identity_from_frame_name_maps_qualified_subs() {
+        assert_eq!(
+            DebugAdapter::observed_package_identity_from_frame_name("Foo::Bar::run"),
+            Some("Foo::Bar".to_string())
+        );
+        assert_eq!(
+            DebugAdapter::observed_package_identity_from_frame_name("main::run"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            DebugAdapter::observed_package_identity_from_frame_name("run"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            DebugAdapter::observed_package_identity_from_frame_name("123::run"),
+            Some("123".to_string())
+        );
+        assert_eq!(DebugAdapter::observed_package_identity_from_frame_name(""), None);
+        assert_eq!(DebugAdapter::observed_package_identity_from_frame_name("<unknown>"), None);
+        assert_eq!(DebugAdapter::observed_package_identity_from_frame_name("::run"), None);
+    }
+
+    #[test]
+    fn package_and_globals_v_commands_never_use_dap_frame_integers_as_package_names() {
+        let frame_id = 7_i32;
+        let package_cmd = DebugAdapter::build_package_scope_v_command("Foo::Bar");
+        assert_eq!(package_cmd, "V Foo::Bar ::");
+        assert!(
+            !package_cmd.contains(&format!("V {frame_id}")),
+            "package query must not embed the DAP frame id: {package_cmd}"
+        );
+
+        let globals_cmd = DebugAdapter::build_globals_scope_v_command();
+        assert_eq!(globals_cmd, "V main *");
+        assert!(
+            !globals_cmd.contains(&format!("V {frame_id}")),
+            "globals query must not embed the DAP frame id: {globals_cmd}"
+        );
+    }
+
+    #[test]
+    fn package_scope_with_unknown_frame_package_performs_zero_queries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return Ok(());
+        }
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        use crate::types::StackFrame;
+
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+            7,
+            "<unknown>",
+            crate::types::Source {
+                name: Some("test.pl".to_string()),
+                path: "/tmp/test.pl".to_string(),
+                source_reference: None,
+            },
+            1,
+        )]);
+        let before = a.debugger_query_count_for_test();
+        let wire =
+            must_some(VariableReference::Scope { frame_id: 7, kind: ScopeKind::Package }.encode());
+        assert!(variables_body_is_empty(&mut a, i64::from(wire)));
+        assert_eq!(
+            a.debugger_query_count_for_test(),
+            before,
+            "unknown package identity must not issue a perl5db V command"
         );
         Ok(())
     }
