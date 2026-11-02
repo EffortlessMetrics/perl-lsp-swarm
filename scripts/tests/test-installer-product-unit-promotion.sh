@@ -776,6 +776,105 @@ else
     pass "no installer reads PERL_LSP_INSTALL_POINTER"
 fi
 
+store_dir() {
+    printf '%s\n' "${INSTALL_DIR}/.perl-lsp"
+}
+
+current_candidate_rel() {
+    readlink "${INSTALL_DIR}/.perl-lsp/current"
+}
+
+current_id() {
+    basename "$(current_candidate_rel)"
+}
+
+candidate_path() {
+    local _id="$1"
+    printf '%s/candidates/%s\n' "$(store_dir)" "$_id"
+}
+
+printf '=== startup recovery rejects crash-truncated candidates (#17905) ===\n'
+
+setup_root
+stage_pair "$EXTRACT_DIR" "recover-a" "recover-a-dap"
+run_promote release
+recover_first="$(current_id)"
+stage_pair "$EXTRACT_DIR" "recover-b" "recover-b-dap"
+run_promote release
+recover_second="$(current_id)"
+rm -f "$(candidate_path "$recover_second")/${DAP_BIN_NAME}"
+set +e
+recovered="$(validate_and_recover_current_selection 2>&1)"
+recovered_status=$?
+set -e
+if [ "$recovered_status" -eq 0 ] \
+    && [[ "$recovered" == rolled_back* ]] \
+    && [ "$(current_id)" = "$recover_first" ] \
+    && assert_complete_pair "recover-a" "recover-a-dap"; then
+    pass "missing DAP member rolls current back to the last verified unit"
+else
+    fail_case "missing DAP member rolls current back to the last verified unit" \
+        "status=$recovered_status out=$recovered first=$recover_first now=$(current_id)"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "manifest-a" "manifest-a-dap"
+run_promote release
+manifest_first="$(current_id)"
+stage_pair "$EXTRACT_DIR" "manifest-b" "manifest-b-dap"
+run_promote release
+manifest_second="$(current_id)"
+rm -f "$(candidate_path "$manifest_second")/product_unit.v1"
+set +e
+manifest_recovered="$(validate_and_recover_current_selection 2>&1)"
+manifest_recovered_status=$?
+set -e
+if [ "$manifest_recovered_status" -eq 0 ] \
+    && [[ "$manifest_recovered" == rolled_back* ]] \
+    && [ "$(current_id)" = "$manifest_first" ]; then
+    pass "missing manifest rolls current back to the last verified unit"
+else
+    fail_case "missing manifest rolls current back to the last verified unit" \
+        "status=$manifest_recovered_status out=$manifest_recovered first=$manifest_first now=$(current_id)"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "trunc-a" "trunc-a-dap"
+run_promote release
+trunc_first="$(current_id)"
+stage_pair "$EXTRACT_DIR" "trunc-b" "trunc-b-dap"
+run_promote release
+trunc_second="$(current_id)"
+printf 'truncated-bytes\n' > "$(candidate_path "$trunc_second")/${BIN_NAME}"
+set +e
+trunc_recovered="$(validate_and_recover_current_selection 2>&1)"
+trunc_recovered_status=$?
+set -e
+if [ "$trunc_recovered_status" -eq 0 ] \
+    && [[ "$trunc_recovered" == rolled_back* ]] \
+    && [ "$(current_id)" = "$trunc_first" ]; then
+    pass "truncated member bytes roll current back to the last verified unit"
+else
+    fail_case "truncated member bytes roll current back to the last verified unit" \
+        "status=$trunc_recovered_status out=$trunc_recovered first=$trunc_first now=$(current_id)"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "alone-a" "alone-a-dap"
+run_promote release
+rm -f "$(candidate_path "$(current_id)")/${DAP_BIN_NAME}"
+rm -f "$(store_dir)/previous"
+set +e
+unrecoverable_out="$(validate_and_recover_current_selection 2>&1)"
+unrecoverable_status=$?
+set -e
+if [ "$unrecoverable_status" -ne 0 ]; then
+    pass "incomplete current with no verified previous unit fails closed"
+else
+    fail_case "incomplete current with no verified previous unit fails closed" \
+        "status=$unrecoverable_status out=$unrecoverable_out"
+fi
+
 if [ "$FAIL" -ne 0 ]; then
     printf 'FAILED %s  passed %s\n' "$FAIL" "$PASS" >&2
     exit 1

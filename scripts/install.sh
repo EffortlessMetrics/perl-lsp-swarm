@@ -1382,6 +1382,81 @@ dap_sha256=${_dap_hash}
 EOF
 }
 
+product_unit_manifest_field() {
+    local _manifest="$1" _field="$2"
+    awk -F= -v field="$_field" '$1 == field { print $2; exit }' "$_manifest"
+}
+
+# A durable candidate is complete only when its manifest is readable, its
+# disposition names a known member set, every required member is present, and
+# re-hashed bytes still match the manifest-bound candidate identity.
+verify_product_unit_candidate_dir() {
+    local _dir="$1"
+    local _manifest _schema _disposition _id _want_server _want_dap _server_hash _dap_hash="-" _computed
+    [ -d "$_dir" ] || return 1
+    _manifest="${_dir}/product_unit.v1"
+    [ -f "$_manifest" ] || return 1
+    _schema="$(product_unit_manifest_field "$_manifest" schema)"
+    [ "$_schema" = "standalone_product_unit.v1" ] || return 1
+    _disposition="$(product_unit_manifest_field "$_manifest" disposition)"
+    case "$_disposition" in
+        archive_pair_required | historical_server_only | advanced_source_server_only) ;;
+        *) return 1 ;;
+    esac
+    _id="$(product_unit_manifest_field "$_manifest" candidate_id)"
+    [ -n "$_id" ] || return 1
+    _want_server="$(product_unit_manifest_field "$_manifest" server_sha256)"
+    [ -n "$_want_server" ] || return 1
+    _want_dap="$(product_unit_manifest_field "$_manifest" dap_sha256)"
+    if [ ! -f "${_dir}/${BIN_NAME}" ] || [ -L "${_dir}/${BIN_NAME}" ]; then
+        return 1
+    fi
+    _server_hash="$(hash_product_member "${_dir}/${BIN_NAME}")" || return 1
+    [ "$_server_hash" = "$_want_server" ] || return 1
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        if [ ! -f "${_dir}/${DAP_BIN_NAME}" ] || [ -L "${_dir}/${DAP_BIN_NAME}" ]; then
+            return 1
+        fi
+        _dap_hash="$(hash_product_member "${_dir}/${DAP_BIN_NAME}")" || return 1
+        [ "$_dap_hash" = "$_want_dap" ] || return 1
+    else
+        [ "$_want_dap" = "-" ] || return 1
+        if [ -e "${_dir}/${DAP_BIN_NAME}" ]; then
+            return 1
+        fi
+    fi
+    _computed="$(product_unit_candidate_id "$_disposition" "$_server_hash" "$_dap_hash")" || return 1
+    [ "$_computed" = "$_id" ] || return 1
+    return 0
+}
+
+validate_and_recover_current_selection() {
+    local _store _current _previous _rel _id _prev_rel _prev_id
+    _store="$(product_store_dir)"
+    _current="${_store}/current"
+    if [ ! -L "$_current" ]; then
+        printf 'none\n'
+        return 0
+    fi
+    _rel="$(readlink "$_current")"
+    _id="${_rel##*/}"
+    if verify_product_unit_candidate_dir "${_store}/${_rel}"; then
+        printf 'none\n'
+        return 0
+    fi
+    _previous="${_store}/previous"
+    if [ -L "$_previous" ]; then
+        _prev_rel="$(readlink "$_previous")"
+        _prev_id="${_prev_rel##*/}"
+        if verify_product_unit_candidate_dir "${_store}/${_prev_rel}"; then
+            atomic_symlink_replace "$_current" "$_prev_rel"
+            printf 'rolled_back candidate_id=%s recovered_to=%s\n' "$_id" "$_prev_id"
+            return 0
+        fi
+    fi
+    err "selected product unit ${_id} is incomplete and no complete previous unit exists"
+}
+
 classify_staged_product_unit() {
     local _src="$1" _mode="$2"
     local _server="${_src}/${BIN_NAME}"
@@ -1617,7 +1692,7 @@ promote_legacy_layout_if_needed() {
 
 install_binaries() {
     local _mode="${1:-${INSTALL_MODE:-release}}"
-    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-" _incoming_pair
+    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-" _incoming_pair _recovery="none"
 
     mkdir -p "$INSTALL_DIR"
 
@@ -1631,6 +1706,10 @@ Try one of:
     _disposition="$(classify_staged_product_unit "$EXTRACT_DIR" "$_mode")" || return
     _store="$(product_store_dir)"
     mkdir -p "$_store"
+
+    if ! _recovery="$(validate_and_recover_current_selection)"; then
+        return 1
+    fi
 
     promote_legacy_layout_if_needed || return
 
@@ -1681,7 +1760,7 @@ Try one of:
     if [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
         _dap_hash="$(hash_product_member "${_store}/current/${DAP_BIN_NAME}")" || return
     fi
-    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected"
+    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} recovery=${_recovery%% *} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected"
     case "$_receipt" in
         *"${INSTALL_DIR}"*|*"${EXTRACT_DIR}"*)
             err "product-unit receipt contained a private path"

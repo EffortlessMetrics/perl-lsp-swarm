@@ -615,6 +615,97 @@ function Write-ProductUnitManifest {
     Set-Content -LiteralPath (Join-Path $Directory "product_unit.v1") -Value $body -Encoding ascii
 }
 
+function Get-ProductUnitManifestField {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$Field
+    )
+    $line = Get-Content -LiteralPath $ManifestPath | Where-Object { $_ -like "${Field}=*" } | Select-Object -First 1
+    if (-not $line) {
+        return $null
+    }
+    return $line.Split("=", 2)[1]
+}
+
+function Test-ProductUnitCandidateVerified {
+    param([Parameter(Mandatory = $true)][string]$CandidateDir)
+    if (-not (Test-Path -LiteralPath $CandidateDir)) {
+        return $false
+    }
+    $manifest = Join-Path $CandidateDir "product_unit.v1"
+    if (-not (Test-Path -LiteralPath $manifest)) {
+        return $false
+    }
+    $schema = Get-ProductUnitManifestField -ManifestPath $manifest -Field "schema"
+    if ($schema -ne "standalone_product_unit.v1") {
+        return $false
+    }
+    $disposition = Get-ProductUnitManifestField -ManifestPath $manifest -Field "disposition"
+    switch ($disposition) {
+        "archive_pair_required" { }
+        "historical_server_only" { }
+        "advanced_source_server_only" { }
+        default { return $false }
+    }
+    $candidateId = Get-ProductUnitManifestField -ManifestPath $manifest -Field "candidate_id"
+    $wantServer = Get-ProductUnitManifestField -ManifestPath $manifest -Field "server_sha256"
+    $wantDap = Get-ProductUnitManifestField -ManifestPath $manifest -Field "dap_sha256"
+    if ([string]::IsNullOrWhiteSpace($candidateId) -or [string]::IsNullOrWhiteSpace($wantServer)) {
+        return $false
+    }
+    $serverPath = Join-Path $CandidateDir "$Name.exe"
+    if (-not (Test-Path -LiteralPath $serverPath) -or [IO.File]::GetAttributes($serverPath).HasFlag([IO.FileAttributes]::ReparsePoint)) {
+        return $false
+    }
+    $serverHash = Get-StagedMemberSha256 -Path $serverPath
+    if ($serverHash -ne $wantServer) {
+        return $false
+    }
+    $dapHash = "-"
+    if ($disposition -eq "archive_pair_required") {
+        $dapPath = Join-Path $CandidateDir "$DapName.exe"
+        if (-not (Test-Path -LiteralPath $dapPath) -or [IO.File]::GetAttributes($dapPath).HasFlag([IO.FileAttributes]::ReparsePoint)) {
+            return $false
+        }
+        $dapHash = Get-StagedMemberSha256 -Path $dapPath
+        if ($dapHash -ne $wantDap) {
+            return $false
+        }
+    } elseif ($wantDap -ne "-") {
+        return $false
+    } elseif (Test-Path -LiteralPath (Join-Path $CandidateDir "$DapName.exe")) {
+        return $false
+    }
+    $computed = Get-ProductUnitCandidateId -Disposition $disposition -ServerSha256 $serverHash -DapSha256 $dapHash
+    return ($computed -eq $candidateId)
+}
+
+function Repair-StandaloneCurrentSelection {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $current = Join-Path $store "current"
+    $rel = Read-StandalonePointerRelative -Path $current -Store $store
+    if ([string]::IsNullOrWhiteSpace($rel)) {
+        return "none"
+    }
+    $normalized = $rel.Replace("/", "\")
+    $candidateDir = Join-Path $store $normalized
+    if (Test-ProductUnitCandidateVerified -CandidateDir $candidateDir) {
+        return "none"
+    }
+    $previous = Join-Path $store "previous"
+    $prevRel = Read-StandalonePointerRelative -Path $previous -Store $store
+    if (-not [string]::IsNullOrWhiteSpace($prevRel)) {
+        $prevNormalized = $prevRel.Replace("/", "\")
+        $prevDir = Join-Path $store $prevNormalized
+        if (Test-ProductUnitCandidateVerified -CandidateDir $prevDir) {
+            Write-StandalonePointerFile -Path $current -RelativeTarget $prevRel
+            return "rolled_back"
+        }
+    }
+    throw "selected product unit $rel is incomplete and no complete previous unit exists"
+}
+
 function Get-StagedProductUnitDisposition {
     param(
         [Parameter(Mandatory = $true)][string]$ExtractDir,
@@ -954,6 +1045,8 @@ function Install-StandaloneProductUnit {
     $store = Get-StandaloneProductStore -InstallDir $InstallDir
     New-Item -ItemType Directory -Path $store -Force | Out-Null
 
+    $recovery = Repair-StandaloneCurrentSelection -InstallDir $InstallDir
+
     $legacy = ConvertTo-StandaloneLegacyCandidate -InstallDir $InstallDir
     if ($null -ne $legacy) {
         $legacyId = Publish-ImmutableStandaloneCandidate -SourceDir $legacy.Dir -InstallDir $InstallDir -Disposition $legacy.Disposition -AllowFault $false
@@ -1001,7 +1094,7 @@ function Install-StandaloneProductUnit {
     if (Test-Path -LiteralPath $currentDap) {
         $dapHash = Get-StagedMemberSha256 -Path $currentDap
     }
-    $receipt = "product_unit_receipt disposition=$disposition candidate_id=$id previous=$previous server_sha256=$serverHash dap_sha256=$dapHash state=selected"
+    $receipt = "product_unit_receipt disposition=$disposition candidate_id=$id previous=$previous recovery=$recovery server_sha256=$serverHash dap_sha256=$dapHash state=selected"
     if ($receipt.Contains($InstallDir) -or $receipt.Contains($ExtractDir)) {
         throw "product-unit receipt contained a private path"
     }

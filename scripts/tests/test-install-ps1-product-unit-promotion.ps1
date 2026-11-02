@@ -518,6 +518,93 @@ try {
         Fail-Case "first-install release publishes a complete executable pair" "status=$LastStatus output=$LastOutput current=$(Get-StandaloneCurrentObservation -InstallDir $script:InstallDir)"
     }
 
+    function Get-CurrentCandidateId {
+        $store = Join-Path $script:InstallDir ".perl-lsp"
+        $current = Join-Path $store "current"
+        $rel = Read-StandalonePointerRelative -Path $current -Store $store
+        if ([string]::IsNullOrWhiteSpace($rel)) { return $null }
+        return [IO.Path]::GetFileName($rel.TrimEnd('\', '/'))
+    }
+
+    function Get-CandidateDir {
+        param([string]$Id)
+        return Join-Path $script:InstallDir (Join-Path ".perl-lsp" (Join-Path "candidates" $Id))
+    }
+
+    Write-Host ""
+    Write-Host "=== startup recovery rejects crash-truncated candidates (#17905) ==="
+
+    Setup-Root
+    Stage-Pair -Dest $ExtractDir -Server "recover-a" -Dap "recover-a-dap"
+    Invoke-Promote
+    $recoverFirst = Get-CurrentCandidateId
+    Stage-Pair -Dest $ExtractDir -Server "recover-b" -Dap "recover-b-dap"
+    Invoke-Promote
+    $recoverSecond = Get-CurrentCandidateId
+    Remove-Item -LiteralPath (Join-Path (Get-CandidateDir $recoverSecond) "perl-dap.exe") -Force
+    try {
+        $recovered = Repair-StandaloneCurrentSelection -InstallDir $script:InstallDir
+        if (($recovered -eq "rolled_back") -and
+            ((Get-CurrentCandidateId) -eq $recoverFirst) -and
+            (Assert-CompletePair -Server "recover-a" -Dap "recover-a-dap")) {
+            Pass-Case "missing DAP member rolls current back to the last verified unit"
+        } else {
+            Fail-Case "missing DAP member rolls current back to the last verified unit" "out=$recovered first=$recoverFirst now=$(Get-CurrentCandidateId)"
+        }
+    } catch {
+        Fail-Case "missing DAP member rolls current back to the last verified unit" $_
+    }
+
+    Setup-Root
+    Stage-Pair -Dest $ExtractDir -Server "manifest-a" -Dap "manifest-a-dap"
+    Invoke-Promote
+    $manifestFirst = Get-CurrentCandidateId
+    Stage-Pair -Dest $ExtractDir -Server "manifest-b" -Dap "manifest-b-dap"
+    Invoke-Promote
+    $manifestSecond = Get-CurrentCandidateId
+    Remove-Item -LiteralPath (Join-Path (Get-CandidateDir $manifestSecond) "product_unit.v1") -Force
+    try {
+        $manifestRecovered = Repair-StandaloneCurrentSelection -InstallDir $script:InstallDir
+        if (($manifestRecovered -eq "rolled_back") -and ((Get-CurrentCandidateId) -eq $manifestFirst)) {
+            Pass-Case "missing manifest rolls current back to the last verified unit"
+        } else {
+            Fail-Case "missing manifest rolls current back to the last verified unit" "out=$manifestRecovered first=$manifestFirst now=$(Get-CurrentCandidateId)"
+        }
+    } catch {
+        Fail-Case "missing manifest rolls current back to the last verified unit" $_
+    }
+
+    Setup-Root
+    Stage-Pair -Dest $ExtractDir -Server "trunc-a" -Dap "trunc-a-dap"
+    Invoke-Promote
+    $truncFirst = Get-CurrentCandidateId
+    Stage-Pair -Dest $ExtractDir -Server "trunc-b" -Dap "trunc-b-dap"
+    Invoke-Promote
+    $truncSecond = Get-CurrentCandidateId
+    Write-Payload -Path (Join-Path (Get-CandidateDir $truncSecond) "perllsp.exe") -Payload "truncated-bytes"
+    try {
+        $truncRecovered = Repair-StandaloneCurrentSelection -InstallDir $script:InstallDir
+        if (($truncRecovered -eq "rolled_back") -and ((Get-CurrentCandidateId) -eq $truncFirst)) {
+            Pass-Case "truncated member bytes roll current back to the last verified unit"
+        } else {
+            Fail-Case "truncated member bytes roll current back to the last verified unit" "out=$truncRecovered first=$truncFirst now=$(Get-CurrentCandidateId)"
+        }
+    } catch {
+        Fail-Case "truncated member bytes roll current back to the last verified unit" $_
+    }
+
+    Setup-Root
+    Stage-Pair -Dest $ExtractDir -Server "alone-a" -Dap "alone-a-dap"
+    Invoke-Promote
+    Remove-Item -LiteralPath (Join-Path (Get-CandidateDir (Get-CurrentCandidateId)) "perl-dap.exe") -Force
+    Remove-Item -LiteralPath (Join-Path $script:InstallDir ".perl-lsp\previous") -Force -ErrorAction SilentlyContinue
+    try {
+        [void](Repair-StandaloneCurrentSelection -InstallDir $script:InstallDir)
+        Fail-Case "incomplete current with no verified previous unit fails closed" "repair unexpectedly succeeded"
+    } catch {
+        Pass-Case "incomplete current with no verified previous unit fails closed"
+    }
+
     # The accepted test surface must not advertise a PERL_LSP_INSTALL_POINTER
     # switch; the installer no longer reads that variable. A non-deliberate
     # test must not reintroduce it (#14052 acceptance). Scoped to the
