@@ -497,7 +497,6 @@ impl Scheduler {
             // blocking pool, capped by a semaphore instead of a receiver mutex.
             tokio::spawn(Self::read_dispatcher(
                 read_rx,
-                read_tx.clone(),
                 Arc::clone(&server),
                 Arc::clone(&mutation_seq_done),
                 Arc::clone(&mutation_notify),
@@ -715,11 +714,11 @@ impl Scheduler {
     /// waits for preceding mutations to complete before executing.
     async fn read_dispatcher(
         mut rx: tokio::sync::mpsc::Receiver<QueuedRead>,
-        read_tx: tokio::sync::mpsc::Sender<QueuedRead>,
         server: Arc<LspServer>,
         mutation_seq_done: Arc<AtomicU64>,
         mutation_notify: Arc<Notify>,
     ) {
+        let (requeue_tx, mut requeue_rx) = tokio::sync::mpsc::channel(QUEUE_CAPACITY);
         let permits = Arc::new(Semaphore::new(READ_WORKERS));
         let mut in_flight = JoinSet::new();
 
@@ -733,51 +732,51 @@ impl Scheduler {
         const DEDUP_MAP_CAP: usize = 4096;
         let mut latest_seq: HashMap<RequestDedupKey, u64> = HashMap::new();
 
+        let mut ingress_closed = false;
+
+        let track_and_enqueue =
+            |pending: &mut BinaryHeap<QueuedRead>,
+             latest_seq: &mut HashMap<RequestDedupKey, u64>,
+             queued: QueuedRead| {
+                if let Some(ref key) = queued.dedup_key {
+                    if latest_seq.len() >= DEDUP_MAP_CAP {
+                        latest_seq.clear();
+                    }
+                    latest_seq
+                        .entry(key.clone())
+                        .and_modify(|seq| {
+                            if queued.arrival_seq > *seq {
+                                *seq = queued.arrival_seq;
+                            }
+                        })
+                        .or_insert(queued.arrival_seq);
+                }
+                pending.push(queued);
+            };
+
         loop {
-            // Drain all currently available messages into the priority heap
+            // Drain all currently available ingress and warm-up requeue messages
             // before committing to one, giving priority re-ordering a chance
             // to work even under burst traffic.
-            loop {
-                match rx.try_recv() {
-                    Ok(queued) => {
-                        // Track latest arrival_seq for dedup keys.
-                        if let Some(ref key) = queued.dedup_key {
-                            // Evict the entire map when it exceeds the cap to
-                            // prevent unbounded growth (#5032 item 1).
-                            if latest_seq.len() >= DEDUP_MAP_CAP {
-                                latest_seq.clear();
-                            }
-                            latest_seq
-                                .entry(key.clone())
-                                .and_modify(|seq| {
-                                    if queued.arrival_seq > *seq {
-                                        *seq = queued.arrival_seq;
-                                    }
-                                })
-                                .or_insert(queued.arrival_seq);
+            if !ingress_closed {
+                loop {
+                    match rx.try_recv() {
+                        Ok(queued) => track_and_enqueue(&mut pending, &mut latest_seq, queued),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            ingress_closed = true;
+                            break;
                         }
-                        pending.push(queued);
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        // Channel closed — drain whatever is left in pending.
-                        while let Some(queued) = pending.pop() {
-                            Self::dispatch_one(
-                                queued,
-                                &latest_seq,
-                                &permits,
-                                &mut in_flight,
-                                &read_tx,
-                                &server,
-                                &mutation_seq_done,
-                                &mutation_notify,
-                            )
-                            .await;
-                        }
-                        while in_flight.join_next().await.is_some() {}
-                        return;
                     }
                 }
+            }
+            while let Ok(queued) = requeue_rx.try_recv() {
+                track_and_enqueue(&mut pending, &mut latest_seq, queued);
+            }
+
+            if ingress_closed && pending.is_empty() && requeue_rx.is_empty() && in_flight.is_empty()
+            {
+                return;
             }
 
             if let Some(queued) = pending.pop() {
@@ -786,7 +785,7 @@ impl Scheduler {
                     &latest_seq,
                     &permits,
                     &mut in_flight,
-                    &read_tx,
+                    &requeue_tx,
                     &server,
                     &mutation_seq_done,
                     &mutation_notify,
@@ -798,29 +797,27 @@ impl Scheduler {
                         break;
                     }
                 }
+            } else if ingress_closed {
+                while in_flight.join_next().await.is_some() {}
+                while let Ok(queued) = requeue_rx.try_recv() {
+                    track_and_enqueue(&mut pending, &mut latest_seq, queued);
+                }
+                if pending.is_empty() && requeue_rx.is_empty() && in_flight.is_empty() {
+                    return;
+                }
             } else {
-                // Heap is empty — block until a new message arrives.
-                match rx.recv().await {
-                    Some(queued) => {
-                        if let Some(ref key) = queued.dedup_key {
-                            if latest_seq.len() >= DEDUP_MAP_CAP {
-                                latest_seq.clear();
-                            }
-                            latest_seq
-                                .entry(key.clone())
-                                .and_modify(|seq| {
-                                    if queued.arrival_seq > *seq {
-                                        *seq = queued.arrival_seq;
-                                    }
-                                })
-                                .or_insert(queued.arrival_seq);
+                // Heap is empty — block until ingress or warm-up requeue delivers work.
+                tokio::select! {
+                    ingress = rx.recv(), if !ingress_closed => {
+                        match ingress {
+                            Some(queued) => track_and_enqueue(&mut pending, &mut latest_seq, queued),
+                            None => ingress_closed = true,
                         }
-                        pending.push(queued);
                     }
-                    None => {
-                        // Channel closed.
-                        while in_flight.join_next().await.is_some() {}
-                        return;
+                    requeued = requeue_rx.recv() => {
+                        if let Some(queued) = requeued {
+                            track_and_enqueue(&mut pending, &mut latest_seq, queued);
+                        }
                     }
                 }
             }
@@ -1040,6 +1037,25 @@ impl Scheduler {
         Self::send_response(&server.outbound, cancelled_response);
     }
 
+    async fn wait_for_mutation_barrier(
+        wait_for_seq: u64,
+        mutation_seq_done: &Arc<AtomicU64>,
+        mutation_notify: &Arc<Notify>,
+    ) {
+        if wait_for_seq == 0 {
+            return;
+        }
+        let notified = mutation_notify.notified();
+        tokio::pin!(notified);
+        loop {
+            if mutation_seq_done.load(Ordering::SeqCst) >= wait_for_seq {
+                break;
+            }
+            notified.as_mut().await;
+            notified.set(mutation_notify.notified());
+        }
+    }
+
     /// Dispatch a single read request, cancelling it if it becomes stale
     /// before execution or before its response is delivered.
     async fn dispatch_one(
@@ -1047,7 +1063,7 @@ impl Scheduler {
         latest_seq: &HashMap<RequestDedupKey, u64>,
         permits: &Arc<Semaphore>,
         in_flight: &mut JoinSet<()>,
-        read_tx: &tokio::sync::mpsc::Sender<QueuedRead>,
+        requeue_tx: &tokio::sync::mpsc::Sender<QueuedRead>,
         server: &Arc<LspServer>,
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
@@ -1086,11 +1102,37 @@ impl Scheduler {
 
         #[cfg(feature = "workspace")]
         if queued.request.method == REFERENCES_METHOD && !queued.references_warmup_precompleted {
+            Self::wait_for_mutation_barrier(
+                queued.wait_for_seq,
+                mutation_seq_done,
+                mutation_notify,
+            )
+            .await;
+
+            let refresh = refresh_after_mutation_barrier(&queued);
+            let mut warm_queued = queued;
+            if refresh {
+                warm_queued.freshness =
+                    Self::refresh_read_freshness(server, warm_queued.freshness.as_ref());
+            }
+            if let Some(reason) = Self::stale_read_reason(server, warm_queued.freshness.as_ref()) {
+                if let Some(id) = warm_queued.request.id.as_ref() {
+                    server.clear_request_pending(id);
+                }
+                Self::send_cancellation(
+                    server,
+                    warm_queued.request.id,
+                    &warm_queued.request.method,
+                    reason,
+                );
+                return;
+            }
+
             let server = Arc::clone(server);
-            let read_tx = read_tx.clone();
+            let requeue_tx = requeue_tx.clone();
             tokio::spawn(async move {
-                let request_id = queued.request.id.clone();
-                let method = queued.request.method.clone();
+                let request_id = warm_queued.request.id.clone();
+                let method = warm_queued.request.method.clone();
                 let warm = tokio::task::spawn_blocking({
                     let server = Arc::clone(&server);
                     let request_id = request_id.clone();
@@ -1127,9 +1169,9 @@ impl Scheduler {
                     return;
                 }
 
-                let mut requeued = queued;
+                let mut requeued = warm_queued;
                 requeued.references_warmup_precompleted = true;
-                if read_tx.send(requeued).await.is_err()
+                if requeue_tx.send(requeued).await.is_err()
                     && let Some(id) = request_id.as_ref()
                 {
                     server.clear_request_pending(id);
