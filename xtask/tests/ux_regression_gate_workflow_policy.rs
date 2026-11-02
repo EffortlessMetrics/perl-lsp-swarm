@@ -14,6 +14,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use tempfile::TempDir;
+use toml::Value as TomlValue;
 
 #[path = "support/workflow_bash.rs"]
 mod workflow_bash;
@@ -525,6 +526,103 @@ fn heredoc_python<'a>(run: &'a str, file: &str, step: &str) -> Result<&'a str> {
 /// makes the falsification real.
 fn executable_python(source: &str) -> String {
     source.lines().filter(|line| !line.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n")
+}
+
+/// The `ux-tests` job carries a control-surface comment (#17213): it must not
+/// hardcode flake counts or claim merge-gate enforcement that
+/// `.ci/policies/required-checks.toml` does not provide.
+#[test]
+fn ci_ux_tests_flakiness_note_matches_ledger_and_policy() -> Result<()> {
+    let ci_path = project_root().join(".github/workflows/ci.yml");
+    let ci = fs::read_to_string(&ci_path)?;
+    let job_start =
+        ci.find("\n  ux-tests:").ok_or_else(|| anyhow!("ci.yml must declare ux-tests job"))?;
+    let steps_start = ci[job_start..]
+        .find("\n    steps:")
+        .ok_or_else(|| anyhow!("ux-tests job must declare steps"))?;
+    let comment_block = &ci[job_start..job_start + steps_start];
+
+    assert!(
+        !comment_block.contains("merge-gate blocks"),
+        "ux-tests flakiness note must not claim merge-gate enforcement"
+    );
+    assert!(
+        !comment_block.contains("regression prevention gate"),
+        "ux-tests comment must not overstate branch-protection role"
+    );
+    assert!(
+        comment_block.contains(".ci/policies/required-checks.toml"),
+        "ux-tests comment must point readers at required-checks policy"
+    );
+    assert!(
+        comment_block.contains("summary"),
+        "ux-tests comment must direct readers to ux-flakes.json summary counts"
+    );
+    assert!(
+        !comment_block.contains("11 active"),
+        "ux-tests comment must not hardcode stale active flake counts"
+    );
+    for line in comment_block.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#')
+            && trimmed
+                .trim_start_matches('#')
+                .trim()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+            && trimmed.contains(" active")
+        {
+            bail!(
+                "ux-tests comment must not hardcode active flake counts; use ux-flakes.json summary: {trimmed}"
+            );
+        }
+    }
+
+    let policy_path = project_root().join(".ci/policies/required-checks.toml");
+    let policy: TomlValue = toml::from_str(&fs::read_to_string(&policy_path)?)?;
+    let checks = policy
+        .get("checks")
+        .and_then(TomlValue::as_array)
+        .ok_or_else(|| anyhow!("required-checks.toml must declare checks"))?;
+    let ux_policy = checks
+        .iter()
+        .find(|check| check.get("name").and_then(TomlValue::as_str) == Some("UX Regression Tests"))
+        .ok_or_else(|| anyhow!("required-checks.toml must inventory UX Regression Tests"))?;
+    let required = ux_policy
+        .get("required")
+        .and_then(TomlValue::as_bool)
+        .ok_or_else(|| anyhow!("UX Regression Tests must declare required"))?;
+    let policy_role = ux_policy
+        .get("policy_role")
+        .and_then(TomlValue::as_str)
+        .ok_or_else(|| anyhow!("UX Regression Tests must declare policy_role"))?;
+    let claims_advisory_only = comment_block.contains("not branch-protection")
+        || comment_block.contains("advisory UX regression evidence");
+
+    if !required && policy_role == "advisory" {
+        assert!(
+            claims_advisory_only,
+            "ux-tests comment must state advisory posture when required-checks marks the job advisory"
+        );
+    } else {
+        assert!(
+            !claims_advisory_only,
+            "ux-tests comment must not claim advisory-only posture when required-checks marks the job required"
+        );
+    }
+
+    let ledger_path = project_root().join(".ci/ux-flakes.json");
+    let ledger: JsonValue = serde_json::from_str(&fs::read_to_string(&ledger_path)?)?;
+    ledger
+        .pointer("/summary/active")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.active"))?;
+    ledger
+        .pointer("/summary/total")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.total"))?;
+    Ok(())
 }
 
 #[test]

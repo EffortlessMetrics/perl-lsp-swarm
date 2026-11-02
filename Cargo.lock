@@ -1911,6 +1911,7 @@ dependencies = [
  "anyhow",
  "clap",
  "insta",
+ "jsonschema",
  "lsp-types",
  "moka",
  "perl-ast",
