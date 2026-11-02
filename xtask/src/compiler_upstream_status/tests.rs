@@ -582,9 +582,17 @@ fn compiler_upstream_conformance_status_agreement_current_requires_installed_wit
     let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
     let mut row = agreement_row("op-current-no-witness", "perl-5.38");
     row.witness = None;
-    write_inputs(dir.path(), &manifest, &[row])?;
+    write_inputs(dir.path(), &manifest, std::slice::from_ref(&row))?;
     let message = error_message(project_from(dir.path()));
     assert!(message.contains("requires a recorded installed witness"), "{message}");
+
+    let witness = installed_witness("t/op/op-current-no-witness.t")
+        .ok_or_else(|| anyhow::anyhow!("fixture witness must be present"))?;
+    row.witness =
+        Some(WitnessRecord { installation: WitnessInstallation::NotInstalled, ..witness });
+    write_inputs(dir.path(), &manifest, std::slice::from_ref(&row))?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("requires an installed witness"), "{message}");
     Ok(())
 }
 
