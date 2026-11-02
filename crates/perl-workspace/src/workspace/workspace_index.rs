@@ -8073,19 +8073,23 @@ mod tests {
     fn package_less_pod_documentation_has_no_main_package() -> anyhow::Result<()> {
         let index = WorkspaceIndex::new();
         let uri = "file:///doc/Module.pod";
-        let pod_only = "=head1 NAME\n\nModule - docs\n\n=cut\n";
+        let pod_only = "=head1 NAME\n\nModule - docs\n\n=cut\n\nsub helper { 1 }\n";
+        anyhow::ensure!(
+            super::initial_package_for_uri(uri).is_none(),
+            "POD files must not receive an implicit package seed"
+        );
         index
             .index_initial_file(Url::parse(uri)?, pod_only.to_string())
             .map_err(anyhow::Error::msg)?;
 
         let symbols = index.file_symbols(uri);
         anyhow::ensure!(
-            symbols.iter().all(|symbol| symbol.name != "main"),
-            "POD documentation must not synthesize a main package: {symbols:?}"
+            symbols.iter().all(|symbol| symbol.qualified_name.as_deref() != Some("main::helper")),
+            "POD files must not qualify declarations with main: {symbols:?}"
         );
         anyhow::ensure!(
-            symbols.iter().all(|symbol| symbol.qualified_name.as_deref() != Some("main::main")),
-            "POD documentation must not surface main-package symbols: {symbols:?}"
+            symbols.iter().all(|symbol| symbol.name != "main"),
+            "POD documentation must not synthesize a main package: {symbols:?}"
         );
         Ok(())
     }
