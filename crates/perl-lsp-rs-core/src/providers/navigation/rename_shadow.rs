@@ -142,7 +142,9 @@ pub struct RenameCutoverOutcome {
 pub enum RenamePackagePilotResult {
     /// The plan is eligible for the scoped pilot proof.
     Eligible {
-        /// The source-backed definition/reference edits covered by the proof.
+        /// Source-backed planned edits covered by the proof (any admitted
+        /// [`PlannedEditCategory`], including import-list and export-list
+        /// projections when blockers are absent).
         edits: Vec<PlannedEdit>,
     },
     /// The plan is not eligible for the scoped pilot proof.
@@ -1143,6 +1145,35 @@ mod tests {
         }
         let notes = outcome.receipt.notes.join(" ");
         assert!(notes.contains("eligible=true"), "missing eligible note in {}", notes);
+        Ok(())
+    }
+
+    #[test]
+    fn rename_package_pilot_accepts_import_and_export_only_edits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let edits = vec![
+            make_edit(30, PlannedEditCategory::ImportList),
+            make_edit(40, PlannedEditCategory::ExportList),
+        ];
+        let plan = RenamePlan::new(
+            EntityId(1),
+            "Old::Name".to_string(),
+            "New::Name".to_string(),
+            edits.clone(),
+            vec![],
+            vec![],
+        );
+        let queries = StubSemanticQueries { rename_plan_result: plan };
+
+        let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::Name");
+
+        match &outcome.result {
+            RenamePackagePilotResult::Eligible { edits: result_edits } => {
+                assert_eq!(result_edits.len(), 2);
+                assert_eq!(*result_edits, edits);
+            }
+            other => return Err(format!("expected Eligible, got {:?}", other).into()),
+        }
         Ok(())
     }
 
