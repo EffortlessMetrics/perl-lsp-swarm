@@ -86,8 +86,11 @@ def append_step_summary(markdown: str) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         raise ValueError("GITHUB_STEP_SUMMARY is not set")
-    with Path(summary_path).open("a", encoding="utf-8") as handle:
-        handle.write(markdown)
+    try:
+        with Path(summary_path).open("a", encoding="utf-8") as handle:
+            handle.write(markdown)
+    except OSError as error:
+        raise ValueError(f"cannot write to GITHUB_STEP_SUMMARY: {error}") from error
 
 
 def main(argv: list[str] | None = None) -> int:

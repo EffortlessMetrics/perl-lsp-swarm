@@ -21,6 +21,11 @@ fn workflow_raw() -> Result<String> {
 fn cpan_corpus_summary_consumers_use_fail_closed_reader() -> Result<()> {
     let raw = workflow_raw()?;
     ensure!(raw.contains(READER), "workflow must delegate summary rendering to {READER}");
+    let reader_invocations = raw.matches(READER).count();
+    ensure!(
+        reader_invocations >= 2,
+        "workflow must invoke {READER} for bounded and full-lane summaries (found {reader_invocations})"
+    );
     ensure!(
         !raw.contains("report.get('total_files', 0)"),
         "inline default-counter summary must not remain in {WORKFLOW}"
