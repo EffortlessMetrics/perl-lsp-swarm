@@ -3,16 +3,20 @@
 use std::fs;
 use std::path::PathBuf;
 
+use perl_tdd_support::{must_some_with, must_with};
+
 fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask manifest has a parent")
-        .to_path_buf()
+    must_some_with(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().map(PathBuf::from),
+        "xtask manifest has a parent",
+    )
 }
 
 fn read(relative: &str) -> String {
-    fs::read_to_string(project_root().join(relative))
-        .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"))
+    must_with(
+        fs::read_to_string(project_root().join(relative)).map_err(|error| error.to_string()),
+        format!("failed to read {relative}"),
+    )
 }
 
 #[test]
@@ -63,10 +67,12 @@ fn xtask_agents_md_points_at_adr_and_review_gate() {
 fn working_tree_disposition_has_no_pass_permitting_default() {
     let observation = read("xtask/src/writer_preflight/observation.rs");
     let struct_marker = "pub struct WorkingTreeDisposition";
-    let start = observation.find(struct_marker).expect("WorkingTreeDisposition struct");
+    let start = must_some_with(observation.find(struct_marker), "WorkingTreeDisposition struct");
     let prefix = &observation[..start];
-    let derive_start =
-        prefix.rfind("#[derive").expect("WorkingTreeDisposition should have a derive attribute");
+    let derive_start = must_some_with(
+        prefix.rfind("#[derive"),
+        "WorkingTreeDisposition should have a derive attribute",
+    );
     let derive_block = &observation[derive_start..start];
     assert!(
         !derive_block.contains("Default"),
