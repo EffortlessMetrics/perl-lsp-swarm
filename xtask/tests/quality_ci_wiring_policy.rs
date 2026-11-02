@@ -5,9 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{anyhow, ensure, Result};
-use assert_cmd::cargo::cargo_bin_cmd;
+use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
@@ -2336,11 +2336,7 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         })
         .find_map(
             |(offset, line)| {
-                if line.trim_start().starts_with("- name:") {
-                    Some(offset)
-                } else {
-                    None
-                }
+                if line.trim_start().starts_with("- name:") { Some(offset) } else { None }
             },
         )
         .unwrap_or(rest.len());
