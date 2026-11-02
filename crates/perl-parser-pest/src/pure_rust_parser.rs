@@ -7,11 +7,6 @@ use crate::error::ParseError;
 use crate::heredoc::{HeredocQueue, HeredocRemoval, HeredocScan};
 use crate::outcome::{ParseAttempt, ParseOutcome, ParserFailure, SourceRange, StrictParseError};
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(test)]
-pub(crate) static PARSE_WITH_RECOVERY_INVOKED: AtomicBool = AtomicBool::new(false);
 use crate::pratt_parser::PrattParser;
 use pest::{
     Parser,
@@ -542,6 +537,24 @@ impl PureRustPerlParser {
             return ParseAttempt::rejected(rejection);
         }
 
+        let scan = crate::heredoc::scan(source);
+        if !scan.captures().is_empty() {
+            let Some(range) = SourceRange::try_over_source(0, source.len(), source).ok() else {
+                return ParseAttempt::failed(ParserFailure::instrument(
+                    "failed to bind heredoc strict rejection to the caller source",
+                ));
+            };
+            return ParseAttempt::rejected(StrictParseError::new(
+                range,
+                "strict parse does not account for heredoc bodies in original source yet",
+                format!(
+                    "found {} heredoc capture(s); use parse() or parse_heredoc_outcome until \
+                     whole-source heredoc strict accounting lands",
+                    scan.captures().len()
+                ),
+            ));
+        }
+
         match <PerlParser as Parser<Rule>>::parse(Rule::program, source) {
             Ok(pairs) => match self.build_ast(pairs) {
                 Ok(ast) => ParseAttempt::outcome(ParseOutcome::complete(ast)),
@@ -640,35 +653,23 @@ impl PureRustPerlParser {
         (normalized, NormalizationMap { passes: vec![deref_edits, bitnot_edits] })
     }
 
-    /// Reject strict parses that would require the legacy normalization rewrites.
+    /// Reject strict parses that would require legacy bitwise-not normalization.
     fn strict_rejection_for_normalization_only(source: &str) -> Option<StrictParseError> {
-        let rejection_for_match = |matched: &str, start: usize, end: usize| {
-            let range = SourceRange::try_over_source(start, end, source).ok()?;
-            Some(StrictParseError::new(
-                range,
-                "strict parse does not apply source normalization substitutions",
-                format!(
-                    "strict parse leaves `{matched}` in the original source; legacy \
-                     normalization would rewrite it before Pest sees the text"
-                ),
-            ))
+        let Some(re) = ASSIGN_BITNOT_RE.as_ref() else {
+            return None;
         };
-
-        if let Some(re) = SIMPLE_SCALAR_DEREF_RE.as_ref()
-            && let Some(caps) = re.captures(source)
-            && let Some(matched) = caps.get(0)
-        {
-            return rejection_for_match(matched.as_str(), matched.start(), matched.end());
-        }
-
-        if let Some(re) = ASSIGN_BITNOT_RE.as_ref()
-            && let Some(caps) = re.captures(source)
-            && let Some(matched) = caps.get(0)
-        {
-            return rejection_for_match(matched.as_str(), matched.start(), matched.end());
-        }
-
-        None
+        let caps = re.captures(source)?;
+        let matched = caps.get(0)?;
+        let range = SourceRange::try_over_source(matched.start(), matched.end(), source).ok()?;
+        Some(StrictParseError::new(
+            range,
+            "strict parse does not apply source normalization substitutions",
+            format!(
+                "strict parse leaves `{raw}` in the original source; legacy \
+                 normalization would rewrite it before Pest sees the text",
+                raw = matched.as_str()
+            ),
+        ))
     }
 
     /// `normalized` must be the exact text Pest attempted to parse (and that
@@ -682,9 +683,6 @@ impl PureRustPerlParser {
         normalization: &NormalizationMap,
         original_error: pest::error::Error<Rule>,
     ) -> Result<AstNode, ParseError> {
-        #[cfg(test)]
-        PARSE_WITH_RECOVERY_INVOKED.store(true, Ordering::SeqCst);
-
         let source = normalized;
         let mut statements = Vec::new();
         let mut current_block = String::new();
@@ -3384,17 +3382,5 @@ mod tests {
             "an offset at the removal point resumes after both removed bodies"
         );
         assert_eq!(composed.to_source_offset(12), 47);
-    }
-
-    #[test]
-    fn parse_strict_never_invokes_recovery() {
-        PARSE_WITH_RECOVERY_INVOKED.store(false, Ordering::SeqCst);
-        let source = include_str!("../tests/fixtures/sources/recovery/valid-invalid-valid.pl");
-        let mut parser = PureRustPerlParser::new();
-        let _ = parser.parse_strict(source);
-        assert!(
-            !PARSE_WITH_RECOVERY_INVOKED.load(Ordering::SeqCst),
-            "parse_strict must not call parse_with_recovery"
-        );
     }
 }

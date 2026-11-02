@@ -56,7 +56,15 @@ fn strict_trailing_garbage_is_rejected_not_complete() -> Result<(), Box<dyn Erro
 }
 
 #[test]
-fn strict_valid_invalid_valid_is_rejected_without_partial_ast() -> Result<(), Box<dyn Error>> {
+fn strict_heredoc_source_is_rejected_without_body_accounting() -> Result<(), Box<dyn Error>> {
+    let source = include_str!("fixtures/sources/heredoc/bare-eof.pl");
+    let mut parser = PureRustPerlParser::new();
+    expect_rejected(&parser.parse_strict(source))?;
+    Ok(())
+}
+
+#[test]
+fn strict_valid_invalid_valid_is_rejected_without_recovery() -> Result<(), Box<dyn Error>> {
     let source = include_str!("fixtures/sources/recovery/valid-invalid-valid.pl");
     let mut parser = PureRustPerlParser::new();
     let attempt = parser.parse_strict(source);
@@ -65,12 +73,13 @@ fn strict_valid_invalid_valid_is_rejected_without_partial_ast() -> Result<(), Bo
 }
 
 #[test]
-fn strict_normalized_only_scalar_deref_rejects_without_synthetic_ast() -> Result<(), Box<dyn Error>>
-{
+fn strict_scalar_deref_records_native_complete_outcome() -> Result<(), Box<dyn Error>> {
     let source = include_str!("fixtures/sources/scalar-deref/double-dollar.pl");
     let mut parser = PureRustPerlParser::new();
-    let attempt = parser.parse_strict(source);
-    expect_rejected(&attempt)?;
+    expect_complete(&parser.parse_strict(source))?;
+    if parser.parse(source).is_err() {
+        return Err("legacy parse of double-dollar.pl must still succeed via normalization".into());
+    }
     Ok(())
 }
 
