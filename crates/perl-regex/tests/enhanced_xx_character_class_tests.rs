@@ -79,12 +79,10 @@ fn enhanced_xx_emits_bracket_inside_comment_warning() -> Result<(), Box<dyn std:
     let pattern = "[a # note ] oops\n]";
     let analysis = RegexValidator::new().analyze_with_modifiers(pattern, modifiers);
     let bracket_offset = pattern.find(']').ok_or("first bracket in comment")?;
-    assert!(
-        analysis.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == RegexDiagnosticCode::EnhancedXxBracketInsideComment
-                && diagnostic.range.start == bracket_offset
-        })
-    );
+    assert!(analysis.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == RegexDiagnosticCode::EnhancedXxBracketInsideComment
+            && diagnostic.range.start == bracket_offset
+    }));
     Ok(())
 }
 
@@ -95,12 +93,10 @@ fn enhanced_xx_emits_hash_inside_comment_warning() -> Result<(), Box<dyn std::er
     let analysis = RegexValidator::new().analyze_with_modifiers(pattern, modifiers);
     let first_hash = pattern.find('#').ok_or("hash")?;
     let second_hash = pattern[first_hash + 1..].find('#').ok_or("second hash")? + first_hash + 1;
-    assert!(
-        analysis.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == RegexDiagnosticCode::EnhancedXxHashInsideComment
-                && diagnostic.range.start == second_hash
-        })
-    );
+    assert!(analysis.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == RegexDiagnosticCode::EnhancedXxHashInsideComment
+            && diagnostic.range.start == second_hash
+    }));
     Ok(())
 }
 
