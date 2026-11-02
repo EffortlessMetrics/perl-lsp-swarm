@@ -18,6 +18,9 @@ use std::path::PathBuf;
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
 
+#[path = "support/external_command.rs"]
+mod external_command;
+
 const WORKFLOW_PATH: &str = ".github/workflows/aggregate-ci-lane-history.yml";
 const DISPATCH_STEP_NAME: &str = "Raise CI on the generated PR";
 const DISPATCH_BRANCH: &str = "automation/ci-lane-history";
@@ -221,144 +224,104 @@ fn test_dispatch_set_covers_required_checks() -> Result<(), Box<dyn std::error::
 
 #[cfg(unix)]
 mod simulation {
+    use super::external_command::{
+        ExpectedExternalCommand, ExternalCommandFixture, HermeticCommandEnv,
+        ObservedExternalCommand,
+    };
     use super::*;
-    use std::process::{Command, Output};
+    use std::process::Output;
 
-    struct Stub {
-        _temp_dir: tempfile::TempDir,
-        run: String,
-        log_path: PathBuf,
+    const PR_NUMBER: &str = "14668";
+
+    fn strs(args: &[&str]) -> Vec<String> {
+        args.iter().map(|argument| (*argument).to_string()).collect()
     }
 
-    fn stubbed_step() -> Result<Stub, Box<dyn std::error::Error>> {
+    fn pr_view(stdout: &str, times: usize, fail: bool) -> ExpectedExternalCommand {
+        let spec = ExpectedExternalCommand::exact(
+            "gh",
+            strs(&["pr", "view", PR_NUMBER, "--json", "baseRefOid,headRefOid"]),
+        )
+        .json_fields_are_a_set()
+        .times(times);
+        if fail { spec.error("lookup failed") } else { spec.stdout(format!("{stdout}\n")) }
+    }
+
+    fn workflow_run(workflow: &str, fail: bool, with_subject: bool) -> ExpectedExternalCommand {
+        let mut argv = strs(&["workflow", "run", workflow, "--ref", DISPATCH_BRANCH]);
+        if with_subject {
+            argv.push("-f".into());
+            argv.push(format!("base_sha={BASE_SHA}"));
+            argv.push("-f".into());
+            argv.push(format!("head_sha={HEAD_SHA}"));
+        }
+        let spec = ExpectedExternalCommand::exact("gh", argv);
+        if fail { spec.error("dispatch failed") } else { spec.stdout("") }
+    }
+
+    fn workflow_calls(observations: &[ObservedExternalCommand]) -> Vec<String> {
+        observations
+            .iter()
+            .filter(|observed| observed.argv.first().map(String::as_str) == Some("workflow"))
+            .map(|observed| observed.argv.join(" "))
+            .collect()
+    }
+
+    struct DispatchScenario<'a> {
+        pr_json: &'a str,
+        fail_pr_view: bool,
+        fail_workflow: Option<&'a str>,
+        move_after_call: Option<(u32, &'a str)>,
+    }
+
+    fn run_scenario(
+        scenario: DispatchScenario<'_>,
+    ) -> Result<(Output, Vec<String>), Box<dyn std::error::Error>> {
         let step = dispatch_step()?;
-        let temp_dir = tempfile::tempdir()?;
-        let stub_dir = temp_dir.path().join("bin");
-        fs::create_dir(&stub_dir)?;
-        let stub_gh = stub_dir.join("gh");
-        // `gh pr view` answers from PR_JSON (or fails when FAIL_PR_VIEW=1);
-        // when PR_JSON_AFTER_CALL is set, calls at or after that ordinal
-        // answer PR_JSON_AFTER instead, simulating a branch that moves
-        // mid-step. Every `gh workflow run` is logged with its full argument
-        // vector so the ci.yml subject inputs are observable (#15100).
-        fs::write(
-            &stub_gh,
-            "#!/usr/bin/env bash\n\
-             if [ \"$1\" = pr ]; then\n\
-             if [ \"${FAIL_PR_VIEW:-}\" = 1 ]; then exit 1; fi\n\
-             counter=\"$GH_LOG.prviewcount\"\n\
-             count=$(cat \"$counter\" 2>/dev/null || echo 0)\n\
-             count=$((count + 1))\n\
-             printf '%s' \"$count\" > \"$counter\"\n\
-             if [ -n \"${PR_JSON_AFTER_CALL:-}\" ] && [ \"$count\" -ge \"$PR_JSON_AFTER_CALL\" ]; then\n\
-             printf '%s\\n' \"$PR_JSON_AFTER\"\n\
-             else\n\
-             printf '%s\\n' \"$PR_JSON\"\n\
-             fi\n\
-             exit 0\n\
-             fi\n\
-             if [ \"$1\" = workflow ]; then\n\
-             printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
-             if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n\
-             exit 0\n\
-             fi\n\
-             exit 2\n",
+        let order = dispatch_order(&step.run)?;
+        let mut fixture = ExternalCommandFixture::new();
+        let identity_ok =
+            !scenario.fail_pr_view && scenario.move_after_call.is_none_or(|(call, _)| call > 1);
+        let initial_head_ok = scenario.pr_json.contains(HEAD_SHA);
+        if scenario.fail_pr_view {
+            fixture = fixture.expect(pr_view(scenario.pr_json, 1, true));
+        } else if let Some((after_call, after_json)) = scenario.move_after_call {
+            let first = after_call.saturating_sub(1);
+            if first > 0 {
+                fixture = fixture.expect(pr_view(scenario.pr_json, first as usize, false));
+            }
+            fixture = fixture.expect(pr_view(after_json, 4, false));
+        } else {
+            fixture = fixture.expect(pr_view(scenario.pr_json, 4, false));
+        }
+        let skip_ci = scenario.fail_pr_view
+            || !initial_head_ok
+            || scenario.move_after_call.is_some_and(|(call, _)| call == 2);
+        for workflow in &order {
+            let is_ci = workflow == "ci.yml";
+            if is_ci && skip_ci {
+                continue;
+            }
+            let fail = scenario.fail_workflow == Some(workflow.as_str());
+            fixture = fixture.expect(workflow_run(
+                workflow,
+                fail,
+                is_ci && identity_ok && initial_head_ok,
+            ));
+        }
+        let env = HermeticCommandEnv::install("gh", &fixture)?;
+        let output = env.run_bash(
+            &step.run,
+            &[
+                ("BRANCH", DISPATCH_BRANCH),
+                ("PR_NUMBER", PR_NUMBER),
+                ("CREATED_HEAD_SHA", HEAD_SHA),
+            ],
         )?;
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(&stub_gh)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&stub_gh, permissions)?;
-        // Stub every invocation: an unstubbed suffix would call the real gh,
-        // breaking hermeticity and, on an authenticated machine, dispatching
-        // real workflows.
-        let run = step
-            .run
-            .replace("gh pr view", &format!("{} pr view", stub_gh.display()))
-            .replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
-        assert_ne!(run, step.run, "dispatch step must invoke gh");
-        let log_path = temp_dir.path().join("dispatch.log");
-        Ok(Stub { _temp_dir: temp_dir, run, log_path })
-    }
-
-    impl Stub {
-        fn run(
-            &self,
-            pr_json: &str,
-            fail_pr_view: bool,
-            fail_workflow: Option<&str>,
-        ) -> Result<(Output, Vec<String>), Box<dyn std::error::Error>> {
-            if self.log_path.exists() {
-                fs::remove_file(&self.log_path)?;
-            }
-            let stub_dir = self.log_path.parent().ok_or("log path must have a parent")?.join("bin");
-            let existing_path = std::env::var_os("PATH").unwrap_or_default();
-            let path = std::env::join_paths(
-                std::iter::once(stub_dir).chain(std::env::split_paths(&existing_path)),
-            )?;
-            let mut command = Command::new("/bin/bash");
-            command
-                .arg("-c")
-                .arg(&self.run)
-                .env("PATH", path)
-                .env("BRANCH", DISPATCH_BRANCH)
-                .env("PR_NUMBER", "14668")
-                .env("CREATED_HEAD_SHA", HEAD_SHA)
-                .env("GH_LOG", &self.log_path)
-                .env("PR_JSON", pr_json);
-            if fail_pr_view {
-                command.env("FAIL_PR_VIEW", "1");
-            }
-            if let Some(fail_workflow) = fail_workflow {
-                command.env("FAIL_WORKFLOW", fail_workflow);
-            }
-            let output = command.output()?;
-            let calls = match fs::read_to_string(&self.log_path) {
-                Ok(content) => content.lines().map(str::to_owned).collect(),
-                Err(_) => Vec::new(),
-            };
-            Ok((output, calls))
+        if env.sentinel_hit() {
+            return Err("live gh fallback reached the PATH sentinel".into());
         }
-
-        /// Simulate a branch whose head starts as `pr_json` and moves to
-        /// `pr_json_after` at the `after_call`-th identity lookup (#15100
-        /// TOCTOU guard).
-        fn run_moving(
-            &self,
-            pr_json: &str,
-            after_call: u32,
-            pr_json_after: &str,
-        ) -> Result<(Output, Vec<String>), Box<dyn std::error::Error>> {
-            if self.log_path.exists() {
-                fs::remove_file(&self.log_path)?;
-            }
-            let counter = self.log_path.with_extension("log.prviewcount");
-            if counter.exists() {
-                fs::remove_file(&counter)?;
-            }
-            let stub_dir = self.log_path.parent().ok_or("log path must have a parent")?.join("bin");
-            let existing_path = std::env::var_os("PATH").unwrap_or_default();
-            let path = std::env::join_paths(
-                std::iter::once(stub_dir).chain(std::env::split_paths(&existing_path)),
-            )?;
-            let mut command = Command::new("/bin/bash");
-            command
-                .arg("-c")
-                .arg(&self.run)
-                .env("PATH", path)
-                .env("BRANCH", DISPATCH_BRANCH)
-                .env("PR_NUMBER", "14668")
-                .env("CREATED_HEAD_SHA", HEAD_SHA)
-                .env("GH_LOG", &self.log_path)
-                .env("PR_JSON", pr_json)
-                .env("PR_JSON_AFTER_CALL", after_call.to_string())
-                .env("PR_JSON_AFTER", pr_json_after);
-            let output = command.output()?;
-            let calls = match fs::read_to_string(&self.log_path) {
-                Ok(content) => content.lines().map(str::to_owned).collect(),
-                Err(_) => Vec::new(),
-            };
-            Ok((output, calls))
-        }
+        Ok((output, workflow_calls(&env.observations()?)))
     }
 
     fn pr_json(base: &str, head: &str) -> String {
@@ -387,8 +350,12 @@ mod simulation {
     {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
-        let stub = stubbed_step()?;
-        let (output, calls) = stub.run(&pr_json(BASE_SHA, HEAD_SHA), false, None)?;
+        let (output, calls) = run_scenario(DispatchScenario {
+            pr_json: &pr_json(BASE_SHA, HEAD_SHA),
+            fail_pr_view: false,
+            fail_workflow: None,
+            move_after_call: None,
+        })?;
         assert!(
             output.status.success(),
             "all-success dispatch run failed: {}",
@@ -404,8 +371,12 @@ mod simulation {
     fn test_failed_identity_lookup_skips_ci_dispatch() -> Result<(), Box<dyn std::error::Error>> {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
-        let stub = stubbed_step()?;
-        let (output, calls) = stub.run(&pr_json(BASE_SHA, HEAD_SHA), true, None)?;
+        let (output, calls) = run_scenario(DispatchScenario {
+            pr_json: &pr_json(BASE_SHA, HEAD_SHA),
+            fail_pr_view: true,
+            fail_workflow: None,
+            move_after_call: None,
+        })?;
         assert!(!output.status.success(), "a failed identity lookup must fail the step");
         assert!(
             !calls.iter().any(|call| call.contains("ci.yml")),
@@ -426,9 +397,13 @@ mod simulation {
     fn test_moved_head_is_refused() -> Result<(), Box<dyn std::error::Error>> {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
-        let stub = stubbed_step()?;
         let moved = "fedcba9876543210fedcba9876543210fedcba98";
-        let (output, calls) = stub.run(&pr_json(BASE_SHA, moved), false, None)?;
+        let (output, calls) = run_scenario(DispatchScenario {
+            pr_json: &pr_json(BASE_SHA, moved),
+            fail_pr_view: false,
+            fail_workflow: None,
+            move_after_call: None,
+        })?;
         assert!(!output.status.success(), "a moved head must fail the step");
         assert!(
             !calls.iter().any(|call| call.contains("ci.yml")),
@@ -451,8 +426,12 @@ mod simulation {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
         let first = order.first().ok_or("dispatch set must not be empty")?.clone();
-        let stub = stubbed_step()?;
-        let (output, calls) = stub.run(&pr_json(BASE_SHA, HEAD_SHA), false, Some(&first))?;
+        let (output, calls) = run_scenario(DispatchScenario {
+            pr_json: &pr_json(BASE_SHA, HEAD_SHA),
+            fail_pr_view: false,
+            fail_workflow: Some(&first),
+            move_after_call: None,
+        })?;
         assert!(!output.status.success(), "a failed dispatch must fail the step");
         assert_eq!(calls, expected_calls(&order), "every workflow must still be attempted");
         Ok(())
@@ -467,10 +446,14 @@ mod simulation {
     fn test_head_moving_before_ci_dispatch_is_caught() -> Result<(), Box<dyn std::error::Error>> {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
-        let stub = stubbed_step()?;
         let moved = "fedcba9876543210fedcba9876543210fedcba98";
-        let (output, calls) =
-            stub.run_moving(&pr_json(BASE_SHA, HEAD_SHA), 2, &pr_json(BASE_SHA, moved))?;
+        let after = pr_json(BASE_SHA, moved);
+        let (output, calls) = run_scenario(DispatchScenario {
+            pr_json: &pr_json(BASE_SHA, HEAD_SHA),
+            fail_pr_view: false,
+            fail_workflow: None,
+            move_after_call: Some((2, after.as_str())),
+        })?;
         assert!(!output.status.success(), "a head moving mid-step must fail the step");
         assert!(
             !calls.iter().any(|call| call.contains("ci.yml")),
@@ -494,10 +477,14 @@ mod simulation {
     {
         let step = dispatch_step()?;
         let order = dispatch_order(&step.run)?;
-        let stub = stubbed_step()?;
         let moved = "fedcba9876543210fedcba9876543210fedcba98";
-        let (output, calls) =
-            stub.run_moving(&pr_json(BASE_SHA, HEAD_SHA), 3, &pr_json(BASE_SHA, moved))?;
+        let after = pr_json(BASE_SHA, moved);
+        let (output, calls) = run_scenario(DispatchScenario {
+            pr_json: &pr_json(BASE_SHA, HEAD_SHA),
+            fail_pr_view: false,
+            fail_workflow: None,
+            move_after_call: Some((3, after.as_str())),
+        })?;
         assert!(!output.status.success(), "a post-dispatch head move must fail the step");
         assert_eq!(
             calls,
