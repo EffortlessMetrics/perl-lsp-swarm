@@ -9,6 +9,10 @@
 //! - named-route references need a canonical reference producer that does
 //!   not exist yet: that request class returns a typed refusal rather than
 //!   a re-parsed answer;
+//! - a literal template name resolves to a typed refusal while filesystem
+//!   resolution stays unresolved (canonical project configuration #7900 is
+//!   not consumed in this slice); a computed template name is also a typed
+//!   refusal rather than a guessed path;
 //! - imported DSL keyword definition resolves only when the provider module
 //!   source is available and exact; otherwise the caller reports generated
 //!   provenance instead of a fictional location.
@@ -16,6 +20,10 @@
 use super::activation::Dancer2FileActivations;
 use super::facts::CanonicalDancer2FileFacts;
 use perl_semantic_facts::route::{RouteFact, RouteHandler};
+use perl_semantic_facts::template::{
+    TemplateFilesystemTarget, TemplateNameSelection, TemplateTargetFact,
+    VIEWS_ROOT_UNRESOLVED_REASON,
+};
 
 /// One definition target derived from canonical facts.
 #[non_exhaustive]
@@ -47,8 +55,34 @@ pub fn definition_target_at(
     facts: &CanonicalDancer2FileFacts,
     offset: usize,
 ) -> Option<Dancer2DefinitionTarget> {
+    if let Some(template) = facts.template_at(offset) {
+        return Some(template_target(template));
+    }
     let route = facts.route_at(offset)?;
     handler_target(route).or_else(|| declaration_target(route))
+}
+
+fn template_target(fact: &TemplateTargetFact) -> Dancer2DefinitionTarget {
+    match &fact.template.name {
+        TemplateNameSelection::Literal(name) => {
+            let reason = match &fact.template.filesystem {
+                TemplateFilesystemTarget::Unresolved { reason } => reason.as_str(),
+                _ => VIEWS_ROOT_UNRESOLVED_REASON,
+            };
+            Dancer2DefinitionTarget::TypedRefusal {
+                reason: "unresolved_template_filesystem",
+                detail: format!("logical template `{}` is exact; {reason}", name.logical),
+            }
+        }
+        TemplateNameSelection::Dynamic { reason, .. } => Dancer2DefinitionTarget::TypedRefusal {
+            reason: "dynamic_template_name",
+            detail: reason.clone(),
+        },
+        _ => Dancer2DefinitionTarget::TypedRefusal {
+            reason: "unsupported_template_name",
+            detail: "template name form is not in the reviewed contract".to_string(),
+        },
+    }
 }
 
 fn handler_target(route: &RouteFact) -> Option<Dancer2DefinitionTarget> {
@@ -171,5 +205,47 @@ mod tests {
         let source = "use Dancer2;\nmy $x = 1;\n";
         let (activations, facts) = setup(source);
         assert!(definition_target_at(&activations, &facts, 12).is_none());
+    }
+
+    #[test]
+    fn literal_template_name_refuses_unresolved_filesystem() {
+        let source = "use Dancer2;\nget '/' => sub { template 'index' };";
+        let (activations, facts) = setup(source);
+        assert_eq!(facts.templates.len(), 1, "canonical assembly must mint the template fact");
+        let name_offset = must_some_with(source.find("'index'"), "template name offset");
+        let target = must_some_with(
+            definition_target_at(&activations, &facts, name_offset),
+            "template definition target",
+        );
+        let (reason, detail) = must_some_with(
+            match target {
+                Dancer2DefinitionTarget::TypedRefusal { reason, detail } => Some((reason, detail)),
+                Dancer2DefinitionTarget::Anchor { .. } => None,
+            },
+            "expected typed refusal, never a guessed views path",
+        );
+        assert_eq!(reason, "unresolved_template_filesystem");
+        assert!(detail.contains("index"), "{detail}");
+        assert!(detail.contains("#7900") || detail.contains("views root"), "{detail}");
+    }
+
+    #[test]
+    fn computed_template_name_is_a_dynamic_refusal() {
+        let source = "use Dancer2;\nget '/' => sub { template $name };";
+        let (activations, facts) = setup(source);
+        assert_eq!(facts.templates.len(), 1);
+        let keyword_offset = must_some_with(source.find("template"), "keyword offset");
+        let target = must_some_with(
+            definition_target_at(&activations, &facts, keyword_offset),
+            "dynamic template target",
+        );
+        let reason = must_some_with(
+            match target {
+                Dancer2DefinitionTarget::TypedRefusal { reason, .. } => Some(reason),
+                Dancer2DefinitionTarget::Anchor { .. } => None,
+            },
+            "expected dynamic refusal",
+        );
+        assert_eq!(reason, "dynamic_template_name");
     }
 }
