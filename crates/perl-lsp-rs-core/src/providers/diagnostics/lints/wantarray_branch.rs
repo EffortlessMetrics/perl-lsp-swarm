@@ -113,18 +113,9 @@ fn branch_has_no_executable_statements(branch: &Node) -> bool {
 fn is_executable_statement(stmt: &Node) -> bool {
     match &stmt.kind {
         NodeKind::Block { statements } => statements.iter().any(is_executable_statement),
-        NodeKind::ExpressionStatement { expression } => is_executable_expression(expression),
-        _ => true,
-    }
-}
-
-fn is_executable_expression(expr: &Node) -> bool {
-    match &expr.kind {
-        NodeKind::Undef => false,
-        NodeKind::Number { value } => !value.is_empty(),
-        NodeKind::String { value, .. } => !value.is_empty(),
-        NodeKind::ArrayLiteral { elements } => !elements.is_empty(),
-        NodeKind::HashLiteral { pairs } => !pairs.is_empty(),
+        // Any expression statement can affect implicit return or side effects; only
+        // comment-only / empty blocks are "no work" for this conservative slice.
+        NodeKind::ExpressionStatement { .. } => true,
         _ => true,
     }
 }
@@ -222,6 +213,33 @@ if (wantarray()) {
 }
 "#;
         assert!(pl411(source).is_empty(), "top-level wantarray is out of scope");
+    }
+
+    #[test]
+    fn undef_in_branch_is_context_sensitive_return() {
+        let source = r#"use v5.40;
+sub f {
+    if (wantarray()) {
+        undef;
+    } else {
+    }
+}
+"#;
+        assert!(pl411(source).is_empty(), "undef in a branch is observable return work");
+    }
+
+    #[test]
+    fn implicit_literal_returns_do_not_warn() {
+        let source = r#"use v5.40;
+sub f {
+    if (wantarray()) {
+        1;
+    } else {
+        2;
+    }
+}
+"#;
+        assert!(pl411(source).is_empty(), "implicit if return values differ by context");
     }
 
     #[test]

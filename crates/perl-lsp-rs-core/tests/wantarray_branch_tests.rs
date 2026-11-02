@@ -28,7 +28,34 @@ sub get_data {
     return 42;
 }
 "#;
-    assert_eq!(pl411(source).len(), 1, "issue #2993 minimal reproducer should emit PL411");
+    let diags = pl411(source);
+    assert_eq!(diags.len(), 1, "issue #2993 minimal reproducer should emit PL411");
+    let needle = "if (wantarray())";
+    let cond_start = source.find(needle).expect("fixture should contain bare wantarray if");
+    let cond_end = cond_start + needle.len();
+    let (start, end) = (diags[0].range.0, diags[0].range.1);
+    assert!(
+        start <= cond_start && end >= cond_end,
+        "PL411 range {start}..{end} should cover conditional `{needle}`"
+    );
+    let covered = source.get(start..end).expect("range in bounds");
+    assert!(
+        covered.contains("if") && covered.contains("wantarray"),
+        "diagnostic span should anchor on the wantarray conditional: {covered:?}"
+    );
+}
+
+#[test]
+fn empty_wantarray_arms_in_eval_emits_pl411() {
+    let source = r#"use v5.40;
+eval {
+    if (wantarray()) {
+    } else {
+    }
+    1;
+};
+"#;
+    assert_eq!(pl411(source).len(), 1, "eval blocks use the same PL411 scan path as subs");
 }
 
 #[test]
