@@ -58,7 +58,7 @@ import {
 } from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
-import { FileKind } from './fileCreation';
+import { FileKind, populateCreatedFiles } from './fileCreation';
 import { createPerlScaffold } from './scaffoldCommands';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
@@ -1469,54 +1469,54 @@ async function runExtensionActivation(
     true,
     () =>
       registerWorkspaceConfigurationEvents({
-      // Registered legacy keys were removed and drive no subsystem, so no
-      // configuration class classifies them; they are observed unclassified
-      // (#14966) instead of through a second host listener.
-      onAnyConfigurationChanged: (event) => {
-        if (legacyMigrationSurface) {
-          refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
-        }
-      },
-      onLiveConfigurationChanged: async (event) => {
-        if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
-          const newTrace = getTraceLevel();
-          await client.setTrace(newTrace);
-          outputChannel.info(`Trace level changed to: ${newTrace}`);
-        }
+        // Registered legacy keys were removed and drive no subsystem, so no
+        // configuration class classifies them; they are observed unclassified
+        // (#14966) instead of through a second host listener.
+        onAnyConfigurationChanged: (event) => {
+          if (legacyMigrationSurface) {
+            refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
+          }
+        },
+        onLiveConfigurationChanged: async (event) => {
+          if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
+            const newTrace = getTraceLevel();
+            await client.setTrace(newTrace);
+            outputChannel.info(`Trace level changed to: ${newTrace}`);
+          }
 
-        if (event.affectsConfiguration('perl-lsp.includePaths')) {
-          await rerunIncludePathGuidance(context);
-        }
+          if (event.affectsConfiguration('perl-lsp.includePaths')) {
+            await rerunIncludePathGuidance(context);
+          }
 
-        await syncLiveLanguageClientConfiguration(client, event);
+          await syncLiveLanguageClientConfiguration(client, event);
 
-        // Advisory coexistence findings re-evaluate when an owned input
-        // changes; every collected input is classified live, so this block is
-        // reachable for all of them. Dedupe keeps this silent unless the
-        // finding set changed (#7214 clear/restore semantics).
-        if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
-          await runCoexistenceAdvisory(context);
-        }
-      },
-      onReconstructConfigurationChanged: async (event) => {
-        if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
-          await refreshTestAdapter();
-        }
+          // Advisory coexistence findings re-evaluate when an owned input
+          // changes; every collected input is classified live, so this block is
+          // reachable for all of them. Dedupe keeps this silent unless the
+          // finding set changed (#7214 clear/restore semantics).
+          if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
+            await runCoexistenceAdvisory(context);
+          }
+        },
+        onReconstructConfigurationChanged: async (event) => {
+          if (event.affectsConfiguration('perl-lsp.enableTestIntegration')) {
+            await refreshTestAdapter();
+          }
 
-        if (
-          event.affectsConfiguration('perl-lsp.aiCompletion.enabled') ||
-          event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
-        ) {
-          refreshStreamingController(client);
-          await syncUserAiCompletionConfiguration(client);
-        }
-      },
-      onRestartRequired: () => promptForClientRefresh(context),
-      onError: (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        outputChannel.error(`[configuration] change handling failed: ${message}`);
-      },
-    }),
+          if (
+            event.affectsConfiguration('perl-lsp.aiCompletion.enabled') ||
+            event.affectsConfiguration('perl-lsp.aiCompletion.streaming.enabled')
+          ) {
+            refreshStreamingController(client);
+            await syncUserAiCompletionConfiguration(client);
+          }
+        },
+        onRestartRequired: () => promptForClientRefresh(context),
+        onError: (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          outputChannel.error(`[configuration] change handling failed: ${message}`);
+        },
+      }),
   )!;
   activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
 
@@ -1548,14 +1548,19 @@ async function runExtensionActivation(
   // it pushes during activation join the attempt, while lazily created
   // resources (a POD preview webview panel's onDidDispose hook) fall through
   // to ordinary host disposal after the attempt closed (#7854).
-  const providerDisposables = measureOrDeferFeature(featureActivationMetrics, 'providers', true, () => [
-    ...registerDocumentFeatureGroup({
-      extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
-      registerGherkinProviders,
-      registerGherkinStepDefinitionSupport,
-      registerPodPreview,
-    }),
-  ])!;
+  const providerDisposables = measureOrDeferFeature(
+    featureActivationMetrics,
+    'providers',
+    true,
+    () => [
+      ...registerDocumentFeatureGroup({
+        extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
+        registerGherkinProviders,
+        registerGherkinStepDefinitionSupport,
+        registerPodPreview,
+      }),
+    ],
+  )!;
   activation.ownDisposables('document_providers', 'optional_degradable', providerDisposables);
 
   languageClientStartupMetrics.markMilestone('commands_registered');

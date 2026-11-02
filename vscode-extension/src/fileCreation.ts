@@ -26,3 +26,8 @@ export function scaffoldContent(
   if (!segments.every((part) => /^[A-Za-z_]\w*$/.test(part))) return null;
   return `package ${segments.join('::')};\nuse strict;\nuse warnings;\n\n\n\n1;\n`;
 }
+
+/** Retained for the activation listener contract; boilerplate is opt-in via commands (#14451). */
+export async function populateCreatedFiles(_event: {
+  files: readonly { fsPath: string }[];
+}): Promise<void> {}

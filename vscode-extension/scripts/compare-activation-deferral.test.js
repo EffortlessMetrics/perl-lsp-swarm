@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { compareActivationDeferral, IMMATERIAL_ACTIVATION_DELTA_MS } = require('./compare-activation-deferral.js');
+const {
+  compareActivationDeferral,
+  IMMATERIAL_ACTIVATION_DELTA_MS,
+} = require('./compare-activation-deferral.js');
 
 function metric(value) {
   return { count: 3, min: value, max: value, p50: value, p95: value };
@@ -22,7 +25,7 @@ function summary(activateReturnedMs, mcpRegistrationMs) {
   };
 }
 
-test('keep_eager when activation delta is immaterial', () => {
+void test('keep_eager when activation delta is immaterial', () => {
   const comparison = compareActivationDeferral({
     baseline: summary(400, 12),
     deferred: summary(398, 0),
@@ -33,7 +36,7 @@ test('keep_eager when activation delta is immaterial', () => {
   assert.equal(comparison.performance_budget_promoted, false);
 });
 
-test('defer_construction when activation delta exceeds immaterial floor', () => {
+void test('defer_construction when activation delta exceeds immaterial floor', () => {
   const comparison = compareActivationDeferral({
     baseline: summary(400, 20),
     deferred: summary(380, 0),
@@ -44,7 +47,7 @@ test('defer_construction when activation delta exceeds immaterial floor', () => 
   assert.equal(comparison.immaterial_activation_delta_ms, IMMATERIAL_ACTIVATION_DELTA_MS);
 });
 
-test('reports violations when deferred arm did not defer registration', () => {
+void test('reports violations when deferred arm did not defer registration', () => {
   const comparison = compareActivationDeferral({
     baseline: summary(400, 12),
     deferred: summary(380, 8),

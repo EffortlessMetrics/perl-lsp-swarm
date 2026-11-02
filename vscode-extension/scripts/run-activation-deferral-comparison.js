@@ -9,43 +9,53 @@ const root = path.resolve(__dirname, '..');
 function parseRunCount(env = process.env) {
   const runs = Number(env.PERL_LSP_VSCODE_SAMPLE_RUNS || '3');
   if (!Number.isSafeInteger(runs) || runs < 1) {
-    throw new Error(`Sample count must be a positive integer, received: ${env.PERL_LSP_VSCODE_SAMPLE_RUNS}`);
+    throw new Error(
+      `Sample count must be a positive integer, received: ${env.PERL_LSP_VSCODE_SAMPLE_RUNS}`,
+    );
   }
   return runs;
 }
 
 function runSampleScript(sampleRoot, env) {
-  const result = spawnSync(process.execPath, [path.join(root, 'scripts', 'sample-local-vsix-smoke.js')], {
-    cwd: root,
-    env: {
-      ...env,
-      PERL_LSP_VSCODE_SAMPLES_DIR: sampleRoot,
+  const result = spawnSync(
+    process.execPath,
+    [path.join(root, 'scripts', 'sample-local-vsix-smoke.js')],
+    {
+      cwd: root,
+      env: {
+        ...env,
+        PERL_LSP_VSCODE_SAMPLES_DIR: sampleRoot,
+      },
+      stdio: 'inherit',
+      windowsHide: true,
     },
-    stdio: 'inherit',
-    windowsHide: true,
-  });
+  );
   return result.status ?? 1;
 }
 
 function summarize(sampleRoot, summaryPath) {
-  return spawnSync(
-    process.execPath,
-    [path.join(root, 'scripts', 'summarize-vscode-receipts.js'), sampleRoot, summaryPath],
-    { cwd: root, env: process.env, stdio: 'inherit', windowsHide: true },
-  ).status ?? 1;
+  return (
+    spawnSync(
+      process.execPath,
+      [path.join(root, 'scripts', 'summarize-vscode-receipts.js'), sampleRoot, summaryPath],
+      { cwd: root, env: process.env, stdio: 'inherit', windowsHide: true },
+    ).status ?? 1
+  );
 }
 
 function compare(baselineSummary, deferredSummary, outputPath, env) {
-  return spawnSync(
-    process.execPath,
-    [
-      path.join(root, 'scripts', 'compare-activation-deferral.js'),
-      baselineSummary,
-      deferredSummary,
-      outputPath,
-    ],
-    { cwd: root, env, stdio: 'inherit', windowsHide: true },
-  ).status ?? 1;
+  return (
+    spawnSync(
+      process.execPath,
+      [
+        path.join(root, 'scripts', 'compare-activation-deferral.js'),
+        baselineSummary,
+        deferredSummary,
+        outputPath,
+      ],
+      { cwd: root, env, stdio: 'inherit', windowsHide: true },
+    ).status ?? 1
+  );
 }
 
 function main() {
@@ -76,7 +86,9 @@ function main() {
     return;
   }
 
-  process.stdout.write(`\n=== activation deferral experiment (${runs} samples, defer ${deferredDomains}) ===\n`);
+  process.stdout.write(
+    `\n=== activation deferral experiment (${runs} samples, defer ${deferredDomains}) ===\n`,
+  );
   const deferredEnv = {
     ...sharedEnv,
     PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT: '1',

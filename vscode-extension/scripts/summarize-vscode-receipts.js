@@ -43,7 +43,14 @@ const METRIC_READERS = {
   shutdown_ms: (receipt) => receipt.lifecycle?.shutdown?.duration_ms,
 };
 
-const FEATURE_DOMAINS = ['mcp', 'whats_new', 'providers', 'configuration', 'debugger', 'onboarding'];
+const FEATURE_DOMAINS = [
+  'mcp',
+  'whats_new',
+  'providers',
+  'configuration',
+  'debugger',
+  'onboarding',
+];
 
 for (const domain of FEATURE_DOMAINS) {
   METRIC_READERS[`feature_${domain}_registration_ms`] = (receipt) => {
