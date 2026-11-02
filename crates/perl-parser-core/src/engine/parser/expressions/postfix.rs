@@ -730,6 +730,56 @@ impl<'a> Parser<'a> {
                         }
                     }
 
+                    if let NodeKind::MethodCall { object, method, args } = &expr.kind
+                        && Self::looks_like_block_call_name(method)
+                    {
+                        let object = object.clone();
+                        let method = method.clone();
+                        let mut call_args = args.clone();
+                        call_args.push(self.parse_builtin_block()?);
+
+                        if self.should_continue_bare_call_after_block()
+                            && !matches!(
+                                self.peek_kind(),
+                                Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
+                            )
+                        {
+                            call_args.push(self.parse_assignment_or_declaration()?);
+                        }
+
+                        while matches!(
+                            self.peek_kind(),
+                            Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
+                        ) {
+                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                && let Some(arg) = call_args.last_mut()
+                            {
+                                self.auto_quote_bareword_before_fat_comma(arg)?;
+                            }
+                            self.consume_token()?;
+                            if !self.should_continue_bare_call_after_separator() {
+                                break;
+                            }
+                            call_args.push(self.parse_assignment_or_declaration()?);
+                        }
+
+                        let start = expr.location.start;
+                        let end = call_args
+                            .last()
+                            .ok_or_else(|| {
+                                ParseError::syntax("Empty method block-call args", start)
+                            })?
+                            .location
+                            .end;
+
+                        record_postfix_layer()?;
+                        expr = self.charge_node(
+                            NodeKind::MethodCall { object, method, args: call_args },
+                            SourceLocation { start, end },
+                        )?;
+                        continue;
+                    }
+
                     // Hash element access (do-while trailing `{` already left
                     // by the loop-top gate above; this re-check keeps the arm
                     // honest if it is ever reached directly).
@@ -1421,7 +1471,10 @@ impl<'a> Parser<'a> {
                                 // the call still owns the complete qw delimiter.
                                 let end = args
                                     .last()
-                                    .map_or_else(|| self.previous_position(), |arg| arg.location.end)
+                                    .map_or_else(
+                                        || self.previous_position(),
+                                        |arg| arg.location.end,
+                                    )
                                     .max(flattened_qw_end.unwrap_or(0));
 
                                 expr = if scalar_filehandle {
