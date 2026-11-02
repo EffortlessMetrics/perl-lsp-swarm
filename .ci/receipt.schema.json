@@ -113,7 +113,12 @@
         "symbol_correctness_pct": { "type": ["number", "null"] },
         "diagnostics_correct_pct": { "type": ["number", "null"] },
         "rename_success_pct": { "type": ["number", "null"] },
-        "cross_file_success_pct": { "type": ["number", "null"] }
+        "cross_file_success_pct": { "type": ["number", "null"] },
+        "publication_generation": {
+          "type": "string",
+          "description": "Generation identity shared with the published scorecard JSON and status Markdown. Optional so historical receipts remain valid; a newly published editor-UX block includes it.",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
       }
     },
     "toolchain": {
