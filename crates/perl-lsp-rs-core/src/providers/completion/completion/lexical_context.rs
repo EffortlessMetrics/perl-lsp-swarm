@@ -258,9 +258,23 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
     is_multi_delim_regex_at_close(body)
 }
 
+/// Text after the last statement separator on the current line, for suffix heuristics.
+fn stmt_local_suffix(text: &str) -> &str {
+    let after_semi = text.rsplit(';').next().unwrap_or(text).trim();
+    after_semi.rsplit('\n').next().unwrap_or(after_semi).trim()
+}
+
 fn method_arrow_suffix(text: &str) -> bool {
     if text.ends_with("->") {
-        return text.len() > 2;
+        if text.len() <= 2 {
+            return false;
+        }
+        let suffix = stmt_local_suffix(text);
+        // `m<foo->` ends with `-` + `>`; that is not a method arrow.
+        if suffix.ends_with("->") && is_multi_delim_regex_at_close(suffix.trim()) {
+            return false;
+        }
+        return true;
     }
     let ident_bytes = text
         .as_bytes()
@@ -2260,6 +2274,16 @@ my $after = "op"#;
             assert!(
                 is_in_regex_flags(source, source.len()),
                 "cursor after a closed angle-delimited regex must still be flags: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn hyphen_before_angle_close_is_still_regex_flags() {
+        for source in ["m<foo->", "qr<foo->", "m<foo->i", "qr<foo->im"] {
+            assert!(
+                is_in_regex_flags(source, source.len()),
+                "pattern ending with `-` before `>` must not be treated as method arrow: {source}"
             );
         }
     }
