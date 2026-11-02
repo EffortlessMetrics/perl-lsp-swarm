@@ -37,14 +37,53 @@ void test('keep_eager when activation delta is immaterial', () => {
 });
 
 void test('defer_construction when activation delta exceeds immaterial floor', () => {
+  const baseline = summary(400, 20);
+  const deferred = {
+    sample_count: 3,
+    metrics: {
+      ...baseline.metrics,
+      activate_returned_ms: metric(380),
+      commands_registered_ms: metric(80),
+      initialize_completed_ms: metric(480),
+      first_useful_request_ms: metric(680),
+      warm_request_ms: metric(880),
+      restart_milestone_ms: metric(1080),
+      shutdown_milestone_ms: metric(1280),
+      feature_mcp_registration_ms: metric(0),
+    },
+  };
   const comparison = compareActivationDeferral({
-    baseline: summary(400, 20),
-    deferred: summary(380, 0),
+    baseline,
+    deferred,
     deferredDomains: ['mcp'],
   });
   assert.equal(comparison.decision, 'defer_construction');
   assert.equal(comparison.activation_delta_ms, 20);
   assert.equal(comparison.immaterial_activation_delta_ms, IMMATERIAL_ACTIVATION_DELTA_MS);
+});
+
+void test('defer_construction when milestones shift with faster activation', () => {
+  const baseline = summary(400, 20);
+  const deferred = {
+    sample_count: 3,
+    metrics: {
+      activate_returned_ms: metric(380),
+      commands_registered_ms: metric(80),
+      initialize_completed_ms: metric(480),
+      first_useful_request_ms: metric(680),
+      warm_request_ms: metric(880),
+      restart_milestone_ms: metric(1080),
+      shutdown_milestone_ms: metric(1280),
+      feature_mcp_registration_ms: metric(0),
+    },
+  };
+  const comparison = compareActivationDeferral({
+    baseline,
+    deferred,
+    deferredDomains: ['mcp'],
+  });
+  assert.equal(comparison.violations.length, 0);
+  assert.equal(comparison.decision, 'defer_construction');
 });
 
 void test('reports violations when deferred arm did not defer registration', () => {

@@ -90,16 +90,25 @@ function compareActivationDeferral(input) {
     'restart_milestone_ms',
     'shutdown_milestone_ms',
   ];
+  // Milestones are elapsed ms from extension load. Faster activate_returned_ms shifts
+  // later milestones earlier in lockstep; compare slack after activation, not raw timestamps.
   for (const metricName of behaviorChecks) {
     const baseline = metricP50(input.baseline.metrics, metricName);
     const deferred = metricP50(input.deferred.metrics, metricName);
-    if (baseline === null || deferred === null) {
+    if (
+      baseline === null ||
+      deferred === null ||
+      baselineActivation === null ||
+      deferredActivation === null
+    ) {
       violations.push(`missing paired ${metricName} for behavior comparison`);
       continue;
     }
-    if (Math.abs(baseline - deferred) > IMMATERIAL_ACTIVATION_DELTA_MS) {
+    const baselineSlack = baseline - baselineActivation;
+    const deferredSlack = deferred - deferredActivation;
+    if (Math.abs(baselineSlack - deferredSlack) > IMMATERIAL_ACTIVATION_DELTA_MS) {
       violations.push(
-        `${metricName} p50 diverged beyond immaterial noise (${baseline} vs ${deferred})`,
+        `${metricName} post-activation slack p50 diverged beyond immaterial noise (${baselineSlack} vs ${deferredSlack})`,
       );
     }
   }
