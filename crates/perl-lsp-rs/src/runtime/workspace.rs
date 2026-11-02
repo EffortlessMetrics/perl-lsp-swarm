@@ -17,6 +17,7 @@ use super::{
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::{
     IndexReadinessOutcome, IndexReadinessPolicy, ReadinessMilestone, check_readiness,
+    check_readiness_with_cancellation,
 };
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
@@ -46,6 +47,8 @@ use perl_workspace::ignore::is_skipped_dir_name;
 use perl_workspace::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
 };
+#[cfg(feature = "workspace")]
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "workspace")]
 use std::io::Read;
@@ -389,6 +392,48 @@ struct WorkspaceIndexCancellationGuard {
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     request_id: JsonRpcId,
+}
+
+/// Test-feature-only barrier for a real stdio client to hold discovery while
+/// exercising references against an empty, still-building workspace index.
+#[cfg(feature = "expose_lsp_test_api")]
+fn hold_index_discovery_for_stdio_proof() -> bool {
+    let Some(directory) = std::env::var_os("PERL_LSP_TEST_INDEX_GATE_DIR") else {
+        return false;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    if let Err(error) = std::fs::write(directory.join("indexing-entered"), b"") {
+        tracing::warn!(%error, "stdio proof index gate could not signal entry");
+        return false;
+    }
+
+    let release = directory.join("release");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !release.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    if !release.exists() {
+        let _ = std::fs::write(directory.join("indexing-gate-timed-out"), b"");
+        tracing::warn!("stdio proof index gate timed out");
+    }
+    true
+}
+
+#[cfg(feature = "workspace")]
+thread_local! {
+    static REFERENCES_WARMUP_ALREADY_WAITED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// References warm-up ran on the scheduler path before this handler acquired
+/// a read worker (#16700).
+#[cfg(feature = "workspace")]
+pub(in crate::runtime) fn set_references_warmup_already_waited(elided: bool) {
+    REFERENCES_WARMUP_ALREADY_WAITED.with(|flag| flag.set(elided));
+}
+
+#[cfg(feature = "workspace")]
+pub(in crate::runtime) fn references_warmup_already_waited() -> bool {
+    REFERENCES_WARMUP_ALREADY_WAITED.with(|flag| flag.get())
 }
 
 #[cfg(feature = "workspace")]
@@ -860,6 +905,34 @@ impl LspServer {
         policy: IndexReadinessPolicy,
     ) -> IndexReadinessOutcome {
         let outcome = check_readiness(self.coordinator(), &self.indexing_in_progress, policy);
+        let index_readiness = outcome.reason();
+        let index_ready = outcome.is_ready();
+        let fallback_safe = outcome.is_fallback_safe();
+        let unsafe_rejected = outcome.is_unsafe_rejected();
+        tracing::trace!(
+            index_readiness,
+            index_ready,
+            fallback_safe,
+            unsafe_rejected,
+            "index readiness evaluated"
+        );
+        outcome
+    }
+
+    /// Apply the shared provider-readiness policy, interrupting any bounded
+    /// wait as soon as `cancelled` reports the request was cancelled (#16700).
+    #[cfg(feature = "workspace")]
+    pub(in crate::runtime) fn check_index_readiness_with_cancellation(
+        &self,
+        policy: IndexReadinessPolicy,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> IndexReadinessOutcome {
+        let outcome = check_readiness_with_cancellation(
+            self.coordinator(),
+            &self.indexing_in_progress,
+            policy,
+            cancelled,
+        );
         let index_readiness = outcome.reason();
         let index_ready = outcome.is_ready();
         let fallback_safe = outcome.is_fallback_safe();
@@ -3103,6 +3176,15 @@ impl LspServer {
                 #[cfg(any(test, feature = "expose_lsp_test_api"))]
                 receipt.set_test_observer_id(readiness_observer_id);
             }
+            #[cfg(feature = "expose_lsp_test_api")]
+            let budget_start = if hold_index_discovery_for_stdio_proof() {
+                // The injected wait is outside the real discovery time budget.
+                let restarted = Instant::now();
+                readiness_receipt.lock().begin_workspace(restarted);
+                restarted
+            } else {
+                budget_start
+            };
             coordinator.transition_to_scanning();
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             crate::runtime::readiness::notify_workspace_indexing_started(&readiness_start_gate);

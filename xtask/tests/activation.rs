@@ -70,20 +70,16 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 27),
+    // 27 -> 28: `perl-lsp-ux-tests/cold-index-proof` (#16650), usage-proven
+    // because every cfg site is under tests/.
+    ("test_api", 28),
     ("lab", 21),
     ("oracle", 1),
-    // 15 -> 16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]] target
-    // added by the #17154 ripr packet benchmark suite (#17170).
-    // 16 -> 17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]] target
-    // added by the #17159 LSP stdio round-trip latency benchmark (#17179).
-    ("benchmark", 17),
+    ("benchmark", 15),
     // 94 -> 95: `unsafe_prod_check` entered .ci/gate-policy.yaml with #16215;
     // the committed inventory and these constants predate the merge that
     // carried it, so both fell one gate behind the authority.
-    // 95 -> 96: routed integration-test compilation preparation (#17459).
-    // 96 -> 97: `regex_static_ratchet` entered .ci/gate-policy.yaml (#16260).
-    ("gate", 97),
+    ("gate", 95),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -100,18 +96,12 @@ const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     // in c02237eda (#16102) and code_action_generation_ledger in 3752ae836 (#15946).
     // 94/94 -> 95/95: unsafe_prod_check (#16215) entered .ci/gate-policy.yaml and
     // the merge carrying it onto this branch predates the last inventory write.
-    // 95/95 -> 96/96: unit_routed_full_build adds one required compilation gate (#17459).
-    // 96/96 -> 97/97: regex_static_ratchet adds one required pr_fast gate (#16260).
-    ("gate-policy-gates", 97, 97),
-    // 15/15 -> 16/16: `perl-ripr-facts/ripr_facts_benchmark` [[bench]]
-    // target added by the #17154 ripr packet benchmark suite (#17170).
-    // 16/16 -> 17/17: `perl-lsp-rs/lsp_stdio_roundtrip_benchmark` [[bench]]
-    // target added by the #17159 LSP stdio round-trip latency benchmark
-    // (#17179).
-    ("cargo-bench-targets", 17, 17),
+    ("gate-policy-gates", 95, 95),
+    ("cargo-bench-targets", 15, 15),
     // 79/26 -> 80/27: `perl-lsp-rs-core/test-instrumentation`, declared in
     // crates/perl-lsp-rs-core/Cargo.toml by 234574a74 (#14272).
-    ("cargo-test-features", 80, 27),
+    // 80/27 -> 81/28: `perl-lsp-ux-tests/cold-index-proof` (#16650).
+    ("cargo-test-features", 81, 28),
     ("fuzz-targets", 21, 21),
     ("override", 2, 2),
 ];
@@ -712,6 +702,7 @@ fn test_api_rule_seeds_features_whose_usage_proves_them_test_only() -> TestResul
         "cargo-feature:perl-lsp-rs/strict-jsonrpc",
         "cargo-feature:perl-parser/crash-repros",
         "cargo-feature:perl-parser/doc-coverage",
+        "cargo-feature:perl-lsp-ux-tests/cold-index-proof",
     ] {
         assert!(ids.contains(&expected), "usage-proven test_api row `{expected}` is missing");
     }
@@ -775,13 +766,15 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
     // 13/13 -> 14/13: the one added row, `perl-lsp-rs-core/test-instrumentation`,
     // is name-classified. The usage side is unchanged, so the corrected deriver
     // reads the same cfg sites as the committed artifact records.
+    // 14/13 -> 14/14: `perl-lsp-ux-tests/cold-index-proof` (#16650) is
+    // usage-classified (cfg sites only under tests/).
     // Returned rather than asserted: the arm above already reports a missing
     // signal note as an error, and a split that drifted is the same kind of
     // finding about the same inventory. A panic here would report it through a
     // different channel than the row-level failure it sits beside.
-    if (by_name, by_usage) != (14, 13) {
+    if (by_name, by_usage) != (14, 14) {
         return Err(format!(
-            "test_api signal split drifted: expected 14 by name and 13 by usage, \
+            "test_api signal split drifted: expected 14 by name and 14 by usage, \
              read {by_name} by name and {by_usage} by usage"
         )
         .into());

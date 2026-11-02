@@ -178,6 +178,11 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # crates/perl-lsp-rs/src/runtime/language/completion.rs
 # (runtime_workspace_package_prefix_excludes_subsequence_numeric_hits); resolved
 # by burndown to index_initial_file_str so compatibility_baseline stays 697.
+# Canonical-only caller identity by #16650 (PR #16687): the test helper
+# `seed_open_documents_into_building_coordinator` in
+# crates/perl-lsp-rs/src/runtime/language/references.rs calls
+# `.index_live_file(..., SourceCommit::new(generation))` so Full-path fixtures
+# are generation-matched and not stale. Fixture-only; baseline unchanged.
 compatibility_baseline = 697
 
 # Structural recurrence control (#11305): files under these prefixes must
