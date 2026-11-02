@@ -1,5 +1,4 @@
-import type { FeatureActivationDomain } from './featureActivationMetrics';
-import { FeatureActivationMetrics } from './featureActivationMetrics';
+import type { FeatureActivationDomain, FeatureActivationMetrics } from './featureActivationMetrics';
 import { isActivationDomainDeferred } from './featureActivationDeferral';
 
 export function measureOrDeferFeature<T>(

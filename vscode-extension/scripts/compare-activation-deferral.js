@@ -5,19 +5,24 @@ const path = require('path');
 
 /** @typedef {'keep_eager' | 'defer_construction' | 'dynamic_import_experiment'} DeferralDecision */
 
+/** @typedef {{ sample_count: number; metrics: Record<string, { p50: number|null; p95: number|null; min: number|null; max: number|null; count: number }> }} ReceiptSummary */
+
 const IMMATERIAL_ACTIVATION_DELTA_MS = 5;
 
 /**
  * @param {unknown} summary
- * @returns {summary is { sample_count: number; metrics: Record<string, { p50: number|null; p95: number|null; min: number|null; max: number|null; count: number }> }}
+ * @returns {summary is ReceiptSummary}
  */
 function isSummary(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return false;
+  }
+  const candidate = /** @type {Record<string, unknown>} */ (summary);
   return (
-    summary &&
-    typeof summary === 'object' &&
-    typeof summary.sample_count === 'number' &&
-    summary.metrics &&
-    typeof summary.metrics === 'object'
+    typeof candidate.sample_count === 'number' &&
+    candidate.metrics !== null &&
+    candidate.metrics !== undefined &&
+    typeof candidate.metrics === 'object'
   );
 }
 
@@ -39,8 +44,8 @@ function metricP95(metrics, name) {
 
 /**
  * @param {{
- *   baseline: ReturnType<typeof summarizeReceipts>;
- *   deferred: ReturnType<typeof summarizeReceipts>;
+ *   baseline: ReceiptSummary;
+ *   deferred: ReceiptSummary;
  *   deferredDomains: string[];
  *   minimumSamples?: number;
  * }} input
