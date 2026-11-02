@@ -79,6 +79,72 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(entry["terminal_state"], scheduling.COMPLETED_EXACT_SUBJECT)
         self.assertEqual(entry["latest_head_relationship"], "exact_subject_not_latest_head")
         self.assertEqual(receipt["merge_verdict_authority"], scheduling.MERGE_VERDICT_AUTHORITY)
+        self.assertFalse(
+            receipt["measurement"]["active_run_reached_terminal_while_newer_heads_arrived"]
+        )
+
+    def test_queued_non_latest_head_is_not_proven(self) -> None:
+        head_b = "b" * 40
+        head_c = "c" * 40
+        runs = [
+            smoke_run(100, head_sha=head_b, status="queued", job_count=0),
+        ]
+        receipt = scheduling.observe_pull_request_snapshot(
+            runs, pull_request_number=4242, latest_head_sha=head_c, observed_at="2026-11-02T00:00:00+00:00"
+        )
+        self.assertEqual(receipt["runs"][0]["terminal_state"], scheduling.NOT_PROVEN)
+
+    def test_zero_job_cancelled_without_newer_is_not_superseded(self) -> None:
+        head_a = "a" * 40
+        runs = [
+            smoke_run(
+                100,
+                head_sha=head_a,
+                status="completed",
+                conclusion="cancelled",
+                job_count=0,
+            ),
+        ]
+        receipt = scheduling.observe_pull_request_snapshot(
+            runs, pull_request_number=4242, latest_head_sha=head_a, observed_at="2026-11-02T00:00:00+00:00"
+        )
+        entry = receipt["runs"][0]
+        self.assertEqual(entry["terminal_state"], scheduling.CANCELLED_BY_HUMAN_OR_PLATFORM)
+        self.assertEqual(entry["queue_disposition"], "not_observed")
+        self.assertEqual(receipt["measurement"]["superseded_while_queued_count"], 0)
+
+    def test_pull_requests_object_entries_are_accepted(self) -> None:
+        head_c = "c" * 40
+        runs = [
+            {
+                "id": 100,
+                "name": "VS Code Current-Source Linux Smoke",
+                "path": scheduling.WORKFLOW_PATH,
+                "head_sha": head_c,
+                "status": "queued",
+                "pull_requests": [{"number": 4242}],
+            }
+        ]
+        receipt = scheduling.observe_pull_request_snapshot(
+            runs, pull_request_number=4242, latest_head_sha=head_c, observed_at="2026-11-02T00:00:00+00:00"
+        )
+        self.assertEqual(len(receipt["runs"]), 1)
+        self.assertEqual(
+            receipt["runs"][0]["terminal_state"], scheduling.QUEUED_LATEST_CANDIDATE
+        )
+
+    def test_cancelled_without_job_count_is_not_proven(self) -> None:
+        head_a = "a" * 40
+        head_b = "b" * 40
+        runs = [
+            smoke_run(100, head_sha=head_a, status="completed", conclusion="cancelled"),
+            smoke_run(101, head_sha=head_b, status="queued", job_count=0),
+        ]
+        receipt = scheduling.observe_pull_request_snapshot(
+            runs, pull_request_number=4242, latest_head_sha=head_b, observed_at="2026-11-02T00:00:00+00:00"
+        )
+        by_id = {entry["run_id"]: entry for entry in receipt["runs"]}
+        self.assertEqual(by_id[100]["terminal_state"], scheduling.NOT_PROVEN)
 
     def test_platform_cancellation_after_start_is_distinct_from_supersession(self) -> None:
         head_a = "a" * 40
@@ -127,7 +193,14 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("'merge_verdict_authority': '#2911'", workflow)
         self.assertIn("'schema_version': 'vscode_current_source_scheduling.v1'", workflow)
         self.assertIn("if-no-files-found: error", workflow)
+        self.assertIn(
+            "ref: ${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}",
+            workflow,
+        )
         self.assertIn("- name: Record exact-subject scheduling result", workflow)
+        scheduling_index = workflow.index("- name: Record exact-subject scheduling result")
+        scheduling_step = workflow[scheduling_index : scheduling_index + 400]
+        self.assertIn("if: always()", scheduling_step)
 
 
 class FixtureTests(unittest.TestCase):
@@ -145,6 +218,35 @@ class FixtureTests(unittest.TestCase):
         )
         self.assertEqual(rebuilt["runs"], fixture["runs"])
         self.assertEqual(rebuilt["measurement"], fixture["measurement"])
+        self.assertEqual(rebuilt["pull_request"], fixture["pull_request"])
+        self.assertEqual(rebuilt["concurrency_group"], fixture["concurrency_group"])
+        states = {entry["terminal_state"] for entry in fixture["runs"]}
+        self.assertIn(scheduling.SUPERSEDED_WHILE_QUEUED, states)
+        self.assertIn(scheduling.QUEUED_LATEST_CANDIDATE, states)
+        self.assertIn(scheduling.COMPLETED_EXACT_SUBJECT, states)
+
+
+class ValidateObservationReceiptTests(unittest.TestCase):
+    def test_rejects_missing_required_key(self) -> None:
+        fixture_path = FIXTURES / "multi_push_observed.v1.json"
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        del payload["merge_verdict_authority"]
+        with self.assertRaises(ValueError):
+            scheduling.validate_observation_receipt(payload)
+
+    def test_rejects_wrong_merge_verdict_authority(self) -> None:
+        fixture_path = FIXTURES / "multi_push_observed.v1.json"
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        payload["merge_verdict_authority"] = "#0000"
+        with self.assertRaises(ValueError):
+            scheduling.validate_observation_receipt(payload)
+
+    def test_rejects_contradictory_terminal_state(self) -> None:
+        fixture_path = FIXTURES / "multi_push_observed.v1.json"
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        payload["runs"][0]["terminal_state"] = scheduling.SUPERSEDED_WHILE_QUEUED
+        with self.assertRaises(ValueError):
+            scheduling.validate_observation_receipt(payload)
 
 
 if __name__ == "__main__":

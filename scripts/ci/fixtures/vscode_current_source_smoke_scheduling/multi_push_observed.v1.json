@@ -2,9 +2,9 @@
   "schema_version": "vscode_current_source_smoke_scheduling_observation.v1",
   "receipt_kind": "vscode_current_source_smoke_scheduling_observation",
   "issue": "#6887",
-  "pull_request": 6887,
+  "pull_request": 4242,
   "latest_observed_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
-  "concurrency_group": "vscode-current-source-linux-smoke-pr-6887",
+  "concurrency_group": "vscode-current-source-linux-smoke-pr-4242",
   "observed_at": "2026-11-02T00:00:00+00:00",
   "source_runs": [
     {
@@ -15,7 +15,7 @@
       "status": "completed",
       "conclusion": "success",
       "job_count": 2,
-      "pull_requests": [6887]
+      "pull_requests": [4242]
     },
     {
       "id": 900002,
@@ -25,7 +25,7 @@
       "status": "completed",
       "conclusion": "cancelled",
       "job_count": 0,
-      "pull_requests": [6887]
+      "pull_requests": [4242]
     },
     {
       "id": 900003,
@@ -34,7 +34,7 @@
       "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
       "status": "queued",
       "job_count": 0,
-      "pull_requests": [6887]
+      "pull_requests": [4242]
     }
   ],
   "runs": [
@@ -56,7 +56,7 @@
       "job_count": 0,
       "terminal_state": "superseded_while_queued",
       "queue_disposition": "superseded_before_start",
-      "latest_head_relationship": "superseded_before_start"
+      "latest_head_relationship": "older_head"
     },
     {
       "run_id": 900003,
@@ -73,7 +73,7 @@
     "superseded_while_queued_count": 1,
     "estimated_matrix_legs_avoided": 2,
     "active_run_reached_terminal_while_newer_heads_arrived": true,
-    "measurement_basis": "queued supersession counts; does not replay historical cancel-in-progress waste"
+    "measurement_basis": "queued supersession counts with explicit job_count==0; zero-job cancelled runs without a newer same-PR smoke run stay cancelled_by_human_or_platform; does not replay historical cancel-in-progress waste or prove manual vs platform cancellation"
   },
   "merge_verdict_authority": "#2911",
   "limitations": [

@@ -57,9 +57,13 @@ def is_smoke_workflow_run(run: Mapping[str, Any]) -> bool:
 def pull_number(run: Mapping[str, Any]) -> int | None:
     pulls = run.get("pull_requests")
     if isinstance(pulls, list) and pulls:
-        number = pulls[0]
-        if isinstance(number, int):
-            return number
+        first = pulls[0]
+        if isinstance(first, int):
+            return first
+        if isinstance(first, Mapping):
+            number = first.get("number")
+            if isinstance(number, int):
+                return number
     number = run.get("pull_number")
     return number if isinstance(number, int) else None
 
@@ -127,9 +131,11 @@ def classify_terminal_state(
     if conclusion == "cancelled":
         if jobs is not None and jobs > 0:
             return CANCELLED_BY_HUMAN_OR_PLATFORM
-        if newer_run_exists(run=run, runs=runs):
-            return SUPERSEDED_WHILE_QUEUED
-        return CANCELLED_BY_HUMAN_OR_PLATFORM
+        if jobs == 0:
+            if newer_run_exists(run=run, runs=runs):
+                return SUPERSEDED_WHILE_QUEUED
+            return CANCELLED_BY_HUMAN_OR_PLATFORM
+        return NOT_PROVEN
 
     return NOT_PROVEN
 
@@ -144,7 +150,10 @@ def queue_disposition(run: Mapping[str, Any], terminal_state: str) -> str:
     if terminal_state == COMPLETED_EXACT_SUBJECT:
         return "started"
     if terminal_state in {FAILED, CANCELLED_BY_HUMAN_OR_PLATFORM}:
-        return "started"
+        jobs = job_count(run)
+        if jobs is not None and jobs > 0:
+            return "started"
+        return "not_observed"
     return "not_observed"
 
 
@@ -161,7 +170,7 @@ def latest_head_relationship(
     if terminal_state == COMPLETED_EXACT_SUBJECT:
         return "exact_subject_not_latest_head"
     if terminal_state == SUPERSEDED_WHILE_QUEUED:
-        return "superseded_before_start"
+        return "older_head"
     return "older_head"
 
 
@@ -183,8 +192,14 @@ def displacement_measurement(
     return {
         "superseded_while_queued_count": len(superseded),
         "estimated_matrix_legs_avoided": len(superseded) * matrix_legs,
-        "active_run_reached_terminal_while_newer_heads_arrived": preserved_active,
-        "measurement_basis": "queued supersession counts; does not replay historical cancel-in-progress waste",
+        "active_run_reached_terminal_while_newer_heads_arrived": preserved_active
+        and len(superseded) > 0,
+        "measurement_basis": (
+            "queued supersession counts with explicit job_count==0; "
+            "zero-job cancelled runs without a newer same-PR smoke run stay "
+            "cancelled_by_human_or_platform; does not replay historical "
+            "cancel-in-progress waste or prove manual vs platform cancellation"
+        ),
     }
 
 
@@ -254,6 +269,34 @@ def observe_pull_request_snapshot(
     }
 
 
+def _validate_classified_run(entry: Mapping[str, Any]) -> None:
+    state = entry.get("terminal_state")
+    if state not in TERMINAL_STATES:
+        raise ValueError(f"invalid terminal_state: {state!r}")
+    status = entry.get("workflow_status")
+    conclusion = entry.get("workflow_conclusion")
+    jobs = entry.get("job_count")
+    if not isinstance(status, str):
+        raise ValueError("workflow_status must be a string")
+    if state == COMPLETED_EXACT_SUBJECT:
+        if status != "completed" or conclusion != "success":
+            raise ValueError("completed_exact_subject inconsistent with workflow fields")
+        if not isinstance(jobs, int) or jobs <= 0:
+            raise ValueError("completed_exact_subject requires positive job_count")
+    elif state == FAILED:
+        if conclusion != "failure":
+            raise ValueError("failed inconsistent with workflow_conclusion")
+    elif state == SUPERSEDED_WHILE_QUEUED:
+        if status != "completed" or conclusion != "cancelled" or jobs != 0:
+            raise ValueError("superseded_while_queued inconsistent with workflow fields")
+    elif state == CANCELLED_BY_HUMAN_OR_PLATFORM:
+        if status != "completed" or conclusion != "cancelled":
+            raise ValueError("cancelled_by_human_or_platform inconsistent with workflow fields")
+    elif state == QUEUED_LATEST_CANDIDATE:
+        if status not in {"queued", "pending", "waiting", "requested"}:
+            raise ValueError("queued_latest_candidate inconsistent with workflow_status")
+
+
 def validate_observation_receipt(payload: Mapping[str, Any]) -> None:
     required_top = (
         "schema_version",
@@ -274,15 +317,25 @@ def validate_observation_receipt(payload: Mapping[str, Any]) -> None:
         raise ValueError("unexpected receipt_kind")
     if payload["merge_verdict_authority"] != MERGE_VERDICT_AUTHORITY:
         raise ValueError("merge verdict authority drift")
+    pull = payload["pull_request"]
+    if not isinstance(pull, int) or pull <= 0:
+        raise ValueError("pull_request must be a positive integer")
+    latest_head = payload["latest_observed_head_sha"]
+    if not isinstance(latest_head, str) or len(latest_head) != 40:
+        raise ValueError("latest_observed_head_sha must be a 40-char string")
+    group = payload["concurrency_group"]
+    if not isinstance(group, str) or group != concurrency_group_for_pull(pull):
+        raise ValueError("concurrency_group does not match pull_request")
+    measurement = payload["measurement"]
+    if not isinstance(measurement, dict):
+        raise ValueError("measurement must be an object")
     runs = payload["runs"]
     if not isinstance(runs, list):
         raise ValueError("runs must be a list")
     for entry in runs:
         if not isinstance(entry, dict):
             raise ValueError("run entry must be an object")
-        state = entry.get("terminal_state")
-        if state not in TERMINAL_STATES:
-            raise ValueError(f"invalid terminal_state: {state!r}")
+        _validate_classified_run(entry)
 
 
 def load_observation_fixture(path: str) -> dict[str, Any]:
