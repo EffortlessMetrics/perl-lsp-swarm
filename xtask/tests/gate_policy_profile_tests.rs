@@ -103,10 +103,10 @@ fn parser_corpus_pr_policy_is_unambiguous() -> Result<(), Box<dyn std::error::Er
         "common_corpus_clean duration budget must reflect CI startup overhead"
     );
 
-    assert_eq!(parser.tier, "merge_gate");
-    assert!(!parser.required, "parser_corpus_ratchet must be advisory in PR merge-gate profile");
+    assert_eq!(parser.tier, "nightly");
+    assert!(!parser.required, "parser_corpus_ratchet must be advisory (nightly tier; no merge-gate driver)");
 
-    assert_eq!(cpan.tier, "merge_gate");
+    assert_eq!(cpan.tier, "nightly");
     assert!(!cpan.required, "cpan_corpus_ratchet must never be PR-blocking");
 
     Ok(())
