@@ -518,12 +518,43 @@ fn is_doc_path(path: &str) -> bool {
     path.starts_with("docs/") || path.ends_with(".md")
 }
 
+/// True when `path` denotes a test artifact by whole path components, not substrings.
+///
+/// A directory component (never the file name alone as a directory token) must be
+/// exactly `test`, `tests`, or `t` (so repo-root `tests/` and `t/` count). Otherwise
+/// the file name must match a test convention: `*_test.rs`, `*_tests.rs`, `*.t`,
+/// `*.test.ts`, `*.test.js`, or `*.spec.ts`.
 fn is_test_path(path: &str) -> bool {
-    path.contains("/test") || path.contains("/tests/")
+    let normalized = path.replace('\\', "/");
+    let mut parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return false;
+    }
+    let file_name = parts.pop().unwrap_or("");
+    if parts.iter().any(|component| matches!(*component, "test" | "tests" | "t")) {
+        return true;
+    }
+    file_name.ends_with("_test.rs")
+        || file_name.ends_with("_tests.rs")
+        || file_name.ends_with(".t")
+        || file_name.ends_with(".test.ts")
+        || file_name.ends_with(".test.js")
+        || file_name.ends_with(".spec.ts")
 }
 
+/// True when `actual` equals `expected`, or `expected` is a directory prefix of
+/// `actual` on a `/` boundary (trailing `/` on `expected` is accepted).
 fn path_matches(actual: &str, expected: &str) -> bool {
-    actual == expected || actual.starts_with(expected)
+    if actual == expected {
+        return true;
+    }
+    if !actual.starts_with(expected) {
+        return false;
+    }
+    if expected.ends_with('/') {
+        return true;
+    }
+    matches!(actual.as_bytes().get(expected.len()), Some(b'/'))
 }
 
 fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
@@ -763,6 +794,65 @@ expected_paths = ["vscode-extension/package.json", "crates/perl-lsp-rs/tests/"]
             }
             other => panic!("expected Unavailable, got: {other:?}"),
         }
+        Ok(())
+    }
+
+    /// #15384: paths containing `/test` as a substring must not count as test updates.
+    #[test]
+    fn is_test_path_segment_boundaries() {
+        for path in [
+            "tests/foo.rs",
+            "t/basic.t",
+            "crates/x/tests/a.rs",
+            "crates/x/src/foo_test.rs",
+            "vscode-extension/src/test/a.test.ts",
+        ] {
+            assert!(is_test_path(path), "expected true for {path}");
+        }
+        for path in [
+            "crates/perl-lsp-testing-utils/src/lib.rs",
+            "xtask/src/testbed.rs",
+            "docs/testing.md",
+            "crates/x/src/contest.rs",
+        ] {
+            assert!(!is_test_path(path), "expected false for {path}");
+        }
+    }
+
+    #[test]
+    fn path_matches_directory_boundary() {
+        assert!(path_matches("crates/perl-dap/src/a.rs", "crates/perl-dap"));
+        assert!(!path_matches("crates/perl-dap-extra/src/a.rs", "crates/perl-dap"));
+        assert!(path_matches(
+            "vscode-extension/package.json",
+            "vscode-extension/package.json"
+        ));
+        assert!(!path_matches("xtask/src/foo_bar.rs", "xtask/src/foo"));
+        assert!(path_matches("crates/perl-dap/src/a.rs", "crates/perl-dap/"));
+    }
+
+    /// #15384: unrelated paths whose names contain `/test` must not suppress
+    /// `closeout_without_evidence` when no real test or target evidence exists.
+    #[test]
+    fn substring_test_path_does_not_authorize_closeout() -> Result<()> {
+        let input = PrInput {
+            title: "fix(vscode): activation regression".to_string(),
+            body: "Fixes #6747".to_string(),
+            changed_files: vec![
+                "crates/perl-core/src/lib.rs".to_string(),
+                "crates/perl-lsp-testing-utils/src/lib.rs".to_string(),
+            ],
+            source_state: complete(),
+            evidence: FixtureEvidence::default(),
+        };
+
+        let receipt = evaluate(&input, &policy()?);
+        assert!(matches!(receipt.verdict, Verdict::Fail));
+        assert!(
+            receipt.violations.iter().any(|v| v.code == "closeout_without_evidence"),
+            "expected closeout_without_evidence, got: {:?}",
+            receipt.violations
+        );
         Ok(())
     }
 }
