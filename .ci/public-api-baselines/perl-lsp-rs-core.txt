@@ -6409,6 +6409,7 @@ pub struct perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
 pub perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan::end: usize
 pub perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan::start: usize
 pub fn perl_lsp_rs_core::providers::regex::definition_links_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink>>
+pub fn perl_lsp_rs_core::providers::regex::record_at_pattern_body_offset(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_lsp_rs_core::providers::regex::reference_spans_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize, include_declaration: bool) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan>>
 pub mod perl_lsp_rs_core::providers::regex_canonical
 pub fn perl_lsp_rs_core::providers::regex_canonical::project_canonical_regex_diagnostics(table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
