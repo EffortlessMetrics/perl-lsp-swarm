@@ -250,23 +250,49 @@ impl PerlExecutionHarness {
         let timeout = Duration::from_secs(PERL_TIMEOUT_SECS);
         let mut child = cmd.spawn().context("spawn oracle Perl probe")?;
 
+        let mut stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| color_eyre::eyre::eyre!("capture oracle probe stdout"))?;
+        let mut stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| color_eyre::eyre::eyre!("capture oracle probe stderr"))?;
+        let h_out = thread::spawn(move || {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut stdout_pipe, &mut buf).map(|_| buf)
+        });
+        let h_err = thread::spawn(move || {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut stderr_pipe, &mut buf).map(|_| buf)
+        });
+
         let start = std::time::Instant::now();
-        loop {
+        let status = loop {
             match child.try_wait().context("polling Perl oracle probe process")? {
-                Some(_) => break,
+                Some(status) => break status,
                 None => {
                     if start.elapsed() >= timeout {
                         let _ = child.kill();
+                        let _ = child.wait();
                         bail!("Perl oracle probe timed out after {}s", timeout.as_secs());
                     }
                     thread::sleep(Duration::from_millis(50));
                 }
             }
-        }
-        let raw = child.wait_with_output().context("collect oracle probe output")?;
-        let stdout = String::from_utf8(raw.stdout).context("decode probe stdout")?;
-        let stderr = String::from_utf8(raw.stderr).context("decode probe stderr")?;
-        Ok(PerlOutput { perl_version, stdout, stderr, exit_code: raw.status.code().unwrap_or(-1) })
+        };
+
+        let stdout_bytes = h_out
+            .join()
+            .map_err(|_| color_eyre::eyre::eyre!("oracle probe stdout reader thread panicked"))?
+            .context("read oracle probe stdout")?;
+        let stderr_bytes = h_err
+            .join()
+            .map_err(|_| color_eyre::eyre::eyre!("oracle probe stderr reader thread panicked"))?
+            .context("read oracle probe stderr")?;
+        let stdout = String::from_utf8(stdout_bytes).context("decode probe stdout")?;
+        let stderr = String::from_utf8(stderr_bytes).context("decode probe stderr")?;
+        Ok(PerlOutput { perl_version, stdout, stderr, exit_code: status.code().unwrap_or(-1) })
     }
 
     fn apply_hermetic_env(cmd: &mut Command, fixture: &Fixture) {
@@ -533,6 +559,7 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
 
     type TestResult<T = ()> = Result<T>;
@@ -920,16 +947,17 @@ print $file, "\n";
     }
 
     #[test]
+    #[serial]
     fn harness_execute_scrubs_perl5lib_from_child_environment() -> TestResult {
         if !perl_available() {
             eprintln!("SKIP: perl not available in this environment");
             return Ok(());
         }
 
+        let _restore = RestoreEnvVar::new("PERL5LIB");
         unsafe {
             std::env::set_var("PERL5LIB", "/ambient/should/not/leak");
         }
-        let restore = RestoreEnvVar::new("PERL5LIB");
 
         let (_dir, fixture) = minimal_probe_fixture("1;\n", &[])?;
         let probe = r#"
@@ -944,7 +972,6 @@ print((exists $ENV{PERL5LIB} ? "present" : "absent"), "\n");
             "absent",
             "PERL5LIB must not leak into the child probe environment"
         );
-        drop(restore);
         Ok(())
     }
 
