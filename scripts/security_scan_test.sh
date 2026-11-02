@@ -214,6 +214,15 @@ FAKE_DENY=unmatched run_engine scan
 receipt_has '"name": "cargo-deny".*"result": "findings"'
 pass "T11 unmatched-skip fails cargo-deny closed"
 
+# --- T12: cargo-deny findings must survive the unmatched-skip guard ---------
+write_fakes
+FAKE_DENY=findings run_engine scan
+[ "$RC" -eq 1 ] || fail "T12 exit $RC != 1"
+receipt_has '"name": "cargo-deny".*"result": "findings"'
+receipt_has '"aggregate": "findings"'
+receipt_has '"complete": true'
+pass "T12 cargo-deny findings propagate through guard"
+
 printf '\n%s\n' "----------------------------------------"
 if [ "$FAILURES" -eq 0 ]; then
     printf 'ALL TESTS PASSED (%s)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

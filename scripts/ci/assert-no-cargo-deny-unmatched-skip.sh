@@ -8,7 +8,7 @@ if [ "$#" -gt 1 ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  if grep -Fq 'unmatched-skip' /dev/stdin; then
+  if grep -Fq 'unmatched-skip'; then
     printf 'FAIL: cargo-deny stderr contains unmatched-skip (vacuous deny.toml skip entry)\n' >&2
     exit 1
   fi

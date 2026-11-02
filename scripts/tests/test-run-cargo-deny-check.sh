@@ -50,9 +50,7 @@ chmod +x "$FAKEBIN/cargo-deny"
 printf 'warning[unmatched-skip]: example\n' >"$WORK/unmatched.stderr"
 printf 'bans ok\n' >"$WORK/clean.stderr"
 
-if bash "$ASSERT" "$WORK/clean.stderr"; then
-  :
-else
+if ! bash "$ASSERT" "$WORK/clean.stderr"; then
   printf 'FAIL assert should accept clean stderr\n' >&2
   exit 1
 fi
