@@ -29,13 +29,14 @@
 #   the issue that changes that.
 #
 # On `source_completeness = legacy_unreported` almost everywhere
-#   One producer already reports whether it finished: `htmx::complete_header_names`
-#   distinguishes "not my context" from "mine, and empty". Every other row is
-#   `legacy_unreported`, and the one exception is discarded by the facade above
-#   it, so no request outcome preserves the signal. Until that changes a
-#   `Complete` completion outcome is not earned by any request, because an
-#   empty result is indistinguishable from a producer that gave up. The gap is
-#   propagation, not capability — which is what #10230 consumes.
+#   Two htmx producers already report whether they finished:
+#   `htmx::complete_header_names` and `htmx::complete_attribute_names`
+#   distinguish "not my context" from "mine, and empty". Every other row is
+#   `legacy_unreported`, and both exceptions lose the signal at the request
+#   router or file-path facade, so no request outcome preserves it. Until that
+#   changes a `Complete` completion outcome is not earned by any request,
+#   because an empty result is indistinguishable from a producer that gave up.
+#   The gap is propagation, not capability — which is what #10230 consumes.
 #
 # On the Dancer2 row
 #   `add_dancer2_keyword_completions` is reached by `handle_completion_cancellable`
@@ -187,7 +188,7 @@ outcome_owner = "#10230"
 # change touched the scanned `completion/variables.rs` and
 # `completion/request/dispatch.rs`; the existing producer rows, their
 # identity/evidence/completeness ceilings and migration owners are unchanged.
-source_digest = "sha256:96c9a2b8f59cdba160ae762e74db97c218da73093df2da7128cde3f537190921"
+source_digest = "sha256:2f808f4cd3caa5d4f4ed562efc572cd888651c7c8df3fb63aae15fb635502bd6"
 
 [[delegations]]
 module = "dancer2"
@@ -650,7 +651,7 @@ limitations = "This seam finalizes early on two of its three exit paths: both th
 note = "Regex-context routing, with an early finalization on two branches that the shared route does not expect."
 
 [[producers]]
-id = "perl_lsp_rs_core::providers::completion::completion::request::context::complete_htmx_attribute_context"
+id = "perl_lsp_rs_core::providers::completion::completion::request::context::try_complete_htmx_attributes"
 package = "perl-lsp-rs-core"
 candidate_class = "router"
 tier = "core_provider"
@@ -663,7 +664,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#14116"
-limitations = "Early-return router: delegates to `htmx::complete_attribute_names` and does not add candidates of its own."
+limitations = "Early-return router: delegates to `htmx::complete_attribute_names`, applies Perl lexical guards and suffix-aware edit ranges, and returns before the shared runtime finalizer. Completeness reporting from the producer is not preserved on the wire (#10230)."
 note = "Admitted markup attribute-name router for htmx completion."
 
 [[producers]]
@@ -1174,7 +1175,7 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
-limitations = "The one producer that already reports completeness, and the report is discarded one hop later: `None` means the prefix is not htmx-shaped and another provider owns it, while `Some([])` means htmx owns the context and has no candidate. The `completion::completion::file_path` facade collapses both into a plain vector, so nothing reaches #10230. Do not read this row as evidence that a Complete outcome is earned."
+limitations = "Reports completeness, but the file-path facade collapses `None` vs `Some([])` into a plain vector, so nothing reaches #10230. Do not read this row as evidence that a Complete outcome is earned."
 note = "Canonical htmx request and response header names inside a string literal."
 
 [[producers]]

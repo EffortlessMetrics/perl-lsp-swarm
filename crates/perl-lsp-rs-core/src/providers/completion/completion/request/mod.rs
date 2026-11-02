@@ -11,17 +11,19 @@ pub(super) fn complete(
     filepath: Option<&str>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Vec<CompletionItem> {
-    let Some(context) = context::prepare_context(provider, source, position) else {
-        return vec![];
-    };
-
     if is_cancelled() {
         return vec![];
     }
 
-    if let Some(htmx_attributes) = context::complete_htmx_attribute_context(source, position) {
+    if let Some(htmx_attributes) =
+        context::try_complete_htmx_attributes(provider, source, position)
+    {
         return htmx_attributes;
     }
+
+    let Some(context) = context::prepare_context(provider, source, position) else {
+        return vec![];
+    };
 
     if context::rejects_dash_trigger(&context) {
         return vec![];

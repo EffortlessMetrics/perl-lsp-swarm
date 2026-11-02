@@ -10,7 +10,7 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against the shipped (non-test) surface of the files listed here. A change to that shipped surface invalidates the audit and `check` fails until the rows are re-checked; test-only or formatting-only edits do not.
 
-- Digest: `sha256:96c9a2b8f59cdba160ae762e74db97c218da73093df2da7128cde3f537190921`
+- Digest: `sha256:2f808f4cd3caa5d4f4ed562efc572cd888651c7c8df3fb63aae15fb635502bd6`
 - Files (42):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
@@ -117,8 +117,8 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::get_completions_with_path` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::get_completions_with_path_cancellable` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::complete` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
-| `perl_lsp_rs_core::providers::completion::completion::request::context::complete_htmx_attribute_context` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #14116 |
 | `perl_lsp_rs_core::providers::completion::completion::request::context::complete_regex_context` | router | append_and_returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
+| `perl_lsp_rs_core::providers::completion::completion::request::context::try_complete_htmx_attributes` | router | returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #14116 |
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_dispatch` | router | append_and_returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_file_path_context` | router | append | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_general_context` | router | append_and_returned | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
