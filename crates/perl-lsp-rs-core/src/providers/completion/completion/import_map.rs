@@ -15,12 +15,6 @@ use used_modules::is_importable_module;
 ///
 /// Only uppercase-starting module names are included (skips pragmas like
 /// `strict`, `warnings`, `feature`, `constant`, `utf8`, `lib`, `parent`, `base`).
-pub(super) fn extract_import_map(ast: &Node) -> ImportMap {
-    extract_import_map_with_source(ast, None)
-}
-
-/// Same as [`extract_import_map`], but passes buffer source for framework import
-/// normalization that requires source text.
 pub(super) fn extract_import_map_with_source(ast: &Node, source: Option<&str>) -> ImportMap {
     let hir = lower_ast(ast);
     let specs = extract_import_specs_from_hir(&hir, ast, FileId(0), source);
@@ -54,9 +48,8 @@ fn merge_spec_symbols(module: &str, symbols: &ImportSymbols, map: &mut ImportMap
     match symbols {
         ImportSymbols::None => {
             map.entry(module.to_string()).or_default();
-            return;
         }
-        ImportSymbols::Default | ImportSymbols::Dynamic => return,
+        ImportSymbols::Default | ImportSymbols::Dynamic => {}
         ImportSymbols::Explicit(explicit) => {
             if explicit.is_empty() {
                 map.entry(module.to_string()).or_default();
@@ -305,7 +298,7 @@ mod tests {
         let code = "use strict qw(vars refs);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map(&ast);
+        let map = extract_import_map_with_source(&ast, None);
 
         assert!(
             !map.contains_key("strict"),
@@ -318,7 +311,7 @@ mod tests {
         let code = "use Module::Thing;\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map(&ast);
+        let map = extract_import_map_with_source(&ast, None);
 
         assert!(
             !map.contains_key("Module::Thing"),
@@ -331,7 +324,7 @@ mod tests {
         let code = "use Module::Thing qw(:unknown_tag);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map(&ast);
+        let map = extract_import_map_with_source(&ast, None);
 
         assert!(
             !map.contains_key("Module::Thing"),
@@ -344,7 +337,7 @@ mod tests {
         let code = "use Module::Thing qw();\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map(&ast);
+        let map = extract_import_map_with_source(&ast, None);
 
         let symbols = must_some(map.get("Module::Thing"));
         assert!(
@@ -358,7 +351,7 @@ mod tests {
         let code = "use Foo qw(bar);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map(&ast);
+        let map = extract_import_map_with_source(&ast, None);
 
         let symbols = must_some(map.get("Foo"));
         assert_eq!(symbols, &HashSet::from(["bar".to_string()]));
@@ -369,7 +362,7 @@ mod tests {
         let code = "require Foo; Foo->import(qw(bar));\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map(&ast);
+        let map = extract_import_map_with_source(&ast, None);
 
         assert!(
             !map.contains_key("Foo"),
@@ -406,7 +399,7 @@ mod tests {
         let code = "use My::Util qw(:nonexistent_tag foo bar baz);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        let map = extract_import_map(&ast);
+        let map = extract_import_map_with_source(&ast, None);
 
         let symbols = must_some(map.get("My::Util"));
         assert!(symbols.contains("foo"), "foo must survive; got: {symbols:?}");
@@ -417,7 +410,7 @@ mod tests {
     #[test]
     fn recurrence_guard_rejects_completion_local_use_arg_classifier() {
         let src = include_str!("import_map.rs");
-        let production = src.split("#[cfg(test)]").next().expect("production import_map source");
+        let production = must_some(src.split("#[cfg(test)]").next());
         assert!(
             !production.contains("fn collect_use_import("),
             "completion must not keep a provider-local use argument classifier"
