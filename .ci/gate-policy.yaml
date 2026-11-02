@@ -1979,6 +1979,27 @@ gates:
       - doctest
       - ratchet
 
+  # Issue #17632: `ci/panic_test_identities.json` names
+  # `cargo xtask ci-hygiene check-panic-test` as its consumer, but until this
+  # gate existed nothing in `.github/workflows` executed that command — only the
+  # local `just ci-panic-test-ratchet` recipe did. Distinct from #16253 (checker
+  # logic); this claim is scheduling only. Fail-closed on NEW identities and on
+  # ACTIVE rows whose source sites disappeared without retirement.
+  - name: panic_test_ratchet
+    tier: merge_gate
+    description: "Ratchet test-code panic! identities against ci/panic_test_identities.json (#17632)"
+    required: true
+    command: just ci-panic-test-ratchet
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+      - ratchet
+
   # The production-unsafe ratchet is fail-closed: `check-unsafe-prod` counts
   # `unsafe` syntax outside tests and fails when any production unsafe block
   # lacks a preceding `// SAFETY:` comment stating the call's actual
@@ -2819,6 +2840,7 @@ workflow_integration:
         - nested_lock_check
         - doctest_contract_proof
         - doctest_enforcement
+        - panic_test_ratchet
         - published_crate_count_pr_fast
         - agent_ledgers_validate
 

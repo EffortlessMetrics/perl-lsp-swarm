@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 97,
-      "emitted": 97,
+      "considered": 98,
+      "emitted": 98,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -4205,6 +4205,33 @@
         "state": "not_evaluated"
       },
       "notes": "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
+    },
+    {
+      "surface_id": "gate:panic_test_ratchet",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#panic_test_ratchet",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Ratchet test-code panic! identities against ci/panic_test_identities.json (#17632)"
     },
     {
       "surface_id": "gate:parser_audit_closeout",
