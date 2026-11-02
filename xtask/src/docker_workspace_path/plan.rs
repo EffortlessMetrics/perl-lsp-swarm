@@ -186,11 +186,11 @@ impl DockerLaunchPlan {
         }
         argv.push("--workdir".to_string());
         argv.push(self.workdir.display().to_string());
-        argv.push(self.image.clone());
         if self.entrypoint != "perllsp" {
             argv.push("--entrypoint".to_string());
             argv.push(self.entrypoint.clone());
         }
+        argv.push(self.image.clone());
         argv.extend(self.args.clone());
         argv
     }
@@ -331,7 +331,7 @@ mod tests {
                 uri: "file:///home/user/project".into(),
                 absolute_path: root.clone(),
             }],
-            Some("ghcr.io/effortlessmetrics/perl-lsp:0.18.0"),
+            Some("ghcr.io/effortlessmetrics/perl-lsp-perl:0.18.0"),
         )?;
         assert_eq!(plan.topology, PathTopology::HostEditorSamePathBind);
         assert_eq!(plan.mounts.len(), 1);
@@ -347,6 +347,25 @@ mod tests {
                 .any(|arg| arg.contains("src=/home/user/project,dst=/home/user/project,readonly"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn custom_entrypoint_precedes_image_in_docker_argv() {
+        let plan = DockerLaunchPlan {
+            topology: PathTopology::HostEditorSamePathBind,
+            mounts: vec![],
+            workdir: PathBuf::from("/tmp"),
+            interactive_stdin: true,
+            allocate_tty: false,
+            require_init: true,
+            image: "img:tag".to_string(),
+            entrypoint: "other-server".to_string(),
+            args: vec!["--stdio".to_string()],
+        };
+        let argv = plan.docker_run_argv();
+        let image_idx = argv.iter().position(|arg| arg == "img:tag").expect("image");
+        let entry_idx = argv.iter().position(|arg| arg == "--entrypoint").expect("entrypoint");
+        assert!(entry_idx < image_idx, "docker argv: {argv:?}");
     }
 
     #[test]

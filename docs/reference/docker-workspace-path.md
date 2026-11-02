@@ -19,7 +19,7 @@ translation layer is designed and proven.
 From the repository root, with an absolute workspace path:
 
 ```bash
-WORKSPACE_ROOT="$(pwd)" PERLLSP_IMAGE=ghcr.io/effortlessmetrics/perl-lsp:<version> \
+WORKSPACE_ROOT="$(pwd)" PERLLSP_IMAGE=ghcr.io/effortlessmetrics/perl-lsp-perl:<version> \
   ./scripts/docker/run-perllsp-host-editor.sh
 ```
 
@@ -29,7 +29,7 @@ Equivalent manual invocation:
 docker run --rm -i --init \
   --mount "type=bind,src=$PWD,dst=$PWD,readonly" \
   --workdir "$PWD" \
-  ghcr.io/effortlessmetrics/perl-lsp:<version> \
+  ghcr.io/effortlessmetrics/perl-lsp-perl:<version> \
   --stdio
 ```
 

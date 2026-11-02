@@ -6,8 +6,7 @@
   "customizations": {
     "vscode": {
       "settings": {
-        "perl-lsp.server.path": "perllsp",
-        "perl-lsp.server.args": ["--stdio"]
+        "perl-lsp.serverPath": "/usr/local/bin/perllsp"
       }
     }
   },

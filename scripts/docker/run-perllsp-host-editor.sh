@@ -18,20 +18,19 @@ Environment:
   WORKSPACE_ROOT  Absolute workspace path (default: absolute path of current directory)
 
 Example:
-  WORKSPACE_ROOT="$PWD" PERLLSP_IMAGE=ghcr.io/effortlessmetrics/perl-lsp:0.18.0 \
-    ./scripts/docker/run-perllsp-host-editor.sh --stdio
+  WORKSPACE_ROOT="$PWD" PERLLSP_IMAGE=ghcr.io/effortlessmetrics/perl-lsp-perl:0.18.0 \
+    ./scripts/docker/run-perllsp-host-editor.sh
 EOF
   exit 0
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-$PWD}"
 if [[ "$WORKSPACE_ROOT" != /* ]]; then
   echo "run-perllsp-host-editor: WORKSPACE_ROOT must be absolute: $WORKSPACE_ROOT" >&2
   exit 2
 fi
 
-IMAGE="${PERLLSP_IMAGE:-ghcr.io/effortlessmetrics/perl-lsp:latest}"
+IMAGE="${PERLLSP_IMAGE:-ghcr.io/effortlessmetrics/perl-lsp-perl:latest}"
 exec docker run --rm -i --init \
   --mount "type=bind,src=${WORKSPACE_ROOT},dst=${WORKSPACE_ROOT},readonly" \
   --workdir "${WORKSPACE_ROOT}" \

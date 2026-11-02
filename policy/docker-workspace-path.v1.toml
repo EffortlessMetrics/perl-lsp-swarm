@@ -62,7 +62,7 @@ note = "Not proven; use WSL or Dev Containers unless a separate translation laye
 
 [host_editor_launcher]
 image_env = "PERLLSP_IMAGE"
-default_image = "ghcr.io/effortlessmetrics/perl-lsp:latest"
+default_image = "ghcr.io/effortlessmetrics/perl-lsp-perl:latest"
 entrypoint = "perllsp"
 default_args = ["--stdio"]
 
