@@ -6,6 +6,9 @@
 # .ci/policies/required-checks.toml, not by reporting success after detection.
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before semver checks.
+. "$(dirname -- "${BASH_SOURCE[0]}")/../lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 repo_root="${1:-.}"
 cd "${repo_root}"
 
