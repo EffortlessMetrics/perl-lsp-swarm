@@ -2733,7 +2733,12 @@ export function createLanguageClient(serverPath: string): LanguageClient {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleFormattingProviderCall(async () => next(document, options, token), null, false, document);
+        return settleFormattingProviderCall(
+          async () => next(document, options, token),
+          null,
+          false,
+          document,
+        );
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
@@ -3124,9 +3129,7 @@ export function presentFormattingProviderOutcome(
         ? 'Formatter returned edits after the request subject changed; exact currentness is not proven.'
         : 'Formatter returned a response after the request subject changed; exact currentness is not proven.',
       action: 'Retry formatting on the current document version.',
-      reasonCode: range
-        ? 'range_formatting_subject_superseded'
-        : 'formatting_subject_superseded',
+      reasonCode: range ? 'range_formatting_subject_superseded' : 'formatting_subject_superseded',
     };
   }
   if (editCount > 0) {

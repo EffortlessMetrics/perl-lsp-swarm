@@ -6,7 +6,9 @@ export interface ProviderRequestSubject {
   readonly version: number;
 }
 
-export function captureProviderRequestSubject(document: vscode.TextDocument): ProviderRequestSubject {
+export function captureProviderRequestSubject(
+  document: vscode.TextDocument,
+): ProviderRequestSubject {
   return {
     uri: document.uri.toString(),
     version: document.version,
