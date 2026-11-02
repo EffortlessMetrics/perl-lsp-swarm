@@ -615,18 +615,13 @@ beforeAll(async () => {
   );
   trackEventFactory(
     vscode.workspace as unknown as Record<string, unknown>,
+    'onDidChangeWorkspaceFolders',
+    'watcher:workspace-folders',
+  );
+  trackEventFactory(
+    vscode.workspace as unknown as Record<string, unknown>,
     'onWillSaveTextDocument',
     'watcher:format-on-save',
-  );
-  trackEventFactory(
-    vscode.workspace as unknown as Record<string, unknown>,
-    'onDidCreateFiles',
-    'watcher:file-creation',
-  );
-  trackEventFactory(
-    vscode.workspace as unknown as Record<string, unknown>,
-    'onDidChangeTextDocument',
-    'watcher:arrow-completion',
   );
   trackEventFactory(
     vscode.workspace as unknown as Record<string, unknown>,
@@ -945,14 +940,14 @@ describe('production activation failure injection (#7855)', () => {
   });
 
   test('a workspace event delivered during rollback cannot corrupt the receipt', async () => {
-    // Fail after the debugger phase. In reverse order the arrow-completion
+    // Fail after the debugger phase. In reverse order the last workspace-folder
     // watcher is disposed before the configuration watcher, so firing a
-    // configuration change while the arrow watcher's dispose runs reaches the
+    // configuration change while that folder watcher's dispose runs reaches the
     // still-live configuration listener — the realistic mid-rollback
     // interleaving.
     const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (boundary) => {
       if (boundary.phase === 'document_providers' && boundary.ordinal === 1) {
-        armBusDisposeHook('watcher:arrow-completion', () => {
+        armBusDisposeHook('watcher:workspace-folders', () => {
           fireHostEvent('watcher:configuration', { affectsConfiguration: () => false });
         });
       }
