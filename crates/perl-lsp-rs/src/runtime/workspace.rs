@@ -2641,8 +2641,8 @@ impl LspServer {
                 };
                 processed_any = true;
 
-                self.invalidate_module_resolution_negative_cache_for_uri(&old_uri);
-                self.invalidate_module_resolution_negative_cache_for_uri(&new_uri);
+                self.invalidate_module_resolution_negative_cache_for_uri(old_uri);
+                self.invalidate_module_resolution_negative_cache_for_uri(new_uri);
 
                 // Normalize URIs so the index and pinned_doc_map_for
                 // lookups (which use normalize_uri_key / uri_key) match
