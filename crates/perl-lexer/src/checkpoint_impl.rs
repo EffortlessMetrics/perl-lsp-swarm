@@ -5,7 +5,6 @@ use crate::checkpoint::{
 use crate::heredoc::HeredocSpec;
 use crate::quote_handler::QuoteOperatorInfo;
 use crate::{LexerCheckpoint, LexerMode, PerlLexer};
-use std::sync::Arc;
 
 impl Checkpointable for PerlLexer<'_> {
     fn checkpoint(&self) -> LexerCheckpoint {
@@ -32,6 +31,7 @@ impl Checkpointable for PerlLexer<'_> {
             current_pos,
             after_newline,
             pending_heredocs,
+            next_heredoc_ordinal,
             line_start_offset,
             emit_heredoc_body_tokens,
             current_quote_op,
@@ -97,8 +97,10 @@ impl Checkpointable for PerlLexer<'_> {
                     body_start: pending.body_start,
                     allow_indent: pending.allow_indent,
                     interpolates: pending.interpolates,
+                    identity: pending.identity.clone(),
                 })
                 .collect(),
+            next_heredoc_ordinal: *next_heredoc_ordinal,
             line_start_offset: *line_start_offset,
             current_quote_op: current_quote_op.as_ref().map(|quote| QuoteOperatorCheckpoint {
                 operator: quote.operator.clone(),
@@ -157,13 +159,13 @@ impl Checkpointable for PerlLexer<'_> {
         self.pending_heredocs = replay
             .pending_heredocs
             .iter()
-            .map(|pending| HeredocSpec {
-                label: Arc::from(pending.label.as_str()),
-                body_start: pending.body_start,
-                allow_indent: pending.allow_indent,
-                interpolates: pending.interpolates,
+            .map(|pending| {
+                let mut identity = pending.identity.clone();
+                identity.set_body_start(pending.body_start);
+                HeredocSpec::from_identity(identity)
             })
             .collect();
+        self.next_heredoc_ordinal = replay.next_heredoc_ordinal;
         self.line_start_offset = replay.line_start_offset;
         self.current_quote_op = replay.current_quote_op.as_ref().map(|quote| QuoteOperatorInfo {
             operator: quote.operator.clone(),
@@ -284,12 +286,10 @@ mod tests {
         lexer.paren_depth = 4;
         lexer.current_pos = Position { byte: 32, line: 3, column: 5 };
         lexer.after_newline = false;
-        lexer.pending_heredocs = vec![HeredocSpec {
-            label: Arc::from("END"),
-            body_start: 48,
-            allow_indent: true,
-            interpolates: true,
-        }];
+        lexer.pending_heredocs = vec![HeredocSpec::from_identity(
+            crate::heredoc::HeredocQueueIdentity::test_fixture("END", 48, true),
+        )];
+        lexer.next_heredoc_ordinal = 7;
         lexer.line_start_offset = 24;
         lexer.emit_heredoc_body_tokens = true;
         lexer.current_quote_op =

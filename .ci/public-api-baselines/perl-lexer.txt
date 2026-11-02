@@ -179,6 +179,7 @@ pub fn perl_lexer::LexerPolicyIdentity::fmt(&self, f: &mut core::fmt::Formatter<
 pub struct perl_lexer::checkpoint::PendingHeredocCheckpoint
 pub perl_lexer::checkpoint::PendingHeredocCheckpoint::allow_indent: bool
 pub perl_lexer::checkpoint::PendingHeredocCheckpoint::body_start: usize
+pub perl_lexer::checkpoint::PendingHeredocCheckpoint::identity: perl_lexer::HeredocQueueIdentity
 pub perl_lexer::checkpoint::PendingHeredocCheckpoint::interpolates: bool
 pub perl_lexer::checkpoint::PendingHeredocCheckpoint::label: alloc::string::String
 pub fn perl_lexer::checkpoint::PendingHeredocCheckpoint::clone(&self) -> perl_lexer::checkpoint::PendingHeredocCheckpoint
@@ -415,6 +416,25 @@ pub fn perl_lexer::CheckpointRestoreError::clone(&self) -> perl_lexer::Checkpoin
 pub fn perl_lexer::CheckpointRestoreError::eq(&self, other: &perl_lexer::CheckpointRestoreError) -> bool
 pub fn perl_lexer::CheckpointRestoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lexer::CheckpointRestoreError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::HeredocOpenerForm
+pub perl_lexer::HeredocOpenerForm::Backslash
+pub perl_lexer::HeredocOpenerForm::Backtick
+pub perl_lexer::HeredocOpenerForm::Bare
+pub perl_lexer::HeredocOpenerForm::DoubleQuoted
+pub perl_lexer::HeredocOpenerForm::SingleQuoted
+pub const fn perl_lexer::HeredocOpenerForm::interpolates(self) -> bool
+pub const fn perl_lexer::HeredocOpenerForm::is_command(self) -> bool
+pub fn perl_lexer::HeredocOpenerForm::clone(&self) -> perl_lexer::HeredocOpenerForm
+pub fn perl_lexer::HeredocOpenerForm::eq(&self, other: &perl_lexer::HeredocOpenerForm) -> bool
+pub fn perl_lexer::HeredocOpenerForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::HeredocOpenerForm::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_lexer::HeredocOperator
+pub perl_lexer::HeredocOperator::Indented
+pub perl_lexer::HeredocOperator::Ordinary
+pub fn perl_lexer::HeredocOperator::clone(&self) -> perl_lexer::HeredocOperator
+pub fn perl_lexer::HeredocOperator::eq(&self, other: &perl_lexer::HeredocOperator) -> bool
+pub fn perl_lexer::HeredocOperator::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::HeredocOperator::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_lexer::LexerError
 pub perl_lexer::LexerError::HeredocError
 pub perl_lexer::LexerError::HeredocError::position: usize
@@ -519,6 +539,41 @@ pub fn perl_lexer::CheckpointCache::find_before(&self, position: usize) -> core:
 pub fn perl_lexer::CheckpointCache::is_empty(&self) -> bool
 pub fn perl_lexer::CheckpointCache::len(&self) -> usize
 pub fn perl_lexer::CheckpointCache::new(max_checkpoints: usize) -> perl_lexer::CheckpointCache
+pub struct perl_lexer::HeredocAdmittedSource
+pub fn perl_lexer::HeredocAdmittedSource::content_digest(&self) -> &perl_source_identity::digest::ContentDigest
+pub fn perl_lexer::HeredocAdmittedSource::generation(&self) -> &perl_source_identity::generation::SourceGeneration
+pub fn perl_lexer::HeredocAdmittedSource::is_publication_ready(&self) -> bool
+pub fn perl_lexer::HeredocAdmittedSource::logical_source(&self) -> core::option::Option<&perl_source_identity::ids::LogicalSourceId>
+pub fn perl_lexer::HeredocAdmittedSource::clone(&self) -> perl_lexer::HeredocAdmittedSource
+pub fn perl_lexer::HeredocAdmittedSource::eq(&self, other: &perl_lexer::HeredocAdmittedSource) -> bool
+pub fn perl_lexer::HeredocAdmittedSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::HeredocAdmittedSource::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_lexer::HeredocByteRange
+pub const fn perl_lexer::HeredocByteRange::as_range(self) -> core::ops::range::Range<usize>
+pub const fn perl_lexer::HeredocByteRange::end(self) -> usize
+pub fn perl_lexer::HeredocByteRange::slice(self, source: &str) -> core::option::Option<&str>
+pub const fn perl_lexer::HeredocByteRange::start(self) -> usize
+pub fn perl_lexer::HeredocByteRange::clone(&self) -> perl_lexer::HeredocByteRange
+pub fn perl_lexer::HeredocByteRange::eq(&self, other: &perl_lexer::HeredocByteRange) -> bool
+pub fn perl_lexer::HeredocByteRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::HeredocByteRange::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_lexer::HeredocQueueIdentity
+pub const fn perl_lexer::HeredocQueueIdentity::allow_indent(&self) -> bool
+pub const fn perl_lexer::HeredocQueueIdentity::body_start(&self) -> usize
+pub fn perl_lexer::HeredocQueueIdentity::decoded_label(&self) -> &str
+pub const fn perl_lexer::HeredocQueueIdentity::form(&self) -> perl_lexer::HeredocOpenerForm
+pub const fn perl_lexer::HeredocQueueIdentity::interpolates(&self) -> bool
+pub const fn perl_lexer::HeredocQueueIdentity::is_command(&self) -> bool
+pub const fn perl_lexer::HeredocQueueIdentity::opener_range(&self) -> perl_lexer::HeredocByteRange
+pub const fn perl_lexer::HeredocQueueIdentity::operator(&self) -> perl_lexer::HeredocOperator
+pub const fn perl_lexer::HeredocQueueIdentity::operator_range(&self) -> perl_lexer::HeredocByteRange
+pub const fn perl_lexer::HeredocQueueIdentity::ordinal(&self) -> u32
+pub const fn perl_lexer::HeredocQueueIdentity::raw_label_range(&self) -> perl_lexer::HeredocByteRange
+pub fn perl_lexer::HeredocQueueIdentity::raw_label_spelling(&self) -> &str
+pub fn perl_lexer::HeredocQueueIdentity::source(&self) -> &perl_lexer::HeredocAdmittedSource
+pub fn perl_lexer::HeredocQueueIdentity::clone(&self) -> perl_lexer::HeredocQueueIdentity
+pub fn perl_lexer::HeredocQueueIdentity::eq(&self, other: &perl_lexer::HeredocQueueIdentity) -> bool
+pub fn perl_lexer::HeredocQueueIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::LexerCheckpoint
 pub fn perl_lexer::LexerCheckpoint::after_arrow(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::after_newline(&self) -> bool
@@ -606,8 +661,10 @@ pub fn perl_lexer::PerlLexer<'_>::bind_generation(&mut self, generation: perl_so
 pub fn perl_lexer::PerlLexer<'_>::bind_logical_source(&mut self, logical_source: perl_source_identity::ids::LogicalSourceId)
 pub fn perl_lexer::PerlLexer<'a>::collect_tokens(&mut self) -> alloc::vec::Vec<perl_lexer::token::Token>
 pub fn perl_lexer::PerlLexer<'a>::enter_format_mode(&mut self)
+pub fn perl_lexer::PerlLexer<'a>::front_heredoc_identity(&self) -> core::option::Option<&perl_lexer::HeredocQueueIdentity>
 pub fn perl_lexer::PerlLexer<'a>::next_token(&mut self) -> core::option::Option<perl_lexer::token::Token>
 pub fn perl_lexer::PerlLexer<'a>::peek_token(&mut self) -> core::option::Option<perl_lexer::token::Token>
+pub fn perl_lexer::PerlLexer<'a>::pending_heredoc_identities(&self) -> alloc::vec::Vec<perl_lexer::HeredocQueueIdentity>
 pub fn perl_lexer::PerlLexer<'a>::reset(&mut self)
 pub fn perl_lexer::PerlLexer<'a>::set_mode(&mut self, mode: perl_lexer::mode::LexerMode)
 pub fn perl_lexer::PerlLexer<'a>::with_body_tokens(input: &'a str) -> perl_lexer::PerlLexer<'a>

@@ -50,6 +50,9 @@ pub struct PerlLexer<'a> {
     pub(crate) current_pos: Position,
     pub(crate) after_newline: bool,
     pub(crate) pending_heredocs: Vec<HeredocSpec>,
+    /// Next declaration ordinal to assign on successful queue admission (#13502).
+    /// Monotonic for this lexer instance so popped entries cannot reuse an ordinal.
+    pub(crate) next_heredoc_ordinal: u32,
     pub(crate) line_start_offset: usize,
     pub(crate) emit_heredoc_body_tokens: bool,
     pub(crate) current_quote_op: Option<quote_handler::QuoteOperatorInfo>,
