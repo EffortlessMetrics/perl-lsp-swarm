@@ -1,6 +1,6 @@
 //! Regression tests for issue #2730 — CPAN `signature_param` bucket (Test::LectroTest::Property.pm).
 //!
-//! Root cause: the lexer merges adjacent prototype `&` characters into `TokenKind::LogicalAnd`,
+//! Root cause: the lexer merges adjacent prototype `&` characters into `TokenKind::And`,
 //! so `sub Property(&&@)` was misrouted into signature parsing and emitted
 //! "Expected comma or closing parenthesis in signature".
 //!
