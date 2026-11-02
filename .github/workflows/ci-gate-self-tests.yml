@@ -169,6 +169,13 @@ on:
       # its inline snapshot step makes, so an edit here must re-prove it.
       - '.github/workflows/ripr-liveness.yml'
       - 'scripts/ci/test_ripr_liveness_pagination_16153.py'
+      # VS Code current-source smoke scheduling observer (#6887): classifies
+      # superseded queued heads separately from active-run completion.
+      - 'scripts/ci/vscode_current_source_smoke_scheduling.py'
+      - 'scripts/ci/test_vscode_current_source_smoke_scheduling.py'
+      - 'scripts/ci/fixtures/vscode_current_source_smoke_scheduling/**'
+      - '.github/workflows/vscode-current-source-linux-smoke.yml'
+      - 'vscode-extension/scripts/vscode-toolchain-workflows.test.js'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -527,6 +534,9 @@ jobs:
 
       - name: Run ripr liveness pagination contract tests (#16153)
         run: python3 -m unittest scripts.ci.test_ripr_liveness_pagination_16153
+
+      - name: VS Code current-source smoke scheduling observer self-test (#6887)
+        run: python3 -m unittest scripts.ci.test_vscode_current_source_smoke_scheduling
 
       - name: Run optional cargo-allow cadence capture tests (#15304)
         run: python3 -m unittest scripts.tests.test_cargo_allow_cadence
