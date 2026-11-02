@@ -43,18 +43,31 @@ pub enum DirectCallableCallSyntaxClass {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DirectCallableDisposition {
+    /// Resolved language builtin or feature-gated construct.
     ResolvedBuiltinOrLanguageConstruct,
+    /// Resolved local or package subroutine binding.
     ResolvedLocalOrPackageSub,
+    /// Resolved imported or currently visible binding.
     ResolvedImportedOrVisibleBinding,
+    /// Resolved generated or framework binding with exact identity.
     ResolvedGeneratedOrFrameworkBinding,
+    /// Resolved package-qualified target.
     ResolvedQualifiedTarget,
+    /// Multiple exact competing targets remain.
     AmbiguousMultipleTargets,
+    /// Relevant dynamic callable behavior may apply.
     DynamicCallablePossible,
+    /// External dependency is not indexed for this subject.
     ExternalOrDependencyUnindexed,
+    /// Readiness or denominator evidence is incomplete.
     NotReadyOrIncomplete,
+    /// Complete denominator checked; no applicable target observed.
     ExactUnresolved,
+    /// Call shape is unsupported for direct-call assessment.
     UnsupportedCallShape,
+    /// Subject or evidence is stale for the requested generation.
     Stale,
+    /// Instrumentation or query producer failure.
     InstrumentFailure,
 }
 
@@ -62,14 +75,23 @@ pub enum DirectCallableDisposition {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DirectCallableCallShapeDisposition {
+    /// Exact bare parenthesized function call.
     ExactBareParenthesized,
+    /// Exact bare unparenthesized call when parser identity is exact.
     ExactBareUnparenthesized,
+    /// Exact package-qualified function call.
     ExactQualified,
+    /// Explicit ampersand named call.
     ExactNamedAmpersand,
+    /// Coderef variable call form.
     CoderefVariable,
+    /// Method call (not a direct import subject).
     Method,
+    /// Indirect object or filehandle ambiguity.
     AmbiguousIndirectOrFilehandle,
+    /// Unsupported call shape for this assessment family.
     Unsupported,
+    /// Recovered or synthetic parser disposition.
     RecoveredOrSynthetic,
 }
 
@@ -77,10 +99,15 @@ pub enum DirectCallableCallShapeDisposition {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DirectCallableTargetResolution {
+    /// Exactly one observed target.
     ExactOne,
+    /// Several exact competing targets.
     ExactSeveral,
+    /// No target observed under a complete denominator.
     NoneObserved,
+    /// Observations contradict each other.
     Contradicted,
+    /// Targets are not comparable for this subject.
     NotComparable,
 }
 
@@ -88,10 +115,15 @@ pub enum DirectCallableTargetResolution {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DirectCallableDynamicBoundary {
+    /// Dynamic behavior proven absent for this subject.
     ProvenAbsentForSubject,
+    /// Dynamic behavior may apply.
     Possible,
+    /// Dynamic behavior is present and relevant.
     PresentAndRelevant,
+    /// Dynamic evidence is unknown or incomplete.
     UnknownOrIncomplete,
+    /// Dynamic boundary does not apply to this call class.
     NotApplicable,
 }
 
@@ -99,11 +131,17 @@ pub enum DirectCallableDynamicBoundary {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DirectCallableCoverageDisposition {
+    /// Complete denominator for the admitted call class.
     CompleteForCallClass,
+    /// Partial source-tier or readiness coverage.
     Partial,
+    /// External or dependency tier is unindexed.
     ExternalOrDependencyUnindexed,
+    /// Required producers are not ready.
     NotReady,
+    /// Coverage subject is stale.
     Stale,
+    /// Instrumentation failed while assembling coverage.
     InstrumentFailure,
 }
 
@@ -117,7 +155,7 @@ pub enum DirectCallableLegacyInputKind {
     EmptyVectorAbsence,
     /// `None` from dynamic helper with unknown availability.
     DynamicNoneAbsence,
-    /// Default/no-op query implementation.
+    /// Default/no-op query implementation supplied empty evidence.
     NullQueryImplementation,
 }
 
