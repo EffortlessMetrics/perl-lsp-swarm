@@ -36,8 +36,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
-    let status =
-        Command::new("git").current_dir(dir).args(args).status().context("failed to spawn git")?;
+    let status = xtask::git_environment::isolate(Command::new("git"))
+        .current_dir(dir)
+        .args(args)
+        .status()
+        .context("failed to spawn git")?;
     if !status.success() {
         bail!("git {args:?} failed in {}", dir.display());
     }
@@ -79,7 +82,7 @@ fn init_fixture_repo(tmp: &Path) -> Result<PathBuf> {
 }
 
 fn head_sha(repo: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = xtask::git_environment::isolate(Command::new("git"))
         .current_dir(repo)
         .args(["rev-parse", "HEAD"])
         .output()
@@ -91,7 +94,7 @@ fn head_sha(repo: &Path) -> Result<String> {
 }
 
 fn git_ref_exists(repo: &Path, reference: &str) -> Result<bool> {
-    let status = Command::new("git")
+    let status = xtask::git_environment::isolate(Command::new("git"))
         .current_dir(repo)
         .args(["rev-parse", "--verify", "--quiet", reference])
         .stdout(std::process::Stdio::null())
@@ -116,7 +119,7 @@ fn git_ref_exists(repo: &Path, reference: &str) -> Result<bool> {
 /// Windows dev machines this repo is built on, without depending on a
 /// bash interpreter being on PATH.
 fn old_shell_style_new_branch_diff(repo: &Path, local_sha: &str) -> Result<Vec<String>> {
-    let merge_base_output = Command::new("git")
+    let merge_base_output = xtask::git_environment::isolate(Command::new("git"))
         .current_dir(repo)
         .args(["merge-base", local_sha, "origin/master"])
         .output()
@@ -128,7 +131,7 @@ fn old_shell_style_new_branch_diff(repo: &Path, local_sha: &str) -> Result<Vec<S
         local_sha.to_string()
     };
 
-    let diff_output = Command::new("git")
+    let diff_output = xtask::git_environment::isolate(Command::new("git"))
         .current_dir(repo)
         .args(["diff", "--name-only", &resolved_remote_sha, local_sha])
         .output()

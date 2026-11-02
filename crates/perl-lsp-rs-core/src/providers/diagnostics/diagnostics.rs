@@ -35,6 +35,7 @@ use super::lints::strict_warnings::check_strict_warnings_with_pragma_map;
 use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
 use super::lints::version_compat::check_version_compat_with_pragma_map;
+use super::lints::wantarray_branch::check_irrelevant_wantarray_branches;
 use super::parse_errors::{parse_error_code, parse_error_severity};
 use super::regex_canonical::project_canonical_regex_diagnostics;
 use super::scope::scope_issues_to_diagnostics_with_semantics_ref;
@@ -772,6 +773,9 @@ impl DiagnosticsProvider {
 
             // Unreachable code detection (PL406)
             check_unreachable_code(ast, &mut diagnostics);
+
+            // Irrelevant wantarray() branches (PL411, issue #2993)
+            check_irrelevant_wantarray_branches(ast, &mut diagnostics);
 
             // Duplicate hash key detection (PL408)
             check_duplicate_hash_keys(ast, &mut diagnostics);

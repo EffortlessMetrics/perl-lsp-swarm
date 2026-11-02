@@ -1879,7 +1879,19 @@ impl BodyLowerer {
         }
 
         let anchor = self.make_body_anchor(range);
-        let sigil = sigil_str(&v.sigil);
+        // A subscript container spelled `$arr` may be bound to the `@arr`
+        // aggregate declaration; the published lexical identity must name
+        // the storage it actually reads, not the source spelling (#16206).
+        let sigil = match v.binding {
+            Some(binding_id) => file
+                .scope_graph
+                .bindings
+                .iter()
+                .find(|binding| binding.id == binding_id)
+                .map(|binding| binding.sigil.clone())
+                .unwrap_or_else(|| sigil_str(&v.sigil).to_string()),
+            None => sigil_str(&v.sigil).to_string(),
+        };
         // At this point access is Read or Write (RMwW filtered above).
         let op = match &v.kind {
             VariableKind::Lexical if v.access == AccessMode::Read => {

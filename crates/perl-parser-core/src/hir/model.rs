@@ -89,7 +89,10 @@ pub struct AstAnchor {
 pub enum RecoveryConfidence {
     /// Lowered from a normally parsed AST node.
     Parsed,
-    /// Lowered from a parser recovery wrapper with a partial valid tree.
+    /// Lowered from a parser recovery wrapper with a partial valid tree, or
+    /// from a parser-synthesized non-source operand (a fabricated node with
+    /// no source span, such as the zero-width `Number("1")` condition of
+    /// `while ()`), where no normally parsed source node exists to lower.
     Recovered,
     /// Lowered from a partially known or placeholder AST shape.
     Partial,

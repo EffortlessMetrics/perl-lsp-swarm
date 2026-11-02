@@ -2345,25 +2345,30 @@ print "result: $final\n";
 
     #[test]
     fn test_attach_tcp_valid_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
         let mut adapter = DebugAdapter::new();
         let args = json!({
-            "host": "localhost",
-            "port": 13603,
+            "host": "127.0.0.1",
+            "port": port,
             "timeout": 5000
         });
         let response = adapter.handle_request(1, "attach", Some(args));
 
         match response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(!success); // Not yet implemented, but validates correctly
+                assert!(success);
                 assert_eq!(command, "attach");
-                assert!(message.is_some());
-                let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("localhost:13603"));
-                assert!(msg.contains("5000ms timeout"));
+                assert!(message.is_none());
             }
             _ => return Err("Expected response".into()),
         }
+        let (_peer, _) = listener.accept()?;
+        assert!(matches!(
+            adapter.handle_request(2, "disconnect", None),
+            DapMessage::Response { success: true, .. }
+        ));
         Ok(())
     }
 
@@ -2641,7 +2646,7 @@ print "result: $final\n";
                 assert_eq!(command, "attach");
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("Port must be in range"));
+                assert_eq!(msg, "Invalid port: expected an integer in range 1-65535");
             }
             _ => return Err("Expected response".into()),
         }
@@ -2688,27 +2693,6 @@ print "result: $final\n";
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
                 assert!(msg.contains("Timeout cannot exceed"));
-            }
-            _ => return Err("Expected response".into()),
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_attach_default_values() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        // Empty args should use defaults and fail with missing arguments message
-        let args = json!({});
-        let response = adapter.handle_request(1, "attach", Some(args));
-
-        match response {
-            DapMessage::Response { success, command, message, .. } => {
-                assert!(!success);
-                assert_eq!(command, "attach");
-                assert!(message.is_some());
-                // Should use default host/port but still not be implemented
-                let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("localhost:13603"));
             }
             _ => return Err("Expected response".into()),
         }
@@ -2817,8 +2801,9 @@ print "result: $final\n";
                 DapMessage::Response { success, message, .. } => {
                     assert!(!success, "port {port} should be rejected");
                     assert!(
-                        message.as_ref().is_some_and(|m| m.contains("out of range")),
-                        "expected 'out of range' error for port {port}, got: {message:?}"
+                        message.as_deref()
+                            == Some("Invalid port: expected an integer in range 1-65535"),
+                        "expected invalid-port error for port {port}, got: {message:?}"
                     );
                 }
                 _ => return Err(format!("Expected error response for port {port}").into()),
@@ -2837,9 +2822,9 @@ print "result: $final\n";
             let args = json!({ "port": port });
             let response = adapter.handle_request(2, "attach", Some(args));
             if let DapMessage::Response { message, .. } = response {
-                // Should NOT contain "out of range" — it passed validation
+                // Boundary integers must pass the native port validation.
                 assert!(
-                    !message.as_ref().is_some_and(|m| m.contains("out of range")),
+                    !message.as_ref().is_some_and(|m| m.contains("Invalid port")),
                     "port {port} should pass range validation, got: {message:?}"
                 );
             }

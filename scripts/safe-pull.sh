@@ -88,9 +88,15 @@ if printf '%s\n' "${MERGE_OUTPUT}" | grep -q "would be overwritten by merge"; th
   # would relocate committed-file edits out of the tree and let the retry
   # report success on a mangled checkout. Validate every candidate against the
   # index BEFORE moving anything; any tracked path aborts the pull untouched.
+  # `git ls-files --error-unmatch` tests index membership only, so a staged
+  # deletion fails open (path gone from the index, untracked bytes still at
+  # the path). Also refuse paths named by `git diff --cached` (#17418).
   TRACKED_OFFENDERS=""
   while IFS= read -r f; do
-    if [ -n "${f}" ] && git ls-files --error-unmatch -- ":(literal)${f}" >/dev/null 2>&1; then
+    if [ -n "${f}" ] && {
+      git ls-files --error-unmatch -- ":(literal)${f}" >/dev/null 2>&1 \
+        || [ -n "$(git diff --cached --name-only -- ":(literal)${f}" 2>/dev/null || true)" ]
+    }; then
       TRACKED_OFFENDERS="${TRACKED_OFFENDERS}${f}
 "
     fi

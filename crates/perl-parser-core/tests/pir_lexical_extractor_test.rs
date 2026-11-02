@@ -20,6 +20,25 @@ fn extract(source: &str) -> perl_parser_core::pir::LexicalExtractorReceipt {
     extract_lexical_facts(&hir)
 }
 
+/// An aggregate-bound element container publishes its storage sigil: the
+/// PIR lexical identity for `$arr[0]` (bound to `@arr`) is `@arr`, never a
+/// `$`-spelled read of the same-named scalar (#16206).
+#[test]
+fn aggregate_bound_container_publishes_aggregate_sigil() -> Result<(), Box<dyn std::error::Error>> {
+    let receipt = extract("my @arr = (11); my $arr = [22]; my $x = $arr[0];");
+    let body = &receipt.bodies[0];
+    let arr_reads: Vec<&str> = body
+        .facts
+        .iter()
+        .filter(|fact| {
+            fact.name.name == "arr" && fact.role == perl_parser_core::pir::LexicalRole::Read
+        })
+        .map(|fact| fact.name.sigil.as_str())
+        .collect();
+    assert_eq!(arr_reads, vec!["@"], "only the aggregate read may be published");
+    Ok(())
+}
+
 /// Fixture 1: Scope isolation with shadowed names.
 ///
 /// Verifies that an outer `$x` in the program root is isolated from an inner `$x`

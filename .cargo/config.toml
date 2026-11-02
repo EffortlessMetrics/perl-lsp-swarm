@@ -2,8 +2,8 @@
 xtask = "run --package xtask --"
 
 # Agent/local-safe aliases. These do not choose machine paths.
-# Machine paths belong in .cargo/config.local.toml, ~/.cargo/config.toml,
-# or scripts/cargo-safe.
+# Select machine storage in the task shell using docs/agents/CARGO_STORAGE.md.
+# Cargo does not automatically load .cargo/config.local.toml.
 agent-check = "check --workspace --all-targets --profile agent --locked"
 agent-test = "test --workspace --all-targets --profile agent --locked"
 agent-clippy = "clippy --workspace --all-targets --profile agent --locked -- -D warnings -A missing_docs"

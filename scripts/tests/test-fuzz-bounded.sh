@@ -242,6 +242,10 @@ assert_not_contains "LF named target does not invoke undeclared names" \
   "FUZZ_RUN_TARGET=other_target" "$CARGO_INVOCATION_LOG"
 assert_contains "LF named target prints success banner" \
   "Bounded fuzz testing complete" "${TMPDIR_BASE}/lf.out"
+assert_contains "LF named target declares libFuzzer RSS ceiling" \
+  "-rss_limit_mb=2048" "${TMPDIR_BASE}/lf.out"
+assert_contains "LF named target forwards rss_limit_mb to libFuzzer" \
+  "-rss_limit_mb=2048" "$CARGO_INVOCATION_LOG"
 
 # ── CRLF discovery (Git Bash + native Windows Python) ─────────────────────────
 

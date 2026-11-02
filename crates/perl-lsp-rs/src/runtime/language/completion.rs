@@ -27,6 +27,7 @@ use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
 use perl_lsp_rs_core::providers::dancer2::Dancer2CompletionCandidate;
+use perl_lsp_rs_core::providers::htmx::htmx_attribute_name_completion_admitted;
 use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -1048,6 +1049,7 @@ impl LspServer {
             });
         if is_method_completion
             || CompletionProvider::detect_hash_key_context(doc_text, offset).is_some()
+            || htmx_attribute_name_completion_admitted(doc_text, offset)
         {
             return;
         }

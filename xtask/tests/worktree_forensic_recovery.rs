@@ -359,7 +359,7 @@ fn configured_fsmonitor_and_hooks_are_suppressed_during_observation() -> Result<
     let hooks_path = path_text(&hooks_dir)?.replace('\\', "/");
     run_git(&fixture.candidate, &["config", "core.hooksPath", hooks_path.as_str()])?;
 
-    let configured_status = Command::new("git")
+    let configured_status = xtask::git_environment::isolate(Command::new("git"))
         .current_dir(&fixture.candidate)
         .args(["status", "--porcelain=v1"])
         .stdin(Stdio::null())
@@ -633,7 +633,7 @@ fn run_git(root: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    Command::new("git")
+    xtask::git_environment::isolate(Command::new("git"))
         .current_dir(root)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args)
