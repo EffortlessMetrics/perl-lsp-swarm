@@ -77,6 +77,7 @@ async function observeCoexistenceCases(
     status: 'not_proven',
     reason: 'perl-lsp.critic.engine is not registered on this artifact',
   };
+  const priorEngine = config.inspect<string>('critic.engine')?.workspaceValue;
   try {
     const cleanReport = await coexistenceReportFromCommand();
     clean = {
@@ -87,11 +88,25 @@ async function observeCoexistenceCases(
       await config.update('critic.engine', 'legacy', vscode.ConfigurationTarget.Workspace);
       const conflictReport = await coexistenceReportFromCommand();
       const conflictClass = 'legacy_first_party_critic_setting_active';
+      const classPresent = conflictReport.includes(conflictClass);
+      const scopePresent = conflictReport.includes('Scope: user');
       detectedConflict = {
-        status: conflictReport.includes(conflictClass) ? 'ok' : 'wrong_answer',
+        status: classPresent && scopePresent ? 'ok' : 'wrong_answer',
         expected_class: conflictClass,
+        expected_scope: 'user',
+        injection: 'workspace perl-lsp.critic.engine=legacy',
       };
       await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Workspace);
+      const afterClear = await coexistenceReportFromCommand();
+      if (
+        detectedConflict.status === 'ok' &&
+        afterClear.includes(conflictClass)
+      ) {
+        detectedConflict = {
+          status: 'wrong_answer',
+          reason: 'legacy conflict persisted after clearing injected workspace engine',
+        };
+      }
     }
   } catch (error: unknown) {
     clean = {
@@ -102,6 +117,14 @@ async function observeCoexistenceCases(
       status: 'error',
       message: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    if (registeredConfigurationKeys.has('perl-lsp.critic.engine')) {
+      if (priorEngine === undefined) {
+        await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Workspace);
+      } else {
+        await config.update('critic.engine', priorEngine, vscode.ConfigurationTarget.Workspace);
+      }
+    }
   }
   return { clean, detectedConflict };
 }

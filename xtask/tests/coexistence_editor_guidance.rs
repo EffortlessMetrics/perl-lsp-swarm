@@ -38,10 +38,7 @@ fn coexistence_doc_states_non_vscode_boundary_and_vs_code_command() {
         "PATH presence of `perlcritic`",
         "no selectable external Perl::Critic engine",
     ] {
-        assert!(
-            doc.contains(needle),
-            "COEXISTENCE.md must contain {needle:?}"
-        );
+        assert!(doc.contains(needle), "COEXISTENCE.md must contain {needle:?}");
     }
 }
 
