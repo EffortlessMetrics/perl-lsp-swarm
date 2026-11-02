@@ -70,6 +70,18 @@ if [[ -z "$CORE_JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$CORE_JSON"; then
     not_proven "invalid_fact_collector_output"
 fi
 
+# Core envelope schema-version gate (#15278). Missing versions are a deprecation
+# warning for legacy collectors; unknown versions are refused before merging
+# the core object into the wrapper payload.
+SUPPORTED_CORE_SCHEMA_VERSIONS=("convergence_core.v1")
+CORE_SCHEMA_VERSION="$(jq -r '.schema_version // ""' <<<"$CORE_JSON")"
+if [[ -z "$CORE_SCHEMA_VERSION" ]]; then
+    echo "WARN: check-pr-review-convergence-core output is missing schema_version; refresh the collector (see docs/reference/REVIEW_CONVERGENCE_OUTPUT_V1.md)" >&2
+elif [[ ! " ${SUPPORTED_CORE_SCHEMA_VERSIONS[*]} " == *" $CORE_SCHEMA_VERSION "* ]]; then
+    echo "ERROR: unsupported convergence-core schema_version '$CORE_SCHEMA_VERSION' (wrapper supports: ${SUPPORTED_CORE_SCHEMA_VERSIONS[*]})" >&2
+    not_proven "unsupported_convergence_core_schema_version"
+fi
+
 get_num() {
     local selector="$1"
     local value
