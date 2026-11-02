@@ -538,15 +538,14 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
     if manifest.schema != SCHEMA_NAME {
         bail!("schema name mismatch: expected {SCHEMA_NAME}, found {}", manifest.schema);
     }
-    if manifest.schema_version == SCHEMA_VERSION {
-        // supported revision
-    } else if manifest.schema_version > MAX_KNOWN_SCHEMA_VERSION {
-        bail!(
-            "schema_version {} newer than known max {}; upgrade xtask",
-            manifest.schema_version,
-            MAX_KNOWN_SCHEMA_VERSION
-        );
-    } else {
+    if manifest.schema_version != SCHEMA_VERSION {
+        if manifest.schema_version > MAX_KNOWN_SCHEMA_VERSION {
+            bail!(
+                "schema_version {} newer than known max {}; upgrade xtask",
+                manifest.schema_version,
+                MAX_KNOWN_SCHEMA_VERSION
+            );
+        }
         bail!(
             "schema_version mismatch: expected {SCHEMA_VERSION}, found {}",
             manifest.schema_version
