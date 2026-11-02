@@ -66,6 +66,11 @@ fn kate_shaped_execute_command_safe_delete_refuses_without_silent_noop() -> Test
         "Kate-shaped executeCommand must not report live delete without applyEdit: {result}"
     );
     assert_eq!(result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(
+        result.get("edit_delivery_disposition").and_then(Value::as_str),
+        Some("refused_unsupported_client"),
+        "Kate-shaped executeCommand must record explicit refusal disposition: {result}"
+    );
     assert_absent(&result, "/apply_edit_requested")?;
     assert!(
         !harness
