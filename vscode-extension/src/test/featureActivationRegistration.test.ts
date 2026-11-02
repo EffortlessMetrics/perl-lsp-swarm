@@ -5,6 +5,11 @@ describe('measureOrDeferFeature', () => {
   const originalExperiment = process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT;
   const originalDomains = process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS;
 
+  beforeEach(() => {
+    delete process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT;
+    delete process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS;
+  });
+
   afterEach(() => {
     if (originalExperiment === undefined) {
       delete process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT;

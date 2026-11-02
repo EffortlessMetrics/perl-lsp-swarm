@@ -85,15 +85,18 @@ PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT=1
 PERL_LSP_ACTIVATION_DEFER_DOMAINS=mcp
 ```
 
-When armed, non-critical domains skip registration/construction during
-activation and record `registration_status: deferred` in
-`feature_activation_metrics.v1`. Activation-critical domains ignore deferral
-requests. Production activation leaves runtime behavior unchanged.
+When armed, domains listed in `PERL_LSP_ACTIVATION_DEFER_DOMAINS` skip
+registration/construction during activation and record
+`registration_status: deferred` in `feature_activation_metrics.v1`.
+Activation-critical domains ignore deferral requests even when listed.
+When the experiment flags are unset, production activation leaves runtime
+behavior unchanged.
 
 Run the paired experiment from `vscode-extension/` after staging the current-source
 server variables required by `npm run test:published:local`:
 
 ```bash
+# Baseline must not inherit experiment flags from the shell; the runner clears them.
 npm run sample:activation-deferral:local
 ```
 

@@ -92,5 +92,5 @@ void test('reports violations when deferred arm did not defer registration', () 
     deferred: summary(380, 8),
     deferredDomains: ['mcp'],
   });
-  assert.ok(comparison.violations.some((entry) => entry.includes('zero-cost deferral')));
+  assert.ok(comparison.violations.some((entry) => entry.includes('zero-cost deferral for mcp')));
 });

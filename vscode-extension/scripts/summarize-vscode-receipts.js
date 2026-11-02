@@ -52,10 +52,19 @@ const FEATURE_DOMAINS = [
   'onboarding',
 ];
 
+function currentFeatureActivationMeasurements(receipt) {
+  const block = receipt.startup?.feature_activation;
+  if (!block || block.schema_version !== 'feature_activation_metrics.v1') {
+    return undefined;
+  }
+  const measurements = block.measurements;
+  return Array.isArray(measurements) ? measurements : undefined;
+}
+
 for (const domain of FEATURE_DOMAINS) {
   METRIC_READERS[`feature_${domain}_registration_ms`] = (receipt) => {
-    const measurements = receipt.startup?.feature_activation?.measurements;
-    if (!Array.isArray(measurements)) {
+    const measurements = currentFeatureActivationMeasurements(receipt);
+    if (!measurements) {
       return undefined;
     }
     const match = measurements.find((entry) => entry?.domain === domain);
@@ -65,8 +74,8 @@ for (const domain of FEATURE_DOMAINS) {
     return match.registration_ms;
   };
   METRIC_READERS[`feature_${domain}_first_use_ms`] = (receipt) => {
-    const measurements = receipt.startup?.feature_activation?.measurements;
-    if (!Array.isArray(measurements)) {
+    const measurements = currentFeatureActivationMeasurements(receipt);
+    if (!measurements) {
       return undefined;
     }
     const match = measurements.find((entry) => entry?.domain === domain);

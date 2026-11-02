@@ -6,6 +6,8 @@ const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
 
+const ACTIVATION_CRITICAL_DEFER_DOMAINS = new Set(['providers', 'debugger']);
+
 function parseRunCount(env = process.env) {
   const runs = Number(env.PERL_LSP_VSCODE_SAMPLE_RUNS || '3');
   if (!Number.isSafeInteger(runs) || runs < 1) {
@@ -14,6 +16,36 @@ function parseRunCount(env = process.env) {
     );
   }
   return runs;
+}
+
+function parseDeferredDomainList(raw) {
+  return raw
+    .split(/[,;\s]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function validateDeferredDomains(domains) {
+  if (domains.length === 0) {
+    throw new Error('PERL_LSP_ACTIVATION_DEFER_DOMAINS must list at least one domain');
+  }
+  for (const domain of domains) {
+    if (ACTIVATION_CRITICAL_DEFER_DOMAINS.has(domain)) {
+      throw new Error(
+        `domain ${JSON.stringify(domain)} is activation-critical and cannot be deferred in this experiment`,
+      );
+    }
+  }
+}
+
+function baselineSampleEnv(runs) {
+  const env = {
+    ...process.env,
+    PERL_LSP_VSCODE_SAMPLE_RUNS: String(runs),
+  };
+  delete env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT;
+  delete env.PERL_LSP_ACTIVATION_DEFER_DOMAINS;
+  return env;
 }
 
 function runSampleScript(sampleRoot, env) {
@@ -58,25 +90,38 @@ function compare(baselineSummary, deferredSummary, outputPath, env) {
   );
 }
 
+function assertFreshExperimentRoot(experimentRoot) {
+  if (!fs.existsSync(experimentRoot)) {
+    return;
+  }
+  const entries = fs.readdirSync(experimentRoot);
+  if (entries.length > 0) {
+    throw new Error(
+      `experiment root ${experimentRoot} is not empty; set a fresh PERL_LSP_ACTIVATION_DEFERRAL_ROOT`,
+    );
+  }
+}
+
 function main() {
   const runs = parseRunCount();
+  const deferredDomains = parseDeferredDomainList(
+    process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS ?? 'mcp',
+  );
+  validateDeferredDomains(deferredDomains);
+  const deferredDomainsJoined = deferredDomains.join(',');
+
   const experimentRoot = path.resolve(
     process.env.PERL_LSP_ACTIVATION_DEFERRAL_ROOT ??
       path.join(root, 'target', 'receipts', 'activation-deferral', `run-${Date.now()}`),
   );
+  assertFreshExperimentRoot(experimentRoot);
   const baselineRoot = path.join(experimentRoot, 'baseline');
   const deferredRoot = path.join(experimentRoot, 'deferred');
   fs.mkdirSync(baselineRoot, { recursive: true });
   fs.mkdirSync(deferredRoot, { recursive: true });
 
-  const sharedEnv = {
-    ...process.env,
-    PERL_LSP_VSCODE_SAMPLE_RUNS: String(runs),
-  };
-  const deferredDomains = (process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS ?? 'mcp').trim();
-
   process.stdout.write(`\n=== activation deferral baseline (${runs} samples) ===\n`);
-  if (runSampleScript(baselineRoot, sharedEnv) !== 0) {
+  if (runSampleScript(baselineRoot, baselineSampleEnv(runs)) !== 0) {
     process.exitCode = 1;
     return;
   }
@@ -87,12 +132,12 @@ function main() {
   }
 
   process.stdout.write(
-    `\n=== activation deferral experiment (${runs} samples, defer ${deferredDomains}) ===\n`,
+    `\n=== activation deferral experiment (${runs} samples, defer ${deferredDomainsJoined}) ===\n`,
   );
   const deferredEnv = {
-    ...sharedEnv,
+    ...baselineSampleEnv(runs),
     PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT: '1',
-    PERL_LSP_ACTIVATION_DEFER_DOMAINS: deferredDomains,
+    PERL_LSP_ACTIVATION_DEFER_DOMAINS: deferredDomainsJoined,
   };
   if (runSampleScript(deferredRoot, deferredEnv) !== 0) {
     process.exitCode = 1;

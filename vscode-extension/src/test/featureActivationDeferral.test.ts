@@ -7,6 +7,11 @@ describe('feature activation deferral experiment env', () => {
   const originalExperiment = process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT;
   const originalDomains = process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS;
 
+  beforeEach(() => {
+    delete process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT;
+    delete process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS;
+  });
+
   afterEach(() => {
     if (originalExperiment === undefined) {
       delete process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT;
@@ -36,6 +41,6 @@ describe('feature activation deferral experiment env', () => {
   test('rejects unknown domains', () => {
     process.env.PERL_LSP_ACTIVATION_DEFERRAL_EXPERIMENT = '1';
     process.env.PERL_LSP_ACTIVATION_DEFER_DOMAINS = 'not-a-domain';
-    expect(() => parseDeferredActivationDomains()).toThrow(/unknown domain/);
+    expect(() => parseDeferredActivationDomains()).toThrow(/unknown domain.*not-a-domain/);
   });
 });

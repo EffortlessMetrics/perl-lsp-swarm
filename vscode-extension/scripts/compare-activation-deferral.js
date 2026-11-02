@@ -53,6 +53,9 @@ function metricP95(metrics, name) {
 function compareActivationDeferral(input) {
   const minimumSamples = input.minimumSamples ?? 3;
   const violations = [];
+  if (input.deferredDomains.length === 0) {
+    violations.push('deferred_domains must include at least one domain');
+  }
   if (input.baseline.sample_count < minimumSamples) {
     violations.push(
       `baseline sample_count ${input.baseline.sample_count} is below required ${minimumSamples}`,
@@ -70,9 +73,24 @@ function compareActivationDeferral(input) {
       violations.push(`baseline is missing ${registrationKey} measurements for ${domain}`);
     }
     const deferredRegistration = input.deferred.metrics[registrationKey];
-    if (!deferredRegistration || deferredRegistration.p50 !== 0) {
+    if (
+      !deferredRegistration ||
+      deferredRegistration.count < minimumSamples ||
+      deferredRegistration.p50 !== 0 ||
+      deferredRegistration.min !== 0 ||
+      deferredRegistration.max !== 0
+    ) {
       violations.push(`deferred arm did not record zero-cost deferral for ${domain}`);
     }
+  }
+
+  const baselineActivateMetric = input.baseline.metrics.activate_returned_ms;
+  const deferredActivateMetric = input.deferred.metrics.activate_returned_ms;
+  if (!baselineActivateMetric || baselineActivateMetric.count < minimumSamples) {
+    violations.push('baseline is missing activate_returned_ms measurements');
+  }
+  if (!deferredActivateMetric || deferredActivateMetric.count < minimumSamples) {
+    violations.push('deferred is missing activate_returned_ms measurements');
   }
 
   const baselineActivation = metricP50(input.baseline.metrics, 'activate_returned_ms');
@@ -93,19 +111,24 @@ function compareActivationDeferral(input) {
   // Milestones are elapsed ms from extension load. Faster activate_returned_ms shifts
   // later milestones earlier in lockstep; compare slack after activation, not raw timestamps.
   for (const metricName of behaviorChecks) {
+    const baselineMetric = input.baseline.metrics[metricName];
+    const deferredMetric = input.deferred.metrics[metricName];
     const baseline = metricP50(input.baseline.metrics, metricName);
     const deferred = metricP50(input.deferred.metrics, metricName);
     if (
-      baseline === null ||
-      deferred === null ||
-      baselineActivation === null ||
-      deferredActivation === null
+      !baselineMetric ||
+      baselineMetric.count < minimumSamples ||
+      !deferredMetric ||
+      deferredMetric.count < minimumSamples
     ) {
       violations.push(`missing paired ${metricName} for behavior comparison`);
       continue;
     }
     const baselineSlack = baseline - baselineActivation;
     const deferredSlack = deferred - deferredActivation;
+    if (baselineActivation === null || deferredActivation === null) {
+      continue;
+    }
     if (Math.abs(baselineSlack - deferredSlack) > IMMATERIAL_ACTIVATION_DELTA_MS) {
       violations.push(
         `${metricName} post-activation slack p50 diverged beyond immaterial noise (${baselineSlack} vs ${deferredSlack})`,
@@ -168,8 +191,15 @@ function readSummary(summaryPath) {
 }
 
 function main() {
-  const baselinePath = path.resolve(process.argv[2] ?? '');
-  const deferredPath = path.resolve(process.argv[3] ?? '');
+  const baselineArg = process.argv[2];
+  const deferredArg = process.argv[3];
+  if (!baselineArg || !deferredArg) {
+    throw new Error(
+      'Usage: compare-activation-deferral.js <baseline-summary.json> <deferred-summary.json> [output.json]',
+    );
+  }
+  const baselinePath = path.resolve(baselineArg);
+  const deferredPath = path.resolve(deferredArg);
   const outputPath = path.resolve(
     process.argv[4] ??
       process.env.PERL_LSP_ACTIVATION_DEFERRAL_COMPARISON ??
@@ -179,11 +209,6 @@ function main() {
     .split(/[,;\s]+/)
     .map((token) => token.trim())
     .filter(Boolean);
-  if (!baselinePath || !deferredPath) {
-    throw new Error(
-      'Usage: compare-activation-deferral.js <baseline-summary.json> <deferred-summary.json> [output.json]',
-    );
-  }
   const baseline = readSummary(baselinePath);
   const deferred = readSummary(deferredPath);
   const comparison = compareActivationDeferral({ baseline, deferred, deferredDomains });
