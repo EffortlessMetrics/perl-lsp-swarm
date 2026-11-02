@@ -18,9 +18,10 @@ use perl_semantic_facts::framework_adapters::dancer2::{
 };
 use perl_semantic_facts::framework_adapters::dancer2_hooks::normalize_dancer2_hook_name;
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
-    DANCER2_TWO_X_DSL_KEYWORDS, DANCER2_TWO_X_PINNED_COMMIT_2_0_0,
-    DANCER2_TWO_X_PINNED_COMMIT_2_0_1, DANCER2_TWO_X_PINNED_COMMIT_2_1_0,
-    DANCER2_TWO_X_VERSION_CONSTRAINT, dancer2_two_x_descriptor,
+    DANCER2_TWO_X_DSL_KEYWORDS, DANCER2_TWO_X_IMPORT_DIE_MESSAGE, DANCER2_TWO_X_KEYWORD_GLOBAL,
+    DANCER2_TWO_X_KEYWORD_ROUTE_ONLY, DANCER2_TWO_X_KEYWORD_TOTAL,
+    DANCER2_TWO_X_PINNED_COMMIT_2_0_0, DANCER2_TWO_X_PINNED_COMMIT_2_0_1,
+    DANCER2_TWO_X_PINNED_COMMIT_2_1_0, DANCER2_TWO_X_VERSION_CONSTRAINT, dancer2_two_x_descriptor,
 };
 use perl_semantic_facts::hook::HookNameNormalization;
 use perl_test_must::{must, must_some_with};
@@ -561,4 +562,108 @@ fn adapters_stay_shadow_and_do_not_promote_broad_2_x_support() {
     assert_eq!(dancer2_descriptor().disposition, AdapterDisposition::Shadow);
     assert_eq!(dancer2_two_x_descriptor().disposition, AdapterDisposition::Shadow);
     assert_eq!(cell("activation", "version_gate").pin_2_1_0, ">=2.0.0,<2.2.0");
+}
+
+#[test]
+fn every_landed_profile_row_anchors_on_live_adapter_surfaces() {
+    const LANDED_CELLS: &[(&str, &str)] = &[
+        ("activation", "use_dancer2_import"),
+        ("activation", "version_gate"),
+        ("keywords", "dsl_keywords_map"),
+        ("keywords", "cookie_redirect_scope"),
+        ("callable", "runtime_deprecation_croaks"),
+        ("lifecycle", "generation_and_missing_version"),
+    ];
+    let landed_in_profile = CONTRACT_PROFILE.iter().filter(|row| row.status == "landed").count();
+    assert_eq!(
+        LANDED_CELLS.len(),
+        landed_in_profile,
+        "update LANDED_CELLS when landed profile rows change"
+    );
+
+    let two_x_source = must(std::fs::read_to_string(format!(
+        "{}/src/framework_adapters/dancer2_two_x.rs",
+        env!("CARGO_MANIFEST_DIR")
+    )));
+
+    let global_from_registry = DANCER2_TWO_X_DSL_KEYWORDS
+        .iter()
+        .filter(|keyword| keyword.scope == DslKeywordScope::Global)
+        .count();
+    let route_only_from_registry = DANCER2_TWO_X_DSL_KEYWORDS
+        .iter()
+        .filter(|keyword| keyword.scope == DslKeywordScope::RouteHandlerOnly)
+        .count();
+    let deprecated_names: Vec<_> = DANCER2_TWO_X_DSL_KEYWORDS
+        .iter()
+        .filter(|keyword| keyword.is_deprecated())
+        .map(|keyword| keyword.name)
+        .collect();
+
+    for &(family, name) in LANDED_CELLS {
+        let row = cell(family, name);
+        assert_eq!(row.status, "landed", "{}.{} must stay landed", family, name);
+        match (family, name) {
+            ("activation", "use_dancer2_import") => {
+                assert_eq!(row.authority_path, "lib/Dancer2.pm");
+                assert_eq!(row.authority_symbol, "sub import");
+                assert!(
+                    two_x_source.contains(DANCER2_TWO_X_IMPORT_DIE_MESSAGE),
+                    "import die must stay wired to the live 2.x adapter"
+                );
+            }
+            ("activation", "version_gate") => {
+                assert_eq!(row.pin_1_1_1, DANCER2_VERSION_CONSTRAINT);
+                assert_eq!(row.pin_2_0_0, DANCER2_TWO_X_VERSION_CONSTRAINT);
+                assert_eq!(row.pin_2_1_0, DANCER2_TWO_X_VERSION_CONSTRAINT);
+            }
+            ("keywords", "dsl_keywords_map") => {
+                assert_eq!(DANCER2_DSL_KEYWORDS.len(), DANCER2_TWO_X_DSL_KEYWORDS.len());
+                assert_eq!(DANCER2_TWO_X_DSL_KEYWORDS.len(), DANCER2_TWO_X_KEYWORD_TOTAL);
+                assert_eq!(DANCER2_TWO_X_KEYWORD_TOTAL, 82);
+                assert_eq!(global_from_registry, DANCER2_TWO_X_KEYWORD_GLOBAL);
+                assert_eq!(DANCER2_TWO_X_KEYWORD_GLOBAL, 43);
+                assert_eq!(route_only_from_registry, DANCER2_TWO_X_KEYWORD_ROUTE_ONLY);
+                assert_eq!(DANCER2_TWO_X_KEYWORD_ROUTE_ONLY, 39);
+                assert_eq!(
+                    row.pin_1_1_1, "82 keywords; 43 global / 39 route-handler-only",
+                    "profile narrative must stay aligned with live registry counts"
+                );
+            }
+            ("keywords", "cookie_redirect_scope") => {
+                for keyword_name in ["cookie", "redirect"] {
+                    let one_x = must_some_with(
+                        DANCER2_DSL_KEYWORDS.iter().find(|keyword| keyword.name == keyword_name),
+                        format!("1.x registry missing `{keyword_name}`"),
+                    );
+                    let two_x = must_some_with(
+                        DANCER2_TWO_X_DSL_KEYWORDS
+                            .iter()
+                            .find(|keyword| keyword.name == keyword_name),
+                        format!("2.x registry missing `{keyword_name}`"),
+                    );
+                    assert_eq!(one_x.scope, DslKeywordScope::RouteHandlerOnly);
+                    assert_eq!(two_x.scope, DslKeywordScope::RouteHandlerOnly);
+                }
+            }
+            ("callable", "runtime_deprecation_croaks") => {
+                assert_eq!(
+                    deprecated_names,
+                    ["context", "header", "headers", "push_header"],
+                    "landed deprecation row must track the live registry croak replacements"
+                );
+            }
+            ("lifecycle", "generation_and_missing_version") => {
+                assert!(
+                    two_x_source.contains("fail closed"),
+                    "2.x detection must document fail-closed lifecycle without newest-profile fallback"
+                );
+                assert!(
+                    !two_x_source.to_ascii_lowercase().contains("newest-profile"),
+                    "profile must not admit a newest-profile fallback path"
+                );
+            }
+            _ => unreachable!("LANDED_CELLS and match arms must stay in sync"),
+        }
+    }
 }
