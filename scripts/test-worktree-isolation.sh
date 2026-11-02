@@ -4,6 +4,9 @@
 set -euo pipefail
 PASS_COUNT=0
 FAIL_COUNT=0
+CLEANUP_DIRS=()
+
+trap 'for dir in "${CLEANUP_DIRS[@]:-}"; do [[ -d "$dir" ]] && rm -rf "$dir"; done' EXIT
 
 pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
@@ -21,6 +24,7 @@ make_git_repo() {
     echo "# original" >"$tmpdir/.claude/commands/test.md"
     git -C "$tmpdir" add .claude/
     git -C "$tmpdir" commit -q -m "add .claude"
+    CLEANUP_DIRS+=("$tmpdir")
     echo "$tmpdir"
 }
 
@@ -31,13 +35,8 @@ make_worktree() {
     wtdir="$(mktemp -d)"
     rm -rf "$wtdir"
     git -C "$repo" worktree add -q -b "$branch" "$wtdir"
+    CLEANUP_DIRS+=("$wtdir")
     echo "$wtdir"
-}
-
-cleanup() {
-    for dir in "$@"; do
-        [[ -d "$dir" ]] && rm -rf "$dir"
-    done
 }
 
 # Test: .claude directory has separate inodes
@@ -49,7 +48,6 @@ test_claude_isolation() {
     wt_inode="$(ls -i "$wt/.claude/commands" 2>/dev/null | awk '{print $1}' || echo "0")"
     git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune 2>/dev/null || true
-    cleanup "$repo"
     if [[ "$main_inode" != "0" && "$wt_inode" != "0" && "$main_inode" != "$wt_inode" ]]; then
         pass ".claude is isolated"
     else
@@ -68,7 +66,6 @@ test_no_leak() {
     main_content="$(cat "$repo/.claude/commands/test.md")"
     git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune 2>/dev/null || true
-    cleanup "$repo"
     if echo "$main_content" | grep -q "# original"; then
         pass "edits don't leak to main"
     else

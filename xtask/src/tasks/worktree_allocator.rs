@@ -121,12 +121,47 @@ pub fn run(command: AgentWorktreeCommand) -> Result<()> {
     }
 }
 
+/// Shared primary checkout path, matching `scripts/worktree-manager.py` defect-1 logic.
+///
+/// When `acquire` runs from a linked worktree, `project_root()` is that linked checkout;
+/// the managed pool must still derive from the primary checkout name and parent.
+fn resolve_primary_repo_root(cwd: &Path) -> Result<PathBuf> {
+    let output =
+        Command::new("git").current_dir(cwd).args(["worktree", "list", "--porcelain"]).output()?;
+    if !output.status.success() {
+        return Ok(cwd.to_path_buf());
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    let mut primary = String::new();
+    let mut in_first = false;
+    for line in stdout.lines() {
+        if !in_first {
+            if let Some(path) = line.strip_prefix("worktree ") {
+                primary = path.trim().to_string();
+                in_first = true;
+            }
+            continue;
+        }
+        if line.trim().is_empty() {
+            break;
+        }
+        if line.trim() == "bare" {
+            primary.clear();
+            break;
+        }
+    }
+    if primary.is_empty() {
+        return Ok(cwd.to_path_buf());
+    }
+    Ok(PathBuf::from(primary))
+}
+
 /// Default agent worktree directory outside the tracked tree (issue #2429).
 ///
 /// Matches `scripts/worktree-manager.py` (`<repo-parent>/<repo-name>-worktrees/`).
-fn default_agent_worktree_path(root: &Path, worktree_id: &str) -> PathBuf {
-    let repo_name = root.file_name().and_then(|name| name.to_str()).unwrap_or("repo");
-    let parent = root.parent().unwrap_or(root);
+fn default_agent_worktree_path(pool_root: &Path, worktree_id: &str) -> PathBuf {
+    let repo_name = pool_root.file_name().and_then(|name| name.to_str()).unwrap_or("repo");
+    let parent = pool_root.parent().unwrap_or(pool_root);
     parent.join(format!("{repo_name}-worktrees")).join(format!("agent-{worktree_id}"))
 }
 
@@ -140,12 +175,13 @@ fn acquire(
     ttl_minutes: i64,
 ) -> Result<()> {
     let root = project_root()?;
+    let pool_root = resolve_primary_repo_root(&root)?;
     let mut state = load_state(&root)?;
     let branch = branch.unwrap_or_else(|| format!("agent/pr-{pr}"));
     let task_id = task_id.unwrap_or_else(|| format!("pr-{pr}"));
     let owner = owner.unwrap_or_else(default_owner);
     let worktree_id = format!("wt-pr-{pr}-{}", short_timestamp());
-    let path = path.unwrap_or_else(|| default_agent_worktree_path(&root, &worktree_id));
+    let path = path.unwrap_or_else(|| default_agent_worktree_path(&pool_root, &worktree_id));
     reject_nested_agent_path(&root, &path)?;
     reject_duplicate_branch(&state, &branch)?;
     reject_existing_git_branch_checkout(&root, &branch)?;
@@ -538,6 +574,64 @@ mod tests {
             path.display()
         );
         assert_eq!(path, PathBuf::from("/tmp/perl-lsp-swarm-worktrees/agent-wt-pr-42-1700000000"));
+        Ok(())
+    }
+
+    #[test]
+    fn default_agent_worktree_path_uses_primary_checkout_from_linked_worktree() -> Result<()> {
+        let primary = tempfile::tempdir()?;
+        run_git(primary.path(), &["init", "-q"])?;
+        run_git(primary.path(), &["config", "user.email", "t@t.com"])?;
+        run_git(primary.path(), &["config", "user.name", "T"])?;
+        std::fs::write(primary.path().join("README"), "x")?;
+        run_git(primary.path(), &["add", "README"])?;
+        run_git(primary.path(), &["commit", "-q", "-m", "init"])?;
+
+        let linked = tempfile::tempdir()?;
+        run_git(
+            primary.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "slot-a",
+                linked.path().to_str().ok_or_else(|| eyre!("linked path"))?,
+            ],
+        )?;
+
+        let pool_root = resolve_primary_repo_root(linked.path())?;
+        assert_eq!(
+            pool_root,
+            primary.path().canonicalize()?,
+            "linked invocation must resolve the primary checkout"
+        );
+        let path = default_agent_worktree_path(&pool_root, "wt-pr-42-1700000000");
+        let primary_name = primary
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| eyre!("primary dir name"))?;
+        let expected_parent = primary.path().parent().unwrap_or(primary.path());
+        assert_eq!(
+            path,
+            expected_parent
+                .join(format!("{primary_name}-worktrees"))
+                .join("agent-wt-pr-42-1700000000")
+        );
+
+        run_git(
+            primary.path(),
+            &["worktree", "remove", "--force", linked.path().to_str().unwrap()],
+        )?;
+        Ok(())
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
+        let status = Command::new("git").current_dir(cwd).args(args).status()?;
+        if !status.success() {
+            bail!("git {} failed in {}", args.join(" "), cwd.display());
+        }
         Ok(())
     }
 
