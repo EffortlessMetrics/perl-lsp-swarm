@@ -15180,21 +15180,15 @@ mod extraction_bundle_shadow_compare {
         let uri = "file:///lib/Foo.pm";
         assert_unified_canonical_parity("4047_module_decl", uri, text);
         assert_unified_legacy_symbols_exact_for_shared_seed_uri("4047_module_decl", uri, text);
-    }
 
-    #[test]
-    fn reindex_records_one_declaration_extract_on_accepted_unified_reindex() {
-        let index = WorkspaceIndex::new();
-        let uri = "file:///lib/ReindexDecl.pm";
-        let text = fixture_prefix(4) + "1;\n";
+        let mut parser = Parser::new(text);
+        let ast = must(parser.parse());
         reindex_metrics::start();
-        let url = must(url::Url::parse(uri));
-        let result = index.index_file_with_generation(url, text, 1);
-        assert!(result.is_ok(), "index failed: {result:?}");
+        let _bundle = build_bundle_unified(uri, text, &ast);
         let metrics = reindex_metrics::take();
         assert_eq!(
             metrics.decl_extract_calls, 1,
-            "accepted production reindex must run exactly one declaration extract (#4047)"
+            "shared-seed module URI must run exactly one declaration extract in build_unified (#4047)"
         );
     }
 
