@@ -2950,6 +2950,7 @@ async function settleResolveMiddlewareProviderCall<T>(
   unresolvedFallback: T,
   call: () => Promise<T>,
 ): Promise<T> {
+  // Resolve hooks retain typed settlement separately from the wire fallback (#14446).
   const settlement = await settleLspProviderCallWithDisposition(call, unresolvedFallback);
   if (settlement.kind === 'failed') {
     safelyObserveProviderOutcome(() => handleLspProviderError(label, settlement.error));
