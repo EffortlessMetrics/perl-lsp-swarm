@@ -1421,10 +1421,7 @@ impl<'a> Parser<'a> {
                                 // the call still owns the complete qw delimiter.
                                 let end = args
                                     .last()
-                                    .map_or_else(
-                                        || self.previous_position(),
-                                        |arg| arg.location.end,
-                                    )
+                                    .map_or_else(|| self.previous_position(), |arg| arg.location.end)
                                     .max(flattened_qw_end.unwrap_or(0));
 
                                 expr = if scalar_filehandle {
