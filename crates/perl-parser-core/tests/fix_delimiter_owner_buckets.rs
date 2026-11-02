@@ -84,10 +84,11 @@ fn malformed_missing_quote_like_closer_still_reports_error() {
 }
 
 #[test]
-fn malformed_unimplemented_quote_like_recovery_stays_generic() {
-    for source in [r#"my $r = qr{hello;"#, r#"my $x = qx{hello;"#] {
-        assert_has_error(source, "unknown token");
-    }
+fn malformed_unterminated_qr_and_qx_recovery_names_the_operator() {
+    // #16608 class (2): qr/qx now have dedicated recovery, so they name the
+    // unterminated operator instead of falling through to an unknown token.
+    assert_has_error(r#"my $r = qr{hello;"#, "search pattern not terminated");
+    assert_has_error(r#"my $x = qx{hello;"#, "can't find string terminator");
 }
 
 #[test]

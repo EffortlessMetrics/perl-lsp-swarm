@@ -7,7 +7,7 @@
 
 use perl_diagnostics::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticSeverity};
 
-const REGEX_ANALYSIS_BLOCK: [(DiagnosticCode, &str, DiagnosticSeverity); 8] = [
+const REGEX_ANALYSIS_BLOCK: [(DiagnosticCode, &str, DiagnosticSeverity); 9] = [
     (DiagnosticCode::RegexBacktrackingRisk, "PL1000", DiagnosticSeverity::Warning),
     (DiagnosticCode::RegexAnalysisLimit, "PL1001", DiagnosticSeverity::Information),
     (DiagnosticCode::RegexModifierInvalid, "PL1002", DiagnosticSeverity::Error),
@@ -16,7 +16,28 @@ const REGEX_ANALYSIS_BLOCK: [(DiagnosticCode, &str, DiagnosticSeverity); 8] = [
     (DiagnosticCode::RegexCaptureInvalid, "PL1005", DiagnosticSeverity::Error),
     (DiagnosticCode::RegexCaptureUnavailable, "PL1006", DiagnosticSeverity::Warning),
     (DiagnosticCode::RegexAnalysisIncomplete, "PL1007", DiagnosticSeverity::Information),
+    (DiagnosticCode::RegexUnterminatedQuoteLike, "PL1008", DiagnosticSeverity::Error),
 ];
+
+/// The parser's perl-mirroring terminator messages must resolve to PL1008
+/// through the compatibility message path.
+#[test]
+fn unterminated_quote_like_messages_map_to_pl1008() {
+    for message in [
+        "Search pattern not terminated",
+        "Can't find string terminator \"]\" anywhere before EOF",
+        "Substitution pattern not terminated",
+        "Transliteration pattern not terminated",
+        "Substitution replacement not terminated",
+        "Transliteration replacement not terminated",
+    ] {
+        assert_eq!(
+            DiagnosticCode::from_message(message),
+            Some(DiagnosticCode::RegexUnterminatedQuoteLike),
+            "{message:?} must map to PL1008"
+        );
+    }
+}
 
 /// A published code is a compatibility surface: clients store it in suppression
 /// config, so `as_str` and `parse_code` must agree in both directions forever.
