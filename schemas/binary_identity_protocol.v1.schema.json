@@ -36,7 +36,7 @@
       "minItems": 1,
       "maxItems": 64,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/reasonToken" }
+      "items": { "$ref": "#/$defs/compatibilityReasonToken" }
     },
     "redacted": { "type": "boolean", "description": "true when NO field was removed or replaced: the payload is copy-safe. false means at least one field was redacted and must not be trusted verbatim." },
     "limitations": {
@@ -48,6 +48,12 @@
   },
   "$defs": {
     "reasonToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "compatibilityReasonToken": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
