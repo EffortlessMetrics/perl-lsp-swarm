@@ -5392,20 +5392,19 @@ impl WorkspaceIndex {
 ///
 /// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
 /// |---|---|---|
-/// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by projecting the shared `extract_symbol_decls(ast, None)` inventory via `IndexVisitor::project_precomputed_symbol_declarations` | [`EntityFact`] + [`AnchorFact`] via the same shared inventory -> `symbol_decls_to_semantic_facts` |
+/// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by projecting the shared `extract_symbol_decls(ast, initial_package_for_uri(uri))` inventory via `IndexVisitor::project_precomputed_symbol_declarations` | [`EntityFact`] + [`AnchorFact`] via the same shared inventory -> `symbol_decls_to_semantic_facts` |
 /// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,MethodCall,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
 /// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
 ///
-/// Declaration extraction is unified in production (`build_unified` runs
-/// `extract_symbol_decls(ast, None)` once and feeds both the legacy
-/// [`FileIndex`] symbol projection and the canonical fact shard) as of
-/// perl-lsp-swarm#4047 / #1711-C. The former `Some("main")` versus `None`
-/// package-context seed mismatch is resolved in favor of the canonical
-/// `None` inventory; legacy workspace symbols are projected from that same
-/// pass. `FileExtractionBundle::build()` (shadow harness) still runs the
-/// pre-unification dual declaration walks for parity regression.
+/// Declaration extraction is unified in production (`build_unified` runs one
+/// `extract_symbol_decls` pass seeded by [`initial_package_for_uri`] and
+/// feeds both the legacy [`FileIndex`] symbol projection and the canonical
+/// fact shard) as of perl-lsp-swarm#4047 / #1711-C. The former per-projection
+/// `Some("main")` versus `None` mismatch is retired by sharing that single
+/// seed for both outputs. `FileExtractionBundle::build()` (shadow harness)
+/// still runs the pre-unification dual declaration walks for parity regression.
 pub(crate) struct FileExtractionBundle {
     /// The legacy `IndexVisitor` projection, produced by one `visit()` call.
     pub(crate) legacy_index: FileIndex,
@@ -5471,7 +5470,7 @@ impl FileExtractionBundle {
     /// **Production extraction path (perl-lsp-swarm#1711-B reference cutover;
     /// perl-lsp-swarm#4047 declaration cutover).** Runs ONE reference walk
     /// (`IndexVisitor::visit_unified`) and ONE declaration inventory
-    /// (`extract_symbol_decls(ast, None)`), feeding both the legacy
+    /// (`extract_symbol_decls(ast, initial_package_for_uri(uri))`), feeding both the legacy
     /// [`FileIndex`] declaration projection and the canonical
     /// [`FileFactShard`] from the shared `Vec<SymbolDecl>`. Import/use-lib
     /// extraction projects HIR compile-environment facts (`#16823`) rather
@@ -5506,9 +5505,11 @@ impl FileExtractionBundle {
         };
         let mut symbol_refs = Vec::new();
         let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
+        let initial_package = initial_package_for_uri(uri_str);
+        let package_seed = initial_package.as_deref();
         #[cfg(test)]
         let decl_start = Instant::now();
-        let shared_decls = extract_symbol_decls(ast, None);
+        let shared_decls = extract_symbol_decls(ast, package_seed);
         #[cfg(test)]
         reindex_metrics::record_decl_extract(decl_start.elapsed());
         #[cfg(test)]
@@ -6358,7 +6359,7 @@ impl IndexVisitor {
     /// ONE recursive descent -- replacing what production used to run as
     /// TWO separate full-AST walks (`IndexVisitor::visit` +
     /// `extract_symbol_refs`). Declaration symbols are projected from the
-    /// shared canonical (`None` seed) inventory passed in by
+    /// shared declaration inventory passed in by
     /// `FileExtractionBundle::build_unified` (perl-lsp-swarm#4047) rather
     /// than re-running `extract_symbol_decls` here.
     ///
@@ -15107,15 +15108,11 @@ mod extraction_bundle_shadow_compare {
         }
     }
 
-    /// **#4047 declaration-inventory cutover:** for module URIs whose legacy
-    /// package seed is already `None` (`*.pm`, etc.), the unified production
-    /// path must emit the same legacy `WorkspaceSymbol` list as the old dual
-    /// walk — now sourced from one shared `extract_symbol_decls(ast, None)`.
-    fn assert_unified_legacy_symbols_exact_for_canonical_seed_uri(
-        label: &str,
-        uri: &str,
-        text: &str,
-    ) {
+    /// **#4047 declaration-inventory cutover:** for URIs whose legacy package
+    /// seed matches the unified shared inventory (`initial_package_for_uri`),
+    /// the production path must emit the same legacy `WorkspaceSymbol` list
+    /// as the old dual-walk path.
+    fn assert_unified_legacy_symbols_exact_for_shared_seed_uri(label: &str, uri: &str, text: &str) {
         let mut parser = Parser::new(text);
         let ast = match parser.parse() {
             Ok(ast) => ast,
@@ -15130,8 +15127,8 @@ mod extraction_bundle_shadow_compare {
 
         assert_eq!(
             direct.file_index.symbols, unified.legacy_index.symbols,
-            "{label}: unified legacy WorkspaceSymbol list diverged on a canonical-seed URI \
-             ({uri}) after sharing the None declaration inventory (#4047)"
+            "{label}: unified legacy WorkspaceSymbol list diverged on a shared-seed URI \
+             ({uri}) after unifying the declaration inventory (#4047)"
         );
     }
 
@@ -15182,7 +15179,7 @@ mod extraction_bundle_shadow_compare {
         let text = "package Foo;\nour $count = 0;\nmy $local = 1;\nsub bar { my ($x, $y) = @_; return $x + $y; }\n1;\n";
         let uri = "file:///lib/Foo.pm";
         assert_unified_canonical_parity("4047_module_decl", uri, text);
-        assert_unified_legacy_symbols_exact_for_canonical_seed_uri("4047_module_decl", uri, text);
+        assert_unified_legacy_symbols_exact_for_shared_seed_uri("4047_module_decl", uri, text);
     }
 
     #[test]
