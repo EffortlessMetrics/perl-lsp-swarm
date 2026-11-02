@@ -9812,6 +9812,7 @@ pub fn perl_lsp_rs_core::providers::is_xs_source(source: &str, filepath: core::o
 pub fn perl_lsp_rs_core::providers::legend() -> perl_lsp_rs_core::providers::TokensLegend
 pub fn perl_lsp_rs_core::providers::matches_query(name: &str, query: &str) -> bool
 pub fn perl_lsp_rs_core::providers::merge_and_sort_completion_candidates(candidates: alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionCandidate>
+pub fn perl_lsp_rs_core::providers::markup_attribute_name_suffix_end(source: &str, name_start: usize) -> usize
 pub fn perl_lsp_rs_core::providers::normalize_provider_decision_receipt(receipt: serde_json::value::Value) -> serde_json::value::Value
 pub fn perl_lsp_rs_core::providers::parameter_hints(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn perl_lsp_rs_core::providers::parameter_hints_with_resolver(ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>, method_resolver: core::option::Option<&dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>>) -> alloc::vec::Vec<serde_json::value::Value>
