@@ -177,8 +177,9 @@ jobs:
             fi
 
             # This marker is written only after extraction and outside the
-            # artifact subtree. The aggregator derives this exact run-level
-            # path and never searches downloaded content for a closer marker.
+            # artifact subtree. It is a sidecar for run provenance, not the
+            # canonical ci-actuals evidence. The aggregator derives this exact
+            # run-level path and never searches downloaded content for a closer marker.
             python3 - \
               "$run_dir/trusted-run.json" \
               "$run_id" \
@@ -196,6 +197,7 @@ jobs:
           output.write_text(
               json.dumps(
                   {
+                      "schema_version": "trusted_run_marker.v1",
                       "run_id": int(sys.argv[2]),
                       "repository": sys.argv[3],
                       "event": sys.argv[4],
