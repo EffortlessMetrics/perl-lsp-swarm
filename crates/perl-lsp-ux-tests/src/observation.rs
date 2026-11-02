@@ -227,12 +227,38 @@ struct InboxState {
     terminal: Option<StreamEnd>,
 }
 
-fn latest_capture_id(state: &InboxState) -> Option<ObservationId> {
-    match (state.events.back(), state.responses.back()) {
-        (Some((left, _)), Some((right, _))) => Some(std::cmp::max(*left, *right)),
-        (Some((left, _)), None) => Some(*left),
-        (None, Some((right, _))) => Some(*right),
-        (None, None) => None,
+/// Per-waiter captured-event projection for [`Inbox::wait_for_events_after`].
+#[derive(Default)]
+struct CapturedEventWaitProjection {
+    events: Vec<CapturedMessage>,
+    last_id: Option<ObservationId>,
+}
+
+impl CapturedEventWaitProjection {
+    fn sync(&mut self, state: &InboxState, cursor: &ServerMessageCursor) -> usize {
+        let front_id =
+            state.events.iter().find(|(id, _)| capture_id_is_after(*id, cursor)).map(|(id, _)| *id);
+        let reset = match (self.events.first().map(|message| message.id), front_id) {
+            (Some(cached), Some(front)) => cached != front,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if reset {
+            self.events.clear();
+            self.last_id = None;
+        }
+        let new_from = self.events.len();
+        for (id, value) in &state.events {
+            if !capture_id_is_after(*id, cursor) {
+                continue;
+            }
+            if self.last_id.is_some_and(|last| *id <= last) {
+                continue;
+            }
+            self.events.push(CapturedMessage { id: *id, value: value.clone() });
+            self.last_id = Some(*id);
+        }
+        new_from
     }
 }
 
@@ -370,14 +396,18 @@ impl Inbox {
         id
     }
 
-    /// Record the newest capture identity currently allocated on this inbox.
+    /// Record the newest capture identity allocated on this inbox so far.
     ///
-    /// Survives queue drains: later events compare by immutable [`ObservationId`],
-    /// not queue position or matching-event counts.
+    /// Uses the allocator (`next_id - 1`), not queue tails, so a checkpoint
+    /// taken after partial drains still excludes already-captured messages that
+    /// remain buffered.
     #[must_use]
     pub fn server_message_cursor(&self) -> ServerMessageCursor {
         let state = self.lock();
-        ServerMessageCursor { owner: Arc::clone(&self.inner), after: latest_capture_id(&state) }
+        ServerMessageCursor {
+            owner: Arc::clone(&self.inner),
+            after: state.next_id.checked_sub(1).map(ObservationId),
+        }
     }
 
     /// Alias for [`Self::server_message_cursor`].
@@ -427,6 +457,10 @@ impl Inbox {
     /// Remove and return raw server-initiated messages captured strictly after
     /// `cursor`, oldest first.
     ///
+    /// Draining removes payloads but cannot renumber capture identities; a
+    /// later wait after the same cursor therefore observes timeout/not-proven
+    /// rather than replaying drained evidence.
+    ///
     /// # Errors
     ///
     /// Returns [`CursorOwnerMismatch`] when `cursor` belongs to another inbox.
@@ -470,17 +504,16 @@ impl Inbox {
             WaitEnd::Ended(StreamEnd::TransportFailure { detail: CursorOwnerMismatch.to_string() })
         })?;
         let cursor = cursor.clone();
+        let projection = Rc::new(RefCell::new(CapturedEventWaitProjection::default()));
+        let for_project = Rc::clone(&projection);
+        let for_select = Rc::clone(&projection);
         self.wait_projected(
             timeout,
-            move |state| {
-                state
-                    .events
-                    .iter()
-                    .filter(|(id, _)| capture_id_is_after(*id, &cursor))
-                    .map(|(id, value)| CapturedMessage { id: *id, value: value.clone() })
-                    .collect::<Vec<_>>()
+            move |state| for_project.borrow_mut().sync(state, &cursor),
+            move |new_from: &usize| {
+                let _ = new_from;
+                select(&for_select.borrow().events)
             },
-            move |events: &Vec<CapturedMessage>| select(events),
         )
     }
 
@@ -1407,6 +1440,22 @@ mod tests {
             anyhow::ensure!(
                 matches!(right.validate_cursor(&cursor), Err(CursorOwnerMismatch)),
                 "cursor from another inbox must not validate"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn checkpoint_tracks_last_allocated_not_queue_tail() -> anyhow::Result<()> {
+            let inbox = Inbox::new();
+            inbox.push_event(notification("keep/buffered"));
+            let after_first = inbox.checkpoint();
+            inbox.push_event(notification("remove/me"));
+            let _ = inbox.drain_events_after(&after_first)?;
+            let cursor = inbox.checkpoint();
+            let after = inbox.captured_events_since(&cursor)?;
+            anyhow::ensure!(
+                after.is_empty(),
+                "checkpoint must not treat buffered pre-checkpoint events as post-cursor: {after:?}"
             );
             Ok(())
         }
