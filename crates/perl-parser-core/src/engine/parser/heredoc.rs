@@ -277,7 +277,11 @@ impl<'a> Parser<'a> {
             self.operation.is_pre_cancelled()
         })
         .map_err(|interrupt| match interrupt {
-            HeredocCollectInterrupt::Cancelled => ParseError::Cancelled,
+            HeredocCollectInterrupt::Cancelled { next_offset } => {
+                self.operation
+                    .record_heredoc_scan(next_offset.saturating_sub(scan_start));
+                ParseError::Cancelled
+            }
         })?;
 
         self.operation.record_heredoc_scan(out.next_offset.saturating_sub(scan_start));

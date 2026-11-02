@@ -314,6 +314,15 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// Like [`Self::new_with_cancellation`], but uses the supplied production config.
+    pub fn with_production_config_and_cancellation(
+        input: &'a str,
+        config: ParserConfigIdentity,
+        cancellation_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self::assemble(TokenStream::new(input), input, config, Some(cancellation_flag))
+    }
+
     /// Create a parser from pre-lexed tokens, skipping the lexer pass.
     ///
     /// This constructor is the integration point for the incremental parsing

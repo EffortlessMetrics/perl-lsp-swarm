@@ -11,7 +11,7 @@ use perl_tdd_support::must;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod cpan_test_helpers;
 
@@ -49,6 +49,24 @@ fn budget_diagnostic_count(output: &ParseOutput) -> usize {
         .iter()
         .filter(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
         .count()
+}
+
+/// Signal cancellation soon after the worker starts, then retry every 25ms until it finishes.
+fn request_cooperative_cancellation<T>(flag: &AtomicBool, handle: &thread::JoinHandle<T>) {
+    thread::sleep(Duration::from_millis(1));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        flag.store(true, Ordering::Release);
+        if handle.is_finished() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn cancellation_parser(source: &str, flag: Arc<AtomicBool>) -> Parser<'_> {
+    let config = ParserConfigIdentity::production_default().with_budget(ParseBudget::unlimited());
+    Parser::with_production_config_and_cancellation(source, config, flag)
 }
 
 // ---------------------------------------------------------------------------
@@ -135,14 +153,16 @@ fn cancellation_at_heredoc_queue_is_distinct_from_budget_exhaustion() {
 fn cancellation_during_heredoc_scan_stops_before_attachment() {
     let body = "x\n".repeat(400_000);
     let source = format!("my $x = <<EOF;\n{body}EOF\n");
+    let full_charge =
+        parse_with_budget(&source, ParseBudget::unlimited()).budget_usage.heredoc_scan_bytes;
+    assert!(full_charge > 0, "fixture must charge scan bytes");
     let flag = Arc::new(AtomicBool::new(false));
     let flag_for_parse = Arc::clone(&flag);
     let parse_handle = thread::spawn(move || {
-        let mut parser = Parser::new_with_cancellation(&source, flag_for_parse);
+        let mut parser = cancellation_parser(&source, flag_for_parse);
         parser.parse_with_recovery()
     });
-    thread::sleep(Duration::from_millis(1));
-    flag.store(true, Ordering::Relaxed);
+    request_cooperative_cancellation(&flag, &parse_handle);
     let output = must(parse_handle.join());
 
     assert_eq!(output.stop_cause(), Some(ParseStopCause::Cancelled));
@@ -150,26 +170,37 @@ fn cancellation_during_heredoc_scan_stops_before_attachment() {
         heredoc_contents(&output).iter().all(String::is_empty),
         "cancelled scan must not attach partial bodies as complete content"
     );
+    assert!(
+        output.budget_usage.heredoc_scan_bytes > 0,
+        "cancelled scan must still charge bytes traversed before interruption"
+    );
+    assert!(
+        output.budget_usage.heredoc_scan_bytes < full_charge,
+        "scan-stage cancellation must not charge the full completed collection"
+    );
 }
 
 #[test]
 fn cancellation_at_attachment_stage_is_observable() {
-    let padding = "line\n".repeat(200_000);
+    let padding = "line\n".repeat(50_000);
     let source = format!("my $a = <<ALPHA;\n{padding}ALPHA\n{BETA_STMT}");
     let flag = Arc::new(AtomicBool::new(false));
     let flag_for_parse = Arc::clone(&flag);
     let parse_handle = thread::spawn(move || {
-        let mut parser = Parser::new_with_cancellation(&source, flag_for_parse);
+        let mut parser = cancellation_parser(&source, flag_for_parse);
         parser.parse_with_recovery()
     });
-    thread::sleep(Duration::from_millis(1));
-    flag.store(true, Ordering::Relaxed);
+    request_cooperative_cancellation(&flag, &parse_handle);
     let output = must(parse_handle.join());
 
     assert_eq!(output.stop_cause(), Some(ParseStopCause::Cancelled));
     assert!(
         output.diagnostics.iter().any(|error| matches!(error, ParseError::Cancelled)),
-        "attachment-stage cancellation must surface the typed terminal"
+        "heredoc-stage cancellation must surface the typed terminal"
+    );
+    assert!(
+        heredoc_contents(&output).iter().all(String::is_empty),
+        "cancelled heredoc work must not attach bodies as complete content"
     );
 }
 

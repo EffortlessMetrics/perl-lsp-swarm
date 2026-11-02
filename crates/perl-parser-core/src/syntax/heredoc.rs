@@ -61,7 +61,10 @@ pub struct HeredocContent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HeredocCollectInterrupt {
     /// An external cancellation flag was set during collection.
-    Cancelled,
+    ///
+    /// `next_offset` is the collector's monotone cursor when the probe fired, so
+    /// the parser can charge partial scan bytes before surfacing `Cancelled`.
+    Cancelled { next_offset: usize },
 }
 
 /// Result of collecting one or more heredocs from source.
@@ -107,7 +110,7 @@ pub fn collect_at_declaration_offsets(
 ) -> CollectionResult {
     collect_at_declaration_offsets_with_probe(src, pending, || false).unwrap_or_else(|interrupt| {
         match interrupt {
-            HeredocCollectInterrupt::Cancelled => {
+            HeredocCollectInterrupt::Cancelled { .. } => {
                 unreachable!("probe never interrupts in collect_at_declaration_offsets")
             }
         }
@@ -130,7 +133,7 @@ where
 
     while let Some(hd) = pending.pop_front() {
         if probe() {
-            return Err(HeredocCollectInterrupt::Cancelled);
+            return Err(HeredocCollectInterrupt::Cancelled { next_offset });
         }
         let body_start = next_offset.max(hd.body_start);
         let (content, offset, found) = collect_one_probed(src, body_start, &hd, &mut probe)?;
@@ -149,7 +152,7 @@ where
 /// CR and LF bytes by construction.
 fn collect_one(src: &[u8], off: usize, hd: &PendingHeredoc) -> (HeredocContent, usize, bool) {
     collect_one_probed(src, off, hd, &mut || false).unwrap_or_else(|interrupt| match interrupt {
-        HeredocCollectInterrupt::Cancelled => {
+        HeredocCollectInterrupt::Cancelled { .. } => {
             unreachable!("probe never interrupts in collect_one")
         }
     })
@@ -178,7 +181,7 @@ where
     // Note: Use < not <= to avoid infinite loop at EOF (next_line_bounds returns same offset at EOF)
     while off < src.len() {
         if probe() {
-            return Err(HeredocCollectInterrupt::Cancelled);
+            return Err(HeredocCollectInterrupt::Cancelled { next_offset: off });
         }
         let (ls, le, next) = next_line_bounds(src, off);
         let line = &src[ls..le];
