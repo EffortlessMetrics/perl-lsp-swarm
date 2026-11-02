@@ -372,6 +372,12 @@ def source_commit_api_combined_tree_wiring_errors(workflow_text: str) -> list[st
         errors.append("combined-tree job must not continue-on-error")
     if COMBINED_TREE_COMMAND not in job:
         errors.append(f"combined-tree job must run {COMBINED_TREE_COMMAND}")
+    if "ledger count drifted" in job:
+        errors.append("combined-tree annotation must not label every failure as count drift")
+    if "::error title=source_commit_api_check::source-commit API ledger check failed" not in job:
+        errors.append("combined-tree annotation must be generic and point at checker output")
+    if "see checker output for the failure" not in job:
+        errors.append("combined-tree annotation must send readers to the checker output")
     checkout_refs = [
         line.strip()
         for line in job.splitlines()
@@ -908,6 +914,11 @@ class GateShardTests(unittest.TestCase):
                 1,
             ),
             "drop-matrix-gate": workflow.replace("source_commit_api_check ", "", 1),
+            "count-drift-annotation": workflow.replace(
+                "source-commit API ledger check failed on the ${EVENT_NAME} tree (${TREE_SHA}); see checker output for the failure.",
+                "ledger count drifted on the ${EVENT_NAME} tree (${TREE_SHA}). The checker names the ledger file, compatibility_baseline value, and per-file counts.",
+                1,
+            ),
         }
         for name, mutant in mutants.items():
             with self.subTest(mutant=name):

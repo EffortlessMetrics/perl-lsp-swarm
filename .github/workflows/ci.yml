@@ -1291,7 +1291,7 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            echo "::error title=source_commit_api_check::ledger count drifted on the ${EVENT_NAME} tree (${TREE_SHA}). The checker names the ledger file, compatibility_baseline value, and per-file counts."
+            echo "::error title=source_commit_api_check::source-commit API ledger check failed on the ${EVENT_NAME} tree (${TREE_SHA}); see checker output for the failure."
             exit "$status"
           fi
 
