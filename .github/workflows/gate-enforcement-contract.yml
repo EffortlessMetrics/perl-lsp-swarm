@@ -30,6 +30,7 @@ jobs:
             scripts/ci/test_validate_gate_enforcement_contract.py \
             scripts/ci/test_gate_enforcement_app_bindings.py \
             scripts/ci/test_queue_qualification_source.py \
+            scripts/ci/test_qualification_cutover_docs.py \
             scripts/ci/test_reconcile_github_enforcement_snapshot.py \
             scripts/ci/test_observe_github_enforcement.py \
             scripts/ci/test_check_release_required_ci.py \
