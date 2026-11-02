@@ -24,7 +24,7 @@ import {
   acquireManagedCacheMutationLock,
   buildManagedCacheMutationAttempt,
   ManagedCacheMutationBusyError,
-  resolveManagedBinaryPathInNamespace,
+  ManagedCacheMutationCancelledError,
 } from './managedCacheLock';
 import {
   MANAGED_CURRENT_SELECTION_FILE,
@@ -1021,6 +1021,9 @@ export class BinaryDownloader {
         );
         return null;
       }
+      if (error instanceof ManagedCacheMutationCancelledError) {
+        throw new Error('Download cancelled');
+      }
       this.outputChannel.appendLine(`Managed binary install failed: ${errorMsg}`);
 
       const manualInstallUrl = 'https://github.com/EffortlessMetrics/perl-lsp#install';
@@ -1236,12 +1239,13 @@ export class BinaryDownloader {
         const cacheLock = await acquireManagedCacheMutationLock(
           baseDir,
           buildManagedCacheMutationAttempt(compatibilityKey, mutationOperation),
+          { isCancelled: () => token.isCancellationRequested },
         );
 
         try {
           if (!forceDownload) {
-            const reused = resolveManagedBinaryPathInNamespace(baseDir);
-            if (reused !== null && fs.existsSync(reused)) {
+            const reused = this.getLocalBinaryPath();
+            if (reused && fs.existsSync(reused)) {
               this.outputChannel.appendLine(
                 `Using existing managed binary after cross-process cache lock: ${reused}`,
               );

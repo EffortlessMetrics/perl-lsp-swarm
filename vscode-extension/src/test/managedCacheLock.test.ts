@@ -4,6 +4,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, test } from '@jest/globals';
 import {
   MANAGED_MUTATION_LEASE_FILE,
+  MANAGED_MUTATION_LOCK_DIR,
   ManagedCacheMutationBusyError,
   acquireManagedCacheMutationLock,
   buildManagedCacheMutationAttempt,
@@ -63,9 +64,10 @@ describe('managed cache mutation lock', () => {
       { ...attempt, owner_process_hint: 999_999_999 },
       'stale-token-abc',
     );
-    fs.mkdirSync(baseDir, { recursive: true });
+    const lockDir = path.join(baseDir, MANAGED_MUTATION_LOCK_DIR);
+    fs.mkdirSync(lockDir, { recursive: true });
     fs.writeFileSync(
-      path.join(baseDir, MANAGED_MUTATION_LEASE_FILE),
+      path.join(lockDir, MANAGED_MUTATION_LEASE_FILE),
       `${JSON.stringify(staleLease, null, 2)}\n`,
       'utf8',
     );
@@ -91,5 +93,15 @@ describe('managed cache mutation lock', () => {
     ).rejects.toBeInstanceOf(ManagedCacheMutationBusyError);
 
     holder.release();
+  });
+
+  test('reclaims an empty lock directory left by a crashed writer', async () => {
+    fs.mkdirSync(path.join(baseDir, MANAGED_MUTATION_LOCK_DIR), { recursive: true });
+    const handle = await acquireManagedCacheMutationLock(
+      baseDir,
+      buildManagedCacheMutationAttempt('x86_64-unknown-linux-gnu', 'install'),
+      { timeoutMs: 2_000, pollIntervalMs: 25 },
+    );
+    handle.release();
   });
 });

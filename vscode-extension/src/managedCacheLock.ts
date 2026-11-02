@@ -14,7 +14,8 @@ import {
   type ManagedOwnerLiveness,
 } from './managedCacheProtocol';
 
-export const MANAGED_MUTATION_LEASE_FILE = 'managed_mutation_lease.json';
+export const MANAGED_MUTATION_LOCK_DIR = 'managed_mutation_lock';
+export const MANAGED_MUTATION_LEASE_FILE = 'lease.json';
 
 const DEFAULT_LOCK_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -29,6 +30,15 @@ export class ManagedCacheMutationBusyError extends Error {
   }
 }
 
+export class ManagedCacheMutationCancelledError extends Error {
+  readonly code = 'managed_install_cancelled';
+
+  constructor(message = 'Managed binary install was cancelled.') {
+    super(message);
+    this.name = 'ManagedCacheMutationCancelledError';
+  }
+}
+
 export interface ManagedCacheLockHandle {
   readonly leaseToken: string;
   release(): void;
@@ -37,6 +47,7 @@ export interface ManagedCacheLockHandle {
 export interface AcquireManagedCacheLockOptions {
   timeoutMs?: number;
   pollIntervalMs?: number;
+  isCancelled?: () => boolean;
 }
 
 function delay(ms: number): Promise<void> {
@@ -70,8 +81,12 @@ export function buildManagedCacheMutationAttempt(
   };
 }
 
-function lockFilePath(baseDir: string): string {
-  return path.join(baseDir, MANAGED_MUTATION_LEASE_FILE);
+function lockDirPath(baseDir: string): string {
+  return path.join(baseDir, MANAGED_MUTATION_LOCK_DIR);
+}
+
+function leaseFilePath(baseDir: string): string {
+  return path.join(lockDirPath(baseDir), MANAGED_MUTATION_LEASE_FILE);
 }
 
 function probeOwnerLiveness(pid: number | null): ManagedOwnerLiveness {
@@ -91,7 +106,7 @@ function probeOwnerLiveness(pid: number | null): ManagedOwnerLiveness {
 }
 
 function readExistingLease(baseDir: string): ManagedMutationLease | null {
-  const filePath = lockFilePath(baseDir);
+  const filePath = leaseFilePath(baseDir);
   if (!fs.existsSync(filePath)) {
     return null;
   }
@@ -112,27 +127,54 @@ function readExistingLease(baseDir: string): ManagedMutationLease | null {
   }
 }
 
-function writeLeaseFile(baseDir: string, lease: ManagedMutationLease): void {
-  const filePath = lockFilePath(baseDir);
-  const payload = `${JSON.stringify(lease, null, 2)}\n`;
-  const handle = fs.openSync(
-    filePath,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
-    0o600,
+function atomicWriteLeaseFile(baseDir: string, lease: ManagedMutationLease): void {
+  const dir = lockDirPath(baseDir);
+  fs.mkdirSync(dir, { recursive: true });
+  const finalPath = path.join(dir, MANAGED_MUTATION_LEASE_FILE);
+  const tmpPath = path.join(
+    dir,
+    `${MANAGED_MUTATION_LEASE_FILE}.${process.pid}-${randomUUID()}.tmp`,
   );
+  const payload = `${JSON.stringify(lease, null, 2)}\n`;
+  fs.writeFileSync(tmpPath, payload, { encoding: 'utf8' });
+  fs.renameSync(tmpPath, finalPath);
+}
+
+function tryCreateLockDir(baseDir: string): boolean {
   try {
-    fs.writeFileSync(handle, payload, { encoding: 'utf8' });
-  } finally {
-    fs.closeSync(handle);
+    fs.mkdirSync(lockDirPath(baseDir));
+    return true;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === 'EEXIST') {
+      return false;
+    }
+    throw error;
   }
 }
 
-function removeLeaseFileIfPresent(baseDir: string): void {
+function lockDirIsEmpty(baseDir: string): boolean {
   try {
-    fs.rmSync(lockFilePath(baseDir), { force: true });
+    return fs.readdirSync(lockDirPath(baseDir)).length === 0;
   } catch {
-    /* best-effort */
+    return false;
   }
+}
+
+function tryReclaimLockDir(baseDir: string): boolean {
+  const dir = lockDirPath(baseDir);
+  const trashPath = path.join(baseDir, `${MANAGED_MUTATION_LOCK_DIR}.reclaim-${randomUUID()}`);
+  try {
+    fs.renameSync(dir, trashPath);
+  } catch {
+    return false;
+  }
+  try {
+    fs.rmSync(trashPath, { recursive: true, force: true });
+  } catch {
+    /* best-effort cleanup of abandoned trash */
+  }
+  return tryCreateLockDir(baseDir);
 }
 
 function abandonmentEvidence(lease: ManagedMutationLease): ManagedAbandonmentEvidence {
@@ -148,8 +190,7 @@ function tryBreakAbandonedLease(baseDir: string, lease: ManagedMutationLease): b
   if (disposition !== 'stale_or_abandoned_needs_recovery') {
     return false;
   }
-  removeLeaseFileIfPresent(baseDir);
-  return true;
+  return tryReclaimLockDir(baseDir);
 }
 
 function tryAcquireLeaseOnce(
@@ -159,32 +200,29 @@ function tryAcquireLeaseOnce(
 ): 'acquired' | 'busy' {
   fs.mkdirSync(baseDir, { recursive: true });
   const lease = buildManagedMutationLease(attempt, leaseToken);
-  try {
-    writeLeaseFile(baseDir, lease);
+
+  if (tryCreateLockDir(baseDir)) {
+    atomicWriteLeaseFile(baseDir, lease);
     return 'acquired';
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    if (code !== 'EEXIST') {
-      throw error;
-    }
   }
 
   const existing = readExistingLease(baseDir);
   if (existing === null) {
+    if (lockDirIsEmpty(baseDir) && tryReclaimLockDir(baseDir)) {
+      atomicWriteLeaseFile(baseDir, lease);
+      return 'acquired';
+    }
     return 'busy';
   }
+
   if (tryBreakAbandonedLease(baseDir, existing)) {
-    try {
-      writeLeaseFile(baseDir, lease);
-      return 'acquired';
-    } catch (retryError: unknown) {
-      const code = (retryError as NodeJS.ErrnoException | null)?.code;
-      if (code === 'EEXIST') {
-        return 'busy';
-      }
-      throw retryError;
+    if (!tryCreateLockDir(baseDir)) {
+      return 'busy';
     }
+    atomicWriteLeaseFile(baseDir, lease);
+    return 'acquired';
   }
+
   return 'busy';
 }
 
@@ -222,10 +260,14 @@ export async function acquireManagedCacheMutationLock(
 ): Promise<ManagedCacheLockHandle> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const isCancelled = options.isCancelled;
   const leaseToken = randomUUID().replace(/-/g, '');
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
+    if (isCancelled?.()) {
+      throw new ManagedCacheMutationCancelledError();
+    }
     const outcome = tryAcquireLeaseOnce(baseDir, attempt, leaseToken);
     if (outcome === 'acquired') {
       return {
@@ -233,7 +275,11 @@ export async function acquireManagedCacheMutationLock(
         release: () => {
           const onDisk = readExistingLease(baseDir);
           if (onDisk !== null && mayReleaseManagedLease(onDisk, leaseToken)) {
-            removeLeaseFileIfPresent(baseDir);
+            try {
+              fs.rmSync(lockDirPath(baseDir), { recursive: true, force: true });
+            } catch {
+              /* best-effort */
+            }
           }
         },
       };
