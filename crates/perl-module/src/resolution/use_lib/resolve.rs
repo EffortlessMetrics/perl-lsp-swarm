@@ -41,8 +41,15 @@ pub fn resolve_use_lib_paths(
                     result.push(s);
                 }
             } else {
-                let s = path_str.to_string();
-                if !result.contains(&s) {
+                let Some(resolved) = normalize_relative_to_workspace(workspace_root, p) else {
+                    continue;
+                };
+                if resolved.strip_prefix(workspace_root).is_err() {
+                    continue;
+                }
+                if let Some(s) = path_to_relative_string(&resolved, workspace_root)
+                    && !result.contains(&s)
+                {
                     result.push(s);
                 }
             }
@@ -73,6 +80,23 @@ fn path_to_relative_string(path: &Path, workspace_root: &Path) -> Option<String>
 
 fn normalize_relative_path_string(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+fn normalize_relative_to_workspace(workspace_root: &Path, relative: &Path) -> Option<PathBuf> {
+    let mut normalized = workspace_root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(segment) => normalized.push(segment),
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(normalized)
 }
 
 fn normalize_findbin_path(base: &Path, relative: &str) -> Option<PathBuf> {
