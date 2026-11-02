@@ -534,9 +534,8 @@ fn executable_python(source: &str) -> String {
 fn ci_ux_tests_flakiness_note_matches_ledger_and_policy() -> Result<()> {
     let ci_path = project_root().join(".github/workflows/ci.yml");
     let ci = fs::read_to_string(&ci_path)?;
-    let job_start = ci
-        .find("\n  ux-tests:")
-        .ok_or_else(|| anyhow!("ci.yml must declare ux-tests job"))?;
+    let job_start =
+        ci.find("\n  ux-tests:").ok_or_else(|| anyhow!("ci.yml must declare ux-tests job"))?;
     let steps_start = ci[job_start..]
         .find("\n    steps:")
         .ok_or_else(|| anyhow!("ux-tests job must declare steps"))?;
@@ -569,10 +568,7 @@ fn ci_ux_tests_flakiness_note_matches_ledger_and_policy() -> Result<()> {
         .pointer("/summary/active")
         .and_then(JsonValue::as_u64)
         .ok_or_else(|| anyhow!("ux-flakes.json must carry summary.active"))?;
-    assert_eq!(
-        active, 0,
-        "fixture drift: update the flakiness note if summary.active changes"
-    );
+    assert_eq!(active, 0, "fixture drift: update the flakiness note if summary.active changes");
     Ok(())
 }
 
