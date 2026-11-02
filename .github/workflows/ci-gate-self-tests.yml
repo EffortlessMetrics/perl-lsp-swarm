@@ -180,10 +180,12 @@ on:
       - '.github/workflows/ripr-infra-retry.yml'
       - 'scripts/tests/test_ripr_infra_retry.py'
       - 'scripts/ci/classify-ripr-lane-termination'
+      - 'scripts/ci/preserve-lane-log-tail.sh'
       - 'scripts/ci/test_ripr_cache_authority_15055.py'
       - 'scripts/ci/require-ripr-subject.sh'
       - 'scripts/ci/test_ripr_event_operands.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
+      - 'scripts/tests/test-preserve-lane-log-tail.sh'
       # Governed RIPR proof entry point (#13768): the adapter and its
       # recording controls gate each other, so both halves re-run here.
       - '.ci/ripr-proof.sh'
@@ -884,6 +886,9 @@ jobs:
 
       - name: Run ripr termination classifier + bounded-retry self-test
         run: bash scripts/tests/test-classify-ripr-lane-termination.sh
+
+      - name: Run ripr lane log tail preservation self-test
+        run: bash scripts/tests/test-preserve-lane-log-tail.sh
 
       - name: Run exact RIPR automatic-retry workflow controls
         run: python3 scripts/tests/test_ripr_infra_retry.py

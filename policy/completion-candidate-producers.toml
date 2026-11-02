@@ -188,7 +188,9 @@ outcome_owner = "#10230"
 # change touched the scanned `completion/variables.rs` and
 # `completion/request/dispatch.rs`; the existing producer rows, their
 # identity/evidence/completeness ceilings and migration owners are unchanged.
-source_digest = "sha256:2f808f4cd3caa5d4f4ed562efc572cd888651c7c8df3fb63aae15fb635502bd6"
+# Re-anchored 2026-11-02 (#18731): clippy-only edits in scanned
+# `completion/import_map.rs` after #18684; producer rows unchanged.
+source_digest = "sha256:5eef7d56a246d92ae488492ef87e27b48df32773cd0b94f821f000205004155f"
 
 [[delegations]]
 module = "dancer2"
