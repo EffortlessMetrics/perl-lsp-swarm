@@ -148,12 +148,7 @@ export function describeWorkspaceTopology(input: WorkspaceTopologyInput): Worksp
 
   const trust = trustState(input.isTrusted);
   const hostCapabilities = { ...WORKSPACE_CAPABILITY_MATRIX[mode] };
-  const capabilities = applyManifestProductSupportGates(
-    mode,
-    trust,
-    hostCapabilities,
-    limitations,
-  );
+  const capabilities = applyManifestProductSupportGates(mode, trust, hostCapabilities, limitations);
 
   return {
     schema_version: 'workspace_topology.v1',

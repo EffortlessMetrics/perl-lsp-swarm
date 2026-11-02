@@ -102,10 +102,7 @@ describe('workspace topology capability contract', () => {
   });
 
   test('workspace capability matrix doc stays aligned with manifest decline boundaries', () => {
-    const docPath = path.join(
-      __dirname,
-      '../../docs/migrations/workspace-capability-matrix.md',
-    );
+    const docPath = path.join(__dirname, '../../docs/migrations/workspace-capability-matrix.md');
     const doc = fs.readFileSync(docPath, 'utf8');
     expect(doc).not.toMatch(/supports virtual and untrusted workspaces/i);
     expect(doc).toMatch(/virtualWorkspaces\.supported:\s*false/i);
