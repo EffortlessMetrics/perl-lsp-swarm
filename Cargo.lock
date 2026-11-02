@@ -2187,6 +2187,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-snapshot-store"
+version = "0.17.0"
+dependencies = [
+ "perl-test-must",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "perl-source-identity"
 version = "0.17.0"
 dependencies = [
@@ -2295,6 +2304,7 @@ dependencies = [
  "perl-parser-core",
  "perl-position-tracking",
  "perl-semantic-facts",
+ "perl-snapshot-store",
  "perl-symbol",
  "perl-tdd-support",
  "perl-uri",
