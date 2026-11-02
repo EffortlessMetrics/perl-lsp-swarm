@@ -447,7 +447,7 @@ impl CompletionProvider {
         let symbol_table = Self::extract_symbol_table(ast, source);
         let class_models = Self::build_class_models(ast);
         let type_engine = Self::build_type_engine(ast, workspace_index.is_some());
-        let import_map = import_map::extract_import_map(ast);
+        let import_map = import_map::extract_import_map_with_source(ast, Some(source));
         let runtime_imports = import_map::extract_runtime_import_authority(ast);
         let used_modules = import_map::collect_used_module_names(ast);
         let pragma_map = perl_pragma::PragmaTracker::build(ast);
