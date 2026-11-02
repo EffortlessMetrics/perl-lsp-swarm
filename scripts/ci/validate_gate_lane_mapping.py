@@ -5,8 +5,10 @@ Every gate in .ci/gate-policy.yaml must map to a lane in policy/ci-lanes.toml
 (or be explicitly declared as not-mapped). When workflow files are supplied,
 every ``required: true`` merge-gate or release gate must also have a statically
 visible execution path through a ``gates --tier`` invocation or a workflow gate
-matrix. Commit-tier hooks and nightly jobs are intentionally outside this
-workflow reachability check.
+matrix. Every ``tier: merge_gate`` gate must have such a path regardless of its
+``required`` flag, because the merge_gate tier is what makes a gate look
+enforced to readers and economics tooling. Commit-tier hooks and nightly jobs are
+intentionally outside this workflow reachability check.
 
 This is the cross-reference validator: it does not enforce, it reports.
 PR 09 of the CI economics rollout.
@@ -533,6 +535,7 @@ def main() -> int:
         print(f"  - {problem}")
 
     required_unreachable: list[str] = []
+    merge_gate_unreachable: list[str] = []
     if args.workflows:
         reachable = read_workflow_reachable_gates(args.workflows, gate_specs)
         workflow_scoped = {
@@ -548,6 +551,11 @@ def main() -> int:
             and spec.get("tier") in {"pr_fast", "merge_gate", "release"}
             and name not in reachable
         )
+        merge_gate_unreachable = sorted(
+            name
+            for name, spec in gate_specs.items()
+            if spec.get("tier") == "merge_gate" and name not in reachable
+        )
         print(f"Workflow files checked: {len(args.workflows)}")
         print(f"Reachable gates: {len(reachable)}")
         print(f"Unreachable gates: {len(unreachable)}")
@@ -557,6 +565,9 @@ def main() -> int:
             print(f"  ... and {len(unreachable) - 30} more")
         print(f"Required unreachable gates: {len(required_unreachable)}")
         for name in required_unreachable:
+            print(f"  - {name}")
+        print(f"Merge-gate unreachable gates: {len(merge_gate_unreachable)}")
+        for name in merge_gate_unreachable:
             print(f"  - {name}")
     else:
         print("Workflow reachability: skipped (no --workflow supplied)")
@@ -573,12 +584,17 @@ def main() -> int:
             "missing_lanes": [{"gate": g, "lane": l} for g, l in missing_lanes],
             "workflows": [str(path) for path in args.workflows],
             "required_unreachable_gates": required_unreachable,
+            "merge_gate_unreachable_gates": merge_gate_unreachable,
         }
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     if args.strict and (
-        unmapped_gates or missing_lanes or docs_problems or required_unreachable
+        unmapped_gates
+        or missing_lanes
+        or docs_problems
+        or required_unreachable
+        or merge_gate_unreachable
     ):
         return 1
     return 0

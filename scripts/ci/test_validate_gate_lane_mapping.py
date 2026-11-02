@@ -177,6 +177,36 @@ gates:
             GATE_TO_LANE_MAP["docs_agents_contract_workflows"]["lanes"],
         )
 
+    def test_strict_fails_when_merge_gate_has_no_workflow_path_even_if_not_required(
+        self,
+    ) -> None:
+        status, output, report = self.run_validator(
+            """
+gates:
+  - name: parser_corpus_ratchet
+    tier: merge_gate
+    required: false
+""",
+            """
+[lane.merge_gate_shards]
+""",
+            strict=True,
+            json_out=True,
+            workflow_text="""
+jobs:
+  test:
+    run: echo no merge gates here
+""",
+        )
+
+        self.assertEqual(1, status)
+        self.assertIn("Merge-gate unreachable gates: 1", output)
+        self.assertIn("  - parser_corpus_ratchet", output)
+        assert report is not None
+        self.assertEqual(
+            ["parser_corpus_ratchet"], report["merge_gate_unreachable_gates"]
+        )
+
     def test_strict_fails_when_required_gate_has_no_workflow_path(self) -> None:
         status, output, report = self.run_validator(
             """
