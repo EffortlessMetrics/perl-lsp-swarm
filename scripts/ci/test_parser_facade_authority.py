@@ -376,11 +376,22 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         class too, so these tests pick one outside it to keep the assertion pointed
         at the feature under test.
         """
-        return next(
+        for row in self.ledger["features"]:
+            if (
+                row["isolation"] == "source_only"
+                and row["name"] not in self.ledger["default_features"]
+            ):
+                return row
+        # The live ledger may classify former production gates as test profiles; promote
+        # one synthetic row so isolation regressions stay discriminating.
+        candidate = next(
             row for row in self.ledger["features"]
-            if row["isolation"] == "source_only"
+            if row["isolation"] == "test_source_only"
             and row["name"] not in self.ledger["default_features"]
         )
+        candidate["isolation"] = "source_only"
+        self.write_fixture()
+        return candidate
 
     # --- dependency universe -------------------------------------------------
 
