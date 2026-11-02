@@ -23,6 +23,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::digest::{DomainHasher, validate_prefixed_wire, wire_error};
+use crate::field_length::{SourceIdentityFieldLengthError, infallible_precondition_violation};
 #[cfg(doc)]
 use crate::logical_path::LogicalPathError;
 use crate::logical_path::RootRelativeLogicalPath;
@@ -102,24 +103,40 @@ macro_rules! wire_id {
 /// perl-lsp:project-id:v1\0 || length_prefixed(canonical_name)
 /// ```
 ///
-/// Where `length_prefixed(x)` = `u32_be(len(x)) || x`.
+/// Where `length_prefixed(x)` = `u32_be(len(x)) || x` for `len(x) ≤ u32::MAX`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct ProjectId(String);
 
 impl ProjectId {
+    /// Derive a project ID when the canonical name fits the v1 field bound.
+    pub fn try_from_canonical_name(
+        canonical_name: &str,
+    ) -> Result<Self, SourceIdentityFieldLengthError> {
+        let mut h = DomainHasher::new(PROJECT_DOMAIN);
+        h.try_push_field(canonical_name.as_bytes())?;
+        let raw = h.finish();
+        Ok(Self(format!("project:sha256:{}", bytes_to_wire_hex(&raw))))
+    }
+
     /// Derive a project ID from its canonical authority-defined name.
     ///
     /// The `canonical_name` should be a stable, authority-defined identifier
     /// such as a VCS URL (`https://github.com/acme/widget`) or a slug
     /// (`acme/widget`). It must not encode local paths, user names, or any
     /// host-specific state.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `canonical_name.len()` exceeds
+    /// [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]. Use
+    /// [`Self::try_from_canonical_name`] for fallible construction.
     #[must_use]
     pub fn from_canonical_name(canonical_name: &str) -> Self {
-        let mut h = DomainHasher::new(PROJECT_DOMAIN);
-        h.push_field(canonical_name.as_bytes());
-        let raw = h.finish();
-        Self(format!("project:sha256:{}", bytes_to_wire_hex(&raw)))
+        match Self::try_from_canonical_name(canonical_name) {
+            Ok(id) => id,
+            Err(err) => infallible_precondition_violation(err),
+        }
     }
 }
 
@@ -151,6 +168,18 @@ wire_id!(
 pub struct WorkspaceRootId(String);
 
 impl WorkspaceRootId {
+    /// Derive a workspace root ID when all fields fit the v1 bound.
+    pub fn try_from_project_and_root_key(
+        project_id: &ProjectId,
+        root_key: &str,
+    ) -> Result<Self, SourceIdentityFieldLengthError> {
+        let mut h = DomainHasher::new(WORKSPACE_ROOT_DOMAIN);
+        h.try_push_field(project_id.as_wire().as_bytes())?;
+        h.try_push_field(root_key.as_bytes())?;
+        let raw = h.finish();
+        Ok(Self(format!("root:sha256:{}", bytes_to_wire_hex(&raw))))
+    }
+
     /// Derive a workspace root ID from its project and an authority-defined root key.
     ///
     /// The `root_key` should be a stable, authority-defined identifier for this
@@ -161,13 +190,18 @@ impl WorkspaceRootId {
     /// different local paths but representing the same logical checkout of the
     /// same commit would otherwise produce different IDs, breaking cross-machine
     /// identity.
+    ///
+    /// # Panics
+    ///
+    /// Panics when any encoded field exceeds
+    /// [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]. Use
+    /// [`Self::try_from_project_and_root_key`] for fallible construction.
     #[must_use]
     pub fn from_project_and_root_key(project_id: &ProjectId, root_key: &str) -> Self {
-        let mut h = DomainHasher::new(WORKSPACE_ROOT_DOMAIN);
-        h.push_field(project_id.as_wire().as_bytes());
-        h.push_field(root_key.as_bytes());
-        let raw = h.finish();
-        Self(format!("root:sha256:{}", bytes_to_wire_hex(&raw)))
+        match Self::try_from_project_and_root_key(project_id, root_key) {
+            Ok(id) => id,
+            Err(err) => infallible_precondition_violation(err),
+        }
     }
 }
 
@@ -239,16 +273,38 @@ impl LogicalSourceId {
     /// assert!(id.as_wire().starts_with("src:sha256:"));
     /// # Ok::<(), perl_source_identity::LogicalPathError>(())
     /// ```
+    pub fn try_from_root_and_logical_path(
+        workspace_root_id: &WorkspaceRootId,
+        root_relative_path: &RootRelativeLogicalPath,
+    ) -> Result<Self, SourceIdentityFieldLengthError> {
+        // Delegates to the primitive rather than hashing again: one digest
+        // implementation means adding this constructor cannot move the wire
+        // vectors #7652 published. `logical_id_constructors_agree_on_canonical_paths`
+        // pins that equivalence.
+        Self::try_from_root_and_path(workspace_root_id, root_relative_path.as_str())
+    }
+
     #[must_use]
     pub fn from_root_and_logical_path(
         workspace_root_id: &WorkspaceRootId,
         root_relative_path: &RootRelativeLogicalPath,
     ) -> Self {
-        // Delegates to the primitive rather than hashing again: one digest
-        // implementation means adding this constructor cannot move the wire
-        // vectors #7652 published. `logical_id_constructors_agree_on_canonical_paths`
-        // pins that equivalence.
-        Self::from_root_and_path(workspace_root_id, root_relative_path.as_str())
+        match Self::try_from_root_and_logical_path(workspace_root_id, root_relative_path) {
+            Ok(id) => id,
+            Err(err) => infallible_precondition_violation(err),
+        }
+    }
+
+    /// Derive a logical source ID when all fields fit the v1 bound.
+    pub fn try_from_root_and_path(
+        workspace_root_id: &WorkspaceRootId,
+        root_relative_path: &str,
+    ) -> Result<Self, SourceIdentityFieldLengthError> {
+        let mut h = DomainHasher::new(LOGICAL_SOURCE_DOMAIN);
+        h.try_push_field(workspace_root_id.as_wire().as_bytes())?;
+        h.try_push_field(root_relative_path.as_bytes())?;
+        let raw = h.finish();
+        Ok(Self(format!("src:sha256:{}", bytes_to_wire_hex(&raw))))
     }
 
     /// Derive a logical source ID from its workspace root and root-relative path
@@ -260,16 +316,20 @@ impl LogicalSourceId {
     /// type rather than a promise: the rules in [`LogicalPathError`] are exactly
     /// the ways this constructor will happily mint a well-formed ID for the
     /// wrong source, including a host absolute path or a `..` traversal.
+    ///
+    /// # Panics
+    ///
+    /// Panics when any encoded field exceeds
+    /// [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`].
     #[must_use]
     pub fn from_root_and_path(
         workspace_root_id: &WorkspaceRootId,
         root_relative_path: &str,
     ) -> Self {
-        let mut h = DomainHasher::new(LOGICAL_SOURCE_DOMAIN);
-        h.push_field(workspace_root_id.as_wire().as_bytes());
-        h.push_field(root_relative_path.as_bytes());
-        let raw = h.finish();
-        Self(format!("src:sha256:{}", bytes_to_wire_hex(&raw)))
+        match Self::try_from_root_and_path(workspace_root_id, root_relative_path) {
+            Ok(id) => id,
+            Err(err) => infallible_precondition_violation(err),
+        }
     }
 }
 

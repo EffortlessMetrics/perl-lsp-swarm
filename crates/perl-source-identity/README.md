@@ -36,7 +36,9 @@ All durable IDs use **SHA-256** with domain separation:
 - IDs of different kinds never collide even when their material inputs match
   (each type uses a unique domain prefix).
 - Fields are length-prefixed so `["a", "bc"]` and `["ab", "c"]` hash
-  differently.
+  differently, for field sizes up to `u32::MAX` bytes. Longer single fields are
+  rejected at construction ([`SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]) rather than
+  silently truncating the prefix.
 
 ## Dependency contract
 
