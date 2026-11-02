@@ -17,6 +17,10 @@
 /// ```compile_fail
 /// let _ = perl_module::module_move::ModuleMovePlan;
 /// ```
+///
+/// ```compile_fail
+/// let _ = perl_module::subroutine_move::SubroutineMovePlan;
+/// ```
 // name module
 pub use crate::name::legacy_package_separator;
 pub use crate::name::module_variant_pairs;
@@ -119,6 +123,20 @@ pub use crate::module_move::ModuleMovePlan;
 pub use crate::module_move::ModuleMoveResourceTransition;
 pub use crate::module_move::ModuleMoveSource;
 pub use crate::module_move::ModuleMoveTarget;
+
+// subroutine_move module — pure generation-bound ordinary package-subroutine move
+// planning (#2990); consumes fact identities from perl-semantic-facts.
+pub use crate::subroutine_move::SUBROUTINE_MOVE_SCHEMA_VERSION;
+pub use crate::subroutine_move::SubroutineMoveAppend;
+pub use crate::subroutine_move::SubroutineMoveBlocker;
+pub use crate::subroutine_move::SubroutineMoveDisposition;
+pub use crate::subroutine_move::SubroutineMoveEdit;
+pub use crate::subroutine_move::SubroutineMoveFileGeneration;
+pub use crate::subroutine_move::SubroutineMoveInvalidPlan;
+pub use crate::subroutine_move::SubroutineMoveOccurrence;
+pub use crate::subroutine_move::SubroutineMovePlan;
+pub use crate::subroutine_move::SubroutineMoveSource;
+pub use crate::subroutine_move::SubroutineMoveTarget;
 
 // resolution module
 pub use crate::resolution::IncRoot;
