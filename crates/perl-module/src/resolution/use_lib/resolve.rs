@@ -40,7 +40,7 @@ pub fn resolve_use_lib_paths(
                 {
                     result.push(s);
                 }
-            } else {
+            } else if p.components().any(|component| component == Component::ParentDir) {
                 let Some(resolved) = normalize_relative_to_workspace(workspace_root, p) else {
                     continue;
                 };
@@ -50,6 +50,11 @@ pub fn resolve_use_lib_paths(
                 if let Some(s) = path_to_relative_string(&resolved, workspace_root)
                     && !result.contains(&s)
                 {
+                    result.push(s);
+                }
+            } else {
+                let s = path_str.to_string();
+                if !result.contains(&s) {
                     result.push(s);
                 }
             }
