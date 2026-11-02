@@ -114,8 +114,8 @@ pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core
 pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub const perl_symbol::api::MIN_LOOSE_MATCH_QUERY_CHARS: usize
 pub fn perl_symbol::api::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
-pub fn perl_symbol::api::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::api::extract_lexical_scope_regions(root: &perl_ast::ast::Node) -> alloc::vec::Vec<(usize, usize)>
+pub fn perl_symbol::api::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::api::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
 pub fn perl_symbol::api::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
 pub fn perl_symbol::api::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
@@ -162,8 +162,8 @@ pub perl_symbol::surface::decl::SymbolDecl::qualified_name: alloc::string::Strin
 pub fn perl_symbol::surface::decl::SymbolDecl::clone(&self) -> perl_symbol::surface::decl::SymbolDecl
 pub fn perl_symbol::surface::decl::SymbolDecl::eq(&self, other: &perl_symbol::surface::decl::SymbolDecl) -> bool
 pub fn perl_symbol::surface::decl::SymbolDecl::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_symbol::surface::decl::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::surface::decl::extract_lexical_scope_regions(root: &perl_ast::ast::Node) -> alloc::vec::Vec<(usize, usize)>
+pub fn perl_symbol::surface::decl::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub mod perl_symbol::surface::facts
 pub struct perl_symbol::surface::facts::SymbolDeclSemanticFacts
 pub perl_symbol::surface::facts::SymbolDeclSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
@@ -273,8 +273,8 @@ pub fn perl_symbol::surface::facts::UnsupportedDeclFact::clone(&self) -> perl_sy
 pub fn perl_symbol::surface::facts::UnsupportedDeclFact::eq(&self, other: &perl_symbol::surface::facts::UnsupportedDeclFact) -> bool
 pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_symbol::surface::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::surface::extract_lexical_scope_regions(root: &perl_ast::ast::Node) -> alloc::vec::Vec<(usize, usize)>
+pub fn perl_symbol::surface::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::surface::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
 pub fn perl_symbol::surface::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
 pub fn perl_symbol::surface::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>, dispatch_only_entity_ids: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
@@ -434,8 +434,8 @@ pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core
 pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub const perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS: usize
 pub fn perl_symbol::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
-pub fn perl_symbol::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::extract_lexical_scope_regions(root: &perl_ast::ast::Node) -> alloc::vec::Vec<(usize, usize)>
+pub fn perl_symbol::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
 pub fn perl_symbol::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
 pub fn perl_symbol::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
 pub fn perl_symbol::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
