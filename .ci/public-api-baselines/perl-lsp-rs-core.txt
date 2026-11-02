@@ -5499,7 +5499,6 @@ pub fn perl_lsp_rs_core::providers::rename_shadow::RenameCutoverResult::fmt(&sel
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason
 pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::Blocked
 pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::EmptyPlan
-pub perl_lsp_rs_core::providers::navigation::rename_shadow::RenamePackagePilotIneligibleReason::UnsupportedEditCategory
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::clone(&self) -> perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::eq(&self, other: &perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason) -> bool
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -6456,7 +6455,6 @@ pub fn perl_lsp_rs_core::providers::rename_shadow::RenameCutoverResult::fmt(&sel
 #[non_exhaustive] pub enum perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::Blocked
 pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::EmptyPlan
-pub perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::UnsupportedEditCategory
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::clone(&self) -> perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::eq(&self, other: &perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason) -> bool
 pub fn perl_lsp_rs_core::providers::rename_shadow::RenamePackagePilotIneligibleReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
