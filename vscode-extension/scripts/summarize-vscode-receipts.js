@@ -43,6 +43,33 @@ const METRIC_READERS = {
   shutdown_ms: (receipt) => receipt.lifecycle?.shutdown?.duration_ms,
 };
 
+const FEATURE_DOMAINS = ['mcp', 'whats_new', 'providers', 'configuration', 'debugger', 'onboarding'];
+
+for (const domain of FEATURE_DOMAINS) {
+  METRIC_READERS[`feature_${domain}_registration_ms`] = (receipt) => {
+    const measurements = receipt.startup?.feature_activation?.measurements;
+    if (!Array.isArray(measurements)) {
+      return undefined;
+    }
+    const match = measurements.find((entry) => entry?.domain === domain);
+    if (!match || typeof match.registration_ms !== 'number') {
+      return undefined;
+    }
+    return match.registration_ms;
+  };
+  METRIC_READERS[`feature_${domain}_first_use_ms`] = (receipt) => {
+    const measurements = receipt.startup?.feature_activation?.measurements;
+    if (!Array.isArray(measurements)) {
+      return undefined;
+    }
+    const match = measurements.find((entry) => entry?.domain === domain);
+    if (!match || typeof match.first_use_ms !== 'number') {
+      return undefined;
+    }
+    return match.first_use_ms;
+  };
+}
+
 function percentile(values, fraction) {
   if (values.length === 0) {
     return null;
