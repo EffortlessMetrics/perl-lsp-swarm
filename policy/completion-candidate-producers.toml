@@ -188,7 +188,7 @@ outcome_owner = "#10230"
 # change touched the scanned `completion/variables.rs` and
 # `completion/request/dispatch.rs`; the existing producer rows, their
 # identity/evidence/completeness ceilings and migration owners are unchanged.
-source_digest = "sha256:2f808f4cd3caa5d4f4ed562efc572cd888651c7c8df3fb63aae15fb635502bd6"
+source_digest = "sha256:7393d4fb445fb2980daeded749396aebdfba110604693d7a2c8fb82ea5ecb38c"
 
 [[delegations]]
 module = "dancer2"

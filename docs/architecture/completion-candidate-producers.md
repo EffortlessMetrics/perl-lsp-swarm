@@ -10,8 +10,8 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against the shipped (non-test) surface of the files listed here. A change to that shipped surface invalidates the audit and `check` fails until the rows are re-checked; test-only or formatting-only edits do not.
 
-- Digest: `sha256:2f808f4cd3caa5d4f4ed562efc572cd888651c7c8df3fb63aae15fb635502bd6`
-- Files (42):
+- Digest: `sha256:7393d4fb445fb2980daeded749396aebdfba110604693d7a2c8fb82ea5ecb38c`
+- Files (41):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins/catalog.rs`
@@ -21,7 +21,6 @@ The dispositions below were audited against the shipped (non-test) surface of th
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/functions.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/import_map.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/import_map/runtime_imports.rs`
-  - `crates/perl-lsp-rs-core/src/providers/completion/completion/import_map/symbols.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/import_map/used_modules.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/items.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/keywords.rs`

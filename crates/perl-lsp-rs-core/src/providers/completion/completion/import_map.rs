@@ -15,6 +15,7 @@ use used_modules::is_importable_module;
 ///
 /// Only uppercase-starting module names are included (skips pragmas like
 /// `strict`, `warnings`, `feature`, `constant`, `utf8`, `lib`, `parent`, `base`).
+#[allow(dead_code)] // exercised by unit tests in this module; production uses `extract_import_map_with_source`.
 pub(super) fn extract_import_map(ast: &Node) -> ImportMap {
     extract_import_map_with_source(ast, None)
 }
@@ -54,9 +55,8 @@ fn merge_spec_symbols(module: &str, symbols: &ImportSymbols, map: &mut ImportMap
     match symbols {
         ImportSymbols::None => {
             map.entry(module.to_string()).or_default();
-            return;
         }
-        ImportSymbols::Default | ImportSymbols::Dynamic => return,
+        ImportSymbols::Default | ImportSymbols::Dynamic => {}
         ImportSymbols::Explicit(explicit) => {
             if explicit.is_empty() {
                 map.entry(module.to_string()).or_default();
