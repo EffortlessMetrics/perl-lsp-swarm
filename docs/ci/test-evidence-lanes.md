@@ -155,7 +155,11 @@ worked example: its contracts were `compile_fail` doctests on an item behind
 the non-default `incremental` feature, so no `--doc` route could reach them.
 
 `doctest_enforcement` keeps the choice honest. A `compile_fail` fence in a
-crate the route does not select fails that gate, naming the file and line.
+crate the route does not select fails that gate, naming the file and line. A
+fence in a selected crate but behind `#[cfg(feature = "…")]` that the route
+command does not enable fails the same gate (#16005): the checker resolves the
+library module graph under default features plus any `--features` /
+`--all-features` on the route command, with `cfg(test)` treated as enabled.
 
 ### `doctest = false` is not an exclusion
 
