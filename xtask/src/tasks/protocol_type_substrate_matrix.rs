@@ -549,7 +549,7 @@ const SCHEMA_DELTAS: &[SchemaDeltaRow] = &[
         incumbent_evidence: "0.97 src/uri.rs: newtype `Uri(fluent_uri::Uri<String>)` around fluent-uri 0.1.4; parse errors surface as typed Result",
         candidate_evidence: "0.11.0 src/generated/common.rs:28: plain `pub struct Uri(pub String)` with no parse step",
         classification: "public_api_only_difference",
-        migration_note: "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire",
+        migration_note: "qualified-URI preservation and DocumentUriKey/#8156/#8484 interaction must be proven before choosing; parse fallibility moves from construction-time to trust-the-wire; canonical string→Uri gates live in perl-lsp-rs-core::uri (`parse_uri` with ADR-0037 fallback, `try_parse_uri` for skip-on-invalid workspace folders, `parse_uri_or_err` for strict/test callers — #14292)",
     },
     SchemaDeltaRow {
         row_id: "DELTA-URI-URL",

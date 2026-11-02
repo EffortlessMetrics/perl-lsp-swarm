@@ -54,29 +54,54 @@ fn windows_file_path_uri(s: &str) -> Option<Uri> {
     url.as_str().parse::<Uri>().ok()
 }
 
+fn parse_uri_candidate(s: &str) -> Option<Uri> {
+    let sanitized = s.trim_start_matches('\u{feff}').trim();
+
+    if sanitized.is_empty() {
+        return None;
+    }
+
+    if let Some(uri) = file_path_uri(sanitized).or_else(|| windows_file_path_uri(sanitized)) {
+        return Some(uri);
+    }
+
+    sanitized.parse::<Uri>().ok().or_else(|| {
+        Url::parse(sanitized)
+            .ok()
+            .and_then(|url| url.as_str().parse::<Uri>().ok())
+    })
+}
+
+/// Parse a URI string without the guaranteed-valid fallback chain.
+///
+/// Returns `None` when the input is empty (after BOM/whitespace trimming) or
+/// cannot be interpreted as a URI or absolute local file path. Workspace
+/// adapters use this when an invalid folder URI should be skipped rather than
+/// substituted (see `DELTA-URI-DEFAULT` / #14292).
+#[must_use]
+pub fn try_parse_uri(s: &str) -> Option<Uri> {
+    parse_uri_candidate(s)
+}
+
+/// Strict parse for tests and callers that must observe failure as `Err`.
+///
+/// Propagates the same success cases as [`try_parse_uri`]; invalid input
+/// becomes `Err` instead of a fallback URI or `None`.
+pub fn parse_uri_or_err(s: &str) -> Result<Uri, UriStrictParseError> {
+    parse_uri_candidate(s).ok_or(UriStrictParseError)
+}
+
+/// Error returned when [`parse_uri_or_err`] cannot interpret the input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UriStrictParseError;
+
 /// Parse a URI string into [`lsp_types::Uri`].
 ///
 /// Accepts valid URI strings and absolute local file paths (both Unix and
 /// Windows styles). Falls back to a guaranteed-valid URI if parsing fails.
 #[must_use]
 pub fn parse_uri(s: &str) -> Uri {
-    let sanitized = s.trim_start_matches('\u{feff}').trim();
-
-    if sanitized.is_empty() {
-        return fallback_uri();
-    }
-
-    if let Some(uri) = file_path_uri(sanitized).or_else(|| windows_file_path_uri(sanitized)) {
-        return uri;
-    }
-
-    match sanitized.parse::<Uri>() {
-        Ok(uri) => uri,
-        Err(_) => Url::parse(sanitized)
-            .ok()
-            .and_then(|url| url.as_str().parse::<Uri>().ok())
-            .unwrap_or_else(fallback_uri),
-    }
+    parse_uri_candidate(s).unwrap_or_else(fallback_uri)
 }
 
 #[cfg(test)]
@@ -225,5 +250,61 @@ mod uri_path_helpers_tests {
             "file:///workspace/lib/Mod.pm",
             "parse_uri must convert a Unix absolute path to a file:// URI via path-detection"
         );
+    }
+}
+
+#[cfg(test)]
+mod uri_parse_gate_tests {
+    use super::{parse_uri, parse_uri_or_err, try_parse_uri, UriStrictParseError};
+    use lsp_types::Uri;
+
+    /// Each literal in the ADR-0037 fallback chain must remain parseable so
+    /// `parse_uri` can always return a wire-safe URI.
+    #[test]
+    fn fallback_literal_candidates_are_parseable() {
+        for candidate in [
+            "file:///unknown",
+            "file:///",
+            "about:blank",
+            "urn:perl-lsp:unknown",
+        ] {
+            assert!(
+                candidate.parse::<Uri>().is_ok(),
+                "fallback candidate {candidate} must parse as Uri"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_uri_invalid_input_uses_first_fallback_literal() {
+        assert_eq!(
+            parse_uri("not a valid uri!!!").as_str(),
+            "file:///unknown",
+            "invalid input must use the first successful fallback literal"
+        );
+    }
+
+    #[test]
+    fn fallback_localhost_last_resort_literal_is_valid() {
+        assert!(
+            "http://localhost/0".parse::<Uri>().is_ok(),
+            "http://localhost/N loop must have a parseable last-resort candidate"
+        );
+    }
+
+    #[test]
+    fn try_parse_uri_returns_none_for_empty_or_invalid_workspace_string() {
+        assert!(try_parse_uri("").is_none());
+        assert!(try_parse_uri("   ").is_none());
+        assert!(try_parse_uri("not a valid uri!!!").is_none());
+    }
+
+    #[test]
+    fn parse_uri_or_err_returns_err_for_invalid_test_input() {
+        assert_eq!(
+            parse_uri_or_err("not a valid uri!!!"),
+            Err(UriStrictParseError)
+        );
+        assert!(parse_uri_or_err("file:///tmp/test.pl").is_ok());
     }
 }
