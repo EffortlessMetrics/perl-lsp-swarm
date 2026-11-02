@@ -321,6 +321,25 @@ fn unused_fixture_cannot_report_success() {
 }
 
 #[test]
+fn unused_reusable_fixture_cannot_report_success() {
+    let fixture = ExternalCommandFixture::new()
+        .expect(ExpectedExternalCommand::exact("git", vec!["status".into()]).reusable());
+    let unused = fixture.assert_exhausted().expect_err("unused reusable fixture must fail");
+    assert_eq!(unused.kind, MismatchKind::UnusedExpectation);
+}
+
+#[test]
+fn consumed_reusable_fixture_is_exhausted() -> Result<(), String> {
+    let fixture = ExternalCommandFixture::new().expect(
+        ExpectedExternalCommand::exact("git", vec!["status".into()]).reusable().stdout("ok"),
+    );
+    observe_ok(&fixture, "git", &["status"])?;
+    observe_ok(&fixture, "git", &["status"])?;
+    fixture.assert_exhausted().map_err(|mismatch| mismatch.to_string())?;
+    Ok(())
+}
+
+#[test]
 fn mismatch_output_is_bounded_and_ordered() -> Result<(), String> {
     let fixture = ExternalCommandFixture::new()
         .expect(ExpectedExternalCommand::exact("git", vec!["ls-remote".into(), "origin".into()]));
@@ -392,6 +411,36 @@ mod hermetic {
         assert!(!env.sentinel_hit(), "live PATH fallback reached the sentinel");
         let mismatch = env.mismatch_text().ok_or("shim must record a mismatch")?;
         assert!(mismatch.contains("unexpected invocation"), "{mismatch}");
+        Ok(())
+    }
+
+    #[test]
+    fn newline_in_one_argument_does_not_match_two_arguments()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ExternalCommandFixture::new().expect(
+            ExpectedExternalCommand::exact("git", vec!["a".into(), "b".into()]).stdout("two\n"),
+        );
+        let env = HermeticCommandEnv::install("git", &fixture)?;
+        let mut split = Command::new("git");
+        split.args(["a", "b"]);
+        env.apply(&mut split)?;
+        let split_output = split.output()?;
+        assert!(split_output.status.success(), "{}", String::from_utf8_lossy(&split_output.stderr));
+        assert_eq!(String::from_utf8_lossy(&split_output.stdout), "two\n");
+
+        let collapsed = ExternalCommandFixture::new().expect(
+            ExpectedExternalCommand::exact("git", vec!["a".into(), "b".into()]).stdout("two\n"),
+        );
+        let collapsed_env = HermeticCommandEnv::install("git", &collapsed)?;
+        let mut joined = Command::new("git");
+        joined.arg("a\nb");
+        collapsed_env.apply(&mut joined)?;
+        let joined_output = joined.output()?;
+        assert!(!joined_output.status.success(), "newline-collapsed argv must not match two args");
+        assert!(
+            !collapsed_env.sentinel_hit(),
+            "unmatched newline argv must not reach the sentinel"
+        );
         Ok(())
     }
 

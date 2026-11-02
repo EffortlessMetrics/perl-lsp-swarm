@@ -410,7 +410,8 @@ impl ExternalCommandFixture {
         self.inner.borrow().mismatch.clone()
     }
 
-    /// Fail if any expectation was never consumed, or if a prior observation
+    /// Fail if any finite expectation still has remaining calls, if a
+    /// reusable expectation was never observed, or if a prior observation
     /// already mismatched.
     #[allow(clippy::result_large_err)]
     pub fn assert_exhausted(&self) -> Result<(), FixtureMismatch> {
@@ -421,7 +422,7 @@ impl ExternalCommandFixture {
         let unused: Vec<String> = inner
             .slots
             .iter()
-            .filter(|slot| slot.remaining > 0)
+            .filter(|slot| slot_is_unconsumed(slot))
             .map(|slot| slot.spec.identity())
             .collect();
         if unused.is_empty() {
@@ -433,6 +434,10 @@ impl ExternalCommandFixture {
     pub fn slots_for_shim(&self) -> Vec<ExpectedExternalCommand> {
         self.inner.borrow().slots.iter().map(|slot| slot.spec.clone()).collect()
     }
+}
+
+fn slot_is_unconsumed(slot: &ExpectationSlot) -> bool {
+    slot.remaining == slot.spec.times || (slot.remaining > 0 && slot.spec.times != usize::MAX)
 }
 
 enum SlotFit {
@@ -684,19 +689,21 @@ fi
 n=$((n + 1))
 printf '%s\n' "$n" > "$dir/obs_count"
 {
-  printf '%s\n' "$program"
-  printf '%s\n' "$@"
+  printf '%s\0' "$program"
+  printf '%s\0' "$@"
 } > "$dir/observed/$n.argv"
 matched=
 for slot in "$dir"/expected/*; do
   [ -d "$slot" ] || continue
   remaining=$(cat "$slot/remaining")
-  if [ "$remaining" -le 0 ]; then
+  if [ "$remaining" -eq 0 ]; then
     continue
   fi
   if cmp -s "$dir/observed/$n.argv" "$slot/argv"; then
-    remaining=$((remaining - 1))
-    printf '%s\n' "$remaining" > "$slot/remaining"
+    if [ "$remaining" -gt 0 ]; then
+      remaining=$((remaining - 1))
+      printf '%s\n' "$remaining" > "$slot/remaining"
+    fi
     matched=1
     if [ -f "$slot/stdout" ]; then
       cat "$slot/stdout"
@@ -798,32 +805,50 @@ exit 98
                 .map_err(|error| io::Error::other(format!("obs_count: {error}")))?;
             let mut observations = Vec::new();
             for index in 1..=count {
-                let text = fs::read_to_string(
-                    self.fixture_dir.join("observed").join(format!("{index}.argv")),
-                )?;
-                let mut lines = text.lines().map(str::to_string);
-                let Some(program) = lines.next() else {
+                let bytes =
+                    fs::read(self.fixture_dir.join("observed").join(format!("{index}.argv")))?;
+                let mut tokens = decode_argv_records(&bytes);
+                if tokens.is_empty() {
                     continue;
-                };
-                observations.push(ObservedExternalCommand::new(program, lines.collect()));
+                }
+                let program = tokens.remove(0);
+                observations.push(ObservedExternalCommand::new(program, tokens));
             }
             Ok(observations)
         }
     }
 
+    fn encode_argv_records(program: &str, argv: &[String]) -> Vec<u8> {
+        let mut records = Vec::new();
+        for token in std::iter::once(program).chain(argv.iter().map(String::as_str)) {
+            records.extend_from_slice(token.as_bytes());
+            records.push(0);
+        }
+        records
+    }
+
+    fn decode_argv_records(bytes: &[u8]) -> Vec<String> {
+        let mut tokens: Vec<String> = bytes
+            .split(|byte| *byte == 0)
+            .map(|part| String::from_utf8_lossy(part).into_owned())
+            .collect();
+        if tokens.last().is_some_and(String::is_empty) {
+            tokens.pop();
+        }
+        tokens
+    }
+
     fn write_slot(dir: &Path, spec: &ExpectedExternalCommand) -> io::Result<()> {
         fs::create_dir_all(dir)?;
-        let mut argv = String::new();
-        argv.push_str(&command_identity(&spec.program));
-        argv.push('\n');
-        for arg in &spec.argv {
-            argv.push_str(arg);
-            argv.push('\n');
-        }
-        fs::write(dir.join("argv"), argv)?;
+        fs::write(
+            dir.join("argv"),
+            encode_argv_records(&command_identity(&spec.program), &spec.argv),
+        )?;
         fs::write(dir.join("stdout"), &spec.result.stdout)?;
         fs::write(dir.join("exit"), format!("{}\n", spec.result.exit_code))?;
-        fs::write(dir.join("remaining"), format!("{}\n", spec.times))?;
+        let remaining =
+            if spec.times == usize::MAX { "-1".to_string() } else { spec.times.to_string() };
+        fs::write(dir.join("remaining"), format!("{remaining}\n"))?;
         Ok(())
     }
 
