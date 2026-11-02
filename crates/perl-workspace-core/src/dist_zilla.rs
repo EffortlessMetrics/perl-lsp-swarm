@@ -12,7 +12,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::dist_authoring::{DistAuthoringFacts, DistAuthoringSource};
+use crate::dist_authoring::{plugin_generates_metadata, plugin_registry_identity, DistAuthoringFacts, DistAuthoringSource};
 use crate::environment::{
     BuildSystemKind, EnvironmentInputAuthority, EnvironmentLimitation, IncludeEntryRole,
     ProjectRootRole,
@@ -369,7 +369,7 @@ pub fn classify_plugin_heading(plugin: &str) -> DistZillaPluginRegistryNote {
             detail: format!("Dist::Zilla bundle `{normalized}` is recorded, not expanded"),
         };
     }
-    if is_dynamic_plugin(normalized) {
+    if plugin_generates_metadata(normalized) {
         return DistZillaPluginRegistryNote {
             plugin: normalized.to_string(),
             effect: "plugin_generated_metadata",
@@ -378,16 +378,17 @@ pub fn classify_plugin_heading(plugin: &str) -> DistZillaPluginRegistryNote {
             ),
         };
     }
-    if plugin_eq(normalized, "MakeMaker") || normalized.ends_with("::MakeMaker") {
+    let identity = plugin_registry_identity(normalized);
+    if plugin_eq(identity, "MakeMaker") || identity.ends_with("::MakeMaker") {
         return DistZillaPluginRegistryNote {
             plugin: normalized.to_string(),
             effect: "declares_generated_eumm",
             detail: "plugin declares ExtUtils::MakeMaker as generated installer".to_string(),
         };
     }
-    if plugin_eq(normalized, "ModuleBuild")
-        || plugin_eq(normalized, "ModuleBuildTiny")
-        || normalized.contains("ModuleBuild")
+    if plugin_eq(identity, "ModuleBuild")
+        || plugin_eq(identity, "ModuleBuildTiny")
+        || identity.contains("ModuleBuild")
     {
         return DistZillaPluginRegistryNote {
             plugin: normalized.to_string(),
@@ -395,7 +396,7 @@ pub fn classify_plugin_heading(plugin: &str) -> DistZillaPluginRegistryNote {
             detail: "plugin declares Module::Build as generated installer".to_string(),
         };
     }
-    if plugin_eq(normalized, "Lib") || normalized.ends_with("::Lib") {
+    if plugin_eq(identity, "Lib") || identity.ends_with("::Lib") {
         return DistZillaPluginRegistryNote {
             plugin: normalized.to_string(),
             effect: "declares_source_layout",
@@ -409,19 +410,6 @@ pub fn classify_plugin_heading(plugin: &str) -> DistZillaPluginRegistryNote {
         detail: "plugin identity recorded; behavior is not inferred from the name alone"
             .to_string(),
     }
-}
-
-fn is_dynamic_plugin(name: &str) -> bool {
-    const DYNAMIC: &[&str] = &[
-        "AutoPrereqs",
-        "AutoVersion",
-        "VersionFromModule",
-        "Git::NextVersion",
-        "PkgVersion",
-        "Prereqs::FromCPANfile",
-        "DynamicPrereqs",
-    ];
-    DYNAMIC.iter().any(|plugin| plugin_eq(name, plugin))
 }
 
 fn plugin_eq(left: &str, right: &str) -> bool {
@@ -549,7 +537,7 @@ fn evaluate_generated_root(
         },
         DirectoryState::EscapesWorkspace => DistZillaRootCandidate {
             relative_path: relative.to_string(),
-            project_role: ProjectRootRole::Generated,
+            project_role,
             include_role,
             authority: EnvironmentInputAuthority::BuildMetadata,
             exists: false,
@@ -563,7 +551,7 @@ fn evaluate_generated_root(
         },
         DirectoryState::NotDirectory => DistZillaRootCandidate {
             relative_path: relative.to_string(),
-            project_role: ProjectRootRole::Generated,
+            project_role,
             include_role,
             authority: EnvironmentInputAuthority::BuildMetadata,
             exists: false,
@@ -598,7 +586,7 @@ fn evaluate_generated_root(
             };
             DistZillaRootCandidate {
                 relative_path: relative.to_string(),
-                project_role: ProjectRootRole::Generated,
+                project_role,
                 include_role,
                 authority: EnvironmentInputAuthority::BuildMetadata,
                 exists: true,

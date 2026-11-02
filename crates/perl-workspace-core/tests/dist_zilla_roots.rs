@@ -16,7 +16,7 @@ use perl_workspace_core::{
     DistZillaDetectOptions, DistZillaRootDisposition, DistZillaRootFreshness,
     DistZillaToolDisposition, BLIB_LIB, DIST_INI, DIST_ZILLA_BLIB_LIB,
     DIST_ZILLA_REASON_GENERATED_ROOT_STALE, DIST_ZILLA_REASON_GENERATED_ROOT_WITHOUT_BUILD_SYSTEM,
-    DIST_ZILLA_SOURCE_LIB, REASON_CONFIGURED_DZIL_MISSING,
+    DIST_ZILLA_SOURCE_LIB, ProjectRootRole, REASON_CONFIGURED_DZIL_MISSING, STAGED_BUILD,
 };
 
 struct Fixture {
@@ -197,6 +197,37 @@ fn plugin_notes_consume_authoring_facts_without_reparse() {
 }
 
 #[test]
+fn staged_build_root_keeps_build_role_when_present() {
+    let fixture = Fixture::new("staged-build");
+    fixture.write(DIST_INI, "name = App-Dist\n");
+    fixture.dir(STAGED_BUILD);
+
+    let detection = detect_dist_zilla(&fixture.root, DistZillaDetectOptions::default());
+    let staged = detection
+        .roots
+        .iter()
+        .find(|root| root.relative_path == STAGED_BUILD)
+        .expect(".build root");
+    assert_eq!(staged.project_role, ProjectRootRole::Build);
+    assert_eq!(staged.disposition, DistZillaRootDisposition::Selected);
+}
+
+#[test]
+fn named_plugin_sections_use_registry_identity() {
+    let content = "[MakeMaker / Installer]\n[AutoPrereqs / Runtime]\n";
+    let facts = parse_dist_ini(FileId::new("dist.ini", &Digest::of(content)), content);
+    let notes = plugin_notes_from_authoring(&facts);
+    assert!(notes.iter().any(|n| n.effect == "declares_generated_eumm"));
+    assert!(notes.iter().any(|n| n.effect == "plugin_generated_metadata"));
+}
+
+#[test]
+fn our_pkg_version_is_dynamic_in_registry() {
+    let note = classify_plugin_heading("OurPkgVersion");
+    assert_eq!(note.effect, "plugin_generated_metadata");
+}
+
+#[test]
 fn detect_with_plugin_headings_is_order_independent() {
     let fixture = Fixture::new("plugins");
     fixture.write(DIST_INI, "name = App-Dist\n");
@@ -208,5 +239,9 @@ fn detect_with_plugin_headings_is_order_independent() {
         DistZillaDetectOptions::default(),
         &["AutoPrereqs".to_string(), "MakeMaker".to_string()],
     );
-    assert_eq!(forward.plugin_notes.len(), reverse.plugin_notes.len());
+    let mut forward_effects: Vec<_> = forward.plugin_notes.iter().map(|n| n.effect).collect();
+    let mut reverse_effects: Vec<_> = reverse.plugin_notes.iter().map(|n| n.effect).collect();
+    forward_effects.sort_unstable();
+    reverse_effects.sort_unstable();
+    assert_eq!(forward_effects, reverse_effects);
 }
