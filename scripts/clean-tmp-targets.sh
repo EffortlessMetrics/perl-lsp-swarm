@@ -110,9 +110,11 @@ collect_live_worktree_target_names() {
 SAFE_NAMES_FILE="$(mktemp)"
 trap 'rm -f "$SAFE_NAMES_FILE"' EXIT
 
-if ! collect_live_worktree_target_names | sort -u > "$SAFE_NAMES_FILE"; then
+worktree_names=""
+if ! worktree_names="$(collect_live_worktree_target_names)"; then
     exit 75
 fi
+printf '%s\n' "$worktree_names" | sort -u > "$SAFE_NAMES_FILE"
 
 # ── Find candidate dirs in /tmp ────────────────────────────────────────────────
 
