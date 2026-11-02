@@ -823,10 +823,7 @@ expected_paths = ["vscode-extension/package.json", "crates/perl-lsp-rs/tests/"]
     fn path_matches_directory_boundary() {
         assert!(path_matches("crates/perl-dap/src/a.rs", "crates/perl-dap"));
         assert!(!path_matches("crates/perl-dap-extra/src/a.rs", "crates/perl-dap"));
-        assert!(path_matches(
-            "vscode-extension/package.json",
-            "vscode-extension/package.json"
-        ));
+        assert!(path_matches("vscode-extension/package.json", "vscode-extension/package.json"));
         assert!(!path_matches("xtask/src/foo_bar.rs", "xtask/src/foo"));
         assert!(path_matches("crates/perl-dap/src/a.rs", "crates/perl-dap/"));
     }
