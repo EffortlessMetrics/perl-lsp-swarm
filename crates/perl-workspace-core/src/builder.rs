@@ -181,6 +181,23 @@ fn extract_dist_metadata(
                     paths: vec![relative_path.to_string()],
                 });
             }
+            for (index, finding) in outcome.spec_validation.findings.iter().enumerate() {
+                limitations.push(ModelLimitation {
+                    id: format!("meta-yml-spec:{relative_path}:{index}"),
+                    kind: if outcome.spec_validation.conforms_to_supported_spec {
+                        "meta_yml_spec_conforms".to_string()
+                    } else {
+                        "meta_yml_spec_nonconforming".to_string()
+                    },
+                    message: format!(
+                        "`{relative_path}` spec {:?} on `{}`: {}",
+                        finding.kind,
+                        finding.field.as_deref().unwrap_or(""),
+                        finding.detail
+                    ),
+                    paths: vec![relative_path.to_string()],
+                });
+            }
             match outcome.state {
                 crate::meta_yml::MetaYmlParseState::Parsed => outcome.facts,
                 _ => None,
@@ -658,12 +675,16 @@ mod tests {
 
         let parsed = model_for(
             "meta-yml-observed",
-            &[("META.yml", "name: X\n")],
+            &[("META.yml", "name: X\nversion: '1'\nlicense: perl_5\n")],
             FactClasses::FILES | FactClasses::DIST,
         );
         assert!(parsed.file_by_path("META.yml").is_some());
         assert!(parsed.dist_metadata.iter().any(|facts| facts.name.as_deref() == Some("X")));
-        assert!(parsed.limitations.is_empty());
+        assert!(
+            parsed.limitations.is_empty(),
+            "conforming META.yml must not emit parse or spec limitations: {:?}",
+            parsed.limitations
+        );
         Ok(())
     }
 
