@@ -32,7 +32,10 @@ pub fn adapt_flat_hir_call(item: &HirItem) -> Option<CallSemantics> {
     }
 }
 
-/// Adapt a body-HIR expression if it is [`HirExpr::Call`].
+/// Adapt a body-HIR expression if it is a call-producing [`HirExpr::Call`].
+///
+/// Body HIR reuses `HirExpr::Call` for non-call operations (`eval`, `do`,
+/// slices, `goto`, …). Those kinds return `None`.
 #[must_use]
 pub fn adapt_body_hir_call(body: &HirBody, expr_id: HirExprId) -> Option<CallSemantics> {
     let expr = body.expr(expr_id)?;
@@ -40,7 +43,7 @@ pub fn adapt_body_hir_call(body: &HirBody, expr_id: HirExprId) -> Option<CallSem
         return None;
     };
     let call_range = body.source_map.expr_range(expr_id)?;
-    Some(adapt_body_call(call_range, ast_kind, args, *callee_span, body))
+    adapt_body_call(call_range, ast_kind, args, *callee_span, body)
 }
 
 fn adapt_call_expr(item: &HirItem, call: &CallExpr) -> CallSemantics {
@@ -91,10 +94,33 @@ fn adapt_call_expr(item: &HirItem, call: &CallExpr) -> CallSemantics {
 
 fn adapt_method_expr(item: &HirItem, call: &MethodCallExpr) -> CallSemantics {
     let recovered = item.recovery_confidence != RecoveryConfidence::Parsed;
+    let dynamic = method_spelling_is_dynamic(&call.method);
     let _ = call.object_kind;
+    let mut limitations = vec![
+        CallLimitation::OperandsUnavailableInRepresentation,
+        CallLimitation::ObjectKindIsClassificationNotOperand,
+        CallLimitation::EvaluationOrderUnknown,
+    ];
+    if dynamic {
+        limitations.push(CallLimitation::DynamicMethodNameTextOnly);
+    }
+    let dispatch = if recovered {
+        DispatchKind::Boundary
+    } else if dynamic {
+        DispatchKind::Dynamic
+    } else {
+        DispatchKind::Method
+    };
+    let boundary = if recovered {
+        CallBoundary::Recovered
+    } else if dynamic {
+        CallBoundary::Dynamic
+    } else {
+        CallBoundary::Partial
+    };
     CallSemantics::compose(
         CallSyntax::MethodArrow,
-        if recovered { DispatchKind::Boundary } else { DispatchKind::Method },
+        dispatch,
         CalleeIdentity::Method { name: call.method.clone() },
         OperandPresence::Unknown,
         item.range,
@@ -106,12 +132,8 @@ fn adapt_method_expr(item: &HirItem, call: &MethodCallExpr) -> CallSemantics {
         ArgumentSource::Unknown,
         PrototypeDisposition::Unknown,
         EvaluationContract::Unknown,
-        if recovered { CallBoundary::Recovered } else { CallBoundary::Partial },
-        vec![
-            CallLimitation::OperandsUnavailableInRepresentation,
-            CallLimitation::ObjectKindIsClassificationNotOperand,
-            CallLimitation::EvaluationOrderUnknown,
-        ],
+        boundary,
+        limitations,
         CurrentRepresentation::HirMethodCallExpr,
     )
 }
@@ -181,19 +203,25 @@ fn adapt_body_call(
     args: &[HirExprId],
     callee_span: Option<SourceLocation>,
     body: &HirBody,
-) -> CallSemantics {
+) -> Option<CallSemantics> {
     let recovered = ast_kind == "Error";
     let (syntax, dispatch, callee, receiver_is_first) = match ast_kind {
         "MethodCall" => {
             (CallSyntax::MethodArrow, DispatchKind::Method, CalleeIdentity::Unknown, true)
         }
         "IndirectCall" => {
-            (CallSyntax::Indirect, DispatchKind::IndirectObject, CalleeIdentity::Unknown, true)
+            (CallSyntax::Indirect, DispatchKind::Boundary, CalleeIdentity::Unknown, false)
         }
         "AmperCall" => {
             (CallSyntax::Ampersand, DispatchKind::Function, CalleeIdentity::Unknown, false)
         }
-        _ => (CallSyntax::Named, DispatchKind::Function, CalleeIdentity::Unknown, false),
+        "FunctionCall" => {
+            (CallSyntax::RecoveredUnknown, DispatchKind::Boundary, CalleeIdentity::Unknown, false)
+        }
+        "Error" => {
+            (CallSyntax::RecoveredUnknown, DispatchKind::Boundary, CalleeIdentity::Unknown, false)
+        }
+        _ => return None,
     };
 
     let mut source_order = 0_u32;
@@ -239,11 +267,17 @@ fn adapt_body_call(
     if ast_kind == "AmperCall" {
         limitations.push(CallLimitation::AmpersandParensFormUnavailable);
     }
+    if ast_kind == "FunctionCall" {
+        limitations.push(CallLimitation::BodyHirFunctionCallFormUnavailable);
+    }
+    if ast_kind == "IndirectCall" {
+        limitations.push(CallLimitation::BodyHirIndirectInvocantRoleUnavailable);
+    }
     if recovered {
         limitations.push(CallLimitation::RecoveredSource);
     }
 
-    CallSemantics::compose(
+    Some(CallSemantics::compose(
         syntax,
         if recovered { DispatchKind::Boundary } else { dispatch },
         callee,
@@ -260,7 +294,11 @@ fn adapt_body_call(
         if recovered { CallBoundary::Recovered } else { CallBoundary::Partial },
         limitations,
         CurrentRepresentation::HirBodyCall,
-    )
+    ))
+}
+
+fn method_spelling_is_dynamic(method: &str) -> bool {
+    method.starts_with('$') || method.starts_with("${")
 }
 
 fn operand_from_hir_id(

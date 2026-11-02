@@ -309,6 +309,31 @@ fn empty_args_are_not_promoted_to_explicit_empty() {
     let call =
         Node::new(NodeKind::FunctionCall { name: "foo".to_string(), args: vec![] }, loc(0, 5));
     let mut semantics = adapt(&call);
+    assert_eq!(semantics.argument_source, ArgumentSource::Unknown);
     semantics.argument_source = ArgumentSource::ExplicitEmpty;
+    assert!(
+        !semantics.contradictions().contains(&CallContradiction::EmptyArgsGuessed),
+        "proven ExplicitEmpty with Explicit([]) is valid; adapters must not emit it"
+    );
+    semantics.argument_source = ArgumentSource::ImplicitCallerArgs;
     assert!(semantics.contradictions().contains(&CallContradiction::EmptyArgsGuessed));
+}
+
+#[test]
+fn recovery_hole_is_not_a_source_backed_argument_identity() {
+    let call = Node::new(
+        NodeKind::FunctionCall {
+            name: "foo".to_string(),
+            args: vec![Node::new(NodeKind::MissingExpression, loc(4, 4))],
+        },
+        loc(0, 4),
+    );
+    let semantics = adapt(&call);
+    assert_eq!(semantics.dispatch, DispatchKind::Boundary);
+    assert_eq!(semantics.boundary, CallBoundary::Recovered);
+    let args = must_some_with(semantics.arguments.explicit(), "recovered args retained for order");
+    let hole = first_operand(args, "recovery hole operand slot");
+    assert_eq!(hole.source_range, None);
+    assert_eq!(hole.evaluation, perl_ast::EvaluationContract::NotApplicable);
+    assert!(semantics.limitations.contains(&CallLimitation::RecoveredHoleNotAnOperandIdentity));
 }

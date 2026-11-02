@@ -309,6 +309,25 @@ pub enum CurrentRepresentation {
     HirBodyCall,
 }
 
+impl CurrentRepresentation {
+    /// Mapping-table row id for this representation. Exhaustive over variants.
+    #[must_use]
+    pub const fn mapping_id(self) -> &'static str {
+        match self {
+            Self::AstFunctionCall => "ast.FunctionCall",
+            Self::AstAmperCall => "ast.AmperCall",
+            Self::AstMethodCall => "ast.MethodCall",
+            Self::AstIndirectCall => "ast.IndirectCall",
+            Self::AstRecovered => "ast.Error.partial-call",
+            Self::HirCallExpr => "hir.CallExpr",
+            Self::HirMethodCallExpr => "hir.MethodCallExpr",
+            Self::HirIndirectCallExpr => "hir.IndirectCallExpr",
+            Self::HirDynamicBoundary => "hir.DynamicBoundary.CoderefCall",
+            Self::HirBodyCall => "hir.HirExpr.Call",
+        }
+    }
+}
+
 /// Disposition of one current representation relative to this schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -366,6 +385,12 @@ pub const CURRENT_REPRESENTATION_DISPOSITIONS: &[RepresentationMapping] = &[
         owner_issue: "8851",
     },
     RepresentationMapping {
+        id: "ast.Error.partial-call",
+        layer: "ast",
+        disposition: RepresentationDisposition::RepresentedWithExplicitLoss,
+        owner_issue: "8851",
+    },
+    RepresentationMapping {
         id: "hir.CallExpr",
         layer: "flat-hir",
         disposition: RepresentationDisposition::RepresentedWithExplicitLoss,
@@ -379,6 +404,12 @@ pub const CURRENT_REPRESENTATION_DISPOSITIONS: &[RepresentationMapping] = &[
     },
     RepresentationMapping {
         id: "hir.IndirectCallExpr",
+        layer: "flat-hir",
+        disposition: RepresentationDisposition::RepresentedWithExplicitLoss,
+        owner_issue: "8851",
+    },
+    RepresentationMapping {
+        id: "hir.DynamicBoundary.CoderefCall",
         layer: "flat-hir",
         disposition: RepresentationDisposition::RepresentedWithExplicitLoss,
         owner_issue: "8851",
@@ -447,6 +478,14 @@ pub enum CallLimitation {
     RecoveredSource,
     /// Traversal/lowering order is not language evaluation proof.
     EvaluationOrderUnknown,
+    /// Body HIR `FunctionCall` dropped the name field, so named vs `->()` is
+    /// unavailable.
+    BodyHirFunctionCallFormUnavailable,
+    /// Body HIR `IndirectCall` dropped the method spelling, so invocant vs
+    /// filehandle is unavailable.
+    BodyHirIndirectInvocantRoleUnavailable,
+    /// Operand is a recovery hole, not a source-backed expression identity.
+    RecoveredHoleNotAnOperandIdentity,
 }
 
 /// Versioned normalized call view.
@@ -557,7 +596,11 @@ pub enum CallContradiction {
     ReceiverOnNonReceiverForm,
     /// Filehandle present on a form that is not print-like.
     FilehandleOnUnadmittedForm,
-    /// Empty argument vec claimed as explicit-empty or implicit `@_`.
+    /// Empty explicit argument vec claimed as implicit caller `@_`.
+    ///
+    /// `ExplicitEmpty` with `Explicit([])` is the valid representation of a
+    /// proven `foo()` / `&foo()`. Current AST adapters must not emit that
+    /// pair; they use [`ArgumentSource::Unknown`] instead.
     EmptyArgsGuessed,
     /// Unavailable operand list treated as an explicit empty list is a
     /// construction error when `arguments` is unavailable and
@@ -603,10 +646,7 @@ impl CallSemantics {
             out.push(CallContradiction::FilehandleOnUnadmittedForm);
         }
         if matches!(&self.arguments, OperandList::Explicit(items) if items.is_empty())
-            && matches!(
-                self.argument_source,
-                ArgumentSource::ExplicitEmpty | ArgumentSource::ImplicitCallerArgs
-            )
+            && self.argument_source == ArgumentSource::ImplicitCallerArgs
         {
             out.push(CallContradiction::EmptyArgsGuessed);
         }
@@ -928,13 +968,30 @@ fn adapt_indirect_call(
 }
 
 fn operand_from_node(node: &Node, role: OperandRole, source_order: u32) -> CallOperand {
+    let hole = node_is_recovery_hole(node);
     CallOperand {
-        source_range: Some(node.location),
+        source_range: if hole { None } else { Some(node.location) },
         role,
         source_order,
-        evaluation: EvaluationContract::Unknown,
+        evaluation: if hole {
+            EvaluationContract::NotApplicable
+        } else {
+            EvaluationContract::Unknown
+        },
         context: OperandContext::Unknown,
     }
+}
+
+fn node_is_recovery_hole(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        NodeKind::Error { .. }
+            | NodeKind::MissingExpression
+            | NodeKind::MissingStatement
+            | NodeKind::MissingIdentifier
+            | NodeKind::MissingBlock
+            | NodeKind::UnknownRest
+    )
 }
 
 fn is_block_taking_name(name: &str) -> bool {
@@ -983,7 +1040,11 @@ fn push_unique(items: &mut Vec<CallLimitation>, item: CallLimitation) {
 }
 
 fn with_recovery_from_args(semantics: CallSemantics, args: &[Node]) -> CallSemantics {
-    if args.iter().any(node_contains_recovery) { mark_recovered(semantics) } else { semantics }
+    if args.iter().any(node_contains_recovery) {
+        mark_recovered_with_holes(semantics, args.iter().any(node_is_recovery_hole))
+    } else {
+        semantics
+    }
 }
 
 fn with_recovery_from_receiver_and_args(
@@ -992,7 +1053,10 @@ fn with_recovery_from_receiver_and_args(
     args: &[Node],
 ) -> CallSemantics {
     if node_contains_recovery(receiver) || args.iter().any(node_contains_recovery) {
-        mark_recovered(semantics)
+        mark_recovered_with_holes(
+            semantics,
+            node_is_recovery_hole(receiver) || args.iter().any(node_is_recovery_hole),
+        )
     } else {
         semantics
     }
@@ -1002,6 +1066,14 @@ fn mark_recovered(mut semantics: CallSemantics) -> CallSemantics {
     semantics.boundary = CallBoundary::Recovered;
     semantics.dispatch = DispatchKind::Boundary;
     push_unique(&mut semantics.limitations, CallLimitation::RecoveredSource);
+    semantics
+}
+
+fn mark_recovered_with_holes(mut semantics: CallSemantics, hole: bool) -> CallSemantics {
+    semantics = mark_recovered(semantics);
+    if hole {
+        push_unique(&mut semantics.limitations, CallLimitation::RecoveredHoleNotAnOperandIdentity);
+    }
     semantics
 }
 
@@ -1049,6 +1121,26 @@ mod tests {
             "pir.PirContext",
         ] {
             assert!(ids.contains(&required), "missing mapping row {required}");
+        }
+    }
+
+    #[test]
+    fn every_current_representation_variant_has_a_mapping_row() {
+        let ids: Vec<_> = CURRENT_REPRESENTATION_DISPOSITIONS.iter().map(|row| row.id).collect();
+        for representation in [
+            CurrentRepresentation::AstFunctionCall,
+            CurrentRepresentation::AstAmperCall,
+            CurrentRepresentation::AstMethodCall,
+            CurrentRepresentation::AstIndirectCall,
+            CurrentRepresentation::AstRecovered,
+            CurrentRepresentation::HirCallExpr,
+            CurrentRepresentation::HirMethodCallExpr,
+            CurrentRepresentation::HirIndirectCallExpr,
+            CurrentRepresentation::HirDynamicBoundary,
+            CurrentRepresentation::HirBodyCall,
+        ] {
+            let id = representation.mapping_id();
+            assert!(ids.contains(&id), "missing mapping row {id} for {representation:?}");
         }
     }
 }
