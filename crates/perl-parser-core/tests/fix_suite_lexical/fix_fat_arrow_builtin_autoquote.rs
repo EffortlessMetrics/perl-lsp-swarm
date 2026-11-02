@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 #[test]
 fn has_log_fat_arrow_sub() {

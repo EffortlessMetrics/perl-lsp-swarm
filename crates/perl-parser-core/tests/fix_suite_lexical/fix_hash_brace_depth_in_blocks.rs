@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Issue #2833: hash_brace_depth was incremented for ALL `{` in ExpectOperator mode,
 // not just those that follow a variable token ($x, @x, %x). This caused quote-op

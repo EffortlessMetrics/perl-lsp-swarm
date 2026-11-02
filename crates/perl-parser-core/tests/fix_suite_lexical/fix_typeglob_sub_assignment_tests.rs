@@ -1,5 +1,4 @@
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
+use super::cpan_test_helpers::*;
 
 // Issue #2394: typeglob assignment with sub bodies fail to parse cleanly.
 // Patterns from MOOSE, CLASS-ACCESSOR, CATALYST corpus files.
