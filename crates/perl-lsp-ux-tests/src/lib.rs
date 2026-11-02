@@ -216,12 +216,12 @@ impl std::error::Error for IndexReadyWaitEnd {}
 
 fn wait_for_index_ready_after(
     inbox: &Inbox,
-    after: ServerMessageCursor,
+    after: &ServerMessageCursor,
     timeout: Duration,
 ) -> std::result::Result<(), IndexReadyWaitEnd> {
     let mut last_observed = None;
     inbox
-        .wait_for_events_after(&after, timeout, |captured| {
+        .wait_for_events_after(after, timeout, |captured| {
             last_observed = captured
                 .iter()
                 .rev()
@@ -959,7 +959,7 @@ impl UxHarness {
         &self,
         timeout: Duration,
     ) -> std::result::Result<(), IndexReadyWaitEnd> {
-        wait_for_index_ready_after(&self.client.inbox(), self.client.origin_cursor(), timeout)
+        wait_for_index_ready_after(self.client.inbox(), &self.client.origin_cursor(), timeout)
     }
 
     /// Wait until a ready-index notification arrives after `cursor`.
@@ -968,7 +968,7 @@ impl UxHarness {
         after: ServerMessageCursor,
         timeout: Duration,
     ) -> std::result::Result<(), IndexReadyWaitEnd> {
-        wait_for_index_ready_after(&self.client.inbox(), after, timeout)
+        wait_for_index_ready_after(self.client.inbox(), &after, timeout)
     }
 
     /// Count ready-index notifications already observed by the harness.
@@ -1136,7 +1136,7 @@ impl UxHarness {
         timeout: std::time::Duration,
     ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
-        DiagnosticsTracker::wait_for_uri_after_cursor(&self.client.inbox(), &uri, &after, timeout)
+        DiagnosticsTracker::wait_for_uri_after_cursor(self.client.inbox(), &uri, &after, timeout)
     }
 
     /// Wait for a diagnostics notification with an explicit version strictly
@@ -1150,7 +1150,7 @@ impl UxHarness {
     ) -> std::result::Result<Vec<Value>, WaitEnd> {
         let uri = self.workspace.uri(relative_path);
         DiagnosticsTracker::wait_for_uri_after_cursor_and_version(
-            &self.client.inbox(),
+            self.client.inbox(),
             &uri,
             &after,
             i64::from(expected_version),
@@ -2398,7 +2398,7 @@ mod event_cursor {
         let _ = inbox.drain_events();
         inbox.push_event(index_ready(false));
         inbox.push_event(index_ready(true));
-        wait_for_index_ready_after(&inbox, cursor, Duration::from_secs(1))?;
+        wait_for_index_ready_after(&inbox, &cursor, Duration::from_secs(1))?;
         Ok(())
     }
 
