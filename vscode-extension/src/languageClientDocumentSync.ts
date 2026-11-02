@@ -1,3 +1,4 @@
+import { lspAttachmentEligible } from './documentEligibility';
 import { isPerlLanguageId } from './languageIdentity';
 
 export interface OpenTextDocumentSnapshot {
@@ -5,6 +6,7 @@ export interface OpenTextDocumentSnapshot {
   readonly languageId: string;
   readonly version: number;
   readonly text: string;
+  readonly fileName?: string;
 }
 
 /** v0.18 selected text/position envelope (#8129). vscode-languageclient follows advertised Full + UTF-16. */
@@ -91,12 +93,53 @@ function assertCurrentGeneration(isCurrent: () => boolean): void {
  * before the old client stopped. Replaying the current snapshots makes the
  * restart contract explicit without changing readiness semantics.
  */
+function snapshotEligible(document: OpenTextDocumentSnapshot): boolean {
+  if (!isPerlLanguageId(document.languageId)) {
+    return false;
+  }
+  const fileName = document.fileName ?? documentUriFileName(document.uri);
+  return lspAttachmentEligible({
+    uri: { scheme: documentUriScheme(document.uri), fsPath: documentUriFsPath(document.uri) },
+    languageId: document.languageId,
+    fileName,
+  });
+}
+
+function documentUriScheme(uri: string): string {
+  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(uri);
+  return match?.[1] ?? 'file';
+}
+
+function documentUriFsPath(uri: string): string {
+  try {
+    const url = new URL(uri);
+    if (url.protocol !== 'file:') {
+      return uri;
+    }
+    let fsPath = decodeURIComponent(url.pathname);
+    if (/^\/[A-Za-z]:\//.test(fsPath)) {
+      fsPath = fsPath.slice(1);
+    }
+    return fsPath;
+  } catch {
+    return uri;
+  }
+}
+
+function documentUriFileName(uri: string): string {
+  const fsPath = documentUriFsPath(uri);
+  const slash = fsPath.lastIndexOf('/');
+  const backslash = fsPath.lastIndexOf('\\');
+  const index = Math.max(slash, backslash);
+  return index >= 0 ? fsPath.slice(index + 1) : fsPath;
+}
+
 export async function replayOpenPerlDocuments(
   client: TextDocumentNotificationClient,
   documents: readonly OpenTextDocumentSnapshot[],
 ): Promise<void> {
   for (const document of documents) {
-    if (!isPerlLanguageId(document.languageId)) {
+    if (!snapshotEligible(document)) {
       continue;
     }
 
@@ -124,7 +167,7 @@ export async function replayOpenPerlDocumentsWhenReady(
   assertCurrentGeneration(isCurrent);
 
   for (const document of documents) {
-    if (!isPerlLanguageId(document.languageId)) {
+    if (!snapshotEligible(document)) {
       continue;
     }
     assertCurrentGeneration(isCurrent);

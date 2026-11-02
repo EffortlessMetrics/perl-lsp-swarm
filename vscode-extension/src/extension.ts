@@ -27,6 +27,7 @@ import {
   PERL_ALIAS_LANGUAGE_ID,
   perlDocumentSelector,
 } from './languageIdentity';
+import { perlFullLspDocumentSelector } from './documentEligibility';
 import {
   acquireLaunchManagedCandidateReference,
   mayReleaseManagedCandidateReferences,
@@ -58,7 +59,7 @@ import {
 } from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
-import { FileKind } from './fileCreation';
+import { FileKind, populateCreatedFiles } from './fileCreation';
 import { createPerlScaffold } from './scaffoldCommands';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
@@ -2377,6 +2378,7 @@ async function finalizeStartedLanguageClient(
         languageId: document.languageId,
         version: document.version,
         text: document.getText(),
+        fileName: document.fileName,
       }));
     await replayOpenPerlDocumentsWhenReady(
       startedClient,
@@ -2587,7 +2589,7 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     errorHandler: LANGUAGE_CLIENT_ERROR_HANDLER,
     // v0.18 (#8129): do not override document sync. vscode-languageclient uses
     // the server's advertised TextDocumentSyncKind::Full and UTF-16 encoding.
-    documentSelector: perlDocumentSelector(),
+    documentSelector: perlFullLspDocumentSelector(),
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/.perltidyrc'),
     },

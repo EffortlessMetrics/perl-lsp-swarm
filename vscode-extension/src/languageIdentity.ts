@@ -67,6 +67,7 @@ export function isSupportedPerlUriScheme(scheme: string): boolean {
 export interface PerlDocumentSelectorEntry {
   readonly scheme: string;
   readonly language: string;
+  readonly pattern?: string;
 }
 
 /**

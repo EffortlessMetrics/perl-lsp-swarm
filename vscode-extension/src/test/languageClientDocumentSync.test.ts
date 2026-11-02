@@ -47,6 +47,23 @@ const PERL_DOCUMENT = {
 };
 
 describe('replayOpenPerlDocuments', () => {
+  test('skips syntax-only Perl-associated families during replay', async () => {
+    const sendNotification = jest.fn().mockResolvedValue(undefined);
+
+    await replayOpenPerlDocuments({ sendNotification }, [
+      PERL_DOCUMENT,
+      {
+        uri: 'file:///workspace/note.pod',
+        languageId: 'perl',
+        version: 1,
+        text: '=head1\n',
+        fileName: 'note.pod',
+      },
+    ]);
+
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
   test('replays current Perl buffers and ignores other languages', async () => {
     const sendNotification = jest.fn().mockResolvedValue(undefined);
 
