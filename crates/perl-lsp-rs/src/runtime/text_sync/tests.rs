@@ -3806,7 +3806,23 @@ fn document_task_barrier_ordering_fixture_parse_diagnostics_index_and_provider()
     );
 
     assert_eq!(index.indexed_generation(uri), Some(2));
-    assert!(index.file_symbols(uri).iter().any(|s| s.name == "beta_v2"));
+    let final_symbols = index.file_symbols(uri);
+    let final_names: Vec<&str> = final_symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        final_names.contains(&"beta_v2") && !final_names.contains(&"alpha_v1"),
+        "released side effects must replace superseded index symbols; got {final_names:?}"
+    );
+
+    let final_diag = server.test_handle_document_diagnostic(Some(json!({
+        "textDocument": { "uri": uri }
+    })))?;
+    let final_items = final_diag
+        .and_then(|v| v.get("items").and_then(|i| i.as_array()).cloned())
+        .ok_or("post-release pull diagnostics must carry items")?;
+    assert!(
+        !final_items.iter().any(|d| d.get("code").and_then(|c| c.as_str()) == Some("PL001")),
+        "post-release diagnostics must reflect the fixed generation-2 source; got {final_items:?}"
+    );
 
     let metrics = must_some(server.test_parse_worker_metrics());
     assert_eq!(metrics.jobs_published, 1);
