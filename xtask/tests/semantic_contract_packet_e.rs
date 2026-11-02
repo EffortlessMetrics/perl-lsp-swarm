@@ -110,11 +110,13 @@ fn packet_e_routing_follow_up_owner_issues_are_declared() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn packet_e_harness_issues_route_to_compatibility_ledger() -> Result<(), Box<dyn std::error::Error>> {
+fn packet_e_harness_issues_route_to_compatibility_ledger() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = project_root()?;
     let policy = fs::read_to_string(root.join("policy/semantic/packet-e-issue-routing.v1.toml"))?;
     let rows = parse_routing_policy(&policy)?;
-    let routes: BTreeMap<u32, String> = rows.into_iter().map(|row| (row.issue, row.follow_up)).collect();
+    let routes: BTreeMap<u32, String> =
+        rows.into_iter().map(|row| (row.issue, row.follow_up)).collect();
     for issue in [3651_u32, 3700, 3708, 4737] {
         assert_eq!(
             routes.get(&issue).map(String::as_str),
@@ -134,10 +136,7 @@ fn parser_to_semantic_contract_module_is_wired_in_semantic_facts()
         lib.contains("mod parser_to_semantic_contract;"),
         "perl-semantic-facts must retain the internal contract note module"
     );
-    assert!(
-        lib.contains("PLSP-SPEC-0039"),
-        "crate root docs must point at the packet E spec"
-    );
+    assert!(lib.contains("PLSP-SPEC-0039"), "crate root docs must point at the packet E spec");
     let module = fs::read_to_string(
         root.join("crates/perl-semantic-facts/src/parser_to_semantic_contract.rs"),
     )?;
