@@ -271,15 +271,11 @@ section "Root install.sh wrapper (identity-bound bootstrap)"
 # Section 1b runs scripts/install.sh from the checkout. New users run the root
 # wrapper with PERL_LSP_INSTALLER_REF / PERL_LSP_INSTALLER_SHA256 instead. Copy
 # the wrapper alone so clone-local exec does not bypass identity bootstrap.
-REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-ROOT_WRAPPER="$REPO_ROOT/install.sh"
 
 case "$INSTALLER_HOST" in
     Linux|Darwin)
         if [[ "$SKIP_INSTALL" == "1" ]]; then
             pass "install.sh wrapper path skipped (SKIP_INSTALL=1)"
-        elif [[ ! -f "$ROOT_WRAPPER" ]]; then
-            fail "root install.sh wrapper not found at $ROOT_WRAPPER"
         else
             RELEASE_TAG="v$VERSION"
             INSTALLER_REF="$(git ls-remote https://github.com/EffortlessMetrics/perl-lsp.git "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
@@ -307,8 +303,14 @@ case "$INSTALLER_HOST" in
                     else
                         WRAPPER_ONLY_DIR="$(mktemp -d)"
                         CLEANUP_DIRS+=("$WRAPPER_ONLY_DIR")
-                        cp "$ROOT_WRAPPER" "$WRAPPER_ONLY_DIR/install.sh"
+                        PUBLISHED_WRAPPER_URL="https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/install.sh"
                         ISOLATED_WRAPPER="$WRAPPER_ONLY_DIR/install.sh"
+                        if ! curl -fsSL "$PUBLISHED_WRAPPER_URL" -o "$ISOLATED_WRAPPER"; then
+                            fail "install.sh wrapper: failed to fetch root install.sh at $INSTALLER_REF"
+                        elif [[ ! -s "$ISOLATED_WRAPPER" ]]; then
+                            fail "install.sh wrapper: fetched root install.sh at $INSTALLER_REF is empty"
+                        else
+                            chmod +x "$ISOLATED_WRAPPER"
 
                         WRAPPER_INSTALL_DIR="$(mktemp -d)"
                         CLEANUP_DIRS+=("$WRAPPER_INSTALL_DIR")
@@ -343,6 +345,7 @@ case "$INSTALLER_HOST" in
                             cat "$NEG_LOG" >&2
                         fi
                         rm -f "$NEG_LOG"
+                        fi
                     fi
                 fi
             fi

@@ -41,7 +41,7 @@ require_pattern 'section for root wrapper' 'Root install\.sh wrapper|install\.sh
 require_pattern 'tag-dereferenced ref' 'refs/tags/\$\{RELEASE_TAG\}\^\{\}'
 require_pattern 'PERL_LSP_INSTALLER_REF export' 'PERL_LSP_INSTALLER_REF="\$INSTALLER_REF"'
 require_pattern 'PERL_LSP_INSTALLER_SHA256 export' 'PERL_LSP_INSTALLER_SHA256="\$INSTALLER_SHA256"'
-require_pattern 'isolated wrapper copy' 'ISOLATED_WRAPPER|WRAPPER_ONLY|wrapper.*mktemp'
+require_pattern 'fetch published root wrapper' 'PUBLISHED_WRAPPER_URL=.*/install\.sh'
 require_pattern 'wrong-digest negative' 'SHA-256 mismatch|wrong digest|BAD_DIGEST|0000000000000000'
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
