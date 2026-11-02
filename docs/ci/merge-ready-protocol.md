@@ -117,8 +117,10 @@ Historical PRs #16106 and #16095 were recovered with empty commits after the
 check-suite payload for those heads; this detector classifies current
 observations instead of reconstructing that lost state.
 
-Compare required names from `.ci/policies/required-checks.toml` (or the live
-ruleset) against check-runs on the exact PR head:
+Compare required `(name, app_id)` identities from
+`.ci/policies/required-checks.toml` (or the live ruleset) against check-runs
+on the exact PR head. A same-name run from another app does not satisfy the
+bound GitHub Actions integration.
 
 ```bash
 python3 scripts/ci/detect_required_check_registration.py --fixture <observation.json>
@@ -127,12 +129,12 @@ python3 scripts/ci/detect_required_check_registration.py --policy .ci/policies/r
 
 | Verdict | Meaning | Recovery |
 | --- | --- | --- |
-| `COMPLETE_GREEN` | Required names succeeded on this head; merge evaluation is not expecting checks | None |
-| `REQUIRED_ABSENT` | A required name has no check-run on any SHA (#14612) | `workflow_dispatch` the producer against the current head; never treat absence as success |
+| `COMPLETE_GREEN` | Bound-app required names succeeded (`success` or `neutral`) on this head; merge evaluation is not expecting checks | None |
+| `REQUIRED_ABSENT` | A required `(name, app_id)` has no check-run on any SHA (#14612) | `workflow_dispatch` the producer against the current head; never treat absence as success |
 | `REQUIRED_OTHER_SHA` | The name exists only on another SHA | Re-run/dispatch against the current head |
-| `REQUIRED_SKIPPED` | The job reported skipped/neutral | Keep the job reachable and no-op in-job (`always-or-scoped-noop`); do not edit the live ruleset from this path |
+| `REQUIRED_SKIPPED` | The job reported `skipped` | Keep the job reachable and no-op in-job (`always-or-scoped-noop`); do not edit the live ruleset from this path |
 | `EXPECTED_STALE` | All required names succeeded on this head, and GitHub still expects checks (#16469) | Rerequest the check suite (`POST /repos/{owner}/{repo}/check-suites/{id}/rerequest`); if no suite exists, `workflow_dispatch` the producer with the exact head SHA. An empty commit is last resort, not the default |
-| `NOT_PROVEN` | Missing evidence, a conflicted tree, or a blocked merge without an expected-checks signal | Do not infer a GitHub defect from the merge error alone |
+| `NOT_PROVEN` | Missing evidence, incomplete app identity, a conflicted tree, empty merge evaluation, or a blocked merge without an expected-checks signal | Do not infer a GitHub defect from the merge error alone |
 
 Two required jobs remain `applicability = "conditional"` on purpose
 (`check-all-targets` and `conflict-markers`): they skip drafts and superseded

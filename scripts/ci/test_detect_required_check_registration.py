@@ -12,6 +12,10 @@ Discriminators:
 - merge BLOCKED without an expected-checks signal is NOT_PROVEN, not a
   GitHub-defect inference
 - skipped required jobs on the current head are not success
+- a same-name run from a different app does not satisfy the required identity
+- an unfinished same-head rerun vetoes an older completed green
+- empty merge evaluation is NOT_PROVEN, never green
+- GitHub `neutral` is success, matching check_release_required_ci.py
 - malformed input is NOT_PROVEN, never green
 """
 
@@ -46,6 +50,8 @@ CONTRACT_SPEC.loader.exec_module(contract)
 
 HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OTHER = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+GITHUB_ACTIONS_APP = 15368
+OTHER_APP = 999
 REQUIRED = (
     "Perl LSP Rust Small Result",
     "ripr+ New Gap Gate",
@@ -59,12 +65,22 @@ CONDITIONAL_REQUIRED_JOBS = {
 }
 
 
+def required_bindings():
+    return [{"name": name, "app_id": GITHUB_ACTIONS_APP} for name in REQUIRED]
+
+
 def payload(**overrides):
     data = {
         "head_sha": HEAD,
-        "required_contexts": list(REQUIRED),
+        "required_contexts": required_bindings(),
         "check_runs": [
-            {"name": name, "head_sha": HEAD, "status": "completed", "conclusion": "success"}
+            {
+                "name": name,
+                "head_sha": HEAD,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": GITHUB_ACTIONS_APP},
+            }
             for name in REQUIRED
         ],
         "merge_evaluation": {
@@ -242,6 +258,83 @@ class ClassifierTests(unittest.TestCase):
     def test_policy_loader_matches_checked_in_required_names(self) -> None:
         names = detector.required_names_from_policy(POLICY.read_text(encoding="utf-8"))
         self.assertEqual(tuple(sorted(REQUIRED)), names)
+
+    def test_policy_loader_carries_ruleset_integration_id(self) -> None:
+        contexts = detector.required_contexts_from_policy(POLICY.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [{"name": name, "app_id": GITHUB_ACTIONS_APP} for name in sorted(REQUIRED)],
+            contexts,
+        )
+
+    def test_cli_policy_supplies_app_bound_contexts(self) -> None:
+        data = payload()
+        del data["required_contexts"]
+        proc = run_cli(data, extra_args=["--policy", str(POLICY)])
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual("COMPLETE_GREEN", json.loads(proc.stdout)["verdict"])
+
+    def test_string_only_required_contexts_are_not_proven(self) -> None:
+        result = classify(payload(required_contexts=list(REQUIRED)))
+        self.assertEqual("NOT_PROVEN", result["verdict"])
+        self.assertIn("app_id", result["remedy"])
+        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+
+    def test_same_name_wrong_app_does_not_satisfy_required_context(self) -> None:
+        data = payload()
+        for row in data["check_runs"]:
+            if row["name"] == "ripr+ New Gap Gate":
+                row["app"] = {"id": OTHER_APP}
+        result = classify(data)
+        self.assertEqual("REQUIRED_ABSENT", result["verdict"])
+        self.assertEqual(["ripr+ New Gap Gate"], result["absent"])
+        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+        self.assertNotEqual("EXPECTED_STALE", result["verdict"])
+
+    def test_missing_app_on_matching_run_is_not_proven(self) -> None:
+        data = payload()
+        for row in data["check_runs"]:
+            if row["name"] == "ripr+ New Gap Gate":
+                del row["app"]
+        result = classify(data)
+        self.assertEqual("NOT_PROVEN", result["verdict"])
+        self.assertIn("app", result["remedy"].lower())
+        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+
+    def test_green_plus_in_progress_same_head_rerun_is_pending(self) -> None:
+        data = payload()
+        data["check_runs"].append(
+            {
+                "name": "Perl LSP Rust Small Result",
+                "head_sha": HEAD,
+                "status": "in_progress",
+                "conclusion": None,
+                "app": {"id": GITHUB_ACTIONS_APP},
+            }
+        )
+        result = classify(data)
+        self.assertEqual("REQUIRED_PENDING", result["verdict"])
+        self.assertEqual(["Perl LSP Rust Small Result"], result["pending"])
+        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+        self.assertNotEqual("EXPECTED_STALE", result["verdict"])
+
+    def test_empty_merge_evaluation_is_not_proven(self) -> None:
+        result = classify(payload(merge_evaluation={}))
+        self.assertEqual("NOT_PROVEN", result["verdict"])
+        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+
+    def test_partial_merge_evaluation_is_not_proven(self) -> None:
+        result = classify(payload(merge_evaluation={"mergeable": "MERGEABLE"}))
+        self.assertEqual("NOT_PROVEN", result["verdict"])
+        self.assertNotEqual("COMPLETE_GREEN", result["verdict"])
+
+    def test_neutral_on_head_is_success(self) -> None:
+        data = payload()
+        for row in data["check_runs"]:
+            if row["name"] == "validate-title":
+                row["conclusion"] = "neutral"
+        result = classify(data)
+        self.assertEqual("COMPLETE_GREEN", result["verdict"])
+        self.assertFalse(result["skipped"])
 
 
 def _live_workflows() -> dict:

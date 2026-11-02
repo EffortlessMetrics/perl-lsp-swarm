@@ -18,9 +18,17 @@ Input JSON (stdin or --fixture):
 
 {
   "head_sha": "<40-char lowercase or mixed hex>",
-  "required_contexts": ["Perl LSP Rust Small Result", "..."],
+  "required_contexts": [
+    {"name": "Perl LSP Rust Small Result", "app_id": 15368}
+  ],
   "check_runs": [
-    {"name": "...", "head_sha": "...", "status": "completed", "conclusion": "success"}
+    {
+      "name": "...",
+      "head_sha": "...",
+      "status": "completed",
+      "conclusion": "success",
+      "app": {"id": 15368}
+    }
   ],
   "merge_evaluation": {
     "mergeable": "MERGEABLE",
@@ -30,9 +38,13 @@ Input JSON (stdin or --fixture):
   }
 }
 
+GitHub required-check identity is (name, app/integration id). String-only
+`required_contexts` and check-runs without a proven `app.id` are NOT_PROVEN,
+never a matching success.
+
 `required_contexts` may be omitted when --policy points at
-`.ci/policies/required-checks.toml`; the required `[[checks]]` names are then
-the denominator.
+`.ci/policies/required-checks.toml`; required `[[checks]]` names and their
+`ruleset_integration_id` values are then the denominator.
 
 Exit 0 only for COMPLETE_GREEN. Every other verdict exits 1.
 """
@@ -48,10 +60,9 @@ from pathlib import Path
 from typing import Any
 
 
-SUCCESS = {"success"}
+SUCCESS = {"success", "neutral"}
 RED = {"failure", "timed_out", "startup_failure", "cancelled", "action_required"}
-SKIPPED = {"skipped", "neutral"}
-PENDING_STATUS = {"queued", "in_progress", "waiting", "requested", "pending"}
+SKIPPED = {"skipped"}
 EXPECTED_REASON = re.compile(
     r"(required status checks? are expected|checks are expected|expected[ —-]+waiting for status)",
     re.IGNORECASE,
@@ -60,8 +71,9 @@ SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 REMEDY = {
     "COMPLETE_GREEN": (
-        "Every required context has a completed success check-run on the exact "
-        "head, and merge evaluation is not refusing for expected checks."
+        "Every required context has a completed success or neutral check-run "
+        "from the bound app on the exact head, and merge evaluation is not "
+        "refusing for expected checks."
     ),
     "REQUIRED_ABSENT": (
         "A required context was never reported on any observed SHA. This is the "
@@ -76,11 +88,12 @@ REMEDY = {
         "dispatch the producing workflow against the current head."
     ),
     "REQUIRED_SKIPPED": (
-        "A required context reported skipped/neutral on the current head. GitHub "
-        "does not treat skipped required checks as success, so the merge box "
-        "stays on Expected. Convert the emitting job to always-or-scoped-noop: "
-        "keep the job reachable and no-op inside the job when the work is out of "
-        "scope. Do not change the live ruleset from this detector."
+        "A required context reported skipped on the current head. GitHub does "
+        "not treat skipped required checks as success, so the merge box stays "
+        "on Expected. Convert the emitting job to always-or-scoped-noop: keep "
+        "the job reachable and no-op inside the job when the work is out of "
+        "scope. Do not change the live ruleset from this detector. GitHub "
+        "`neutral` is success, matching scripts/ci/check_release_required_ci.py."
     ),
     "REQUIRED_RED": (
         "A required context failed on the current head. Repair the failing job; "
@@ -107,18 +120,36 @@ REMEDY = {
 }
 
 
-def required_names_from_policy(text: str) -> tuple[str, ...]:
+def required_contexts_from_policy(text: str) -> list[dict[str, Any]]:
     policy = tomllib.loads(text)
-    names = [
-        str(row["name"])
+    rows = [
+        {"name": str(row["name"]), "app_id": row.get("ruleset_integration_id")}
         for row in policy.get("checks", [])
         if isinstance(row, dict) and row.get("required") is True and row.get("name")
     ]
-    return tuple(sorted(names))
+    rows.sort(key=lambda item: str(item["name"]))
+    return rows
+
+
+def required_names_from_policy(text: str) -> tuple[str, ...]:
+    return tuple(item["name"] for item in required_contexts_from_policy(text))
 
 
 def _as_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _positive_id(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _run_app_id(run: dict[str, Any]) -> int | None:
+    app = run.get("app")
+    if not isinstance(app, dict):
+        return None
+    return _positive_id(app.get("id"))
 
 
 def _normalize_sha(value: Any) -> str | None:
@@ -171,28 +202,51 @@ def classify(data: Any) -> dict[str, Any]:
     required = data.get("required_contexts")
     if not isinstance(required, list) or not required:
         return _not_proven("no required contexts supplied; refuse to invent a denominator")
-    names: list[str] = []
-    seen: set[str] = set()
+    bindings: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
     for item in required:
-        name = _as_text(item)
+        if isinstance(item, str):
+            return _not_proven(
+                "required_contexts entries must be {name, app_id}; "
+                "string-only names are not a GitHub required-check identity"
+            )
+        if not isinstance(item, dict):
+            return _not_proven("required_contexts entries must be objects with name and app_id")
+        name = _as_text(item.get("name"))
+        app_id = _positive_id(item.get("app_id"))
         if not name:
             return _not_proven("required_contexts contains an empty name")
-        if name in seen:
-            return _not_proven(f"required context is duplicated: {name}")
-        seen.add(name)
-        names.append(name)
+        if app_id is None:
+            return _not_proven(
+                f"required context {name!r} is missing a positive app_id; "
+                "incomplete app evidence is not a matching success"
+            )
+        key = (name, app_id)
+        if key in seen:
+            return _not_proven(f"required context is duplicated: {name} app {app_id}")
+        seen.add(key)
+        bindings.append(key)
+    names = [name for name, _app_id in bindings]
 
     raw_runs = data.get("check_runs")
     if not isinstance(raw_runs, list):
         return _not_proven("check_runs must be an array")
 
-    runs_by_name: dict[str, list[dict[str, Any]]] = {name: [] for name in names}
+    runs_by_key: dict[tuple[str, int], list[dict[str, Any]]] = {key: [] for key in bindings}
+    incomplete_names: set[str] = set()
+    bound_names = {name for name, _app_id in bindings}
     for run in raw_runs:
         if not isinstance(run, dict):
             return _not_proven("check_runs entries must be objects")
         name = _as_text(run.get("name"))
-        if name in runs_by_name:
-            runs_by_name[name].append(run)
+        app_id = _run_app_id(run)
+        if app_id is None:
+            if name in bound_names:
+                incomplete_names.add(name)
+            continue
+        key = (name, app_id)
+        if key in runs_by_key:
+            runs_by_key[key].append(run)
 
     absent: list[str] = []
     other_sha: list[str] = []
@@ -201,9 +255,15 @@ def classify(data: Any) -> dict[str, Any]:
     pending: list[str] = []
     rows: list[dict[str, Any]] = []
 
-    for name in names:
-        observed = runs_by_name[name]
+    for name, app_id in bindings:
+        observed = runs_by_key[(name, app_id)]
         if not observed:
+            if name in incomplete_names:
+                return _not_proven(
+                    f"required context {name!r} has a same-name run without a proven app.id; "
+                    "incomplete app evidence is not a matching success",
+                    required_contexts=names,
+                )
             absent.append(name)
             rows.append({"name": name, "state": "absent"})
             continue
@@ -225,6 +285,7 @@ def classify(data: Any) -> dict[str, Any]:
             continue
 
         terminal = [run for run in on_head if _status(run) == "completed"]
+        unfinished = [run for run in on_head if _status(run) != "completed"]
         if not terminal:
             pending.append(name)
             rows.append({"name": name, "state": "pending"})
@@ -239,12 +300,15 @@ def classify(data: Any) -> dict[str, Any]:
             skipped.append(name)
             rows.append({"name": name, "state": "skipped"})
             continue
-        if conclusions <= SUCCESS:
-            rows.append({"name": name, "state": "success"})
-            continue
-        if any(not _status(run) or _status(run) in PENDING_STATUS for run in on_head):
+        # An unfinished same-head rerun vetoes an older completed green.
+        # check_release_required_ci.py encodes the same rule: latest completed
+        # success cannot override a pending or unknown on-head status.
+        if unfinished:
             pending.append(name)
             rows.append({"name": name, "state": "pending"})
+            continue
+        if conclusions <= SUCCESS:
+            rows.append({"name": name, "state": "success"})
             continue
         return _not_proven(
             f"required context {name!r} has an unrecognized conclusion {sorted(conclusions)}",
@@ -317,8 +381,17 @@ def classify(data: Any) -> dict[str, Any]:
         return finish("EXPECTED_STALE", head_status="HEAD_GREEN")
 
     merge_state = _as_text(evaluation.get("merge_state_status")).upper()
-    if merge_state in {"CLEAN", "BEHIND", "UNSTABLE", ""} and mergeable in {"MERGEABLE", ""}:
-        if merge_state == "UNSTABLE" and evaluation.get("blocked_by_expected_checks") is not False:
+    if mergeable != "MERGEABLE":
+        return _not_proven(
+            "mergeable is missing or not MERGEABLE; refuse to infer COMPLETE_GREEN",
+            head_status="HEAD_GREEN",
+            required_contexts=names,
+            rows=[],
+        )
+    if merge_state in {"CLEAN", "BEHIND"}:
+        return finish("COMPLETE_GREEN", head_status="HEAD_GREEN")
+    if merge_state == "UNSTABLE":
+        if evaluation.get("blocked_by_expected_checks") is not False:
             return _not_proven(
                 "merge_state_status is UNSTABLE without an expected-checks signal; do not infer a GitHub defect",
                 head_status="HEAD_GREEN",
@@ -326,7 +399,7 @@ def classify(data: Any) -> dict[str, Any]:
                 rows=[],
             )
         return finish("COMPLETE_GREEN", head_status="HEAD_GREEN")
-    if merge_state in {"BLOCKED", "UNSTABLE"}:
+    if merge_state == "BLOCKED":
         return _not_proven(
             "merge evaluation is blocked without an expected-checks signal; "
             "do not infer a GitHub defect from the merge error alone",
@@ -348,7 +421,7 @@ def _load_required(data: dict[str, Any], policy: Path | None) -> dict[str, Any]:
     if policy is None:
         return data
     data = dict(data)
-    data["required_contexts"] = list(required_names_from_policy(policy.read_text(encoding="utf-8")))
+    data["required_contexts"] = required_contexts_from_policy(policy.read_text(encoding="utf-8"))
     return data
 
 
