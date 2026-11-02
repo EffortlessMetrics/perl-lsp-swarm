@@ -1573,10 +1573,7 @@ Module::Build->new(
             hints.libs_flags,
             vec!["-Lxs/build_link".to_string(), "-lbuildlink".to_string(), "-lbuild".to_string()]
         );
-        assert_eq!(
-            hints.libs_alternatives,
-            vec![vec!["-lbuild".to_string()]],
-        );
+        assert_eq!(hints.libs_alternatives, vec![vec!["-lbuild".to_string()]],);
         assert_eq!(hints.define_flags, vec!["-DBUILD_HINT".to_string()]);
         assert_eq!(hints.object_files, vec!["build.obj".to_string()]);
         assert_eq!(hints.myextlib_files, vec!["build/libbuild.lib".to_string()]);
