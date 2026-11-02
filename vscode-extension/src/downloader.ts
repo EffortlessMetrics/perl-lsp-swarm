@@ -56,6 +56,16 @@ import {
   type ManagedUpdateCheckDecision,
   type ManagedUpdateCheckIntent,
 } from './managedUpdateCheckAdmission';
+import {
+  composeCheckSkippedOutcome,
+  composeUpdatedReloadRequiredOutcome,
+  composeUpdatedReloadUnverifiedOutcome,
+  composeUpToDateOutcome,
+  ManagedUpdateOutcomeDedupe,
+  projectManagedUpdateOutcome,
+  type ManagedUpdateOutcome,
+  type ManagedUpdatePresentation,
+} from './managedUpdateOutcome';
 
 interface ReleaseAsset {
   name: string;
@@ -859,6 +869,8 @@ export class BinaryDownloader {
    * arrangement, not a rule. Gating the write on the owned run makes it one.
    */
   private ownedDownloadRunActive = false;
+  /** Background output dedupe for identical update outcomes (#16804). */
+  private readonly updateOutcomeDedupe = new ManagedUpdateOutcomeDedupe();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -2394,12 +2406,7 @@ export class BinaryDownloader {
       }
 
       if (compareVersions(localVersion, remoteVersion) >= 0) {
-        this.outputChannel.appendLine(`[update-check] Up to date (${localVersion})`);
-        if (force) {
-          // The manual command owes the user a visible outcome (#16530);
-          // the background path stays silent.
-          void vscode.window.showInformationMessage(`You are up to date (${localVersion}).`);
-        }
+        this.renderManagedUpdateOutcome(composeUpToDateOutcome(localVersion, force));
         return;
       }
 
@@ -2488,39 +2495,41 @@ export class BinaryDownloader {
   private reportUpdateCheckRefusal(
     decision: Exclude<ManagedUpdateCheckDecision, { kind: 'run' }>,
   ): void {
-    const explanation = decision.kind === 'skip' ? decision.detail : decision.remediation;
-    this.outputChannel.appendLine(
-      `[update-check] ${decision.kind}: ${decision.reason} — ${explanation}`,
-    );
-    if (decision.userVisibility !== 'report') {
+    this.renderManagedUpdateOutcome(composeCheckSkippedOutcome(decision));
+  }
+
+  /**
+   * Apply one projected outcome to the output channel and any owed notification.
+   */
+  private renderManagedUpdateOutcome(outcome: ManagedUpdateOutcome): void {
+    const presentation = projectManagedUpdateOutcome(outcome);
+    if (this.updateOutcomeDedupe.shouldEmitOutput(presentation)) {
+      this.outputChannel.appendLine(presentation.outputChannel.line);
+    }
+    this.showManagedUpdateNotification(presentation);
+  }
+
+  private showManagedUpdateNotification(presentation: ManagedUpdatePresentation): void {
+    const { notification, actions } = presentation;
+    if (notification.visibility === 'none' || notification.summary.length === 0) {
       return;
     }
-    // The user ran the command and is owed an answer. The existing #16530/#16533
-    // copy is preserved verbatim per reason; #16804 owns consolidating it.
-    switch (decision.reason) {
-      case 'pinned_exact_tag':
-        // The decision names the exact pinned tag, so a refusal is never
-        // mistakable for "up to date" (#16530).
-        void vscode.window.showInformationMessage(`Binary update check skipped: ${explanation}`);
-        return;
-      case 'explicit_user_binary_selected':
-        void vscode.window.showInformationMessage(
-          'Binary update checks are unavailable while perl-lsp.serverPath is configured.',
-        );
-        return;
-      case 'binary_not_managed':
-        void vscode.window.showInformationMessage(
-          'Binary update checks are unavailable because this binary is not managed by perl-lsp.',
-        );
-        return;
-      case 'local_binary_missing':
-        void vscode.window.showWarningMessage(
-          'Binary update check could not run because the managed binary is missing. Run Perl: Reinstall Server Binary.',
-        );
-        return;
-      default:
-        void vscode.window.showWarningMessage(`Binary update check skipped: ${explanation}`);
-    }
+    const show =
+      notification.severity === 'warning'
+        ? vscode.window.showWarningMessage.bind(vscode.window)
+        : vscode.window.showInformationMessage.bind(vscode.window);
+    const prompt =
+      actions.length > 0
+        ? show(notification.summary, ...actions)
+        : show(notification.summary);
+    void prompt.then((choice) => {
+        if (choice === 'View Logs') {
+          this.outputChannel.show();
+        }
+      if (choice === 'Reload Window') {
+        void vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    });
   }
 
   /**
@@ -2554,31 +2563,10 @@ export class BinaryDownloader {
   private async confirmStagedUpdate(installedPath: string): Promise<void> {
     const version = await this.getLocalVersion(installedPath);
     if (!version) {
-      this.outputChannel.appendLine(
-        `[update-check] Installed binary at ${installedPath} has no readable version; reload confirmation withheld.`,
-      );
-      void vscode.window
-        .showWarningMessage(
-          'perllsp update was downloaded, but its installed version could not be verified. The running server is unchanged; check the Perl Language Server output before reloading.',
-          'View Logs',
-        )
-        .then((choice) => {
-          if (choice === 'View Logs') {
-            this.outputChannel.show();
-          }
-        });
+      this.renderManagedUpdateOutcome(composeUpdatedReloadUnverifiedOutcome());
       return;
     }
-    void vscode.window
-      .showInformationMessage(
-        `perllsp ${version} downloaded. Reload the window to switch to it.`,
-        'Reload Window',
-      )
-      .then((choice) => {
-        if (choice === 'Reload Window') {
-          void vscode.commands.executeCommand('workbench.action.reloadWindow');
-        }
-      });
+    this.renderManagedUpdateOutcome(composeUpdatedReloadRequiredOutcome(version));
   }
 
   private async getLocalVersion(binaryPath: string): Promise<string | null> {
