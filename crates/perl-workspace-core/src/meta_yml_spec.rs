@@ -80,6 +80,8 @@ const V1_TOP_LEVEL: &[&str] = &[
     "test_requires",
     "author_requires",
     "prereqs",
+    "distribution_type",
+    "private",
 ];
 
 const V2_TOP_LEVEL: &[&str] = &[
@@ -233,6 +235,10 @@ fn require_non_empty(value: Option<&str>, field: &str, findings: &mut Vec<MetaYm
     missing_field(field, findings);
 }
 
+fn is_custom_extension_key(key: &str) -> bool {
+    key.starts_with("x_") || key.starts_with("X_")
+}
+
 fn check_unsupported_top_level(
     spec: EffectiveSpec,
     keys: &[String],
@@ -243,7 +249,7 @@ fn check_unsupported_top_level(
         EffectiveSpec::V2 => V2_TOP_LEVEL,
     };
     for key in keys {
-        if allowed.contains(&key.as_str()) {
+        if allowed.contains(&key.as_str()) || is_custom_extension_key(key) {
             continue;
         }
         findings.push(MetaYmlSpecFinding {
@@ -331,6 +337,58 @@ mod tests {
         assert!(!validation.conforms_to_supported_spec);
         assert!(
             validation.findings.iter().any(|f| f.kind == MetaYmlSpecFindingKind::InvalidFieldShape)
+        );
+    }
+
+    #[test]
+    fn custom_extension_keys_are_not_unsupported() {
+        let validation = validate_meta_yml_spec(
+            Some(MetaSpecVersion::V2),
+            true,
+            MetaYmlLicenseShape::Sequence,
+            &[
+                "meta-spec".to_string(),
+                "name".to_string(),
+                "version".to_string(),
+                "abstract".to_string(),
+                "license".to_string(),
+                "author".to_string(),
+                "generated_by".to_string(),
+                "x_serialization_backend".to_string(),
+            ],
+            &facts("Foo-Bar", "2.0", Some("summary"), &["perl_5"]),
+        );
+        assert!(validation.conforms_to_supported_spec);
+        assert!(
+            !validation
+                .findings
+                .iter()
+                .any(|f| f.kind == MetaYmlSpecFindingKind::UnsupportedTopLevelField)
+        );
+    }
+
+    #[test]
+    fn v1_distribution_type_is_supported_top_level() {
+        let validation = validate_meta_yml_spec(
+            Some(MetaSpecVersion::V1),
+            true,
+            MetaYmlLicenseShape::Scalar,
+            &[
+                "meta-spec".to_string(),
+                "name".to_string(),
+                "version".to_string(),
+                "license".to_string(),
+                "author".to_string(),
+                "generated_by".to_string(),
+                "distribution_type".to_string(),
+            ],
+            &facts("Foo-Bar", "1.0", None, &["perl_5"]),
+        );
+        assert!(
+            !validation
+                .findings
+                .iter()
+                .any(|f| f.kind == MetaYmlSpecFindingKind::UnsupportedTopLevelField)
         );
     }
 

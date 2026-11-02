@@ -24,6 +24,7 @@ use crate::fact_classes::FactClasses;
 use crate::file::{FileRecord, FileRole, ParseStatus};
 use crate::id::{Digest, FileId, PackageId, SymbolId};
 use crate::import_walk;
+use crate::meta_yml_spec::MetaYmlSpecFindingKind;
 use crate::model::ProjectModel;
 use crate::package::PackageRecord;
 use crate::provenance::Confidence;
@@ -182,13 +183,15 @@ fn extract_dist_metadata(
                 });
             }
             for (index, finding) in outcome.spec_validation.findings.iter().enumerate() {
+                let limitation_kind = match finding.kind {
+                    MetaYmlSpecFindingKind::UnsupportedTopLevelField => {
+                        "meta_yml_spec_unsupported_field"
+                    }
+                    _ => "meta_yml_spec_nonconforming",
+                };
                 limitations.push(ModelLimitation {
                     id: format!("meta-yml-spec:{relative_path}:{index}"),
-                    kind: if outcome.spec_validation.conforms_to_supported_spec {
-                        "meta_yml_spec_conforms".to_string()
-                    } else {
-                        "meta_yml_spec_nonconforming".to_string()
-                    },
+                    kind: limitation_kind.to_string(),
                     message: format!(
                         "`{relative_path}` spec {:?} on `{}`: {}",
                         finding.kind,
@@ -686,6 +689,22 @@ mod tests {
             parsed.limitations
         );
         Ok(())
+    }
+
+    #[test]
+    fn meta_yml_unknown_top_level_uses_unsupported_field_limitation_kind() {
+        let model = model_for(
+            "meta-yml-unknown-key",
+            &[(
+                "META.yml",
+                "meta-spec:\n  version: 2\nname: Foo-Bar\nversion: '1.0'\nabstract: x\nlicense:\n  - perl_5\nauthor:\n  - me\ngenerated_by: dzil\nnot_in_spec: 1\n",
+            )],
+            FactClasses::FILES | FactClasses::DIST,
+        );
+        let spec_limits: Vec<_> =
+            model.limitations.iter().filter(|l| l.id.starts_with("meta-yml-spec:")).collect();
+        assert_eq!(spec_limits.len(), 1);
+        assert_eq!(spec_limits[0].kind, "meta_yml_spec_unsupported_field");
     }
 
     #[test]
