@@ -235,10 +235,9 @@ fn mixed_hashref_then_plain_hash_keeps_each_local_operator() -> Result<(), Strin
 }
 
 #[test]
-#[ignore = "needs #9474: plain hash slot then hashref slot then array index exact object package"]
 fn plain_hash_then_hashref_slot_resolves_through_public_receiver_api() -> Result<(), String> {
     let fact = receiver_fact_for_source(
-        "my %root = (outer => \\{ staff => [My::User->new] }); $root{outer}->{staff}[0]->render();",
+        "my %root = (outer => { staff => [My::User->new] }); $root{outer}->{staff}[0]->render();",
         "render",
     )?;
 
@@ -257,19 +256,6 @@ fn plain_hash_then_hashref_slot_resolves_through_public_receiver_api() -> Result
             TypeEvidence::HashRefSlot { key, .. } if key == "staff"
         )
     }));
-    Ok(())
-}
-
-#[test]
-fn plain_hash_then_hashref_slot_stays_fallback_on_current_main() -> Result<(), String> {
-    let fact = receiver_fact_for_source(
-        "my %root = (outer => \\{ staff => [My::User->new] }); $root{outer}->{staff}[0]->render();",
-        "render",
-    )?;
-
-    assert_eq!(fact.kind, ReceiverKind::ArrayIndex);
-    assert_eq!(fact.package, None);
-    assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
     Ok(())
 }
 
@@ -543,19 +529,14 @@ fn shadowed_environment_fact_wins_on_public_route() -> Result<(), String> {
 #[test]
 fn malformed_receiver_does_not_fabricate_exact_fact() -> Result<(), String> {
     let code = "$groups{staff}[0]->render(";
-    let mut parser = Parser::new(code);
-    let parsed = parser.parse();
-    if let Ok(ast) = parsed
-        && let Some(call) = method_call_named(&ast, "render")
-    {
-        let env = TypeEnvironment::new();
-        let fact = receiver_fact_for_method_call(
-            call,
-            ReceiverFactContext::new(Some(&env)).with_source(code),
-        );
-        if fact.package.is_some() || fact.fallback_state == ReceiverFallbackState::Exact {
-            return Err(format!("malformed receiver fabricated exact fact: {fact:?}"));
-        }
+    let ast = parse_ast(code)?;
+    let call = method_call_named(&ast, "render")
+        .ok_or_else(|| "expected recovered render call in malformed fixture".to_string())?;
+    let env = TypeEnvironment::new();
+    let fact =
+        receiver_fact_for_method_call(call, ReceiverFactContext::new(Some(&env)).with_source(code));
+    if fact.package.is_some() || fact.fallback_state == ReceiverFallbackState::Exact {
+        return Err(format!("malformed receiver fabricated exact fact: {fact:?}"));
     }
     Ok(())
 }
