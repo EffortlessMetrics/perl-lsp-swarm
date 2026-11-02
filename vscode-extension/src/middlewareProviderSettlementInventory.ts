@@ -19,9 +19,9 @@ export function evaluateMiddlewareProviderSettlementInventory(source: string): {
   const block = source.slice(middlewareStart, middlewareEnd);
   const failures: string[] = [];
 
-  if (/catch\s*\(\s*error\s*:\s*unknown\s*\)/.test(block)) {
+  if (/\}\s*catch\s*(?:\(|\{)/.test(block)) {
     failures.push(
-      'LanguageClient middleware contains raw catch (error: unknown) handlers; use typed provider settlement helpers instead',
+      'LanguageClient middleware contains raw try/catch handlers; use typed provider settlement helpers instead',
     );
   }
 

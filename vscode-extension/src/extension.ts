@@ -2970,15 +2970,14 @@ async function settleResolveMiddlewareProviderCall<T>(
 export async function settleFormattingProviderCall<T>(
   call: () => Promise<T>,
   fallback: T,
-  range: boolean = false,
-  document?: vscode.TextDocument,
+  range: boolean,
+  document: vscode.TextDocument,
 ): Promise<T> {
-  const subject = document ? captureProviderRequestSubject(document) : undefined;
+  const subject = captureProviderRequestSubject(document);
   const settlement = await settleLspProviderCallWithDisposition(call, fallback);
   if (settlement.kind === 'returned') {
     safelyObserveProviderOutcome(() => {
-      const subjectCurrent =
-        document && subject ? isProviderRequestSubjectCurrent(subject, document) : false;
+      const subjectCurrent = isProviderRequestSubjectCurrent(subject, document);
       const presentation = presentFormattingProviderOutcome(
         Array.isArray(settlement.value) ? settlement.value.length : 0,
         range,

@@ -97,10 +97,15 @@ describe('formatting provider experience projection', () => {
       },
     };
 
+    const document = {
+      uri: { toString: () => 'file:///test.pl' },
+      version: 1,
+    } as unknown as vscode.TextDocument;
+
     await expect(
       settleFormattingProviderCall(async () => {
         throw error;
-      }, null),
+      }, null, false, document),
     ).resolves.toBeNull();
   });
 });
