@@ -337,6 +337,21 @@ fn falsifier_removed_server_info_version_fails_envelope_census() {
 }
 
 #[test]
+fn falsifier_renamed_server_info_version_fails_envelope_census() {
+    let ledgered = inventory_envelope_ledger_pointers();
+    let result = json!({
+        "capabilities": {},
+        "serverInfo": {"name": "perl-lsp", "versionCode": "0.0.0"}
+    });
+    let emitted = flatten_envelope_pointers(&result);
+    let missing = ledgered_envelope_pointers_missing_from_emission(&emitted, &ledgered);
+    assert!(
+        missing.iter().any(|pointer| pointer == "envelope.serverInfo.version"),
+        "census must detect a renamed serverInfo.version emission: {missing:?}"
+    );
+}
+
+#[test]
 fn falsifier_bogus_envelope_ledger_pointer_fails_envelope_census() {
     let mut ledgered = inventory_envelope_ledger_pointers();
     ledgered.insert("envelope.bogus.field".to_string());
