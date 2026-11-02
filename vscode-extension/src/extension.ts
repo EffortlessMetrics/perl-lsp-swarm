@@ -1294,7 +1294,12 @@ async function runExtensionActivation(
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
-            ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
+            ...(widget?.fileCount === undefined
+              ? {}
+              : {
+                  fileCount: widget.fileCount,
+                  fileCountLowerBound: widget.fileCountLowerBound,
+                }),
             ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
             ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
             ...(widget?.experienceDetail ? { lifecycleDetail: widget.experienceDetail } : {}),
@@ -1528,15 +1533,6 @@ async function runExtensionActivation(
 
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
-
-  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    try {
-      await populateCreatedFiles(event);
-    } catch (e) {
-      outputChannel.error('File creation handler error', e);
-    }
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
   // The document feature group receives a scoped facade context: registrations
   // it pushes during activation join the attempt, while lazily created
