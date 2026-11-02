@@ -275,6 +275,43 @@ fn cwd_mismatch_fails() -> Result<(), String> {
 }
 
 #[test]
+fn stdin_exact_match_succeeds() -> Result<(), String> {
+    let fixture = ExternalCommandFixture::new().expect(
+        ExpectedExternalCommand::exact("git", vec!["commit".into(), "-F".into(), "-".into()])
+            .stdin_exact("subject\n")
+            .stdout("ok"),
+    );
+    let mut observed =
+        ObservedExternalCommand::new("git", vec!["commit".into(), "-F".into(), "-".into()]);
+    observed.stdin = Some("subject\n".into());
+    match fixture.observe(observed) {
+        ExternalCommandFixtureResult::Matched(result) => {
+            assert_eq!(result.stdout, "ok");
+            Ok(())
+        }
+        ExternalCommandFixtureResult::Mismatch(mismatch) => Err(mismatch.to_string()),
+    }
+}
+
+#[test]
+fn stdin_mismatch_fails() -> Result<(), String> {
+    let fixture = ExternalCommandFixture::new().expect(
+        ExpectedExternalCommand::exact("git", vec!["commit".into(), "-F".into(), "-".into()])
+            .stdin_exact("subject\n"),
+    );
+    let mut observed =
+        ObservedExternalCommand::new("git", vec!["commit".into(), "-F".into(), "-".into()]);
+    observed.stdin = Some("other\n".into());
+    match fixture.observe(observed) {
+        ExternalCommandFixtureResult::Mismatch(mismatch) => {
+            assert_eq!(mismatch.kind, MismatchKind::WrongStdin);
+            Ok(())
+        }
+        ExternalCommandFixtureResult::Matched(_) => Err("stdin mismatch must fail".into()),
+    }
+}
+
+#[test]
 fn stale_subject_payload_is_a_distinct_mismatch_when_argv_names_another_head() -> Result<(), String>
 {
     let fixture = ExternalCommandFixture::new().expect(ExpectedExternalCommand::exact(
