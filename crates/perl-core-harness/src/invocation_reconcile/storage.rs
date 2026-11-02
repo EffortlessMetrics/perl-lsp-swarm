@@ -2,16 +2,34 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 
 use super::model::SettledInvocationReceipt;
 
+fn receipt_leaf_name(invocation_id: &str) -> Result<String> {
+    let leaf = format!("{invocation_id}.json");
+    let path = Path::new(&leaf);
+    if leaf.is_empty() {
+        bail!("invocation id must not be empty");
+    }
+    for component in path.components() {
+        if !matches!(component, Component::Normal(_)) {
+            bail!("invocation id must not contain path traversal or separators");
+        }
+    }
+    Ok(leaf)
+}
+
 /// Return the canonical receipt path for one invocation within a run tree.
-#[must_use]
-pub fn invocation_receipt_path(run_tree: &Path, run_id: &str, invocation_id: &str) -> PathBuf {
-    run_tree.join("invocations").join(run_id).join(format!("{invocation_id}.json"))
+pub fn invocation_receipt_path(
+    run_tree: &Path,
+    run_id: &str,
+    invocation_id: &str,
+) -> Result<PathBuf> {
+    let leaf = receipt_leaf_name(invocation_id)?;
+    Ok(run_tree.join("invocations").join(run_id).join(leaf))
 }
 
 /// Write one complete settled receipt atomically; partial files are never published.

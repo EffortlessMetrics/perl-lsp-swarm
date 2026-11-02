@@ -73,6 +73,8 @@ pub struct InvocationTapSummary {
     pub skipped: usize,
     pub bailed_out: bool,
     pub structurally_complete: bool,
+    /// True when the TAP plan is an explicit skip-all declaration (`1..0 # SKIP …`).
+    pub plan_skip_all: bool,
 }
 
 /// Summarized semantic runner-record plane on a settled receipt.
@@ -152,8 +154,8 @@ impl SemanticRecordRejection {
             Self::WrongMode { observed, expected } => {
                 format!("semantic record mode {observed} does not match expected {expected}")
             }
-            Self::WrongPath { observed, expected } => {
-                format!("semantic record path {observed} does not match expected {expected}")
+            Self::WrongPath { .. } => {
+                "semantic record path does not match invocation binding".to_string()
             }
             Self::ImpossibleAssertions { passed, total } => {
                 format!("semantic record assertions_passed {passed} exceeds total {total}")

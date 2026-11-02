@@ -4,7 +4,7 @@ use perl_core_harness_types::{
     HarnessMode, RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus,
     result_axes::EvidenceValidity, validate_execution_mechanism,
 };
-use perl_test_facts::parse_tap;
+use perl_test_facts::{TapAssertionOutcome, TapAssertionStatus, TapReport, parse_tap};
 
 use crate::normalization::sha256_digest_bytes;
 use crate::normalize_test_path;
@@ -39,27 +39,35 @@ pub fn reconcile_invocation(input: ReconcileInvocationInput<'_>) -> SettledInvoc
         reasons.push(input.terminal.not_proven_reason());
     }
 
-    let semantic =
-        match validate_semantic_records(&input.binding, input.semantic_records, &mut reasons) {
-            Ok(summary) => summary,
-            Err(rejection) => {
-                reasons.push(rejection.reason());
-                None
-            }
-        };
-
-    if input.authority == InvocationAuthority::DirectProbe {
+    let direct_probe_invalid = input.authority == InvocationAuthority::DirectProbe;
+    if direct_probe_invalid {
         reasons.push(
             "direct_probe authority cannot settle upstream product evidence (#8173)".to_string(),
         );
     }
 
+    let (semantic, semantic_contradiction) =
+        match validate_semantic_records(&input.binding, input.semantic_records, &mut reasons) {
+            Ok(summary) => (summary, false),
+            Err(SemanticRecordRejection::MissingRecord) => (None, false),
+            Err(rejection) => {
+                reasons.push(rejection.reason());
+                (None, true)
+            }
+        };
+
     let tap_valid = tap_is_authoritative(&tap, &mut reasons);
     let cross_plane_ok =
         cross_planes_agree(&process, &tap, semantic.as_ref(), &mut reasons, input.binding.mode);
 
-    let evidence_result =
-        derive_evidence_validity(&process, tap_valid, semantic.is_some(), cross_plane_ok, &reasons);
+    let evidence_result = derive_evidence_validity(
+        &process,
+        tap_valid,
+        semantic.is_some(),
+        cross_plane_ok,
+        semantic_contradiction,
+        direct_probe_invalid,
+    );
     let domain_outcome = derive_domain_outcome(
         evidence_result,
         &process,
@@ -83,21 +91,55 @@ pub fn reconcile_invocation(input: ReconcileInvocationInput<'_>) -> SettledInvoc
 
 fn summarize_tap(stdout: &str) -> InvocationTapSummary {
     let report = parse_tap(stdout);
+    let (assertions_passed, assertions_failed, skipped) = top_level_outcome_counts(&report);
     let structurally_complete = report.bail_out.is_none()
         && report.diagnostics.is_empty()
         && report.unknown_count() == 0
+        && report.raw_lines.is_empty()
         && report.plan.is_some();
+    let plan_skip_all = report.plan.as_ref().is_some_and(plan_is_skip_all);
     InvocationTapSummary {
         raw_digest: sha256_digest_bytes(stdout.as_bytes()),
         parser_identity: TAP_PARSER_IDENTITY.to_string(),
         plan_start: report.plan.as_ref().map(|plan| plan.start),
         plan_end: report.plan.as_ref().map(|plan| plan.end),
-        assertions_passed: report.passed_count(),
-        assertions_failed: report.failed_count(),
-        skipped: report.skipped_count(),
+        assertions_passed,
+        assertions_failed,
+        skipped,
         bailed_out: report.bail_out.is_some(),
         structurally_complete,
+        plan_skip_all,
     }
+}
+
+fn plan_is_skip_all(plan: &perl_test_facts::TapPlan) -> bool {
+    plan.end == 0
+        && plan.directive.as_ref().is_some_and(|directive| {
+            directive
+                .split_whitespace()
+                .next()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("skip"))
+        })
+}
+
+fn top_level_outcome_counts(report: &TapReport) -> (usize, usize, usize) {
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut skipped = 0usize;
+    for assertion in report.assertions.iter().filter(|assertion| assertion.depth == 0) {
+        if assertion.status == TapAssertionStatus::Skip {
+            skipped += 1;
+            continue;
+        }
+        if assertion.outcome == TapAssertionOutcome::Pass {
+            passed += 1;
+        } else if assertion.outcome == TapAssertionOutcome::Fail
+            && assertion.status != TapAssertionStatus::Todo
+        {
+            failed += 1;
+        }
+    }
+    (passed, failed, skipped)
 }
 
 fn tap_is_authoritative(tap: &InvocationTapSummary, reasons: &mut Vec<String>) -> bool {
@@ -190,7 +232,7 @@ fn cross_planes_agree(
     tap: &InvocationTapSummary,
     semantic: Option<&InvocationSemanticSummary>,
     reasons: &mut Vec<String>,
-    mode: HarnessMode,
+    _mode: HarnessMode,
 ) -> bool {
     let Some(semantic) = semantic else {
         if tap.structurally_complete && tap.assertions_failed == 0 && process.scoreable {
@@ -222,11 +264,8 @@ fn cross_planes_agree(
         );
         return false;
     }
-    if !record_pass && tap_pass && !mode_allows_tap_pass_record_fail(mode) {
-        reasons.push(
-            "semantic record reports fail while TAP reports a clean pass without mode allowance"
-                .to_string(),
-        );
+    if !record_pass && tap_pass {
+        reasons.push("semantic record reports fail while TAP reports a clean pass".to_string());
         return false;
     }
 
@@ -246,12 +285,10 @@ fn cross_planes_agree(
 }
 
 fn tap_count_total(tap: &InvocationTapSummary) -> usize {
-    tap.assertions_passed.saturating_add(tap.assertions_failed).saturating_add(tap.skipped)
-}
-
-fn mode_allows_tap_pass_record_fail(mode: HarnessMode) -> bool {
-    // Parse/compile synthetic one-test TAP can represent failure outside TAP lines.
-    matches!(mode, HarnessMode::Parse | HarnessMode::Compile)
+    tap.assertions_passed
+        .saturating_add(tap.assertions_failed)
+        .saturating_add(tap.skipped)
+        .max(tap.plan_end.unwrap_or(0) as usize)
 }
 
 fn derive_evidence_validity(
@@ -259,9 +296,10 @@ fn derive_evidence_validity(
     tap_valid: bool,
     has_semantic: bool,
     cross_plane_ok: bool,
-    reasons: &[String],
+    semantic_contradiction: bool,
+    direct_probe_invalid: bool,
 ) -> EvidenceValidity {
-    if reasons.iter().any(|reason| reason.contains("direct_probe authority")) {
+    if direct_probe_invalid || semantic_contradiction {
         return EvidenceValidity::Invalid;
     }
     if !has_semantic || !tap_valid || !process.scoreable || process.stdout_truncated {
@@ -275,7 +313,7 @@ fn derive_domain_outcome(
     process: &InvocationProcessSummary,
     tap: &InvocationTapSummary,
     semantic: Option<&InvocationSemanticSummary>,
-    mode: HarnessMode,
+    _mode: HarnessMode,
 ) -> InvocationDomainOutcome {
     if evidence != EvidenceValidity::Valid {
         return InvocationDomainOutcome::NotAssessed;
@@ -284,16 +322,21 @@ fn derive_domain_outcome(
         Some(value) => value,
         None => return InvocationDomainOutcome::NotAssessed,
     };
+    if tap.plan_skip_all
+        && semantic.reported_status == RunnerStatus::Pass
+        && tap.assertions_failed == 0
+    {
+        return InvocationDomainOutcome::RecognizedSkip;
+    }
     if tap.skipped > 0
+        && tap.assertions_passed == 0
         && tap.assertions_failed == 0
         && semantic.reported_status == RunnerStatus::Pass
     {
         return InvocationDomainOutcome::RecognizedSkip;
     }
     if semantic.reported_status == RunnerStatus::Fail || tap.assertions_failed > 0 {
-        if semantic.reported_status == RunnerStatus::Fail || tap.assertions_failed > 0 {
-            return InvocationDomainOutcome::CompletedWithFailures;
-        }
+        return InvocationDomainOutcome::CompletedWithFailures;
     }
     if !process.scoreable {
         return InvocationDomainOutcome::NotAssessed;
@@ -303,9 +346,6 @@ fn derive_domain_outcome(
         && tap.assertions_passed > 0
     {
         return InvocationDomainOutcome::CompletedCleanly;
-    }
-    if mode_allows_tap_pass_record_fail(mode) && semantic.reported_status == RunnerStatus::Fail {
-        return InvocationDomainOutcome::CompletedWithFailures;
     }
     InvocationDomainOutcome::UnsupportedOrBounded
 }

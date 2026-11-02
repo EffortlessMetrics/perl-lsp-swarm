@@ -196,7 +196,7 @@ fn wrong_mode_is_rejected() {
         false,
         std::slice::from_ref(&wrong),
     );
-    assert_ne!(rec.derived.evidence_result, EvidenceValidity::Valid);
+    assert_eq!(rec.derived.evidence_result, EvidenceValidity::Invalid);
     wrong.mode = HarnessMode::Parse.as_str().to_string();
     let _ = wrong;
 }
@@ -327,7 +327,7 @@ fn atomic_publication_writes_only_complete_receipt() -> color_eyre::Result<()> {
         temp.path(),
         "run-fixture",
         "base/ok.t",
-    );
+    )?;
     let stdout = "1..1\nok 1\n";
     let receipt = reconcile(
         HarnessMode::Parse,
@@ -344,4 +344,72 @@ fn atomic_publication_writes_only_complete_receipt() -> color_eyre::Result<()> {
         serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     assert_eq!(decoded, receipt);
     Ok(())
+}
+
+#[test]
+fn fail_record_with_clean_matching_tap_is_invalid() {
+    let stdout = "1..1\nok 1\n";
+    let rec = reconcile(
+        HarnessMode::Parse,
+        "base/bad.t",
+        TerminalProcessOutcome::CleanExit,
+        stdout,
+        false,
+        &[record(HarnessMode::Parse, "base/bad.t", RunnerStatus::Fail, 1, 1)],
+    );
+    assert_eq!(rec.derived.evidence_result, EvidenceValidity::Invalid);
+}
+
+#[test]
+fn unparsed_stdout_lines_are_not_authoritative() {
+    let stdout = "1..1\nok 1 - fine\nfuture record: opaque\n";
+    let rec = reconcile(
+        HarnessMode::Parse,
+        "base/ok.t",
+        TerminalProcessOutcome::CleanExit,
+        stdout,
+        false,
+        &[record(HarnessMode::Parse, "base/ok.t", RunnerStatus::Pass, 1, 1)],
+    );
+    assert_eq!(rec.derived.evidence_result, EvidenceValidity::NotProven);
+}
+
+#[test]
+fn skip_all_plan_is_recognized_skip() {
+    let stdout = "1..0 # SKIP database unavailable\n";
+    let rec = reconcile(
+        HarnessMode::Parse,
+        "base/skip.t",
+        TerminalProcessOutcome::CleanExit,
+        stdout,
+        false,
+        &[record(HarnessMode::Parse, "base/skip.t", RunnerStatus::Pass, 0, 0)],
+    );
+    assert_eq!(rec.derived.evidence_result, EvidenceValidity::Valid);
+    assert_eq!(rec.derived.domain_outcome, InvocationDomainOutcome::RecognizedSkip);
+}
+
+#[test]
+fn nested_subtest_counts_use_top_level_only() {
+    let stdout = "    ok 1 - inner\nok 1 - outer\n1..1\n";
+    let rec = reconcile(
+        HarnessMode::Parse,
+        "base/sub.t",
+        TerminalProcessOutcome::CleanExit,
+        stdout,
+        false,
+        &[record(HarnessMode::Parse, "base/sub.t", RunnerStatus::Pass, 1, 1)],
+    );
+    assert_eq!(rec.derived.evidence_result, EvidenceValidity::Valid);
+}
+
+#[test]
+fn invocation_id_traversal_is_rejected_for_receipt_paths() {
+    let err = crate::invocation_reconcile::invocation_receipt_path(
+        std::path::Path::new("/tmp/run"),
+        "run-fixture",
+        "../escape",
+    )
+    .expect_err("parent segments must be rejected");
+    assert!(err.to_string().contains("traversal"));
 }
