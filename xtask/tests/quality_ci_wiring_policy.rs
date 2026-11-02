@@ -1017,8 +1017,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         coverage_proof_step.contains("if:")
             && coverage_proof_step
                 .contains("steps.coverage_route.outputs.coverage_required == 'true'")
-            && coverage_proof_step
-                .contains("routing_classification == 'routing_skip'"),
+            && coverage_proof_step.contains("routing_classification == 'routing_skip'"),
         "coverage proof must run for routed packs or baseline routing_skip nightly/manual runs"
     );
     let skipped_receipt_step =
@@ -1027,8 +1026,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         skipped_receipt_step.contains("if:")
             && skipped_receipt_step
                 .contains("steps.coverage_route.outputs.coverage_required != 'true'")
-            && skipped_receipt_step
-                .contains("routing_classification != 'routing_skip'"),
+            && skipped_receipt_step.contains("routing_classification != 'routing_skip'"),
         "skipped receipt must emit only when baseline proof does not run"
     );
     assert!(
