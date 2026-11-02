@@ -5612,6 +5612,109 @@ fn package_edges_from_stash_graph(
         .collect()
 }
 
+/// Anchor span for expression-form `eval` / `do` dynamic boundaries.
+///
+/// String-literal bodies cover the literal (runtime-evaluated code). Other
+/// operands (for example `eval $expr`, `do $file`) cover only the keyword so
+/// undeclared-variable suppression stays position-scoped on the operand.
+fn eval_do_expression_boundary_anchor_span(node: &Node) -> Option<(usize, usize)> {
+    let (keyword_len, block) = match &node.kind {
+        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            (4, block.as_ref())
+        }
+        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            (2, block.as_ref())
+        }
+        _ => return None,
+    };
+    let node_start = node.location.start;
+    if matches!(block.kind, NodeKind::String { .. }) {
+        Some((block.location.start, block.location.end))
+    } else {
+        Some((node_start, node_start + keyword_len))
+    }
+}
+
+fn collect_expression_form_eval_do_boundaries(
+    node: &Node,
+    uri: &str,
+    file_id: FileId,
+    anchors: &mut Vec<AnchorFact>,
+    occurrences: &mut Vec<OccurrenceFact>,
+) {
+    match &node.kind {
+        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
+                push_hir_dynamic_boundary_occurrence(
+                    uri,
+                    file_id,
+                    start,
+                    end,
+                    1,
+                    anchors,
+                    occurrences,
+                );
+            }
+        }
+        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
+                push_hir_dynamic_boundary_occurrence(
+                    uri,
+                    file_id,
+                    start,
+                    end,
+                    2,
+                    anchors,
+                    occurrences,
+                );
+            }
+        }
+        _ => {}
+    }
+    node.for_each_child(|child| {
+        collect_expression_form_eval_do_boundaries(child, uri, file_id, anchors, occurrences);
+    });
+}
+
+fn push_hir_dynamic_boundary_occurrence(
+    uri: &str,
+    file_id: FileId,
+    span_start: usize,
+    span_end: usize,
+    boundary_kind_tag: u8,
+    anchors: &mut Vec<AnchorFact>,
+    occurrences: &mut Vec<OccurrenceFact>,
+) {
+    let mut anchor_hasher = DefaultHasher::new();
+    uri.hash(&mut anchor_hasher);
+    span_start.hash(&mut anchor_hasher);
+    span_end.hash(&mut anchor_hasher);
+    boundary_kind_tag.hash(&mut anchor_hasher);
+    let anchor_id = AnchorId(anchor_hasher.finish());
+    let mut occurrence_hasher = DefaultHasher::new();
+    anchor_id.hash(&mut occurrence_hasher);
+    1u8.hash(&mut occurrence_hasher);
+    let occurrence_id = OccurrenceId(occurrence_hasher.finish());
+    anchors.push(AnchorFact {
+        id: anchor_id,
+        file_id,
+        span_start_byte: span_start.min(u32::MAX as usize) as u32,
+        span_end_byte: span_end.min(u32::MAX as usize) as u32,
+        scope_id: None,
+        provenance: Provenance::DynamicBoundary,
+        confidence: Confidence::Low,
+    });
+    occurrences.push(OccurrenceFact {
+        id: occurrence_id,
+        kind: OccurrenceKind::DynamicBoundary,
+        entity_id: None,
+        anchor_id,
+        scope_id: None,
+        provenance: Provenance::DynamicBoundary,
+        confidence: Confidence::Low,
+    });
+}
+
 fn dynamic_isa_facts(
     uri: &str,
     ast: &Node,
@@ -5623,35 +5726,17 @@ fn dynamic_isa_facts(
     for boundary in hir.stash_graph.dynamic_boundaries.iter().filter(|boundary| {
         boundary.kind == perl_parser_core::hir::StashDynamicBoundaryKind::DynamicInheritance
     }) {
-        let mut anchor_hasher = DefaultHasher::new();
-        uri.hash(&mut anchor_hasher);
-        boundary.range.start.hash(&mut anchor_hasher);
-        boundary.range.end.hash(&mut anchor_hasher);
-        boundary.kind.hash(&mut anchor_hasher);
-        let anchor_id = AnchorId(anchor_hasher.finish());
-        let mut occurrence_hasher = DefaultHasher::new();
-        anchor_id.hash(&mut occurrence_hasher);
-        1u8.hash(&mut occurrence_hasher);
-        let occurrence_id = OccurrenceId(occurrence_hasher.finish());
-        anchors.push(AnchorFact {
-            id: anchor_id,
+        push_hir_dynamic_boundary_occurrence(
+            uri,
             file_id,
-            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
-            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
-            scope_id: None,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-        });
-        occurrences.push(OccurrenceFact {
-            id: occurrence_id,
-            kind: OccurrenceKind::DynamicBoundary,
-            entity_id: None,
-            anchor_id,
-            scope_id: None,
-            provenance: Provenance::DynamicBoundary,
-            confidence: Confidence::Low,
-        });
+            boundary.range.start,
+            boundary.range.end,
+            0,
+            &mut anchors,
+            &mut occurrences,
+        );
     }
+    collect_expression_form_eval_do_boundaries(ast, uri, file_id, &mut anchors, &mut occurrences);
     (anchors, occurrences)
 }
 
