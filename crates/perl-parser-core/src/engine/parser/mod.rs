@@ -57,7 +57,10 @@
 use crate::{
     ast::{GotoTargetForm, Node, NodeKind, SourceLocation},
     error::{ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind, RecoverySite},
-    heredoc_collector::{self, HeredocContent, PendingHeredoc, collect_at_declaration_offsets},
+    heredoc_collector::{
+        self, HeredocCollectInterrupt, HeredocContent, PendingHeredoc,
+        collect_at_declaration_offsets_with_probe,
+    },
     quote_parser,
     token_stream::{ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream},
 };
@@ -309,6 +312,15 @@ impl<'a> Parser<'a> {
             ParserConfigIdentity::production_default(),
             Some(cancellation_flag),
         )
+    }
+
+    /// Like [`Self::new_with_cancellation`], but uses the supplied production config.
+    pub fn with_production_config_and_cancellation(
+        input: &'a str,
+        config: ParserConfigIdentity,
+        cancellation_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self::assemble(TokenStream::new(input), input, config, Some(cancellation_flag))
     }
 
     /// Create a parser from pre-lexed tokens, skipping the lexer pass.
