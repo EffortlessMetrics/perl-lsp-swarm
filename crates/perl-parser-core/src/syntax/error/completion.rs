@@ -180,6 +180,34 @@ pub enum ParseCompletionValidationError {
     /// terminal fallback shell.
     #[error("catastrophic safe_partial requires a retained AST that is not the fallback shell")]
     CatastrophicSafePartialMissingAst,
+    /// Recovered completion recorded a different count than the output.
+    #[error("recovered completion count {recorded} disagrees with output {actual}")]
+    RecoveredCountMismatch {
+        /// Count stored on the completion.
+        recorded: usize,
+        /// Structured recovery count on the output.
+        actual: usize,
+    },
+    /// Budget-exhausted completion payload disagrees with the stop cause.
+    #[error("budget-exhausted completion payload disagrees with stop cause {cause:?}")]
+    BudgetPayloadMismatch {
+        /// Dimension stored on the completion.
+        recorded_dimension: ParseBudgetExhaustionDimension,
+        /// Limit stored on the completion.
+        recorded_limit: Option<usize>,
+        /// Usage stored on the completion.
+        recorded_usage: Option<usize>,
+        /// Observed budget stop cause.
+        cause: ParseStopCause,
+    },
+    /// Catastrophic cause disagrees with the stop-cause variant.
+    #[error("catastrophic cause {recorded:?} disagrees with stop cause {cause:?}")]
+    CatastrophicCauseMismatch {
+        /// Cause stored on the completion.
+        recorded: ParseCatastrophicCause,
+        /// Observed catastrophic stop cause.
+        cause: ParseStopCause,
+    },
 }
 
 impl ParseCompletion {
@@ -280,6 +308,12 @@ impl ParseCompletion {
                 if recovered_count == 0 || output.recovered_count == 0 {
                     return Err(ParseCompletionValidationError::RecoveredWithoutRecovery);
                 }
+                if recovered_count != output.recovered_count {
+                    return Err(ParseCompletionValidationError::RecoveredCountMismatch {
+                        recorded: recovered_count,
+                        actual: output.recovered_count,
+                    });
+                }
                 Ok(())
             }
             Self::Cancelled { .. } => match output.stop_cause() {
@@ -288,22 +322,52 @@ impl ParseCompletion {
                     Err(ParseCompletionValidationError::CancelledWithoutCancelledCause)
                 }
             },
-            Self::BudgetExhausted { .. } => match output.stop_cause() {
-                Some(cause) if cause.is_budget_exhaustion() => Ok(()),
-                Some(_) | None => Err(ParseCompletionValidationError::BudgetWithoutBudgetCause),
-            },
-            Self::Catastrophic { safe_partial, .. } => match output.stop_cause() {
-                Some(ParseStopCause::CatastrophicTermination)
-                | Some(ParseStopCause::FutureTypedTerminal) => {
-                    if safe_partial && is_terminal_fallback_shell(&output.ast) {
-                        Err(ParseCompletionValidationError::CatastrophicSafePartialMissingAst)
-                    } else {
+            Self::BudgetExhausted { dimension, limit, usage, .. } => match output.stop_cause() {
+                Some(cause) if cause.is_budget_exhaustion() => match budget_from_cause(cause) {
+                    Self::BudgetExhausted {
+                        dimension: expected_dimension,
+                        limit: expected_limit,
+                        usage: expected_usage,
+                        ..
+                    } if dimension == expected_dimension
+                        && limit == expected_limit
+                        && usage == expected_usage =>
+                    {
                         Ok(())
                     }
-                }
-                Some(_) | None => {
-                    Err(ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause)
-                }
+                    Self::BudgetExhausted { .. } => {
+                        Err(ParseCompletionValidationError::BudgetPayloadMismatch {
+                            recorded_dimension: dimension,
+                            recorded_limit: limit,
+                            recorded_usage: usage,
+                            cause,
+                        })
+                    }
+                    _ => Err(ParseCompletionValidationError::BudgetWithoutBudgetCause),
+                },
+                Some(_) | None => Err(ParseCompletionValidationError::BudgetWithoutBudgetCause),
+            },
+            Self::Catastrophic { cause, safe_partial } => match output.stop_cause() {
+                Some(stop) => match Self::from_parser_terminal(
+                    Some(stop),
+                    output.recovered_count,
+                    &output.ast,
+                ) {
+                    Self::Catastrophic { cause: expected_cause, .. } => {
+                        if cause != expected_cause {
+                            Err(ParseCompletionValidationError::CatastrophicCauseMismatch {
+                                recorded: cause,
+                                cause: stop,
+                            })
+                        } else if safe_partial && is_terminal_fallback_shell(&output.ast) {
+                            Err(ParseCompletionValidationError::CatastrophicSafePartialMissingAst)
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    _ => Err(ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause),
+                },
+                None => Err(ParseCompletionValidationError::CatastrophicWithoutCatastrophicCause),
             },
         }
     }
@@ -587,6 +651,72 @@ mod tests {
             )
             .validate_against_output(&catastrophic),
             Err(ParseCompletionValidationError::CatastrophicSafePartialMissingAst)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_mismatched_recovery_count_budget_payload_and_cause() {
+        let recovered = ParseOutput::finish(
+            empty_ast(),
+            vec![
+                ParseError::Recovered {
+                    site: RecoverySite::InfixRhs,
+                    kind: RecoveryKind::MissingOperand,
+                    location: 1,
+                },
+                ParseError::Recovered {
+                    site: RecoverySite::Statement,
+                    kind: RecoveryKind::InferredSemicolon,
+                    location: 4,
+                },
+            ],
+            BudgetTracker::new(),
+            None,
+        );
+        assert_eq!(recovered.recovered_count, 2);
+        assert_eq!(
+            ParseCompletion::CompletedWithRecovery { recovered_count: 1 }
+                .validate_against_output(&recovered),
+            Err(ParseCompletionValidationError::RecoveredCountMismatch { recorded: 1, actual: 2 })
+        );
+
+        let recursion = ParseOutput::finish(
+            empty_ast(),
+            vec![],
+            BudgetTracker::new(),
+            Some(ParseStopCause::RecursionBudgetExhausted { limit: Some(8), usage: Some(9) }),
+        );
+        assert_eq!(
+            ParseCompletion::budget_exhausted(
+                ParseBudgetExhaustionDimension::Lexer,
+                None,
+                None,
+                ParseCompletionStage::Unspecified,
+                None,
+            )
+            .validate_against_output(&recursion),
+            Err(ParseCompletionValidationError::BudgetPayloadMismatch {
+                recorded_dimension: ParseBudgetExhaustionDimension::Lexer,
+                recorded_limit: None,
+                recorded_usage: None,
+                cause: ParseStopCause::RecursionBudgetExhausted { limit: Some(8), usage: Some(9) },
+            })
+        );
+        assert!(recursion.completion().validate_against_output(&recursion).is_ok());
+
+        let catastrophic = ParseOutput::finish(
+            empty_ast(),
+            vec![],
+            BudgetTracker::new(),
+            Some(ParseStopCause::CatastrophicTermination),
+        );
+        assert_eq!(
+            ParseCompletion::catastrophic(ParseCatastrophicCause::FutureTypedTerminal, false)
+                .validate_against_output(&catastrophic),
+            Err(ParseCompletionValidationError::CatastrophicCauseMismatch {
+                recorded: ParseCatastrophicCause::FutureTypedTerminal,
+                cause: ParseStopCause::CatastrophicTermination,
+            })
         );
     }
 
