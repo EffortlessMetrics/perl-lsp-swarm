@@ -323,10 +323,7 @@ fn merge_linker_flags(
             .into_iter()
             .filter(|token| is_library_link_input(token))
             .collect::<Vec<_>>();
-        if !tokens.is_empty() {
-            contribution.libs_alternatives.push(tokens.clone());
-            collect_unique(&mut contribution.libs_flags, tokens.into_iter());
-        }
+        collect_unique(&mut contribution.libs_flags, tokens.into_iter());
     }
 }
 
@@ -1206,9 +1203,9 @@ Module::Build->new(
             hints.libs_flags,
             vec!["-L/opt/build/lib".to_string(), "-lbuildonly".to_string()]
         );
-        assert_eq!(
-            hints.libs_alternatives,
-            vec![vec!["-L/opt/build/lib".to_string()], vec!["-lbuildonly".to_string()]]
+        assert!(
+            hints.libs_alternatives.is_empty(),
+            "extra_linker_flags are cumulative, not MakeMaker LIBS alternatives"
         );
         assert!(hints.diagnostics.is_empty());
         Ok(())
@@ -1578,11 +1575,7 @@ Module::Build->new(
         );
         assert_eq!(
             hints.libs_alternatives,
-            vec![
-                vec!["-Lxs/build_link".to_string()],
-                vec!["-lbuildlink".to_string()],
-                vec!["-lbuild".to_string()],
-            ]
+            vec![vec!["-lbuild".to_string()]],
         );
         assert_eq!(hints.define_flags, vec!["-DBUILD_HINT".to_string()]);
         assert_eq!(hints.object_files, vec!["build.obj".to_string()]);
