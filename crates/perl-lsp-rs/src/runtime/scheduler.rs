@@ -734,25 +734,24 @@ impl Scheduler {
 
         let mut ingress_closed = false;
 
-        let track_and_enqueue =
-            |pending: &mut BinaryHeap<QueuedRead>,
-             latest_seq: &mut HashMap<RequestDedupKey, u64>,
-             queued: QueuedRead| {
-                if let Some(ref key) = queued.dedup_key {
-                    if latest_seq.len() >= DEDUP_MAP_CAP {
-                        latest_seq.clear();
-                    }
-                    latest_seq
-                        .entry(key.clone())
-                        .and_modify(|seq| {
-                            if queued.arrival_seq > *seq {
-                                *seq = queued.arrival_seq;
-                            }
-                        })
-                        .or_insert(queued.arrival_seq);
+        let track_and_enqueue = |pending: &mut BinaryHeap<QueuedRead>,
+                                 latest_seq: &mut HashMap<RequestDedupKey, u64>,
+                                 queued: QueuedRead| {
+            if let Some(ref key) = queued.dedup_key {
+                if latest_seq.len() >= DEDUP_MAP_CAP {
+                    latest_seq.clear();
                 }
-                pending.push(queued);
-            };
+                latest_seq
+                    .entry(key.clone())
+                    .and_modify(|seq| {
+                        if queued.arrival_seq > *seq {
+                            *seq = queued.arrival_seq;
+                        }
+                    })
+                    .or_insert(queued.arrival_seq);
+            }
+            pending.push(queued);
+        };
 
         loop {
             // Drain all currently available ingress and warm-up requeue messages
