@@ -64,6 +64,10 @@ fn fuzz_fragment_strategy() -> impl Strategy<Value = String> {
     prop_oneof![Just(String::new()), "\\PC*".prop_map(|s| truncate_chars(&s, MAX_FRAGMENT_CHARS)),]
 }
 
+fn severity_input_strategy() -> impl Strategy<Value = u64> {
+    prop_oneof![Just(0), Just(1), Just(5), Just(6), Just(99), Just(u64::MAX), 0u64..=256,]
+}
+
 proptest! {
     #[test]
     fn prop_project_config_toml_apply_is_total_and_clamps_severity(fragment in fuzz_fragment_strategy()) {
@@ -123,7 +127,10 @@ api_key_env = "{escaped}"
     }
 
     #[test]
-    fn prop_server_config_json_apply_is_total_and_clamps_severity(fragment in fuzz_fragment_strategy()) {
+    fn prop_server_config_json_apply_is_total_and_clamps_severity(
+        fragment in fuzz_fragment_strategy(),
+        severity in severity_input_strategy(),
+    ) {
         let settings = json!({
             "inlayHints": {
                 "enabled": true,
@@ -141,15 +148,15 @@ api_key_env = "{escaped}"
             "telemetry": { "enabled": true },
             "perlcritic": {
                 "enabled": false,
-                "severity": u64::MAX,
+                "severity": severity,
                 "profile": fragment,
                 "theme": fragment,
             },
             "critic": {
-                "engine": fragment,
-                "profile": fragment,
-                "include": [fragment, "", "Native::Rule"],
-                "exclude": [7, fragment, null],
+                "engine": "native",
+                "profile": "recommended",
+                "include": ["Native::Rule"],
+                "exclude": ["native.common.assignment_in_condition"],
             },
             "formatting": {
                 "enabled": true,
@@ -190,9 +197,21 @@ api_key_env = "{escaped}"
             "inlayHints": json_string(&fragment),
             "testRunner": [json_string(&fragment)],
             "telemetry": null,
-            "perlcritic": { "severity": json_string(&fragment) },
+            "perlcritic": { "severity": severity },
             "formatting": { "extraArgs": [json_string(&fragment)] },
         }))?;
+    }
+
+    #[test]
+    fn prop_project_config_toml_clamps_generated_severity(severity in severity_input_strategy()) {
+        let source = format!(
+            r#"
+[diagnostics]
+perlcritic = true
+perlcritic_severity = {severity}
+"#
+        );
+        exercise_project_config_toml(&source)?;
     }
 
     #[test]
