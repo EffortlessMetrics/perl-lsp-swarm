@@ -60,17 +60,17 @@ use tasks::{
     memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
     native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     no_publish_side_effects, oneliner_capability_matrix, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
-    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
-    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
-    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
+    oracle_receipt_schema, oracle_runner, package_documentation, parse_rust, parser_corpus_sweep,
+    parser_matrix, parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee,
+    populate_book, pre_push_plan, prep_crates_io_launch, product_health_rail_contract,
+    product_health_status, protocol_type_substrate_matrix, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot,
+    quickorm_api_matrix, receipts, release, release_artifact_check, release_candidate_artifacts,
+    release_evidence, release_notes, release_trust_invariants, release_turnkey, repo_hygiene,
+    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
+    session_receipt, shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
     supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
     targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
     update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
@@ -421,6 +421,17 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Build or check the package documentation topology matrix (#14122).
+    #[command(name = "package-documentation")]
+    PackageDocumentation {
+        /// Validate only, and require the checked-in projections to be current.
+        #[arg(long)]
+        check: bool,
+        /// Also fail when required class evidence is missing.
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Validate a `no_publish_side_effects.v1` surface inventory against
@@ -6089,6 +6100,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
+        Commands::PackageDocumentation { check, strict } => {
+            package_documentation::run(check, strict)
+        }
         Commands::NoPublishSideEffects { inventory, topology } => {
             no_publish_side_effects::run(inventory, topology)
         }
