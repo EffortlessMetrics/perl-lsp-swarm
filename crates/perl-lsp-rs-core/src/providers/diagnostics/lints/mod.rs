@@ -130,6 +130,12 @@
 //! |------|----------|-------------|
 //! | `PL410` | Warning | `next`/`last`/`redo LABEL` references a label that is not defined in the file |
 //!
+//! ## Irrelevant wantarray branches (`wantarray_branch.rs`)
+//!
+//! | Code | Severity | Description |
+//! |------|----------|-------------|
+//! | `PL411` | Warning | `wantarray()` conditional whose branches perform no local work |
+//!
 //! # Severity Levels
 //!
 //! Each lint produces diagnostics with appropriate severity:
@@ -181,3 +187,5 @@ pub mod unreachable_code_disposition;
 pub mod unused_imports;
 /// Perl version compatibility warnings (PL900)
 pub mod version_compat;
+/// Irrelevant `wantarray()` branch detection (PL411, issue #2993)
+pub mod wantarray_branch;

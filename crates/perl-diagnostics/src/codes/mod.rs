@@ -168,6 +168,8 @@ define_diagnostic_codes! {
     GotoUndefinedLabel => "PL409",
     /// `next`/`last`/`redo LABEL` references a label that does not exist in this file
     LoopControlUndefinedLabel => "PL410",
+    /// `wantarray()` conditional whose branches perform no local work
+    IrrelevantWantarrayBranch => "PL411",
 
     // Pragma pitfalls / deprecated syntax (PL500-PL599)
     /// Use of deprecated defined(@array) / defined(%hash)
