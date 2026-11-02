@@ -63,6 +63,10 @@ fn cell_admits_perl_document_store(cell_doc: &Value) -> bool {
         .is_some_and(|language| language == PREVIEW_CELL_LANGUAGE)
 }
 
+fn cell_uri_in_perl_document_store(server: &LspServer, cell_uri: &str) -> bool {
+    server.documents_guard().contains_key(cell_uri)
+}
+
 /// Execution summary for a notebook cell (LSP 3.17)
 ///
 /// Tracks the execution state of a cell, including execution order
@@ -539,11 +543,18 @@ impl LspServer {
                                 .and_then(|v| v.as_str())
                                 .ok_or_else(|| invalid_params("Missing cell uri"))?;
 
-                            // Close cell text document
-                            let did_close_params = did_close_params(cell_uri);
+                            // Close admitted Perl cell text documents only
+                            if cell_uri_in_perl_document_store(self, cell_uri) {
+                                let did_close_params = did_close_params(cell_uri);
 
-                            self.handle_did_close(Some(did_close_params))?;
-                            tracing::debug!(cell_uri, "Cell closed");
+                                self.handle_did_close(Some(did_close_params))?;
+                                tracing::debug!(cell_uri, "Admitted notebook cell closed");
+                            } else {
+                                tracing::debug!(
+                                    cell_uri,
+                                    "Skipped notebook cell close for non-admitted document"
+                                );
+                            }
 
                             let previous_len = updated_cells.len();
                             updated_cells.retain(|cell| cell.document != cell_uri);
@@ -598,6 +609,14 @@ impl LspServer {
                         if let Some(changes) =
                             change_event.get("changes").and_then(|v| v.as_array())
                         {
+                            if !cell_uri_in_perl_document_store(self, cell_uri) {
+                                tracing::debug!(
+                                    cell_uri,
+                                    "Skipped notebook textContent for non-admitted cell"
+                                );
+                                continue;
+                            }
+
                             // Apply changes using existing didChange logic
                             let did_change_params = json!({
                                 "textDocument": {
@@ -668,11 +687,18 @@ impl LspServer {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| invalid_params("Missing cell uri"))?;
 
-                // Close cell text document
-                let did_close_params = did_close_params(cell_uri);
+                // Close admitted Perl cell text documents only
+                if cell_uri_in_perl_document_store(self, cell_uri) {
+                    let did_close_params = did_close_params(cell_uri);
 
-                self.handle_did_close(Some(did_close_params))?;
-                tracing::debug!(cell_uri, "Cell closed");
+                    self.handle_did_close(Some(did_close_params))?;
+                    tracing::debug!(cell_uri, "Admitted notebook cell closed");
+                } else {
+                    tracing::debug!(
+                        cell_uri,
+                        "Skipped notebook didClose for non-admitted document"
+                    );
+                }
             }
         }
 
@@ -1110,6 +1136,50 @@ mod tests {
 
         assert!(!server.documents_guard().contains_key(python_uri));
         assert!(server.notebook_store.get_notebook_for_cell(python_uri).is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn notebook_text_content_skips_non_admitted_cells() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
+        let notebook_uri = "file:///text-content-non-perl.ipynb";
+        let python_uri = "file:///text-content-non-perl.ipynb#python";
+
+        server.handle_notebook_did_open(Some(json!({
+            "notebookDocument": {
+                "uri": notebook_uri,
+                "notebookType": "jupyter-notebook",
+                "version": 1,
+                "cells": [{"kind": 2, "document": python_uri}]
+            },
+            "cellTextDocuments": [{
+                "uri": python_uri,
+                "languageId": "python",
+                "version": 1,
+                "text": "print('hi')\n"
+            }]
+        })))?;
+
+        assert!(!server.documents_guard().contains_key(python_uri));
+
+        server.handle_notebook_did_change(Some(json!({
+            "notebookDocument": {
+                "uri": notebook_uri,
+                "version": 2
+            },
+            "change": {
+                "cells": {
+                    "textContent": [{
+                        "document": python_uri,
+                        "version": 2,
+                        "changes": [{ "text": "print('bye')\n" }]
+                    }]
+                }
+            }
+        })))?;
+
+        assert!(!server.documents_guard().contains_key(python_uri));
 
         Ok(())
     }
