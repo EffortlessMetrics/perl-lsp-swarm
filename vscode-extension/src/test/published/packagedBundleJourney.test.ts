@@ -58,8 +58,7 @@ interface ArtifactHashes {
 const SOURCE_CLAIM_BOUNDARY =
   'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
 
-const CLEAN_COEXISTENCE_MARKER =
-  'No conflicts detected among the facts this product can observe.';
+const CLEAN_COEXISTENCE_MARKER = 'No conflicts detected among the facts this product can observe.';
 
 async function coexistenceReportFromCommand(): Promise<string> {
   await vscode.commands.executeCommand('perl-lsp.showCoexistenceStatus');
@@ -98,10 +97,7 @@ async function observeCoexistenceCases(
       };
       await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Workspace);
       const afterClear = await coexistenceReportFromCommand();
-      if (
-        detectedConflict.status === 'ok' &&
-        afterClear.includes(conflictClass)
-      ) {
+      if (detectedConflict.status === 'ok' && afterClear.includes(conflictClass)) {
         detectedConflict = {
           status: 'wrong_answer',
           reason: 'legacy conflict persisted after clearing injected workspace engine',
@@ -669,7 +665,6 @@ suite('Packaged VSIX bundled-server journey', function () {
         | undefined;
       activationStop = activation?.stop?.bind(activation);
       const activationCompleted = performance.now();
-      const coexistence = await observeCoexistenceCases(config, registeredConfigurationKeys);
       const bundledVersion = await bundledServerVersion(bundledServerPath);
       const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
       const document = await vscode.workspace.openTextDocument(workspaceFile);
@@ -701,6 +696,12 @@ suite('Packaged VSIX bundled-server journey', function () {
         readinessWait.status === 'ready'
           ? 'active-document readiness resolved before provider requests'
           : `provider requests were withheld: ${String(readinessWait.reason ?? 'readiness unavailable')}`;
+      const coexistence = readinessReady
+        ? await observeCoexistenceCases(config, registeredConfigurationKeys)
+        : {
+            clean: { status: 'not_proven', reason: readinessReason },
+            detectedConflict: { status: 'not_proven', reason: readinessReason },
+          };
       const readyProviders = readinessReady
         ? {
             completion: await expectedCompletion(document),
@@ -1142,14 +1143,21 @@ suite('Packaged VSIX bundled-server journey', function () {
                 },
               }
             : null;
-      const coexistenceBlockers = [
-        ...(coexistence.clean.status !== 'ok'
-          ? [{ label: 'coexistence.clean_case', result: coexistence.clean }]
-          : []),
-        ...(coexistence.detectedConflict.status !== 'ok'
-          ? [{ label: 'coexistence.detected_conflict_case', result: coexistence.detectedConflict }]
-          : []),
-      ];
+      const coexistenceBlockers = readinessReady
+        ? [
+            ...(coexistence.clean.status !== 'ok'
+              ? [{ label: 'coexistence.clean_case', result: coexistence.clean }]
+              : []),
+            ...(coexistence.detectedConflict.status !== 'ok'
+              ? [
+                  {
+                    label: 'coexistence.detected_conflict_case',
+                    result: coexistence.detectedConflict,
+                  },
+                ]
+              : []),
+          ]
+        : [];
       const productBlockers = [
         ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
         ...(activatedPathBlocker ? [activatedPathBlocker] : []),
