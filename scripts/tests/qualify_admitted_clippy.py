@@ -55,6 +55,7 @@ def verify_inputs(root, destination, request, binding):
 parser = argparse.ArgumentParser(description='Owned, offline native Clippy fail/clean qualification; retains artifacts')
 parser.add_argument('--proof-root', required=True, type=Path)
 parser.add_argument('--named-only', action='store_true', help='Run only the affected named-test pair')
+parser.add_argument('--keep-going-only', action='store_true', help='Run only the keep-going census controls')
 options = parser.parse_args()
 if not options.proof_root.is_absolute() or not options.proof_root.is_dir():
     parser.error('--proof-root must be an existing absolute owner-approved directory')
@@ -175,7 +176,7 @@ def execute(label, source, request=args):
     print(label, 'product_exit', status, 'group_absent', group_absent, 'lease_verified_released')
     return status, stderr
 
-if not options.named_only:
+if not options.named_only and not options.keep_going_only:
     failed, diagnostic = execute('lint-failure', 'pub fn witness() -> usize { let values = vec![1, 2, 3]; values.len() }\n')
     if failed != 101 or 'clippy::useless_vec' not in diagnostic:
         raise RuntimeError('Clippy-specific fail control not observed: ' + diagnostic)
@@ -190,26 +191,63 @@ if not options.named_only:
         raise RuntimeError('both normal and test library targets were not observed')
     print('REAL ADMITTED CLIPPY FAIL/CLEAN PAIR PASS; FIXTURE ONLY; native Windows NOT_PROVEN')
 
-# A real named target must retain default features and lint policy, while a
-# deliberately invalid unselected target proves Cargo did not expand selection.
-(ROOT / 'tests').mkdir()
-(ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
-named = ROOT / 'tests/named-proof.rs'
-prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'
-request = ['clippy', '-p', 'consumer', '--test', 'named-proof', '--profile', 'agent',
-           '--locked', '--offline', '--', '-D', 'warnings']
-named.write_text(prefix + '#[test]\nfn witness() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
-failed, diagnostic = execute('named-lint-failure', 'pub fn witness() -> usize { 3 }\n', request)
-if failed != 101 or 'clippy::useless_vec' not in diagnostic or 'tests/named-proof.rs' not in diagnostic:
-    raise RuntimeError('named-target lint failure not observed: ' + diagnostic)
-named.write_text(prefix + '#[test]\nfn witness() { let values = [1, 2, 3]; assert_eq!(values.len(), 3); }\n')
-passed, diagnostic = execute('named-clean', 'pub fn witness() -> usize { 3 }\n', request)
-if passed != 0:
-    raise RuntimeError('named clean control failed: ' + diagnostic)
-artifacts = [json.loads(line) for line in (BASE / 'named-clean-stdout.txt').read_text().splitlines() if line.startswith('{')]
-compiled = [item for item in artifacts if item.get('reason') == 'compiler-artifact']
-if (len(compiled) != 2 or {item['target']['name'] for item in compiled} != {'consumer', 'named-proof'}
-        or any(item['features'] != ['default', 'witness'] or item['profile']['opt_level'] != '0' for item in compiled)
-        or [item['profile']['test'] for item in compiled if item['target']['name'] == 'named-proof'] != [True]):
-    raise RuntimeError('named-target/default-features/agent-profile identity not observed')
-print('REAL NAMED TEST FAIL/CLEAN PAIR PASS; UNSELECTED TARGET EXCLUDED; FIXTURE ONLY')
+if not options.keep_going_only:
+    # A real named target must retain default features and lint policy, while a
+    # deliberately invalid unselected target proves Cargo did not expand selection.
+    (ROOT / 'tests').mkdir()
+    (ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
+    named = ROOT / 'tests/named-proof.rs'
+    prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'
+    request = ['clippy', '-p', 'consumer', '--test', 'named-proof', '--profile', 'agent',
+               '--locked', '--offline', '--', '-D', 'warnings']
+    named.write_text(prefix + '#[test]\nfn witness() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    failed, diagnostic = execute('named-lint-failure', 'pub fn witness() -> usize { 3 }\n', request)
+    if failed != 101 or 'clippy::useless_vec' not in diagnostic or 'tests/named-proof.rs' not in diagnostic:
+        raise RuntimeError('named-target lint failure not observed: ' + diagnostic)
+    named.write_text(prefix + '#[test]\nfn witness() { let values = [1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    passed, diagnostic = execute('named-clean', 'pub fn witness() -> usize { 3 }\n', request)
+    if passed != 0:
+        raise RuntimeError('named clean control failed: ' + diagnostic)
+    artifacts = [json.loads(line) for line in (BASE / 'named-clean-stdout.txt').read_text().splitlines() if line.startswith('{')]
+    compiled = [item for item in artifacts if item.get('reason') == 'compiler-artifact']
+    if (len(compiled) != 2 or {item['target']['name'] for item in compiled} != {'consumer', 'named-proof'}
+            or any(item['features'] != ['default', 'witness'] or item['profile']['opt_level'] != '0' for item in compiled)
+            or [item['profile']['test'] for item in compiled if item['target']['name'] == 'named-proof'] != [True]):
+        raise RuntimeError('named-target/default-features/agent-profile identity not observed')
+    print('REAL NAMED TEST FAIL/CLEAN PAIR PASS; UNSELECTED TARGET EXCLUDED; FIXTURE ONLY')
+
+if not options.named_only:
+    keep_going = ['clippy', '-p', 'consumer', '--all-targets', '--profile', 'agent',
+                  '--locked', '--offline', '--keep-going', '--', '-D', 'warnings']
+    (ROOT / 'tests').mkdir(exist_ok=True)
+    (ROOT / 'tests/first_fail.rs').write_text(
+        '#[test]\nfn first() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    (ROOT / 'tests/second_fail.rs').write_text(
+        '#[test]\nfn second() { let values = vec![4, 5, 6]; assert_eq!(values.len(), 3); }\n')
+    lib = 'pub fn witness() -> usize { 0 }\n'
+    failed, diagnostic = execute('keep-going-dual-lint', lib, keep_going)
+    if failed != 101:
+        raise RuntimeError('keep-going dual-lint control did not fail: ' + diagnostic)
+    if diagnostic.count('clippy::useless_vec') < 2:
+        raise RuntimeError('keep-going did not observe both independent lint targets: ' + diagnostic)
+    if 'tests/first_fail.rs' not in diagnostic or 'tests/second_fail.rs' not in diagnostic:
+        raise RuntimeError('keep-going missed an independent diagnostic-bearing target: ' + diagnostic)
+    (ROOT / 'src/lib.rs').write_text('compile_error!("prerequisite failure blocks dependents");\n')
+    (ROOT / 'tests/unvisited.rs').write_text(
+        '#[test]\nfn unvisited() { let values = vec![9, 9, 9]; assert_eq!(values.len(), 3); }\n')
+    blocked, diagnostic = execute('keep-going-prerequisite-blocked', 'ignored\n', keep_going)
+    if blocked != 101:
+        raise RuntimeError('prerequisite-blocked keep-going control did not fail: ' + diagnostic)
+    if 'tests/unvisited.rs' in diagnostic and 'clippy::useless_vec' in diagnostic.split('tests/unvisited.rs')[1][:500]:
+        raise RuntimeError('prerequisite-blocked target was reported as lint-clean/worked: ' + diagnostic)
+    named_keep_going = ['clippy', '-p', 'consumer', '--test', 'named-proof', '--profile', 'agent',
+                        '--locked', '--offline', '--keep-going', '--', '-D', 'warnings']
+    named = ROOT / 'tests/named-proof.rs'
+    prefix = '#[cfg(not(feature = "witness"))]\ncompile_error!("default feature lost");\n'
+    (ROOT / 'tests/other.rs').write_text('compile_error!("unselected target compiled");\n')
+    (ROOT / 'src/lib.rs').write_text('pub fn witness() -> usize { 3 }\n')
+    named.write_text(prefix + '#[test]\nfn witness() { let values = vec![1, 2, 3]; assert_eq!(values.len(), 3); }\n')
+    failed, diagnostic = execute('named-keep-going-lint', 'pub fn witness() -> usize { 3 }\n', named_keep_going)
+    if failed != 101 or 'clippy::useless_vec' not in diagnostic or 'tests/named-proof.rs' not in diagnostic:
+        raise RuntimeError('named keep-going lint failure not observed: ' + diagnostic)
+    print('REAL KEEP-GOING DUAL-LINT AND PREREQUISITE-BLOCKED PASS; NAMED KEEP-GOING PASS; FIXTURE ONLY')
