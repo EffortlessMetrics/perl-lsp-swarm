@@ -122,6 +122,53 @@ pub use perl_uri::{fs_path_to_uri, uri_to_fs_path};
 /// URI inspection helpers used during Index/Analyze workflows.
 pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 
+#[cfg(feature = "memory-profiling")]
+/// Controlled leak injections for memory-evidence falsifier tests.
+pub mod memory_falsifiers {
+    use super::{DocumentStore, FileFactShard, WorkspaceIndex, WorkspaceSymbol};
+    use perl_semantic_facts::{FileId, ImportSpec, PackageEdge};
+
+    /// Inject a orphaned search-index bucket for memory-evidence falsifiers.
+    pub fn leak_search_index_bucket(index: &WorkspaceIndex, key: String, symbol: WorkspaceSymbol) {
+        index.search_index.write().entry(key).or_default().push(symbol);
+    }
+
+    /// Inject a orphaned fact shard for memory-evidence falsifiers.
+    pub fn leak_fact_shard(index: &WorkspaceIndex, shard: FileFactShard) {
+        let map_key = DocumentStore::uri_key(&WorkspaceIndex::normalize_uri(&shard.source_uri));
+        index.fact_shards.write().insert(map_key, shard);
+    }
+
+    /// Inject a semantic reference row for memory-evidence falsifiers.
+    pub fn leak_semantic_reference_row(index: &WorkspaceIndex, shard: FileFactShard) {
+        index.semantic_reference_index.write().add_file(&shard);
+    }
+
+    /// Inject an import/export row for memory-evidence falsifiers.
+    pub fn leak_import_row(
+        index: &WorkspaceIndex,
+        source_uri: &str,
+        file_id: FileId,
+        import: ImportSpec,
+    ) {
+        index.semantic_import_export_index.write().add_file_imports(
+            source_uri,
+            file_id,
+            vec![import],
+        );
+    }
+
+    /// Inject a package-graph row for memory-evidence falsifiers.
+    pub fn leak_package_graph_row(
+        index: &WorkspaceIndex,
+        source_uri: &str,
+        file_id: FileId,
+        edge: PackageEdge,
+    ) {
+        index.semantic_package_graph_index.write().add_edges(source_uri, file_id, vec![edge]);
+    }
+}
+
 // ============================================================================
 // Index Lifecycle Types (Index Lifecycle v1 Specification)
 // ============================================================================
@@ -4204,73 +4251,163 @@ impl WorkspaceIndex {
     /// Only available when the `memory-profiling` feature is enabled.
     #[cfg(feature = "memory-profiling")]
     pub fn memory_snapshot(&self) -> crate::workspace::memory::MemorySnapshot {
-        use std::mem::size_of;
+        crate::workspace::memory::MemorySnapshot::capture(self)
+    }
+
+    /// Capture the versioned complete retained denominator.
+    #[cfg(feature = "memory-profiling")]
+    pub fn memory_snapshot_v2(
+        &self,
+    ) -> crate::workspace::memory_snapshot_v2::WorkspaceIndexMemorySnapshotV2 {
+        use crate::workspace::memory_snapshot_v2::WorkspaceIndexMemorySnapshotV2;
+        match self.try_memory_snapshot_v2() {
+            Ok(snapshot) => snapshot,
+            Err(error) => WorkspaceIndexMemorySnapshotV2::instrument_failed(error),
+        }
+    }
+
+    #[cfg(feature = "memory-profiling")]
+    fn try_memory_snapshot_v2(
+        &self,
+    ) -> Result<
+        crate::workspace::memory_snapshot_v2::WorkspaceIndexMemorySnapshotV2,
+        crate::workspace::memory_weight::MemoryWeightError,
+    > {
+        use crate::workspace::memory_snapshot_v2::{
+            MemoryEvidenceCompleteness, WORKSPACE_INDEX_MEMORY_SCHEMA_V2,
+            WorkspaceIndexMemorySnapshotV2, estimate_document_store, estimate_fact_shard,
+            estimate_search_index, symbol_logical_bytes,
+        };
+        use crate::workspace::memory_weight::{
+            CollectionWeight, checked_add, checked_mul, hashmap_capacity_slack, string_logical,
+            vec_capacity,
+        };
 
         let files_guard = self.files.read();
         let symbols_guard = self.symbols.read();
+        let search_guard = self.search_index.read();
         let global_refs_guard = self.global_references.read();
+        let shards_guard = self.fact_shards.read();
+        let semantic_refs = self.semantic_reference_index.read();
+        let semantic_imports = self.semantic_import_export_index.read();
+        let semantic_packages = self.semantic_package_graph_index.read();
+        let folders = self.workspace_folders.read();
+        let lifecycle = self.lifecycle_guards.lock();
 
-        // --- files map ---
-        let mut files_bytes: usize = 0;
-        let mut total_symbol_count: usize = 0;
+        let mut file_projection = CollectionWeight::empty();
+        let mut total_symbol_count = 0usize;
         for (uri_key, fi) in files_guard.iter() {
-            // key string
-            files_bytes += uri_key.len();
-            // per-symbol entries
+            file_projection.live_entries += 1;
+            file_projection.logical_bytes =
+                checked_add(file_projection.logical_bytes, string_logical(uri_key))?;
             for sym in &fi.symbols {
-                files_bytes += sym.name.len()
-                    + sym.uri.len()
-                    + sym.qualified_name.as_deref().map_or(0, str::len)
-                    + sym.documentation.as_deref().map_or(0, str::len)
-                    + sym.container_name.as_deref().map_or(0, str::len)
-                    // stack portion: kind + range + has_body + option discriminants
-                    + size_of::<WorkspaceSymbol>();
+                file_projection.logical_bytes =
+                    checked_add(file_projection.logical_bytes, symbol_logical_bytes(sym)?)?;
+                total_symbol_count += 1;
             }
-            total_symbol_count += fi.symbols.len();
-            // per-reference entries
             for (ref_name, refs) in &fi.references {
-                files_bytes += ref_name.len();
+                file_projection.logical_bytes =
+                    checked_add(file_projection.logical_bytes, string_logical(ref_name))?;
                 for r in refs {
-                    files_bytes += r.uri.len() + size_of::<SymbolReference>();
+                    file_projection.logical_bytes = checked_add(
+                        file_projection.logical_bytes,
+                        checked_add(
+                            string_logical(&r.uri),
+                            std::mem::size_of::<SymbolReference>(),
+                        )?,
+                    )?;
                 }
             }
-            // dependencies
             for dep in &fi.dependencies {
-                files_bytes += dep.len();
+                file_projection.logical_bytes =
+                    checked_add(file_projection.logical_bytes, string_logical(dep))?;
             }
-            // content hash (u64) + vec/hashset capacity overhead (rough)
-            files_bytes += size_of::<u64>();
+            file_projection.logical_bytes =
+                checked_add(file_projection.logical_bytes, std::mem::size_of::<u64>())?;
         }
+        file_projection.capacity_bytes = hashmap_capacity_slack(&*files_guard)?;
 
-        // --- global symbols map ---
-        let mut symbols_bytes: usize = 0;
+        let mut definition_symbols = CollectionWeight::empty();
+        definition_symbols.capacity_bytes = hashmap_capacity_slack(&*symbols_guard)?;
         for (qname, candidates) in symbols_guard.iter() {
-            symbols_bytes += qname.len();
+            definition_symbols.live_entries += 1;
+            definition_symbols.logical_bytes =
+                checked_add(definition_symbols.logical_bytes, string_logical(qname))?;
             for candidate in candidates {
-                symbols_bytes += candidate.location.uri.len() + size_of::<Location>();
+                definition_symbols.logical_bytes = checked_add(
+                    definition_symbols.logical_bytes,
+                    checked_add(
+                        string_logical(&candidate.location.uri),
+                        std::mem::size_of::<Location>(),
+                    )?,
+                )?;
             }
         }
 
-        // --- global references map ---
-        let mut global_refs_bytes: usize = 0;
+        let search_index = estimate_search_index(&search_guard)?;
+
+        let mut global_references = CollectionWeight::empty();
+        global_references.capacity_bytes = hashmap_capacity_slack(&*global_refs_guard)?;
         for (sym_name, refs) in global_refs_guard.iter() {
-            global_refs_bytes += sym_name.len();
+            global_references.live_entries += 1;
+            global_references.logical_bytes =
+                checked_add(global_references.logical_bytes, string_logical(sym_name))?;
             for r in refs {
-                global_refs_bytes += r.uri.len() + size_of::<SymbolReference>();
+                global_references.logical_bytes = checked_add(
+                    global_references.logical_bytes,
+                    checked_add(string_logical(&r.uri), std::mem::size_of::<SymbolReference>())?,
+                )?;
             }
         }
 
-        // --- document store ---
-        let document_store_bytes = self.document_store.total_text_bytes();
+        let mut fact_shards = CollectionWeight::empty();
+        fact_shards.capacity_bytes = hashmap_capacity_slack(&*shards_guard)?;
+        for shard in shards_guard.values() {
+            fact_shards.live_entries += 1;
+            fact_shards.logical_bytes =
+                checked_add(fact_shards.logical_bytes, estimate_fact_shard(shard)?)?;
+        }
 
-        crate::workspace::memory::MemorySnapshot {
+        let semantic_reference_index = semantic_refs.memory_retained_weight()?;
+        let semantic_import_export_index = semantic_imports.memory_retained_weight()?;
+        let semantic_package_graph_index = semantic_packages.memory_retained_weight()?;
+
+        let (document_source, document_line_geometry, document_map_capacity) =
+            estimate_document_store(&self.document_store)?;
+
+        let mut workspace_folders = CollectionWeight::empty();
+        workspace_folders.live_entries = folders.len();
+        workspace_folders.capacity_bytes = vec_capacity(&folders)?;
+        for folder in folders.iter() {
+            workspace_folders.logical_bytes =
+                checked_add(workspace_folders.logical_bytes, string_logical(folder))?;
+        }
+
+        let mut lifecycle_guards = CollectionWeight::empty();
+        lifecycle_guards.live_entries = lifecycle.len();
+        lifecycle_guards.capacity_bytes = hashmap_capacity_slack(&*lifecycle)?;
+        const GUARD_ENTRY_MODEL_BYTES: usize = 64;
+        lifecycle_guards.logical_bytes = checked_mul(lifecycle.len(), GUARD_ENTRY_MODEL_BYTES)?;
+
+        Ok(WorkspaceIndexMemorySnapshotV2 {
+            schema_id: WORKSPACE_INDEX_MEMORY_SCHEMA_V2,
+            completeness: MemoryEvidenceCompleteness::Complete,
             file_count: files_guard.len(),
             symbol_count: total_symbol_count,
-            files_bytes,
-            symbols_bytes,
-            global_refs_bytes,
-            document_store_bytes,
-        }
+            file_projection,
+            definition_symbols,
+            search_index,
+            global_references,
+            fact_shards,
+            semantic_reference_index,
+            semantic_import_export_index,
+            semantic_package_graph_index,
+            document_source,
+            document_line_geometry,
+            document_map_capacity,
+            workspace_folders,
+            lifecycle_guards,
+        })
     }
 
     /// Check if the workspace index has symbols (soft readiness check)

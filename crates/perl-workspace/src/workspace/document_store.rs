@@ -216,6 +216,56 @@ impl DocumentStore {
         };
         docs.values().map(|d| d.text().len()).sum()
     }
+
+    /// Split document-store retained weight: source text, line geometry, and map capacity.
+    #[cfg(feature = "memory-profiling")]
+    pub fn memory_retained_weight(
+        &self,
+    ) -> Result<
+        (
+            crate::workspace::memory_weight::CollectionWeight,
+            crate::workspace::memory_weight::CollectionWeight,
+            crate::workspace::memory_weight::CollectionWeight,
+        ),
+        crate::workspace::memory_weight::MemoryWeightError,
+    > {
+        use crate::workspace::memory_weight::{
+            CollectionWeight, MemoryWeightError, checked_add, hashmap_capacity_slack,
+            string_logical,
+        };
+
+        let Ok(docs) = self.documents.read() else {
+            return Err(MemoryWeightError::Overflow);
+        };
+
+        let mut source = CollectionWeight::empty();
+        let mut geometry = CollectionWeight::empty();
+        let map_capacity = CollectionWeight {
+            live_entries: docs.len(),
+            logical_bytes: 0,
+            capacity_bytes: hashmap_capacity_slack(&*docs)?,
+        };
+
+        for (key, doc) in docs.iter() {
+            source.live_entries += 1;
+            source.logical_bytes = checked_add(source.logical_bytes, string_logical(key))?;
+            source.logical_bytes = checked_add(source.logical_bytes, string_logical(&doc.uri))?;
+
+            let components = doc.line_index.retained_weight_components();
+            source.logical_bytes =
+                checked_add(source.logical_bytes, components.source_logical_bytes)?;
+            source.capacity_bytes =
+                checked_add(source.capacity_bytes, components.source_capacity_bytes)?;
+
+            geometry.live_entries += 1;
+            geometry.logical_bytes =
+                checked_add(geometry.logical_bytes, components.line_starts_logical_bytes)?;
+            geometry.capacity_bytes =
+                checked_add(geometry.capacity_bytes, components.line_starts_capacity_bytes)?;
+        }
+
+        Ok((source, geometry, map_capacity))
+    }
 }
 
 impl Default for DocumentStore {

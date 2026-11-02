@@ -198,6 +198,86 @@ impl ImportExportIndex {
     pub fn all_imports(&self) -> impl Iterator<Item = (FileId, &[ImportSpec])> {
         self.imports_by_file.iter().map(|(&fid, specs)| (fid, specs.as_slice()))
     }
+
+    /// Conservative retained logical/capacity weight for memory evidence.
+    #[cfg(feature = "memory-profiling")]
+    pub(crate) fn memory_retained_weight(
+        &self,
+    ) -> Result<
+        crate::workspace::memory_weight::CollectionWeight,
+        crate::workspace::memory_weight::MemoryWeightError,
+    > {
+        use crate::workspace::memory_weight::{
+            CollectionWeight, checked_add, hashmap_capacity_slack, string_logical, vec_capacity,
+            vec_logical,
+        };
+
+        let mut logical = 0usize;
+        let mut capacity = 0usize;
+        let mut live_entries = 0usize;
+
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.imports_by_file)?)?;
+        for (file_id, imports) in &self.imports_by_file {
+            logical = checked_add(logical, std::mem::size_of_val(file_id))?;
+            logical = checked_add(logical, vec_logical(imports.as_slice())?)?;
+            capacity = checked_add(capacity, vec_capacity(imports)?)?;
+            for spec in imports {
+                logical = checked_add(logical, string_logical(&spec.module))?;
+                live_entries += 1;
+            }
+        }
+
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.exports_by_module)?)?;
+        for (key, exports) in &self.exports_by_module {
+            logical = checked_add(logical, string_logical(key))?;
+            logical = checked_add(logical, std::mem::size_of_val(exports))?;
+            live_entries += 1;
+        }
+
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.file_uri_to_id)?)?;
+        for (key, file_id) in &self.file_uri_to_id {
+            logical = checked_add(logical, string_logical(key))?;
+            logical = checked_add(logical, std::mem::size_of_val(file_id))?;
+            live_entries += 1;
+        }
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.module_to_source_uri)?)?;
+        for (key, value) in &self.module_to_source_uri {
+            logical = checked_add(logical, string_logical(key))?;
+            logical = checked_add(logical, string_logical(value))?;
+            live_entries += 1;
+        }
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.use_lib_uri_to_id)?)?;
+        for (key, file_id) in &self.use_lib_uri_to_id {
+            logical = checked_add(logical, string_logical(key))?;
+            logical = checked_add(logical, std::mem::size_of_val(file_id))?;
+            live_entries += 1;
+        }
+
+        capacity = checked_add(capacity, hashmap_capacity_slack(&self.use_lib_by_file)?)?;
+        for (file_id, facts) in &self.use_lib_by_file {
+            logical = checked_add(logical, std::mem::size_of_val(file_id))?;
+            logical = checked_add(logical, vec_logical(facts.as_slice())?)?;
+            capacity = checked_add(capacity, vec_capacity(facts)?)?;
+            for fact in facts {
+                logical = checked_add(logical, string_logical(&fact.path))?;
+                live_entries += 1;
+            }
+        }
+
+        for exports in self.exports_by_module.values() {
+            for name in exports.default_exports.iter().chain(exports.optional_exports.iter()) {
+                logical = checked_add(logical, string_logical(name))?;
+            }
+            for tag in &exports.tags {
+                logical = checked_add(logical, string_logical(&tag.name))?;
+                for member in &tag.members {
+                    logical = checked_add(logical, string_logical(member))?;
+                }
+            }
+        }
+
+        Ok(CollectionWeight { live_entries, logical_bytes: logical, capacity_bytes: capacity })
+    }
 }
 
 /// Check whether an `ImportSpec` explicitly names a given symbol.
