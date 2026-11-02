@@ -262,8 +262,23 @@ fn perl_oracle_available() -> bool {
         .unwrap_or(false)
 }
 
-fn perl_compile(source: &str) -> Result<Option<bool>, String> {
+fn pinned_oracle_ready() -> Result<Option<()>, String> {
     if !perl_oracle_available() {
+        return Ok(None);
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let output = Command::new("perl")
+        .args(["-V:version"])
+        .env_clear()
+        .env("PATH", path)
+        .output()
+        .map_err(|error| format!("reading perl version: {error}"))?;
+    let version = String::from_utf8_lossy(&output.stdout);
+    if version.contains(PERL_VERSION_PIN) { Ok(Some(())) } else { Ok(None) }
+}
+
+fn perl_compile(source: &str) -> Result<Option<bool>, String> {
+    if pinned_oracle_ready()?.is_none() {
         return Ok(None);
     }
     let path = std::env::var("PATH").unwrap_or_default();
@@ -280,6 +295,53 @@ fn perl_compile(source: &str) -> Result<Option<bool>, String> {
     Ok(Some(output.status.success()))
 }
 
+fn perl_deparse(source: &str) -> Result<Option<String>, String> {
+    if pinned_oracle_ready()?.is_none() {
+        return Ok(None);
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let output = Command::new("perl")
+        .args(["-MO=Deparse,-p", "-e", source])
+        .env_clear()
+        .env("PATH", path)
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .env_remove("PERL5LIB")
+        .env_remove("PERL5OPT")
+        .output()
+        .map_err(|error| format!("spawning perl deparse oracle: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "deparse oracle failed for {source:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+}
+
+fn assert_output_handle_deparse(row: &MatrixRow) -> Result<(), String> {
+    let RowDisposition::Proven(ParserRole::OutputIndirectHandle { method, .. }) = row.disposition
+    else {
+        return Ok(());
+    };
+    let Some(deparse) = perl_deparse(row.source)? else {
+        return Ok(());
+    };
+    if deparse.contains(&format!("->{method}")) {
+        return Err(format!(
+            "{}: deparse oracle shows method-call syntax, not builtin output handle: {deparse:?}",
+            row.id
+        ));
+    }
+    if !deparse.contains(method) {
+        return Err(format!(
+            "{}: deparse oracle lost builtin operator {method:?}: {deparse:?}",
+            row.id
+        ));
+    }
+    Ok(())
+}
+
 fn assert_oracle(row: &MatrixRow) -> Result<(), String> {
     match row.oracle {
         OracleDisposition::CompileAccept | OracleDisposition::CompileReject => {
@@ -293,6 +355,7 @@ fn assert_oracle(row: &MatrixRow) -> Result<(), String> {
                     row.id, row.source
                 ));
             }
+            assert_output_handle_deparse(row)?;
             Ok(())
         }
     }
@@ -324,7 +387,7 @@ const MATRIX: &[MatrixRow] = &[
     MatrixRow {
         id: "output-say-scalar-handle",
         family: "output",
-        source: "say $fh 1;",
+        source: "use feature 'say'; say $fh 1;",
         oracle: OracleDisposition::CompileAccept,
         disposition: RowDisposition::Proven(ParserRole::OutputIndirectHandle {
             method: "say",
@@ -821,18 +884,8 @@ fn production_split_close_try_matches_ordinary_call_not_indirect() -> R {
 
 #[test]
 fn perl_version_pin_is_recorded_when_oracle_runs() -> R {
-    let Some(_) = perl_compile("1;")? else {
+    let Some(()) = pinned_oracle_ready()? else {
         return Ok(());
     };
-    let output = Command::new("perl")
-        .args(["-V:version"])
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .output()
-        .map_err(|error| format!("reading perl version: {error}"))?;
-    let version = String::from_utf8_lossy(&output.stdout);
-    if !version.contains(PERL_VERSION_PIN) {
-        return Ok(());
-    }
     Ok(())
 }
