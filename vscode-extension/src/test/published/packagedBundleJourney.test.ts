@@ -76,7 +76,7 @@ async function observeCoexistenceCases(
     status: 'not_proven',
     reason: 'perl-lsp.critic.engine is not registered on this artifact',
   };
-  const priorEngine = config.inspect<string>('critic.engine')?.workspaceValue;
+  const priorEngine = config.inspect<string>('critic.engine')?.globalValue;
   try {
     const cleanReport = await coexistenceReportFromCommand();
     clean = {
@@ -84,7 +84,7 @@ async function observeCoexistenceCases(
       marker: CLEAN_COEXISTENCE_MARKER,
     };
     if (registeredConfigurationKeys.has('perl-lsp.critic.engine')) {
-      await config.update('critic.engine', 'legacy', vscode.ConfigurationTarget.Workspace);
+      await config.update('critic.engine', 'legacy', vscode.ConfigurationTarget.Global);
       const conflictReport = await coexistenceReportFromCommand();
       const conflictClass = 'legacy_first_party_critic_setting_active';
       const classPresent = conflictReport.includes(conflictClass);
@@ -93,14 +93,14 @@ async function observeCoexistenceCases(
         status: classPresent && scopePresent ? 'ok' : 'wrong_answer',
         expected_class: conflictClass,
         expected_scope: 'user',
-        injection: 'workspace perl-lsp.critic.engine=legacy',
+        injection: 'user perl-lsp.critic.engine=legacy',
       };
-      await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Workspace);
+      await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Global);
       const afterClear = await coexistenceReportFromCommand();
       if (detectedConflict.status === 'ok' && afterClear.includes(conflictClass)) {
         detectedConflict = {
           status: 'wrong_answer',
-          reason: 'legacy conflict persisted after clearing injected workspace engine',
+          reason: 'legacy conflict persisted after clearing injected user engine',
         };
       }
     }
@@ -116,9 +116,9 @@ async function observeCoexistenceCases(
   } finally {
     if (registeredConfigurationKeys.has('perl-lsp.critic.engine')) {
       if (priorEngine === undefined) {
-        await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Workspace);
+        await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Global);
       } else {
-        await config.update('critic.engine', priorEngine, vscode.ConfigurationTarget.Workspace);
+        await config.update('critic.engine', priorEngine, vscode.ConfigurationTarget.Global);
       }
     }
   }
