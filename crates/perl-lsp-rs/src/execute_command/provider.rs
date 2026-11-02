@@ -84,9 +84,11 @@ pub struct ExecuteCommandProvider {
     workspace_config: Option<WorkspaceConfig>,
     /// Configured critic engine for `perl.runCritic`.
     ///
-    /// Defaults to [`CriticEngine::Native`]. The external (legacy `perlcritic`)
-    /// analyzer runs only when this is [`CriticEngine::Legacy`] — merely having
-    /// `perlcritic` on `PATH` must not change the default behavior.
+    /// Defaults to [`CriticEngine::Native`]. [`CriticEngine::Legacy`] is still
+    /// stored so the public command can refuse retired external aliases before
+    /// any PATH lookup (#18377). Merely having `perlcritic` on `PATH` must not
+    /// change the default. The deprecated [`Self::run_critic`] wrapper retains
+    /// the #16550 spawn/fallback contract.
     critic_engine: CriticEngine,
     /// Native critic rule configuration for `perl.runCritic` when the engine is
     /// [`CriticEngine::Native`]. Mirrors the `ServerConfig` values the editor's
@@ -258,9 +260,10 @@ impl ExecuteCommandProvider {
 
     /// Set the critic engine used by `perl.runCritic`.
     ///
-    /// Defaults to [`CriticEngine::Native`]. Pass [`CriticEngine::Legacy`] to
-    /// route `perl.runCritic` through the external `perlcritic` analyzer when it
-    /// is available on `PATH`.
+    /// Defaults to [`CriticEngine::Native`]. [`CriticEngine::Legacy`] is still
+    /// accepted so the public command can refuse retired external aliases
+    /// before any PATH lookup (#18377). The deprecated [`Self::run_critic`]
+    /// wrapper retains the #16550 spawn/fallback contract.
     pub fn with_critic_engine(mut self, engine: CriticEngine) -> Self {
         self.critic_engine = engine;
         self
