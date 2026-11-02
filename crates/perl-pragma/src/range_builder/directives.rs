@@ -1,8 +1,8 @@
 use crate::{
-    PragmaState, add_disabled_warning_category, admitted_vstring_version,
-    apply_builtin_imports_if_changed, apply_feature_state, conditional_pragma_target,
-    enable_effective_version_semantics, looks_like_version_literal, normalized_pragma_token,
-    parse_perl_version, pragma_arg_items,
+    PragmaState, add_disabled_warning_category, add_enabled_warning_category,
+    admitted_vstring_version, apply_builtin_imports_if_changed, apply_feature_state,
+    conditional_pragma_target, enable_effective_version_semantics, looks_like_version_literal,
+    normalized_pragma_token, parse_perl_version, pragma_arg_items,
 };
 use std::ops::Range;
 
@@ -268,27 +268,91 @@ fn apply_use_warnings(
 }
 
 fn enable_warnings_categories(args: &[String], state: &mut PragmaState) {
-    state.warnings = true;
-
     if args.is_empty() {
-        state.disabled_warning_categories.clear();
+        activate_global_warnings(state);
+        return;
+    }
+
+    let mut categories = Vec::new();
+    let mut requests_global = false;
+    let mut unsupported_shape = false;
+
+    for arg in args {
+        if warning_arg_shape_is_unsupported(arg) {
+            unsupported_shape = true;
+        }
+        for category in pragma_arg_items(arg) {
+            match category.as_str() {
+                "all" => requests_global = true,
+                "FATAL" | "NONFATAL" | "fatal" | "nonfatal" => unsupported_shape = true,
+                "" => {}
+                _ => categories.push(category),
+            }
+        }
+    }
+
+    if unsupported_shape && !requests_global {
+        return;
+    }
+
+    if requests_global {
+        activate_global_warnings(state);
+        return;
+    }
+
+    if categories.is_empty() {
+        if !unsupported_shape {
+            activate_global_warnings(state);
+        }
+        return;
+    }
+
+    if state.warnings {
+        for category in categories {
+            state.disabled_warning_categories.retain(|disabled| disabled != &category);
+        }
+        return;
+    }
+
+    for category in categories {
+        add_enabled_warning_category(state, &category);
+    }
+}
+
+fn activate_global_warnings(state: &mut PragmaState) {
+    state.warnings = true;
+    state.disabled_warning_categories.clear();
+    state.enabled_warning_categories.clear();
+}
+
+fn warning_arg_shape_is_unsupported(arg: &str) -> bool {
+    let trimmed = normalized_pragma_token(arg);
+    trimmed.contains("=>")
+}
+
+fn disable_warnings_categories(args: &[String], state: &mut PragmaState) {
+    if args.is_empty() {
+        deactivate_all_warnings(state);
         return;
     }
 
     for arg in args {
         for category in pragma_arg_items(arg) {
             if category == "all" {
-                // `use warnings 'all'` re-enables every category, exactly like a
-                // bare `use warnings`. Clearing the disabled set keeps the list
-                // accurate so a later per-category query does not read a stale
-                // `disabled_warning_categories` entry as still disabled after the
-                // blanket re-enable.
-                state.disabled_warning_categories.clear();
+                deactivate_all_warnings(state);
+            } else if state.warnings {
+                add_disabled_warning_category(state, &category);
             } else {
-                state.disabled_warning_categories.retain(|disabled| disabled != &category);
+                state.enabled_warning_categories.retain(|enabled| enabled != &category);
             }
         }
     }
+}
+
+fn deactivate_all_warnings(state: &mut PragmaState) {
+    state.warnings = false;
+    state.disabled_warning_categories.clear();
+    state.enabled_warning_categories.clear();
 }
 
 fn apply_no_warnings(
@@ -299,30 +363,20 @@ fn apply_no_warnings(
 ) {
     let warnings_before = state.warnings;
     let had_disabled_before = !state.disabled_warning_categories.is_empty();
-    let before = state.disabled_warning_categories.len();
+    let had_enabled_before = !state.enabled_warning_categories.is_empty();
+    let before_disabled = state.disabled_warning_categories.len();
+    let before_enabled = state.enabled_warning_categories.len();
     disable_warnings_categories(args, state);
 
     let changed = if args.is_empty() {
-        warnings_before || had_disabled_before
+        warnings_before || had_disabled_before || had_enabled_before
     } else {
-        state.disabled_warning_categories.len() != before
+        state.warnings != warnings_before
+            || state.disabled_warning_categories.len() != before_disabled
+            || state.enabled_warning_categories.len() != before_enabled
     };
     if changed {
         push_state(range, state, ranges);
-    }
-}
-
-fn disable_warnings_categories(args: &[String], state: &mut PragmaState) {
-    if args.is_empty() {
-        state.warnings = false;
-        state.disabled_warning_categories.clear();
-        return;
-    }
-
-    for arg in args {
-        for category in pragma_arg_items(arg) {
-            add_disabled_warning_category(state, &category);
-        }
     }
 }
 
