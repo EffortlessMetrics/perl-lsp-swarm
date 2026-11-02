@@ -2,6 +2,7 @@
 
 #![allow(deprecated, reason = "tests intentionally exercise deprecated legacy workflow facades")]
 
+use perl_tdd_support::must_err;
 use perl_tdd_support::tdd_workflow::{
     EXECUTION_UNSUPPORTED_PHASE, LEGACY_TDD_WORKFLOW_DEPRECATION, TddConfig, TddConfigError,
     TddWorkflow, WorkflowState, read_tdd_config, read_tdd_config_with_diagnostics,
@@ -10,16 +11,16 @@ use std::path::PathBuf;
 
 #[test]
 fn malformed_tdd_config_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-    let err = read_tdd_config(r#"{"coverage_threshold":"not-a-number"}"#).unwrap_err();
+    let err = must_err(read_tdd_config(r#"{"coverage_threshold":"not-a-number"}"#));
     assert!(matches!(err, TddConfigError::Parse(_)));
 
-    let err = read_tdd_config(r#"{"coverage_threshold": -1.0}"#).unwrap_err();
+    let err = must_err(read_tdd_config(r#"{"coverage_threshold": -1.0}"#));
     assert!(matches!(err, TddConfigError::InvalidCoverageThreshold));
 
-    let err = read_tdd_config(r#"{"coverage_treshold": 90.0}"#).unwrap_err();
+    let err = must_err(read_tdd_config(r#"{"coverage_treshold": 90.0}"#));
     assert!(matches!(err, TddConfigError::Parse(_)));
 
-    let err = read_tdd_config(r#"{"test_framework": ""}"#).unwrap_err();
+    let err = must_err(read_tdd_config(r#"{"test_framework": ""}"#));
     assert!(matches!(err, TddConfigError::EmptyTestFramework));
     Ok(())
 }

@@ -789,11 +789,12 @@ mod tests {
     use super::*;
     use crate::ast::NodeKind;
     use crate::ast::SourceLocation;
+    use crate::must;
 
     #[test]
     fn test_tdd_workflow_cycle() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config).expect("default config validates");
+        let mut workflow = must(TddWorkflow::new(config));
 
         // Start a new cycle
         let result = workflow.start_cycle("calculate_sum");
@@ -805,7 +806,7 @@ mod tests {
     #[test]
     fn test_generate_tests() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config).expect("default config validates");
+        let workflow = must(TddWorkflow::new(config));
 
         let ast = Node::new(
             NodeKind::Subroutine {
@@ -830,7 +831,7 @@ mod tests {
     #[test]
     fn test_coverage_tracking() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config).expect("default config validates");
+        let mut workflow = must(TddWorkflow::new(config));
 
         let coverage = vec![
             LineCoverage { line: 1, hits: 5, covered: true },
@@ -849,7 +850,7 @@ mod tests {
     fn test_coverage_resets_to_zero_when_all_inputs_empty() -> Result<(), Box<dyn std::error::Error>>
     {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config).expect("default config validates");
+        let mut workflow = must(TddWorkflow::new(config));
 
         workflow.update_coverage(
             PathBuf::from("a.pl"),
@@ -867,7 +868,7 @@ mod tests {
     #[test]
     fn test_refactoring_suggestions() {
         let config = TddConfig::default();
-        let mut workflow = TddWorkflow::new(config).expect("default config validates");
+        let mut workflow = must(TddWorkflow::new(config));
 
         // Create a subroutine with 8 parameters to trigger TooManyParameters suggestion
         let parameters: Vec<Node> = (0..8)
@@ -919,7 +920,7 @@ mod tests {
     #[test]
     fn test_specific_test_generation() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config).expect("default config validates");
+        let workflow = must(TddWorkflow::new(config));
 
         let test = workflow.generate_test_for_function(
             "validate_email",
@@ -935,7 +936,7 @@ mod tests {
     #[test]
     fn test_edge_case_generation_preserves_signature_arity() {
         let config = TddConfig::default();
-        let workflow = TddWorkflow::new(config).expect("default config validates");
+        let workflow = must(TddWorkflow::new(config));
 
         let test = workflow.generate_test_for_function(
             "validate_contact",
