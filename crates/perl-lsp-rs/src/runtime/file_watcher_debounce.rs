@@ -702,6 +702,19 @@ impl FileWatcherDebouncer {
             .is_none_or(|handles| handles.intake.is_finished() && handles.dispatcher.is_finished())
     }
 
+    /// Whether an intake or dispatcher worker is still running on this thread.
+    ///
+    /// Same self-drop settlement seam as [`DiagnosticDebouncer::runs_on_worker_thread`]
+    /// (#8088).
+    pub(crate) fn runs_on_worker_thread(&self) -> bool {
+        let self_id = thread::current().id();
+        self.workers.lock().as_ref().is_some_and(|handles| {
+            (!handles.intake.is_finished() && handles.intake.thread().id() == self_id)
+                || (!handles.dispatcher.is_finished()
+                    && handles.dispatcher.thread().id() == self_id)
+        })
+    }
+
     /// Stop intake and join both workers. Idempotent; invoked from `Drop`.
     ///
     /// Actual teardown policy: intake stops first; whatever is still pending

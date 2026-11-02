@@ -542,6 +542,8 @@ impl LspServer {
 
 impl Drop for LspServer {
     fn drop(&mut self) {
+        self.runtime_services.settle_and_report_on_server_drop();
+
         let outbound = std::mem::replace(&mut self.outbound, outbound::closed_sender());
         drop(outbound);
 
