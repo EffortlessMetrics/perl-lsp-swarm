@@ -163,7 +163,7 @@ policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348). A job-level skip leaves GitHub expecting this name; diagnose with scripts/ci/detect_required_check_registration.py (#16469)."
 
 [[checks]]
 name = "Conflict marker check"
@@ -177,7 +177,7 @@ policy_role = "required"
 applicability = "conditional"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348)."
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge, bound to the GitHub Actions integration (check-run read-back on main PR heads observed app.id 15368 for this context); workflow prerequisites control when the job is selected (#15348). A job-level skip leaves GitHub expecting this name; diagnose with scripts/ci/detect_required_check_registration.py (#16469)."
 
 [[checks]]
 name = "validate-title"
