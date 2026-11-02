@@ -174,7 +174,7 @@ function buildFilenameIndex(): ReadonlyMap<string, DocumentFamilyRow> {
 }
 
 export interface DocumentFamilyInput {
-  readonly uri: { readonly scheme?: string; readonly fsPath?: string };
+  readonly uri?: { readonly scheme?: string; readonly fsPath?: string; readonly toString?: () => string };
   readonly languageId: string;
   readonly fileName?: string;
 }
@@ -188,7 +188,7 @@ function manifestAssociatedFilename(fileName: string): DocumentFamilyRow | undef
  * not language ID alone (#14450).
  */
 function documentUriScheme(document: DocumentFamilyInput): string {
-  const scheme = document.uri.scheme;
+  const scheme = document.uri?.scheme;
   return scheme && scheme.length > 0 ? scheme : 'file';
 }
 
@@ -197,11 +197,14 @@ function documentFileName(document: DocumentFamilyInput): string {
   if (explicit.length > 0) {
     return explicit;
   }
-  const fsPath = document.uri.fsPath ?? '';
+  const fsPath = document.uri?.fsPath ?? '';
   if (fsPath.length > 0) {
     return path.basename(fsPath);
   }
-  const uriText = (document.uri as { toString?: () => string }).toString?.();
+  let uriText: string | undefined;
+  if (document.uri !== undefined && typeof document.uri.toString === 'function') {
+    uriText = document.uri.toString();
+  }
   if (uriText?.startsWith('file://')) {
     try {
       return path.basename(decodeURIComponent(uriText.replace(/^file:\/\//, '')));
