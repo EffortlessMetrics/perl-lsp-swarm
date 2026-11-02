@@ -51,14 +51,14 @@ is pass-permitting. Adapters must construct every load-bearing field explicitly.
 
 | ID | Location | Acceptance criterion | Status on `main` |
 |----|----------|----------------------|------------------|
-| WP-1 | `xtask/src/writer_preflight/decision.rs` — resume/mutate with empty worktree map | `evaluate_registration_conflicts` refuses when `branch_matches == 0` for non-Create operations | Fixed; regression: `resume_or_mutate_with_unregistered_candidate_refuses` |
-| WP-2 | `xtask/src/writer_preflight/observation.rs` — `WorkingTreeDisposition` | No `Default` derive; `unique_work_at_risk` must be set explicitly | Fixed; comment at type + contract test |
-| WP-3 | `xtask/src/tasks/writer_admission.rs` — `compute_guidance` tri-state | Returns `Some` only when exactly one worktree matches | Fixed; bin-side witness retained |
-| CO-1 | `xtask/src/authority_transfer_closeout.rs` — `subject_matches_candidate` | Cross-checked against `executed_against_sha` vs `request.candidate.head_sha` | Partial bind; regression: `controls_executed_elsewhere_cannot_claim_subject_alignment` |
-| CO-2 | Same file — `red_before_evidence`, `passes_only_intended_implementation` | Required true for load-bearing controls; future: bind to executed proof receipts | Shape gate only; tracked in #14294 |
-| CO-3 | Same file — artifact digest binds | Recomputed SHA-256 of supplied bodies vs bound digests | Fixed; `bind_artifacts`, `evaluated_profile_must_be_the_digest_bound_artifact` |
+| WP-1 | `xtask/src/writer_preflight/decision.rs:619` — resume/mutate with empty worktree map | `evaluate_registration_conflicts` refuses when `branch_matches == 0` for non-Create operations | Fixed; regression: `resume_or_mutate_with_unregistered_candidate_refuses` |
+| WP-2 | `xtask/src/writer_preflight/observation.rs:142–148` — `WorkingTreeDisposition` | Default-impl rule: no `Default` derive/impl; fields set explicitly (see type comment) | Type comment on `main`; contract test lands with this ADR |
+| WP-3 | `xtask/src/tasks/writer_admission.rs:854–859` — `compute_guidance` tri-state | Returns `Some` only when exactly one worktree matches | Fixed; bin-side witness retained |
+| CO-1 | `xtask/src/authority_transfer_closeout.rs:296`, `authority_transfer_closeout.rs:1046` — `subject_matches_candidate` | Cross-checked against `executed_against_sha` vs `request.candidate.head_sha` | Partial bind; regression: `controls_executed_elsewhere_cannot_claim_subject_alignment` |
+| CO-2 | Same file `:292–294` — `red_before_evidence`, `passes_only_intended_implementation` | Required true for load-bearing controls; future: bind to executed proof receipts | Shape gate only; tracked in #14294 |
+| CO-3 | `xtask/src/authority_transfer_closeout.rs:630` — artifact digest binds | Recomputed SHA-256 of supplied bodies vs bound digests | Fixed; `bind_artifacts`, `evaluated_profile_must_be_the_digest_bound_artifact` |
 | CO-4 | Same file — wave-1 sites (digest case, packet subject, forbidden surface prefix) | Typed results with independent binds/tests | Fixed; see module tests |
-| CO-5 | Same file — `LiveCandidateState` vs `observation_digest` | Pairwise consistency enforced in `validate_request` | Read in validation; tracked in #14294 for full evidence path |
+| CO-5 | Same file `:319–320`, `:578` — `LiveCandidateState` vs `observation_digest` | Pairwise consistency enforced in `validate_request` | Read in validation; tracked in #14294 for full evidence path |
 
 Remaining closeout fields without full independent paths are owned by #14294.
 This ADR does not claim that issue is closed.
@@ -67,10 +67,11 @@ This ADR does not claim that issue is closed.
 
 - New safety-bearing booleans need an evidence plan in the PR body or adjacent
   documentation.
-- `xtask/AGENTS.md` restates the inventory and points agents at the regression
-  tests that pin fixed instances.
+- `xtask/AGENTS.md` lists pinned regression instances and points agents at their
+  regression tests (full inventory lives in this ADR).
 - Machine contract tests in `xtask/tests/safety_bearing_boolean_contract.rs`
-  guard the documented inventory and key regression test names.
+  check ADR headings, inventory IDs, location anchors, and key regression test
+  names.
 
 ## Follow-up
 

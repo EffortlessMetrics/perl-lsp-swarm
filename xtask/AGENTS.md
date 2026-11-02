@@ -20,7 +20,7 @@ or documenting why syntactic validation suffices.
 |----------|-------|
 | Writer preflight empty worktree map | `writer_preflight::tests::resume_or_mutate_with_unregistered_candidate_refuses` |
 | `WorkingTreeDisposition` without `Default` | `safety_bearing_boolean_contract` + type comment in `observation.rs` |
-| Closeout control head alignment | `authority_transfer_closeout::tests::controls_executed_elsewhere_cannot_claim_subject_alignment` |
-| Closeout digest binds | `evaluated_profile_must_be_the_digest_bound_artifact`, `bind_artifacts` tests |
+| Closeout control head alignment (partial bind; see PLSP-ADR-0009 CO-1) | `authority_transfer_closeout::tests::controls_executed_elsewhere_cannot_claim_subject_alignment` |
+| Closeout digest binds | `evaluated_profile_must_be_the_digest_bound_artifact`, `swapped_packets_with_recomputed_digests_stay_non_green` |
 
 Open closeout gaps: [#14294](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14294).

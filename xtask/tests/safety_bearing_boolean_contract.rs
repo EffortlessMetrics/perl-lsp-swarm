@@ -24,9 +24,33 @@ fn adr_documents_independent_evidence_principle() {
         "Review gate",
         "Known instances (inventory)",
         "WP-1",
+        "WP-2",
+        "WP-3",
         "CO-1",
+        "CO-2",
+        "CO-3",
+        "CO-4",
+        "CO-5",
     ] {
         assert!(adr.contains(needle), "ADR missing section or instance {needle}");
+    }
+}
+
+#[test]
+fn adr_inventory_anchors_file_paths_and_line_refs() {
+    let adr = read("docs/adr/PLSP-ADR-0009-safety-bearing-boolean-evidence.md");
+    for anchor in [
+        "writer_preflight/decision.rs:619",
+        "writer_preflight/observation.rs:142",
+        "tasks/writer_admission.rs:854",
+        "authority_transfer_closeout.rs:296",
+        "authority_transfer_closeout.rs:1046",
+        "authority_transfer_closeout.rs:630",
+    ] {
+        assert!(
+            adr.contains(anchor),
+            "ADR inventory missing location anchor {anchor}"
+        );
     }
 }
 
@@ -54,6 +78,10 @@ fn working_tree_disposition_has_no_pass_permitting_default() {
     assert!(
         observation.contains("There is deliberately **no `Default`**"),
         "type must document the no-Default rationale (#14304)"
+    );
+    assert!(
+        !observation.contains("impl Default for WorkingTreeDisposition"),
+        "WorkingTreeDisposition must not implement Default manually"
     );
 }
 
