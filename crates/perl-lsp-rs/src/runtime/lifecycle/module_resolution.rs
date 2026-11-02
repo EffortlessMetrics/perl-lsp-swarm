@@ -1032,13 +1032,17 @@ mod tests {
             eprintln!("SKIP: directory symlink unavailable on this Windows host: {error}");
             return Ok(());
         }
+        let workspace = temp.path();
+        let workspace_uri = url::Url::from_directory_path(workspace)
+            .map_err(|_| "failed workspace URI")?
+            .to_string();
         let alias_uri = url::Url::from_file_path(linked_root.join("Alias.pm"))
             .map_err(|_| "failed alias URI")?
             .to_string();
         let report = collect_module_uri_candidates_with_effective_inc(
             "Alias",
             std::slice::from_ref(&alias_uri),
-            &[],
+            std::slice::from_ref(&workspace_uri),
             &[perl_module::IncRoot {
                 kind: IncRootKind::ExternalAbsolute,
                 path: real_root,
