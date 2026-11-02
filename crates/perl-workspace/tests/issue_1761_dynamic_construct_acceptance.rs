@@ -2,7 +2,7 @@
 //! graceful degradation for string eval, `do EXPR`, and typeglob boundaries.
 
 use perl_parser_core::Parser;
-use perl_semantic_facts::{OccurrenceKind, Provenance};
+use perl_semantic_facts::{OccurrenceFact, OccurrenceKind, Provenance};
 use perl_workspace::semantic::queries::SemanticQueries;
 use perl_workspace::workspace::workspace_index::WorkspaceIndex;
 
@@ -30,6 +30,21 @@ fn byte_offset_in(source: &str, needle: &str) -> Result<u32> {
     u32::try_from(start).map_err(|_| "source offset exceeds u32".into())
 }
 
+/// [`WorkspaceIndex::with_semantic_queries_for_uri`] wraps the callback result in
+/// `Option`; flatten once so callers test the query outcome, not index presence.
+fn dynamic_boundary_at_indexed(
+    index: &WorkspaceIndex,
+    uri: &str,
+    offset: u32,
+    symbol: Option<&str>,
+) -> Option<OccurrenceFact> {
+    index
+        .with_semantic_queries_for_uri(uri, |file_id, queries| {
+            queries.dynamic_boundary_at(file_id, offset, symbol)
+        })
+        .flatten()
+}
+
 #[test]
 fn issue_1761_eval_string_parses_and_publishes_dynamic_boundary() -> Result<()> {
     let source = "package App;\neval \"my \\$x = 1\";\n1;\n";
@@ -42,10 +57,37 @@ fn issue_1761_eval_string_parses_and_publishes_dynamic_boundary() -> Result<()> 
 
     let (index, uri) = index_temp_source("eval", "lib/App.pm", source)?;
     let offset = byte_offset_in(source, "my")?;
-    let covered = index.with_semantic_queries_for_uri(&uri, |file_id, queries| {
-        queries.dynamic_boundary_at(file_id, offset, None)
-    });
+    let covered = dynamic_boundary_at_indexed(&index, &uri, offset, None);
     assert!(covered.is_some(), "string eval span should publish a dynamic boundary occurrence");
+    Ok(())
+}
+
+#[test]
+fn issue_1761_eval_variable_operand_is_not_boundary_coverage() -> Result<()> {
+    let source = "package App;\neval $missing;\n1;\n";
+    let (index, uri) = index_temp_source("eval-var", "lib/App.pm", source)?;
+    let offset = byte_offset_in(source, "$missing")?;
+    let covered = dynamic_boundary_at_indexed(&index, &uri, offset, Some("missing"));
+    assert!(
+        covered.is_none(),
+        "variable operand of expression-form eval must not publish entity-less boundary coverage"
+    );
+    Ok(())
+}
+
+#[test]
+fn issue_1761_do_file_operand_is_not_boundary_coverage() -> Result<()> {
+    let source = "package App;\nmy $file = 'config.pl';\ndo $file;\n1;\n";
+    let (index, uri) = index_temp_source("do-operand", "lib/App.pm", source)?;
+    let do_operand = source
+        .find("do $file")
+        .ok_or("do $file operand not found in fixture")?;
+    let offset = u32::try_from(do_operand + "do ".len()).map_err(|_| "offset exceeds u32")?;
+    let covered = dynamic_boundary_at_indexed(&index, &uri, offset, Some("file"));
+    assert!(
+        covered.is_none(),
+        "variable operand of do EXPR must not publish entity-less boundary coverage"
+    );
     Ok(())
 }
 
@@ -57,9 +99,7 @@ fn issue_1761_do_file_parses_and_publishes_dynamic_boundary() -> Result<()> {
 
     let (index, uri) = index_temp_source("do-file", "lib/App.pm", source)?;
     let offset = byte_offset_in(source, "do")?;
-    let covered = index.with_semantic_queries_for_uri(&uri, |file_id, queries| {
-        queries.dynamic_boundary_at(file_id, offset, None)
-    });
+    let covered = dynamic_boundary_at_indexed(&index, &uri, offset, None);
     assert!(
         covered.is_some(),
         "do EXPR should publish a dynamic boundary for the file-load expression"

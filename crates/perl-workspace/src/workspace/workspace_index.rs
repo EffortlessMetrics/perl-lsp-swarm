@@ -5605,6 +5605,58 @@ fn package_edges_from_stash_graph(
         .collect()
 }
 
+/// Anchor span for expression-form `eval` / `do` dynamic boundaries.
+///
+/// String-literal bodies cover the literal (runtime-evaluated code). Other
+/// operands (for example `eval $expr`, `do $file`) cover only the keyword so
+/// undeclared-variable suppression stays position-scoped on the operand.
+fn eval_do_expression_boundary_anchor_span(node: &Node) -> Option<(usize, usize)> {
+    let (keyword_len, block) = match &node.kind {
+        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            (4, block.as_ref())
+        }
+        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            (2, block.as_ref())
+        }
+        _ => return None,
+    };
+    let node_start = node.location.start;
+    if matches!(block.kind, NodeKind::String { .. }) {
+        Some((block.location.start, block.location.end))
+    } else {
+        Some((node_start, node_start + keyword_len))
+    }
+}
+
+fn collect_expression_form_eval_do_boundaries(
+    node: &Node,
+    uri: &str,
+    file_id: FileId,
+    anchors: &mut Vec<AnchorFact>,
+    occurrences: &mut Vec<OccurrenceFact>,
+) {
+    match &node.kind {
+        NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
+                push_hir_dynamic_boundary_occurrence(
+                    uri, file_id, start, end, 1, anchors, occurrences,
+                );
+            }
+        }
+        NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
+            if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
+                push_hir_dynamic_boundary_occurrence(
+                    uri, file_id, start, end, 2, anchors, occurrences,
+                );
+            }
+        }
+        _ => {}
+    }
+    node.for_each_child(|child| {
+        collect_expression_form_eval_do_boundaries(child, uri, file_id, anchors, occurrences);
+    });
+}
+
 fn push_hir_dynamic_boundary_occurrence(
     uri: &str,
     file_id: FileId,
@@ -5665,26 +5717,7 @@ fn dynamic_isa_facts(
             &mut occurrences,
         );
     }
-    use perl_parser_core::hir::{DynamicBoundaryKind as HirDynamicBoundaryKind, HirKind};
-    for item in &hir.items {
-        let HirKind::DynamicBoundary(boundary) = &item.kind else {
-            continue;
-        };
-        let boundary_kind_tag = match boundary.kind {
-            HirDynamicBoundaryKind::EvalExpression => 1,
-            HirDynamicBoundaryKind::DoExpression => 2,
-            _ => continue,
-        };
-        push_hir_dynamic_boundary_occurrence(
-            uri,
-            file_id,
-            item.range.start,
-            item.range.end,
-            boundary_kind_tag,
-            &mut anchors,
-            &mut occurrences,
-        );
-    }
+    collect_expression_form_eval_do_boundaries(ast, uri, file_id, &mut anchors, &mut occurrences);
     (anchors, occurrences)
 }
 

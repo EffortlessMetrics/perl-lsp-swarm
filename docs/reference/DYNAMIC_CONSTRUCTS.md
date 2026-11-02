@@ -32,8 +32,10 @@ available to the provider; they do not certify the runtime-generated symbol.
 
 Coverage is partial by design. A hover or definition request inside arbitrary
 string-eval content now consults a position-scoped dynamic boundary when one
-is published on the workspace fact shard (including compiler-HIR `eval EXPR`
-and `do EXPR` spans). That does not parse or execute the runtime code. Literal
+is published on the workspace fact shard (string-literal spans for `eval "..."`,
+keyword-only anchors for other `eval EXPR` / `do EXPR` forms so operand
+variables keep undeclared-symbol diagnostics). That does not parse or execute
+the runtime code. Literal
 `eval 'sub NAME { ... }'` evidence remains a separate, name-bearing boundary
 path. Eval-heredoc-specific bridging remains tracked in
 [#1762](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1762).
