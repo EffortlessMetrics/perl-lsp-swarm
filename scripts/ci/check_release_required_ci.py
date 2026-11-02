@@ -146,6 +146,11 @@ def selected_run_consistent(run, observed, sha):
     if run.get("head_sha") != sha:
         return True
     if run.get("status") != peer.get("status"):
+        pending = {"queued", "in_progress", "waiting", "pending", "requested"}
+        if run.get("status") in pending or peer.get("status") in pending:
+            # filter=all is collected before filter=latest; a run can finish between
+            # those reads without contradictory GitHub state.
+            return True
         return False
     if run.get("status") == "completed" and run.get("conclusion") != peer.get("conclusion"):
         return False

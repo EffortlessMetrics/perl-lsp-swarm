@@ -316,6 +316,26 @@ class RequiredCITests(unittest.TestCase):
         self.assertEqual(packet["verdict"], "PASS")
         self.assertGreater(clock.now, 0)
 
+    def test_check_completing_between_all_and_latest_reads_waits(self):
+        fixture = responses()
+        clock = Clock()
+        transport = FixtureTransport(fixture)
+
+        def get(path):
+            if clock.now == 0:
+                if path == ALL:
+                    return observer.ApiResult(200, json.dumps({"total_count": 1, "check_runs": [
+                        check_run(status="queued", conclusion=None)]}).encode())
+                if path == LATEST:
+                    return observer.ApiResult(200, json.dumps({"total_count": 1, "check_runs": [
+                        check_run()]}).encode())
+            return transport(path)
+
+        packet = checker.wait_for_required_ci(REPOSITORY, "main", SHA, timeout=1, interval=.1,
+                                              transport=get, clock=clock, sleep=clock.sleep)
+        self.assertEqual(packet["verdict"], "PASS")
+        self.assertGreater(clock.now, 0)
+
     def test_cancel_skip_unknown_and_neutral_remain_distinct(self):
         for conclusion, expected in (("cancelled", "NOT_PROVEN"), ("skipped", "NOT_PROVEN"),
                                      ("future-state", "NOT_PROVEN"), ("neutral", "PASS")):
