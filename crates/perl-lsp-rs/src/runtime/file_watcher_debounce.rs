@@ -923,14 +923,6 @@ fn intake_loop(shared: Arc<Shared>) {
     }
 }
 
-#[cfg(test)]
-fn record_test_last_delivered_batch(shared: &Shared, batch: &[String]) {
-    let mut sorted: Vec<&str> = batch.iter().map(String::as_str).collect();
-    sorted.sort_unstable();
-    let head = sorted.first().copied().unwrap_or("-");
-    *shared.last_delivered_batch.lock() = format!("len={} head={head}", batch.len());
-}
-
 fn dispatch_loop<F>(shared: Arc<Shared>, sink: F)
 where
     F: Fn(Vec<String>) + Send + 'static,
@@ -954,12 +946,21 @@ where
                 drop(guard);
                 let batch_len = batch.len();
                 #[cfg(test)]
-                record_test_last_delivered_batch(&shared, &batch);
+                let delivered_summary = {
+                    let mut sorted: Vec<&str> = batch.iter().map(String::as_str).collect();
+                    sorted.sort_unstable();
+                    let head = sorted.first().copied().unwrap_or("-");
+                    format!("len={} head={head}", batch_len)
+                };
                 // A panicking callback must not masquerade as delivered work:
                 // mark the coalescer degraded so admissions route to the
                 // unavailable disposition instead of apparent success.
                 let outcome =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(batch)));
+                #[cfg(test)]
+                if outcome.is_ok() {
+                    *shared.last_delivered_batch.lock() = delivered_summary;
+                }
                 shared.stats.active_subjects.fetch_sub(batch_len, Ordering::SeqCst);
                 shared.stats.batches_dispatched.fetch_add(1, Ordering::Relaxed);
                 if outcome.is_err() {
