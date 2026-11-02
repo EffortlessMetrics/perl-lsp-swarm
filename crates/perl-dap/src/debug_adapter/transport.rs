@@ -144,6 +144,11 @@ const EVENT_WRITE_BATCH_MAX: usize = 64;
 /// session. Commands that emit no events never wait at all.
 const EVENT_DRAIN_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Upper bound on waiting for the scoped event-writer thread after intake stops.
+/// E2e stdio tests that assert process exit after a broken client stdout must
+/// allow at least this budget plus [`EVENT_DRAIN_MAX_WAIT`] headroom on loaded CI.
+const EVENT_WRITER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn next_transport_seq(seq: &Mutex<i64>) -> i64 {
     let mut value = lock_or_recover(seq, "transport.seq");
     *value += 1;
@@ -530,6 +535,9 @@ impl DebugAdapter {
                     tracing::error!(
                         "Transport is broken; a transport writer detected persistent write failure"
                     );
+                    // Unblock the event consumer promptly so shutdown does not sit
+                    // behind an idle `rx.recv()` until the scoped worker finishes.
+                    event_sender.close();
                     break 'transport Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
                         "Transport writer detected persistent write failure; transport is broken",
@@ -799,10 +807,17 @@ impl DebugAdapter {
                 .map_err(|_| io::Error::other("DAP request worker panicked"))
                 .and_then(|result| result);
             event_sender.close();
+            let writer_join_timeout = if transport_broken.load(Ordering::Acquire) {
+                // A broken client stdout/socket already failed a write; do not
+                // spend the full healthy-session budget waiting for drain.
+                Duration::from_secs(1)
+            } else {
+                EVENT_WRITER_JOIN_TIMEOUT
+            };
             let events_drained =
-                writer_done_rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(
-                    |error| io::Error::other(format!("event writer did not terminate: {error}")),
-                )?;
+                writer_done_rx.recv_timeout(writer_join_timeout).map_err(|error| {
+                    io::Error::other(format!("event writer did not terminate: {error}"))
+                })?;
             if !events_drained {
                 return Err(io::Error::new(io::ErrorKind::BrokenPipe, "event delivery failed"));
             }
