@@ -174,7 +174,7 @@ fn given_use_feature_qw_when_querying_state_then_requested_features_and_unicode_
 
 #[test]
 fn given_use_if_feature_bundle_when_querying_state_then_bundle_features_are_recorded() {
-    let ast = program(vec![use_node("if", &["$]", ">=", "5.036", "feature", "':5.36'"], 0, 44)]);
+    let ast = program(vec![use_node("if", &["1", "feature", "':5.36'"], 0, 32)]);
     let map = PragmaTracker::build(&ast);
 
     let state = PragmaTracker::state_for_offset(&map, 20);

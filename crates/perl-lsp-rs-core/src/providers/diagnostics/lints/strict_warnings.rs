@@ -674,6 +674,15 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_use_if_strict_does_not_suppress_missing_strict() {
+        let diags = strict_warnings_diags("use if $dynamic, 'strict';\nmy $x = 1;\n");
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL100")),
+            "dynamic conditional strict must not suppress missing-strict"
+        );
+    }
+
+    #[test]
     fn conditional_use_if_pragmas_suppress_file_level_missing_diagnostics() {
         // `use if COND, 'strict'/'warnings'` is represented as module "if" in the AST,
         // and should still update tracked top-level pragma state.
