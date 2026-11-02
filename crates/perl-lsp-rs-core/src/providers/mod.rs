@@ -17,7 +17,7 @@ pub mod completion_item;
 /// hook facts, never a union of canonical and legacy answers.
 pub mod dancer2;
 pub mod provider_decision;
-pub mod provider_eligibility;
+pub(crate) mod provider_eligibility;
 pub mod semantic_port;
 pub mod semantic_port_adapters;
 /// Shared shadow-compare framework: canonical verdict vocabulary, parameterized
@@ -90,7 +90,6 @@ pub use lsp_compat::*;
 pub use navigation::*;
 pub use on_type_formatting::*;
 pub use provider_decision::*;
-pub use provider_eligibility::*;
 pub use rename::*;
 pub use selection_range::*;
 pub use semantic_port::*;
