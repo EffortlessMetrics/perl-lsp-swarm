@@ -31,7 +31,9 @@ on:
       - 'scripts/tests/test_cargo_admitted_budget.py'
       - 'scripts/storage-doctor'
       - 'scripts/storage_observation.py'
+      - 'scripts/measure_cargo_storage.py'
       - 'scripts/tests/test_storage_doctor.py'
+      - 'scripts/tests/test_measure_cargo_storage.py'
       - 'justfile'
       - 'CONTRIBUTING.md'
       # Ordinary doctor entrypoint regressions (#8639, landed in #17556).
@@ -785,6 +787,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_cargo_cohort.py' -v
       - name: Check retained target measurement failure and threshold controls
         run: python3 -m unittest discover -s scripts/tests -p 'test_storage_doctor.py' -v
+      - name: Check periodic cargo storage sampler controls
+        run: python3 -m unittest discover -s scripts/tests -p 'test_measure_cargo_storage.py' -v
 
   cargo-toolchain-guard-self-test:
     name: Entrypoint cargo toolchain guard self-test
