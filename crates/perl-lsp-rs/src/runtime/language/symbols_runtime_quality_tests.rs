@@ -384,6 +384,10 @@ fn document_symbols_runtime_quality_receipt_handles_unknown_uri_gracefully()
         receipt.get("compiler_receipt").is_none(),
         "unknown URI proof must not emit a nominal compiler_receipt key: {receipt}"
     );
+    assert!(
+        receipt.get("projection_receipt").is_none_or(|value| value.is_null()),
+        "unknown URI must not inherit a prior request's projection receipt: {receipt}"
+    );
     Ok(())
 }
 

@@ -86,6 +86,7 @@ pub fn pod_heading_document_symbols(source: &str) -> Vec<DocumentSymbol> {
         return Vec::new();
     };
     let mut symbols = Vec::new();
+    let line_starts = line_start_byte_offsets(source);
     for (line_num, line) in source.lines().enumerate() {
         if line == "__DATA__" || line == "__END__" {
             break;
@@ -98,7 +99,10 @@ pub fn pod_heading_document_symbols(source: &str) -> Vec<DocumentSymbol> {
             continue;
         }
         let line_index = u32::try_from(line_num).unwrap_or(u32::MAX);
-        let end_character = line_end_utf16_character(source, line_num, line);
+        let line_start = line_starts.get(line_num).copied().unwrap_or(0);
+        let line_end_byte = line_start.saturating_add(line.len());
+        let end_character =
+            perl_position_tracking::offset_to_utf16_line_col(source, line_end_byte).1;
         let range = WireRange {
             start: WirePosition::new(line_index, 0),
             end: WirePosition::new(line_index, end_character),
@@ -159,7 +163,8 @@ pub fn apply_document_symbol_node_budget(
     }
 }
 
-fn prune_preorder(nodes: Vec<DocumentSymbol>, remaining: &mut usize) -> Vec<DocumentSymbol> {
+fn prune_preorder(mut nodes: Vec<DocumentSymbol>, remaining: &mut usize) -> Vec<DocumentSymbol> {
+    nodes.sort_by(source_order_key);
     let mut kept = Vec::new();
     for mut node in nodes {
         if *remaining == 0 {
@@ -184,11 +189,14 @@ fn source_order_key(left: &DocumentSymbol, right: &DocumentSymbol) -> std::cmp::
         .then_with(|| left.kind.cmp(&right.kind))
 }
 
-fn line_end_utf16_character(source: &str, line_num: usize, line: &str) -> u32 {
-    let line_start =
-        source.lines().take(line_num).map(str::len).sum::<usize>().saturating_add(line_num);
-    let line_end_byte = line_start.saturating_add(line.len());
-    perl_position_tracking::offset_to_utf16_line_col(source, line_end_byte).1
+fn line_start_byte_offsets(source: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    for (idx, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            offsets.push(idx.saturating_add(1));
+        }
+    }
+    offsets
 }
 
 fn visible_tree_fingerprint(symbols: &[DocumentSymbol]) -> String {
@@ -212,7 +220,9 @@ fn write_visible_tree(symbols: &[DocumentSymbol], out: &mut String) {
         out.push(',');
         out.push_str(&symbol.range.end.character.to_string());
         out.push(';');
+        out.push('(');
         write_visible_tree(&symbol.children, out);
+        out.push(')');
     }
 }
 
@@ -300,5 +310,39 @@ mod tests {
         assert_eq!(receipt.visible_total, 1);
         assert!(receipt.truncated);
         assert_eq!(receipt.visible_tree_fingerprint, visible_tree_fingerprint(&outcome.symbols));
+    }
+
+    #[test]
+    fn budget_keeps_earlier_child_in_source_order() {
+        let mut earlier = symbol("sub_first", 1, vec![]);
+        earlier.sort_priority = 10;
+        let mut later = symbol("has_later", 2, vec![]);
+        later.sort_priority = 0;
+        let tree = vec![symbol("Pkg", 0, vec![earlier, later])];
+        let outcome = apply_document_symbol_node_budget(tree, 2);
+        assert_eq!(outcome.visible_total, 2);
+        let kept = outcome
+            .symbols
+            .first()
+            .and_then(|pkg| pkg.children.first())
+            .map(|child| child.name.as_str());
+        assert_eq!(kept, Some("sub_first"));
+    }
+
+    #[test]
+    fn pod_headings_use_crlf_line_end_columns() {
+        let symbols = pod_heading_document_symbols("=head1 First\r\n=head1 Second\r\n");
+        assert_eq!(symbols.len(), 2);
+        let second = &symbols[1];
+        assert_eq!(second.range.start.line, 1);
+        let expected_end = perl_position_tracking::offset_to_utf16_line_col("=head1 Second", 13).1;
+        assert_eq!(second.range.end.character, expected_end);
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_parentage() {
+        let flat = vec![symbol("A", 0, vec![]), symbol("B", 1, vec![])];
+        let nested = vec![symbol("A", 0, vec![symbol("B", 1, vec![])])];
+        assert_ne!(visible_tree_fingerprint(&flat), visible_tree_fingerprint(&nested));
     }
 }

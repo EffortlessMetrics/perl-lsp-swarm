@@ -163,100 +163,110 @@ impl LspServer {
         }
 
         let cap = document_symbol_cap();
+        clear_document_symbol_projection_receipt();
 
         if let Some(params) = params {
             let uri = req_uri(&params)?;
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                // Full-sync unavailability is not an ordinary parse failure.
-                // The AST-less regex fallback must keep using live `doc.text`
-                // for synchronized pending-parse gaps, and must not scan
-                // predecessor text while `full_sync_required` is set.
-                if doc.text_for_user_answers().is_none() {
-                    return Ok(Some(json!([])));
-                }
-                let parsed = doc.current_parsed();
-                if let Some(parsed_snapshot) = parsed {
-                    if let Some(ast) = parsed_snapshot.ast() {
-                        // Source-backed compiler document symbols are live for fresh,
-                        // high-confidence parser syntax facts. Astless documents keep
-                        // the legacy text fallback below.
-                        let live_result =
-                        perl_lsp_rs_core::providers::document_symbols::source_backed_document_symbols_from_ast(
-                            ast,
-                            &doc.text,
-                        );
+            enum DocumentSymbolCapture {
+                Missing,
+                FullSyncPending,
+                Ast {
+                    snapshot: std::sync::Arc<crate::state::ParsedSnapshot>,
+                    text: String,
+                    ast: std::sync::Arc<perl_parser::ast::Node>,
+                },
+                Fallback {
+                    text: String,
+                },
+            }
 
-                        // Merge Test2/Test::More subtests into their lexically
-                        // enclosing outline scopes (#1792): each subtest nests under
-                        // the innermost scope the parse proves instead of floating at
-                        // the top level. Subtest calls only exist in test files, so
-                        // this is empty for ordinary source.
-                        let mut outline = live_result.symbols;
-                        let subtests =
-                            perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
-                                ast, &doc.text,
-                            );
-                        if !subtests.is_empty() {
-                            perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
-                            &mut outline,
-                            &subtests,
-                            &doc.text,
-                        );
+            let capture = {
+                let documents = self.documents_guard();
+                match self.get_document(&documents, uri) {
+                    None => DocumentSymbolCapture::Missing,
+                    Some(doc) => {
+                        if doc.text_for_user_answers().is_none() {
+                            DocumentSymbolCapture::FullSyncPending
+                        } else {
+                            let text = doc.text.clone();
+                            match doc.current_parsed() {
+                                Some(snapshot) => match snapshot.ast().cloned() {
+                                    Some(ast) => DocumentSymbolCapture::Ast { snapshot, text, ast },
+                                    None => DocumentSymbolCapture::Fallback { text },
+                                },
+                                None => DocumentSymbolCapture::Fallback { text },
+                            }
                         }
+                    }
+                }
+            };
 
-                        let dancer2_outline = self.dancer2_document_symbols_structured(
-                            uri,
-                            &parsed_snapshot,
-                            &doc.text,
-                            ast,
-                        );
-                        perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
-                        &mut outline,
-                        dancer2_outline,
-                    );
-                        let pod_headings =
-                        perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(
-                            &doc.text,
-                        );
-                        perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
-                        &mut outline,
-                        pod_headings,
-                    );
-
-                        let budget_outcome =
+            let finish_outline = |outline: Vec<
+                perl_lsp_rs_core::providers::document_symbols::DocumentSymbol,
+            >| {
+                let budget_outcome =
                         perl_lsp_rs_core::providers::document_symbols::apply_document_symbol_node_budget(
                             outline,
                             cap,
                         );
-                        record_document_symbol_projection_receipt(cap, &budget_outcome, None);
+                record_document_symbol_projection_receipt(cap, &budget_outcome, None);
+                let symbols = document_symbols_to_json(budget_outcome.symbols);
+                Ok(Some(json!(symbols)))
+            };
 
-                        let document_symbols = document_symbols_to_json(budget_outcome.symbols);
-
-                        return Ok(Some(json!(document_symbols)));
-                    }
-                } else {
-                    // Fallback: Extract symbols via regex when parse fails
+            match capture {
+                DocumentSymbolCapture::Missing | DocumentSymbolCapture::FullSyncPending => {
+                    return Ok(Some(json!([])));
+                }
+                DocumentSymbolCapture::Fallback { text } => {
                     tracing::debug!(uri, "Using fallback symbol extraction");
-                    let mut outline = fallback_document_symbols(&doc.text);
+                    let mut outline = fallback_document_symbols(&text);
                     let pod_headings =
                         perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(
-                            &doc.text,
+                            &text,
                         );
                     perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
                         &mut outline,
                         pod_headings,
                     );
-                    let budget_outcome =
-                        perl_lsp_rs_core::providers::document_symbols::apply_document_symbol_node_budget(
-                            outline,
-                            cap,
+                    return finish_outline(outline);
+                }
+                DocumentSymbolCapture::Ast { snapshot, text, ast } => {
+                    let live_result =
+                        perl_lsp_rs_core::providers::document_symbols::source_backed_document_symbols_from_ast(
+                            &ast,
+                            &text,
                         );
-                    record_document_symbol_projection_receipt(cap, &budget_outcome, None);
-                    let symbols = document_symbols_to_json(budget_outcome.symbols);
-                    tracing::debug!(count = symbols.len(), "Returning fallback symbols");
-                    return Ok(Some(json!(symbols)));
+
+                    let mut outline = live_result.symbols;
+                    let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
+                        &ast, &text,
+                    );
+                    if !subtests.is_empty() {
+                        perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
+                            &mut outline,
+                            &subtests,
+                            &text,
+                        );
+                    }
+
+                    let dancer2_outline =
+                        self.dancer2_document_symbols_structured(uri, &snapshot, &text, &ast);
+                    perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
+                        &mut outline,
+                        dancer2_outline,
+                    );
+                    let pod_headings =
+                        perl_lsp_rs_core::providers::document_symbols::pod_heading_document_symbols(
+                            &text,
+                        );
+                    perl_lsp_rs_core::providers::document_symbols::merge_document_symbol_roots_in_source_order(
+                        &mut outline,
+                        pod_headings,
+                    );
+
+                    return finish_outline(outline);
                 }
             }
         }
@@ -511,6 +521,12 @@ fn record_document_symbol_projection_receipt(
     );
     LAST_DOCUMENT_SYMBOL_PROJECTION_RECEIPT.with(|cell| {
         *cell.borrow_mut() = Some(receipt);
+    });
+}
+
+fn clear_document_symbol_projection_receipt() {
+    LAST_DOCUMENT_SYMBOL_PROJECTION_RECEIPT.with(|cell| {
+        *cell.borrow_mut() = None;
     });
 }
 
