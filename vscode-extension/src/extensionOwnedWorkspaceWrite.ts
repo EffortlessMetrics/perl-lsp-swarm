@@ -107,11 +107,7 @@ export async function ensureWorkspaceDirectoryPath(
       stat = await fs.promises.lstat(current);
     }
 
-    rejectReparsePoint(
-      current,
-      displayWorkspaceRelativePath(lexicalWorkspaceRoot, current),
-      stat,
-    );
+    rejectReparsePoint(current, displayWorkspaceRelativePath(lexicalWorkspaceRoot, current), stat);
     if (!stat.isDirectory()) {
       throw new ExtensionOwnedWorkspaceWriteError(
         workspaceRelativePath,
@@ -162,7 +158,9 @@ export async function replaceWorkspaceRegularFile(
   }
   const expectedIdentity =
     replace === 'match-existing'
-      ? (observedIdentity !== undefined ? observedIdentity : (existing?.identity ?? null))
+      ? observedIdentity !== undefined
+        ? observedIdentity
+        : (existing?.identity ?? null)
       : null;
   await atomicReplacePreparedRegularFile(
     target,
@@ -211,11 +209,7 @@ function prepareWorkspaceRegularFileTargetSync(
       );
     }
 
-    rejectReparsePoint(
-      current,
-      displayWorkspaceRelativePath(lexicalWorkspaceRoot, current),
-      stat,
-    );
+    rejectReparsePoint(current, displayWorkspaceRelativePath(lexicalWorkspaceRoot, current), stat);
     if (!stat.isDirectory()) {
       throw new ExtensionOwnedWorkspaceWriteError(
         workspaceRelativePath,

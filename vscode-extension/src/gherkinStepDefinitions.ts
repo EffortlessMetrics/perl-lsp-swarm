@@ -611,7 +611,11 @@ export async function writeGeneratedStepDefinitionFile(
   appendStub: string,
 ): Promise<void> {
   const resolvedTarget = path.resolve(targetPath);
-  let existing: { text: string; mode: number; identity: WorkspaceRegularFileIdentity | null } | null;
+  let existing: {
+    text: string;
+    mode: number;
+    identity: WorkspaceRegularFileIdentity | null;
+  } | null;
   try {
     existing = await readExistingStepDefinitionContent(workspaceRoot, resolvedTarget);
   } catch (error) {
@@ -716,7 +720,10 @@ function mapWorkspaceWriteError(error: unknown): Error {
     if (error.message.includes('changed during validation')) {
       return new Error('generated step-definition target changed during validation');
     }
-    if (error.message.includes('already exists') || error.message.includes('appeared during validation')) {
+    if (
+      error.message.includes('already exists') ||
+      error.message.includes('appeared during validation')
+    ) {
       return new Error('generated step-definition target appeared during validation');
     }
     if (error.message.includes('was removed during validation')) {
