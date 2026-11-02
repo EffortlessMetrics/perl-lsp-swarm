@@ -897,7 +897,7 @@ jobs:
       # next same-head attempt to redo the ~44m baseline scan (#16431
       # catch-22). Restored receipts skip this step via the freshness marker.
       - name: Checkpoint save memoized ripr-plus receipt
-        if: hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
+        if: always() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: target/receipts/quality/ripr-plus.json
@@ -1245,7 +1245,7 @@ jobs:
       # #17451: checkpoint the freshly produced receipt before the long
       # guidance pass (same contract as ripr-github above).
       - name: Checkpoint save memoized ripr-plus receipt
-        if: hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
+        if: always() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: target/receipts/quality/ripr-plus.json

@@ -49,7 +49,7 @@ RECEIPT_CACHE_MARKER_GUARD = (
 )
 RECEIPT_CACHE_CHECKPOINT_NAME = "Checkpoint save memoized ripr-plus receipt"
 RECEIPT_CACHE_CHECKPOINT_GUARD = (
-    "hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''"
+    "always() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''"
 )
 RECEIPT_CACHE_FINAL_NAME = "Save memoized ripr-plus receipt"
 RECEIPT_CACHE_ADJUDICATOR = "Adjudicate receipt cache exactness"
@@ -401,6 +401,10 @@ def validate_receipt_cache_contract(source: list[str]) -> None:
             )
         if field(checkpoint_text.splitlines(), "if", 8) != RECEIPT_CACHE_CHECKPOINT_GUARD:
             raise AssertionError(f"{job} receipt-cache checkpoint save guard drifted")
+        if f"key: {RECEIPT_CACHE_KEY}" not in checkpoint_text:
+            raise AssertionError(f"{job} receipt-cache checkpoint key drifted")
+        if not any(line.strip() == RECEIPT_CACHE_PATH for line in checkpoint_text.splitlines()):
+            raise AssertionError(f"{job} receipt-cache checkpoint path drifted")
         # Final save side: only a fully succeeding run may publish again, and
         # only when this run produced the receipt itself (freshness marker).
         if field(save_text.splitlines(), "if", 8) != RECEIPT_CACHE_MARKER_GUARD:
