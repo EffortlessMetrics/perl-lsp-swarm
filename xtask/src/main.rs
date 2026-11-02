@@ -1968,11 +1968,21 @@ enum Commands {
     },
 
     /// Compose candidate, review, required-check, and protected-merge facts.
-    #[command(name = "gh-preflight")]
+    #[command(name = "gh-preflight", group(
+        clap::ArgGroup::new("target")
+            .required(true)
+            .args(["pr", "sha", "branch"])
+    ))]
     GhPreflight {
         /// Pull request number.
-        #[arg(long)]
-        pr: u64,
+        #[arg(long, conflicts_with_all = ["sha", "branch"])]
+        pr: Option<u64>,
+        /// Evaluate an exact commit SHA (policy contexts from `main`).
+        #[arg(long, conflicts_with_all = ["pr", "branch"])]
+        sha: Option<String>,
+        /// Evaluate a branch head (policy contexts from the same branch ref).
+        #[arg(long, conflicts_with_all = ["pr", "sha"])]
+        branch: Option<String>,
         /// Emit JSON only.
         #[arg(long)]
         json: bool,
@@ -6999,7 +7009,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::GhReviewConvergence { pr, json } => {
             github_review::run_review_convergence(pr, json)
         }
-        Commands::GhPreflight { pr, json } => github_preflight::run_preflight(pr, json),
+        Commands::GhPreflight { pr, sha, branch, json } => {
+            github_preflight::run_preflight_mode(pr, sha, branch, json)
+        }
         Commands::CorpusAudit { corpus_path, output, check, fresh } => {
             corpus_audit::run(corpus_audit::AuditConfig {
                 corpus_path,
