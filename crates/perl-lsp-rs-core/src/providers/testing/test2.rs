@@ -120,7 +120,10 @@ const COMPARE: &[&str] = &[
 const COMPARE_OWN_DEFAULT: &[&str] = &["is", "like"];
 
 /// `Test2::Tools::ClassicCompare` — the `Test::More`-style operator compare.
-const CLASSIC_COMPARE: &[&str] = &["cmp_ok"];
+const CLASSIC_COMPARE_V0: &[&str] = &["cmp_ok"];
+
+/// Standalone `Test2::Tools::ClassicCompare` default `@EXPORT` at the pin.
+const CLASSIC_COMPARE_OWN: &[&str] = &["cmp_ok", "is", "is_deeply", "isnt", "like", "unlike"];
 
 /// `Test2::Tools::Warnings`.
 const WARNINGS: &[&str] = &["warns", "warning", "warnings", "no_warnings"];
@@ -152,14 +155,153 @@ const REFCOUNT: &[&str] = &["is_refcount", "is_oneref", "refcount"];
 /// `Test2::Tools::Event`.
 const EVENT: &[&str] = &["gen_event"];
 
-/// `Test2::API` symbols re-exported by `Test2::V0`.
-const API: &[&str] = &["intercept", "context"];
+/// `Test2::API` symbols selected by `Test2::V0`.
+const API_V0: &[&str] = &["intercept", "context"];
+
+/// Reviewed `@EXPORT_OK` for plain `use Test2::API;` explicit imports (pin 1.302225).
+const API_EXPORT_OK: &[&str] = &[
+    "context",
+    "release",
+    "context_do",
+    "no_context",
+    "intercept",
+    "intercept_deep",
+    "run_subtest",
+    "test2_init_done",
+    "test2_load_done",
+    "test2_load",
+    "test2_start_preload",
+    "test2_stop_preload",
+    "test2_in_preload",
+    "test2_is_testing_done",
+    "test2_set_is_end",
+    "test2_unset_is_end",
+    "test2_get_is_end",
+    "test2_pid",
+    "test2_tid",
+    "test2_stack",
+    "test2_no_wait",
+    "test2_ipc_wait_enable",
+    "test2_ipc_wait_disable",
+    "test2_ipc_wait_enabled",
+    "test2_add_uuid_via",
+    "test2_add_callback_testing_done",
+    "test2_add_callback_context_aquire",
+    "test2_add_callback_context_acquire",
+    "test2_add_callback_context_init",
+    "test2_add_callback_context_release",
+    "test2_add_callback_exit",
+    "test2_add_callback_post_load",
+    "test2_add_callback_pre_subtest",
+    "test2_list_context_aquire_callbacks",
+    "test2_list_context_acquire_callbacks",
+    "test2_list_context_init_callbacks",
+    "test2_list_context_release_callbacks",
+    "test2_list_exit_callbacks",
+    "test2_list_post_load_callbacks",
+    "test2_list_pre_subtest_callbacks",
+    "test2_ipc",
+    "test2_has_ipc",
+    "test2_ipc_disable",
+    "test2_ipc_disabled",
+    "test2_ipc_drivers",
+    "test2_ipc_add_driver",
+    "test2_ipc_polling",
+    "test2_ipc_disable_polling",
+    "test2_ipc_enable_polling",
+    "test2_ipc_get_pending",
+    "test2_ipc_set_pending",
+    "test2_ipc_get_timeout",
+    "test2_ipc_set_timeout",
+    "test2_formatter",
+    "test2_formatters",
+    "test2_formatter_add",
+    "test2_formatter_set",
+    "test2_stdout",
+    "test2_stderr",
+    "test2_reset_io",
+    "test2_enable_trace_stamps",
+    "test2_disable_trace_stamps",
+    "test2_trace_stamps_enabled",
+    "test2_add_pending_diag",
+    "test2_get_pending_diags",
+    "test2_clear_pending_diags",
+];
 
 /// `Test2::Tools::Subtest` — the module's *own* default exports. `Test2::V0`
 /// renames `subtest_buffered` to the familiar `subtest`, so a bundle exposes
 /// `subtest` while the standalone tool exposes the `*_streamed`/`*_buffered`
 /// pair.
 const SUBTEST_OWN: &[&str] = &["subtest_streamed", "subtest_buffered"];
+
+/// `Test2::Tools::AsyncSubtest` default exports at the pin.
+const ASYNC_SUBTEST: &[&str] = &["async_subtest", "fork_subtest", "thread_subtest"];
+
+/// `Test2::Tools::GenTemp` default export at the pin.
+const GEN_TEMP: &[&str] = &["gen_temp"];
+
+/// `Test2::Tools::Grab` default export at the pin.
+const GRAB: &[&str] = &["grab"];
+
+/// `Test2::Tools::Tester` optional exports (`@EXPORT_OK`); no defaults at the pin.
+const TESTER_EXPORT_OK: &[&str] = &["facets", "filter_events", "event_groups"];
+
+/// `Test2::Tools::Spec` default exports assembled at load time (pin 1.302225).
+const SPEC_DEFAULT: &[&str] = &[
+    "tests",
+    "it",
+    "case",
+    "before_all",
+    "around_all",
+    "after_all",
+    "before_case",
+    "around_case",
+    "after_case",
+    "before_each",
+    "around_each",
+    "after_each",
+    "describe",
+    "cases",
+];
+
+/// `Test2::Tools::Spec` optional exports at the pin.
+const SPEC_EXPORT_OK: &[&str] = &[
+    "mini",
+    "iso",
+    "miso",
+    "async",
+    "masync",
+    "include_workflow",
+    "include_workflows",
+    "spec_defaults",
+];
+
+/// `Test2::Bundle::More` default `@EXPORT` at the pin.
+const BUNDLE_MORE: &[&str] = &[
+    "ok",
+    "pass",
+    "fail",
+    "skip",
+    "todo",
+    "diag",
+    "note",
+    "plan",
+    "skip_all",
+    "done_testing",
+    "BAIL_OUT",
+    "is",
+    "isnt",
+    "like",
+    "unlike",
+    "is_deeply",
+    "cmp_ok",
+    "isa_ok",
+    "can_ok",
+    "subtest",
+];
+
+/// `Test2::Bundle::Simple` default `@EXPORT` at the pin.
+const BUNDLE_SIMPLE: &[&str] = &["ok", "plan", "done_testing", "skip_all"];
 
 /// The `subtest` name as exposed by the `Test2::V0` bundle.
 const SUBTEST_BUNDLE: &[&str] = &["subtest"];
@@ -173,7 +315,7 @@ static V0_DEFAULT: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     for group in [
         BASIC,
         COMPARE,
-        CLASSIC_COMPARE,
+        CLASSIC_COMPARE_V0,
         WARNINGS,
         CLASS,
         EXCEPTION,
@@ -184,7 +326,7 @@ static V0_DEFAULT: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         EXPORTS,
         REFCOUNT,
         EVENT,
-        API,
+        API_V0,
         SUBTEST_BUNDLE,
     ] {
         v.extend_from_slice(group);
@@ -207,7 +349,8 @@ const V1_DEFAULT: &[&str] = &["T2"];
 
 /// Whether `module` is any Test2 module the LSP has awareness of.
 pub fn is_test2_module(module: &str) -> bool {
-    is_test2_bundle(module)
+    module == "Test2::Suite"
+        || is_test2_bundle(module)
         || module.starts_with("Test2::Tools::")
         || module.starts_with("Test2::Plugin::")
         || module == "Test2::API"
@@ -215,11 +358,17 @@ pub fn is_test2_module(module: &str) -> bool {
 
 /// Whether `module` is a Test2 *bundle* module. Bundles are the recommended
 /// entry points (`Test2::V0`, `Test2::V1`, `Test2::Bundle::*`). Note that being
-/// a bundle does **not** imply pragmas are on by default — `Test2::V0` enables
-/// them by default while `Test2::V1` does not (see `resolve_import`).
+/// a bundle does **not** imply pragmas are on by default — `Test2::V0` and
+/// `Test2::Bundle::Extended` enable them by default while `Test2::V1`,
+/// `Test2::Bundle::More`, and `Test2::Bundle::Simple` do not (see
+/// `resolve_import`). `Test2::Suite` is not a bundle.
 pub fn is_test2_bundle(module: &str) -> bool {
-    matches!(module, "Test2::V0" | "Test2::V1" | "Test2::Suite")
-        || module.starts_with("Test2::Bundle::")
+    matches!(module, "Test2::V0" | "Test2::V1") || module.starts_with("Test2::Bundle::")
+}
+
+/// Bundles whose importers install caller `strict`/`warnings` by default.
+fn bundle_enables_default_pragmas(module: &str) -> bool {
+    matches!(module, "Test2::V0" | "Test2::Bundle::Extended")
 }
 
 /// The default export set for a known Test2 module, or `None` if the module is
@@ -232,6 +381,18 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
     if module == "Test2::V0" {
         return Some(V0_DEFAULT.as_slice());
     }
+    if module == "Test2::Bundle::Extended" {
+        return Some(V0_DEFAULT.as_slice());
+    }
+    if module == "Test2::Bundle::More" {
+        return Some(BUNDLE_MORE);
+    }
+    if module == "Test2::Bundle::Simple" {
+        return Some(BUNDLE_SIMPLE);
+    }
+    if module == "Test2::Suite" {
+        return Some(&[]);
+    }
     // `Test2::V1`'s only *default* export is the `T2()` handle; the bare set is
     // pulled in only under `-import`/`-i` (handled in `resolve_import`). Oracle:
     // metacpan `Test2::V1`.
@@ -241,7 +402,7 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
     let group: &'static [&'static str] = match module {
         "Test2::Tools::Basic" => BASIC,
         "Test2::Tools::Compare" => COMPARE_OWN_DEFAULT,
-        "Test2::Tools::ClassicCompare" => CLASSIC_COMPARE,
+        "Test2::Tools::ClassicCompare" => CLASSIC_COMPARE_OWN,
         "Test2::Tools::Warnings" => WARNINGS,
         "Test2::Tools::Class" => CLASS,
         "Test2::Tools::Exception" => EXCEPTION,
@@ -253,7 +414,13 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
         "Test2::Tools::Refcount" => REFCOUNT,
         "Test2::Tools::Event" => EVENT,
         "Test2::Tools::Subtest" => SUBTEST_OWN,
-        "Test2::API" => API,
+        "Test2::Tools::AsyncSubtest" => ASYNC_SUBTEST,
+        "Test2::Tools::GenTemp" => GEN_TEMP,
+        "Test2::Tools::Grab" => GRAB,
+        "Test2::Tools::Spec" => SPEC_DEFAULT,
+        "Test2::Tools::Target" => &[],
+        "Test2::Tools::Tester" => &[],
+        "Test2::API" => &[],
         _ => return None,
     };
     Some(group)
@@ -269,6 +436,20 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
 fn module_all_exports(module: &str) -> Option<&'static [&'static str]> {
     match module {
         "Test2::Tools::Compare" => Some(COMPARE),
+        "Test2::Tools::Spec" => {
+            static SPEC_ALL: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+                let mut v: Vec<&'static str> = Vec::new();
+                v.extend_from_slice(SPEC_DEFAULT);
+                v.extend_from_slice(SPEC_EXPORT_OK);
+                v.sort_unstable();
+                v.dedup();
+                v
+            });
+            Some(SPEC_ALL.as_slice())
+        }
+        "Test2::Tools::Tester" => Some(TESTER_EXPORT_OK),
+        "Test2::API" => Some(API_EXPORT_OK),
+        "Test2::Bundle::Extended" | "Test2::V0" => Some(V0_DEFAULT.as_slice()),
         _ => module_default_exports(module),
     }
 }
@@ -892,6 +1073,15 @@ fn resolve_import_with(
         return None;
     }
 
+    // `Test2::Suite` is a distribution namespace with no importer; never admit
+    // local symbol facts from plain or explicit imports.
+    if module == "Test2::Suite" {
+        return Some(ResolvedImportAnalysis {
+            resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
+            analysis_limited: false,
+        });
+    }
+
     // `use Test2::V0 ();` — an explicit empty import list. Perl does not call
     // `import`, so no symbols are imported and (for bundles) no strict/warnings
     // pragmas are applied. The module is still loaded, so return an empty import
@@ -904,6 +1094,38 @@ fn resolve_import_with(
         return Some(ResolvedImportAnalysis {
             resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
             analysis_limited: false,
+        });
+    }
+
+    if module == "Test2::Tools::Target" {
+        let trimmed = raw_args.trim();
+        let synthetic = if trimmed.is_empty() {
+            String::new()
+        } else if trimmed.starts_with('{') {
+            format!("-target => {trimmed}")
+        } else if trimmed.contains("=>") {
+            format!("-target => {{ {trimmed} }}")
+        } else {
+            format!("-target => {trimmed}")
+        };
+        if synthetic.is_empty() {
+            return Some(ResolvedImportAnalysis {
+                resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
+                analysis_limited: false,
+            });
+        }
+        let v0_analysis = resolve_import_with("Test2::V0", &synthetic, rename_as, rename_fix)?;
+        let default_names: BTreeSet<String> =
+            V0_DEFAULT.iter().map(|symbol| (*symbol).to_string()).collect();
+        let symbols: BTreeSet<String> = v0_analysis
+            .resolved
+            .symbols
+            .into_iter()
+            .filter(|symbol| !default_names.contains(symbol))
+            .collect();
+        return Some(ResolvedImportAnalysis {
+            resolved: ResolvedImport { symbols, pragmas: None },
+            analysis_limited: v0_analysis.analysis_limited,
         });
     }
 
@@ -920,12 +1142,10 @@ fn resolve_import_with(
     let all_set =
         if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_all_exports(module) };
 
-    // Pragma resolution (bundles only). Most bundles (`Test2::V0`, `Test2::Suite`,
-    // `Test2::Bundle::*`) enable strict/warnings by default and opt OUT via
-    // `-no_strict`/`-no_warnings`/`-no_pragmas`. `Test2::V1` is the exception: it
-    // enables NO pragmas by default and opts IN via `-pragmas`/`-p` (grouped or
-    // standalone), `-strict`, or `-warnings`. Oracle: metacpan `Test2::V1` ("NO
-    // PRAGMAS ARE ENABLED BY DEFAULT").
+    // Pragma resolution (bundles only). `Test2::V0` and `Test2::Bundle::Extended`
+    // enable strict/warnings by default and opt OUT via `-no_*`. `Test2::V1`
+    // enables NO pragmas by default and opts IN. Exporter bundles (`More`,
+    // `Simple`) install no caller pragmas.
     let pragmas = if bundle {
         if module == "Test2::V1" {
             let all = args_contains_option(raw_args, "pragmas") || v1_short_flag(raw_args, 'p');
@@ -933,11 +1153,13 @@ fn resolve_import_with(
                 strict: all || args_contains_option(raw_args, "strict"),
                 warnings: all || args_contains_option(raw_args, "warnings"),
             })
-        } else {
+        } else if bundle_enables_default_pragmas(module) {
             let no_pragmas = args_contains_option(raw_args, "no_pragmas");
             let no_strict = no_pragmas || args_contains_option(raw_args, "no_strict");
             let no_warnings = no_pragmas || args_contains_option(raw_args, "no_warnings");
             Some(Test2Pragmas { strict: !no_strict, warnings: !no_warnings })
+        } else {
+            None
         }
     } else {
         None
@@ -962,7 +1184,8 @@ fn resolve_import_with(
     };
 
     let atoms = tokenize_import_args(&stripped);
-    let target_option_supported = matches!(module, "Test2::V0" | "Test2::V1");
+    let target_option_supported =
+        matches!(module, "Test2::V0" | "Test2::V1" | "Test2::Bundle::Extended");
     let mut atom_index = 0;
     let mut target_helpers: BTreeSet<String> = BTreeSet::new();
 
