@@ -5,7 +5,8 @@ use std::fs;
 use std::path::Path;
 
 /// Wire version this producer emits and every consumer pins (#15372).
-const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: &str = "agent_lease.v1";
+const SUPPORTED_SCHEMA_VERSION: &str = SCHEMA_VERSION;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -26,7 +27,7 @@ pub struct AgentTask {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentLease {
-    pub schema_version: u32,
+    pub schema_version: String,
     pub issued_at: DateTime<Utc>,
     #[serde(flatten)]
     pub task: AgentTask,
@@ -43,8 +44,11 @@ pub fn acquire(task_path: &Path, out_path: &Path) -> Result<()> {
     let task = read_task(task_path)?;
     validate_task(&task)?;
 
-    let lease =
-        AgentLease { schema_version: SUPPORTED_SCHEMA_VERSION, issued_at: Utc::now(), task };
+    let lease = AgentLease {
+        schema_version: SUPPORTED_SCHEMA_VERSION.to_owned(),
+        issued_at: Utc::now(),
+        task,
+    };
 
     write_json(out_path, &lease)?;
     println!("Lease written to {}", out_path.display());
@@ -170,7 +174,7 @@ mod tests {
 
     fn valid_lease() -> Result<AgentLease> {
         Ok(AgentLease {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION.to_owned(),
             issued_at: parse_time("2026-06-20T00:00:00Z")?,
             task: valid_task()?,
         })
@@ -209,7 +213,7 @@ mod tests {
         let lease = read_lease(&lease_path)?;
         verify(&lease_path, &current_path)?;
 
-        ensure!(lease.schema_version == 1, "got lease: {lease:?}");
+        ensure!(lease.schema_version == SCHEMA_VERSION, "got lease: {lease:?}");
         ensure!(lease.task.task_id == "task-1", "got lease: {lease:?}");
 
         Ok(())
@@ -266,13 +270,15 @@ mod tests {
         )?;
 
         let mut future = valid_lease()?;
-        future.schema_version = 2;
+        future.schema_version = "agent_lease.v2".to_owned();
         write_fixture_json(&lease_path, &future)?;
         let err = verify(&lease_path, &current_path)
             .err()
             .ok_or_else(|| eyre!("v2 lease should fail verification"))?;
         ensure!(
-            err.to_string().contains("unsupported agent lease schema_version: 2 (expected 1)"),
+            err.to_string().contains(
+                "unsupported agent lease schema_version: agent_lease.v2 (expected agent_lease.v1)"
+            ),
             "got error: {err}"
         );
 
