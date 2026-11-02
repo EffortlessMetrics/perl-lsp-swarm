@@ -640,28 +640,37 @@ fn prepare_gitignore_probe_repo(
 ) -> std::io::Result<PathBuf> {
     let probe_root = create_gitignore_probe_root()?;
 
-    let init = std::process::Command::new("git")
-        .args(["init", "--quiet"])
-        .current_dir(&probe_root)
-        .status()?;
-    if !init.success() {
-        return Err(std::io::Error::other("git init failed for ignore probe"));
-    }
-
-    copy_gitignore_probe_configuration(root, &probe_root)?;
-    copy_gitignore_rules_for_paths(root, &probe_root, relative_paths)?;
-
-    for relative in relative_paths {
-        if !is_safe_relative_git_path(relative) {
-            continue;
+    let setup = (|| -> std::io::Result<()> {
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&probe_root)
+            .status()?;
+        if !init.success() {
+            return Err(std::io::Error::other("git init failed for ignore probe"));
         }
-        let path = probe_root.join(relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+
+        copy_gitignore_probe_configuration(root, &probe_root)?;
+        copy_gitignore_rules_for_paths(root, &probe_root, relative_paths)?;
+
+        for relative in relative_paths {
+            if !is_safe_relative_git_path(relative) {
+                continue;
+            }
+            let path = probe_root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            // Linked-directory expansion only supplies regular files; materialize each
+            // candidate as a file so directory-only ignore rules cannot misfire.
+            std::fs::write(path, b"")?;
         }
-        // Linked-directory expansion only supplies regular files; materialize each
-        // candidate as a file so directory-only ignore rules cannot misfire.
-        std::fs::write(path, b"")?;
+
+        Ok(())
+    })();
+
+    if let Err(error) = setup {
+        let _ = std::fs::remove_dir_all(&probe_root);
+        return Err(error);
     }
 
     Ok(probe_root)
