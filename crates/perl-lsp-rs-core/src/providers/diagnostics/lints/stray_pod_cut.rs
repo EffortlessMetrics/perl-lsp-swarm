@@ -16,6 +16,7 @@ pub fn check_stray_pod_cut(source: &str, diagnostics: &mut Vec<Diagnostic>) {
     let bytes = source.as_bytes();
     let mut in_pod = false;
     let mut last_significant: Option<u8> = None;
+    let mut quote = QuoteState::None;
     let mut offset = 0;
 
     while offset < bytes.len() {
@@ -23,28 +24,33 @@ pub fn check_stray_pod_cut(source: &str, diagnostics: &mut Vec<Diagnostic>) {
         let rest = &bytes[offset..];
         let rel_end = rest.iter().position(|&b| b == b'\n' || b == b'\r').unwrap_or(rest.len());
         let line = &rest[..rel_end];
+        let in_string_at_line_start = quote != QuoteState::None;
 
-        match classify_pod_line(line) {
-            Some(PodLine::Cut) if in_pod => {
-                in_pod = false;
-                last_significant = None;
-            }
-            Some(kind) if !in_pod && at_directive_context(last_significant) => match kind {
-                PodLine::Cut => {
-                    emit_stray_cut(line_start, diagnostics);
-                    in_pod = true;
-                }
-                PodLine::Opener => in_pod = true,
-            },
-            _ if !in_pod => {
-                if line_is_blank(line) {
+        if !in_string_at_line_start {
+            match classify_pod_line(line) {
+                Some(PodLine::Cut) if in_pod => {
+                    in_pod = false;
                     last_significant = None;
-                } else if let Some(sig) = last_significant_on_line(line) {
-                    last_significant = Some(sig);
                 }
+                Some(kind) if !in_pod && at_directive_context(last_significant) => match kind {
+                    PodLine::Cut => {
+                        emit_stray_cut(line_start, diagnostics);
+                        in_pod = true;
+                    }
+                    PodLine::Opener => in_pod = true,
+                },
+                _ if !in_pod => {
+                    if line_is_blank(line) {
+                        last_significant = None;
+                    } else if let Some(sig) = last_significant_on_line(line) {
+                        last_significant = Some(sig);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
+
+        quote = update_quote_state_for_line(quote, line);
 
         offset = line_start.saturating_add(rel_end);
         if offset >= bytes.len() {
@@ -65,6 +71,52 @@ pub fn check_stray_pod_cut(source: &str, diagnostics: &mut Vec<Diagnostic>) {
 enum PodLine {
     Cut,
     Opener,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuoteState {
+    None,
+    Single { escaped: bool },
+    Double { escaped: bool },
+}
+
+fn advance_quote_state(state: QuoteState, byte: u8) -> QuoteState {
+    match state {
+        QuoteState::None => match byte {
+            b'\'' => QuoteState::Single { escaped: false },
+            b'"' => QuoteState::Double { escaped: false },
+            _ => QuoteState::None,
+        },
+        QuoteState::Single { escaped } => {
+            if escaped {
+                QuoteState::Single { escaped: false }
+            } else if byte == b'\\' {
+                QuoteState::Single { escaped: true }
+            } else if byte == b'\'' {
+                QuoteState::None
+            } else {
+                QuoteState::Single { escaped: false }
+            }
+        }
+        QuoteState::Double { escaped } => {
+            if escaped {
+                QuoteState::Double { escaped: false }
+            } else if byte == b'\\' {
+                QuoteState::Double { escaped: true }
+            } else if byte == b'"' {
+                QuoteState::None
+            } else {
+                QuoteState::Double { escaped: false }
+            }
+        }
+    }
+}
+
+fn update_quote_state_for_line(mut state: QuoteState, line: &[u8]) -> QuoteState {
+    for &byte in line {
+        state = advance_quote_state(state, byte);
+    }
+    state
 }
 
 fn classify_pod_line(line: &[u8]) -> Option<PodLine> {
@@ -190,5 +242,15 @@ mod tests {
         assert_eq!(ranges("my $x = 1\n\n=cut\n").len(), 1);
         assert_eq!(ranges("use strict;\n=cut\nnot code\n=cut\nsub recovered { 1 }\n").len(), 1);
         assert!(ranges("use strict;\n=pod\nDocs\n=cut\nsub after { 1 }\n").is_empty());
+    }
+
+    #[test]
+    fn cut_inside_multiline_double_quoted_string_is_silent() {
+        let source = "my $s = \"first\n=cut\nlast\";\n";
+        assert!(
+            ranges(source).is_empty(),
+            "=cut inside a string must not warn: {:?}",
+            ranges(source)
+        );
     }
 }

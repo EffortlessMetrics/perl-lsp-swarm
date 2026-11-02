@@ -104,3 +104,13 @@ fn warning_not_error() {
         "perl -c accepts the file, so this is a warning"
     );
 }
+
+#[test]
+fn cut_inside_multiline_string_is_silent() {
+    let source = "my $s = \"first\n=cut\nlast\";\n";
+    assert!(
+        pl412(source).is_empty(),
+        "=cut inside a double-quoted string must not warn: {:?}",
+        pl412(source)
+    );
+}

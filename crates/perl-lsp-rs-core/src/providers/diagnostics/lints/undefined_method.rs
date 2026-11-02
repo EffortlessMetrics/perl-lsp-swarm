@@ -34,9 +34,10 @@ struct WalkState<'a> {
 
 /// Warn when a method call is absent from the inferred in-file class table.
 pub fn check_undefined_methods(root: &Node, source: &str, diagnostics: &mut Vec<Diagnostic>) {
-    let models = merge_reopened_class_models(&ClassModelBuilder::new().build(root));
+    let raw_models = ClassModelBuilder::new().build(root);
+    let models = merge_reopened_class_models(&raw_models);
     let defined = collect_package_methods(root);
-    let classes = class_info_by_name(&models, defined);
+    let classes = class_info_by_name(&models, &raw_models, defined);
     if classes.is_empty() {
         return;
     }
@@ -51,6 +52,7 @@ pub fn check_undefined_methods(root: &Node, source: &str, diagnostics: &mut Vec<
 
 fn class_info_by_name(
     models: &[ClassModel],
+    raw_models: &[ClassModel],
     defined: HashMap<String, HashSet<String>>,
 ) -> HashMap<String, ClassInfo> {
     let mut classes = HashMap::new();
@@ -94,6 +96,16 @@ fn class_info_by_name(
             entry.framework = model.framework;
         }
     }
+    for model in raw_models {
+        if model.name.is_empty() {
+            continue;
+        }
+        let extra = provided_method_names(model);
+        if let Some(entry) = classes.get_mut(&model.name) {
+            entry.methods.extend(extra);
+            entry.autoload |= entry.methods.contains("AUTOLOAD");
+        }
+    }
     classes
 }
 
@@ -113,20 +125,25 @@ fn collect_package_methods_visit(
     match &node.kind {
         NodeKind::Package { name, block: Some(block), .. } => {
             let previous = std::mem::replace(package, name.clone());
+            methods.entry(package.clone()).or_default();
             collect_package_methods_visit(block, package, methods);
             *package = previous;
         }
         NodeKind::Package { name, block: None, .. } => {
             *package = name.clone();
+            methods.entry(package.clone()).or_default();
         }
         NodeKind::Class { name, body, .. } => {
             let previous = std::mem::replace(package, name.clone());
+            methods.entry(package.clone()).or_default();
             collect_package_methods_visit(body, package, methods);
             *package = previous;
         }
-        NodeKind::Subroutine { name, body, .. } => {
+        NodeKind::Subroutine { name, body, declarator, .. } => {
+            let lexical = is_lexical_sub_declarator(declarator.as_deref());
             if let Some(sub_name) = name
                 && !sub_name.is_empty()
+                && !lexical
             {
                 methods.entry(package.clone()).or_default().insert(sub_name.clone());
             }
@@ -146,9 +163,16 @@ fn collect_package_methods_visit(
     }
 }
 
+fn is_lexical_sub_declarator(declarator: Option<&str>) -> bool {
+    matches!(declarator, Some("my") | Some("state"))
+}
+
 fn provided_method_names(model: &ClassModel) -> HashSet<String> {
     let mut names = HashSet::new();
     for method in model.methods.iter().chain(model.adjusts.iter()) {
+        if is_lexical_sub_declarator(method.declarator.as_deref()) {
+            continue;
+        }
         if !method.name.is_empty() {
             names.insert(method.name.clone());
         }
@@ -221,6 +245,13 @@ fn visit(node: &Node, state: &mut WalkState<'_>, diagnostics: &mut Vec<Diagnosti
                 visit(arg, state, diagnostics);
             }
         }
+        NodeKind::Block { .. } => {
+            let checkpoint = state.locals.clone();
+            for child in node.children() {
+                visit(child, state, diagnostics);
+            }
+            state.locals = checkpoint;
+        }
         _ => {
             for child in node.children() {
                 visit(child, state, diagnostics);
@@ -230,13 +261,14 @@ fn visit(node: &Node, state: &mut WalkState<'_>, diagnostics: &mut Vec<Diagnosti
 }
 
 fn record_constructor(lhs: &Node, rhs: &Node, state: &mut WalkState<'_>) {
-    let Some(package) = constructor_package(rhs) else {
-        return;
-    };
     let Some(variable) = scalar_name(lhs) else {
         return;
     };
-    state.locals.insert(variable, package);
+    if let Some(package) = constructor_package(rhs) {
+        state.locals.insert(variable, package);
+    } else {
+        state.locals.remove(&variable);
+    }
 }
 
 fn constructor_package(rhs: &Node) -> Option<String> {

@@ -266,3 +266,77 @@ fn warning_not_error() {
         "issue #18771 requires a warning, not an error"
     );
 }
+
+#[test]
+fn reassignment_clears_stale_constructor_type() {
+    let source = r#"package Old;
+sub new { bless {}, shift }
+package Other;
+sub new_from_cache { bless {}, shift }
+sub send { }
+package Demo;
+sub demo {
+    my $obj = Old->new;
+    $obj = Other->new_from_cache;
+    $obj->send;
+}
+"#;
+    assert!(
+        pl306(source).is_empty(),
+        "reassignment must drop the old inferred class: {:?}",
+        pl306(source)
+    );
+}
+
+#[test]
+fn inner_block_lexical_does_not_escape_scope() {
+    let source = r#"package Outer;
+sub new { bless {}, shift }
+sub outer_only { }
+package Inner;
+sub new { bless {}, shift }
+package Demo;
+sub demo {
+    my $obj = Outer->new;
+    { my $obj = Inner->new; }
+    $obj->outer_only;
+}
+"#;
+    assert!(
+        pl306(source).is_empty(),
+        "inner block shadow must not leak inferred type: {:?}",
+        pl306(source)
+    );
+}
+
+#[test]
+fn lexical_sub_is_not_a_package_method() {
+    let source = r#"package P;
+my sub foo { }
+P->foo();
+"#;
+    assert_eq!(
+        pl306(source).len(),
+        1,
+        "my sub must not suppress PL306 on Package->call: {:?}",
+        pl306(source)
+    );
+}
+
+#[test]
+fn reopened_segment_accessor_is_silent() {
+    let source = r#"package Item;
+use Moo;
+sub demo {
+    my ($self) = @_;
+    $self->sku;
+}
+package Item;
+has 'sku' => (is => 'ro');
+"#;
+    assert!(
+        pl306(source).is_empty(),
+        "accessor declared in a later package segment must not warn: {:?}",
+        pl306(source)
+    );
+}
