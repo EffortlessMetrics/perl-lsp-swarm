@@ -394,15 +394,7 @@ pub(super) fn publish_diagnostics_params(method: &str, value: &Value) -> Result<
 fn diagnostic_item(method: &str, path: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), path, value)?;
     range(method, &format!("{path}.range"), object.get("range"))?;
-    let message = expect_string(Some(method), &format!("{path}.message"), object.get("message"))?;
-    if message.is_empty() {
-        return Err(SchemaError::new(
-            Some(method),
-            format!("{path}.message"),
-            "non-empty string",
-            "string(len=0)",
-        ));
-    }
+    expect_string(Some(method), &format!("{path}.message"), object.get("message"))?;
     if let Some(severity) = object.get("severity") {
         let severity =
             expect_lsp_integer(Some(method), &format!("{path}.severity"), Some(severity))?;
@@ -415,16 +407,12 @@ fn diagnostic_item(method: &str, path: &str, value: &Value) -> Result<(), Schema
             ));
         }
     }
-    if let Some(code) = object.get("code")
-        && !code.is_string()
-        && code.as_i64().is_none()
-    {
-        return Err(SchemaError::at_value(
-            Some(method),
-            format!("{path}.code"),
-            "integer or string",
-            code,
-        ));
+    if let Some(code) = object.get("code") {
+        if code.is_string() {
+            expect_string(Some(method), &format!("{path}.code"), Some(code))?;
+        } else {
+            expect_lsp_integer(Some(method), &format!("{path}.code"), Some(code))?;
+        }
     }
     if let Some(source) = object.get("source") {
         expect_string(Some(method), &format!("{path}.source"), Some(source))?;
@@ -466,19 +454,7 @@ fn diagnostic_item(method: &str, path: &str, value: &Value) -> Result<(), Schema
     if let Some(code_description) = object.get("codeDescription") {
         let object =
             expect_object(Some(method), &format!("{path}.codeDescription"), code_description)?;
-        let href = expect_string(
-            Some(method),
-            &format!("{path}.codeDescription.href"),
-            object.get("href"),
-        )?;
-        if !(href.starts_with("http://") || href.starts_with("https://")) {
-            return Err(SchemaError::new(
-                Some(method),
-                format!("{path}.codeDescription.href"),
-                "http:// or https:// URL",
-                format!("string(len={})", href.len()),
-            ));
-        }
+        document_uri(method, &format!("{path}.codeDescription.href"), object.get("href"))?;
     }
     Ok(())
 }

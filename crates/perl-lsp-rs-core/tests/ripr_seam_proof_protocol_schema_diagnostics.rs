@@ -75,16 +75,6 @@ fn publish_diagnostics_rejects_wrong_known_fields_at_exact_paths() {
                 "uri": "file:///main.pl",
                 "diagnostics": [{
                     "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
-                    "message": ""
-                }]
-            }),
-            "$.params.diagnostics[0].message",
-        ),
-        (
-            json!({
-                "uri": "file:///main.pl",
-                "diagnostics": [{
-                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
                     "message": "bad",
                     "severity": 0
                 }]
@@ -97,7 +87,18 @@ fn publish_diagnostics_rejects_wrong_known_fields_at_exact_paths() {
                 "diagnostics": [{
                     "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
                     "message": "bad",
-                    "codeDescription": {"href": "ftp://example.com"}
+                    "code": 2147483648_i64
+                }]
+            }),
+            "$.params.diagnostics[0].code",
+        ),
+        (
+            json!({
+                "uri": "file:///main.pl",
+                "diagnostics": [{
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+                    "message": "bad",
+                    "codeDescription": {"href": "not-a-uri"}
                 }]
             }),
             "$.params.diagnostics[0].codeDescription.href",
@@ -109,6 +110,20 @@ fn publish_diagnostics_rejects_wrong_known_fields_at_exact_paths() {
         assert_eq!(error.method.as_deref(), Some(METHOD));
         assert_eq!(error.path, path);
     }
+}
+
+#[test]
+fn publish_diagnostics_accepts_empty_message_and_file_href() -> Result<(), SchemaError> {
+    let frame = notification(json!({
+        "uri": "file:///main.pl",
+        "diagnostics": [{
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "message": "",
+            "codeDescription": {"href": "file:///workspace/docs/PL002.html"}
+        }]
+    }));
+    validate(&frame, Direction::ServerToClient, None)?;
+    Ok(())
 }
 
 #[test]
