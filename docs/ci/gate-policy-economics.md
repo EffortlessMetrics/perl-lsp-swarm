@@ -55,7 +55,7 @@ integration-test preparation; #17459):
 
 | Lane | Gates |
 |---|---|
-| `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `unit_routed_full_build`, `clippy_tests_kernel`, `ci_subject_digest_oracle`, `unit_control_plane_bins`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
+| `pr_smoke` | `fmt`, `cargo_lock_coherence`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `unit_routed_full_build`, `clippy_tests_kernel`, `ci_subject_digest_oracle`, `unit_control_plane_bins`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
 | `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `parser_integration`, `parser_behavior_proof`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `pending_parse_freshness`, `pull_diagnostics_freshness`, `must_context_check`, `docs_agents_contract_workflows`, `doctest_contract_proof`, `doctest_enforcement`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage`, `non_rust_inventory_check`, `completion_candidate_ledger`, `lint_policy`, `msrv_authority_sync`, `compiler_concept_ledger`, `compiler_proof_policy`, `compiler_concept_proof`, `compiler_performance_receipt_contract`, `kubernetes_dap_profiles`, `postfix_capability_closure`, `release_trust_invariants`, `agent_ledgers_validate`, `unsafe_prod_check`, `code_action_generation_ledger`, `source_commit_api_check`, `serial_test_ratchet`, `regex_static_ratchet` |
 | `check_all_targets` | `compile_all_targets` |
 | `conflict_markers` | `check_conflict_markers` |
@@ -68,7 +68,7 @@ integration-test preparation; #17459):
 | `coverage` | `coverage` |
 | `real_repo_latency` | `benchmarks`, `lsp_tier_a`, `lsp_tier_b` |
 | `perl_version_matrix` | `full_matrix` |
-| `commit_checks` | `staged_tree_identity`, `whitespace_check`, `conflict_markers_staged`, `staged_exec_mode_policy`, `staged_config_syntax`, `forbidden_machine_paths`, `staged_oversized_or_binary`, `changie_fragment_staged`, `rustfmt_staged`, `from_raw_staged` |
+| `commit_checks` | `staged_tree_identity`, `whitespace_check`, `conflict_markers_staged`, `staged_exec_mode_policy`, `staged_config_syntax`, `forbidden_machine_paths`, `staged_oversized_or_binary`, `changie_fragment_staged`, `rustfmt_staged`, `from_raw_staged`, `cargo_lock_coherence_staged` |
 
 Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_latest`,
 `merge_gate_aggregate`, `lsp_memory_smoke`, `windows_guardrails`, `ripr_advisory`,
