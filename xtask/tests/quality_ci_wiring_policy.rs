@@ -1160,8 +1160,11 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     let ci_route_source =
         must(fs::read_to_string(root.join("xtask").join("src").join("tasks").join("ci_route.rs")));
     must(ci_nightly_coverage_route_consumer_contract(coverage_job));
-    let stale_coverage_consumer =
-        coverage_job.replacen("if schema != \"ci-route.v1\":", "if False:", 1);
+    let stale_coverage_consumer = coverage_job.replacen(
+        "unsupported ci-route schema",
+        "ignored schema drift",
+        1,
+    );
     assert_ne!(
         stale_coverage_consumer, coverage_job,
         "negative control must disable the nightly ci-route schema_version gate"
@@ -2455,12 +2458,13 @@ fn ci_nightly_coverage_route_consumer_contract(coverage_job: &str) -> Result<()>
         .ok_or_else(|| anyhow!("missing nightly coverage_required ci-route consumer"))?;
     let snippet = &coverage_job[start..];
     ensure!(
-        snippet.contains("schema_version") && snippet.contains("ci-route.v1"),
+        snippet.contains("if schema != \"ci-route.v1\":")
+            && snippet.contains("unsupported ci-route schema"),
         "coverage route consumer must validate ci-route.v1 before reading coverage_proof_packs (#15308)"
     );
     ensure!(
-        snippet.contains("unsupported ci-route schema"),
-        "schema_version mismatch must abort the coverage route step loudly (#15308)"
+        snippet.contains("coverage_proof_packs"),
+        "coverage route consumer must still derive coverage_required from coverage_proof_packs (#15308)"
     );
     Ok(())
 }
