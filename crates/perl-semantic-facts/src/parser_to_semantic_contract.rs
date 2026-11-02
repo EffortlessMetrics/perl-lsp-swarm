@@ -41,6 +41,15 @@ pub(crate) const SPEC_PATH: &str = "docs/specs/PLSP-SPEC-0039-semantic-contract-
 /// Policy path for machine-readable issue routing.
 pub(crate) const ROUTING_POLICY_PATH: &str = "policy/semantic/packet-e-issue-routing.v1.toml";
 
+// Keep contract anchors live in non-test builds (clippy `-D warnings` / dead_code).
+const _: () = {
+    assert!(FOLLOW_UP_COMPATIBILITY_LEDGER == 4736);
+    assert!(FOLLOW_UP_FACT_TAXONOMY == 2543);
+    assert!(FOLLOW_UP_CAPABILITY_BACKLOG == 2559);
+    assert!(!SPEC_PATH.is_empty());
+    assert!(!ROUTING_POLICY_PATH.is_empty());
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
