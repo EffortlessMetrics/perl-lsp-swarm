@@ -85,20 +85,6 @@ void test('current-source Linux smoke runs when the DAP crate changes', () => {
   assert.match(source, /^      - 'crates\/perl-dap\/\*\*'$/m);
 });
 
-void test('current-source Linux smoke preserves active runs and coalesces queued heads (#6887)', () => {
-  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
-  assert.match(source, /cancel-in-progress: false/);
-  assert.match(
-    source,
-    /group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('vscode-current-source-linux-smoke-manual-\{0\}', github\.run_id\) \|\| format\('vscode-current-source-linux-smoke-pr-\{0\}', github\.event\.pull_request\.number\) \}\}/,
-  );
-  assert.match(source, /PERL_LSP_SMOKE_SUBJECT_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
-  assert.match(source, /merge_verdict_authority': '#2911'/);
-  assert.match(source, /schema_version': 'vscode_current_source_scheduling\.v1'/);
-  assert.match(source, /if-no-files-found: error/);
-  assert.match(source, /- name: Record exact-subject scheduling result/);
-});
-
 void test('Linux first-hour byte leaf uses one standalone stable leg and retains its receipts', () => {
   const source = readWorkflow('vscode-current-source-linux-smoke.yml');
   assert.match(source, /branches: \[main, master, codex\/6056-installed-identity\]/);

@@ -110,6 +110,26 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(receipt["runs"][0]["terminal_state"], scheduling.FAILED)
 
 
+class WorkflowContractTests(unittest.TestCase):
+    def test_workflow_preserves_active_runs_and_coalesces_queued_heads(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/vscode-current-source-linux-smoke.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertIn(
+            "format('vscode-current-source-linux-smoke-pr-{0}', github.event.pull_request.number)",
+            workflow,
+        )
+        self.assertIn(
+            "PERL_LSP_SMOKE_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+            workflow,
+        )
+        self.assertIn("'merge_verdict_authority': '#2911'", workflow)
+        self.assertIn("'schema_version': 'vscode_current_source_scheduling.v1'", workflow)
+        self.assertIn("if-no-files-found: error", workflow)
+        self.assertIn("- name: Record exact-subject scheduling result", workflow)
+
+
 class FixtureTests(unittest.TestCase):
     def test_checked_multi_push_fixture_matches_classifier(self) -> None:
         fixture_path = FIXTURES / "multi_push_observed.v1.json"
