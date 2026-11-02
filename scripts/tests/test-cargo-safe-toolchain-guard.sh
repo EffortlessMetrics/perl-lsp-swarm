@@ -299,6 +299,103 @@ fi
 assert_contains "old proxy refusal names the safe manager floor" \
   'needs rustup >= 1.28.0' "${TMPDIR_BASE}/old.err"
 
+# ── 5. per-checkout config.local.toml loading (#13065) ───────────────────────
+
+LIB="${REPO_ROOT}/scripts/lib/cargo-local-config.sh"
+FIXTURE="${TMPDIR_BASE}/local-config-fixture"
+mkdir -p "${FIXTURE}/.cargo"
+# shellcheck source=../lib/cargo-local-config.sh
+source "$LIB"
+CARGO_LOCAL_CONFIG_ARGS=(unexpected)
+cargo_local_config_prepare "$FIXTURE"
+if [[ ${#CARGO_LOCAL_CONFIG_ARGS[@]} -eq 0 ]]; then
+  pass "local-config helper: no args when file absent"
+else
+  fail "local-config helper: expected empty args when absent"
+fi
+echo '[build]
+jobs = 3' > "${FIXTURE}/.cargo/config.local.toml"
+cargo_local_config_prepare "$FIXTURE"
+if [[ ${#CARGO_LOCAL_CONFIG_ARGS[@]} -eq 2 &&
+      "${CARGO_LOCAL_CONFIG_ARGS[0]}" == "--config" ]]; then
+  pass "local-config helper: passes --config when present"
+else
+  fail "local-config helper: unexpected args when present"
+fi
+
+LOCAL_CONFIG="${REPO_ROOT}/.cargo/config.local.toml"
+LOCAL_BACKUP=""
+CREATED_LOCAL=0
+restore_local_config() {
+  if [[ -n "${LOCAL_BACKUP:-}" ]]; then
+    mv -f "$LOCAL_BACKUP" "$LOCAL_CONFIG"
+    LOCAL_BACKUP=""
+  elif [[ "${CREATED_LOCAL:-0}" == 1 && -f "$LOCAL_CONFIG" ]]; then
+    rm -f "$LOCAL_CONFIG"
+  fi
+  CREATED_LOCAL=0
+}
+if [[ -f "$LOCAL_CONFIG" ]]; then
+  LOCAL_BACKUP="${TMPDIR_BASE}/config.local.toml.bak"
+  cp "$LOCAL_CONFIG" "$LOCAL_BACKUP"
+fi
+trap 'restore_local_config; cleanup' EXIT
+
+CONFIG_STUB_BIN="${TMPDIR_BASE}/config-stub-bin"
+CONFIG_STUB_LOG="${TMPDIR_BASE}/config-stub-args.log"
+: > "$CONFIG_STUB_LOG"
+write_stub_cargo "$CONFIG_STUB_BIN" "1.96.1" "$CONFIG_STUB_LOG"
+echo '[env]
+CARGO_LOCAL_CONFIG_PROBE = "present"' > "$LOCAL_CONFIG"
+CREATED_LOCAL=1
+: > "$CONFIG_STUB_LOG"
+code=0
+(
+  cd "$REPO_ROOT"
+  PATH="${CONFIG_STUB_BIN}:$PATH" DEVPLANE="${TMPDIR_BASE}/config-plane" bash "$CARGO_SAFE" metadata --no-deps --format-version 1
+) > "${TMPDIR_BASE}/config-present.out" 2> "${TMPDIR_BASE}/config-present.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "cargo-safe: delegates with local config present"
+else
+  fail "cargo-safe: delegation failed with local config (${code})"
+fi
+assert_contains "cargo-safe: passes --config for local file" \
+  "--config ${REPO_ROOT}/.cargo/config.local.toml" "$CONFIG_STUB_LOG"
+restore_local_config
+
+code=0
+(
+  cd "$REPO_ROOT"
+  cargo metadata --no-deps --format-version 1 >/dev/null
+) 2> "${TMPDIR_BASE}/config-parse.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "tracked config.toml parses without local file"
+else
+  fail "tracked config.toml must parse without local file (${code})"
+fi
+
+FIXTURE_MANIFEST="${TMPDIR_BASE}/manifest-fixture"
+mkdir -p "${FIXTURE_MANIFEST}/.cargo" "${FIXTURE_MANIFEST}/src"
+cp "${REPO_ROOT}/.cargo/config.toml" "${FIXTURE_MANIFEST}/.cargo/config.toml"
+cat > "${FIXTURE_MANIFEST}/Cargo.toml" <<'EOF'
+[package]
+name = "local-config-parse-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+EOF
+echo 'fn main() {}' > "${FIXTURE_MANIFEST}/src/main.rs"
+code=0
+(
+  cd "$FIXTURE_MANIFEST"
+  cargo metadata --no-deps --format-version 1 >/dev/null
+) 2> "${TMPDIR_BASE}/include-missing.err" || code=$?
+if [[ "$code" -eq 0 ]]; then
+  pass "optional include tolerates missing config.local.toml"
+else
+  fail "optional include must parse when local file absent (${code})"
+fi
+
 TOTAL=$((PASS + FAIL))
 echo ""
 echo "=== Results: ${PASS}/${TOTAL} passed ==="

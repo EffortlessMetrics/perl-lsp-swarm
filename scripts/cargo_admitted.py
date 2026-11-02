@@ -25,6 +25,13 @@ class Denied(Exception):
         self.details = details
 
 
+def local_config_cli_args(worktree):
+    path = worktree / ".cargo" / "config.local.toml"
+    if path.is_file():
+        return ["--config", str(path)]
+    return []
+
+
 def native_path(value):
     # Python on Windows does not understand Git Bash /c/... environment paths.
     if value.startswith(("\\\\", "//")):
@@ -983,7 +990,8 @@ def main(args=None):
                 descriptor.update(lease_identity=list(identity), lease_marker=str(marker),
                                   marker_identity=list(marker_identity))
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
-            command = ["cargo", "--config", "unstable.unstable-options=false",
+            command = ["cargo", *local_config_cli_args(worktree),
+                       "--config", "unstable.unstable-options=false",
                        "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                        "--config", 'build.rustc-wrapper=""',
                        "--config", 'build.rustc-workspace-wrapper=""',
