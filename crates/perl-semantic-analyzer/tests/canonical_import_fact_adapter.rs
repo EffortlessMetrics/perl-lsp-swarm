@@ -5,6 +5,8 @@
 //! scope, anchor, and span must match. Overlay rows that HIR does not emit
 //! (`RequireThenImport`, standalone `ManualImport`) are allowed extras.
 
+use std::collections::HashSet;
+
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_semantic_analyzer::analysis::import_extractor::ImportExtractor;
@@ -34,18 +36,26 @@ fn spec_named<'a>(specs: &'a [ImportSpec], module: &str) -> Result<&'a ImportSpe
 fn matching_analyzer_row<'a>(
     hir_spec: &ImportSpec,
     analyzer: &'a [ImportSpec],
+    claimed: &mut HashSet<usize>,
 ) -> Result<&'a ImportSpec, String> {
     analyzer
         .iter()
-        .find(|spec| {
-            spec.span_start_byte == hir_spec.span_start_byte
+        .enumerate()
+        .find(|(idx, spec)| {
+            !claimed.contains(idx)
+                && spec.span_start_byte == hir_spec.span_start_byte
                 && match hir_spec.kind {
-                    ImportKind::Require => {
-                        spec.kind == ImportKind::Require
-                            || spec.kind == ImportKind::RequireThenImport
-                    }
+                    ImportKind::Require => match spec.kind {
+                        ImportKind::Require => spec.module == hir_spec.module,
+                        ImportKind::RequireThenImport => true,
+                        _ => false,
+                    },
                     _ => spec.kind == hir_spec.kind && spec.module == hir_spec.module,
                 }
+        })
+        .map(|(idx, spec)| {
+            claimed.insert(idx);
+            spec
         })
         .ok_or_else(|| {
             format!(
@@ -61,8 +71,9 @@ fn assert_hir_identity_survives(source: &str) -> TestResult {
     let hir_specs = hir.compile_environment.import_specs(FILE_ID);
     let analyzer = ImportExtractor::extract_from_hir(&hir, &ast, FILE_ID);
 
+    let mut claimed = HashSet::new();
     for hir_spec in &hir_specs {
-        let analyzer_spec = matching_analyzer_row(hir_spec, &analyzer)?;
+        let analyzer_spec = matching_analyzer_row(hir_spec, &analyzer, &mut claimed)?;
         if hir_spec.kind == ImportKind::Require
             && analyzer_spec.kind == ImportKind::RequireThenImport
         {
@@ -71,6 +82,7 @@ fn assert_hir_identity_survives(source: &str) -> TestResult {
             assert_eq!(analyzer_spec.span_start_byte, hir_spec.span_start_byte);
             continue;
         }
+        assert_eq!(analyzer_spec.module, hir_spec.module, "module drifted for {}", hir_spec.module);
         assert_eq!(analyzer_spec.kind, hir_spec.kind, "kind drifted for {}", hir_spec.module);
         assert_eq!(
             analyzer_spec.symbols, hir_spec.symbols,
@@ -99,6 +111,15 @@ fn assert_hir_identity_survives(source: &str) -> TestResult {
         );
         assert_eq!(analyzer_spec.file_id, hir_spec.file_id);
         assert_eq!(analyzer_spec.span_start_byte, hir_spec.span_start_byte);
+    }
+    for (idx, extra) in analyzer.iter().enumerate() {
+        if claimed.contains(&idx) {
+            continue;
+        }
+        assert!(
+            extra.kind == ImportKind::RequireThenImport || extra.kind == ImportKind::ManualImport,
+            "unexpected extra analyzer row beyond permitted overlays: {extra:?}"
+        );
     }
     Ok(())
 }
@@ -252,6 +273,26 @@ fn standalone_quoted_require_keeps_hir_path_identity() -> TestResult {
     let specs = analyzer_specs(source)?;
     assert_eq!(specs.len(), 1, "standalone quoted require must keep one HIR row: {specs:?}");
     assert_eq!(specs[0].kind, ImportKind::Require);
+    Ok(())
+}
+
+#[test]
+fn require_then_dynamic_import_does_not_emit_manual_import() -> TestResult {
+    let source = "require Foo::Bar;\nFoo::Bar->import(@names);\n";
+    assert_hir_identity_survives(source)?;
+    let specs = analyzer_specs(source)?;
+    assert_eq!(
+        specs.iter().filter(|row| row.module == "Foo::Bar").count(),
+        1,
+        "paired dynamic import must not emit a second ManualImport row: {specs:?}"
+    );
+    let spec = spec_named(&specs, "Foo::Bar")?;
+    assert_eq!(spec.kind, ImportKind::RequireThenImport);
+    assert_eq!(spec.symbols, ImportSymbols::Dynamic);
+    assert!(
+        specs.iter().all(|row| row.kind != ImportKind::ManualImport),
+        "import call consumed by require pairing must not also overlay ManualImport: {specs:?}"
+    );
     Ok(())
 }
 

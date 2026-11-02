@@ -53,21 +53,32 @@ impl ImportExtractor {
     // ── Overlay for patterns current HIR import_specs do not emit ────────
 
     fn overlay_non_directive_imports(node: &Node, file_id: FileId, out: &mut Vec<ImportSpec>) {
+        let mut consumed_import_spans = std::collections::HashSet::new();
+        Self::overlay_non_directive_imports_inner(node, file_id, out, &mut consumed_import_spans);
+    }
+
+    fn overlay_non_directive_imports_inner(
+        node: &Node,
+        file_id: FileId,
+        out: &mut Vec<ImportSpec>,
+        consumed_import_spans: &mut std::collections::HashSet<u32>,
+    ) {
         if let Some(spec) = Self::try_classify_standalone_class_import(node, file_id)
             && !Self::already_has_span(out, spec.span_start_byte)
+            && spec.span_start_byte.is_none_or(|span| !consumed_import_spans.contains(&span))
         {
             out.push(spec);
         }
 
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                Self::overlay_require_then_import(statements, file_id, out);
+                Self::overlay_require_then_import(statements, file_id, out, consumed_import_spans);
             }
             _ => {}
         }
 
         for child in node.children() {
-            Self::overlay_non_directive_imports(child, file_id, out);
+            Self::overlay_non_directive_imports_inner(child, file_id, out, consumed_import_spans);
         }
     }
 
@@ -81,14 +92,17 @@ impl ImportExtractor {
     /// Returns `None` when:
     /// - The node is not a `MethodCall`.
     /// - The method name is not `"import"`.
-    /// - The object is a variable (those are covered by `walk_statements`).
+    /// - The object is a variable.
     /// - The argument list is entirely static (fully explicit symbols) — those
-    ///   are already captured by `walk_statements` when preceded by `require`.
+    ///   are already captured by [`Self::overlay_require_then_import`] when
+    ///   preceded by `require`.
     ///
     /// Returns an `ImportSpec` with `ImportSymbols::Dynamic` when the
     /// argument list contains any dynamic argument (e.g. `@names`, `$names`).
     /// Returns `None` when all arguments are static strings or `qw(...)` lists
-    /// (those produce `Explicit` specs through `walk_statements`).
+    /// (those produce `Explicit` specs through require-then-import pairing).
+    /// Import calls already consumed by a neighboring `require` pair are
+    /// suppressed by span, even when their arguments are dynamic.
     fn try_classify_standalone_class_import(node: &Node, file_id: FileId) -> Option<ImportSpec> {
         let (object, method, args) = match &node.kind {
             NodeKind::MethodCall { object, method, args } => (object, method, args),
@@ -134,12 +148,14 @@ impl ImportExtractor {
     /// Overlay `require Module; Module->import(...)` onto HIR Require rows.
     ///
     /// Standalone `require` and `require $var` stay as HIR facts. This only
-    /// promotes a paired import call and replaces a path-like HIR Require row
-    /// in place so the quoted-require overlay does not duplicate.
+    /// promotes a paired import call and updates the matching HIR Require row
+    /// in place (including path-like quoted requires) so pairing does not
+    /// leave a duplicate Require row.
     fn overlay_require_then_import(
         statements: &[Node],
         file_id: FileId,
         out: &mut Vec<ImportSpec>,
+        consumed_import_spans: &mut std::collections::HashSet<u32>,
     ) {
         let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
@@ -170,7 +186,7 @@ impl ImportExtractor {
                 Self::try_match_import_call(next_expr, &module_name)
             });
 
-            if let Some((symbols, _import_node)) = import_spec {
+            if let Some((symbols, import_node)) = import_spec {
                 let require_span = Self::some_span_start(require_node);
                 let expr_span = Self::some_span_start(expr);
                 let confidence = Self::confidence_for_symbols(&symbols);
@@ -201,6 +217,9 @@ impl ImportExtractor {
                         scope_id: None,
                         span_start_byte: require_span,
                     });
+                }
+                if let Some(span) = Self::some_span_start(import_node) {
+                    consumed_import_spans.insert(span);
                 }
                 consumed.insert(i);
                 consumed.insert(i + 1);
@@ -861,6 +880,15 @@ Foo::Bar->import(@names);
         assert_eq!(spec.kind, ImportKind::RequireThenImport);
         assert_eq!(spec.symbols, ImportSymbols::Dynamic);
         assert_eq!(spec.confidence, Confidence::Low);
+        assert_eq!(
+            specs.iter().filter(|row| row.module == "Foo::Bar").count(),
+            1,
+            "paired dynamic import must not emit a second ManualImport row: {specs:?}"
+        );
+        assert!(
+            specs.iter().all(|row| row.kind != ImportKind::ManualImport),
+            "import call consumed by require pairing must not also overlay ManualImport: {specs:?}"
+        );
         Ok(())
     }
 
