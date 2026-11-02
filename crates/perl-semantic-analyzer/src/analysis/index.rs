@@ -196,8 +196,8 @@ impl WorkspaceIndex {
 
     fn normalize_path_like_module(module: &str) -> String {
         let cleaned = module.trim().trim_matches('\'').trim_matches('"').trim();
-        if cleaned.contains('/') || cleaned.ends_with(".pm") {
-            cleaned.trim_end_matches(".pm").replace('/', "::")
+        if cleaned.contains('/') || cleaned.contains('\\') || cleaned.ends_with(".pm") {
+            cleaned.trim_end_matches(".pm").replace(['\\', '/'], "::")
         } else {
             cleaned.to_string()
         }
@@ -273,17 +273,14 @@ mod tests {
     use crate::SourceLocation;
     use crate::symbol::Symbol;
 
-    /// Regression: `use parent qw [..]` with whitespace before the delimiter
-    /// must extract each base module as a dependency. Previously the leading
-    /// space was treated as the `qw` delimiter, so `parse_qw_content` returned
-    /// garbage and the whole `qw [..]` token was recorded as a single bogus
-    /// dependency. See `parse_qw_content`.
     #[test]
     fn normalize_path_like_module_converts_only_path_identities() {
         assert_eq!(WorkspaceIndex::normalize_path_like_module("Foo::Bar"), "Foo::Bar");
         assert_eq!(WorkspaceIndex::normalize_path_like_module("Foo/Bar.pm"), "Foo::Bar");
         assert_eq!(WorkspaceIndex::normalize_path_like_module("\"Foo/Bar.pm\""), "Foo::Bar");
         assert_eq!(WorkspaceIndex::normalize_path_like_module("'Foo.pm'"), "Foo");
+        assert_eq!(WorkspaceIndex::normalize_path_like_module("Foo\\Bar.pm"), "Foo::Bar");
+        assert_eq!(WorkspaceIndex::normalize_path_like_module("\"Foo\\Bar.pm\""), "Foo::Bar");
     }
 
     #[test]
@@ -311,6 +308,11 @@ mod tests {
         Ok(())
     }
 
+    /// Regression: `use parent qw [..]` with whitespace before the delimiter
+    /// must extract each base module as a dependency. Previously the leading
+    /// space was treated as the `qw` delimiter, so `parse_qw_content` returned
+    /// garbage and the whole `qw [..]` token was recorded as a single bogus
+    /// dependency. See `parse_qw_content`.
     #[test]
     fn parent_qw_space_before_delimiter_extracts_each_base() -> Result<(), String> {
         let index = WorkspaceIndex::new();
