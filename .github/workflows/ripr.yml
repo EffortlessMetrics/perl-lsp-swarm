@@ -1516,10 +1516,9 @@ jobs:
     permissions:
       contents: read
       # #6807: read the failed lane's job log to classify runner evictions.
-      actions: read
-      # #16101: read this pull request's live draft state and the conclusions
-      # already published for this head, so a stale draft snapshot cannot
-      # overwrite the verdict of the run that analyzed it.
+      actions: write
+      # #16240: cancel stale draft snapshots that would otherwise publish a
+      # required failure while the authoritative run is still pending.
       checks: read
       pull-requests: read
     steps:
@@ -1768,11 +1767,30 @@ jobs:
                 *) return 0 ;;
               esac
               if [ "$waited" -ge "${MIRROR_WAIT_SECONDS:-60}" ]; then
+                printf 'pending'
                 return 0
               fi
               sleep "$poll"
               waited=$(( waited + poll ))
             done
+          }
+
+          # A stale draft snapshot on a head that is no longer a draft evaluated
+          # nothing. When the mirror wait expires while the authoritative run is
+          # still pending, publishing superseded-no-proof would red a required
+          # context before any code ran (#16240). Cancel this workflow run so
+          # the check ends cancelled rather than failed; the run for this head
+          # will publish the real verdict when it finishes.
+          withdraw_stale_draft_verdict() {
+            echo "RIPR_GATE_VERDICT=superseded-awaiting-proof"
+            echo "- verdict: superseded-awaiting-proof (NOT_PROVEN; authoritative run still pending)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::This run carries a stale draft snapshot and the run analyzing ${HEAD_SHA:-} has not published a verdict yet; cancelling so no required failure is manufactured (#16240)."
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
+            gh run watch "${GITHUB_RUN_ID}"
+            exit 0
           }
 
           # Draft routing saves work but produces no required-check proof.
@@ -1787,6 +1805,9 @@ jobs:
                   echo "- verdict: superseded-draft-snapshot (mirroring published success)" >> "$GITHUB_STEP_SUMMARY"
                   echo "::notice::This run carries a stale draft snapshot for a pull request that is no longer a draft; mirroring the success already published for ${HEAD_SHA:-}."
                   exit 0
+                fi
+                if [ "$published" = "pending" ]; then
+                  withdraw_stale_draft_verdict
                 fi
                 echo "RIPR_GATE_VERDICT=superseded-no-proof"
                 echo "- verdict: superseded-no-proof (NOT_PROVEN; published: \`${published:-none}\`)" >> "$GITHUB_STEP_SUMMARY"
