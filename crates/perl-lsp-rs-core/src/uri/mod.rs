@@ -65,11 +65,10 @@ fn parse_uri_candidate(s: &str) -> Option<Uri> {
         return Some(uri);
     }
 
-    sanitized.parse::<Uri>().ok().or_else(|| {
-        Url::parse(sanitized)
-            .ok()
-            .and_then(|url| url.as_str().parse::<Uri>().ok())
-    })
+    sanitized
+        .parse::<Uri>()
+        .ok()
+        .or_else(|| Url::parse(sanitized).ok().and_then(|url| url.as_str().parse::<Uri>().ok()))
 }
 
 /// Parse a URI string without the guaranteed-valid fallback chain.
@@ -262,12 +261,7 @@ mod uri_parse_gate_tests {
     /// `parse_uri` can always return a wire-safe URI.
     #[test]
     fn fallback_literal_candidates_are_parseable() {
-        for candidate in [
-            "file:///unknown",
-            "file:///",
-            "about:blank",
-            "urn:perl-lsp:unknown",
-        ] {
+        for candidate in ["file:///unknown", "file:///", "about:blank", "urn:perl-lsp:unknown"] {
             assert!(
                 candidate.parse::<Uri>().is_ok(),
                 "fallback candidate {candidate} must parse as Uri"
@@ -301,10 +295,7 @@ mod uri_parse_gate_tests {
 
     #[test]
     fn parse_uri_or_err_returns_err_for_invalid_test_input() {
-        assert_eq!(
-            parse_uri_or_err("not a valid uri!!!"),
-            Err(UriStrictParseError)
-        );
+        assert_eq!(parse_uri_or_err("not a valid uri!!!"), Err(UriStrictParseError));
         assert!(parse_uri_or_err("file:///tmp/test.pl").is_ok());
     }
 }
