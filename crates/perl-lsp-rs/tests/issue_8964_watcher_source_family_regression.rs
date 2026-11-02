@@ -7,49 +7,42 @@ mod support;
 
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 use serde_json::{Value, json};
-use support::lsp_harness::LspHarness;
+use std::time::Duration;
+use support::lsp_harness::{LspHarness, WaitForSymbolMode};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
-fn cgi_and_fcgi_watched_file_notifications_are_accepted() -> TestResult {
-    let server = perl_lsp::LspServer::with_output(std::sync::Arc::new(parking_lot::Mutex::new(
-        Box::new(Vec::new()) as Box<dyn std::io::Write + Send>,
-    )));
+fn cgi_and_fcgi_watched_file_create_reaches_workspace_index() -> TestResult {
+    let (mut harness, workspace) = LspHarness::with_workspace(&[])?;
+    workspace
+        .write("app.cgi", "#!/usr/bin/env perl\npackage CgiApp;\nuse strict;\nsub hello { 1 }\n")?;
+    workspace.write("run.fcgi", "#!/usr/bin/env perl\npackage FcgiRun;\nuse strict;\n1;\n")?;
 
-    let init_params = json!({
-        "processId": 1234,
-        "rootUri": "file:///test/workspace",
-        "capabilities": {}
-    });
-    let init = perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    };
-    server.handle_request(init);
-    server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: None,
-        method: "initialized".to_string(),
-        params: Some(json!({})),
-    });
+    let cgi_uri = workspace.uri("app.cgi");
+    let fcgi_uri = workspace.uri("run.fcgi");
+    harness.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({
+            "changes": [
+                { "uri": cgi_uri, "type": 1 },
+                { "uri": fcgi_uri, "type": 1 },
+            ]
+        }),
+    );
 
-    for uri in ["file:///test/workspace/app.cgi", "file:///test/workspace/run.fcgi"] {
-        let watched = perl_lsp::JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: None,
-            method: "workspace/didChangeWatchedFiles".to_string(),
-            params: Some(json!({
-                "changes": [{ "uri": uri, "type": 1 }]
-            })),
-        };
-        assert!(
-            server.handle_request(watched).is_none(),
-            "didChangeWatchedFiles notifications must be handled without a JSON-RPC response"
-        );
-    }
+    harness.wait_for_symbol_with_mode(
+        "CgiApp",
+        Some(cgi_uri.as_str()),
+        Duration::from_secs(30),
+        WaitForSymbolMode::Default,
+    )?;
+    harness.wait_for_symbol_with_mode(
+        "FcgiRun",
+        Some(fcgi_uri.as_str()),
+        Duration::from_secs(30),
+        WaitForSymbolMode::Default,
+    )?;
     Ok(())
 }
 
@@ -67,11 +60,11 @@ fn watcher_registration_matches_file_operation_catch_all_globs() -> TestResult {
             .get("filters")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("{name} must include filters"))?;
-        assert!(
-            filters.iter().any(|filter| {
-                filter.pointer("/pattern/glob").and_then(Value::as_str) == Some("**/*")
-            }),
-            "{name} must advertise the catch-all glob: {op:?}"
+        assert_eq!(filters.len(), 1, "{name} must advertise exactly one catch-all filter: {op:?}");
+        assert_eq!(
+            filters[0].pointer("/pattern/glob").and_then(Value::as_str),
+            Some("**/*"),
+            "{name} must use the shared catch-all glob"
         );
     }
 
@@ -82,9 +75,15 @@ fn watcher_registration_matches_file_operation_catch_all_globs() -> TestResult {
         .pointer("/registerOptions/watchers")
         .and_then(Value::as_array)
         .ok_or("watcher registration must include watchers")?;
-    assert!(
-        watchers.iter().any(|watcher| watcher["globPattern"] == json!("**/*")),
-        "watcher registration must advertise catch-all glob: {watchers:?}"
+    assert_eq!(
+        watchers.len(),
+        1,
+        "watcher registration must advertise exactly one catch-all watcher"
+    );
+    assert_eq!(
+        watchers[0]["globPattern"],
+        json!("**/*"),
+        "watcher glob must match file-operation authority"
     );
     Ok(())
 }
