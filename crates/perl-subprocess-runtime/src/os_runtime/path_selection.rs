@@ -51,9 +51,25 @@ pub(crate) fn candidate_priority<T: AsRef<Path>>(candidate: T) -> u8 {
 /// empty (tool genuinely not on PATH; better than running a planted binary).
 ///
 /// Native paths are retained so non-UTF-8 PATH directories remain usable on Unix.
+/// Returns `true` when `path` is a filesystem root (e.g. `/` or `C:\`).
+fn is_filesystem_root(path: &Path) -> bool {
+    path.parent().is_none()
+}
+
 /// Returns `true` when `path` is exactly `cwd_canon` or a descendant of it.
+///
+/// At a filesystem root, every absolute path shares the `/` prefix on Unix (or the
+/// drive root on Windows), so subtree matching would reject all installed tools.
+/// In that case fall back to immediate-parent equality only.
 fn canonical_path_is_under_cwd(path: &Path, cwd_canon: &Path) -> bool {
-    path == cwd_canon || path.starts_with(cwd_canon)
+    if path == cwd_canon {
+        return true;
+    }
+    if is_filesystem_root(cwd_canon) {
+        let parent = path.parent().unwrap_or(Path::new(""));
+        return parent == cwd_canon;
+    }
+    path.starts_with(cwd_canon)
 }
 
 /// Returns `true` when the candidate must be rejected because its canonical target
@@ -69,7 +85,7 @@ pub(crate) fn select_path_candidate<T: AsRef<Path>>(
     candidates: &[T],
     cwd: &Path,
 ) -> Option<PathBuf> {
-    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let cwd_canon = std::fs::canonicalize(cwd).ok()?;
 
     candidates
         .iter()

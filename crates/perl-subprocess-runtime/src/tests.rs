@@ -404,6 +404,39 @@ fn test_select_path_candidate_rejects_candidate_in_cwd_subtree() {
     );
 }
 
+/// Fail closed when the working directory cannot be canonicalized.
+#[test]
+fn test_select_path_candidate_fail_closed_when_cwd_missing() {
+    let tree = SelectPathTempTree::new("missing-cwd");
+    let safe_dir = tree.dir("usr-bin");
+    let safe = tree.plant(&safe_dir, "perltidy.exe");
+    let missing_cwd = tree.root.join("definitely-not-a-real-cwd");
+    let candidate_refs = [safe.to_string_lossy().into_owned()];
+    let candidate_ref_strs: Vec<&str> = candidate_refs.iter().map(String::as_str).collect();
+    let result = select_path_candidate(&candidate_ref_strs, &missing_cwd);
+    assert!(result.is_none(), "missing CWD must fail closed; got: {result:?}");
+}
+
+/// At a filesystem root CWD, subtree matching would reject every absolute path;
+/// installed tools outside the root directory must remain selectable.
+#[cfg(unix)]
+#[test]
+fn test_select_path_candidate_filesystem_root_cwd_admits_usr_bin() {
+    use std::path::Path;
+    let cwd = Path::new("/");
+    let candidate = Path::new("/usr/bin/true");
+    if !candidate.is_file() {
+        return;
+    }
+    let candidate_str = candidate.to_string_lossy().to_string();
+    let result = select_path_candidate(&[candidate_str.as_str()], cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(candidate),
+        "filesystem-root CWD must not reject installed tools under /usr/bin"
+    );
+}
+
 /// Fail-closed: a non-existent absolute candidate is dropped rather than compared
 /// via a raw parent-path fallback.
 #[test]
