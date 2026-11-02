@@ -51,7 +51,7 @@ impl TestGenerator {
 
     /// Generate basic test for a subroutine
     pub fn generate_test(&self, name: &str, _params: usize) -> String {
-        let reason = format!("behavioral oracle required for {name}");
+        let reason = format!("behavioral oracle required for {name} ({})", self.framework);
         format!(
             "use Test::More;\n\n\
              subtest '{name}' => sub {{\n\

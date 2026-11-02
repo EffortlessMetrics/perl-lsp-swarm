@@ -1,5 +1,7 @@
 //! False-green regression tests for TDD generation (#8154).
 
+use perl_tdd_support::must_some;
+use perl_tdd_support::must_with;
 use perl_tdd_support::tdd_workflow::{TddConfig, TddWorkflow, TestType};
 use perl_tdd_support::test_generator::{
     FalseGreenPolicy, GeneratedTestReadiness, TestFramework, TestGenerator, TestGeneratorOptions,
@@ -43,7 +45,7 @@ fn test_generator_basic_without_oracle_is_draft() {
         perl_tdd_support::SourceLocation { start: 0, end: 0 },
     );
     let tests = generator.generate_tests(&ast, "sub zero { 0 }");
-    let basic = tests.iter().find(|t| t.name == "test_zero").expect("basic test present");
+    let basic = must_some(tests.iter().find(|t| t.name == "test_zero"));
     assert_eq!(basic.readiness, GeneratedTestReadiness::DraftNeedsOracle);
     assert_no_false_green(&basic.code, basic.readiness);
 }
@@ -69,7 +71,7 @@ fn test_generator_with_oracle_can_be_runnable() {
         perl_tdd_support::SourceLocation { start: 0, end: 0 },
     );
     let tests = generator.generate_tests(&ast, "sub add { }");
-    let basic = tests.iter().find(|t| t.name == "test_add").expect("basic");
+    let basic = must_some(tests.iter().find(|t| t.name == "test_add"));
     assert_eq!(basic.readiness, GeneratedTestReadiness::Runnable);
     assert!(!basic.code.contains("pass("));
 }
@@ -163,11 +165,14 @@ fn generated_draft_prove_is_not_all_green_without_todo() {
     }
     let wf = TddWorkflow::new(TddConfig::default());
     let tc = wf.generate_test_for_function("setup", &[], TestType::Integration);
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = must_with(tempfile::tempdir(), "tempdir for prove fixture");
     let path = dir.path().join("integration.t");
-    std::fs::write(&path, &tc.code).expect("write generated perl");
+    must_with(std::fs::write(&path, &tc.code), "write generated perl for prove fixture");
 
-    let output = Command::new("prove").arg("-v").arg(&path).output().expect("prove");
+    let output = must_with(
+        Command::new("prove").arg("-v").arg(&path).output(),
+        "run prove on generated integration draft",
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("TODO") || !output.status.success(),
@@ -196,6 +201,6 @@ fn options_map_does_not_change_draft_without_oracle_key() {
         perl_tdd_support::SourceLocation { start: 0, end: 0 },
     );
     let tests = generator.generate_tests(&ast, "sub mystery { }");
-    let basic = tests.iter().find(|t| t.name == "test_mystery").expect("basic");
+    let basic = must_some(tests.iter().find(|t| t.name == "test_mystery"));
     assert_eq!(basic.readiness, GeneratedTestReadiness::DraftNeedsOracle);
 }
