@@ -32,7 +32,7 @@ fn read(relative: &str) -> String {
 fn coexistence_doc_states_non_vscode_boundary_and_vs_code_command() {
     let doc = read(COEXISTENCE_DOC);
     for needle in [
-        "do not run the VS Code coexistence detector",
+        "run the VS Code coexistence detector",
         "Show Coexistence Status",
         "perllsp --health",
         "PATH presence of `perlcritic`",
