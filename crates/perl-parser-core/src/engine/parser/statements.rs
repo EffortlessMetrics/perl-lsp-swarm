@@ -195,7 +195,7 @@ impl<'a> Parser<'a> {
                 stmt = self.parse_statement_modifier(stmt)?;
             }
             self.finish_statement_terminator(&stmt)?;
-            self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+            self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt)?;
             return Ok(stmt);
         }
 
@@ -556,7 +556,7 @@ impl<'a> Parser<'a> {
         self.finish_statement_terminator(&stmt)?;
 
         // Drain pending heredocs after statement completion (attach content to AST)
-        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
+        self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt)?;
 
         Ok(stmt)
     }

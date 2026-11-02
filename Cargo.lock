@@ -2226,6 +2226,7 @@ dependencies = [
  "perl-parser-core",
  "perl-position-tracking",
  "perl-source-identity",
+ "perl-test-facts",
  "perl-test-must",
  "serde",
  "serde_json",

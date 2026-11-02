@@ -206,6 +206,11 @@ on:
       - 'scripts/tests/test-cargo-toolchain-guard.sh'
       - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
       - 'scripts/tests/test-fuzz-bounded.sh'
+      # Nightly fuzz matrix ↔ fuzz/Cargo.toml [[bin]] parity (#17135): the
+      # discovery self-test is the executing gate, so a change to either
+      # authority must start this workflow.
+      - '.github/workflows/ci-nightly.yml'
+      - 'fuzz/Cargo.toml'
       - 'scripts/lib/release-turnkey-handoff.sh'
       - 'scripts/tests/test-release-turnkey-handoff.sh'
       - 'xtask/src/tasks/release_turnkey.rs'
@@ -868,7 +873,7 @@ jobs:
           if [ "$JOB_STATUS" = "success" ]; then
             echo "## fuzz-bounded discovery self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "The wrapper (issue #15059) accepts declared targets from LF and CRLF Python metadata, forwards the caller argv unmodified to cargo-fuzz, rejects unknown names before execution, and cannot print the success banner when metadata fails or yields no bin targets. Fixtures stub cargo/python and do not compile fuzz binaries." >> "$GITHUB_STEP_SUMMARY"
+            echo "The wrapper (issue #15059) accepts declared targets from LF and CRLF Python metadata, forwards the caller argv unmodified to cargo-fuzz, rejects unknown names before execution, and cannot print the success banner when metadata fails or yields no bin targets. It also asserts \`ci-nightly.yml\` \`jobs.fuzz.strategy.matrix.target\` equals \`fuzz/Cargo.toml\` \`[[bin]]\` names (#17135). Fixtures stub cargo/python and do not compile fuzz binaries." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## fuzz-bounded discovery self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
