@@ -1,0 +1,36 @@
+{
+  "fact_source_traces": [
+    {
+      "anchor_id": null,
+      "confidence": "High",
+      "fallback_state": "Blocked",
+      "freshness": "Fresh",
+      "model_version": 1,
+      "provenance": "DynamicBoundary",
+      "source": "DynamicBoundary",
+      "source_hash": null,
+      "surface": "Diagnostics"
+    }
+  ],
+  "input": {
+    "symbol": "defined_sub"
+  },
+  "new_result": {
+    "available": true,
+    "identities": [],
+    "match_count": 0
+  },
+  "notes": [
+    "suppressed: dynamic boundary scope"
+  ],
+  "old_result": {
+    "available": true,
+    "identities": [
+      "warn"
+    ],
+    "match_count": 1
+  },
+  "query": "diagnostics_check",
+  "schema_version": 2,
+  "verdict": "regression"
+}

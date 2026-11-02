@@ -28,8 +28,11 @@ use perl_semantic_facts::{
 };
 use perl_workspace::semantic::queries::SemanticQueries;
 use perl_workspace::semantic_shadow_compare::{
-    SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, ShadowResultSummary,
-    summarize_identities,
+    SemanticShadowCompareReceipt, ShadowQueryName, ShadowResultSummary, summarize_identities,
+};
+
+use crate::providers::shadow_framework::{
+    ShadowNewPathOutput, ShadowOldPathOutput, run_shadow_compare,
 };
 
 use super::refactor_receipt_helpers::{blocker_reason_list, blocker_ux_list};
@@ -68,32 +71,36 @@ pub fn safe_delete_shadow<Q: SemanticQueries>(
     entity_id: EntityId,
     symbol: &str,
 ) -> SafeDeleteShadowResult {
-    // ── Legacy path ──
-    let old_summary = legacy_safe_delete_to_summary(legacy_allowed);
-
-    // ── New semantic path ──
-    let plan = semantic_queries.safe_delete_plan(entity_id);
-    let new_summary = safe_delete_plan_to_summary(&plan);
-
-    // ── Build receipt ──
-    let receipt = SemanticShadowCompareReceipt::from_summaries_with_fact_source_traces(
+    let compare = run_shadow_compare(
         ShadowQueryName::SafeDeletePlan,
-        ShadowQueryInput { symbol: symbol.to_string() },
-        old_summary,
-        new_summary,
-        safe_delete_plan_receipt_notes(legacy_allowed, &plan, "shadow"),
-        safe_delete_plan_fact_source_traces(&plan, ProviderFallbackState::Shadow),
+        symbol,
+        || ShadowOldPathOutput {
+            value: legacy_allowed,
+            summary: legacy_safe_delete_to_summary(legacy_allowed),
+        },
+        || {
+            let plan = semantic_queries.safe_delete_plan(entity_id);
+            ShadowNewPathOutput {
+                value: plan.clone(),
+                summary: safe_delete_plan_to_summary(&plan),
+                fact_source_traces: safe_delete_plan_fact_source_traces(
+                    &plan,
+                    ProviderFallbackState::Shadow,
+                ),
+                notes: safe_delete_plan_receipt_notes(legacy_allowed, &plan, "shadow"),
+            }
+        },
     );
 
     tracing::debug!(
         entity_id = entity_id.0,
         symbol = %symbol,
-        verdict = ?receipt.verdict,
-        blockers = plan.blockers.len(),
+        verdict = ?compare.receipt.verdict,
+        blockers = compare.new_value.blockers.len(),
         "safe-delete shadow compare"
     );
 
-    SafeDeleteShadowResult { legacy_allowed, receipt }
+    SafeDeleteShadowResult { legacy_allowed: compare.old_value, receipt: compare.receipt }
 }
 
 // ── Cutover types ──
@@ -155,30 +162,33 @@ pub fn safe_delete_cutover<Q: SemanticQueries>(
     entity_id: EntityId,
     symbol: &str,
 ) -> SafeDeleteCutoverOutcome {
-    // ── Semantic path (primary) ──
-    let plan = semantic_queries.safe_delete_plan(entity_id);
-    let new_summary = safe_delete_plan_to_summary(&plan);
-
-    // ── Legacy path (for receipt) ──
-    let old_summary = legacy_safe_delete_to_summary(legacy_allowed);
-
-    // ── Build receipt ──
-    let receipt = SemanticShadowCompareReceipt::from_summaries_with_fact_source_traces(
+    let compare = run_shadow_compare(
         ShadowQueryName::SafeDeletePlan,
-        ShadowQueryInput { symbol: symbol.to_string() },
-        old_summary,
-        new_summary,
-        safe_delete_plan_receipt_notes(legacy_allowed, &plan, "cutover"),
-        safe_delete_plan_fact_source_traces(&plan, ProviderFallbackState::Primary),
+        symbol,
+        || ShadowOldPathOutput {
+            value: legacy_allowed,
+            summary: legacy_safe_delete_to_summary(legacy_allowed),
+        },
+        || {
+            let plan = semantic_queries.safe_delete_plan(entity_id);
+            ShadowNewPathOutput {
+                value: plan.clone(),
+                summary: safe_delete_plan_to_summary(&plan),
+                fact_source_traces: safe_delete_plan_fact_source_traces(
+                    &plan,
+                    ProviderFallbackState::Primary,
+                ),
+                notes: safe_delete_plan_receipt_notes(legacy_allowed, &plan, "cutover"),
+            }
+        },
     );
 
-    // ── Classify result ──
-    let result = classify_safe_delete_result(plan);
+    let result = classify_safe_delete_result(compare.new_value);
 
     tracing::debug!(
         entity_id = entity_id.0,
         symbol = %symbol,
-        verdict = ?receipt.verdict,
+        verdict = ?compare.receipt.verdict,
         classification = match &result {
             SafeDeleteCutoverResult::Allowed => "allowed",
             SafeDeleteCutoverResult::Blocked { .. } => "blocked",
@@ -186,7 +196,7 @@ pub fn safe_delete_cutover<Q: SemanticQueries>(
         "safe-delete cutover"
     );
 
-    SafeDeleteCutoverOutcome { result, receipt }
+    SafeDeleteCutoverOutcome { result, receipt: compare.receipt }
 }
 
 /// Classify a safe-delete plan into the cutover result category.

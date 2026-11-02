@@ -1,0 +1,38 @@
+{
+  "fact_source_traces": [
+    {
+      "anchor_id": null,
+      "confidence": "High",
+      "fallback_state": "Shadow",
+      "freshness": "Fresh",
+      "model_version": 1,
+      "provenance": "ExactAst",
+      "source": "SemanticFact",
+      "source_hash": "safe-delete-plan",
+      "surface": "SafeDelete"
+    }
+  ],
+  "input": {
+    "symbol": "my_sub"
+  },
+  "new_result": {
+    "available": true,
+    "identities": [
+      "safe_delete:allowed"
+    ],
+    "match_count": 1
+  },
+  "notes": [
+    "safe-delete shadow receipt: legacy_allowed=true; compiler_plan_safe=true; blocker_count=0; blocker_reasons=none; dynamic_boundary=false; generated_member=false; stale_fact=false; low_confidence=false; fallback_state=allowed; blocker_ux=none"
+  ],
+  "old_result": {
+    "available": true,
+    "identities": [
+      "safe_delete:allowed"
+    ],
+    "match_count": 1
+  },
+  "query": "safe_delete_plan",
+  "schema_version": 2,
+  "verdict": "same"
+}

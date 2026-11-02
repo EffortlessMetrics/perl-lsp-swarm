@@ -1,0 +1,36 @@
+{
+  "fact_source_traces": [
+    {
+      "anchor_id": 10,
+      "confidence": "High",
+      "fallback_state": "Fallback",
+      "freshness": "Fresh",
+      "model_version": 1,
+      "provenance": "ExactAst",
+      "source": "SemanticFact",
+      "source_hash": null,
+      "surface": "Diagnostics"
+    }
+  ],
+  "input": {
+    "symbol": "defined_sub"
+  },
+  "new_result": {
+    "available": true,
+    "identities": [],
+    "match_count": 0
+  },
+  "notes": [
+    "suppressed: dynamic boundary or symbol defined"
+  ],
+  "old_result": {
+    "available": true,
+    "identities": [
+      "warn"
+    ],
+    "match_count": 1
+  },
+  "query": "diagnostics_check",
+  "schema_version": 2,
+  "verdict": "regression"
+}

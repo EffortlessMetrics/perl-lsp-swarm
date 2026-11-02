@@ -1,0 +1,36 @@
+{
+  "fact_source_traces": [
+    {
+      "anchor_id": null,
+      "confidence": "High",
+      "fallback_state": "Blocked",
+      "freshness": "Fresh",
+      "model_version": 1,
+      "provenance": "SemanticAnalyzer",
+      "source": "SemanticFact",
+      "source_hash": "safe-delete-plan",
+      "surface": "SafeDelete"
+    }
+  ],
+  "input": {
+    "symbol": "my_sub"
+  },
+  "new_result": {
+    "available": true,
+    "identities": [
+      "blocker:ReferencesExist"
+    ],
+    "match_count": 1
+  },
+  "notes": [
+    "safe-delete shadow receipt: legacy_allowed=false; compiler_plan_safe=false; blocker_count=1; blocker_reasons=references_exist; dynamic_boundary=false; generated_member=false; stale_fact=false; low_confidence=false; fallback_state=blocked; blocker_ux=references exist"
+  ],
+  "old_result": {
+    "available": false,
+    "identities": [],
+    "match_count": 0
+  },
+  "query": "safe_delete_plan",
+  "schema_version": 2,
+  "verdict": "unavailable"
+}
