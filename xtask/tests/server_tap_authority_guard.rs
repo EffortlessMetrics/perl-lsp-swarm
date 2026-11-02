@@ -42,7 +42,8 @@ fn server_sources_do_not_reintroduce_raw_tap_line_classifiers() {
                     ));
                 }
             }
-        });
+        })
+        .expect("scan server sources for forbidden TAP classifiers");
     }
 
     assert!(violations.is_empty(), "server TAP authority violations:\n{}", violations.join("\n"));
@@ -52,21 +53,18 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-fn walk_rust_sources(dir: &Path, visit: &mut dyn FnMut(&Path, usize, &str)) {
-    let entries = fs::read_dir(dir).unwrap_or_else(|error| {
-        panic!("read_dir failed for {}: {error}", dir.display());
-    });
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|error| panic!("read_dir entry failed: {error}"));
+fn walk_rust_sources(dir: &Path, visit: &mut dyn FnMut(&Path, usize, &str)) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            walk_rust_sources(&path, visit);
+            walk_rust_sources(&path, visit)?;
         } else if path.extension().is_some_and(|ext| ext == "rs") {
-            let source = fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("read failed for {}: {error}", path.display()));
+            let source = fs::read_to_string(&path)?;
             for (index, line) in source.lines().enumerate() {
                 visit(&path, index + 1, line);
             }
         }
     }
+    Ok(())
 }
