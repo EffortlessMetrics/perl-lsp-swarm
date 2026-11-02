@@ -24,10 +24,11 @@ pub mod native;
 pub use native::{
     BracePlacement, COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, ElsePlacement, FinalNewline,
     FormatConfig, FormatDiagnostic, FormatDiagnosticSeverity, FormatDoc, FormatResult,
-    FormatterMode, KeywordSpacing, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
+    FormatterMode, KeywordSpacing, MAX_INDENT_WIDTH, MAX_LINE_WIDTH, MAX_RENDER_INDENT_COLUMNS,
+    MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, MIN_INDENT_WIDTH, MIN_LINE_WIDTH, NativeFormatter,
     NativePipelineCounters, PerlFormatter, PipelineCollectorScope, SCALING_ABSOLUTE_SLACK_V1,
     SCALING_RATIO_BOUND_V1, TextEdit, TextPosition, TextRange, TrailingComma,
-    exceeds_replacement_envelope_v1,
+    effective_indent_width, effective_line_width, exceeds_replacement_envelope_v1,
 };
 
 /// Configuration for perltidy.

@@ -25,6 +25,7 @@ use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
     NativeFormatter, TextPosition, TextRange, TrailingComma,
 };
+use perl_lsp_perltidy::{effective_indent_width, effective_line_width};
 use perl_subprocess_runtime::SubprocessRuntime;
 use serde::{Deserialize, Serialize};
 
@@ -826,7 +827,7 @@ fn native_format_config(
     allow_final_newline: bool,
 ) -> FormatConfig {
     let mut config = FormatConfig {
-        indent_width: options.tab_size,
+        indent_width: effective_indent_width(options.tab_size),
         use_tabs: !options.insert_spaces,
         final_newline: if allow_final_newline {
             if options.trim_final_newlines.unwrap_or(false) {
@@ -876,6 +877,8 @@ fn native_format_config(
         }
     }
 
+    config.line_width = effective_line_width(config.line_width);
+    config.indent_width = effective_indent_width(config.indent_width);
     config
 }
 
