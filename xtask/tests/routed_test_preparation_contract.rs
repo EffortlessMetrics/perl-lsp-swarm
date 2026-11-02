@@ -109,7 +109,7 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         .ok_or("missing receipt artifact")?;
     let upload_if = upload["if"].as_str().ok_or("missing receipt upload guard")?;
     assert!(
-        upload_if.contains("hashFiles('target/receipts/receipt.json')"),
+        upload_if.contains("hashFiles('target/receipts/receipt.json') != ''"),
         "tier-named receipt upload must require receipt.json (#17915)"
     );
     let missing = steps
@@ -122,7 +122,7 @@ fn preparation_precedes_watchdog_and_has_separate_evidence()
         .ok_or("missing missing-receipt diagnostics artifact")?;
     let missing_if = missing["if"].as_str().ok_or("missing diagnostics upload guard")?;
     assert!(
-        missing_if.contains("hashFiles('target/receipts/receipt.json')"),
+        missing_if.contains("hashFiles('target/receipts/receipt.json') == ''"),
         "missing-receipt diagnostics must publish only without receipt.json"
     );
     let paths = upload["with"]["path"].as_str().ok_or("missing artifact paths")?;

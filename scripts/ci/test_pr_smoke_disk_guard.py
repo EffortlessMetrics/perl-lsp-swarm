@@ -496,6 +496,21 @@ class ClassifyFlowTests(unittest.TestCase):
             self.assertIn("no exhaustion signatures", output)
             self.assertIn("no resource-exhaustion signatures", pressure_log.read_text(encoding="utf-8").lower())
 
+    def test_preparation_log_without_receipt_is_not_full_tier_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            logs_dir = root / "logs"
+            logs_dir.mkdir()
+            (logs_dir / guard.PREPARATION_GATE_LOG).write_text(
+                "all checks passed", encoding="utf-8"
+            )
+            pressure_log = root / "pr-fast-disk-pressure.log"
+            output = self.run_classify(logs_dir, pressure_log, "target")
+            self.assertIn("NOT_PROVEN", output)
+            self.assertNotIn("no resource-exhaustion signatures found", output.lower())
+            verdict = pressure_log.read_text(encoding="utf-8")
+            self.assertIn("VERDICT: NOT_PROVEN", verdict)
+
     def test_pressure_log_alone_is_not_gate_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

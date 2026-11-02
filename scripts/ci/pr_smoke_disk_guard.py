@@ -94,6 +94,11 @@ def effective_min_free_bytes(
     return max(requested, floor)
 
 PRESSURE_LOG_NAME = "pr-fast-disk-pressure.log"
+# Written by the preparation step into the shared receipt-log directory before
+# the full pr-fast tier runs; it must not satisfy full-tier gate-evidence
+# binding when receipt.json is absent (#17915 review).
+PREPARATION_GATE_LOG = "unit_routed_full_build.log"
+NAVIGATION_LOG_PREFIX = "navigation-"
 
 # Signatures taken verbatim from the confirmed exhaustion receipts (runs
 # 32697324730 / 32697144932): collect2 SIGBUS during linking, cargo/rustc
@@ -257,6 +262,8 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
     for log_path in sorted(logs_dir.glob("*.log")):
         if log_path.name == PRESSURE_LOG_NAME:
             continue
+        if log_path.is_symlink():
+            continue
         try:
             text = log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -283,6 +290,30 @@ def gate_log_paths(logs_dir: Path) -> list[Path]:
         for path in logs_dir.glob("*.log")
         if path.name != PRESSURE_LOG_NAME and path.is_file() and not path.is_symlink()
     )
+
+
+def _log_is_preparation_or_navigation(name: str) -> bool:
+    return name == PREPARATION_GATE_LOG or name.startswith(NAVIGATION_LOG_PREFIX)
+
+
+def has_full_tier_gate_evidence(
+    logs_dir: Path,
+    gate_logs: list[Path],
+    receipt_path: Path | None = None,
+) -> bool:
+    """True when pr-fast produced gate logs beyond preparation-only residue.
+
+    Preparation copies ``unit_routed_full_build.log`` into the shared log
+    directory before the tier receipt exists. A planning failure on the full
+    ``xtask gates`` invocation must not treat that log as tier evidence.
+    """
+    if not gate_logs:
+        return False
+    if receipt_path is None:
+        receipt_path = logs_dir.parent / "receipt.json"
+    if receipt_path.is_file():
+        return True
+    return any(not _log_is_preparation_or_navigation(path.name) for path in gate_logs)
 
 
 def _emit(message: str) -> None:
@@ -386,7 +417,7 @@ def run_classify(args: argparse.Namespace) -> int:
     ]
     target_dir = args.target_dir or "target"
     body_lines = [render_snapshot({"cargo-target-dir": target_dir})]
-    if not gate_logs:
+    if not gate_logs or not has_full_tier_gate_evidence(logs_dir, gate_logs):
         body_lines.append(
             "VERDICT: NOT_PROVEN: no gate logs available for exhaustion "
             "classification (the pr-fast tier did not produce gate evidence)."
