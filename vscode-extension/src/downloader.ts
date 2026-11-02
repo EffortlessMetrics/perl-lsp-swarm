@@ -61,7 +61,7 @@ import {
   composeUpdatedReloadRequiredOutcome,
   composeUpdatedReloadUnverifiedOutcome,
   composeUpToDateOutcome,
-  ManagedUpdateOutcomeDedupe,
+  getSessionManagedUpdateOutcomeDedupe,
   projectManagedUpdateOutcome,
   type ManagedUpdateOutcome,
   type ManagedUpdatePresentation,
@@ -870,7 +870,7 @@ export class BinaryDownloader {
    */
   private ownedDownloadRunActive = false;
   /** Background output dedupe for identical update outcomes (#16804). */
-  private readonly updateOutcomeDedupe = new ManagedUpdateOutcomeDedupe();
+  private readonly updateOutcomeDedupe = getSessionManagedUpdateOutcomeDedupe();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -2514,10 +2514,16 @@ export class BinaryDownloader {
     if (notification.visibility === 'none' || notification.summary.length === 0) {
       return;
     }
-    const show =
-      notification.severity === 'warning'
-        ? vscode.window.showWarningMessage.bind(vscode.window)
-        : vscode.window.showInformationMessage.bind(vscode.window);
+    const show = ((): typeof vscode.window.showInformationMessage => {
+      switch (notification.severity) {
+        case 'error':
+          return vscode.window.showErrorMessage.bind(vscode.window);
+        case 'warning':
+          return vscode.window.showWarningMessage.bind(vscode.window);
+        case 'information':
+          return vscode.window.showInformationMessage.bind(vscode.window);
+      }
+    })();
     const prompt =
       actions.length > 0
         ? show(notification.summary, ...actions)
@@ -2563,7 +2569,7 @@ export class BinaryDownloader {
   private async confirmStagedUpdate(installedPath: string): Promise<void> {
     const version = await this.getLocalVersion(installedPath);
     if (!version) {
-      this.renderManagedUpdateOutcome(composeUpdatedReloadUnverifiedOutcome());
+      this.renderManagedUpdateOutcome(composeUpdatedReloadUnverifiedOutcome(installedPath));
       return;
     }
     this.renderManagedUpdateOutcome(composeUpdatedReloadRequiredOutcome(version));

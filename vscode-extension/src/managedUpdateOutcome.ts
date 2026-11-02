@@ -17,7 +17,7 @@ export type ManagedUpdateOutcome =
   | { readonly kind: 'check_skipped'; readonly decision: Exclude<ManagedUpdateCheckDecision, { kind: 'run' }> }
   | { readonly kind: 'up_to_date'; readonly installedVersion: string; readonly manual: boolean }
   | { readonly kind: 'updated_reload_required'; readonly installedVersion: string }
-  | { readonly kind: 'updated_reload_unverified' };
+  | { readonly kind: 'updated_reload_unverified'; readonly installedPath: string };
 
 export type ManagedUpdateNotificationVisibility =
   | 'none'
@@ -66,11 +66,10 @@ export function composeUpdatedReloadRequiredOutcome(
   return { kind: 'updated_reload_required', installedVersion };
 }
 
-export function composeUpdatedReloadUnverifiedOutcome(): Extract<
-  ManagedUpdateOutcome,
-  { kind: 'updated_reload_unverified' }
-> {
-  return { kind: 'updated_reload_unverified' };
+export function composeUpdatedReloadUnverifiedOutcome(
+  installedPath: string,
+): Extract<ManagedUpdateOutcome, { kind: 'updated_reload_unverified' }> {
+  return { kind: 'updated_reload_unverified', installedPath };
 }
 
 export function projectManagedUpdateOutcome(outcome: ManagedUpdateOutcome): ManagedUpdatePresentation {
@@ -82,7 +81,7 @@ export function projectManagedUpdateOutcome(outcome: ManagedUpdateOutcome): Mana
     case 'updated_reload_required':
       return projectUpdatedReloadRequired(outcome.installedVersion);
     case 'updated_reload_unverified':
-      return projectUpdatedReloadUnverified();
+      return projectUpdatedReloadUnverified(outcome.installedPath);
   }
 }
 
@@ -185,7 +184,7 @@ function projectUpdatedReloadRequired(installedVersion: string): ManagedUpdatePr
   };
 }
 
-function projectUpdatedReloadUnverified(): ManagedUpdatePresentation {
+function projectUpdatedReloadUnverified(installedPath: string): ManagedUpdatePresentation {
   return {
     dedupIdentity: 'updated_reload_unverified',
     notification: {
@@ -195,8 +194,7 @@ function projectUpdatedReloadUnverified(): ManagedUpdatePresentation {
         'perllsp update was downloaded, but its installed version could not be verified. The running server is unchanged; check the Perl Language Server output before reloading.',
     },
     outputChannel: {
-      line:
-        '[update-check] Installed binary has no readable version; reload confirmation withheld.',
+      line: `[update-check] Installed binary at ${installedPath} has no readable version; reload confirmation withheld.`,
     },
     actions: ['View Logs'],
   };
@@ -226,4 +224,11 @@ export class ManagedUpdateOutcomeDedupe {
   clear(): void {
     this.seenOutput.clear();
   }
+}
+
+const sessionManagedUpdateOutcomeDedupe = new ManagedUpdateOutcomeDedupe();
+
+/** One dedupe owner per extension host session (#16804); shared across downloaders. */
+export function getSessionManagedUpdateOutcomeDedupe(): ManagedUpdateOutcomeDedupe {
+  return sessionManagedUpdateOutcomeDedupe;
 }

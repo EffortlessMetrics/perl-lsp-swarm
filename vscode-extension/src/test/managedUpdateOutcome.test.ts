@@ -124,10 +124,12 @@ describe('managedUpdateOutcome manual terminal results (#16804)', () => {
   });
 
   test('unverified staged install warns without claiming success', () => {
-    const view = projectManagedUpdateOutcome(composeUpdatedReloadUnverifiedOutcome());
+    const installedPath = '/tmp/perllsp/current/perllsp';
+    const view = projectManagedUpdateOutcome(composeUpdatedReloadUnverifiedOutcome(installedPath));
 
     expect(view.notification.severity).toBe('warning');
     expect(view.notification.summary).toContain('could not be verified');
+    expect(view.outputChannel.line).toContain(installedPath);
     expect(view.actions).toEqual(['View Logs']);
   });
 });
