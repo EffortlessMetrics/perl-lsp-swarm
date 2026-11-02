@@ -207,11 +207,6 @@ pub use security::{
 pub use server::{DapConfig, DapMode, DapServer};
 
 pub use breakpoints::{BreakpointRecord, BreakpointStore, interpolate_logpoint_message};
-pub use initialize_capability_schema::{
-    ExtensionCapabilityCandidateRow, InitializeCapabilitySchemaInventory, NullabilityRowRef,
-    StandardCapabilitySchemaRow, WireShape, extension_initialize_capability_candidates,
-    initialize_capability_schema_inventory, standard_initialize_capability_rows,
-};
 pub use protocol::{
     AttachRequestArguments, Breakpoint, BreakpointLocation, BreakpointLocationsArguments,
     BreakpointLocationsResponseBody, CancelArguments, Capabilities, CompletionItem,
