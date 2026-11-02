@@ -639,6 +639,19 @@ function Initialize-StandaloneNativeFile {
         Add-Type -Namespace PerlLspNative -Name File -MemberDefinition @"
 [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
 public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr CreateFileW(
+    string lpFileName,
+    uint dwDesiredAccess,
+    uint dwShareMode,
+    System.IntPtr lpSecurityAttributes,
+    uint dwCreationDisposition,
+    uint dwFlagsAndAttributes,
+    System.IntPtr hTemplateFile);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool FlushFileBuffers(System.IntPtr hFile);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool CloseHandle(System.IntPtr hObject);
 "@
     }
 }
@@ -697,6 +710,18 @@ function Write-StandalonePointerFile {
 # Whether the last commit proved the promoted candidate durable on this host.
 # Reported in the receipt so durability is never implied when it was not run.
 $script:StandaloneProductUnitDurability = "unverified"
+# Whether the store directory entry naming the selector move was flushed after
+# the pointer publish. Recorded separately so durability= never implies it.
+$script:StandaloneProductUnitPointerFlush = "unverified"
+
+function Write-StandaloneProductUnitFlushTrace {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    $tracePath = $env:PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE
+    if ([string]::IsNullOrWhiteSpace($tracePath)) {
+        return
+    }
+    Add-Content -LiteralPath $tracePath -Value $Message -Encoding ascii
+}
 
 # FlushFileBuffers is the Windows equivalent of fsync(2): it does not return
 # until the data reaches stable storage. A bare Dispose would not do it, and
@@ -717,6 +742,51 @@ function Invoke-StandaloneFlushFile {
         if ($null -ne $stream) {
             $stream.Dispose()
         }
+    }
+}
+
+function Invoke-StandaloneFlushDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    Initialize-StandaloneNativeFile
+    $genericRead = [uint32]0x80000000
+    $shareReadWrite = [uint32]3
+    $openExisting = [uint32]3
+    $backupSemantics = [uint32]0x02000000
+    $invalidHandle = [IntPtr]::new(-1)
+    $nullSecurity = [IntPtr]::Zero
+    $handle = [PerlLspNative.File]::CreateFileW(
+        $Path,
+        $genericRead,
+        $shareReadWrite,
+        $nullSecurity,
+        $openExisting,
+        $backupSemantics,
+        $nullSecurity)
+    if ($handle -eq $invalidHandle) {
+        return $false
+    }
+    try {
+        if (-not [PerlLspNative.File]::FlushFileBuffers($handle)) {
+            return $false
+        }
+        return $true
+    } finally {
+        [void][PerlLspNative.File]::CloseHandle($handle)
+    }
+}
+
+function Invoke-StandaloneFlushStoreDir {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    if ($env:PERL_LSP_PRODUCT_UNIT_NO_FLUSH -eq "1") {
+        $script:StandaloneProductUnitPointerFlush = "skipped"
+        return
+    }
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $result = if (Invoke-StandaloneFlushDirectory -Path $store) { "flushed" } else { "open_failed" }
+    Write-StandaloneProductUnitFlushTrace "dir store-post-commit $result"
+    $script:StandaloneProductUnitPointerFlush = $result
+    if ($result -ne "flushed") {
+        Write-Warning "product-unit pointer-entry flush after the selector move: $result"
     }
 }
 
@@ -745,7 +815,20 @@ function Invoke-StandaloneCandidateDurability {
         if (-not (Test-Path -LiteralPath $path)) {
             continue
         }
-        if (-not (Invoke-StandaloneFlushFile -Path $path)) {
+        $memberResult = if (Invoke-StandaloneFlushFile -Path $path) { "flushed" } else { "open_failed" }
+        Write-StandaloneProductUnitFlushTrace "file ${CandidateId}/$member $memberResult"
+        if ($memberResult -ne "flushed") {
+            $status = "open_failed"
+        }
+    }
+    $candidatesParent = Join-Path $store "candidates"
+    foreach ($dirEntry in @(
+            @{ Path = $candidate; TraceLabel = "dir candidates/$CandidateId" },
+            @{ Path = $candidatesParent; TraceLabel = "dir candidates-parent" },
+            @{ Path = $store; TraceLabel = "dir store" })) {
+        $dirResult = if (Invoke-StandaloneFlushDirectory -Path $dirEntry.Path) { "flushed" } else { "open_failed" }
+        Write-StandaloneProductUnitFlushTrace "$($dirEntry.TraceLabel) $dirResult"
+        if ($dirResult -ne "flushed") {
             $status = "open_failed"
         }
     }
@@ -932,6 +1015,7 @@ function Set-StandaloneCurrentSelection {
         Write-StandalonePointerFile -Path (Join-Path $store "previous") -RelativeTarget $oldRel
     }
     Write-StandalonePointerFile -Path $current -RelativeTarget "candidates\$CandidateId"
+    Invoke-StandaloneFlushStoreDir -InstallDir $InstallDir
 }
 
 function Set-StandalonePathVisibleSelectors {
@@ -1133,7 +1217,7 @@ function Install-StandaloneProductUnit {
     if (Test-Path -LiteralPath $currentDap) {
         $dapHash = Get-StagedMemberSha256 -Path $currentDap
     }
-    $receipt = "product_unit_receipt disposition=$disposition candidate_id=$id previous=$previous server_sha256=$serverHash dap_sha256=$dapHash state=selected durability=$($script:StandaloneProductUnitDurability) recovery=$($recovery -split ' ')[0]"
+    $receipt = "product_unit_receipt disposition=$disposition candidate_id=$id previous=$previous server_sha256=$serverHash dap_sha256=$dapHash state=selected durability=$($script:StandaloneProductUnitDurability) pointer_flush=$($script:StandaloneProductUnitPointerFlush) recovery=$($recovery -split ' ')[0]"
     if ($receipt.Contains($InstallDir) -or $receipt.Contains($ExtractDir)) {
         throw "product-unit receipt contained a private path"
     }

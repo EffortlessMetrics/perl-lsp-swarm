@@ -1258,6 +1258,31 @@ mod tests {
         Ok(())
     }
 
+    /// When the #13289 durability seam is present, `durability=flushed` must not
+    /// be honest unless directory entries are flushed the same way as POSIX
+    /// `flush_candidate_durability` (#17155).
+    #[test]
+    fn install_ps1_candidate_durability_flushes_directory_entries() -> Result<()> {
+        let root = project_root()?;
+        let install_ps1 = fs::read_to_string(root.join("install.ps1"))?;
+        if !install_ps1.contains("function Invoke-StandaloneCandidateDurability") {
+            return Ok(());
+        }
+        assert!(
+            install_ps1.contains("function Invoke-StandaloneFlushDirectory"),
+            "install.ps1 must define Invoke-StandaloneFlushDirectory when candidate durability exists"
+        );
+        assert!(
+            install_ps1.contains("dir candidates-parent"),
+            "install.ps1 must flush the candidates parent directory entry"
+        );
+        assert!(
+            install_ps1.contains("pointer_flush=$($script:StandaloneProductUnitPointerFlush)"),
+            "install.ps1 receipt must record pointer_flush separately from durability="
+        );
+        Ok(())
+    }
+
     /// The canonical guide must not attribute an executable to policy that policy does
     /// not declare.
     ///

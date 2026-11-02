@@ -572,6 +572,40 @@ try {
         Fail-Case "candidate that could not be made durable is not published" "status=$($script:LastStatus) first=$flushFirst now=$stillFirst"
     }
 
+    # The commit must flush staged members and the candidate, candidates-parent,
+    # and store directory entries before the pointer move. The trace oracle is
+    # the same shape as the POSIX installer contract (#17155).
+    Setup-Root
+    Stage-Pair -Dest $script:ExtractDir -Server "trace-a" -Dap "trace-a-dap"
+    $tracePath = Join-Path $TempRoot ("flush-trace-" + [guid]::NewGuid().ToString("N") + ".txt")
+    Set-Content -LiteralPath $tracePath -Value "" -Encoding ascii
+    $env:PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE = $tracePath
+    try {
+        Invoke-Promote "release"
+    } finally {
+        Remove-Item Env:PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE -ErrorAction SilentlyContinue
+    }
+    $traceId = [IO.Path]::GetFileName(
+        (Read-StandalonePointerRelative -Path (Join-Path (Get-StandaloneProductStore -InstallDir $script:InstallDir) "current") -Store (Get-StandaloneProductStore -InstallDir $script:InstallDir)))
+    $traceBody = Get-Content -LiteralPath $tracePath -Raw
+    $traceOk = ($script:LastStatus -eq 0)
+    foreach ($pattern in @(
+            "file ${traceId}/perllsp.exe flushed",
+            "file ${traceId}/perl-dap.exe flushed",
+            "file ${traceId}/product_unit.v1 flushed",
+            "dir candidates/${traceId} flushed",
+            "dir candidates-parent flushed",
+            "dir store flushed",
+            "dir store-post-commit flushed")) {
+        if ($traceBody -notlike "*${pattern}*") { $traceOk = $false }
+    }
+    if ($traceOk -and ($script:LastOutput -like "*pointer_flush=flushed*")) {
+        Pass-Case "commit flushes staged members and directories before the pointer move"
+    } else {
+        Fail-Case "commit flushes staged members and directories before the pointer move" `
+            "status=$($script:LastStatus) id=$traceId receipt=$($script:LastOutput) trace=$traceBody"
+    }
+
     # Startup recovery: a current pointer left naming an incomplete candidate is
     # rolled back to the last complete unit instead of serving a truncated pair.
     Setup-Root
