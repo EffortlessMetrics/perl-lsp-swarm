@@ -997,7 +997,7 @@ mod tests {
             module_runtime_module_at_byte_offset(text, in_pod).is_none(),
             "POD headings must not resolve as executable Module::Runtime calls"
         );
-        let in_code = text.find("'Demo").ok_or("missing code call")?;
+        let in_code = text.find("Demo::Worker").ok_or("missing code call")?;
         let resolved = module_runtime_module_at_byte_offset(text, in_code)
             .ok_or("code after POD must still resolve")?;
         assert_eq!(resolved, "Demo::Worker");
