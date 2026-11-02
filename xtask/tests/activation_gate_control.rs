@@ -65,11 +65,7 @@ fn reachable_required_gate_passes_control_chain() -> TestResult {
 #[test]
 fn unreachable_required_gate_registration_fails() -> TestResult {
     expect_fail(
-        &gate_row(
-            "gate:parser_audit_closeout",
-            "tier = \"merge_gate\"; required = true",
-            None,
-        ),
+        &gate_row("gate:parser_audit_closeout", "tier = \"merge_gate\"; required = true", None),
         "claims required enforcement",
     )
 }
@@ -77,11 +73,7 @@ fn unreachable_required_gate_registration_fails() -> TestResult {
 #[test]
 fn advisory_only_gate_cannot_claim_required_enforcement() -> TestResult {
     expect_fail(
-        &gate_row(
-            "gate:security_audit",
-            "tier = \"merge_gate\"; required = true",
-            None,
-        ),
+        &gate_row("gate:security_audit", "tier = \"merge_gate\"; required = true", None),
         "claims required enforcement",
     )
 }
@@ -96,11 +88,7 @@ fn renamed_registration_context_fails_when_policy_is_advisory() -> TestResult {
 
 #[test]
 fn quarantined_advisory_gate_passes_without_claiming_active_required_path() -> TestResult {
-    expect_pass(&gate_row(
-        "gate:security_audit",
-        "tier = \"merge_gate\"; required = false",
-        None,
-    ))
+    expect_pass(&gate_row("gate:security_audit", "tier = \"merge_gate\"; required = false", None))
 }
 
 #[test]

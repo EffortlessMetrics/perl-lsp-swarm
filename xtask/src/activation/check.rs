@@ -388,10 +388,7 @@ fn check_gate(
         reasons.push(reason);
     }
     let Some(gate_id) = gate_control::gate_id_from_surface(&row.surface_id) else {
-        reasons.push(format!(
-            "gate row surface id `{}` is not a gate:* identity",
-            row.surface_id
-        ));
+        reasons.push(format!("gate row surface id `{}` is not a gate:* identity", row.surface_id));
         return;
     };
     let Some(snapshot) = gate_control else {
