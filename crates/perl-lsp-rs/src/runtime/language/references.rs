@@ -840,6 +840,46 @@ impl LspServer {
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
 
+                    if let Some(table) = parsed.as_ref().and_then(|parsed| parsed.regex_analysis())
+                        && table.source_matches(&doc.text)
+                    {
+                        if let Some(locations) = self.regex_capture_references(
+                            uri,
+                            doc,
+                            table,
+                            offset,
+                            include_declaration,
+                        ) {
+                            let locations = finalize_reference_locations(locations, cap);
+                            return Ok((
+                                Some(Value::Array(locations.clone())),
+                                ReferencesAnsweringTier::SemanticSourceBacked,
+                                "regex_capture",
+                                locations.len(),
+                                0,
+                                start.elapsed().as_micros(),
+                                Some(SourceBackedReferenceAttempt::Exact(locations)),
+                                fallback_receipt,
+                            ));
+                        }
+                        if perl_lsp_rs_core::providers::regex::record_at_pattern_body_offset(
+                            &doc.text, table, offset,
+                        )
+                        .is_some()
+                        {
+                            return Ok((
+                                Some(Value::Array(Vec::new())),
+                                ReferencesAnsweringTier::SemanticSourceBacked,
+                                "regex_capture",
+                                0,
+                                0,
+                                start.elapsed().as_micros(),
+                                None,
+                                fallback_receipt,
+                            ));
+                        }
+                    }
+
                     let needle = token_under_cursor(&doc.text, line as usize, character as usize)
                         .unwrap_or_default();
 

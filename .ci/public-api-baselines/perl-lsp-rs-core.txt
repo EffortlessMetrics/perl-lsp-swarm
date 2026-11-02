@@ -6398,6 +6398,18 @@ pub fn perl_lsp_rs_core::providers::references_shadow::ReferencesShadowResult::f
 pub fn perl_lsp_rs_core::providers::references_shadow::find_references_cutover<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_locations: alloc::vec::Vec<perl_workspace::workspace::workspace_index::Location>, semantic_queries: &Q, symbol: &str, entity_id: perl_semantic_facts::EntityId) -> perl_lsp_rs_core::providers::references_shadow::ReferencesCutoverOutcome
 pub fn perl_lsp_rs_core::providers::references_shadow::find_references_live_source_backed<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_locations: alloc::vec::Vec<perl_workspace::workspace::workspace_index::Location>, semantic_queries: &Q, symbol: &str, entity_id: perl_semantic_facts::EntityId) -> perl_lsp_rs_core::providers::references_shadow::ReferencesCutoverOutcome
 pub fn perl_lsp_rs_core::providers::references_shadow::find_references_shadow<Q: perl_workspace::semantic::queries::SemanticQueries>(legacy_locations: alloc::vec::Vec<perl_workspace::workspace::workspace_index::Location>, semantic_queries: &Q, symbol: &str, entity_id: perl_semantic_facts::EntityId) -> perl_lsp_rs_core::providers::references_shadow::ReferencesShadowResult
+pub mod perl_lsp_rs_core::providers::regex
+pub use perl_lsp_rs_core::providers::regex::definition_links_at
+pub use perl_lsp_rs_core::providers::regex::reference_spans_at
+pub struct perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink
+pub perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink::origin_selection: perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
+pub perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink::target_range: perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
+pub perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink::target_selection: perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
+pub struct perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan
+pub perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan::end: usize
+pub perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan::start: usize
+pub fn perl_lsp_rs_core::providers::regex::definition_links_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::navigation::RegexCaptureDefinitionLink>>
+pub fn perl_lsp_rs_core::providers::regex::reference_spans_at(source: &str, table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable, offset: usize, include_declaration: bool) -> core::option::Option<alloc::vec::Vec<perl_lsp_rs_core::providers::regex::navigation::SourceByteSpan>>
 pub mod perl_lsp_rs_core::providers::regex_canonical
 pub fn perl_lsp_rs_core::providers::regex_canonical::project_canonical_regex_diagnostics(table: &perl_parser_core::syntax::regex_analysis::RegexAnalysisTable) -> alloc::vec::Vec<perl_lsp_rs_core::providers::Diagnostic>
 pub mod perl_lsp_rs_core::providers::rename
