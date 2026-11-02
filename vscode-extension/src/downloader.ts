@@ -21,6 +21,12 @@ import {
 } from './managedArchiveSafetyPolicy';
 import type { ManagedCandidateManifest } from './managedCacheProtocol';
 import {
+  acquireManagedCacheMutationLock,
+  buildManagedCacheMutationAttempt,
+  ManagedCacheMutationBusyError,
+  resolveManagedBinaryPathInNamespace,
+} from './managedCacheLock';
+import {
   MANAGED_CURRENT_SELECTION_FILE,
   collectStaleManagedCandidates,
   commitManagedCandidateSelection,
@@ -999,13 +1005,20 @@ export class BinaryDownloader {
       // needed depends on whether the target release carries a native ARM64
       // asset, which is not known until the release is fetched; rejecting up
       // front refused installs that would have succeeded natively (#6196).
-      return await this.downloadWithProgress(progressTitle);
+      return await this.downloadWithProgress(progressTitle, forceDownload);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.lastErrorMessage = errorMsg;
       if (isDownloadCancellationMessage(errorMsg)) {
         this.outputChannel.appendLine(`Download cancelled: ${errorMsg}`);
         void vscode.window.showInformationMessage('Perl LSP download cancelled.');
+        return null;
+      }
+      if (error instanceof ManagedCacheMutationBusyError) {
+        this.outputChannel.appendLine(`Managed cache busy: ${errorMsg}`);
+        void vscode.window.showWarningMessage(
+          'perl-lsp: Another window is installing or updating the managed server binary. Try again shortly.',
+        );
         return null;
       }
       this.outputChannel.appendLine(`Managed binary install failed: ${errorMsg}`);
@@ -1131,6 +1144,7 @@ export class BinaryDownloader {
 
   private async downloadWithProgress(
     progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+    forceDownload = false,
   ): Promise<string> {
     return vscode.window.withProgress(
       {
@@ -1212,6 +1226,28 @@ export class BinaryDownloader {
         }
 
         this.outputChannel.appendLine(`Found matching asset: ${assetName}`);
+
+        const baseDir = this.getManagedBaseDirForKey(compatibilityKey);
+        if (!fs.existsSync(baseDir)) {
+          fs.mkdirSync(baseDir, { recursive: true });
+        }
+
+        const mutationOperation = forceDownload ? 'repair' : 'install';
+        const cacheLock = await acquireManagedCacheMutationLock(
+          baseDir,
+          buildManagedCacheMutationAttempt(compatibilityKey, mutationOperation),
+        );
+
+        try {
+          if (!forceDownload) {
+            const reused = resolveManagedBinaryPathInNamespace(baseDir);
+            if (reused !== null && fs.existsSync(reused)) {
+              this.outputChannel.appendLine(
+                `Using existing managed binary after cross-process cache lock: ${reused}`,
+              );
+              return reused;
+            }
+          }
 
         // Find checksum file (SHA256SUMS file contains all checksums)
         const checksumAsset = release.assets.find((a) => a.name === 'SHA256SUMS');
@@ -1314,10 +1350,6 @@ export class BinaryDownloader {
           // active install is selected by an atomically-committed
           // pointer file at the base dir.
           progress.report({ increment: 15, message: 'Installing binary...' });
-          const baseDir = this.getManagedBaseDirForKey(compatibilityKey);
-          if (!fs.existsSync(baseDir)) {
-            fs.mkdirSync(baseDir, { recursive: true });
-          }
           const installDirName = this.buildVersionedInstallDirName(release.tag_name);
           const installDir = path.join(baseDir, installDirName);
           fs.mkdirSync(installDir, { recursive: true });
@@ -1398,6 +1430,9 @@ export class BinaryDownloader {
           } catch (e) {
             this.outputChannel.appendLine(`Failed to clean up temp dir: ${e}`);
           }
+        }
+        } finally {
+          cacheLock.release();
         }
       },
     );
