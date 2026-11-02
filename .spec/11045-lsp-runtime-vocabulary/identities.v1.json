@@ -177,7 +177,10 @@
       "owner": "Progress authority.",
       "equality": "Distinct from request and reverse-request domains even when raw values resemble.",
       "lifetime": "Released only after progress completion or owning session cleanup.",
-      "variants": [],
+      "variants": [
+        "numeric",
+        "string"
+      ],
       "scoped_by": [
         "session_id"
       ],

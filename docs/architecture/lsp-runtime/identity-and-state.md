@@ -125,7 +125,7 @@ Application completion remains evidence. Currentness authority rejects publicati
 
 ### Writer failure
 
-Terminal and publication remain unchanged. Output fate becomes failed. Cleanup remains incomplete until output, task, and request resources settle.
+The terminal decision and the committed publication remain unchanged. Output fate becomes failed. Cleanup remains incomplete until output, task, and request resources settle.
 
 ### Graceful shutdown
 

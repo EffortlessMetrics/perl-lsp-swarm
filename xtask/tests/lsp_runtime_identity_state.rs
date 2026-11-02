@@ -42,7 +42,9 @@ fn row_mut<'a>(
 
 fn reject(value: &Value, needle: &str) -> Result<()> {
     let raw = encode(value)?;
-    let error = validate_str(&raw).expect_err("mutated identity/state vocabulary must fail closed");
+    let Err(error) = validate_str(&raw) else {
+        return Err(eyre!("mutated identity/state vocabulary must fail closed"));
+    };
     let rendered = format!("{error:#}");
     assert!(rendered.contains(needle), "expected error containing {needle:?}; got {rendered}");
     Ok(())
@@ -58,6 +60,70 @@ fn embedded_contract_and_human_index_are_current() -> Result<()> {
     assert!(ids.contains(&"request_key".to_string()));
     assert!(ids.contains(&"terminal_selected".to_string()));
     assert!(ids.contains(&"delivery_fate".to_string()));
+    // The promised downstream set is exact, not sampled: any added or
+    // removed identity, boundary term, or state must update this list.
+    let expected: Vec<String> = [
+        "application_completed",
+        "application_completion",
+        "application_ready",
+        "application_unavailable",
+        "cancellation_requested",
+        "client_consumed",
+        "connection_closed",
+        "connection_closing",
+        "connection_id",
+        "connection_open",
+        "currentness_token",
+        "deadline_expired",
+        "deadline_id",
+        "delivery_fate",
+        "delivery_fate_known",
+        "enqueued",
+        "execution_admitted",
+        "execution_rejected",
+        "failure_id",
+        "ingress_sequence",
+        "lifecycle_transition_id",
+        "message_id",
+        "message_observed",
+        "mutation_barrier_id",
+        "operation_id",
+        "output_admitted",
+        "output_failed",
+        "output_flush_committed",
+        "output_id",
+        "output_prepared",
+        "output_sequence",
+        "output_write_committed",
+        "owner_cleaned",
+        "progress_key",
+        "protocol_exited",
+        "protocol_initialized",
+        "protocol_shutdown_requested",
+        "protocol_uninitialized",
+        "protocol_valid",
+        "publication_committed",
+        "publication_id",
+        "request_key",
+        "request_registered",
+        "request_tracking_reserved",
+        "reservation_id",
+        "reverse_request_key",
+        "route_id",
+        "running",
+        "session_id",
+        "stale_publication_rejected",
+        "task_group_settled",
+        "task_id",
+        "terminal_decision",
+        "terminal_selected",
+        "terminal_signal",
+        "work_id",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(ids, expected);
     Ok(())
 }
 
@@ -143,7 +209,7 @@ fn request_key_preserves_numeric_string_and_connection_session_scope() -> Result
     let mut scope = value()?;
     row_mut(&mut scope, "identities", "id", "request_key")?
         .insert("scoped_by".into(), serde_json::json!(["session_id"]));
-    reject(&scope, "request_key.scoped_by")
+    reject(&scope, "identity request_key scopes changed")
 }
 
 #[test]
@@ -200,13 +266,7 @@ fn completion_terminal_publication_and_delivery_cannot_collapse() -> Result<()> 
         "write_forbids_client_consumption",
         "output_failure_independent_terminal",
     ] {
-        let mut changed = value()?;
-        let relations = changed
-            .get_mut("relations")
-            .and_then(Value::as_array_mut)
-            .ok_or_else(|| eyre!("missing relations"))?;
-        relations.retain(|row| row.get("id").and_then(Value::as_str) != Some(relation_id));
-        reject(&changed, "missing required relationship")?;
+        reject_missing_relation(relation_id)?;
     }
     Ok(())
 }
@@ -222,13 +282,7 @@ fn lifecycle_connection_task_delivery_and_cleanup_remain_distinct() -> Result<()
         "protocol_exit_forbids_cleanup",
         "protocol_initialized_independent_readiness",
     ] {
-        let mut changed = value()?;
-        let relations = changed
-            .get_mut("relations")
-            .and_then(Value::as_array_mut)
-            .ok_or_else(|| eyre!("missing relations"))?;
-        relations.retain(|row| row.get("id").and_then(Value::as_str) != Some(relation_id));
-        reject(&changed, "missing required relationship")?;
+        reject_missing_relation(relation_id)?;
     }
     Ok(())
 }
@@ -240,14 +294,88 @@ fn cleanup_requires_terminal_delivery_and_task_settlement() -> Result<()> {
         "cleanup_requires_delivery_fate",
         "cleanup_requires_task_settlement",
     ] {
-        let mut changed = value()?;
-        let relations = changed
-            .get_mut("relations")
-            .and_then(Value::as_array_mut)
-            .ok_or_else(|| eyre!("missing relations"))?;
-        relations.retain(|row| row.get("id").and_then(Value::as_str) != Some(relation_id));
-        reject(&changed, "missing required relationship")?;
+        reject_missing_relation(relation_id)?;
     }
+    Ok(())
+}
+
+/// Remove one relation and assert the refusal names its exact semantic
+/// tuple: a loose "missing required relationship" needle cannot tell which
+/// tuple the denominator lost.
+fn reject_missing_relation(relation_id: &str) -> Result<()> {
+    let mut changed = value()?;
+    let relations = changed
+        .get_mut("relations")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("missing relations"))?;
+    let removed = relations
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(relation_id))
+        .cloned()
+        .ok_or_else(|| eyre!("unknown relation {relation_id}"))?;
+    let key = format!(
+        "{}|{}|{}",
+        removed.get("from").and_then(Value::as_str).unwrap_or("?"),
+        removed.get("kind").and_then(Value::as_str).unwrap_or("?"),
+        removed.get("to").and_then(Value::as_str).unwrap_or("?")
+    );
+    relations.retain(|row| row.get("id").and_then(Value::as_str) != Some(relation_id));
+    reject(&changed, &format!("missing required relationship {key}"))?;
+    Ok(())
+}
+
+/// Falsifier: narrowing an identity's scope set is refused even though every
+/// referenced scope still names a known identity.
+#[test]
+fn narrowed_identity_scopes_are_refused() -> Result<()> {
+    let mut changed = value()?;
+    let scopes = row_mut(&mut changed, "identities", "id", "message_id")?
+        .get_mut("scoped_by")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("missing scoped_by"))?;
+    scopes.retain(|scope| scope.as_str() != Some("connection_id"));
+    reject(&changed, "identity message_id scopes changed")?;
+    Ok(())
+}
+
+/// Falsifier: an ambiguous term without a source issue is refused.
+#[test]
+fn ambiguous_term_without_source_is_refused() -> Result<()> {
+    let mut changed = value()?;
+    row_mut(&mut changed, "ambiguous_terms", "term", "pending")?
+        .insert("source".into(), Value::from(0));
+    reject(&changed, "ambiguous_terms pending has no source issue")?;
+    Ok(())
+}
+
+/// Falsifier: a relation that is both legal and rejected for one journey is refused.
+#[test]
+fn journey_relation_in_both_lists_is_refused() -> Result<()> {
+    let mut changed = value()?;
+    let journey = row_mut(&mut changed, "journeys", "id", "ordinary_success")?;
+    // Move a forbidden-kind relation into the legal list: the rejected-side
+    // kind check passes, so the overlap check must fire.
+    let moved = journey
+        .get("rejected")
+        .and_then(Value::as_array)
+        .and_then(|rejected| rejected.first().cloned())
+        .ok_or_else(|| eyre!("journey has no rejected relations"))?;
+    journey
+        .get_mut("relations")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("journey has no legal relations"))?
+        .push(moved);
+    reject(&changed, "is both legal and rejected")?;
+    Ok(())
+}
+
+/// Falsifier: a blank axis proposition is refused.
+#[test]
+fn blank_axis_proposition_is_refused() -> Result<()> {
+    let mut changed = value()?;
+    row_mut(&mut changed, "axes", "id", "terminal")?
+        .insert("proposition".into(), Value::String(String::new()));
+    reject(&changed, "axis proposition")?;
     Ok(())
 }
 

@@ -190,6 +190,7 @@ pub(super) struct AmbiguousTerm {
     pub(super) term: String,
     pub(super) reason: String,
     pub(super) replacements: Vec<String>,
+    pub(super) source: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

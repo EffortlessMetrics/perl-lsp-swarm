@@ -111,6 +111,7 @@ pub(super) fn verify_document(vocabulary: &Vocabulary, document: &str) -> Result
 
     let begin = "<!-- BEGIN CHECKED LSP RUNTIME VOCABULARY INDEX -->";
     let end = "<!-- END CHECKED LSP RUNTIME VOCABULARY INDEX -->";
+    check_single_marker_pair(document, begin, end)?;
     let start = document
         .find(begin)
         .ok_or_else(|| eyre!("human reference lacks checked-index start marker"))?;
@@ -124,4 +125,49 @@ pub(super) fn verify_document(vocabulary: &Vocabulary, document: &str) -> Result
         bail!("checked machine index is stale; regenerate it from the machine source");
     }
     Ok(())
+}
+
+/// A second marker pair would let a stale generated block hide after the
+/// checked one: only the first pair is compared, so extras must be refused.
+fn check_single_marker_pair(document: &str, begin: &str, end: &str) -> Result<()> {
+    if document.matches(begin).count() != 1 || document.matches(end).count() != 1 {
+        bail!("human reference must contain exactly one checked-index marker pair");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use color_eyre::eyre::{Result, eyre};
+
+    use super::check_single_marker_pair;
+
+    const BEGIN: &str = "<!-- BEGIN -->";
+    const END: &str = "<!-- END -->";
+
+    #[test]
+    fn single_marker_pair_passes() -> Result<()> {
+        let document = format!("head\n{BEGIN}\nbody\n{END}\ntail");
+        check_single_marker_pair(&document, BEGIN, END)?;
+        Ok(())
+    }
+
+    #[test]
+    fn duplicated_marker_pair_is_refused() -> Result<()> {
+        let document = format!("{BEGIN}\nbody\n{END}\n{BEGIN}\nstale\n{END}");
+        let Err(error) = check_single_marker_pair(&document, BEGIN, END) else {
+            return Err(eyre!("duplicated marker pair must be refused"));
+        };
+        assert!(error.to_string().contains("exactly one checked-index marker pair"));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_markers_are_refused() -> Result<()> {
+        let Err(error) = check_single_marker_pair("no markers", BEGIN, END) else {
+            return Err(eyre!("missing markers must be refused"));
+        };
+        assert!(error.to_string().contains("exactly one checked-index marker pair"));
+        Ok(())
+    }
 }

@@ -158,7 +158,8 @@
         "output_admitted",
         "protocol_valid",
         "request_tracking_reserved"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "active",
@@ -168,7 +169,8 @@
         "request_registered",
         "running",
         "task_group_settled"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "admitted",
@@ -176,7 +178,8 @@
       "replacements": [
         "execution_admitted",
         "output_admitted"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "closed",
@@ -186,7 +189,8 @@
         "owner_cleaned",
         "protocol_exited",
         "task_group_settled"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "completed",
@@ -197,7 +201,8 @@
         "output_write_committed",
         "owner_cleaned",
         "task_group_settled"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "delivered",
@@ -207,18 +212,20 @@
         "output_admitted",
         "output_flush_committed",
         "output_write_committed"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "pending",
-      "reason": "Name whether the request is registered, queued, running, awaiting terminal selection, or awaiting cleanup.",
+      "reason": "Name the exact lifecycle position: request_registered, enqueued, running, terminal_selected, or owner_cleaned.",
       "replacements": [
         "enqueued",
         "owner_cleaned",
         "request_registered",
         "running",
         "terminal_selected"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "published",
@@ -227,7 +234,8 @@
         "client_consumed",
         "output_admitted",
         "publication_committed"
-      ]
+      ],
+      "source": 11045
     },
     {
       "term": "terminal",
@@ -236,7 +244,8 @@
         "delivery_fate",
         "terminal_decision",
         "terminal_signal"
-      ]
+      ],
+      "source": 11045
     }
   ]
 }

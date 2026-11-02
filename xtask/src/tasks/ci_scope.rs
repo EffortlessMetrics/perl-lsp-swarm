@@ -1321,6 +1321,30 @@ mod tests {
         }
     }
 
+    /// The vocabulary path list must cover every checked fragment: a renamed
+    /// fragment that drops out of this list silently loses xtask routing.
+    #[test]
+    fn vocabulary_paths_cover_every_checked_fragment() -> Result<()> {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or_else(|| eyre!("CARGO_MANIFEST_DIR has no parent"))?
+            .to_path_buf();
+        let spec_dir = root.join(".spec/11045-lsp-runtime-vocabulary");
+        let mut expected: Vec<String> = std::fs::read_dir(&spec_dir)
+            .wrap_err("vocabulary spec dir must be readable")?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".json"))
+            .map(|name| format!(".spec/11045-lsp-runtime-vocabulary/{name}"))
+            .collect();
+        expected.push("docs/architecture/lsp-runtime/identity-and-state.md".to_string());
+        expected.sort();
+        let mut listed: Vec<&str> = LSP_RUNTIME_VOCABULARY_PATHS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(listed, expected.iter().map(String::as_str).collect::<Vec<_>>());
+        Ok(())
+    }
+
     #[test]
     fn windows_runner_ignores_unrelated_paths_and_non_shell_scripts() {
         let files = [

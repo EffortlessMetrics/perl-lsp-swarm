@@ -6,8 +6,7 @@ use serde_json::Value;
 use super::concept_id_set;
 use super::constants::{
     REQUIRED_AMBIGUOUS_TERMS, REQUIRED_AXES, REQUIRED_BOUNDARY_TERMS, REQUIRED_IDENTITIES,
-    REQUIRED_JOURNEYS, REQUIRED_RELATION_BINDINGS, REQUIRED_RELATION_IDS, REQUIRED_RELATION_KEYS,
-    REQUIRED_STATES,
+    REQUIRED_IDENTITY_SCOPES, REQUIRED_JOURNEYS, REQUIRED_RELATION_BINDINGS, REQUIRED_STATES,
 };
 use super::model::{Identity, RelationKind, StateTerm, Vocabulary};
 use super::{SCHEMA_NAME, SCHEMA_VERSION};
@@ -71,11 +70,17 @@ impl Vocabulary {
         )?;
 
         validate_named_rows("axes", &self.axes, |row| (&row.id, row.source))?;
+        for axis in &self.axes {
+            nonempty("axis proposition", &axis.proposition)?;
+        }
         validate_named_rows("identities", &self.identities, |row| (&row.id, row.source))?;
         validate_named_rows("boundary_terms", &self.boundary_terms, |row| (&row.id, row.source))?;
         validate_named_rows("states", &self.states, |row| (&row.id, row.source))?;
         validate_named_rows("relations", &self.relations, |row| (&row.id, row.source))?;
         validate_named_rows("journeys", &self.journeys, |row| (&row.id, row.source))?;
+        validate_named_rows("ambiguous_terms", &self.ambiguous_terms, |row| {
+            (row.term.as_str(), row.source)
+        })?;
 
         exact_strings("axes", self.axes.iter().map(|row| row.id.as_str()), REQUIRED_AXES)?;
         exact_strings(
@@ -119,6 +124,22 @@ impl Vocabulary {
                 &identity.scoped_by,
                 &identity_ids,
             )?;
+            // Scopes are a closed denominator, not an open list: narrowing a
+            // scope set silently detaches the identity from its naming
+            // authority while every other check still passes.
+            let (_, required_scopes) = REQUIRED_IDENTITY_SCOPES
+                .iter()
+                .find(|(id, _)| *id == identity.id)
+                .ok_or_else(|| eyre!("identity {} has no frozen scope set", identity.id))?;
+            let actual_scopes: BTreeSet<&str> =
+                identity.scoped_by.iter().map(String::as_str).collect();
+            let required_scopes: BTreeSet<&str> = required_scopes.iter().copied().collect();
+            if actual_scopes != required_scopes {
+                bail!(
+                    "identity {} scopes changed: actual={actual_scopes:?} required={required_scopes:?}",
+                    identity.id
+                );
+            }
         }
         for term in &self.boundary_terms {
             nonempty("boundary term name", &term.name)?;
@@ -184,7 +205,14 @@ impl Vocabulary {
                 bail!("duplicate relationship semantic in {}", relation.id);
             }
         }
-        for required in REQUIRED_RELATION_KEYS {
+        // The id and tuple denominators are projections of the binding
+        // table, not separately maintained lists: one added relation
+        // updates one table, and drift between them is unrepresentable.
+        let required_ids: Vec<&str> =
+            REQUIRED_RELATION_BINDINGS.iter().map(|(id, _)| *id).collect();
+        let required_keys: Vec<&str> =
+            REQUIRED_RELATION_BINDINGS.iter().map(|(_, key)| *key).collect();
+        for required in &required_keys {
             if !relation_keys.contains(*required) {
                 bail!("missing required relationship {required}");
             }
@@ -192,12 +220,12 @@ impl Vocabulary {
         exact_strings(
             "relationship semantics",
             relation_keys.iter().map(String::as_str),
-            REQUIRED_RELATION_KEYS,
+            &required_keys,
         )?;
         exact_strings(
             "relations",
             self.relations.iter().map(|row| row.id.as_str()),
-            REQUIRED_RELATION_IDS,
+            &required_ids,
         )?;
 
         for term in &self.ambiguous_terms {
@@ -257,6 +285,12 @@ impl Vocabulary {
                     .iter()
                     .find(|row| row.id == *relation_id)
                     .ok_or_else(|| eyre!("missing journey relation {relation_id}"))?;
+                if journey.rejected.iter().any(|rejected| rejected == relation_id) {
+                    bail!(
+                        "journey {} relation {relation_id} is both legal and rejected",
+                        journey.id
+                    );
+                }
                 if relation.kind == RelationKind::Requires
                     && (!journey.facts.contains(&relation.from_id)
                         || !journey.facts.contains(&relation.to))
