@@ -37,7 +37,12 @@ impl ErrorClass for ValidationError {
             | Self::IncrementDecrement
             | Self::Backticks
             | Self::RegexMutation(_)
-            | Self::ContainsNewlines => ErrorCategory::UserError,
+            | Self::ContainsNewlines
+            | Self::IndirectDangerousOperation(_)
+            | Self::DynamicSubroutineCall
+            | Self::GlobOperation
+            | Self::FileHandleRead
+            | Self::CoreQualificationBypass(_) => ErrorCategory::UserError,
         }
     }
 }

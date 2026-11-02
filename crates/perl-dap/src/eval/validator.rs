@@ -5,7 +5,8 @@
 //! the interpreter.
 
 use super::patterns::{
-    ASSIGNMENT_OP_TOKENS_RE, ASSIGNMENT_OPERATORS, DANGEROUS_OPS_RE, REGEX_MUTATION_RE,
+    ASSIGNMENT_OP_TOKENS_RE, ASSIGNMENT_OPERATORS, DANGEROUS_OPS_RE, DEREF_RE, GLOB_RE,
+    REGEX_MUTATION_RE,
 };
 
 /// Error type for unsafe expression detection
@@ -51,6 +52,26 @@ pub enum ValidationError {
     /// Expression contains newlines (potential command injection)
     #[error("Expression cannot contain newlines")]
     ContainsNewlines,
+
+    /// Indirect invocation of a deny-listed operation in trusted REPL (#1746).
+    #[error("Side-effectful REPL evaluation: indirect invocation of '{0}' is not allowed")]
+    IndirectDangerousOperation(String),
+
+    /// Dynamic subroutine call bypass in trusted REPL (#1746).
+    #[error("Side-effectful REPL evaluation: dynamic subroutine calls (&{{...}}) are not allowed")]
+    DynamicSubroutineCall,
+
+    /// Glob read bypass in trusted REPL (#1746).
+    #[error("Side-effectful REPL evaluation: glob operations (<*...>) are not allowed")]
+    GlobOperation,
+
+    /// Filehandle/glob read at expression start in trusted REPL (#1746).
+    #[error("Side-effectful REPL evaluation: file handle reads (<...>) and globs are not allowed")]
+    FileHandleRead,
+
+    /// CORE:: qualification bypass in trusted REPL (#1746).
+    #[error("Side-effectful REPL evaluation: CORE:: qualification of '{0}' is not allowed")]
+    CoreQualificationBypass(String),
 }
 
 /// Result type for expression validation
@@ -116,6 +137,35 @@ impl SafeEvaluator {
         Ok(())
     }
 
+    /// Block deny-list bypass constructs even when trusted REPL execution is admitted.
+    ///
+    /// Direct side-effectful calls such as `system('ls')` remain available to the
+    /// interactive debug console; this check targets indirect forms that existed
+    /// only to evade screening (`$obj->system`, `&$system`, `CORE::system`, …).
+    pub fn validate_bypass_confinement(&self, expression: &str) -> ValidationResult {
+        if expression.contains('\n') || expression.contains('\r') {
+            return Err(ValidationError::ContainsNewlines);
+        }
+
+        if let Ok(re) = DEREF_RE.as_ref() {
+            if re.is_match(expression) {
+                return Err(ValidationError::DynamicSubroutineCall);
+            }
+        }
+
+        if let Ok(re) = GLOB_RE.as_ref() {
+            if re.is_match(expression) {
+                return Err(ValidationError::GlobOperation);
+            }
+        }
+
+        if expression.trim().starts_with('<') {
+            return Err(ValidationError::FileHandleRead);
+        }
+
+        self.check_bypass_confinement_operations(expression)
+    }
+
     /// Check for dangerous operations in the expression
     fn check_dangerous_operations(&self, expression: &str) -> ValidationResult {
         let Some(re) = DANGEROUS_OPS_RE.as_ref().ok() else {
@@ -150,6 +200,46 @@ impl SafeEvaluator {
 
             // Block: either bare op or CORE:: qualified
             return Err(ValidationError::DangerousOperation(op.to_string()));
+        }
+
+        Ok(())
+    }
+
+    fn check_bypass_confinement_operations(&self, expression: &str) -> ValidationResult {
+        let Some(re) = DANGEROUS_OPS_RE.as_ref().ok() else {
+            return Ok(());
+        };
+
+        for mat in re.find_iter(expression) {
+            let op = mat.as_str();
+            let start = mat.start();
+            let end = mat.end();
+
+            if is_in_single_quotes(expression, start) {
+                continue;
+            }
+
+            if is_sigil_prefixed_identifier(expression, start) {
+                continue;
+            }
+
+            if is_simple_braced_scalar_var(expression, start, end) {
+                continue;
+            }
+
+            if is_package_qualified_not_core(expression, start) {
+                continue;
+            }
+
+            if is_core_qualified(expression, start) {
+                return Err(ValidationError::CoreQualificationBypass(op.to_string()));
+            }
+
+            if is_bare_dangerous_call(expression, start) {
+                continue;
+            }
+
+            return Err(ValidationError::IndirectDangerousOperation(op.to_string()));
         }
 
         Ok(())
@@ -312,6 +402,43 @@ fn is_escape_sequence(s: &str, match_start: usize) -> bool {
     s.as_bytes()[match_start - 1] == b'\\'
 }
 
+/// True when a deny-list operation is invoked directly, not via a bypass form.
+fn is_bare_dangerous_call(s: &str, op_start: usize) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = op_start;
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i == 0 {
+        return true;
+    }
+
+    let prev = bytes[i - 1];
+    if prev == b'>' && i >= 2 && bytes[i - 2] == b'-' {
+        return false;
+    }
+    if prev == b'&' {
+        return false;
+    }
+    if prev == b'{' {
+        let mut j = i - 1;
+        while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+            j -= 1;
+        }
+        if j > 0 && bytes[j - 1] == b'&' {
+            return false;
+        }
+    }
+    if matches!(prev, b'$' | b'@' | b'%' | b'*') {
+        return false;
+    }
+    if i >= 2 && bytes[i - 1] == b':' && bytes[i - 2] == b':' {
+        return false;
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +592,42 @@ mod tests {
         // Ops inside single quotes should be allowed (they're literal strings)
         assert!(evaluator.validate("'print this'").is_ok());
         assert!(evaluator.validate("'system call'").is_ok());
+    }
+
+    #[test]
+    fn bypass_confinement_allows_direct_side_effectful_calls() {
+        let evaluator = SafeEvaluator::new();
+        for expr in ["system('ls')", "print 'test'", "eval('1')", "$x = 1", "`date`"] {
+            assert!(
+                evaluator.validate_bypass_confinement(expr).is_ok(),
+                "direct REPL execution should remain available: {expr}"
+            );
+        }
+    }
+
+    #[test]
+    fn bypass_confinement_blocks_known_evasion_patterns() {
+        let evaluator = SafeEvaluator::new();
+        let blocked = [
+            ("$obj->system('ls')", "method-call bypass"),
+            ("&$system", "code-deref bypass"),
+            ("&{ $system }", "braced code-deref bypass"),
+            ("&{'sys'.'tem'}('ls')", "dynamic subroutine bypass"),
+            ("CORE::system('ls')", "CORE qualification bypass"),
+            ("<*.txt>", "glob bypass"),
+            ("<STDIN>", "leading filehandle read"),
+        ];
+        for (expr, label) in blocked {
+            assert!(
+                evaluator.validate_bypass_confinement(expr).is_err(),
+                "{label} must stay blocked in trusted REPL: {expr}"
+            );
+        }
+    }
+
+    #[test]
+    fn bypass_confinement_allows_non_deny_list_method_calls() {
+        let evaluator = SafeEvaluator::new();
+        assert!(evaluator.validate_bypass_confinement("$obj->some_method()").is_ok());
     }
 }
