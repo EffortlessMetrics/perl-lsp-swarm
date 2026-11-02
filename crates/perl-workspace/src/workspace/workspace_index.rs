@@ -5398,13 +5398,11 @@ impl WorkspaceIndex {
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
 ///
-/// Declaration extraction is unified in production (`build_unified` runs one
-/// `extract_symbol_decls` pass seeded by [`initial_package_for_uri`] and
-/// feeds both the legacy [`FileIndex`] symbol projection and the canonical
-/// fact shard) as of perl-lsp-swarm#4047 / #1711-C. The former per-projection
-/// `Some("main")` versus `None` mismatch is retired by sharing that single
-/// seed for both outputs. `FileExtractionBundle::build()` (shadow harness)
-/// still runs the pre-unification dual declaration walks for parity regression.
+/// Declaration extraction is unified on module/template URIs (`*.pm`, etc.)
+/// where [`initial_package_for_uri`] is `None`: `build_unified` runs one
+/// `extract_symbol_decls` pass for both legacy and canonical projections
+/// (perl-lsp-swarm#4047). Script URIs still run a second canonical `None`-seed
+/// pass until source-backed references can consume the shared inventory.
 pub(crate) struct FileExtractionBundle {
     /// The legacy `IndexVisitor` projection, produced by one `visit()` call.
     pub(crate) legacy_index: FileIndex,
@@ -5509,12 +5507,26 @@ impl FileExtractionBundle {
         let package_seed = initial_package.as_deref();
         #[cfg(test)]
         let decl_start = Instant::now();
-        let shared_decls = extract_symbol_decls(ast, package_seed);
+        let legacy_decls = extract_symbol_decls(ast, package_seed);
         #[cfg(test)]
         reindex_metrics::record_decl_extract(decl_start.elapsed());
+        let canonical_decls_storage;
+        let canonical_decls: &[SymbolDecl] = if initial_package.is_some() {
+            // Script/extensionless URIs seed legacy with implicit `main`; canonical
+            // facts remain on the `None` inventory until a follow-up retires this
+            // second pass without breaking source-backed references (#4047).
+            #[cfg(test)]
+            let decl_start = Instant::now();
+            canonical_decls_storage = extract_symbol_decls(ast, None);
+            #[cfg(test)]
+            reindex_metrics::record_decl_extract(decl_start.elapsed());
+            &canonical_decls_storage
+        } else {
+            &legacy_decls
+        };
         #[cfg(test)]
         let visit_start = Instant::now();
-        visitor.visit_unified(ast, &shared_decls, &mut file_index, &mut symbol_refs);
+        visitor.visit_unified(ast, &legacy_decls, &mut file_index, &mut symbol_refs);
         #[cfg(test)]
         reindex_metrics::record_visit(visit_start.elapsed());
 
@@ -5522,7 +5534,7 @@ impl FileExtractionBundle {
             uri_str,
             content_hash,
             ast,
-            &shared_decls,
+            canonical_decls,
             &symbol_refs,
             inherited_method_aliases,
             doc.text(),
@@ -14974,30 +14986,6 @@ mod extraction_bundle_shadow_compare {
         )
     }
 
-    /// Canonical shard expected after perl-lsp-swarm#4047: one declaration
-    /// inventory seeded by [`initial_package_for_uri`], independent reference
-    /// extraction unchanged.
-    fn expected_declaration_unified_canonical_shard(
-        uri: &str,
-        text: &str,
-        ast: &Node,
-    ) -> FileFactShard {
-        let content_hash = content_hash_of(text);
-        let doc = Document::new(uri.to_string(), 1, text.to_string());
-        let initial_package = initial_package_for_uri(uri);
-        let decls = extract_symbol_decls(ast, initial_package.as_deref());
-        let refs = extract_symbol_refs(ast);
-        WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs(
-            uri,
-            content_hash,
-            ast,
-            &decls,
-            &refs,
-            &std::collections::BTreeMap::new(),
-            doc.text(),
-        )
-    }
-
     /// Assert full structural parity between the two independently-computed
     /// projections and the bundle-derived ones, for one fixture. There must
     /// be NO delta -- `FileExtractionBundle::build` runs the identical
@@ -15049,12 +15037,10 @@ mod extraction_bundle_shadow_compare {
         );
     }
 
-    /// **1711-B phase 2 + #4047 declaration cutover:** Asserts the unified
-    /// production path's canonical `FileFactShard` matches the shard built
-    /// from one shared declaration inventory (URI seed) plus the existing
-    /// independent reference walk. Reference coverage is unchanged from
-    /// 1711-B; declaration facts on script URIs may differ from the pre-4047
-    /// dual-walk canonical output that always seeded declarations with `None`.
+    /// **1711-B phase 2: canonical-side parity for the REAL unified
+    /// traversal.** Canonical declaration facts on script URIs still use
+    /// the `None` inventory (see `FileExtractionBundle::build_unified`);
+    /// module URIs share one pass. Reference coverage remains unchanged.
     fn assert_unified_canonical_parity(label: &str, uri: &str, text: &str) {
         let mut parser = Parser::new(text);
         let ast = match parser.parse() {
@@ -15065,13 +15051,13 @@ mod extraction_bundle_shadow_compare {
             }
         };
 
-        let expected = expected_declaration_unified_canonical_shard(uri, text, &ast);
+        let direct = build_direct(uri, text, &ast);
         let unified = build_bundle_unified(uri, text, &ast);
 
         assert_eq!(
-            expected, unified.canonical_shard,
-            "{label}: canonical FileFactShard diverged from the #4047 unified \
-             declaration inventory policy"
+            direct.shard, unified.canonical_shard,
+            "{label}: canonical FileFactShard diverged between production's dual-walk output \
+             and the unified traversal -- canonical coverage must NOT change under unification"
         );
     }
 
@@ -15511,10 +15497,9 @@ sub bar { return $greeting; }
              this construct."
         );
         assert_eq!(
-            expected_declaration_unified_canonical_shard(uri, text, &ast),
-            unified.canonical_shard,
-            "{label}: canonical FileFactShard must match the unified declaration \
-             inventory policy (#4047); reference-side coverage delta is legacy-only"
+            direct.shard, unified.canonical_shard,
+            "{label}: canonical FileFactShard must stay IDENTICAL -- canonical already had this \
+             coverage before unification; only the legacy projection should gain anything here"
         );
     }
 
