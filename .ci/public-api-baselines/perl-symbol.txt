@@ -115,6 +115,7 @@ pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, _
 pub const perl_symbol::api::MIN_LOOSE_MATCH_QUERY_CHARS: usize
 pub fn perl_symbol::api::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
 pub fn perl_symbol::api::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
+pub fn perl_symbol::api::extract_lexical_scope_regions(root: &perl_ast::ast::Node) -> alloc::vec::Vec<(usize, usize)>
 pub fn perl_symbol::api::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
 pub fn perl_symbol::api::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
 pub fn perl_symbol::api::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
@@ -122,6 +123,7 @@ pub fn perl_symbol::api::is_modchar(byte: u8) -> bool
 pub fn perl_symbol::api::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
 pub fn perl_symbol::api::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
 pub fn perl_symbol::api::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>, dispatch_only_entity_ids: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::api::symbol_refs_to_semantic_facts_with_declarations(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, decls: &[perl_symbol::surface::decl::SymbolDecl], lexical_scope_regions: &[(usize, usize)], dispatch_only_entity_ids: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
 pub fn perl_symbol::api::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>
 pub mod perl_symbol::cursor
 pub enum perl_symbol::cursor::CursorSymbolKind
@@ -433,6 +435,7 @@ pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, _
 pub const perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS: usize
 pub fn perl_symbol::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
 pub fn perl_symbol::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
+pub fn perl_symbol::extract_lexical_scope_regions(root: &perl_ast::ast::Node) -> alloc::vec::Vec<(usize, usize)>
 pub fn perl_symbol::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
 pub fn perl_symbol::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
 pub fn perl_symbol::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
@@ -440,4 +443,5 @@ pub fn perl_symbol::is_modchar(byte: u8) -> bool
 pub fn perl_symbol::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
 pub fn perl_symbol::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
 pub fn perl_symbol::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>, dispatch_only_entity_ids: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::symbol_refs_to_semantic_facts_with_declarations(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, decls: &[perl_symbol::surface::decl::SymbolDecl], lexical_scope_regions: &[(usize, usize)], dispatch_only_entity_ids: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
 pub fn perl_symbol::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>
