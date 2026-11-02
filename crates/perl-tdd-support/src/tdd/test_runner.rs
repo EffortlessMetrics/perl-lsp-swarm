@@ -870,13 +870,7 @@ done_testing();
     -> Result<(), Box<dyn std::error::Error>> {
         let runner = TestRunner::new(String::new(), String::new());
 
-        let results = runner.parse_tap_output(
-            "1..1\nok 1 named\n",
-            "",
-            true,
-            1,
-            "t/nodash.t",
-        );
+        let results = runner.parse_tap_output("1..1\nok 1 named\n", "", true, 1, "t/nodash.t");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].test_id, "t/nodash.t::named");
