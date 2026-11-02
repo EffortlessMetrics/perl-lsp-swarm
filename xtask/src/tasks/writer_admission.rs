@@ -467,20 +467,22 @@ fn check_canonical_base(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
 /// A caller-supplied `--expected-base-sha` is commonly a short/abbreviated
 /// SHA (this is how commits are conventionally referenced in issues, PR
 /// descriptions, and plan-review comments — e.g. "currently 6fade008c"),
-/// not necessarily the full 40-hex-character SHA. Exact string equality
-/// would false-BLOCK every short-SHA caller even when the base is exactly
-/// correct. Accept a full match OR a case-insensitive hex-prefix match, with
-/// a minimum prefix length (git's own historical default abbreviation is 7
-/// hex characters) to avoid a degenerate short prefix matching too loosely.
+/// not necessarily the full 40-hex-character SHA. Both operands are
+/// unvalidated caller/git strings: require non-empty ASCII hex on each side,
+/// a minimum prefix length, and `remote_sha.len() >= selected_sha.len()`
+/// before comparing prefixes case-insensitively. Malformed input never
+/// panics and never silently passes (mirrors
+/// `writer_preflight::decision::sha_matches`).
 fn sha_matches(remote_sha: &str, selected_sha: &str) -> bool {
     const MIN_PREFIX_LEN: usize = 4;
-    if selected_sha.eq_ignore_ascii_case(remote_sha) {
-        return true;
+    let hex_token = |token: &str| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit());
+    if !hex_token(remote_sha) || !hex_token(selected_sha) {
+        return false;
     }
-    selected_sha.len() >= MIN_PREFIX_LEN
-        && selected_sha.len() <= remote_sha.len()
-        && selected_sha.chars().all(|c| c.is_ascii_hexdigit())
-        && remote_sha[..selected_sha.len()].eq_ignore_ascii_case(selected_sha)
+    if selected_sha.len() < MIN_PREFIX_LEN || remote_sha.len() < selected_sha.len() {
+        return false;
+    }
+    remote_sha[..selected_sha.len()].eq_ignore_ascii_case(selected_sha)
 }
 
 fn check_shadow_ref(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
@@ -843,6 +845,12 @@ fn worktrees_matching_target_branch(snapshot: &WriterAdmissionSnapshot) -> Vec<&
 /// root. Short-circuit unconditionally on `is_root_checkout`, not only when
 /// it's the sole match — being invoked from the root is never itself a
 /// reusable-worktree signal, regardless of how many entries matched.
+///
+/// The lib-side twin for registration refusal is
+/// `writer_preflight::decision::evaluate_registration_conflicts` (exactly
+/// one branch-bound worktree for resume/mutate). This helper only surfaces
+/// an unambiguous REUSE path (`matches.len() == 1`); zero or many matches
+/// stay `None` here while checks/decide carry the refusal semantics.
 pub fn compute_guidance(snapshot: &WriterAdmissionSnapshot) -> AdmissionGuidance {
     let existing_worktree_path = if snapshot.is_root_checkout {
         None
@@ -894,10 +902,11 @@ fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
 
 /// Builds the early-return `HeadInfo` for a `git` spawn failure encountered
 /// while gathering HEAD info. Carries forward whatever fields an earlier
-/// `git` call already resolved (e.g. `symbolic_ref`) so a later spawn error
-/// can never silently discard already-known state via `..Default::default()`.
+/// `git` call already resolved (e.g. `symbolic_ref`) and leaves every other
+/// field at its explicit unknown/clean sentinel — never rebuilds from a
+/// partial update that would drop a prior `symbolic_ref`.
 fn head_info_spawn_error(symbolic_ref: Option<String>, message: String) -> HeadInfo {
-    HeadInfo { symbolic_ref, error: Some(message), ..Default::default() }
+    HeadInfo { symbolic_ref, resolved_sha: None, dangling: false, error: Some(message) }
 }
 
 fn gather_head_info(root: &Path) -> HeadInfo {
@@ -1574,6 +1583,36 @@ mod tests {
             "longer than the remote SHA must not match"
         );
         assert!(!sha_matches("deadbeef", "dead-bad"), "non-hex characters must not match");
+    }
+
+    #[test]
+    fn sha_matches_bin_side_matches_writer_preflight_table() {
+        let cases: [(&str, &str, bool); 12] = [
+            ("deadbeef", "deadbeef", true),
+            ("deadbeef", "DEADBEEF", true),
+            ("deadbeef", "DEAD", true),
+            ("deadbeef", "dea", false),
+            ("deadbeef", "deadbeefff", false),
+            ("deadbeef", "beef", false),
+            ("deadbeef", "dead-bad", false),
+            ("deadzzzz", "dead", false),
+            ("deadböef", "dead", false),
+            ("not-a-sha", "not-a-sha", false),
+            ("", "dead", false),
+            ("deadbeef", "", false),
+        ];
+        for (remote, selected, want) in cases {
+            assert_eq!(
+                sha_matches(remote, selected),
+                want,
+                "remote={remote:?} selected={selected:?}"
+            );
+            assert_eq!(
+                sha_matches(remote, selected),
+                xtask::writer_preflight::sha_matches_bin_parity(remote, selected),
+                "bin/lib mismatch for remote={remote:?} selected={selected:?}"
+            );
+        }
     }
 
     #[test]
