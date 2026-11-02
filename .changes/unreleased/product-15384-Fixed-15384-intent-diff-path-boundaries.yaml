@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Match intent-diff-gate test paths and expected target paths by whole path components instead of substring heuristics (#15384)."
+time: 2026-11-02T00:15:00Z
+custom:
+  PR: "15384"
+  Slug: intent-diff-path-boundaries
+  Breaking: "no"
