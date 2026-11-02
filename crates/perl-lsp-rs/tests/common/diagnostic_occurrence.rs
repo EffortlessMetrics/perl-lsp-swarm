@@ -179,6 +179,15 @@ impl DiagnosticMatchVerdict {
     }
 }
 
+/// Per-assertion outcomes plus the first non-pass overall verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticMatchReport {
+    /// First non-pass verdict, or [`DiagnosticMatchVerdict::Pass`].
+    pub overall: DiagnosticMatchVerdict,
+    /// One verdict per expectation, in expectation order.
+    pub assertion_verdicts: Vec<DiagnosticMatchVerdict>,
+}
+
 impl std::fmt::Display for DiagnosticMatchVerdict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -251,29 +260,41 @@ pub fn match_diagnostic_expectations(
     observation: &DiagnosticObservation,
     extras: UnexpectedExtraPolicy,
     subject: DiagnosticSubject<'_>,
-) -> DiagnosticMatchVerdict {
+) -> DiagnosticMatchReport {
     let valid = match observation {
         DiagnosticObservation::Valid(valid) => valid,
         DiagnosticObservation::InvalidObservation { reason } => {
-            return DiagnosticMatchVerdict::InvalidObservation { evidence: reason.clone() };
+            let failure = DiagnosticMatchVerdict::InvalidObservation { evidence: reason.clone() };
+            return DiagnosticMatchReport {
+                overall: failure.clone(),
+                assertion_verdicts: expectations.iter().map(|_| failure.clone()).collect(),
+            };
         }
         DiagnosticObservation::InstrumentFailure { reason } => {
-            return DiagnosticMatchVerdict::InstrumentFailure { evidence: reason.clone() };
+            let failure = DiagnosticMatchVerdict::InstrumentFailure { evidence: reason.clone() };
+            return DiagnosticMatchReport {
+                overall: failure.clone(),
+                assertion_verdicts: expectations.iter().map(|_| failure.clone()).collect(),
+            };
         }
     };
 
     let mut consumed = vec![false; valid.diagnostics.len()];
+    let mut assertion_verdicts = Vec::with_capacity(expectations.len());
+    let mut overall = DiagnosticMatchVerdict::Pass;
     for expectation in expectations {
-        match expectation.kind {
+        let verdict = match expectation.kind {
             DiagnosticExpectationKind::Empty => {
-                if !valid.diagnostics.is_empty() {
-                    return DiagnosticMatchVerdict::Mismatch {
+                if valid.diagnostics.is_empty() {
+                    DiagnosticMatchVerdict::Pass
+                } else {
+                    DiagnosticMatchVerdict::Mismatch {
                         identity: expectation.identity.clone(),
                         evidence: format!(
                             "expected no diagnostics, actual: {}",
                             describe_actuals(&valid.diagnostics)
                         ),
-                    };
+                    }
                 }
             }
             DiagnosticExpectationKind::Absent => {
@@ -286,30 +307,30 @@ pub fn match_diagnostic_expectations(
                             && message_matches(actual, expectation.message_contains.as_deref())
                     })
                     .collect();
-                if !hits.is_empty() {
-                    return DiagnosticMatchVerdict::Mismatch {
+                if hits.is_empty() {
+                    DiagnosticMatchVerdict::Pass
+                } else {
+                    DiagnosticMatchVerdict::Mismatch {
                         identity: expectation.identity.clone(),
                         evidence: format!(
                             "expected code {:?} absent, actual: {}",
                             expectation.code,
                             describe_actuals(&hits.into_iter().cloned().collect::<Vec<_>>())
                         ),
-                    };
+                    }
                 }
             }
             DiagnosticExpectationKind::Present => {
-                let verdict = bind_present(expectation, valid, &mut consumed, subject);
-                if !verdict.is_pass() {
-                    return verdict;
-                }
+                bind_present(expectation, valid, &mut consumed, subject)
             }
             DiagnosticExpectationKind::Count { count } => {
-                let verdict = bind_count(expectation, count, valid, &mut consumed, subject);
-                if !verdict.is_pass() {
-                    return verdict;
-                }
+                bind_count(expectation, count, valid, &mut consumed, subject)
             }
+        };
+        if overall.is_pass() && !verdict.is_pass() {
+            overall = verdict.clone();
         }
+        assertion_verdicts.push(verdict);
     }
 
     if extras == UnexpectedExtraPolicy::Reject {
@@ -320,17 +341,20 @@ pub fn match_diagnostic_expectations(
             .filter_map(|(actual, used)| if *used { None } else { Some(actual) })
             .collect();
         if !leftovers.is_empty() {
-            return DiagnosticMatchVerdict::UnexpectedExtra {
+            let extras_verdict = DiagnosticMatchVerdict::UnexpectedExtra {
                 identity: "fixture".to_string(),
                 evidence: format!(
                     "unexpected extra diagnostics: {}",
                     describe_actuals(&leftovers.into_iter().cloned().collect::<Vec<_>>())
                 ),
             };
+            if overall.is_pass() {
+                overall = extras_verdict;
+            }
         }
     }
 
-    DiagnosticMatchVerdict::Pass
+    DiagnosticMatchReport { overall, assertion_verdicts }
 }
 
 /// Compatibility extras policy while #7009 remains open.
@@ -523,9 +547,9 @@ fn decode_one_diagnostic(
     let range_value = object.get("range").ok_or_else(|| "diagnostic missing range".to_string())?;
     let range = parse_range(range_value)?;
     let mapping = wire_range_to_bytes(subject.source, range, subject.encoding);
-    if !mapping.disposition().admits_incoming_mutation() {
+    if mapping.disposition() != PositionMappingDisposition::Exact {
         return Err(format!(
-            "range {}:{}-{}:{} is not a canonical source span ({:?})",
+            "range {}:{}-{}:{} is not an exact source span ({:?})",
             range.start.line,
             range.start.character,
             range.end.line,
@@ -647,7 +671,8 @@ fn bind_count(
     consumed: &mut [bool],
     subject: DiagnosticSubject<'_>,
 ) -> DiagnosticMatchVerdict {
-    let candidates = match candidate_indices(expectation, valid, consumed, subject) {
+    let none_consumed = vec![false; valid.diagnostics.len()];
+    let candidates = match candidate_indices(expectation, valid, &none_consumed, subject) {
         Ok(candidates) => candidates,
         Err(evidence) => {
             return DiagnosticMatchVerdict::Mismatch {
@@ -712,7 +737,11 @@ fn location_matches(
         LocationConstraint::Unconstrained => Ok(true),
         LocationConstraint::PointContained { byte_offset } => {
             let point = exact_byte_position(subject, byte_offset)?;
-            Ok(actual.start_byte <= point && point < actual.end_byte)
+            if actual.start_byte == actual.end_byte {
+                Ok(point == actual.start_byte)
+            } else {
+                Ok(actual.start_byte <= point && point < actual.end_byte)
+            }
         }
         LocationConstraint::ExactStart { byte_offset } => {
             let start = exact_byte_position(subject, byte_offset)?;
@@ -889,7 +918,7 @@ mod tests {
         extras: UnexpectedExtraPolicy,
     ) -> DiagnosticMatchVerdict {
         let observation = observe_diagnostics_json(payload, subject(source));
-        match_diagnostic_expectations(expectations, &observation, extras, subject(source))
+        match_diagnostic_expectations(expectations, &observation, extras, subject(source)).overall
     }
 
     fn find_nth(source: &str, needle: &str, n: usize) -> Result<usize, String> {
@@ -1165,7 +1194,8 @@ mod tests {
             &observation,
             UnexpectedExtraPolicy::Reject,
             utf8_subject,
-        );
+        )
+        .overall;
         if !verdict.is_pass() {
             return Err(format!("utf-8 encoding occurrence must pass, got {verdict}"));
         }
@@ -1210,6 +1240,131 @@ mod tests {
         assert!(
             matches!(unchanged, DiagnosticMatchVerdict::InvalidObservation { .. }),
             "unchanged report must not pass no_diagnostics, got {unchanged}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_count_is_independent_of_earlier_present_matches() -> Result<(), String> {
+        let source = "my $x = 1;\n";
+        let start = find_nth(source, "$x", 0)?;
+        let payload = publish(source, vec![diag(source, "PL001", "unused", start, start + 2)]);
+        let present = present_at("gold/count#expected.json/0:diagnostic_present", "PL001", start);
+        let zero = empty_count("gold/count#expected.json/1:diagnostic_count", "PL001");
+        let one = DiagnosticExpectation {
+            identity: "gold/count#expected.json/1:diagnostic_count".to_string(),
+            kind: DiagnosticExpectationKind::Count { count: 1 },
+            code: Some("PL001".to_string()),
+            message_contains: None,
+            location: LocationConstraint::Unconstrained,
+        };
+        let zero_after_present =
+            match_with(source, &payload, &[present.clone(), zero], UnexpectedExtraPolicy::Reject);
+        match zero_after_present {
+            DiagnosticMatchVerdict::Mismatch { .. } => {}
+            other => {
+                return Err(format!(
+                    "count 0 after present must still see the bound diagnostic, got {other}"
+                ));
+            }
+        }
+        let one_after_present =
+            match_with(source, &payload, &[present, one], UnexpectedExtraPolicy::Reject);
+        if !one_after_present.is_pass() {
+            return Err(format!("count 1 after present must pass, got {one_after_present}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_width_eof_point_is_contained() -> Result<(), String> {
+        let source = "my $x =\n";
+        let eof = source.len();
+        let payload = publish(source, vec![diag(source, "PL001", "parse error", eof, eof)]);
+        let at_eof = present_at("gold/eof#expected.json/0:diagnostic_present", "PL001", eof);
+        let verdict = match_with(source, &payload, &[at_eof], UnexpectedExtraPolicy::Reject);
+        if !verdict.is_pass() {
+            return Err(format!(
+                "zero-width EOF diagnostic must match its start point, got {verdict}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn past_end_column_cannot_satisfy_exact_range() -> Result<(), String> {
+        let source = "abc\n";
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": URI,
+                "version": 1,
+                "diagnostics": [{
+                    "code": "PL001",
+                    "message": "x",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 99 }
+                    }
+                }]
+            }
+        });
+        let exact = DiagnosticExpectation {
+            identity: "gold/span#expected.json/0:exact_range".to_string(),
+            kind: DiagnosticExpectationKind::Present,
+            code: Some("PL001".to_string()),
+            message_contains: None,
+            location: LocationConstraint::ExactRange { start_byte: 0, end_byte: 3 },
+        };
+        let verdict = match_with(source, &payload, &[exact], UnexpectedExtraPolicy::Reject);
+        match verdict {
+            DiagnosticMatchVerdict::InvalidObservation { .. } => Ok(()),
+            other => {
+                Err(format!("normalized past-end column must not pass exact-range, got {other}"))
+            }
+        }
+    }
+
+    #[test]
+    fn assertion_pass_rate_counts_each_expectation() -> Result<(), String> {
+        let source = "my $x = 1;\n";
+        let start = find_nth(source, "$x", 0)?;
+        let payload = publish(source, vec![diag(source, "PL001", "unused", start, start + 2)]);
+        let present = present_at("gold/rate#expected.json/0:diagnostic_present", "PL001", start);
+        let absent = DiagnosticExpectation {
+            identity: "gold/rate#expected.json/1:no_diagnostic".to_string(),
+            kind: DiagnosticExpectationKind::Absent,
+            code: Some("PL002".to_string()),
+            message_contains: None,
+            location: LocationConstraint::Unconstrained,
+        };
+        let report = match_diagnostic_expectations(
+            &[present, absent],
+            &observe_diagnostics_json(&payload, subject(source)),
+            UnexpectedExtraPolicy::Reject,
+            subject(source),
+        );
+        if report.assertion_verdicts.len() != 2
+            || !report.assertion_verdicts.iter().all(DiagnosticMatchVerdict::is_pass)
+        {
+            return Err(format!("expected two passing assertion verdicts, got {report:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn empty_expectations_still_report_invalid_observation() {
+        let source = "1;\n";
+        let report = match_diagnostic_expectations(
+            &[],
+            &observe_diagnostics_json(&json!({"result": null}), subject(source)),
+            UnexpectedExtraPolicy::Reject,
+            subject(source),
+        );
+        assert!(
+            matches!(report.overall, DiagnosticMatchVerdict::InvalidObservation { .. })
+                && report.assertion_verdicts.is_empty(),
+            "empty expectation list must not turn invalid observation into a pass, got {report:?}"
         );
     }
 }

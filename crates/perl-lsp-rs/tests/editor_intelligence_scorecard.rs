@@ -31,8 +31,8 @@ mod diagnostic_occurrence;
 
 use common::test_utils::TestServerBuilder;
 use diagnostic_occurrence::{
-    DiagnosticSubject, gold_expectations, gold_extras_policy, match_diagnostic_expectations,
-    observe_diagnostics_json,
+    DiagnosticExpectation, DiagnosticMatchReport, DiagnosticMatchVerdict, DiagnosticSubject,
+    gold_expectations, gold_extras_policy, match_diagnostic_expectations, observe_diagnostics_json,
 };
 use perl_corpus::gold::{
     CompletionAssertionKind, CompletionGoldFixture, GoldFixture, GotoAssertionKind,
@@ -414,12 +414,9 @@ fn test_diagnostics_gold_corpus() -> TestResult {
         let expectations = gold_expectations(&fixture.name, &fixture.expected.diagnostics);
         total += expectations.len();
         let extras = gold_extras_policy(&fixture.expected.diagnostics);
-        let verdict = match_diagnostic_expectations(&expectations, &observation, extras, subject);
-        if verdict.is_pass() {
-            passed += expectations.len();
-        } else {
-            failures.push(format!("  FAIL [{}] {verdict}", fixture.name));
-        }
+        let report = match_diagnostic_expectations(&expectations, &observation, extras, subject);
+        passed += report.assertion_verdicts.iter().filter(|verdict| verdict.is_pass()).count();
+        failures.extend(diagnostic_gold_failures(&fixture.name, &expectations, &report));
     }
 
     println!(
@@ -441,6 +438,25 @@ fn test_diagnostics_gold_corpus() -> TestResult {
     );
 
     Ok(())
+}
+
+fn diagnostic_gold_failures(
+    fixture_name: &str,
+    expectations: &[DiagnosticExpectation],
+    report: &DiagnosticMatchReport,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (expectation, verdict) in expectations.iter().zip(report.assertion_verdicts.iter()) {
+        if !verdict.is_pass() {
+            failures.push(format!("  FAIL [{}] {verdict}", expectation.identity));
+        }
+    }
+    if !report.overall.is_pass()
+        && !report.assertion_verdicts.iter().any(|verdict| verdict == &report.overall)
+    {
+        failures.push(format!("  FAIL [{fixture_name}] {}", report.overall));
+    }
+    failures
 }
 
 // ---------------------------------------------------------------------------
@@ -1359,6 +1375,60 @@ mod rename_oracle_tests {
             return Err("omitted expected_edits must use count-only scorecard mode".into());
         }
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_gold_scorecard_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_gold_failures_keep_fixture_level_invalid_observation() -> TestResult {
+        let report = DiagnosticMatchReport {
+            overall: DiagnosticMatchVerdict::InvalidObservation {
+                evidence: "missing publishDiagnostics".to_string(),
+            },
+            assertion_verdicts: Vec::new(),
+        };
+        let failures = diagnostic_gold_failures("empty_fixture", &[], &report);
+        match failures.as_slice() {
+            [failure] if failure.contains("empty_fixture") => {}
+            other => {
+                return Err(format!(
+                    "empty expectation list must still fail invalid observation, got {other:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_gold_failures_do_not_double_count_assertion_mismatch() -> TestResult {
+        let expectation = DiagnosticExpectation {
+            identity: "gold/rate#expected.json/0:diagnostic_present".to_string(),
+            kind: diagnostic_occurrence::DiagnosticExpectationKind::Present,
+            code: Some("PL001".to_string()),
+            message_contains: None,
+            location: diagnostic_occurrence::LocationConstraint::Unconstrained,
+        };
+        let mismatch = DiagnosticMatchVerdict::Mismatch {
+            identity: expectation.identity.clone(),
+            evidence: "missing PL001".to_string(),
+        };
+        let report =
+            DiagnosticMatchReport { overall: mismatch.clone(), assertion_verdicts: vec![mismatch] };
+        let failures =
+            diagnostic_gold_failures("rate", std::slice::from_ref(&expectation), &report);
+        match failures.as_slice() {
+            [failure] if failure.contains(&expectation.identity) => {}
+            other => {
+                return Err(
+                    format!("assertion mismatch must be reported once, got {other:?}").into()
+                );
+            }
+        }
         Ok(())
     }
 }
