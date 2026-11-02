@@ -60,12 +60,14 @@ fn gate_policy_wires_pr_fast_and_commit_checks() -> Result<(), Box<dyn Error>> {
     let policy = fs::read_to_string(repo_root.join(".ci/gate-policy.yaml"))?;
     assert!(policy.contains("name: cargo_lock_coherence\n"), "pr_fast gate missing");
     assert!(
-        policy.contains("command: cargo xtask cargo-lock-coherence"),
+        policy.contains("command: cargo run -p xtask --bin xtask --locked -- cargo-lock-coherence"),
         "pr_fast command missing"
     );
     assert!(policy.contains("name: cargo_lock_coherence_staged\n"), "commit-tier gate missing");
     assert!(
-        policy.contains("command: cargo xtask commit-check cargo_lock_coherence_staged"),
+        policy.contains(
+            "command: cargo run -p xtask --bin xtask --locked -- commit-check cargo_lock_coherence_staged"
+        ),
         "commit-tier command missing"
     );
     Ok(())

@@ -898,6 +898,16 @@ fn rustfmt_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckO
     }))
 }
 
+fn working_tree_has_unstaged_lock_edits(root: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["diff", "--quiet", "--", "Cargo.lock"])
+        .current_dir(root)
+        .output()
+        .context("running git diff for unstaged Cargo.lock edits")?;
+    // `git diff --quiet` exits 1 when there are unstaged changes.
+    Ok(!output.status.success())
+}
+
 fn cargo_lock_coherence_staged_at(
     root: &Path,
     tree_oid: Option<&str>,
@@ -917,21 +927,19 @@ fn cargo_lock_coherence_staged_at(
         ));
     }
 
-    let manifests_staged =
-        graph_paths.iter().any(|path| path == "Cargo.toml" || path.ends_with("/Cargo.toml"));
-    let lock_staged = graph_paths.iter().any(|path| path == "Cargo.lock");
-    if manifests_staged && !lock_staged {
+    if working_tree_has_unstaged_lock_edits(root)? {
         return Ok(CommitCheckOutcome::Flagged(CheckReport {
             check: "cargo_lock_coherence_staged".to_string(),
             posture: Posture::Blocked,
-            result: "a manifest change is staged without a matching Cargo.lock update".to_string(),
-            why: "dependency graph inputs changed in the index but the lockfile was not staged \
-                  with them"
+            result: "unstaged Cargo.lock edits would satisfy the check without matching the staged commit"
+                .to_string(),
+            why: "the locked graph check must not pass because of an unstaged working-tree lock repair \
+                  (#13411 falsifier 9)"
                 .to_string(),
             affected: graph_paths,
-            fix: Some(REMEDIATION.to_string()),
+            fix: Some("stage or revert the Cargo.lock working-tree edits, then rerun the check".to_string()),
             rerun: rerun_for("cargo_lock_coherence_staged"),
-            what_remains: "stage an updated Cargo.lock or revert the manifest edit".to_string(),
+            what_remains: "exact committed candidate graph coherence is still unproven".to_string(),
         }));
     }
 
@@ -956,9 +964,9 @@ fn cargo_lock_coherence_staged_at(
         })),
         other => Ok(CommitCheckOutcome::Flagged(CheckReport {
             check: "cargo_lock_coherence_staged".to_string(),
-            posture: Posture::NotProven,
+            posture: Posture::Blocked,
             result: format!("cargo graph coherence is {}", other.as_str()),
-            why: "resolution did not complete cleanly; this is not a clean bill of health"
+            why: "resolution did not complete cleanly for graph-affecting staged inputs"
                 .to_string(),
             affected: graph_paths,
             fix: Some(REMEDIATION.to_string()),

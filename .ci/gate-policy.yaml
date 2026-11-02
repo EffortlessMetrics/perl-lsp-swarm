@@ -308,7 +308,7 @@ gates:
     tier: commit
     description: "Locked Cargo graph coherence when staged manifests or lockfile change (#13411)"
     required: true
-    command: cargo xtask commit-check cargo_lock_coherence_staged
+    command: cargo run -p xtask --bin xtask --locked -- commit-check cargo_lock_coherence_staged
     timeout_seconds: 120
     retry_count: 0
     budgets:
@@ -344,12 +344,13 @@ gates:
     tier: pr_fast
     description: "Fail fast when workspace manifests and Cargo.lock disagree (#13411)"
     required: true
-    command: cargo xtask cargo-lock-coherence
+    command: cargo run -p xtask --bin xtask --locked -- cargo-lock-coherence
     timeout_seconds: 120
     retry_count: 0
     budgets:
       max_duration_ms: 90000
     quarantine: false
+    short_circuit: true
     tags:
       - lockfile
       - dependencies
