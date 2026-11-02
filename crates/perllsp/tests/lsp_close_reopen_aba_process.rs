@@ -46,6 +46,22 @@ fn parse_worker_barrier(
     request(client, "barrier", "$/test/parseWorkerBarrier", params)
 }
 
+fn wait_for_stale_job_rejection(client: &mut RealProcessClient, minimum: u64) -> Result<()> {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let metrics = parse_worker_barrier(client, "metrics", None, None)?;
+        let rejected = metrics.get("jobsRejectedStale").and_then(Value::as_u64).unwrap_or(0);
+        if rejected >= minimum {
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "stale held job must be rejected (need >={minimum}, last metrics={metrics})"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn initialize_workspace(client: &mut RealProcessClient) -> Result<String> {
     let root_uri = file_uri(client.workspace_path())?;
     let result = request(
@@ -207,12 +223,7 @@ fn held_parse_never_publishes_after_close_reopen() -> Result<()> {
     );
 
     parse_worker_barrier(&mut client, "release", None, None)?;
-    std::thread::sleep(Duration::from_millis(50));
-    let metrics = parse_worker_barrier(&mut client, "metrics", None, None)?;
-    ensure!(
-        metrics.get("jobsRejectedStale").and_then(Value::as_u64).unwrap_or(0) >= 1,
-        "stale held job must be rejected: {metrics}"
-    );
+    wait_for_stale_job_rejection(&mut client, 1)?;
 
     let after = document_symbol_names(&mut client, &uri, "symbols-after-release")?;
     ensure!(
@@ -373,7 +384,9 @@ fn uri_aliases_normalize_to_one_open_document_owner() -> Result<()> {
     let dir = client.workspace_path().join("fixtures space#percent%25");
     std::fs::create_dir_all(&dir)?;
     let file = dir.join("alias.pl");
-    std::fs::write(&file, "package Alias;\nsub alias_symbol { 1 }\n1;\n")?;
+    let disk_text = "package Alias;\nsub disk_only { 99 }\n1;\n";
+    let buffer_text = "package Alias;\nsub alias_symbol { 1 }\n1;\n";
+    std::fs::write(&file, disk_text)?;
     let canonical = file_uri(&file)?;
     let alias = canonical.replacen("file://", "file://localhost", 1);
     ensure!(alias != canonical, "fixture must expose localhost alias spelling");
@@ -383,8 +396,7 @@ fn uri_aliases_normalize_to_one_open_document_owner() -> Result<()> {
         "textDocument/didOpen",
         json!({
             "textDocument": {
-                "uri": canonical, "languageId": "perl", "version": 1,
-                "text": "package Alias;\nsub alias_symbol { 1 }\n1;\n"
+                "uri": canonical, "languageId": "perl", "version": 1, "text": buffer_text
             }
         }),
     )?;
@@ -393,7 +405,11 @@ fn uri_aliases_normalize_to_one_open_document_owner() -> Result<()> {
     let alias_names = document_symbol_names(&mut client, &alias, "alias-spelling")?;
     ensure!(
         alias_names.iter().any(|name| name.contains("alias_symbol")),
-        "percent-encoded alias must resolve to the open document: {alias_names:?}"
+        "percent-encoded alias must resolve to the open buffer, not disk: {alias_names:?}"
+    );
+    ensure!(
+        !alias_names.iter().any(|name| name.contains("disk_only")),
+        "alias query must not fall back to on-disk-only symbols while buffer is open: {alias_names:?}"
     );
     let canonical_names = document_symbol_names(&mut client, &canonical, "alias-canonical")?;
     ensure!(
