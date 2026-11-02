@@ -600,7 +600,6 @@ impl DebugAdapter {
                 Some(args.clone());
 
             let program = args.get("program").and_then(|p| p.as_str()).unwrap_or("");
-            let perl_interpreter = Self::resolve_launch_interpreter(&args);
 
             // Extract user-provided cwd for script execution (if specified)
             // This is the working directory where the debugged script will run,
@@ -750,13 +749,33 @@ impl DebugAdapter {
             // 0 disables it), and `env_overrides` were admitted without
             // coercion by `parse_launch_typed_options` above (#18027).
 
+            let requested = Self::resolve_launch_interpreter(&args);
+            let admitted_execution = match self.admit_launch_execution(
+                &args,
+                &requested,
+                env_overrides,
+            ) {
+                Ok(admitted) => admitted,
+                Err(message) => {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                        previous_workspace_root;
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
+
             // Launch Perl debugger
             let launch_result = self.launch_debugger(
                 program,
-                &perl_interpreter,
+                &admitted_execution,
                 perl_args,
                 stop_on_entry,
-                env_overrides,
                 user_cwd,
                 debuggee_timeout_secs,
             );
@@ -970,13 +989,13 @@ impl DebugAdapter {
     pub(super) fn launch_debugger(
         &mut self,
         program: &str,
-        perl_interpreter: &str,
+        admitted: &crate::security::AdmittedLaunchExecution,
         args: Vec<String>,
         stop_on_entry: bool,
-        env_overrides: HashMap<String, String>,
         cwd_override: Option<PathBuf>,
         debuggee_timeout_secs: u64,
     ) -> Result<i32, String> {
+        let perl_interpreter = admitted.perl_binary.to_string_lossy();
         // Security: Validate program path before any process spawning
         // This prevents command injection via flag arguments (e.g., "-e malicious_code")
         // and ensures we're launching a real Perl script file.
@@ -1047,7 +1066,7 @@ impl DebugAdapter {
             })?;
         }
 
-        if !is_valid_perl_interpreter(perl_interpreter) {
+        if !is_valid_perl_interpreter(&perl_interpreter) {
             return Err(format!(
                 "Invalid Perl interpreter '{}'. Set launch.json `perl` to a Perl executable path (for example, `perl` or `/usr/bin/perl`).",
                 perl_interpreter
@@ -1071,24 +1090,15 @@ impl DebugAdapter {
         // but never hosts a session. Probe it — from the same effective
         // debuggee directory — before spawning so such a launch fails with a
         // typed, actionable error instead of a mid-session pipe failure.
-        Self::check_debugger_capability(perl_interpreter, &env_overrides, &prog_cwd)?;
+        Self::check_debugger_capability(admitted, &prog_cwd)?;
 
         // Pre-launch syntax check: run `perl -c <script>` before spawning the
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(perl_interpreter, program, &env_overrides, Some(prog_cwd.clone()))?;
+        Self::check_syntax(admitted, program, Some(prog_cwd.clone()))?;
 
-        // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
-        // session env is controlled entirely by launch.json `env` (#8688).
-        // `env_overrides` (explicit launch.json entries) are added via
-        // extra_env so they reach the subprocess unconditionally.
-        let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
-            PathBuf::from(perl_interpreter),
-            prog_cwd,
-        );
-        oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let mut cmd = oracle.into_command();
+        let mut cmd = admitted.build_spawn_oracle(prog_cwd).into_command();
         cmd.arg("-d");
 
         // Strawberry Perl's Windows debugger transport/ReadLine environment;
@@ -1254,7 +1264,7 @@ impl DebugAdapter {
 
                 Ok(thread_id)
             }
-            Err(e) => Err(format_perl_spawn_error(perl_interpreter, &e)),
+            Err(e) => Err(format_perl_spawn_error(&perl_interpreter, &e)),
         }
     }
 
@@ -1291,19 +1301,18 @@ impl DebugAdapter {
     /// installed in place — and an inconclusive probe is no verdict at all,
     /// so neither is retained and the next launch re-probes.
     fn check_debugger_capability(
-        perl_interpreter: &str,
-        env_overrides: &HashMap<String, String>,
+        admitted: &crate::security::AdmittedLaunchExecution,
         probe_cwd: &Path,
     ) -> Result<(), String> {
-        let cache_key =
-            Self::capability_probe_cache_key(perl_interpreter, env_overrides, probe_cwd);
+        let cache_key = Self::capability_probe_cache_key(admitted, probe_cwd);
         if let Ok(cache) = DEBUGGER_PROBE_CACHE.lock()
             && let Some(cached) = cache.get(&cache_key)
         {
             return cached.clone();
         }
 
-        match Self::run_debugger_capability_probe(perl_interpreter, env_overrides, probe_cwd) {
+        let perl_interpreter = admitted.perl_binary.to_string_lossy();
+        match Self::run_debugger_capability_probe(admitted, probe_cwd) {
             DebuggerCapabilityProbe::Capable => {
                 if let Ok(mut cache) = DEBUGGER_PROBE_CACHE.lock() {
                     cache.insert(cache_key, Ok(()));
@@ -1328,6 +1337,17 @@ impl DebugAdapter {
     /// distinct keys. A conservative key can only cost a re-probe, never
     /// serve a verdict measured under a different launch configuration.
     fn capability_probe_cache_key(
+        admitted: &crate::security::AdmittedLaunchExecution,
+        probe_cwd: &Path,
+    ) -> String {
+        Self::capability_probe_cache_key_from_parts(
+            &admitted.perl_binary.to_string_lossy(),
+            &admitted.env_overrides,
+            probe_cwd,
+        )
+    }
+
+    fn capability_probe_cache_key_from_parts(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
         probe_cwd: &Path,
@@ -1352,16 +1372,11 @@ impl DebugAdapter {
     /// marker on stdout — exit status alone can be produced by an
     /// interpreter shim that never evaluated the expression.
     fn run_debugger_capability_probe(
-        perl_interpreter: &str,
-        env_overrides: &HashMap<String, String>,
+        admitted: &crate::security::AdmittedLaunchExecution,
         probe_cwd: &Path,
     ) -> DebuggerCapabilityProbe {
-        let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
-            PathBuf::from(perl_interpreter),
-            probe_cwd.to_path_buf(),
-        );
-        oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let mut cmd = oracle.into_command();
+        let perl_interpreter = admitted.perl_binary.to_string_lossy();
+        let mut cmd = admitted.build_spawn_oracle(probe_cwd.to_path_buf()).into_command();
         cmd.arg("-e")
             .arg(format!("require \"perl5db.pl\"; print \"{DEBUGGER_PROBE_SUCCESS_MARKER}\\n\";"));
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1498,13 +1513,10 @@ impl DebugAdapter {
     /// and `Ok(())` is returned so that the subsequent `perl -d` launch
     /// produces the correct "perl not on PATH" error to the user.
     pub(super) fn check_syntax(
-        perl_interpreter: &str,
+        admitted: &crate::security::AdmittedLaunchExecution,
         program: &str,
-        env_overrides: &HashMap<String, String>,
         cwd_override: Option<PathBuf>,
     ) -> Result<(), String> {
-        // PerlOracleEnv denies ambient PERL5LIB/PERL5OPT (#8688); explicit
-        // env_overrides from launch.json are honored via extra_env.
         // Use user-specified cwd if provided; otherwise default to script's parent directory
         let prog_cwd = if let Some(user_cwd) = cwd_override {
             user_cwd
@@ -1514,12 +1526,8 @@ impl DebugAdapter {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         };
-        let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
-            PathBuf::from(perl_interpreter),
-            prog_cwd,
-        );
-        oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let output = match oracle
+        let output = match admitted
+            .build_spawn_oracle(prog_cwd)
             .into_command()
             .arg("-c")
             .arg("--")
@@ -3966,6 +3974,7 @@ mod tests {
         LaunchAuthority::resolve(&LaunchAuthorityStartup {
             trusted_roots: vec![root.to_path_buf()],
             allow_unbounded: None,
+            ..Default::default()
         })
         .expect("test authority resolution")
     }
@@ -3977,8 +3986,20 @@ mod tests {
                 LaunchAuthoritySource::CommandLine,
                 "test session",
             )),
+            ..Default::default()
         })
         .expect("test authority resolution")
+    }
+
+    fn admitted_for_tests(
+        perl_interpreter: impl AsRef<str>,
+        env_overrides: HashMap<String, String>,
+    ) -> crate::security::AdmittedLaunchExecution {
+        crate::security::AdmittedLaunchExecution {
+            perl_binary: PathBuf::from(perl_interpreter.as_ref()),
+            env_overrides,
+            allow_launch_code_loading_env: false,
+        }
     }
 
     /// #18027: wrong-typed launch options refuse with a typed message;
@@ -4198,6 +4219,7 @@ mod tests {
         let first = LaunchAuthority::resolve(&LaunchAuthorityStartup {
             trusted_roots: vec![first_root.path().to_path_buf()],
             allow_unbounded: None,
+            ..Default::default()
         })
         .expect("first authority resolution");
         assert_eq!(receipt.authority_identity, first.receipt().authority_identity);
@@ -6384,8 +6406,10 @@ mod tests {
             HashMap::from([("A".to_string(), "x".to_string()), ("B".to_string(), "y".to_string())]);
         let cwd = PathBuf::from(".");
 
-        let joined_key = DebugAdapter::capability_probe_cache_key("perl", &joined, &cwd);
-        let split_key = DebugAdapter::capability_probe_cache_key("perl", &split, &cwd);
+        let joined_key =
+            DebugAdapter::capability_probe_cache_key(&admitted_for_tests("perl", joined), &cwd);
+        let split_key =
+            DebugAdapter::capability_probe_cache_key(&admitted_for_tests("perl", split), &cwd);
 
         assert_ne!(joined_key, split_key);
     }
@@ -6396,8 +6420,14 @@ mod tests {
     fn capability_probe_cache_key_distinguishes_delimiters_inside_components() {
         let env = HashMap::new();
 
-        let spliced = DebugAdapter::capability_probe_cache_key("a@b", &env, &PathBuf::from("c"));
-        let honest = DebugAdapter::capability_probe_cache_key("a", &env, &PathBuf::from("b@c"));
+        let spliced = DebugAdapter::capability_probe_cache_key(
+            &admitted_for_tests("a@b", env.clone()),
+            &PathBuf::from("c"),
+        );
+        let honest = DebugAdapter::capability_probe_cache_key(
+            &admitted_for_tests("a", env),
+            &PathBuf::from("b@c"),
+        );
 
         assert_ne!(spliced, honest);
     }
@@ -6525,8 +6555,10 @@ mod tests {
         // failing: only a measured verdict is asserted. A reworded variant
         // never matches and fails immediately.
         for _ in 0..3 {
-            let probe =
-                DebugAdapter::run_debugger_capability_probe(&script, &HashMap::new(), dir.path());
+            let probe = DebugAdapter::run_debugger_capability_probe(
+                &admitted_for_tests(&script, HashMap::new()),
+                dir.path(),
+            );
             if matches!(&probe, DebuggerCapabilityProbe::Inconclusive) {
                 continue;
             }
@@ -6549,8 +6581,11 @@ mod tests {
                 detail, expected_detail,
                 "incapable detail must carry the measured probe diagnosis"
             );
-            let err = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path())
-                .expect_err("silent probe must report incapable");
+            let err = DebugAdapter::check_debugger_capability(
+                &admitted_for_tests(&script, HashMap::new()),
+                dir.path(),
+            )
+            .expect_err("silent probe must report incapable");
             assert_eq!(err, expected, "incapable verdict must carry the exact error variant");
             // The assertion text names the arm's remediation literal so the
             // static exposure tracer can observe the `Incapable => Err`
@@ -6583,7 +6618,10 @@ mod tests {
             "recording-probe-9d1c.sh",
             &format!("printf '%s\\n' \"$@\" >> '{record_str}'\nprintf 'OK\\n'"),
         )?;
-        let verdict = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path());
+        let verdict = DebugAdapter::check_debugger_capability(
+            &admitted_for_tests(&script, HashMap::new()),
+            dir.path(),
+        );
         if verdict != Ok(()) {
             return Err(format!("recording probe must verify capable, got: {verdict:?}"));
         }
@@ -6605,12 +6643,13 @@ mod tests {
         let interpreter = "perl-lsp-missing-probe-interpreter-9e2f1";
         let env = HashMap::new();
         let cwd = std::env::temp_dir();
-        let key = DebugAdapter::capability_probe_cache_key(interpreter, &env, &cwd);
+        let admitted = admitted_for_tests(interpreter, env);
+        let key = DebugAdapter::capability_probe_cache_key(&admitted, &cwd);
         if let Ok(cache) = super::DEBUGGER_PROBE_CACHE.lock() {
             assert!(cache.get(&key).is_none(), "precondition: key must start absent");
         }
 
-        let verdict = DebugAdapter::check_debugger_capability(interpreter, &env, &cwd);
+        let verdict = DebugAdapter::check_debugger_capability(&admitted, &cwd);
 
         assert!(verdict.is_ok(), "spawn failure is launch-continue, got: {verdict:?}");
         if let Ok(cache) = super::DEBUGGER_PROBE_CACHE.lock() {
@@ -6631,12 +6670,13 @@ mod tests {
         let interpreter = "perl-lsp-cached-probe-interpreter-7c3e9";
         let env = HashMap::new();
         let cwd = std::env::temp_dir();
-        let key = DebugAdapter::capability_probe_cache_key(interpreter, &env, &cwd);
+        let admitted = admitted_for_tests(interpreter, env);
+        let key = DebugAdapter::capability_probe_cache_key(&admitted, &cwd);
         if let Ok(mut cache) = super::DEBUGGER_PROBE_CACHE.lock() {
             cache.insert(key, Err("cached probe failure sentinel".to_string()));
         }
 
-        let verdict = DebugAdapter::check_debugger_capability(interpreter, &env, &cwd);
+        let verdict = DebugAdapter::check_debugger_capability(&admitted, &cwd);
 
         assert_eq!(
             verdict,
@@ -6707,6 +6747,7 @@ mod tests {
                         "test: reach the Perl spawn error path",
                     ),
                 ),
+                ..Default::default()
             },
         )
         .map_err(|e| format!("authority resolution failed: {e}"))?;
@@ -6767,10 +6808,9 @@ mod tests {
         let mut adapter = DebugAdapter::new();
         let result = adapter.launch_debugger(
             script_path,
-            missing_perl,
+            &admitted_for_tests(missing_perl, HashMap::new()),
             Vec::new(),
             false,
-            std::collections::HashMap::new(),
             None,
             1,
         );
