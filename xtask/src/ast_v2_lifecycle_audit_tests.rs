@@ -1312,10 +1312,7 @@ fn the_prose_report_summary_cannot_drift_from_the_inventory() -> Result<()> {
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("`consumers` is not an array"))?;
     let gating_count = |role: &str| -> usize {
-        consumers
-            .iter()
-            .filter(|row| row["role"].as_str() == Some(role))
-            .count()
+        consumers.iter().filter(|row| row["role"].as_str() == Some(role)).count()
     };
     let expected_gating_sentence = format!(
         "The migration set is this manifest's gating rows: {} production, {} re-export, {} \
