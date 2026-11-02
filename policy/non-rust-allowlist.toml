@@ -2728,6 +2728,7 @@ created = "2026-11-02"
 review_after = "2027-02-02"
 
 [[allow]]
+id = "non-rust-behavior-disposition-ledger"
 path = "crates/perl-incremental-parsing/behavior_disposition.json"
 kind = "config"
 language = "json"
