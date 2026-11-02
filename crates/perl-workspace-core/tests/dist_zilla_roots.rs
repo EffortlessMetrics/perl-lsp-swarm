@@ -11,12 +11,12 @@ use std::time::Duration;
 
 use perl_workspace_core::id::{Digest, FileId};
 use perl_workspace_core::{
-    classify_plugin_heading, detect_dist_zilla, detect_dist_zilla_with_plugins, parse_dist_ini,
-    plugin_notes_from_authoring, BuildSystemKind, DetectedDistZillaBuildSystem,
-    DistZillaDetectOptions, DistZillaRootDisposition, DistZillaRootFreshness,
-    DistZillaToolDisposition, BLIB_LIB, DIST_INI, DIST_ZILLA_BLIB_LIB,
+    BLIB_LIB, BuildSystemKind, DIST_INI, DIST_ZILLA_BLIB_LIB,
     DIST_ZILLA_REASON_GENERATED_ROOT_STALE, DIST_ZILLA_REASON_GENERATED_ROOT_WITHOUT_BUILD_SYSTEM,
-    DIST_ZILLA_SOURCE_LIB, ProjectRootRole, REASON_CONFIGURED_DZIL_MISSING, STAGED_BUILD,
+    DIST_ZILLA_SOURCE_LIB, DetectedDistZillaBuildSystem, DistZillaDetectOptions,
+    DistZillaRootDisposition, DistZillaRootFreshness, DistZillaToolDisposition, ProjectRootRole,
+    REASON_CONFIGURED_DZIL_MISSING, STAGED_BUILD, classify_plugin_heading, detect_dist_zilla,
+    detect_dist_zilla_with_plugins, parse_dist_ini, plugin_notes_from_authoring,
 };
 
 struct Fixture {

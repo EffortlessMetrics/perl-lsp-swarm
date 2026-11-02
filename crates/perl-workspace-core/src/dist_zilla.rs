@@ -12,7 +12,9 @@
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::dist_authoring::{plugin_generates_metadata, plugin_registry_identity, DistAuthoringFacts, DistAuthoringSource};
+use crate::dist_authoring::{
+    DistAuthoringFacts, DistAuthoringSource, plugin_generates_metadata, plugin_registry_identity,
+};
 use crate::environment::{
     BuildSystemKind, EnvironmentInputAuthority, EnvironmentLimitation, IncludeEntryRole,
     ProjectRootRole,
