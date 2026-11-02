@@ -1,6 +1,7 @@
 use perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay;
 use perl_module::{IncRoot, IncRootKind};
-use perl_parser_core::path_security::validate_workspace_path;
+use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
+use std::path::{Component, Path};
 
 pub(super) fn search_display_paths(
     roots: &[IncRoot],
@@ -73,7 +74,9 @@ fn annotate_root_label(base: &str, root: &IncRoot, workspace_root: &std::path::P
     }
 
     let root_dir = workspace_bound_root_directory(root, workspace_root);
-    match validate_workspace_path(&root_dir, workspace_root) {
+    let validation_path =
+        if root.path == Path::new(".") { Path::new(".") } else { root.path.as_path() };
+    match validate_workspace_path(validation_path, workspace_root) {
         Ok(_) => {
             if root_dir.exists() {
                 base.to_string()
@@ -81,8 +84,23 @@ fn annotate_root_label(base: &str, root: &IncRoot, workspace_root: &std::path::P
                 format!("{base}, does not exist")
             }
         }
-        Err(_) => format!("{base}, outside workspace: not searched"),
+        Err(error) if workspace_root_excluded_by_policy(&root.path, &error) => {
+            format!("{base}, outside workspace: not searched")
+        }
+        Err(_) => {
+            // Root-directory validation can fail for outside-pointing symlink
+            // roots while `full_path_for_root` still accepts module candidates
+            // that re-enter the workspace (#17857).
+            base.to_string()
+        }
     }
+}
+
+fn workspace_root_excluded_by_policy(path: &Path, error: &WorkspacePathError) -> bool {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return true;
+    }
+    !matches!(error, WorkspacePathError::SymlinkOutsideWorkspace(_))
 }
 
 fn root_source_label(source: &str) -> &'static str {
@@ -206,6 +224,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn perl5lib_relative_root_uses_process_directory() -> TestResult {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("ws");
@@ -228,23 +247,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlink_escape_root_is_not_searched() -> TestResult {
+    fn escaping_symlink_root_stays_searched_when_module_reenters_workspace() -> TestResult {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("ws");
         let outside = temp.path().join("outside");
         let escape = workspace.join("escape");
+        let module_in_workspace = workspace.join("Foo.pm");
         std::fs::create_dir_all(&workspace)?;
         std::fs::create_dir_all(&outside)?;
+        std::fs::write(&module_in_workspace, "package Foo; 1;")?;
         symlink(&outside, &escape)?;
+        symlink(&module_in_workspace, outside.join("Foo.pm"))?;
 
         let displays = search_display_paths(&[workspace_root(PathBuf::from("escape"))], &workspace);
-        assert!(
-            displays[0].source.contains("outside workspace")
-                && displays[0].source.contains("not searched"),
-            "symlink escape must be rejected like the resolver: {}",
+        assert_eq!(
+            displays[0].source, "workspace includePaths",
+            "module candidates under an escaping root can still resolve inside the workspace: {}",
             displays[0].source
+        );
+
+        let candidate = Path::new("escape/Foo.pm");
+        assert!(
+            validate_workspace_path(candidate, &workspace).is_ok(),
+            "resolver-shaped module candidate must stay admissible"
         );
         Ok(())
     }
