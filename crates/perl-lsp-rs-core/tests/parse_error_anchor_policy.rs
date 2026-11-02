@@ -9,8 +9,7 @@ fn repo_root() -> PathBuf {
 
 #[test]
 fn diagnostics_provider_delegates_placement_to_parser_anchor() {
-    let path =
-        repo_root().join("crates/perl-lsp-rs-core/src/providers/diagnostics/diagnostics.rs");
+    let path = repo_root().join("crates/perl-lsp-rs-core/src/providers/diagnostics/diagnostics.rs");
     let content = std::fs::read_to_string(&path).expect("read diagnostics.rs");
     assert!(
         !content.contains("location().unwrap_or(0)"),
