@@ -3,6 +3,7 @@
 //! Simplified TDD implementation focused on core red-green-refactor cycle
 
 use crate::ast::{Node, NodeKind};
+use crate::tdd::generated_test_artifact::emit_subtest_draft_fail;
 
 /// Diagnostic produced during a TDD cycle (independent of `lsp_types`).
 ///
@@ -49,34 +50,16 @@ impl TestGenerator {
     }
 
     /// Generate basic test for a subroutine
-    pub fn generate_test(&self, name: &str, params: usize) -> String {
-        let args = (0..params).map(|i| format!("'arg{}'", i + 1)).collect::<Vec<_>>().join(", ");
-
-        match self.framework.as_str() {
-            "Test2::V0" => {
-                format!(
-                    "use Test2::V0;\n\n\
-                     subtest '{}' => sub {{\n    \
-                     my $result = {}({});\n    \
-                     ok($result, 'Function returns value');\n\
-                     }};\n\n\
-                     done_testing();\n",
-                    name, name, args
-                )
-            }
-            _ => {
-                // Default to Test::More
-                format!(
-                    "use Test::More;\n\n\
-                     subtest '{}' => sub {{\n    \
-                     my $result = {}({});\n    \
-                     ok(defined $result, 'Function returns defined value');\n\
-                     }};\n\n\
-                     done_testing();\n",
-                    name, name, args
-                )
-            }
-        }
+    pub fn generate_test(&self, name: &str, _params: usize) -> String {
+        let reason = format!("behavioral oracle required for {name}");
+        format!(
+            "use Test::More;\n\n\
+             subtest '{name}' => sub {{\n\
+             {body}\
+             }};\n\n\
+             done_testing();\n",
+            body = emit_subtest_draft_fail(&reason)
+        )
     }
 
     /// Find all subroutines in AST
@@ -474,8 +457,8 @@ mod tests {
         let test = generator.generate_test("add", 2);
         assert!(test.contains("Test::More"));
         assert!(test.contains("add"));
-        assert!(test.contains("arg1"));
-        assert!(test.contains("arg2"));
+        assert!(test.contains("TODO:"));
+        assert!(!test.contains("arg1"));
     }
 
     #[test]
