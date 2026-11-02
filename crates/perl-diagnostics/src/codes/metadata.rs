@@ -90,6 +90,7 @@ impl DiagnosticCode {
             "PL408" => "https://docs.perl-lsp.org/errors/PL408",
             "PL409" => "https://docs.perl-lsp.org/errors/PL409",
             "PL410" => "https://docs.perl-lsp.org/errors/PL410",
+            "PL411" => "https://docs.perl-lsp.org/errors/PL411",
             "PL500" => "https://docs.perl-lsp.org/errors/PL500",
             "PL501" => "https://docs.perl-lsp.org/errors/PL501",
             "PL502" => "https://docs.perl-lsp.org/errors/PL502",
@@ -174,6 +175,7 @@ impl DiagnosticCode {
             | Self::DuplicateHashKey
             | Self::GotoUndefinedLabel
             | Self::LoopControlUndefinedLabel
+            | Self::IrrelevantWantarrayBranch
             | Self::DeprecatedDefined
             | Self::DeprecatedArrayBase
             | Self::PhaseScopedStrictPragma
@@ -330,6 +332,10 @@ impl DiagnosticCode {
             Self::LoopControlUndefinedLabel => Some(
                 "This `next`, `last`, or `redo` references a label that is not defined in the current file. \
                 Add a matching `LABEL:` on an enclosing loop, or remove the label to target the innermost loop.",
+            ),
+            Self::IrrelevantWantarrayBranch => Some(
+                "This `wantarray()` test selects between branches that perform no work, so the caller-context \
+                check cannot change behavior. Remove the conditional or return different values per context.",
             ),
             Self::PrintfFormatMismatch => Some(
                 "The number of format specifiers does not match the number of arguments. \

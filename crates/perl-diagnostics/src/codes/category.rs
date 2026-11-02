@@ -94,7 +94,8 @@ impl DiagnosticCode {
             | Self::EvalErrorFlow
             | Self::DuplicateHashKey
             | Self::GotoUndefinedLabel
-            | Self::LoopControlUndefinedLabel => DiagnosticCategory::BestPractices,
+            | Self::LoopControlUndefinedLabel
+            | Self::IrrelevantWantarrayBranch => DiagnosticCategory::BestPractices,
 
             Self::VersionIncompatFeature => DiagnosticCategory::VersionCompatibility,
 
