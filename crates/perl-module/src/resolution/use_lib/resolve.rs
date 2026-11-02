@@ -47,9 +47,10 @@ pub fn resolve_use_lib_paths(
                 if resolved.strip_prefix(workspace_root).is_err() {
                     continue;
                 }
-                if let Some(s) = path_to_relative_string(&resolved, workspace_root)
-                    && !result.contains(&s)
-                {
+                // Keep the source spelling for Add/Remove matching; normalization
+                // only proves the path stays inside the workspace boundary.
+                let s = path_str.to_string();
+                if !result.contains(&s) {
                     result.push(s);
                 }
             } else {
@@ -89,11 +90,15 @@ fn normalize_relative_path_string(path: &str) -> String {
 
 fn normalize_relative_to_workspace(workspace_root: &Path, relative: &Path) -> Option<PathBuf> {
     let mut normalized = workspace_root.to_path_buf();
+    let root_component_count = workspace_root.components().count();
     for component in relative.components() {
         match component {
             Component::CurDir => {}
             Component::Normal(segment) => normalized.push(segment),
             Component::ParentDir => {
+                if normalized.components().count() <= root_component_count {
+                    return None;
+                }
                 if !normalized.pop() {
                     return None;
                 }
