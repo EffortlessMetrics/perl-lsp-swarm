@@ -511,10 +511,7 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             check(self.root, self.ledger_path)
 
     def test_moving_a_gate_from_src_to_tests_downgrades_isolation(self) -> None:
-        row = self.independent_source_only_feature()
-        row["isolation"] = "source_only"
-        self.write_ledger(self.ledger)
-        gated = row["name"]
+        gated = self.independent_source_only_feature()["name"]
         self.write_feature_gates(
             [name for name in self.gated_features if name != gated],
             self.test_gated_features + [gated],
