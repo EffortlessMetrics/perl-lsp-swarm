@@ -15,10 +15,42 @@ mod tests {
     use super::super::LspServer;
     use super::super::diagnostic_debounce::DiagnosticDebouncer;
     use super::super::file_watcher_debounce::FileWatcherDebouncer;
+    use super::super::outbound::tests::capture_tracing_records;
     use super::super::runtime_services::{
         ApplicationShutdown, ApplicationTaskClass, DuplicateRegistration, RuntimeServices,
         ShutdownReason, TaskTerminal, UnregisteredTask,
     };
+
+    #[test]
+    fn server_drop_settlement_emits_retained_instrument_failure_evidence() {
+        let services = RuntimeServices::new();
+        services.register_task(ApplicationTaskClass::ParseWorker).expect("registration succeeds");
+        services
+            .record_terminal(
+                ApplicationTaskClass::ParseWorker,
+                TaskTerminal::InstrumentFailed {
+                    reason: "parse worker pool failed to spawn any threads".to_string(),
+                },
+            )
+            .expect("terminal accepted");
+
+        let records = capture_tracing_records(|| {
+            services.settle_and_report_on_server_drop();
+        });
+
+        assert!(
+            records.contains("application background component never became operational"),
+            "instrument failure must reach settlement evidence, got: {records}"
+        );
+        assert!(
+            records.contains("parse-worker"),
+            "settlement evidence must name the component, got: {records}"
+        );
+        assert!(
+            records.contains("parse worker pool failed to spawn any threads"),
+            "settlement evidence must retain the first causal reason, got: {records}"
+        );
+    }
 
     #[test]
     fn register_then_complete_terminal_is_retained_in_settlement_snapshot() {
