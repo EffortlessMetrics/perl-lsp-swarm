@@ -742,13 +742,29 @@ fn validate_and_bind_returns_the_typed_handoff_without_revalidation() -> Result<
     let receipt = with_protocol_evidence(valid_receipt()?, |_| ())?;
     let bound = receipt.validate_and_bind()?;
     ensure!(
-        bound.bounds_version == xtask::editor_client_compat::RECEIPT_BOUNDS_VERSION,
+        bound.bounds_version() == xtask::editor_client_compat::RECEIPT_BOUNDS_VERSION,
         "validated handoff did not expose the current bounds version"
     );
     ensure!(
-        bound.protocol_receipt_digest.is_some(),
+        bound.protocol_receipt_digest().is_some(),
         "validated handoff omitted the embedded protocol digest"
     );
+    Ok(())
+}
+
+#[test]
+fn protocol_run_id_is_bounded_and_embedded_extension_null_values_digest() -> Result<()> {
+    let mut long_run = "r".repeat(bounds::MAX_REASON_TOKEN_LEN + 1);
+    long_run.insert(0, 'a');
+    let mut stale = with_protocol_evidence(valid_receipt()?, |_| ())?;
+    stale.protocol_evidence.as_mut().unwrap().run_id = long_run.clone();
+    stale.protocol_evidence.as_mut().unwrap().receipt["run_id"] = Value::String(long_run);
+    ensure!(stale.validate().is_err(), "oversized protocol run_id was accepted");
+
+    let mut with_null_extension = with_protocol_evidence(valid_receipt()?, |payload| {
+        payload["extensions"] = serde_json::json!({ "vendor.note": null });
+    })?;
+    with_null_extension.validate_and_bind()?;
     Ok(())
 }
 

@@ -4,7 +4,7 @@
   "title": "editor_client_compat.v1",
   "type": "object",
   "additionalProperties": false,
-  "description": "Generic actual-editor receipt contract (#7777) with explicit bounds (#10527). Bounds version: editor_client_compat_bounds.v1.",
+  "description": "Generic actual-editor receipt contract (#7777) with explicit bounds (#10527). Bounds version: editor_client_compat_bounds.v1. The embedded protocol receipt byte cap (65536) is enforced by the Rust production validator; JSON Schema cannot express serialized nested-object byte length.",
   "required": [
     "schema_version",
     "observed_at",

@@ -302,9 +302,23 @@ pub struct EditorClientCompatReceipt {
 /// re-derive digest/bounds checks on the returned receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedEditorClientCompatReceipt {
-    pub receipt: EditorClientCompatReceipt,
-    pub bounds_version: &'static str,
-    pub protocol_receipt_digest: Option<String>,
+    receipt: EditorClientCompatReceipt,
+    bounds_version: &'static str,
+    protocol_receipt_digest: Option<String>,
+}
+
+impl ValidatedEditorClientCompatReceipt {
+    pub fn receipt(&self) -> &EditorClientCompatReceipt {
+        &self.receipt
+    }
+
+    pub fn bounds_version(&self) -> &'static str {
+        self.bounds_version
+    }
+
+    pub fn protocol_receipt_digest(&self) -> Option<&str> {
+        self.protocol_receipt_digest.as_deref()
+    }
 }
 
 impl EditorClientCompatReceipt {
@@ -753,6 +767,9 @@ impl EditorClientCompatReceipt {
         }
         for message in &self.diagnostics.observed_messages {
             ensure_reason_token_bounded(message)?;
+        }
+        if let Some(protocol) = &self.protocol_evidence {
+            ensure_reason_token_bounded(&protocol.run_id)?;
         }
         Ok(())
     }

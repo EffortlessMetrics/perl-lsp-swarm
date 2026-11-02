@@ -345,14 +345,83 @@ pub const RECEIPT_CONTENT_DIGEST_DOMAIN: &[u8] = b"actual_host_receipt.v1\0";
 
 /// Canonical JSON bytes of a receipt object suitable for content addressing.
 ///
-/// Encoding matches `ci_route_plan.v1` canonical JSON: sorted object keys,
-/// minimal string escaping, unsigned integers only, no explicit nulls.
+/// Encoding is deterministic JSON with UTF-8 object keys sorted by byte order,
+/// minimal string escaping, and explicit `null` spellings. This must accept every
+/// JSON value permitted by [`validate_receipt`], including extension payloads.
 pub fn canonical_receipt_bytes(receipt: &Value) -> Result<Vec<u8>, ReceiptValidationError> {
-    crate::ci_route_plan::canonical::canonical_json(receipt).map_err(|message| {
+    let mut out = Vec::new();
+    write_canonical_value(receipt, &mut out).map_err(|message| {
         ReceiptValidationError::new(format!(
             "receipt cannot be canonically encoded for digest: {message}"
         ))
-    })
+    })?;
+    Ok(out)
+}
+
+fn write_canonical_value(value: &Value, out: &mut Vec<u8>) -> Result<(), String> {
+    match value {
+        Value::Null => out.extend_from_slice(b"null"),
+        Value::Bool(true) => out.extend_from_slice(b"true"),
+        Value::Bool(false) => out.extend_from_slice(b"false"),
+        Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                out.extend_from_slice(integer.to_string().as_bytes());
+            } else if let Some(unsigned) = number.as_u64() {
+                out.extend_from_slice(unsigned.to_string().as_bytes());
+            } else {
+                return Err(format!("non-integer JSON number is not canonical: {number}"));
+            }
+        }
+        Value::String(text) => write_canonical_string(text, out),
+        Value::Array(items) => {
+            out.push(b'[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(b',');
+                }
+                write_canonical_value(item, out)?;
+            }
+            out.push(b']');
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            out.push(b'{');
+            for (index, key) in keys.iter().enumerate() {
+                if index > 0 {
+                    out.push(b',');
+                }
+                write_canonical_string(key, out);
+                out.push(b':');
+                write_canonical_value(&map[*key], out)?;
+            }
+            out.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+fn write_canonical_string(text: &str, out: &mut Vec<u8>) {
+    out.push(b'"');
+    for unit in text.chars() {
+        match unit {
+            '"' => out.extend_from_slice(b"\\\""),
+            '\\' => out.extend_from_slice(b"\\\\"),
+            '\u{8}' => out.extend_from_slice(b"\\b"),
+            '\u{c}' => out.extend_from_slice(b"\\f"),
+            '\n' => out.extend_from_slice(b"\\n"),
+            '\r' => out.extend_from_slice(b"\\r"),
+            '\t' => out.extend_from_slice(b"\\t"),
+            control if (control as u32) < 0x20 => {
+                out.extend_from_slice(format!("\\u{:04x}", control as u32).as_bytes());
+            }
+            other => {
+                let mut buffer = [0u8; 4];
+                out.extend_from_slice(other.encode_utf8(&mut buffer).as_bytes());
+            }
+        }
+    }
+    out.push(b'"');
 }
 
 /// SHA-256 content digest of a receipt object in `sha256:<64 lowercase hex>`
