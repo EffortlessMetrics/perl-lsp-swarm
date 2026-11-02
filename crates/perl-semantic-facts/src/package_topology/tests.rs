@@ -347,6 +347,80 @@ fn complete_declaration_rejects_missing_name_span() -> FixtureResult {
 }
 
 #[test]
+fn name_anchor_spelling_must_match_package_identity() -> FixtureResult {
+    let err = PackageDeclarationContribution::new(
+        package_id("root-a", "Foo")?,
+        declaration_id(
+            "root-a::lib/Foo.pm",
+            "gen-1",
+            PackageDeclarationForm::PackageStatement,
+            "Bar",
+            0,
+        )?,
+        EntityId(7),
+        EntityKind::Package,
+        Some(declaration_anchor("decl-Bar", 0, 12)?),
+        Some(name_anchor("Bar", 8, 11)?),
+        PackageSourceTier::Workspace,
+        PackageEditAuthority::Editable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticSubjectStatus::Complete,
+        Vec::new(),
+        Vec::new(),
+    );
+    let err = must_err_with(err, "Foo package cannot join a Bar name anchor");
+    assert!(matches!(err, PackageTopologyContractError::ContradictoryStatus(_)));
+    Ok(())
+}
+
+fn complete_with_name_span(
+    name_span: SourceAnchor,
+) -> Result<PackageDeclarationContribution, PackageTopologyContractError> {
+    PackageDeclarationContribution::new(
+        package_id("root-a", "Foo")?,
+        declaration_id(
+            "root-a::lib/Foo.pm",
+            "gen-1",
+            PackageDeclarationForm::PackageStatement,
+            "Foo",
+            0,
+        )?,
+        EntityId(7),
+        EntityKind::Package,
+        Some(declaration_anchor("decl-Foo", 0, 12)?),
+        Some(PackageNameAnchor::new("Foo", "name-digest-Foo", Some(name_span))?),
+        PackageSourceTier::Workspace,
+        PackageEditAuthority::Editable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticSubjectStatus::Complete,
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+#[test]
+fn complete_declaration_rejects_empty_or_foreign_name_span() -> FixtureResult {
+    let empty = complete_with_name_span(span(8, 8));
+    let empty = must_err_with(empty, "empty name span is not an exact name token");
+    assert!(matches!(empty, PackageTopologyContractError::ContradictoryStatus(_)));
+
+    let cross_file =
+        complete_with_name_span(SourceAnchor::new(Some(AnchorId(1)), FileId(12), 8, 11));
+    let cross_file =
+        must_err_with(cross_file, "cross-file name span is not inside the declaration");
+    assert!(matches!(cross_file, PackageTopologyContractError::ContradictoryStatus(_)));
+
+    let outside = complete_with_name_span(span(20, 23));
+    let outside = must_err_with(outside, "name span past the declaration is not exact");
+    assert!(matches!(outside, PackageTopologyContractError::ContradictoryStatus(_)));
+    Ok(())
+}
+
+#[test]
 fn fingerprints_are_deterministic_and_field_boundary_sensitive() -> FixtureResult {
     let a = PackageId::new("ab", "c", "Foo")?;
     let b = PackageId::new("a", "bc", "Foo")?;
@@ -411,6 +485,24 @@ fn ambiguous_candidates_are_order_independent() -> FixtureResult {
     let right = PackageResolution::ambiguous(asked, vec![foo_b, foo_a])?;
     assert_eq!(left, right);
     assert_eq!(left.fingerprint(), right.fingerprint());
+    Ok(())
+}
+
+#[test]
+fn ambiguous_candidates_must_answer_the_requested_package() -> FixtureResult {
+    let asked = request("workspace", "Foo")?;
+    let other_name = package_id("root-a", "Bar")?;
+    let other_project = PackageId::new("project-other", "root-a", "Foo")?;
+    let name_err =
+        PackageResolution::ambiguous(asked.clone(), vec![package_id("root-a", "Foo")?, other_name]);
+    let name_err = must_err_with(name_err, "Bar is not a Foo candidate");
+    assert!(matches!(name_err, PackageTopologyContractError::MalformedResolution(_)));
+
+    let project_err =
+        PackageResolution::ambiguous(asked, vec![package_id("root-a", "Foo")?, other_project]);
+    let project_err =
+        must_err_with(project_err, "another project is not a candidate for this request");
+    assert!(matches!(project_err, PackageTopologyContractError::MalformedResolution(_)));
     Ok(())
 }
 
@@ -563,6 +655,40 @@ fn json_round_trip_survives_and_forged_sentinel_fails_validate() -> FixtureResul
     let decoded: PackageDeclarationContribution =
         must_with(serde_json::from_value(forged), "forged record still deserializes");
     assert_eq!(decoded.validate(), Err(PackageTopologyContractError::SentinelEntityId));
+
+    let with_dep = PackageDeclarationContribution::new(
+        package_id("root-a", "Foo")?,
+        declaration_id(
+            "root-a::lib/Foo.pm",
+            "gen-1",
+            PackageDeclarationForm::PackageStatement,
+            "Foo",
+            0,
+        )?,
+        EntityId(7),
+        EntityKind::Package,
+        Some(declaration_anchor("decl-Foo", 0, 12)?),
+        Some(name_anchor("Foo", 8, 11)?),
+        PackageSourceTier::Workspace,
+        PackageEditAuthority::Editable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticSubjectStatus::Complete,
+        Vec::new(),
+        vec![SemanticDependencyIdentity::new(SemanticDependencyKind::NamedFact, "fact-1")?],
+    )?;
+    let encoded = must_with(serde_json::to_string(&with_dep), "serialize contribution with dep");
+    let mut forged: serde_json::Value = must_with(serde_json::from_str(&encoded), "dep json value");
+    forged["dependencies"][0]["target_fingerprint"] = serde_json::json!(" ");
+    let decoded: PackageDeclarationContribution =
+        must_with(serde_json::from_value(forged), "blank-target dep still deserializes");
+    assert_eq!(
+        decoded.validate(),
+        Err(PackageTopologyContractError::EmptyIdentityField(
+            "PackageDeclarationContribution.dependencies.target_fingerprint",
+        ))
+    );
     Ok(())
 }
 

@@ -149,3 +149,36 @@ fn recovered_contribution_without_name_span_round_trips() -> Result<(), Box<dyn 
     round_trip_contribution(&contribution)?;
     Ok(())
 }
+
+#[test]
+fn forged_blank_dependency_target_deserializes_and_fails_validate() -> Result<(), Box<dyn Error>> {
+    let contribution = PackageDeclarationContribution::new(
+        PackageId::new("project-app", "root-a", "Foo")?,
+        PackageDeclarationId::new(
+            "root-a::lib/Foo.pm",
+            "rev-1",
+            "gen-1",
+            PackageDeclarationForm::PackageStatement,
+            Some("name-digest-Foo".to_string()),
+            0,
+        )?,
+        EntityId(5),
+        EntityKind::Package,
+        Some(PackageDeclarationAnchor::new("decl-Foo", Some(span(0, 20)))?),
+        Some(PackageNameAnchor::new("Foo", "name-digest-Foo", Some(span(8, 11)))?),
+        PackageSourceTier::Workspace,
+        PackageEditAuthority::ReadOnly,
+        SemanticProducer::Parser,
+        SemanticProvenance::Known(Provenance::DesugaredAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticSubjectStatus::Complete,
+        Vec::new(),
+        vec![SemanticDependencyIdentity::new(SemanticDependencyKind::NamedFact, "fact-1")?],
+    )?;
+    let encoded = serde_json::to_string(&contribution)?;
+    let mut forged: serde_json::Value = serde_json::from_str(&encoded)?;
+    forged["dependencies"][0]["target_fingerprint"] = serde_json::json!(" ");
+    let decoded: PackageDeclarationContribution = serde_json::from_value(forged)?;
+    assert!(decoded.validate().is_err());
+    Ok(())
+}

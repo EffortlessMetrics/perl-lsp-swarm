@@ -39,8 +39,10 @@ impl PackageDeclarationContribution {
     ///
     /// # Errors
     /// Returns a contract error when identity slots are empty, a zero entity
-    /// identity is used, kind/form disagree, complete status lacks an exact
-    /// name anchor, or source-tier/edit-authority contradict.
+    /// identity is used, kind/form disagree, a name spelling disagrees with
+    /// the package identity, complete status lacks a nonempty in-declaration
+    /// name span, a nested dependency has a blank target, or
+    /// source-tier/edit-authority contradict.
     #[expect(
         clippy::too_many_arguments,
         reason = "a declaration contribution is one validated record; splitting would duplicate the identity law"
@@ -106,6 +108,11 @@ impl PackageDeclarationContribution {
         }
         if let Some(anchor) = &self.name_anchor {
             anchor.validate()?;
+            if anchor.name_spelling() != self.package_id.qualified_name() {
+                return Err(PackageTopologyContractError::ContradictoryStatus(
+                    "name anchor spelling must match the package identity qualified name",
+                ));
+            }
             if let Some(declared) = self.declaration_id.name_digest()
                 && declared != anchor.name_digest()
             {
@@ -119,14 +126,32 @@ impl PackageDeclarationContribution {
             ));
         }
         if self.completeness.is_complete() {
-            if self.name_anchor.as_ref().and_then(PackageNameAnchor::span).is_none() {
+            let Some(name_span) = self.name_anchor.as_ref().and_then(PackageNameAnchor::span)
+            else {
                 return Err(PackageTopologyContractError::ContradictoryStatus(
                     "a complete declaration requires an exact name span",
                 ));
-            }
-            if self.declaration_anchor.as_ref().and_then(PackageDeclarationAnchor::span).is_none() {
+            };
+            let Some(declaration_span) =
+                self.declaration_anchor.as_ref().and_then(PackageDeclarationAnchor::span)
+            else {
                 return Err(PackageTopologyContractError::ContradictoryStatus(
                     "a complete declaration requires an exact declaration span",
+                ));
+            };
+            if name_span.start_byte == name_span.end_byte
+                || declaration_span.start_byte == declaration_span.end_byte
+            {
+                return Err(PackageTopologyContractError::ContradictoryStatus(
+                    "a complete declaration requires nonempty name and declaration spans",
+                ));
+            }
+            if name_span.file_id != declaration_span.file_id
+                || name_span.start_byte < declaration_span.start_byte
+                || name_span.end_byte > declaration_span.end_byte
+            {
+                return Err(PackageTopologyContractError::ContradictoryStatus(
+                    "a complete declaration's name span must occupy bytes inside the declaration span",
                 ));
             }
             if !self.limitations.is_empty() {
@@ -174,6 +199,15 @@ impl PackageDeclarationContribution {
         }) {
             return Err(PackageTopologyContractError::ContradictoryStatus(
                 "dependencies must be distinct",
+            ));
+        }
+        if self
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.target_fingerprint().trim().is_empty())
+        {
+            return Err(PackageTopologyContractError::EmptyIdentityField(
+                "PackageDeclarationContribution.dependencies.target_fingerprint",
             ));
         }
         Ok(())

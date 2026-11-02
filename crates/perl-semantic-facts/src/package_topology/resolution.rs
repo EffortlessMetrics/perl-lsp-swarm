@@ -243,6 +243,13 @@ impl PackageResolution {
                 }
                 for candidate in candidates {
                     candidate.validate()?;
+                    if candidate.project_identity() != request.project_identity()
+                        || candidate.qualified_name() != request.qualified_name()
+                    {
+                        return Err(PackageTopologyContractError::MalformedResolution(
+                            "ambiguous candidates must share the request project identity and qualified name",
+                        ));
+                    }
                 }
                 let mut fingerprints: Vec<String> =
                     candidates.iter().map(PackageId::fingerprint).collect();
