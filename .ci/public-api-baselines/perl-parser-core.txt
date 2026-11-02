@@ -690,8 +690,6 @@ pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &m
 pub trait perl_parser_core::engine::error::ErrorClass
 pub fn perl_parser_core::engine::error::ErrorClass::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
-pub fn perl_parser_core::engine::error::build_parse_error_hint(error: &perl_parser_core::syntax::error::ParseError, base_message: &str) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::engine::error::build_parse_error_hint_with_source(error: &perl_parser_core::syntax::error::ParseError, base_message: &str, source: core::option::Option<&str>) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::engine::error::get_error_contexts(errors: &[perl_parser_core::syntax::error::ParseError], source: &str) -> alloc::vec::Vec<perl_parser_core::syntax::error::ErrorContext>
 pub type perl_parser_core::engine::error::ParseResult<T> = core::result::Result<T, perl_parser_core::syntax::error::ParseError>
 pub mod perl_parser_core::engine::heredoc_collector
@@ -735,6 +733,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::engine::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
@@ -1254,8 +1253,6 @@ pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &m
 pub trait perl_parser_core::error::ErrorClass
 pub fn perl_parser_core::error::ErrorClass::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
-pub fn perl_parser_core::error::build_parse_error_hint(error: &perl_parser_core::syntax::error::ParseError, base_message: &str) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::error::build_parse_error_hint_with_source(error: &perl_parser_core::syntax::error::ParseError, base_message: &str, source: core::option::Option<&str>) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::error::get_error_contexts(errors: &[perl_parser_core::syntax::error::ParseError], source: &str) -> alloc::vec::Vec<perl_parser_core::syntax::error::ErrorContext>
 pub type perl_parser_core::error::ParseResult<T> = core::result::Result<T, perl_parser_core::syntax::error::ParseError>
 pub mod perl_parser_core::error_classifier
@@ -2974,6 +2971,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::parser::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
@@ -3874,6 +3872,9 @@ pub fn perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::eq(&
 pub fn perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::default() -> perl_parser_core::engine::error::classifier::RecoverySalvageMetrics
 pub fn perl_parser_core::engine::error::classifier::RecoverySalvageMetrics::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::error::classifier::classify_recovery_salvage(ast: &perl_ast::ast::Node, diagnostics: &[perl_parser_core::syntax::error::ParseError]) -> perl_parser_core::engine::error::classifier::RecoverySalvageMetrics
+pub mod perl_parser_core::syntax::error::hints
+pub fn perl_parser_core::syntax::error::hints::build_parse_error_hint(error: &perl_parser_core::syntax::error::ParseError, base_message: &str) -> core::option::Option<alloc::string::String>
+pub fn perl_parser_core::syntax::error::hints::build_parse_error_hint_with_source(error: &perl_parser_core::syntax::error::ParseError, base_message: &str, source: core::option::Option<&str>) -> core::option::Option<alloc::string::String>
 pub mod perl_parser_core::syntax::error::recovery
 pub enum perl_parser_core::syntax::error::recovery::RecoveryResult
 pub perl_parser_core::syntax::error::recovery::RecoveryResult::AtSyncPoint
@@ -4197,8 +4198,6 @@ pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &m
 pub trait perl_parser_core::syntax::error::ErrorClass
 pub fn perl_parser_core::syntax::error::ErrorClass::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
-pub fn perl_parser_core::syntax::error::build_parse_error_hint(error: &perl_parser_core::syntax::error::ParseError, base_message: &str) -> core::option::Option<alloc::string::String>
-pub fn perl_parser_core::syntax::error::build_parse_error_hint_with_source(error: &perl_parser_core::syntax::error::ParseError, base_message: &str, source: core::option::Option<&str>) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::syntax::error::get_error_contexts(errors: &[perl_parser_core::syntax::error::ParseError], source: &str) -> alloc::vec::Vec<perl_parser_core::syntax::error::ErrorContext>
 pub type perl_parser_core::syntax::error::ParseResult<T> = core::result::Result<T, perl_parser_core::syntax::error::ParseError>
 pub mod perl_parser_core::syntax::heredoc
@@ -5150,6 +5149,7 @@ pub fn perl_parser_core::engine::parser::Parser<'a>::operation_id(&self) -> perl
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_ast::ast::Node>
 pub fn perl_parser_core::engine::parser::Parser<'a>::parse_with_recovery(&mut self) -> perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config(input: &'a str, config: perl_parser_core::ParserConfigIdentity) -> perl_parser_core::engine::parser::Parser<'a>
+pub fn perl_parser_core::engine::parser::Parser<'a>::with_production_config_and_cancellation(input: &'a str, config: perl_parser_core::ParserConfigIdentity, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::parser::Parser<'a>
 pub fn perl_parser_core::engine::parser::Parser<'a>::get_errors(&self) -> &[perl_parser_core::syntax::error::ParseError]
 pub struct perl_parser_core::ParserConfigIdentity
 pub fn perl_parser_core::ParserConfigIdentity::budget(self) -> perl_parser_core::syntax::error::ParseBudget
