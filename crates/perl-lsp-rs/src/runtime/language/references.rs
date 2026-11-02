@@ -12,7 +12,7 @@ use super::super::{DocumentHighlightProvider, LspServer, Value, json};
 use super::reference_text::{
     TextReferenceQuery, callable_declarations, finalize_named_reference_locations,
     normalized_text_query, search_document_texts_with_declarations,
-    shrink_declaration_span_to_name_span,
+    shrink_declaration_span_to_name_span, uri_keys_from_reference_locations,
 };
 use crate::protocol::{
     JsonRpcError, JsonRpcId, REQUEST_CANCELLED, REQUEST_FAILED, req_position, req_uri,
@@ -1018,9 +1018,15 @@ impl LspServer {
                                                 source_backed_attempt = Some(
                                                     SourceBackedReferenceAttempt::Exact(Vec::new()),
                                                 );
+                                                let narrowing_keys =
+                                                    uri_keys_from_reference_locations(
+                                                        &live_locations,
+                                                    );
                                                 let narrowing_docs = self
                                                     .open_document_texts_for_range_narrowing(
-                                                        uri, &doc.text,
+                                                        uri,
+                                                        &doc.text,
+                                                        &narrowing_keys,
                                                     );
                                                 live_locations = finalize_named_reference_locations(
                                                     live_locations,
@@ -1553,17 +1559,23 @@ impl LspServer {
                                         // The same occurrence-identity finalizer as every
                                         // other tier (#17242), then identifier narrowing
                                         // (#9825).
-                                        let narrowing_docs = self
-                                            .open_document_texts_for_range_narrowing(
-                                                uri, &doc.text,
-                                            );
-                                        let lsp_locations = finalize_named_reference_locations(
+                                        let lsp_values: Vec<Value> =
                                             crate::workspace_index::lsp_adapter::to_lsp_locations(
-                                                partial_refs.into_iter().take(cap),
+                                                partial_refs.iter().take(cap).cloned(),
                                             )
                                             .into_iter()
                                             .map(|loc| json!(loc))
-                                            .collect(),
+                                            .collect();
+                                        let narrowing_keys =
+                                            uri_keys_from_reference_locations(&lsp_values);
+                                        let narrowing_docs = self
+                                            .open_document_texts_for_range_narrowing(
+                                                uri,
+                                                &doc.text,
+                                                &narrowing_keys,
+                                            );
+                                        let lsp_locations = finalize_named_reference_locations(
+                                            lsp_values,
                                             cap,
                                             &narrowing_docs,
                                             symbol_key.name.as_ref(),
@@ -1696,8 +1708,12 @@ impl LspServer {
                                 })
                             })
                             .collect();
-                        let narrowing_docs =
-                            self.open_document_texts_for_range_narrowing(uri, &doc.text);
+                        let narrowing_keys = uri_keys_from_reference_locations(&locations);
+                        let narrowing_docs = self.open_document_texts_for_range_narrowing(
+                            uri,
+                            &doc.text,
+                            &narrowing_keys,
+                        );
                         let locations = finalize_named_reference_locations(
                             locations,
                             cap,
@@ -1786,25 +1802,35 @@ impl LspServer {
 
     /// Open-document texts used to narrow reference ranges to identifier
     /// tokens (#9825). Pins `current_uri` to the generation already captured
-    /// for this request so a racing `didChange` cannot mix identities.
+    /// for this request so a racing `didChange` cannot mix identities. Only
+    /// loads documents whose URIs appear in `needed_uri_keys` plus the
+    /// current file.
     fn open_document_texts_for_range_narrowing(
         &self,
         current_uri: &str,
         current_text: &str,
+        needed_uri_keys: &[String],
     ) -> Vec<(String, String)> {
-        let documents = self.documents_guard();
         let current_key = perl_uri::uri_key(current_uri);
-        let mut out = Vec::with_capacity(documents.len().max(1));
+        let mut want: std::collections::HashSet<String> = needed_uri_keys.iter().cloned().collect();
+        want.insert(current_key.clone());
+
+        let documents = self.documents_guard();
+        let mut out = Vec::with_capacity(want.len().max(1));
         let mut saw_current = false;
         for (uri, state) in documents.iter() {
-            if perl_uri::uri_key(uri) == current_key {
+            let key = perl_uri::uri_key(uri);
+            if !want.contains(&key) {
+                continue;
+            }
+            if key == current_key {
                 out.push((uri.clone(), current_text.to_owned()));
                 saw_current = true;
             } else {
                 out.push((uri.clone(), state.text.clone()));
             }
         }
-        if !saw_current {
+        if !saw_current && want.contains(&current_key) {
             out.push((current_uri.to_owned(), current_text.to_owned()));
         }
         out

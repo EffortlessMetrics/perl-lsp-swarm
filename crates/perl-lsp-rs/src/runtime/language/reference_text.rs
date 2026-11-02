@@ -526,6 +526,7 @@ fn narrow_one_location_to_name_token(
     if range_end_byte < range_start_byte {
         return;
     }
+    let text = line;
 
     let matches = ident_bounded_name_matches(line, name);
     if matches.is_empty() {
@@ -536,15 +537,28 @@ fn narrow_one_location_to_name_token(
         .copied()
         .filter(|(start, end)| *start >= range_start_byte && *end <= range_end_byte)
         .collect();
-    // A one-character `sub` range does not contain the name token. Search the
-    // rest of the declaration line the same way declaration shrinking does.
+    // A one-character `sub` range does not contain the name token. Only in that
+    // declaration case, search the rest of the declaration line: the gap from
+    // the range start to the match must be `sub` followed by whitespace only.
     let search = if contained.is_empty() {
-        matches.into_iter().filter(|(start, _)| *start >= range_start_byte).collect()
+        matches
+            .into_iter()
+            .filter(|(start, _)| {
+                *start >= range_start_byte
+                    && text
+                        .get(range_start_byte..*start)
+                        .and_then(|gap| gap.strip_prefix("sub"))
+                        .is_some_and(|rest| {
+                            !rest.is_empty() && rest.chars().all(char::is_whitespace)
+                        })
+            })
+            .collect()
     } else {
         contained
     };
     let preferred = preferred_name_matches(line, &search, query_sigil);
-    let Some(&(match_start, match_end)) = preferred.first() else {
+    let Some((match_start, match_end)) = choose_narrowing_name_match(line, &preferred, query_sigil)
+    else {
         return;
     };
     let (emit_start, emit_end) = emitted_match_byte_range(line, match_start, match_end);
@@ -626,7 +640,10 @@ fn preferred_name_matches(
     let classified: Vec<(usize, usize)> = matches
         .iter()
         .copied()
-        .filter(|(start, end)| keep_text_reference_match(line, *start, *end, query_sigil, true))
+        .filter(|(start, end)| {
+            keep_text_reference_match(line, *start, *end, query_sigil, true)
+                && variable_query_sigil_matches(line, *start, query_sigil)
+        })
         .collect();
     if matches!(query_sigil, Some('$' | '@' | '%')) {
         return classified;
@@ -639,6 +656,79 @@ fn preferred_name_matches(
         })
         .collect();
     if subroutine.is_empty() { classified } else { subroutine }
+}
+
+/// When a sigiled query runs inside an interpolated string, require the
+/// matched variable's actual sigil to match the query (#9825).
+fn variable_query_sigil_matches(line: &str, match_start: usize, query_sigil: Option<char>) -> bool {
+    let Some(query @ ('$' | '@' | '%')) = query_sigil else {
+        return true;
+    };
+    variable_sigil_at(line, match_start) == Some(query)
+}
+
+fn variable_sigil_at(line: &str, match_start: usize) -> Option<char> {
+    if let Some(sigil @ ('$' | '@' | '%')) = char_before(line, match_start) {
+        return Some(sigil);
+    }
+    let inner_start = skip_ws_left(line, match_start);
+    if char_before(line, inner_start) != Some('{') {
+        return None;
+    }
+    let brace_at = inner_start.saturating_sub('{'.len_utf8());
+    let before_brace = skip_ws_left(line, brace_at);
+    char_before(line, before_brace).filter(|ch| matches!(ch, '$' | '@' | '%'))
+}
+
+/// Pick one identifier when an indexed call-expression span contains several
+/// name hits (for example `bar(foo())->foo()`).
+fn choose_narrowing_name_match(
+    line: &str,
+    matches: &[(usize, usize)],
+    query_sigil: Option<char>,
+) -> Option<(usize, usize)> {
+    if matches.is_empty() {
+        return None;
+    }
+    if matches.len() == 1 {
+        return Some(matches[0]);
+    }
+    if query_sigil.is_none() {
+        let after_arrow: Vec<(usize, usize)> = matches
+            .iter()
+            .copied()
+            .filter(|(start, _)| is_method_arrow_invocation(line, *start))
+            .collect();
+        if !after_arrow.is_empty() {
+            return after_arrow.into_iter().max_by_key(|(start, _)| *start);
+        }
+        return matches.iter().copied().min_by_key(|(start, _)| *start);
+    }
+    Some(matches[0])
+}
+
+fn is_method_arrow_invocation(line: &str, match_start: usize) -> bool {
+    let left = skip_ws_left(line, match_start);
+    if char_before(line, left) != Some('>') {
+        return false;
+    }
+    let gt_at = left.saturating_sub('>'.len_utf8());
+    char_before(line, skip_ws_left(line, gt_at)) == Some('-')
+}
+
+/// Collect canonical URI keys referenced by finalized locations.
+pub(super) fn uri_keys_from_reference_locations(locations: &[Value]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for location in locations {
+        let Some(uri) = location.get("uri").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = perl_uri::uri_key(uri);
+        if !keys.iter().any(|existing| existing == &key) {
+            keys.push(key);
+        }
+    }
+    keys
 }
 
 fn location_value(uri: &str, line: usize, start_utf16: usize, end_utf16: usize) -> Value {
@@ -1727,6 +1817,75 @@ mod tests {
         );
         if out.len() != 2 {
             return Err(format!("nested calls must stay two occurrences, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sub_keyword_fallback_does_not_rewrite_unrelated_ranges() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = foo(); foo();\n".to_owned())];
+        // Range over `();` between calls: no name token inside and not a `sub` span.
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 13},
+                "end": {"line": 0, "character": 16},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (13, 16) {
+            return Err(
+                format!("range without an in-span name must stay unchanged, got {out:?}").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_method_call_span_narrows_to_the_method_name() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $x = bar(foo())->foo();\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 7},
+                "end": {"line": 0, "character": 23},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", None);
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        // `bar(foo())->foo()` method token is 20-23, argument `foo` is 11-14.
+        if span != (20, 23) {
+            return Err(format!("method `foo` must win over argument `foo`, got {out:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sigiled_string_interpolation_picks_matching_sigil() -> Result<(), Box<dyn Error>> {
+        let docs = vec![("file:///a.pl".to_owned(), "my $s = \"@foo $foo\";\n".to_owned())];
+        let locations = vec![json!({
+            "uri": "file:///a.pl",
+            "range": {
+                "start": {"line": 0, "character": 9},
+                "end": {"line": 0, "character": 19},
+            },
+        })];
+        let out = finalize_named_reference_locations(locations, 10, &docs, "foo", Some('$'));
+        let span = (
+            out[0]["range"]["start"]["character"].as_u64().ok_or("start")?,
+            out[0]["range"]["end"]["character"].as_u64().ok_or("end")?,
+        );
+        if span != (14, 18) {
+            return Err(
+                format!("`$foo` query must narrow to scalar, not `@foo`, got {out:?}").into()
+            );
         }
         Ok(())
     }
