@@ -10,11 +10,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use perl_subprocess_runtime::process::{
-    AmbientInheritance, AuthorizationEvidence, AuthorizationStrength, CaptureBudget,
-    ClaimBoundary, CwdPolicy, DeadlinePolicy, EnvironmentProjection, EvidenceFreshness,
-    ExecutableIdentity, ExecutionProfile, OperationId, OwnerDomain, PlanId, PrivatePath,
-    ProcessPlan, ResolutionProvenance, SchemaVersion, SubjectIdentity, SubjectReference,
-    TerminationPolicy,
+    AmbientInheritance, AuthorizationEvidence, AuthorizationStrength, CaptureBudget, ClaimBoundary,
+    CwdPolicy, DeadlinePolicy, EnvironmentProjection, EvidenceFreshness, ExecutableIdentity,
+    ExecutionProfile, OperationId, OwnerDomain, PlanId, PrivatePath, ProcessPlan,
+    ResolutionProvenance, SchemaVersion, SubjectIdentity, SubjectReference, TerminationPolicy,
 };
 
 use crate::critic_oracle::{OracleInvocation, OracleSubject, OracleSubjectError};
@@ -97,11 +96,12 @@ impl std::fmt::Display for CriticOraclePlanError {
             Self::RelativePath { field } => {
                 write!(formatter, "oracle plan field {field} must be an absolute path")
             }
-            Self::CaptureBudgetTooLarge { requested, maximum } => write!(
-                formatter,
-                "oracle capture budget {requested} exceeds maximum {maximum}"
-            ),
-            Self::PlanRejected(reason) => write!(formatter, "oracle process plan rejected: {reason}"),
+            Self::CaptureBudgetTooLarge { requested, maximum } => {
+                write!(formatter, "oracle capture budget {requested} exceeds maximum {maximum}")
+            }
+            Self::PlanRejected(reason) => {
+                write!(formatter, "oracle process plan rejected: {reason}")
+            }
         }
     }
 }
@@ -186,11 +186,7 @@ pub fn build_critic_oracle_process_plan(
 }
 
 fn require_absolute(field: &'static str, path: &Path) -> Result<(), CriticOraclePlanError> {
-    if path.is_absolute() {
-        Ok(())
-    } else {
-        Err(CriticOraclePlanError::RelativePath { field })
-    }
+    if path.is_absolute() { Ok(()) } else { Err(CriticOraclePlanError::RelativePath { field }) }
 }
 
 fn current_reference(reference: impl Into<String>) -> SubjectReference {
@@ -286,10 +282,7 @@ mod tests {
         assert_eq!(plan.owner(), OwnerDomain::ExternalCritic);
         assert_eq!(plan.operation().as_str(), CRITIC_ORACLE_OPERATION_ID);
         assert_eq!(plan.profile(), ExecutionProfile::HermeticProbe);
-        assert!(matches!(
-            plan.environment().inheritance(),
-            AmbientInheritance::DenyAll
-        ));
+        assert!(matches!(plan.environment().inheritance(), AmbientInheritance::DenyAll));
         assert!(matches!(
             plan.termination(),
             TerminationPolicy::ProcessTree { then_forced: true, .. }
@@ -333,9 +326,6 @@ mod tests {
             absolute("/tmp/conformance/fixtures"),
         ))
         .expect_err("relative executable must be rejected");
-        assert_eq!(
-            error,
-            CriticOraclePlanError::RelativePath { field: "perlcritic_executable" }
-        );
+        assert_eq!(error, CriticOraclePlanError::RelativePath { field: "perlcritic_executable" });
     }
 }

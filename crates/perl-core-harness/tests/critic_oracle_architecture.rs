@@ -38,9 +38,8 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn read_source(path: &Path) -> String {
-    fs::read_to_string(path).unwrap_or_else(|error| {
-        panic!("source file {} must be readable: {error}", path.display())
-    })
+    fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("source file {} must be readable: {error}", path.display()))
 }
 
 #[test]
