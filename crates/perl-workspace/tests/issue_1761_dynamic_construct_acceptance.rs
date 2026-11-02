@@ -79,9 +79,7 @@ fn issue_1761_eval_variable_operand_is_not_boundary_coverage() -> Result<()> {
 fn issue_1761_do_file_operand_is_not_boundary_coverage() -> Result<()> {
     let source = "package App;\nmy $file = 'config.pl';\ndo $file;\n1;\n";
     let (index, uri) = index_temp_source("do-operand", "lib/App.pm", source)?;
-    let do_operand = source
-        .find("do $file")
-        .ok_or("do $file operand not found in fixture")?;
+    let do_operand = source.find("do $file").ok_or("do $file operand not found in fixture")?;
     let offset = u32::try_from(do_operand + "do ".len()).map_err(|_| "offset exceeds u32")?;
     let covered = dynamic_boundary_at_indexed(&index, &uri, offset, Some("file"));
     assert!(

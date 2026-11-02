@@ -5639,14 +5639,26 @@ fn collect_expression_form_eval_do_boundaries(
         NodeKind::Eval { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
             if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
                 push_hir_dynamic_boundary_occurrence(
-                    uri, file_id, start, end, 1, anchors, occurrences,
+                    uri,
+                    file_id,
+                    start,
+                    end,
+                    1,
+                    anchors,
+                    occurrences,
                 );
             }
         }
         NodeKind::Do { block } if !matches!(block.kind, NodeKind::Block { .. }) => {
             if let Some((start, end)) = eval_do_expression_boundary_anchor_span(node) {
                 push_hir_dynamic_boundary_occurrence(
-                    uri, file_id, start, end, 2, anchors, occurrences,
+                    uri,
+                    file_id,
+                    start,
+                    end,
+                    2,
+                    anchors,
+                    occurrences,
                 );
             }
         }
