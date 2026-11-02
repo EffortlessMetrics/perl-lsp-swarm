@@ -2111,6 +2111,21 @@ gates:
       - compiler
       - contract
 
+  - name: snapshot_warm_start_receipt_contract
+    tier: merge_gate
+    description: "Prove snapshot_warm_start_receipt.v1 discriminates missing instrumentation, work avoidance, correctness admission, and comparison laws (#16992)"
+    required: true
+    command: cargo test -p xtask --bin xtask snapshot_warm_start_receipt --locked && cargo xtask check-snapshot-warm-start-receipt
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 540000
+    quarantine: false
+    tags:
+      - policy
+      - cache
+      - contract
+
   - name: release_trust_invariants
     tier: merge_gate
     description: "Validate policy/release-trust-invariants.v1.json and its generated status projection"

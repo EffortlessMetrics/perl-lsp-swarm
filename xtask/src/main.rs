@@ -70,12 +70,13 @@ use tasks::{
     release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
     rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
-    supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
-    targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
-    update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
-    workflow_authority_inventory, workflow_policy_lint, workflow_trigger_lint,
-    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
+    shadow_parity, snapshot_warm_start_receipt, srp_microcrates, standalone_diagnostics,
+    standalone_vectors, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
+    workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
+    writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -234,6 +235,9 @@ enum Commands {
 
     /// Validate the compiler performance receipt schema, its vocabularies, and every committed fixture.
     CheckCompilerPerformanceReceipt,
+
+    /// Validate the snapshot warm-start receipt schema, vocabularies, and fixtures (#16992).
+    CheckSnapshotWarmStartReceipt,
 
     /// Validate the shared typed train edge and claim-profile contract
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
@@ -5640,6 +5644,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
+        Commands::CheckSnapshotWarmStartReceipt => snapshot_warm_start_receipt::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CandidateSecurityContract { contract } => {
             tasks::candidate_security_contract::run(&contract)
