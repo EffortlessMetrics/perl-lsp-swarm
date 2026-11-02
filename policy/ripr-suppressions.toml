@@ -1,9 +1,10 @@
 # RIPR Suppressions
 #
-# Suppressions for ripr static exposure analysis findings. Each suppression
-# requires owner, reason, created, review_after, and expires. Suppressions
-# are the documented exception path; the default is to leave findings
-# advisory-visible.
+# Suppressions for ripr static exposure analysis findings. Each entry should
+# carry owner, reason, and lifecycle dates (created, review_after, expires).
+# Those dates are advisory (see docs/ci/ripr.md); ripr-suppression-audit reports
+# them but no gate stops applying a suppression on expires. Suppressions are the
+# documented exception path; the default is to leave findings advisory-visible.
 #
 # Read by .github/workflows/ripr.yml (PR 06+) and ripr.toml.
 
