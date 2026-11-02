@@ -58,6 +58,54 @@ interface ArtifactHashes {
 const SOURCE_CLAIM_BOUNDARY =
   'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
 
+const CLEAN_COEXISTENCE_MARKER =
+  'No conflicts detected among the facts this product can observe.';
+
+async function coexistenceReportFromCommand(): Promise<string> {
+  await vscode.commands.executeCommand('perl-lsp.showCoexistenceStatus');
+  const editor = vscode.window.activeTextEditor;
+  assert.ok(editor, 'coexistence status must open a report editor');
+  return editor.document.getText();
+}
+
+async function observeCoexistenceCases(
+  config: vscode.WorkspaceConfiguration,
+  registeredConfigurationKeys: Set<string>,
+): Promise<{ clean: ReceiptValue; detectedConflict: ReceiptValue }> {
+  let clean: ReceiptValue = { status: 'not_proven', reason: 'coexistence command failed' };
+  let detectedConflict: ReceiptValue = {
+    status: 'not_proven',
+    reason: 'perl-lsp.critic.engine is not registered on this artifact',
+  };
+  try {
+    const cleanReport = await coexistenceReportFromCommand();
+    clean = {
+      status: cleanReport.includes(CLEAN_COEXISTENCE_MARKER) ? 'ok' : 'wrong_answer',
+      marker: CLEAN_COEXISTENCE_MARKER,
+    };
+    if (registeredConfigurationKeys.has('perl-lsp.critic.engine')) {
+      await config.update('critic.engine', 'legacy', vscode.ConfigurationTarget.Workspace);
+      const conflictReport = await coexistenceReportFromCommand();
+      const conflictClass = 'legacy_first_party_critic_setting_active';
+      detectedConflict = {
+        status: conflictReport.includes(conflictClass) ? 'ok' : 'wrong_answer',
+        expected_class: conflictClass,
+      };
+      await config.update('critic.engine', undefined, vscode.ConfigurationTarget.Workspace);
+    }
+  } catch (error: unknown) {
+    clean = {
+      status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+    detectedConflict = {
+      status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return { clean, detectedConflict };
+}
+
 function readinessDeferredProvider(label: string, reason: string): ReceiptValue {
   return {
     status: 'not_proven',
@@ -598,6 +646,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         | undefined;
       activationStop = activation?.stop?.bind(activation);
       const activationCompleted = performance.now();
+      const coexistence = await observeCoexistenceCases(config, registeredConfigurationKeys);
       const bundledVersion = await bundledServerVersion(bundledServerPath);
       const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
       const document = await vscode.workspace.openTextDocument(workspaceFile);
@@ -949,6 +998,10 @@ suite('Packaged VSIX bundled-server journey', function () {
         ],
         product_blockers: [],
         diagnostics: { count: diagnostics.length, known_answer: diagnosticAnswer },
+        coexistence: {
+          clean_case: coexistence.clean,
+          detected_conflict_case: coexistence.detectedConflict,
+        },
         shutdown: 'pending',
       };
 
@@ -1066,12 +1119,21 @@ suite('Packaged VSIX bundled-server journey', function () {
                 },
               }
             : null;
+      const coexistenceBlockers = [
+        ...(coexistence.clean.status !== 'ok'
+          ? [{ label: 'coexistence.clean_case', result: coexistence.clean }]
+          : []),
+        ...(coexistence.detectedConflict.status !== 'ok'
+          ? [{ label: 'coexistence.detected_conflict_case', result: coexistence.detectedConflict }]
+          : []),
+      ];
       const productBlockers = [
         ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
         ...(activatedPathBlocker ? [activatedPathBlocker] : []),
         ...(activatedVersionBlocker ? [activatedVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
+        ...coexistenceBlockers,
       ];
       receipt.outcome = productBlockers.length > 0 ? 'failed' : 'not_proven';
       receipt.product_blockers = productBlockers;

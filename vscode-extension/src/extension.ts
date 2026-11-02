@@ -1529,6 +1529,10 @@ async function runExtensionActivation(
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
 
+  async function populateCreatedFiles(_event: vscode.FileCreateEvent): Promise<void> {
+    // #14451: ordinary workspace file creation must not auto-insert boilerplate.
+  }
+
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
       await populateCreatedFiles(event);
