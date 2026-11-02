@@ -70,7 +70,7 @@ use tasks::{
     release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
     rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
+    shadow_parity, source_context_inventory, srp_microcrates, standalone_diagnostics, standalone_vectors,
     supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
     targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
     update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
@@ -460,6 +460,13 @@ enum Commands {
         /// Evaluate a different repository tree (for hermetic tests).
         #[arg(long)]
         root: Option<PathBuf>,
+    },
+
+    /// Validate or regenerate the checked inventory and review map (#13993).
+    #[command(name = "source-context")]
+    SourceContext {
+        #[command(subcommand)]
+        command: source_context_inventory::SourceContextSubcommand,
     },
 
     /// Reconcile `policy/completion-candidate-producers.toml` against the live
@@ -6096,6 +6103,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::KwaliteeInventory { check, scaffold, root } => {
             kwalitee_namespace_inventory::run(check, scaffold, root)
         }
+        Commands::SourceContext { command } => source_context_inventory::run(command),
         Commands::CompletionCandidates { command } => completion_candidates::run(command),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
