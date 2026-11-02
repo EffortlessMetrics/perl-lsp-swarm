@@ -97,6 +97,8 @@ pub(crate) struct FormattingUserNotification {
 pub(crate) struct FormattingWarningDedupKey {
     pub reason: FormatReasonCode,
     pub surface: FormattingPresentationSurface,
+    /// Hashed logical document identity (`FormatIdentity::source_id`), not raw URI text.
+    pub source_document_fingerprint: u64,
     pub source_generation: u64,
     pub source_content_fingerprint: u64,
     pub config_fingerprint: u64,
@@ -340,6 +342,12 @@ fn formatting_warning_dedup_key(
     FormattingWarningDedupKey {
         reason: outcome.reason,
         surface,
+        source_document_fingerprint: outcome
+            .identity
+            .source_id
+            .as_deref()
+            .map(|id| fnv1a64(id.as_bytes()))
+            .unwrap_or(0),
         source_generation: outcome.identity.source_generation.unwrap_or(0),
         source_content_fingerprint: fnv1a64(outcome.identity.content_digest.as_bytes()),
         config_fingerprint: fnv1a64(outcome.identity.config_fingerprint.as_bytes()),
@@ -375,13 +383,17 @@ fn compose_user_message(outcome: &FormatOutcome, headline: &str) -> String {
 }
 
 fn outcome_contract_violation(
-    receipt: FormattingReceiptPresentation,
+    _receipt: FormattingReceiptPresentation,
 ) -> FormattingPresentationDecision {
     FormattingPresentationDecision {
         lsp_result: FormattingLspResultClass::ProtocolError(
             FormattingProtocolErrorKind::InternalOutcomeContract,
         ),
-        receipt: FormattingReceiptPresentation { reason_wire: "instrument_failure", ..receipt },
+        receipt: FormattingReceiptPresentation {
+            decision: "blocked",
+            fallback: "no_edit",
+            reason_wire: "instrument_failure",
+        },
         notification: None,
         dedup_key: None,
         retry_without_source_change: false,
@@ -567,5 +579,39 @@ mod tests {
             &other_generation,
         );
         assert_ne!(base, changed_generation);
+    }
+
+    #[test]
+    fn formatting_presentation_dedup_key_varies_by_source_id_with_identical_content() {
+        let mut outcome_a =
+            minimal_outcome(FormatDisposition::Refused, FormatReasonCode::UnsupportedSyntax);
+        outcome_a.identity.source_id = Some("file:///a.pl".to_string());
+        let mut outcome_b = outcome_a.clone();
+        outcome_b.identity.source_id = Some("file:///b.pl".to_string());
+        let key_a =
+            formatting_warning_dedup_key(FormattingPresentationSurface::Document, &outcome_a);
+        let key_b =
+            formatting_warning_dedup_key(FormattingPresentationSurface::Document, &outcome_b);
+        assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn formatting_presentation_outcome_contract_violation_receipt_is_blocked() {
+        let outcome = minimal_outcome(FormatDisposition::Refused, FormatReasonCode::Applied);
+        let decision = decide_formatting_presentation(&FormattingPresentationInput {
+            surface: FormattingPresentationSurface::Document,
+            invocation: FormattingInvocationKind::UserInvoked,
+            edit_count: 0,
+            outcome: &outcome,
+        });
+        assert!(matches!(
+            decision.lsp_result,
+            FormattingLspResultClass::ProtocolError(
+                FormattingProtocolErrorKind::InternalOutcomeContract
+            )
+        ));
+        assert_eq!(decision.receipt.decision, "blocked");
+        assert_eq!(decision.receipt.fallback, "no_edit");
+        assert_eq!(decision.receipt.reason_wire, "instrument_failure");
     }
 }
