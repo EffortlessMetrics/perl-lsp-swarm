@@ -11,7 +11,7 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_parser_core::pir::{
-    LexicalRole, PirOperation, PirSourceAnchor, extract_lexical_facts, lower_hir,
+    LexicalRole, PirOperation, PirSourceAnchor, extract_lexical_facts, lower_hir, lower_hir_bodies,
 };
 use perl_semantic_facts::{
     AnchorId, Confidence, FactId, FileId, LifecyclePhase, Provenance, ScopeId, SemanticConfidence,
@@ -35,25 +35,39 @@ fn extract(source: &str) -> perl_parser_core::pir::LexicalExtractorReceipt {
     extract_lexical_facts(&hir)
 }
 
-/// Acceptance: PIR registries and receipt operation keys stay aligned with
-/// `PirOperation::ALL_OPERATION_NAMES` (PLSP-SPEC-0025).
-#[test]
-fn operation_registry_matches_receipt_keys() {
+fn assert_operation_keys_registered(graph: &perl_parser_core::pir::PirGraph) {
     let registered: BTreeSet<&'static str> =
         PirOperation::ALL_OPERATION_NAMES.iter().copied().collect();
-    let graph = lower_graph(
-        r#"
-package P;
-use strict;
-sub f { my $x = 1; $x++; foo($x); eval "1"; }
-"#,
-    );
     for key in graph.receipt.operation_counts.keys() {
         assert!(
             registered.contains(key),
             "receipt operation_counts key {key:?} must appear in ALL_OPERATION_NAMES"
         );
     }
+}
+
+/// Acceptance: PIR registries and receipt operation keys stay aligned with
+/// `PirOperation::ALL_OPERATION_NAMES` (PLSP-SPEC-0025).
+#[test]
+fn operation_registry_matches_receipt_keys_flat_hir() {
+    let mut parser = Parser::new(
+        r#"
+package P;
+use strict;
+sub f { my $x = 1; $x++; foo($x); eval "1"; }
+"#,
+    );
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+    assert_operation_keys_registered(&lower_hir(&hir));
+}
+
+#[test]
+fn operation_registry_matches_receipt_keys_body_hir() {
+    let mut parser = Parser::new("sub f { my $x = 1; foo($x); }");
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+    assert_operation_keys_registered(&lower_hir_bodies(&hir));
 }
 
 /// Acceptance: unsupported/deferred HIR families stay receipt-visible (never silent).
