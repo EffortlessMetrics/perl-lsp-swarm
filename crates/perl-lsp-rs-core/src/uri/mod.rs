@@ -7,8 +7,12 @@ use lsp_types::Uri;
 use std::path::Path;
 use url::Url;
 
+/// ADR-0037 fallback literals tried before the localhost last-resort loop.
+const FALLBACK_LITERAL_CANDIDATES: [&str; 4] =
+    ["file:///unknown", "file:///", "about:blank", "urn:perl-lsp:unknown"];
+
 fn fallback_uri() -> Uri {
-    for candidate in ["file:///unknown", "file:///", "about:blank", "urn:perl-lsp:unknown"] {
+    for candidate in FALLBACK_LITERAL_CANDIDATES {
         if let Ok(uri) = candidate.parse::<Uri>() {
             return uri;
         }
@@ -254,14 +258,17 @@ mod uri_path_helpers_tests {
 
 #[cfg(test)]
 mod uri_parse_gate_tests {
-    use super::{UriStrictParseError, parse_uri, parse_uri_or_err, try_parse_uri};
+    use super::{
+        FALLBACK_LITERAL_CANDIDATES, UriStrictParseError, parse_uri, parse_uri_or_err,
+        try_parse_uri,
+    };
     use lsp_types::Uri;
 
     /// Each literal in the ADR-0037 fallback chain must remain parseable so
     /// `parse_uri` can always return a wire-safe URI.
     #[test]
     fn fallback_literal_candidates_are_parseable() {
-        for candidate in ["file:///unknown", "file:///", "about:blank", "urn:perl-lsp:unknown"] {
+        for candidate in FALLBACK_LITERAL_CANDIDATES {
             assert!(
                 candidate.parse::<Uri>().is_ok(),
                 "fallback candidate {candidate} must parse as Uri"
