@@ -212,6 +212,16 @@ fn request_key_preserves_numeric_string_and_connection_session_scope() -> Result
     reject(&scope, "identity request_key scopes changed")
 }
 
+/// Falsifier: progress_key must keep the LSP wire variants (integer or string).
+#[test]
+fn progress_key_preserves_numeric_string_wire_variants() -> Result<()> {
+    let mut variants = value()?;
+    row_mut(&mut variants, "identities", "id", "progress_key")?
+        .insert("variants".into(), serde_json::json!(["string"]));
+    reject(&variants, "progress_key.variants")?;
+    Ok(())
+}
+
 #[test]
 fn request_progress_and_reverse_domains_remain_independent() -> Result<()> {
     let mut changed = value()?;

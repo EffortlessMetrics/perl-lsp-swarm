@@ -156,6 +156,7 @@ impl Vocabulary {
 
         validate_request_key(self, "request_key")?;
         validate_request_key(self, "reverse_request_key")?;
+        validate_progress_key(self)?;
         let currentness = identity(self, "currentness_token")?;
         if !currentness.opaque || !currentness.owner_validated {
             bail!("CurrentnessToken must remain opaque and owner-validated");
@@ -338,6 +339,18 @@ fn validate_request_key(vocabulary: &Vocabulary, id: &str) -> Result<()> {
         &format!("{id}.scoped_by"),
         key.scoped_by.iter().map(String::as_str),
         &["connection_id", "session_id"],
+    )?;
+    Ok(())
+}
+
+fn validate_progress_key(vocabulary: &Vocabulary) -> Result<()> {
+    // Variants are the wire contract; the session scope itself is frozen by
+    // REQUIRED_IDENTITY_SCOPES alongside every other identity.
+    let key = identity(vocabulary, "progress_key")?;
+    exact_strings(
+        "progress_key.variants",
+        key.variants.iter().map(String::as_str),
+        &["numeric", "string"],
     )?;
     Ok(())
 }
