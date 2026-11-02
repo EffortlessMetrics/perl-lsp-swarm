@@ -951,7 +951,7 @@ describe('production activation failure injection (#7855)', () => {
     // creation watcher's dispose runs reaches the still-live configuration
     // listener — the realistic mid-rollback interleaving.
     let rollbackHookArmed = false;
-    const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (boundary) => {
+    const failure = await activateWithInjectedFailure(lastOfPhase('debugger'), (_boundary) => {
       if (rollbackHookArmed || allEntries('watcher:file-creation').length < 2) {
         return;
       }
