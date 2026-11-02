@@ -1,0 +1,9 @@
+project: product
+component: Diagnostics
+kind: Fixed
+body: "perl-lsp-rs-core parse-error diagnostics now map ranges through parser-owned resolved_diagnostic_anchor instead of a secondary ParseError::location match that pinned unlisted and future variants to byte zero."
+time: 2026-11-02T02:08:00Z
+custom:
+  PR: "18706"
+  Slug: parse-error-diagnostic-anchor-lsp-core
+  Breaking: "no"
