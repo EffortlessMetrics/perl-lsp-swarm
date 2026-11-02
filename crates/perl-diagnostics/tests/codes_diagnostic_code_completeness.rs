@@ -174,6 +174,34 @@ fn loop_control_undefined_label_code_exists() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
+fn irrelevant_wantarray_branch_code_exists() -> Result<(), Box<dyn std::error::Error>> {
+    let code = DiagnosticCode::IrrelevantWantarrayBranch;
+    assert_eq!(code.as_str(), "PL411", "IrrelevantWantarrayBranch should have code PL411");
+    assert_eq!(
+        code.severity(),
+        perl_diagnostics::codes::DiagnosticSeverity::Warning,
+        "IrrelevantWantarrayBranch should have Warning severity"
+    );
+    assert!(code.context_hint().is_some(), "IrrelevantWantarrayBranch should have a context hint");
+    assert_eq!(
+        DiagnosticCode::parse_code("PL411"),
+        Some(DiagnosticCode::IrrelevantWantarrayBranch),
+        "parse_code('PL411') should return IrrelevantWantarrayBranch"
+    );
+    assert_eq!(
+        code.category(),
+        perl_diagnostics::codes::DiagnosticCategory::BestPractices,
+        "IrrelevantWantarrayBranch belongs to the BestPractices (PL4xx) range"
+    );
+    assert_eq!(
+        code.documentation_url(),
+        Some("https://docs.perl-lsp.org/errors/PL411"),
+        "PL411 should advertise a docs URL following the conventional scheme"
+    );
+    Ok(())
+}
+
+#[test]
 fn source_filter_module_code_exists() -> Result<(), Box<dyn std::error::Error>> {
     let code = DiagnosticCode::SourceFilterModule;
     assert_eq!(code.as_str(), "PL702", "SourceFilterModule should have code PL702");

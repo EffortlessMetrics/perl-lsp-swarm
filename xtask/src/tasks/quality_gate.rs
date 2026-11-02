@@ -2896,7 +2896,10 @@ mod tests {
     use super::*;
 
     fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
-        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        let output = xtask::git_environment::isolate(Command::new("git"))
+            .args(args)
+            .current_dir(repo)
+            .output()?;
         if !output.status.success() {
             bail!("git {:?} failed with status {}", args, output.status);
         }

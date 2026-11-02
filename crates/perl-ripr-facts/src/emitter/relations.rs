@@ -74,29 +74,39 @@ pub(crate) fn emit_relations_and_discriminators(
     pm_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Parse each candidate `.pm` once, hoisted above the test loop below —
-    // NOT once per (test, pm) pair. `extract_package_name` stays the existing
+    // NOT once per (test, pm) pair. `extract_package_names` stays the existing
     // string scan (out of scope); only the declared-sub proof is parser-backed.
     // The same parse also resolves the package's real `owners[]` `owner_id`
     // (#3342) so a relation can carry a resolvable cross-reference; `None` means
     // the parse exposed no matching container decl (unparsed/name-mismatched).
-    type PmFact = (String, String, std::collections::BTreeMap<String, String>, Option<String>);
+    // One entry per `package NAME;` statement, not just the first: a module may
+    // declare a helper or exception package ahead of its own (`Forms::Error`
+    // before `Forms`), and a package-qualified call names its package
+    // unambiguously. `primary` marks the first package, the only one that also
+    // takes the path-proximity heuristic.
+    type PmFact =
+        (String, String, std::collections::BTreeMap<String, String>, Option<String>, bool);
     let pm_facts: Vec<PmFact> = pm_files
         .iter()
-        .map(|(pm_path, pm_content)| {
-            let package_name = extract_package_name(pm_content);
-            let (declared_sub_owner_ids, owner_id) = if package_name.is_empty() {
-                (std::collections::BTreeMap::new(), None)
-            } else {
-                match Parser::new(pm_content).parse() {
-                    Ok(ast) => (
-                        declared_sub_owner_ids(&ast, pm_path, &package_name),
-                        resolve_package_owner_id(&ast, pm_path, &package_name),
-                    ),
-                    // parse failure → cannot prove calls or resolve an owner
-                    Err(_) => (std::collections::BTreeMap::new(), None),
-                }
-            };
-            (pm_path.clone(), package_name, declared_sub_owner_ids, owner_id)
+        .flat_map(|(pm_path, pm_content)| {
+            let package_names = extract_package_names(pm_content);
+            // Parse once per file; a parse failure cannot prove calls or resolve an owner.
+            let ast =
+                if package_names.is_empty() { None } else { Parser::new(pm_content).parse().ok() };
+            package_names
+                .into_iter()
+                .enumerate()
+                .map(|(index, package_name)| {
+                    let (declared_sub_owner_ids, owner_id) = match &ast {
+                        Some(ast) => (
+                            declared_sub_owner_ids(ast, pm_path, &package_name),
+                            resolve_package_owner_id(ast, pm_path, &package_name),
+                        ),
+                        None => (std::collections::BTreeMap::new(), None),
+                    };
+                    (pm_path.clone(), package_name, declared_sub_owner_ids, owner_id, index == 0)
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -122,7 +132,8 @@ pub(crate) fn emit_relations_and_discriminators(
         let test_file_id = test["file_id"].as_str().unwrap_or("");
         let test_path = test["name"].as_str().unwrap_or("");
 
-        for (pm_path, package_name, declared_sub_owner_ids, package_owner_id) in &pm_facts {
+        for (pm_path, package_name, declared_sub_owner_ids, package_owner_id, primary) in &pm_facts
+        {
             if package_name.is_empty() {
                 continue;
             }
@@ -134,6 +145,7 @@ pub(crate) fn emit_relations_and_discriminators(
                     t_call_facts.get(test_path),
                     pm_path,
                     package_name,
+                    *primary,
                 )
             {
                 // #3342: a relation's `owner_id` must resolve to a real
@@ -193,17 +205,65 @@ pub(crate) fn emit_relations_and_discriminators(
     (relations, limitations)
 }
 
-/// Extract the package name from Perl source (first `package Foo::Bar;` line).
-fn extract_package_name(content: &str) -> String {
+/// Every distinct package declared in source order (the first is the file's
+/// primary package). Handles `package Foo;`, `package Foo 1.0;`,
+/// `package Foo { ... }` and `package Foo 1.0 { ... }`; lines inside POD blocks
+/// are skipped.
+fn extract_package_names(content: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut in_pod = false;
     for line in content.lines() {
+        if line.starts_with('=') && line.len() > 1 && line.as_bytes()[1].is_ascii_alphabetic() {
+            in_pod = !is_pod_cut(line);
+            continue;
+        }
+        if in_pod {
+            continue;
+        }
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("package ")
-            && let Some(name_end) = rest.find(';')
+        if let Some(rest) =
+            trimmed.strip_prefix("package").filter(|rest| rest.starts_with(char::is_whitespace))
+            && let Some(name) = package_name_from_declaration(rest)
+            && !names.contains(&name)
         {
-            return rest[..name_end].trim().to_string();
+            names.push(name);
         }
     }
-    String::new()
+    names
+}
+
+/// `=cut` as a whole directive word (`=cutover` is a different POD command).
+fn is_pod_cut(line: &str) -> bool {
+    line.strip_prefix("=cut")
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+}
+
+/// The package name from the text after `package` and its whitespace, when it is followed by a
+/// statement end (`;`), a block open (`{`), or a version then either.
+fn package_name_from_declaration(rest: &str) -> Option<String> {
+    let rest = rest.trim_start();
+    let name_len =
+        rest.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':')).unwrap_or(rest.len());
+    let name = &rest[..name_len];
+    if name.is_empty() {
+        return None;
+    }
+    let after = rest[name_len..].trim_start();
+    let after = after.strip_prefix(version_prefix(after)).unwrap_or(after).trim_start();
+    after.starts_with([';', '{']).then(|| name.to_string())
+}
+
+/// The leading version literal (`1.0`, `v1.2.3`, `0.01_01`), or `""` when the
+/// text does not start with one. It ends at the first non-version character, so
+/// `1.0;` and `1.0{` yield `1.0`.
+fn version_prefix(text: &str) -> &str {
+    let body = text.strip_prefix('v').unwrap_or(text);
+    if !body.starts_with(|c: char| c.is_ascii_digit()) {
+        return "";
+    }
+    let len =
+        body.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '_')).unwrap_or(body.len());
+    &text[..text.len() - body.len() + len]
 }
 
 fn test_references_package(
@@ -211,6 +271,7 @@ fn test_references_package(
     facts: Option<&TestCallFacts>,
     pm_path: &str,
     package_name: &str,
+    primary: bool,
 ) -> bool {
     facts.is_some_and(|facts| {
         facts.used_modules.contains(package_name)
@@ -218,7 +279,7 @@ fn test_references_package(
                 .calls
                 .iter()
                 .any(|call| call.package_qualifier.as_deref() == Some(package_name))
-    }) || file_references_package(test_path, &[], pm_path)
+    }) || (primary && file_references_package(test_path, &[], pm_path))
 }
 
 /// Check if a test file references a .pm file (fallback heuristic: same basename).
@@ -470,12 +531,51 @@ mod tests {
     #[test]
     fn extract_package_name_from_pm_content() {
         let content = "package My::App;\nuse strict;\n1;";
-        assert_eq!(extract_package_name(content), "My::App");
+        assert_eq!(extract_package_names(content), vec!["My::App".to_string()]);
+    }
+
+    #[test]
+    fn extract_package_names_lists_every_package_in_source_order() {
+        let content =
+            "package Forms::Error;\nsub new {}\npackage Forms;\npackage Forms::Error;\n1;";
+        assert_eq!(
+            extract_package_names(content),
+            vec!["Forms::Error".to_string(), "Forms".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_package_names_handles_block_and_versioned_declarations() {
+        let cases: &[(&str, &[&str])] = &[
+            ("package First;\npackage Second { sub target { 42 } }\n", &["First", "Second"]),
+            ("package First;\npackage Second {\n sub target { 42 }\n}\n", &["First", "Second"]),
+            ("package First;\npackage Second 1.0;\n", &["First", "Second"]),
+            ("package First;\npackage Second v1.2.3 {\n}\n", &["First", "Second"]),
+            ("package First 0.01;\n", &["First"]),
+            ("package Foo::Bar{\n}\n", &["Foo::Bar"]),
+            ("package First;\npackage Second 1.0; # note\n", &["First", "Second"]),
+            ("package First;\npackage Second 1.0; sub target { 42 }\n", &["First", "Second"]),
+            ("package First;\npackage Second v1.2.3;sub t { 1 }\n", &["First", "Second"]),
+            ("package First;\npackage Second 1.0{\n}\n", &["First", "Second"]),
+            ("package First;\npackage\tSecond;\n", &["First", "Second"]),
+            ("package First;\n\tpackage  \tSecond {\n}\n", &["First", "Second"]),
+            ("package First;\npackageSecond;\n", &["First"]),
+        ];
+        for (src, want) in cases {
+            let want: Vec<String> = want.iter().map(|n| (*n).to_string()).collect();
+            assert_eq!(extract_package_names(src), want, "source: {src:?}");
+        }
+    }
+
+    #[test]
+    fn extract_package_names_ignores_pod_and_prose_lines() {
+        let src = "package Real;\n\n=head1 NOTES\n\npackage Fake;\n\n=cutover\n\npackage Decoy;\n\n=cut\n\npackage Also;\npackage manager docs\n";
+        assert_eq!(extract_package_names(src), vec!["Real".to_string(), "Also".to_string()]);
     }
 
     #[test]
     fn extract_package_name_returns_empty_when_no_package() {
-        assert_eq!(extract_package_name("use strict;\n1;"), "");
+        assert!(extract_package_names("use strict;\n1;").is_empty());
     }
 
     /// Build `TestCallFacts` directly from source, mirroring what

@@ -1976,12 +1976,14 @@ bench-alert-test:
     @echo "🧪 Running benchmark alert regression tests..."
     @cargo xtask bench-alert-test
 
-# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing)
+# Run benchmark runner harness tests (#17218 failure surfacing, #17219 parsing,
+# #18427 rustc-probe fallback).
 bench-runner-test:
     @echo "🧪 Running benchmark runner harness tests..."
     @bash -n benchmarks/scripts/run-benchmarks.sh
     bash benchmarks/scripts/test_run_benchmarks_parse.sh
     bash benchmarks/scripts/test_run_benchmarks_failure.sh
+    bash benchmarks/scripts/test_run_benchmarks_rustc_probe.sh
 
 
 # Run all performance benchmarks and save baseline for 0.12.0
