@@ -1900,6 +1900,7 @@ pub fn add_workspace_method_completions(
     if add_semantic_method_completions(
         completions,
         method_text_edit_range,
+        source,
         index,
         &package_name,
         method_prefix,
@@ -1941,7 +1942,11 @@ pub fn add_workspace_method_completions(
                     ))
                 })
                 .map(Cow::Owned),
-            insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
+            insert_text: Some(Cow::Owned(super::callable_insert_text(
+                &symbol.name,
+                source,
+                context.suffix_end,
+            ))),
             sort_text: Some(Cow::Owned(format!("{method_tier}_{}", symbol.name))), // tier 2=own, 3=inherited, after local (tier 1)
             filter_text: Some(Cow::Owned(symbol.name.clone())),
             additional_edits: vec![],
@@ -2057,7 +2062,11 @@ fn add_union_receiver_method_completions(
                         ))
                     })
                     .map(Cow::Owned),
-                insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
+                insert_text: Some(Cow::Owned(super::callable_insert_text(
+                    &symbol.name,
+                    source,
+                    context.suffix_end,
+                ))),
                 sort_text: Some(Cow::Owned(format!("{sort_tier}_{}", symbol.name))),
                 filter_text: Some(Cow::Owned(symbol.name.clone())),
                 additional_edits: vec![],
@@ -2139,7 +2148,11 @@ fn add_unknown_receiver_fallback(
                         defining_pkg, symbol.name
                     ))
                 }).map(Cow::Owned),
-                insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
+                insert_text: Some(Cow::Owned(super::callable_insert_text(
+                &symbol.name,
+                source,
+                context.suffix_end,
+            ))),
                 // Tier 6: below all exact-receiver completion tiers
                 // (existing tiers 1–4) and below other tier-5 catch-alls.
                 sort_text: Some(Cow::Owned(format!("6_{}", symbol.name))),
@@ -2195,6 +2208,7 @@ fn workspace_method_symbols<'a>(
 fn add_semantic_method_completions(
     completions: &mut Vec<CompletionItem>,
     method_text_edit_range: (usize, usize),
+    source: &str,
     index: &WorkspaceIndex,
     package_name: &str,
     method_prefix: &str,
@@ -2244,7 +2258,11 @@ fn add_semantic_method_completions(
                 package_name,
                 &candidate,
             ))),
-            insert_text: Some(Cow::Owned(format!("{}()", candidate.display_name))),
+            insert_text: Some(Cow::Owned(super::callable_insert_text(
+                &candidate.display_name,
+                source,
+                method_text_edit_range.1,
+            ))),
             sort_text: Some(Cow::Owned(format!(
                 "{}_{}",
                 semantic_method_sort_tier(package_name, &candidate),
