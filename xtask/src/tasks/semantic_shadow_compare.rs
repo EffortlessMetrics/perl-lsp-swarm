@@ -1276,6 +1276,30 @@ mod tests {
     }
 
     #[test]
+    fn find_references_imported_func_fixture_uses_semantic_fact_trace() {
+        let artifact = build_artifact();
+        let receipt = artifact
+            .receipts
+            .iter()
+            .find(|receipt| {
+                receipt.query == ShadowQueryName::FindReferences
+                    && receipt.input.symbol == "imported_func"
+                    && receipt.notes.iter().any(|note| note.contains("ImportSpec/ExportSet"))
+            })
+            .expect("release-readiness imported_func references receipt");
+        assert_eq!(receipt.fact_source_traces.len(), 1);
+        let trace = &receipt.fact_source_traces[0];
+        assert_eq!(trace.surface, ProviderSurface::References);
+        assert_eq!(trace.source, ProviderFactSourceKind::SemanticFact);
+        assert_eq!(trace.provenance, Provenance::ImportExportInference);
+        assert!(
+            receipt.notes[0].contains("AST/workspace-index"),
+            "note should describe AST/workspace-index provenance, got {:?}",
+            receipt.notes
+        );
+    }
+
+    #[test]
     fn verify_file_matches_detects_drift() -> Result<()> {
         let tmp = tempfile::NamedTempFile::new()?;
         fs::write(tmp.path(), "actual\n")?;
