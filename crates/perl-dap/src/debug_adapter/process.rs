@@ -6692,15 +6692,14 @@ mod tests {
 
         let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
         let script = dir.path().join("script.pl");
-        let mut file = fs::File::create(&script).map_err(|error| format!("create script: {error}"))?;
+        let mut file =
+            fs::File::create(&script).map_err(|error| format!("create script: {error}"))?;
         writeln!(file, "1;").map_err(|error| format!("write script: {error}"))?;
         let missing_perl = dir.path().join("perl");
         let missing_perl = missing_perl
             .to_str()
             .ok_or_else(|| "missing interpreter path is not UTF-8".to_string())?;
-        let program = script
-            .to_str()
-            .ok_or_else(|| "script path is not UTF-8".to_string())?;
+        let program = script.to_str().ok_or_else(|| "script path is not UTF-8".to_string())?;
         let expected = format_perl_spawn_error(
             missing_perl,
             &std::io::Error::from(std::io::ErrorKind::NotFound),

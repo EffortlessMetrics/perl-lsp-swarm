@@ -284,10 +284,7 @@ fn resolve_interpreter_path(requested: &str, launch_path: Option<&str>) -> Optio
     if candidate_path.is_file() {
         return canonicalize_existing_interpreter(&candidate_path);
     }
-    if candidate_path.is_absolute()
-        || trimmed.contains('/') 
-        || trimmed.contains('\\')
-    {
+    if candidate_path.is_absolute() || trimmed.contains('/') || trimmed.contains('\\') {
         return None;
     }
 
@@ -392,10 +389,7 @@ mod tests {
     #[test]
     fn launch_env_path_from_args_is_case_insensitive() {
         let args = serde_json::json!({ "env": { "Path": "/custom/bin" } });
-        assert_eq!(
-            launch_env_path_from_args(&args).as_deref(),
-            Some("/custom/bin")
-        );
+        assert_eq!(launch_env_path_from_args(&args).as_deref(), Some("/custom/bin"));
     }
 
     #[test]
