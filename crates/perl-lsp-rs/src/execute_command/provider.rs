@@ -783,16 +783,17 @@ impl ExecuteCommandProvider {
         };
 
         if self.external_critic_requested() {
-            // Legacy engine: external `perlcritic` when present, else the
-            // `BuiltInAnalyzer` (Perl::Critic-compatible) fallback.
-            if command_exists("perlcritic") {
-                // A present-but-failing `perlcritic` (e.g. an unparsable
-                // `.perlcriticrc`) must surface its bounded error instead of
-                // silently degrading to a rule set the client did not
-                // request (#16550). Only a missing binary falls back.
-                return self.run_external_critic(&canonical_path);
-            }
-            return self.run_builtin_critic(&canonical_path);
+            // Public `perl.runCritic` must not consult PATH or spawn
+            // `perlcritic` under any legacy/external/perlcritic alias, and
+            // must not silently reinterpret that intent as native or
+            // BuiltInAnalyzer parity (#18377, #6969/#9072). Configuration
+            // migration is a separate obligation. The deprecated `run_critic`
+            // wrapper retains the #16550 spawn/fallback contract.
+            return Err(concat!(
+                "External critic engines are retired for perl.runCritic; ",
+                "configure critic.engine = native to request native rules explicitly"
+            )
+            .to_string());
         }
 
         // Native engine (default): route through the native rule registry so the
@@ -806,9 +807,8 @@ impl ExecuteCommandProvider {
     ///
     /// The native analyzer is the default: merely having `perlcritic` present
     /// on `PATH` must not change the default behavior of `perl.runCritic`.
-    /// External critic runs only when `.perl-lsp.toml` / server config sets the
-    /// critic engine to `legacy`/`external`/`perlcritic`
-    /// ([`CriticEngine::Legacy`]).
+    /// `CriticEngine::Legacy` is still detected here so the public command can
+    /// refuse it before any PATH lookup (#18377).
     pub(crate) fn external_critic_requested(&self) -> bool {
         matches!(self.critic_engine, CriticEngine::Legacy)
     }
