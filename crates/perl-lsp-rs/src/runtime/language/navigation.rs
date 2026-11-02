@@ -966,6 +966,23 @@ fn workspace_location_is_callable(
 /// the requested Sub kind, so revalidate each location against typed metadata.
 /// Return None to fall through to same-file resolution for an unproved target.
 #[cfg(feature = "workspace")]
+fn semantic_method_definition_lsp_location(
+    workspace_index: &crate::workspace_index::WorkspaceIndex,
+    doc_uri: &str,
+    pkg: &str,
+    method_name: &str,
+) -> Option<lsp_types::Location> {
+    let anchor_id = workspace_index.with_semantic_queries_for_uri(doc_uri, |_, queries| {
+        queries.method_candidates(pkg, method_name).into_iter().find_map(|candidate| {
+            queries.anchor_source_span(candidate.anchor_id).map(|_| candidate.anchor_id)
+        })
+    })??;
+
+    let wire = workspace_index.semantic_anchor_wire_location(anchor_id)?;
+    lsp_types::Location::try_from(wire).ok()
+}
+
+#[cfg(feature = "workspace")]
 fn find_workspace_definition_location(
     workspace_index: &crate::workspace_index::WorkspaceIndex,
     pkg: &str,
@@ -1290,6 +1307,13 @@ fn lookup_workspace_definition(
         })
         && let Some(lsp_location) =
             crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
+    {
+        return Some(json!([lsp_location]));
+    }
+
+    if let Some(uri) = doc_uri
+        && let Some(lsp_location) =
+            semantic_method_definition_lsp_location(workspace_index, uri, pkg, name)
     {
         return Some(json!([lsp_location]));
     }
