@@ -31,5 +31,6 @@ python3 -m unittest \
   scripts/ci/test_hosted_formatter_producers.py \
   scripts/ci/test_rust_small_probe_gate.py \
   scripts/ci/test_main_red_refusal.py \
+  scripts/ci/test_rust_main_red_probe_exit.py \
   scripts/ci/test_rust_standard_result.py
 python3 scripts/ci/rust_standard_result.py

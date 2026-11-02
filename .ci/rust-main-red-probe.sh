@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Extracted without policy changes from PR16134; transport is read-only Python.
+# Read-only probe transport; invalid terminal classifier exits are not success.
 set -u
 probe_dir="$(mktemp -d)"
 trap 'rm -rf "$probe_dir"' EXIT
@@ -144,5 +144,8 @@ if [ "$refusal_status" -eq 2 ]; then
   refusal_status=$?
 fi
 if [ "$refusal_status" -eq 1 ]; then
+  exit 1
+elif [ "$refusal_status" -ne 0 ]; then
+  echo "::error::main-red refusal returned exit ${refusal_status}; no valid terminal decision was produced"
   exit 1
 fi

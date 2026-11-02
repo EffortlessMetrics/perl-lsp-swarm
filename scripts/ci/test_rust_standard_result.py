@@ -85,12 +85,12 @@ class PolicyTests(unittest.TestCase):
     def test_draft_cannot_create_result_policy_verdict(self):
         self.event.write_text(json.dumps({'pull_request':{'draft':True,'head':{'sha':'b'*40}}}))
         with self.assertRaises(ValueError):policy_environment(self.env)
-    def test_extracted_main_red_policy_changes_only_transport(self):
-        # Golden digest of the extracted shell after transport-only substitution,
-        # independently byte-compared to consumer ac2cddf1 before workflow wiring.
+    def test_extracted_main_red_probe_matches_reviewed_consumer(self):
+        # Pin the read-only transport plus the terminal-status repair.
+        # Executable exit controls live in test_rust_main_red_probe_exit.py.
         actual=(ROOT/'.ci/rust-main-red-probe.sh').read_text().split('\n',2)[2]
         self.assertEqual(hashlib.sha256(actual.encode()).hexdigest(),
-                         'efb096913970ca7fc6fcb604eafb589a8943aefee30fa424b134dcbd1be3811e')
+                         '8798a9e6d3c6f6f49cd91ba2ec18228b44e5bfd9381a602f904032f6e8c8ebe2')
         self.assertNotIn('gh api',actual)
     def test_missing_tools_fail_before_bootstrap_or_dependency_setup(self):
         for missing in ('python3', 'git', 'uv', 'jq', 'base64'):
