@@ -77,8 +77,8 @@ fn workspace_root() -> PathBuf {
     crate_root
         .parent()
         .and_then(Path::parent)
-        .expect("perl-parser must live below the workspace crates directory")
-        .to_path_buf()
+        .map(Path::to_path_buf)
+        .unwrap_or(crate_root)
 }
 
 fn read(path: impl AsRef<Path>) -> Result<String, std::io::Error> {
@@ -92,6 +92,187 @@ fn load_manifest() -> Result<AuthorityManifest, Box<dyn std::error::Error>> {
 
 fn compact_whitespace(source: &str) -> String {
     source.split_whitespace().collect()
+}
+
+/// Remove comments and string/char literal bodies so incidental mentions of
+/// `incremental` do not classify a file as a lower-tier consumer.
+fn strip_comments_and_string_literals(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = vec![b' '; bytes.len()];
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if i + 1 < bytes.len() {
+                    i += 2;
+                }
+            }
+            b'"' => {
+                out[i] = b'"';
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => {
+                            if i + 1 < bytes.len() {
+                                out[i] = bytes[i];
+                                out[i + 1] = bytes[i + 1];
+                            }
+                            i += 2;
+                        }
+                        b'"' => {
+                            out[i] = b'"';
+                            i += 1;
+                            break;
+                        }
+                        _ => {
+                            out[i] = b' ';
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            b'\'' => {
+                out[i] = b'\'';
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => {
+                            if i + 1 < bytes.len() {
+                                out[i] = bytes[i];
+                                out[i + 1] = bytes[i + 1];
+                            }
+                            i += 2;
+                        }
+                        b'\'' => {
+                            out[i] = b'\'';
+                            i += 1;
+                            break;
+                        }
+                        _ => {
+                            out[i] = b' ';
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            b'r' => {
+                if let Some((hashes, quote)) = raw_string_hashes(bytes, i) {
+                    out[i] = b'r';
+                    i += 1;
+                    for _ in 0..hashes {
+                        out[i] = b'#';
+                        i += 1;
+                    }
+                    out[i] = b'"';
+                    i = skip_raw_string(bytes, quote, hashes);
+                } else {
+                    out[i] = b'r';
+                    i += 1;
+                }
+            }
+            other => {
+                out[i] = other;
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn raw_string_hashes(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+    let mut hashes = 0usize;
+    let mut j = start + 1;
+    while j < bytes.len() && bytes[j] == b'#' {
+        hashes += 1;
+        j += 1;
+    }
+    if j < bytes.len() && bytes[j] == b'"' { Some((hashes, j)) } else { None }
+}
+
+fn skip_raw_string(bytes: &[u8], open: usize, hashes: usize) -> usize {
+    let mut j = open + 1;
+    while j < bytes.len() {
+        if bytes[j] == b'"' {
+            let mut k = j + 1;
+            let mut seen = 0usize;
+            while k < bytes.len() && bytes[k] == b'#' && seen < hashes {
+                seen += 1;
+                k += 1;
+            }
+            if seen == hashes {
+                return k;
+            }
+        }
+        j += 1;
+    }
+    bytes.len()
+}
+
+fn dependency_key_to_rust_path(key: &str) -> String {
+    key.replace('-', "_")
+}
+
+fn dependency_spec_package_name(key: &str, spec: &toml::Value) -> Option<String> {
+    match spec {
+        toml::Value::String(_) | toml::Value::Integer(_) | toml::Value::Boolean(_) => {
+            Some(key.replace('_', "-"))
+        }
+        toml::Value::Table(table) => {
+            if let Some(package) = table.get("package").and_then(|value| value.as_str()) {
+                return Some(package.to_string());
+            }
+            Some(key.replace('_', "-"))
+        }
+        _ => None,
+    }
+}
+
+fn dependency_keys_targeting_package(
+    manifest_source: &str,
+    package: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let manifest: toml::Value = toml::from_str(manifest_source)?;
+    let mut keys = BTreeSet::new();
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(deps) = manifest.get(section).and_then(|value| value.as_table()) else {
+            continue;
+        };
+        for (key, spec) in deps {
+            let Some(resolved) = dependency_spec_package_name(key, spec) else {
+                continue;
+            };
+            if resolved == package {
+                keys.insert(dependency_key_to_rust_path(key));
+            }
+        }
+    }
+    Ok(keys.into_iter().collect())
+}
+
+fn lower_tier_crate_paths_for_crate(
+    crate_dir: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let manifest = read(crate_dir.join("Cargo.toml"))?;
+    dependency_keys_targeting_package(&manifest, "perl-parser-core")
+}
+
+fn lower_tier_paths_for_source_scanning(crate_paths: &[String]) -> Vec<String> {
+    let mut paths = crate_paths.to_vec();
+    if !paths.iter().any(|path| path == "perl_parser_core") {
+        paths.push("perl_parser_core".to_string());
+    }
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 fn public_incremental_modules(source: &str) -> BTreeSet<String> {
@@ -145,7 +326,7 @@ fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     Ok(files)
 }
 
-fn production_rust_sources() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+fn production_rust_sources() -> Result<Vec<(PathBuf, PathBuf)>, Box<dyn std::error::Error>> {
     let crates_root = workspace_root().join("crates");
     let mut crate_entries = fs::read_dir(&crates_root)?.collect::<Result<Vec<_>, _>>()?;
     crate_entries.sort_by_key(|entry| entry.file_name());
@@ -156,29 +337,32 @@ fn production_rust_sources() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>
             continue;
         }
 
-        let src = entry.path().join("src");
+        let crate_dir = entry.path();
+        let src = crate_dir.join("src");
         if src.is_dir() {
-            sources.extend(rust_source_files(&src)?);
+            for path in rust_source_files(&src)? {
+                sources.push((path, crate_dir.clone()));
+            }
         }
     }
-    sources.sort();
+    sources.sort_by(|(left, _), (right, _)| left.cmp(right));
     Ok(sources)
 }
 
-fn uses_lower_tier_incremental(source: &str) -> bool {
-    let compact = compact_whitespace(source);
-    if compact.contains("perl_parser_core::incremental") {
+fn uses_lower_tier_incremental(source: &str, crate_paths: &[String]) -> bool {
+    let compact = compact_whitespace(&strip_comments_and_string_literals(source));
+    crate_paths.iter().any(|crate_path| lower_tier_usage_in_compact(&compact, crate_path))
+}
+
+fn lower_tier_usage_in_compact(compact: &str, crate_path: &str) -> bool {
+    let direct = format!("{crate_path}::incremental");
+    if compact.contains(&direct) {
         return true;
     }
 
-    // A braced `use perl_parser_core::{...}` consumes the lower tier only when
-    // the incremental module itself appears in the import list.  The token
-    // scan is scoped to each import statement: prose that merely mentions
-    // "incremental" in a file importing sibling modules (ast, edit, parser)
-    // must not classify the file as a kernel consumer, and a zero-reparse
-    // consumer cannot be expressed in the manifest's per-call-site allowlist.
+    let braced_marker = format!("{crate_path}::{{");
     let mut cursor = 0;
-    while let Some(offset) = compact[cursor..].find("perl_parser_core::{") {
+    while let Some(offset) = compact[cursor..].find(&braced_marker) {
         let statement = &compact[cursor + offset..];
         let imports = &statement[..statement.find(';').unwrap_or(statement.len())];
         if imports.contains("incremental::{")
@@ -188,11 +372,13 @@ fn uses_lower_tier_incremental(source: &str) -> bool {
         {
             return true;
         }
-        cursor += offset + "perl_parser_core::{".len();
+        cursor += offset + braced_marker.len();
     }
 
+    let use_as = format!("use{crate_path}as");
+    let extern_as = format!("externcrate{crate_path}as");
     compact.split(';').any(|statement| {
-        ["useperl_parser_coreas", "externcrateperl_parser_coreas"].iter().any(|prefix| {
+        [use_as.as_str(), extern_as.as_str()].iter().any(|prefix| {
             statement.strip_prefix(prefix).is_some_and(|remainder| {
                 let alias = remainder.split([':', '{', ',', '}']).next().unwrap_or_default();
                 !alias.is_empty() && compact.contains(&format!("{alias}::incremental"))
@@ -208,9 +394,15 @@ fn normalized_workspace_path(path: &Path) -> Result<String, Box<dyn std::error::
 
 fn discovered_lower_tier_consumers() -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
     let mut consumers = BTreeSet::new();
-    for path in production_rust_sources()? {
+    let mut crate_paths_cache = BTreeMap::<PathBuf, Vec<String>>::new();
+    for (path, crate_dir) in production_rust_sources()? {
+        let crate_paths = crate_paths_cache.entry(crate_dir.clone()).or_insert_with(|| {
+            lower_tier_crate_paths_for_crate(&crate_dir)
+                .map(|paths| lower_tier_paths_for_source_scanning(&paths))
+                .unwrap_or_else(|_| vec!["perl_parser_core".to_string()])
+        });
         let source = read(&path)?;
-        if uses_lower_tier_incremental(&source) {
+        if uses_lower_tier_incremental(&source, crate_paths) {
             consumers.insert(normalized_workspace_path(&path)?);
         }
     }
@@ -233,7 +425,13 @@ fn public_function_anchor(symbol: &str) -> String {
 }
 
 fn lower_tier_reparse_call_count(source: &str) -> usize {
-    compact_whitespace(source).match_indices(".reparse(").count()
+    compact_whitespace(&strip_comments_and_string_literals(source))
+        .match_indices(".reparse(")
+        .count()
+}
+
+fn default_lower_tier_paths() -> Vec<String> {
+    vec!["perl_parser_core".to_string()]
 }
 
 #[test]
@@ -328,30 +526,66 @@ fn every_public_incremental_generation_has_one_non_production_disposition() -> T
 
 #[test]
 fn lower_tier_consumer_detector_covers_direct_nested_and_aliased_imports() {
-    assert!(uses_lower_tier_incremental("use perl_parser_core::incremental::IncrementalState;"));
+    let paths = default_lower_tier_paths();
     assert!(uses_lower_tier_incremental(
-        "use perl_parser_core::{ParseOutput, incremental::{IncrementalEdit, IncrementalState}};"
+        "use perl_parser_core::incremental::IncrementalState;",
+        &paths
     ));
     assert!(uses_lower_tier_incremental(
-        "use perl_parser_core::{incremental as core_incremental, ParseOutput};"
+        "use perl_parser_core::{ParseOutput, incremental::{IncrementalEdit, IncrementalState}};",
+        &paths
     ));
     assert!(uses_lower_tier_incremental(
-        "use perl_parser_core as core; core::incremental::IncrementalState;"
+        "use perl_parser_core::{incremental as core_incremental, ParseOutput};",
+        &paths
     ));
     assert!(uses_lower_tier_incremental(
-        "extern crate perl_parser_core as core; core::incremental::IncrementalState;"
+        "use perl_parser_core as core; core::incremental::IncrementalState;",
+        &paths
     ));
-    assert!(!uses_lower_tier_incremental("use perl_parser_core::{ParseOutput, Parser};"));
+    assert!(uses_lower_tier_incremental(
+        "extern crate perl_parser_core as core; core::incremental::IncrementalState;",
+        &paths
+    ));
+    assert!(!uses_lower_tier_incremental("use perl_parser_core::{ParseOutput, Parser};", &paths));
     // Prose mentioning the word "incremental" must not classify a file that
     // only imports sibling modules as a kernel consumer: a zero-reparse
     // consumer cannot be declared in the per-call-site allowlist.
     assert!(!uses_lower_tier_incremental(
-        "use perl_parser_core::{ast::Node, edit::Edit};\n// reparse the tree with incremental, quoted text"
+        "use perl_parser_core::{ast::Node, edit::Edit};\n// reparse the tree with incremental, quoted text",
+        &paths
     ));
-    assert!(uses_lower_tier_incremental("use perl_parser_core::{ast::Node, incremental};"));
+    assert!(!uses_lower_tier_incremental(
+        "// use perl_parser_core::incremental::IncrementalState;",
+        &paths
+    ));
+    assert!(!uses_lower_tier_incremental(
+        "const _: &str = \"perl_parser_core::incremental::IncrementalState\";",
+        &paths
+    ));
+    assert!(uses_lower_tier_incremental("use perl_parser_core::{ast::Node, incremental};", &paths));
     assert!(uses_lower_tier_incremental(
-        "use perl_parser_core::{ast::Node};\nuse perl_parser_core::{incremental::{IncrementalState}};"
+        "use perl_parser_core::{ast::Node};\nuse perl_parser_core::{incremental::{IncrementalState}};",
+        &paths
     ));
+}
+
+#[test]
+fn lower_tier_consumer_detector_honors_cargo_dependency_renames() -> TestResult {
+    let fixture = crate_root().join("tests/fixtures/incremental_authority_renamed_dep/Cargo.toml");
+    let keys = dependency_keys_targeting_package(&read(fixture)?, "perl-parser-core")?;
+    assert_eq!(keys, vec!["core_parser".to_string()]);
+
+    let renamed_paths = lower_tier_paths_for_source_scanning(&keys);
+    assert!(uses_lower_tier_incremental(
+        "use core_parser::incremental::IncrementalState;",
+        &renamed_paths
+    ));
+    assert!(uses_lower_tier_incremental(
+        "use core_parser as kernel; kernel::incremental::IncrementalState;",
+        &renamed_paths
+    ));
+    Ok(())
 }
 
 #[test]

@@ -1,0 +1,9 @@
+# Fixture for incremental_authority_contract: dependency key != package name.
+[package]
+name = "incremental-authority-renamed-dep-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+core_parser = { package = "perl-parser-core", path = "../../../../perl-parser-core" }
