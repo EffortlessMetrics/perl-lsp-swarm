@@ -200,8 +200,10 @@ mod unicode;
 
 pub use api::*;
 pub use checkpoint::{
-    CHECKPOINT_SCHEMA_VERSION, CheckpointCache, CheckpointNewlinePolicy, CheckpointRestoreError,
-    Checkpointable, LexerCheckpoint, LexerCheckpointIdentity, LexerPolicyIdentity,
+    BEHAVIOR_BEARING_STATE_COMPARE_VERSION, BehaviorBearingStateFingerprint,
+    BehaviorBearingStateMismatch, CHECKPOINT_SCHEMA_VERSION, CheckpointCache,
+    CheckpointNewlinePolicy, CheckpointRestoreError, Checkpointable, LexerCheckpoint,
+    LexerCheckpointIdentity, LexerPolicyIdentity,
 };
 pub use config::LexerConfig;
 pub use error::{LexerError, Result};
