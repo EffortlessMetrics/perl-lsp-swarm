@@ -19,6 +19,10 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::field_length::{
+    SourceIdentityFieldLengthError, field_length_u32, infallible_precondition_violation,
+};
+
 /// Current content-digest schema version.
 pub const CONTENT_DIGEST_SCHEMA_VERSION: u32 = 1;
 
@@ -80,15 +84,15 @@ fn u32_be(n: u32) -> [u8; 4] {
 ///
 /// Using explicit length prefixes is required by the issue contract: fields must
 /// be unambiguously separated so that `["a", "bc"]` and `["ab", "c"]` produce
-/// distinct digests.
-fn length_prefixed(data: &[u8]) -> Vec<u8> {
-    let len = u32_be(data.len() as u32);
+/// distinct digests, for field sizes up to [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`].
+pub(crate) fn try_length_prefixed(data: &[u8]) -> Result<Vec<u8>, SourceIdentityFieldLengthError> {
+    let len = field_length_u32(data.len())?;
+    let prefix = u32_be(len);
     let mut out = Vec::with_capacity(4 + data.len());
-    out.extend_from_slice(&len);
+    out.extend_from_slice(&prefix);
     out.extend_from_slice(data);
-    out
+    Ok(out)
 }
-
 /// A collision-resistant SHA-256 digest of exact byte content.
 ///
 /// `ContentDigest` records the exact bytes of a source revision, not the
@@ -125,15 +129,32 @@ impl<'de> Deserialize<'de> for ContentDigest {
 const CONTENT_DIGEST_DOMAIN: &[u8] = b"perl-lsp:content-digest:v1\0";
 
 impl ContentDigest {
+    /// Compute a content digest for a byte slice when it fits the v1 field bound.
+    ///
+    /// Returns [`SourceIdentityFieldLengthError`] when `content.len()` exceeds
+    /// [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`]. Prefer this constructor for
+    /// buffers whose size is not known to be within the v1 contract.
+    pub fn try_of_bytes(content: &[u8]) -> Result<Self, SourceIdentityFieldLengthError> {
+        let len = try_length_prefixed(content)?;
+        let raw = sha256_raw(&[CONTENT_DIGEST_DOMAIN, &len]);
+        Ok(Self(sha256_to_wire(&raw)))
+    }
+
     /// Compute a content digest for a byte slice.
     ///
     /// The domain separator `perl-lsp:content-digest:v1\0` is prepended before
     /// hashing so a raw file hash cannot masquerade as a domain-separated ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `content.len()` exceeds [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`].
+    /// Multi-gibibyte single-buffer inputs must use [`Self::try_of_bytes`].
     #[must_use]
     pub fn of_bytes(content: &[u8]) -> Self {
-        let len = length_prefixed(content);
-        let raw = sha256_raw(&[CONTENT_DIGEST_DOMAIN, &len]);
-        Self(sha256_to_wire(&raw))
+        match Self::try_of_bytes(content) {
+            Ok(d) => d,
+            Err(err) => infallible_precondition_violation(err),
+        }
     }
 
     /// Parse a content digest from its wire representation.
@@ -181,9 +202,22 @@ impl DomainHasher {
     /// Append a length-prefixed field to the hash input.
     ///
     /// Every field is encoded as `u32_be(len) || bytes` before hashing so that
-    /// `["a", "bc"]` and `["ab", "c"]` produce distinct digests.
+    /// `["a", "bc"]` and `["ab", "c"]` produce distinct digests, for field sizes
+    /// up to [`crate::SOURCE_IDENTITY_V1_MAX_FIELD_BYTES`].
+    pub(crate) fn try_push_field(
+        &mut self,
+        field: &[u8],
+    ) -> Result<(), SourceIdentityFieldLengthError> {
+        self.parts.push(try_length_prefixed(field)?);
+        Ok(())
+    }
+
+    /// Infallible field push for callers that have already enforced the v1 bound.
+    #[cfg(test)]
     pub(crate) fn push_field(&mut self, field: &[u8]) {
-        self.parts.push(length_prefixed(field));
+        if let Err(err) = self.try_push_field(field) {
+            infallible_precondition_violation(err);
+        }
     }
 
     /// Compute the final domain-separated SHA-256 digest.
@@ -321,5 +355,20 @@ mod tests {
         h2.push_field(b"same-material");
 
         assert_ne!(h1.finish(), h2.finish(), "distinct domains → distinct digests");
+    }
+
+    #[test]
+    fn try_of_bytes_rejects_field_length_above_u32_max_on_wide_usize() {
+        if usize::BITS <= u32::BITS {
+            return;
+        }
+        let oversize_len = u32::MAX as usize + 1;
+        assert!(
+            matches!(
+                crate::field_length::field_length_u32(oversize_len),
+                Err(e) if e.actual_bytes() == oversize_len
+            ),
+            "oversize length must be rejected fail-closed"
+        );
     }
 }
