@@ -620,3 +620,125 @@ sub table { 1 };
     }
     Ok(())
 }
+
+#[test]
+fn workspace_index_receipts_nested_compile_time_import_enables_package_builder()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #13314: compile-time `use` inside a subroutine still configures the
+    // enclosing package; a later direct package-level builder may emit
+    // `qorm_table` through the production index path.
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/NestedConfigure.pm")?;
+    let source = r#"
+package MyApp::Schema::NestedConfigure;
+sub configure {
+    use DBIx::QuickORM type => 'table';
+}
+table users => sub {};
+1;
+"#;
+
+    index.index_initial_file(uri.clone(), source.to_string())?;
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    assert_eq!(generated.len(), 1);
+    assert_eq!(
+        generated[0].qualified_name.as_deref(),
+        Some("MyApp::Schema::NestedConfigure::qorm_table")
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_receipts_nested_package_restore_after_compile_time_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #13314: a nested package declaration inside a runtime container must
+    // attribute QuickORM authority to the inner package only.
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/NestedPackageRestore.pm")?;
+    let source = r#"
+package MyApp::Schema::Outer;
+sub setup {
+    package MyApp::Schema::Inner;
+    use DBIx::QuickORM type => 'table';
+}
+table users => sub {};
+1;
+"#;
+
+    index.index_initial_file(uri, source.to_string())?;
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "outer-package table must not consume inner-package QuickORM authority"
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_blocks_runtime_table_builder_inside_subroutine()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #13314: runtime `table` calls inside the same container as a nested
+    // compile-time import must not earn a package-level generated fact.
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/BuildLater.pm")?;
+    let source = r#"
+package MyApp::Schema::BuildLater;
+use DBIx::QuickORM type => 'table';
+sub build_later {
+    use DBIx::QuickORM type => 'table';
+    table users => sub {};
+}
+1;
+"#;
+
+    index.index_initial_file(uri, source.to_string())?;
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "runtime table builder inside a subroutine must not reach workspace symbols"
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_receipts_comment_semicolon_does_not_break_quickorm_import()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #13314: semicolons inside `#` comments must not truncate the import segment.
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/CommentSemicolon.pm")?;
+    let source = r#"
+package MyApp::Schema::CommentSemicolon;
+use DBIx::QuickORM type # fixed; mode
+    => 'table';
+table users => sub {};
+1;
+"#;
+
+    index.index_initial_file(uri.clone(), source.to_string())?;
+    let generated = index.search_generated_workspace_symbols("qorm_table", None);
+    assert_eq!(generated.len(), 1);
+    assert_eq!(
+        generated[0].qualified_name.as_deref(),
+        Some("MyApp::Schema::CommentSemicolon::qorm_table")
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_index_receipts_double_dollar_interpolation_is_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #13314: `$$` in a double-quoted table name is runtime-dependent.
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///lib/MyApp/Schema/DoubleDollar.pm")?;
+    let source = r#"
+package MyApp::Schema::DoubleDollar;
+use DBIx::QuickORM type => 'table';
+table "tenant_$$" => sub {};
+1;
+"#;
+
+    index.index_initial_file(uri, source.to_string())?;
+    assert!(
+        index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
+        "process-id interpolation must not promote qorm_table through WorkspaceIndex"
+    );
+    Ok(())
+}
