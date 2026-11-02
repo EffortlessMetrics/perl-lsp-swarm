@@ -1390,3 +1390,28 @@ fn workspace_symbols_runtime_quality_receipt_handles_no_match_query()
     );
     Ok(())
 }
+
+#[test]
+fn document_symbols_runtime_quality_receipt_includes_post_projection_budget_receipt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_symbol_workspace(&server)?;
+    let params = json!({"textDocument": {"uri": MODULE_URI}});
+
+    let receipt = server
+        .test_document_symbols_runtime_quality_receipt(Some(params))?
+        .ok_or("missing document symbols receipt")?;
+    let projection = receipt
+        .get("projection_receipt")
+        .ok_or("missing post-projection receipt after live documentSymbol handling")?;
+
+    assert_eq!(
+        projection.get("budgetIdentity").and_then(Value::as_str),
+        Some("document_symbol_recursive_node_budget.v1")
+    );
+    assert!(
+        projection.get("visibleTotal").and_then(Value::as_u64).is_some(),
+        "projection receipt must record visible node total"
+    );
+    Ok(())
+}
