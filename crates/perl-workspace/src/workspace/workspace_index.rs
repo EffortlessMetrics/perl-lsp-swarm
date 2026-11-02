@@ -65,6 +65,7 @@ use crate::Parser;
 use crate::ast::{Node, NodeKind};
 use crate::document_store::{Document, DocumentStore};
 use crate::position::{Position, Range};
+use crate::workspace::framework_namespace;
 use crate::workspace::monitoring::IndexInstrumentation;
 use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
@@ -5530,6 +5531,8 @@ impl FileExtractionBundle {
         #[cfg(test)]
         reindex_metrics::record_visit(visit_start.elapsed());
 
+        apply_framework_namespace_kinds(&mut file_index, ast);
+
         let canonical_shard = WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs(
             uri_str,
             content_hash,
@@ -5560,6 +5563,17 @@ impl FileExtractionBundle {
         reindex_metrics::record_use_lib_extract(use_lib_start.elapsed());
 
         Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
+    }
+}
+
+fn apply_framework_namespace_kinds(file_index: &mut FileIndex, ast: &Node) {
+    let kinds = framework_namespace::framework_namespace_kinds_by_package(ast);
+    for symbol in &mut file_index.symbols {
+        if symbol.kind == SymbolKind::Package
+            && let Some(&new_kind) = kinds.get(&symbol.name)
+        {
+            symbol.kind = new_kind;
+        }
     }
 }
 
