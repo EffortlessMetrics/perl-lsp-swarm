@@ -255,6 +255,8 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
     if not logs_dir.is_dir():
         return findings
     for log_path in sorted(logs_dir.glob("*.log")):
+        if log_path.name == PRESSURE_LOG_NAME:
+            continue
         try:
             text = log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -270,6 +272,17 @@ def scan_logs(logs_dir: Path) -> list[Finding]:
                 )
                 break
     return findings
+
+
+def gate_log_paths(logs_dir: Path) -> list[Path]:
+    """Return gate log files excluding the advisory pressure transcript."""
+    if not logs_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in logs_dir.glob("*.log")
+        if path.name != PRESSURE_LOG_NAME and path.is_file() and not path.is_symlink()
+    )
 
 
 def _emit(message: str) -> None:
@@ -358,7 +371,9 @@ def run_preflight(args: argparse.Namespace) -> int:
 
 
 def run_classify(args: argparse.Namespace) -> int:
-    findings = scan_logs(Path(args.logs_dir))
+    logs_dir = Path(args.logs_dir)
+    gate_logs = gate_log_paths(logs_dir)
+    findings = scan_logs(logs_dir)
     strong = [
         finding
         for finding in findings
@@ -371,7 +386,16 @@ def run_classify(args: argparse.Namespace) -> int:
     ]
     target_dir = args.target_dir or "target"
     body_lines = [render_snapshot({"cargo-target-dir": target_dir})]
-    if strong:
+    if not gate_logs:
+        body_lines.append(
+            "VERDICT: NOT_PROVEN: no gate logs available for exhaustion "
+            "classification (the pr-fast tier did not produce gate evidence)."
+        )
+        _emit(
+            "PR-fast disk-exhaustion classification: NOT_PROVEN "
+            f"(no gate logs under {args.logs_dir})"
+        )
+    elif strong:
         body_lines.append(
             "VERDICT: resource-exhaustion detected in gate logs "
             "(ENOSPC / os-error-28 class); matched logs: "
