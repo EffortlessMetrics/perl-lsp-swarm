@@ -5,7 +5,13 @@
 
 use crate::error::ParseError;
 use crate::heredoc::{HeredocQueue, HeredocRemoval, HeredocScan};
-use crate::outcome::{ParserFailure, StrictParseError};
+use crate::outcome::{ParseAttempt, ParseOutcome, ParserFailure, SourceRange, StrictParseError};
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(test)]
+pub(crate) static PARSE_WITH_RECOVERY_INVOKED: AtomicBool = AtomicBool::new(false);
 use crate::pratt_parser::PrattParser;
 use pest::{
     Parser,
@@ -19,6 +25,11 @@ use std::sync::{Arc, LazyLock};
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
 pub struct PerlParser;
+
+static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
+static ASSIGN_BITNOT_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"=\s+~\s*(?P<expr>\$[A-Za-z_][A-Za-z0-9_:]*)").ok());
 
 /// Opening delimiter for a heredoc placeholder embedded in `q{...}` / `qq{...}` content
 /// (see `Rule::q_string` / `Rule::qq_string` in `build_node`).
@@ -495,7 +506,12 @@ impl PureRustPerlParser {
         }
     }
 
-    /// Parse `source` into an [`AstNode`].
+    /// Legacy recovering parse adapter (#8435 / train #8410 PR-03).
+    ///
+    /// This entry point applies the heredoc pre-pass, source normalization, and
+    /// statement-level recovery. It does **not** imply strict completeness over
+    /// the caller's original source. For a strict boundary that parses the
+    /// original bytes without recovery or normalization, use [`Self::parse_strict`].
     ///
     /// `source` is rewritten by an internal normalization pass before Pest sees
     /// it (see [`Self::normalize_source_mapped`]). Pest's byte offsets therefore index
@@ -507,6 +523,38 @@ impl PureRustPerlParser {
     pub fn parse(&mut self, source: &str) -> Result<AstNode, ParseError> {
         let scan = crate::heredoc::scan(source);
         self.parse_scanned(&scan, source)
+    }
+
+    /// Strict parse of `source` over the caller's original bytes (#8435).
+    ///
+    /// Pest runs on `source` verbatim: no heredoc body removal, no
+    /// [`Self::normalize_source_mapped`] rewrites, and no
+    /// [`Self::parse_with_recovery`]. A [`crate::ParseCompleteness::Complete`] outcome
+    /// means Pest consumed the full `SOI … EOI` program and AST construction
+    /// succeeded without recovery metadata.
+    pub fn parse_strict(&mut self, source: &str) -> ParseAttempt<AstNode> {
+        self.heredocs = HeredocQueue::default();
+        self.heredoc_offsets_exact = false;
+        self.heredoc_span_base = 0;
+        self.heredoc_nodes_built = 0;
+
+        if let Some(rejection) = Self::strict_rejection_for_normalization_only(source) {
+            return ParseAttempt::rejected(rejection);
+        }
+
+        match <PerlParser as Parser<Rule>>::parse(Rule::program, source) {
+            Ok(pairs) => match self.build_ast(pairs) {
+                Ok(ast) => ParseAttempt::outcome(ParseOutcome::complete(ast)),
+                Err(ParseError::Rejected(rejection)) => ParseAttempt::rejected(rejection),
+                Err(ParseError::Failed(failure)) => ParseAttempt::failed(failure),
+            },
+            Err(error) => match StrictParseError::from_pest(&error, source) {
+                Ok(rejection) => ParseAttempt::rejected(rejection),
+                Err(outcome_error) => ParseAttempt::failed(ParserFailure::instrument(format!(
+                    "failed to bind pest rejection to the caller source: {outcome_error}"
+                ))),
+            },
+        }
     }
 
     /// Parse the body-stripped text of `scan`, attaching its captured bodies.
@@ -569,11 +617,6 @@ impl PureRustPerlParser {
     /// into the coordinate system Pest actually reports, so a capture keeps a
     /// usable identity instead of falling back to matching on marker text alone.
     fn normalize_source_mapped(source: &str) -> (String, NormalizationMap) {
-        static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
-            LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
-        static ASSIGN_BITNOT_RE: LazyLock<Option<Regex>> =
-            LazyLock::new(|| Regex::new(r"=\s+~\s*(?P<expr>\$[A-Za-z_][A-Za-z0-9_:]*)").ok());
-
         // These are fixed patterns; if one ever fails to compile, skip normalization
         // rather than panicking inside production parser code.
         let Some(scalar_deref_re) = SIMPLE_SCALAR_DEREF_RE.as_ref() else {
@@ -597,6 +640,37 @@ impl PureRustPerlParser {
         (normalized, NormalizationMap { passes: vec![deref_edits, bitnot_edits] })
     }
 
+    /// Reject strict parses that would require the legacy normalization rewrites.
+    fn strict_rejection_for_normalization_only(source: &str) -> Option<StrictParseError> {
+        let rejection_for_match = |matched: &str, start: usize, end: usize| {
+            let range = SourceRange::try_over_source(start, end, source).ok()?;
+            Some(StrictParseError::new(
+                range,
+                "strict parse does not apply source normalization substitutions",
+                format!(
+                    "strict parse leaves `{matched}` in the original source; legacy \
+                     normalization would rewrite it before Pest sees the text"
+                ),
+            ))
+        };
+
+        if let Some(re) = SIMPLE_SCALAR_DEREF_RE.as_ref()
+            && let Some(caps) = re.captures(source)
+            && let Some(matched) = caps.get(0)
+        {
+            return rejection_for_match(matched.as_str(), matched.start(), matched.end());
+        }
+
+        if let Some(re) = ASSIGN_BITNOT_RE.as_ref()
+            && let Some(caps) = re.captures(source)
+            && let Some(matched) = caps.get(0)
+        {
+            return rejection_for_match(matched.as_str(), matched.start(), matched.end());
+        }
+
+        None
+    }
+
     /// `normalized` must be the exact text Pest attempted to parse (and that
     /// produced `original_error`); `caller_source` is the untouched text the
     /// caller supplied, and `normalization` translates offsets between them, so
@@ -608,6 +682,9 @@ impl PureRustPerlParser {
         normalization: &NormalizationMap,
         original_error: pest::error::Error<Rule>,
     ) -> Result<AstNode, ParseError> {
+        #[cfg(test)]
+        PARSE_WITH_RECOVERY_INVOKED.store(true, Ordering::SeqCst);
+
         let source = normalized;
         let mut statements = Vec::new();
         let mut current_block = String::new();
@@ -3307,5 +3384,17 @@ mod tests {
             "an offset at the removal point resumes after both removed bodies"
         );
         assert_eq!(composed.to_source_offset(12), 47);
+    }
+
+    #[test]
+    fn parse_strict_never_invokes_recovery() {
+        PARSE_WITH_RECOVERY_INVOKED.store(false, Ordering::SeqCst);
+        let source = include_str!("../tests/fixtures/sources/recovery/valid-invalid-valid.pl");
+        let mut parser = PureRustPerlParser::new();
+        let _ = parser.parse_strict(source);
+        assert!(
+            !PARSE_WITH_RECOVERY_INVOKED.load(Ordering::SeqCst),
+            "parse_strict must not call parse_with_recovery"
+        );
     }
 }
