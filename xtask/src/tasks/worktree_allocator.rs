@@ -121,6 +121,15 @@ pub fn run(command: AgentWorktreeCommand) -> Result<()> {
     }
 }
 
+/// Default agent worktree directory outside the tracked tree (issue #2429).
+///
+/// Matches `scripts/worktree-manager.py` (`<repo-parent>/<repo-name>-worktrees/`).
+fn default_agent_worktree_path(root: &Path, worktree_id: &str) -> PathBuf {
+    let repo_name = root.file_name().and_then(|name| name.to_str()).unwrap_or("repo");
+    let parent = root.parent().unwrap_or(root);
+    parent.join(format!("{repo_name}-worktrees")).join(format!("agent-{worktree_id}"))
+}
+
 fn acquire(
     pr: u64,
     base: &str,
@@ -136,8 +145,7 @@ fn acquire(
     let task_id = task_id.unwrap_or_else(|| format!("pr-{pr}"));
     let owner = owner.unwrap_or_else(default_owner);
     let worktree_id = format!("wt-pr-{pr}-{}", short_timestamp());
-    let path =
-        path.unwrap_or_else(|| root.join(".claude/worktrees").join(format!("agent-{worktree_id}")));
+    let path = path.unwrap_or_else(|| default_agent_worktree_path(&root, &worktree_id));
     reject_nested_agent_path(&root, &path)?;
     reject_duplicate_branch(&state, &branch)?;
     reject_existing_git_branch_checkout(&root, &branch)?;
@@ -517,6 +525,22 @@ mod tests {
             .expect("current schema_version envelope must round-trip cleanly");
         assert_eq!(state.schema_version, WORKTREE_LEASE_STATE_SCHEMA_VERSION);
         assert!(state.leases.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn default_agent_worktree_path_avoids_claude_worktree_nesting() -> Result<()> {
+        let root = PathBuf::from("/tmp/perl-lsp-swarm");
+        let path = default_agent_worktree_path(&root, "wt-pr-42-1700000000");
+        assert!(
+            !path.starts_with(root.join(".claude")),
+            "default path must not nest under .claude/: {}",
+            path.display()
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/perl-lsp-swarm-worktrees/agent-wt-pr-42-1700000000")
+        );
         Ok(())
     }
 
