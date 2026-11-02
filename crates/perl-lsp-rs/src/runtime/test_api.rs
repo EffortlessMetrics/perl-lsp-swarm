@@ -1111,6 +1111,31 @@ impl LspServer {
             .collect()
     }
 
+    /// Test-only: begin capturing #7301 text-sync work events.
+    pub fn test_text_sync_work_capture_start(&self) {
+        let _ = self;
+        crate::runtime::text_sync_work::capture::start();
+    }
+
+    /// Test-only: drain captured work events and build a versioned receipt.
+    pub fn test_text_sync_work_capture_receipt(
+        &self,
+        workload: &str,
+        reproduction: &str,
+    ) -> crate::runtime::text_sync_work::TextSyncWorkReceipt {
+        let _ = self;
+        let events = crate::runtime::text_sync_work::capture::drain();
+        let parse_worker = self.test_parse_worker_metrics().map(|m| {
+            crate::runtime::text_sync_work::ParseWorkerTotals {
+                jobs_enqueued: m.jobs_enqueued,
+                jobs_coalesced: m.jobs_coalesced,
+                jobs_rejected_stale: m.jobs_rejected_stale,
+                jobs_published: m.jobs_published,
+            }
+        });
+        crate::runtime::text_sync_work::build_receipt(workload, reproduction, events, parse_worker)
+    }
+
     /// Install the production off-lock async parse worker (#3396 Phase 3)
     /// on this server.
     ///
