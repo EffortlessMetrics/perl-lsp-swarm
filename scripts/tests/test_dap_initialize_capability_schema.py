@@ -114,6 +114,39 @@ def test_unsupported_composition_fails_closed():
     raise AssertionError("expected anyOf capability property to fail closed")
 
 
+def test_multi_request_descriptions_capture_the_full_family():
+    """Falsifier: plural request lists lose earlier backticked names."""
+    schema = base_schema()
+    props = schema["definitions"]["Capabilities"]["properties"]
+    step_back = next(
+        r for r in rows_for(schema) if r["wire_name"] == "supportsStepBack"
+    )
+    assert step_back["related_requests"] == ["stepBack", "reverseContinue"]
+    formatting = next(
+        r for r in rows_for(schema) if r["wire_name"] == "supportsValueFormattingOptions"
+    )
+    assert formatting["related_requests"] == [
+        "stackTrace",
+        "variables",
+        "evaluate",
+    ]
+    single_thread = next(
+        r
+        for r in rows_for(schema)
+        if r["wire_name"] == "supportsSingleThreadExecutionRequests"
+    )
+    assert single_thread["related_requests"] == [
+        "continue",
+        "next",
+        "stepIn",
+        "stepOut",
+        "reverseContinue",
+        "stepBack",
+    ]
+    assert "format" not in formatting["related_requests"]
+    assert props  # keep schema materialized for mutation tests
+
+
 def test_committed_report_matches_generator():
     """Falsifier: hand-edit generated rows without changing the pin/input."""
     report = mod.build_report()

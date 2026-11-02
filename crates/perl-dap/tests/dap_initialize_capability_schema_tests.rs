@@ -94,6 +94,28 @@ fn array_capability_shapes_expose_item_identities() -> TestResult {
 }
 
 #[test]
+fn multi_request_descriptions_preserve_full_request_families() -> TestResult {
+    let rows = standard_initialize_capability_rows()?;
+    let step_back = rows
+        .iter()
+        .find(|row| row.wire_name == "supportsStepBack")
+        .ok_or("missing supportsStepBack row")?;
+    assert_eq!(
+        step_back.related_requests,
+        vec!["stepBack".to_owned(), "reverseContinue".to_owned()]
+    );
+    let formatting = rows
+        .iter()
+        .find(|row| row.wire_name == "supportsValueFormattingOptions")
+        .ok_or("missing supportsValueFormattingOptions row")?;
+    assert_eq!(
+        formatting.related_requests,
+        vec!["stackTrace".to_owned(), "variables".to_owned(), "evaluate".to_owned(),]
+    );
+    Ok(())
+}
+
+#[test]
 fn request_families_are_preserved_for_named_capabilities() -> TestResult {
     let rows = standard_initialize_capability_rows()?;
     let cancel = rows

@@ -32,7 +32,11 @@ DEFINITION_REF_PREFIX = "#/definitions/"
 UPSTREAM_DEFINITION = "Capabilities"
 SCHEMA_VERSION = "dap_initialize_capability_schema.v1"
 
-REQUEST_IN_DESC = re.compile(r"`([A-Za-z][A-Za-z0-9]*)`\s+request")
+REQUEST_IN_DESC = re.compile(r"`([A-Za-z][A-Za-z0-9]*)`\s+request\b")
+REQUESTS_PAREN = re.compile(r"\brequests\s*\(([^)]*)\)", re.IGNORECASE)
+REQUESTS_ON_THE = re.compile(r"\bon the\b(.+\brequests\b)", re.IGNORECASE)
+REQUESTS_VIA_THE = re.compile(r"\bvia the\b(.+\brequests\b)", re.IGNORECASE)
+BACKTICK_NAME = re.compile(r"`([A-Za-z][A-Za-z0-9]*)`")
 EVENT_IN_DESC = re.compile(r"`([A-Za-z][A-Za-z0-9]*)`\s+event")
 CAPABILITIES_STRUCT_RE = re.compile(
     r"pub struct Capabilities\s*\{(.*?)\n\}",
@@ -195,11 +199,26 @@ def rust_initialize_wire_fields() -> dict[str, str]:
 
 
 def related_requests(description: str, wire_name: str) -> list[str]:
-    requests = REQUEST_IN_DESC.findall(description or "")
+    text = description or ""
+    requests: list[str] = []
+
+    paren = REQUESTS_PAREN.search(text)
+    if paren is not None:
+        requests.extend(BACKTICK_NAME.findall(paren.group(1)))
+
+    on_the = REQUESTS_ON_THE.search(text)
+    if on_the is not None:
+        requests.extend(BACKTICK_NAME.findall(on_the.group(1)))
+
+    via_the = REQUESTS_VIA_THE.search(text)
+    if via_the is not None:
+        requests.extend(BACKTICK_NAME.findall(via_the.group(1)))
+
+    requests.extend(REQUEST_IN_DESC.findall(text))
     if wire_name.startswith("supports") and wire_name.endswith("Request") and not requests:
         base = wire_name[len("supports") : -len("Request")]
         if base:
-            requests = [base[0].lower() + base[1:]]
+            requests.append(base[0].lower() + base[1:])
     deduped: list[str] = []
     for name in requests:
         if name not in deduped:

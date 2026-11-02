@@ -696,7 +696,14 @@
         "field": "supportsSingleThreadExecutionRequests"
       },
       "related_events": [],
-      "related_requests": [],
+      "related_requests": [
+        "continue",
+        "next",
+        "stepIn",
+        "stepOut",
+        "reverseContinue",
+        "stepBack"
+      ],
       "row_id": "CAP-STD-035",
       "schema_required": false,
       "upstream_definition": "Capabilities",
@@ -715,6 +722,7 @@
       },
       "related_events": [],
       "related_requests": [
+        "stepBack",
         "reverseContinue"
       ],
       "row_id": "CAP-STD-036",
@@ -813,6 +821,8 @@
       },
       "related_events": [],
       "related_requests": [
+        "stackTrace",
+        "variables",
         "evaluate"
       ],
       "row_id": "CAP-STD-041",
