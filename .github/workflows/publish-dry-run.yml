@@ -23,6 +23,7 @@ on:
       - 'scripts/ci/check_perl_lsp_rs_core_package.py'
       - 'scripts/cargo-package-workspace-dry-run.sh'
       - 'scripts/publish-topo.py'
+      - 'scripts/ci/publish_crates_json.py'
       - 'xtask/src/tasks/publish_manifest_check.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
@@ -67,6 +68,9 @@ jobs:
       - name: Run publish-topo unit tests
         run: python3 scripts/tests/test-publish-topo.py -v
 
+      - name: Run publish_crates_json unit tests
+        run: python3 scripts/ci/test_publish_crates_json.py -v
+
       - name: Check allowlist drift (manifest check)
         run: |
           start=$SECONDS
@@ -82,13 +86,9 @@ jobs:
           cargo metadata --format-version=1 --no-deps \
             | python3 scripts/publish-topo.py > /tmp/crates.json
 
-          COUNT=$(python3 -c 'import json,sys; print(len(json.load(open("/tmp/crates.json"))))')
+          COUNT=$(python3 scripts/ci/publish_crates_json.py --count < /tmp/crates.json)
           echo "Dry-run packaging order (${COUNT} crates):"
-          python3 -c '
-          import json
-          for i, c in enumerate(json.load(open("/tmp/crates.json")), 1):
-              print("  {}. {}@{}".format(i, c["name"], c["version"]))
-          '
+          python3 scripts/ci/publish_crates_json.py --list < /tmp/crates.json | awk '{printf "  %d. %s@%s\n", NR, $1, $2}'
           echo "crates=$(cat /tmp/crates.json)" >> "$GITHUB_OUTPUT"
 
       - name: Package all allowlisted crates (dry-run)
@@ -127,8 +127,7 @@ jobs:
 
           FAILED=""
           CRATES_LIST="$(mktemp)"
-          echo "$CRATES_JSON" | python3 -c \
-            'import json,sys; [print("{} {}".format(c["name"],c["version"])) for c in json.load(sys.stdin)]' \
+          echo "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --list \
             > "$CRATES_LIST"
 
           while read -r CRATE VERSION; do
@@ -181,7 +180,7 @@ jobs:
         env:
           CRATES_JSON: ${{ steps.topo.outputs.crates }}
         run: |
-          COUNT=$(echo "$CRATES_JSON" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "?")
+          COUNT=$(printf '%s\n' "$CRATES_JSON" | python3 scripts/ci/publish_crates_json.py --count)
           if [ "${{ job.status }}" = "success" ]; then
             echo "## Publish dry-run passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
