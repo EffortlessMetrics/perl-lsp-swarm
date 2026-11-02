@@ -349,7 +349,7 @@ cat >"$TMP_FUTURE/scripts/ci/check-pr-review-convergence" <<'EOF'
 # schema gate (the production wrapper refuses unknown core versions earlier).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CORE_JSON="$(bash "$SCRIPT_DIR/check-pr-review-convergence-core" "$1")"
+CORE_JSON="$(bash "$SCRIPT_DIR/check-pr-review-convergence-core" "${1:-9999}")"
 jq -n --argjson core "$CORE_JSON" '$core + {
   wrapper_schema_version: "pr_review_convergence.v2",
   converged: false,
