@@ -338,3 +338,41 @@ fn require_u64(
         .as_u64()
         .ok_or_else(|| ReceiptValidationError::new(format!("{path}: expected unsigned integer")))
 }
+
+/// Domain-separation prefix for the content digest of a validated receipt
+/// payload. The exact bytes are part of the versioned contract.
+pub const RECEIPT_CONTENT_DIGEST_DOMAIN: &[u8] = b"actual_host_receipt.v1\0";
+
+/// Canonical JSON bytes of a receipt object suitable for content addressing.
+///
+/// Encoding matches `ci_route_plan.v1` canonical JSON: sorted object keys,
+/// minimal string escaping, unsigned integers only, no explicit nulls.
+pub fn canonical_receipt_bytes(receipt: &Value) -> Result<Vec<u8>, ReceiptValidationError> {
+    crate::ci_route_plan::canonical::canonical_json(receipt).map_err(|message| {
+        ReceiptValidationError::new(format!(
+            "receipt cannot be canonically encoded for digest: {message}"
+        ))
+    })
+}
+
+/// SHA-256 content digest of a receipt object in `sha256:<64 lowercase hex>`
+/// form.
+pub fn receipt_content_digest(receipt: &Value) -> Result<String, ReceiptValidationError> {
+    let canonical = canonical_receipt_bytes(receipt)?;
+    let mut preimage = Vec::with_capacity(RECEIPT_CONTENT_DIGEST_DOMAIN.len() + canonical.len());
+    preimage.extend_from_slice(RECEIPT_CONTENT_DIGEST_DOMAIN);
+    preimage.extend_from_slice(&canonical);
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(preimage);
+    Ok(format!("sha256:{}", digest_hex_lower(&digest)))
+}
+
+fn digest_hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
