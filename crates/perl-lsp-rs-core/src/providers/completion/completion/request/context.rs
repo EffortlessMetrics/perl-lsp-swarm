@@ -139,7 +139,9 @@ mod tests {
 
     #[test]
     fn complete_htmx_attribute_context_returns_none_outside_markup() {
-        assert!(crate::providers::htmx::complete_attribute_names("my $hx = 'hx-get';", 3).is_none());
+        assert!(
+            crate::providers::htmx::complete_attribute_names("my $hx = 'hx-get';", 3).is_none()
+        );
     }
 
     fn provider_for(source: &str) -> Result<CompletionProvider, Box<dyn std::error::Error>> {
@@ -152,8 +154,8 @@ mod tests {
     }
 
     #[test]
-    fn perl_string_does_not_receive_markup_attribute_completions() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn perl_string_does_not_receive_markup_attribute_completions()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "my $s = '<div hx-ge";
         let position = source.len();
         let provider = provider_for(source)?;
@@ -162,8 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn pod_block_does_not_receive_markup_attribute_completions() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn pod_block_does_not_receive_markup_attribute_completions()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "=pod\n<div hx-ge";
         let position = source.len();
         let provider = provider_for(source)?;
@@ -172,8 +174,8 @@ mod tests {
     }
 
     #[test]
-    fn fragment_href_does_not_block_markup_attribute_completions() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn fragment_href_does_not_block_markup_attribute_completions()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "<a href=\"#section\" hx-ge";
         let position = source.len();
         let provider = provider_for(source)?;
@@ -191,16 +193,15 @@ mod tests {
         let provider = provider_for(&source)?;
         let items = try_complete_htmx_attributes(&provider, &source, cursor)
             .ok_or("expected markup attribute slot")?;
-        let item = items
-            .iter()
-            .find(|item| item.label == "hx-get")
-            .ok_or("missing hx-get candidate")?;
+        let item =
+            items.iter().find(|item| item.label == "hx-get").ok_or("missing hx-get candidate")?;
         assert_eq!(item.text_edit_range, Some((cursor - "hx-ge".len(), source.len())));
         Ok(())
     }
 
     #[test]
-    fn regex_body_does_not_claim_markup_attribute_route() -> Result<(), Box<dyn std::error::Error>> {
+    fn regex_body_does_not_claim_markup_attribute_route() -> Result<(), Box<dyn std::error::Error>>
+    {
         let source = "my $r = qr{<div hx-on:click";
         let position = source.len();
         let provider = provider_for(source)?;
@@ -217,8 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn completion_request_returns_htmx_attributes_before_perl_dispatch() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn completion_request_returns_htmx_attributes_before_perl_dispatch()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "<div hx-on";
         let provider = provider_for(source)?;
         let items = provider.get_completions(source, source.len());
@@ -228,8 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn dash_trigger_does_not_suppress_htmx_attribute_completion() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn dash_trigger_does_not_suppress_htmx_attribute_completion()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "<div hx-";
         let provider = provider_for(source)?;
         let items = provider.get_completions(source, source.len());

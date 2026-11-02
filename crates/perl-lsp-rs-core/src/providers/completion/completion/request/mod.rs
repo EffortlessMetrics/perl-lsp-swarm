@@ -15,8 +15,7 @@ pub(super) fn complete(
         return vec![];
     }
 
-    if let Some(htmx_attributes) =
-        context::try_complete_htmx_attributes(provider, source, position)
+    if let Some(htmx_attributes) = context::try_complete_htmx_attributes(provider, source, position)
     {
         return htmx_attributes;
     }
