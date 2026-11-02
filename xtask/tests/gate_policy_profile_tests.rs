@@ -104,7 +104,10 @@ fn parser_corpus_pr_policy_is_unambiguous() -> Result<(), Box<dyn std::error::Er
     );
 
     assert_eq!(parser.tier, "nightly");
-    assert!(!parser.required, "parser_corpus_ratchet must be advisory (nightly tier; no merge-gate driver)");
+    assert!(
+        !parser.required,
+        "parser_corpus_ratchet must be advisory (nightly tier; no merge-gate driver)"
+    );
 
     assert_eq!(cpan.tier, "nightly");
     assert!(!cpan.required, "cpan_corpus_ratchet must never be PR-blocking");
