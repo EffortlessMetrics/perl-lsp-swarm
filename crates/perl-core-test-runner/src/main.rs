@@ -94,14 +94,18 @@ fn pinned_upstream_comp_source_digest(source: &str) -> String {
 fn comp_pinned_upstream_parse_recovery_boundary(
     invocation: &Invocation,
     source: &str,
+    _diagnostics: &[ParseError],
 ) -> Option<SemanticBoundaryRecord> {
     let path = normalize_display_path(&invocation.display_path);
     let (_, expected_digest) = PINNED_UPSTREAM_COMP_PARSE_RECOVERY
         .iter()
         .find(|(candidate, _)| *candidate == path.as_str())?;
+    let normalized = normalize_upstream_perl_test_source(source);
     if pinned_upstream_comp_source_digest(source) != *expected_digest {
         return None;
     }
+
+    let source_span = pinned_upstream_parse_recovery_span(&normalized);
 
     Some(SemanticBoundaryRecord {
         id: format!("source_locked:{path}:pinned_upstream_parse_recovery"),
@@ -110,7 +114,7 @@ fn comp_pinned_upstream_parse_recovery_boundary(
                   b62845c7186 Perl tree; accepted for zero legacy terminal status until \
                   parser proofs replace this lock (#18153)"
             .to_string(),
-        source_span: SemanticBoundarySourceSpan { start: 0, end: 0 },
+        source_span,
         source_kind: "ParseRecovery".to_string(),
         confidence: SemanticBoundaryConfidence::Exact,
         blocks_compilation: false,
@@ -119,6 +123,10 @@ fn comp_pinned_upstream_parse_recovery_boundary(
         owner_workstream: "source_locked_compatibility".to_string(),
         supporting_test: path,
     })
+}
+
+fn pinned_upstream_parse_recovery_span(normalized_source: &str) -> SemanticBoundarySourceSpan {
+    SemanticBoundarySourceSpan { start: 0, end: normalized_source.len().max(1) }
 }
 
 #[derive(Debug)]
@@ -384,7 +392,9 @@ fn run_parse(invocation: &Invocation) -> Result<ModeRunResult> {
         return Ok(result);
     }
 
-    if let Some(boundary) = comp_pinned_upstream_parse_recovery_boundary(invocation, &source) {
+    if let Some(boundary) =
+        comp_pinned_upstream_parse_recovery_boundary(invocation, &source, &output.diagnostics)
+    {
         let mut result = ModeRunResult::pass();
         result.semantic_boundaries.push(boundary);
         return Ok(result);
@@ -413,7 +423,9 @@ fn run_compile(invocation: &Invocation) -> Result<ModeRunResult> {
             result.semantic_boundaries.push(boundary);
             return Ok(result);
         }
-        if let Some(boundary) = comp_pinned_upstream_parse_recovery_boundary(invocation, &source) {
+        if let Some(boundary) =
+            comp_pinned_upstream_parse_recovery_boundary(invocation, &source, &output.diagnostics)
+        {
             let mut result = ModeRunResult::pass();
             result.semantic_boundaries.push(boundary);
             return Ok(result);
