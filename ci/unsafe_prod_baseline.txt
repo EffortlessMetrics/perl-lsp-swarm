@@ -5,8 +5,8 @@ crates/perl-dap/src/process_tree.rs:133
 crates/perl-dap/src/process_tree.rs:151
 crates/perl-dap/src/process_tree.rs:208
 crates/perl-dap/src/security/launch_authority.rs:206
-crates/perl-lsp-rs/src/runtime/mod.rs:642
 crates/perl-lsp-rs/src/runtime/mod.rs:644
+crates/perl-lsp-rs/src/runtime/mod.rs:646
 crates/perl-lsp-rs/src/runtime/parse_worker.rs:127
 crates/perl-lsp-rs/src/runtime/parse_worker.rs:129
 crates/perl-lsp-rs/src/runtime/workspace.rs:340

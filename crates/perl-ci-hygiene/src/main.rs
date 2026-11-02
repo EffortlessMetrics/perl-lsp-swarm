@@ -2381,14 +2381,10 @@ fn cmd_check_parser_matrix(repo_root: &Path) -> Result<i32> {
 
 /// Stable `path:line` key for one counted production-unsafe site.
 pub(crate) fn unsafe_prod_site_key(rel_path: &str, line_no: usize) -> String {
-    format!("{rel_path}:{line_no}")
+    format!("{}:{line_no}", rel_path.replace('\\', "/"))
 }
 
-fn parse_unsafe_prod_site_key_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return None;
-    }
+fn parse_unsafe_prod_site_key_line(trimmed: &str) -> Option<String> {
     let (path, line_no) = trimmed.rsplit_once(':')?;
     if path.is_empty() || !line_no.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
@@ -2415,22 +2411,24 @@ pub(crate) fn read_unsafe_prod_expected_sites(path: &Path) -> Result<BTreeSet<St
     }
     let mut expected = BTreeSet::new();
     for (idx, line) in raw.lines().enumerate() {
-        let Some(key) = parse_unsafe_prod_site_key_line(line) else {
-            if line.trim().is_empty() || line.trim_start().starts_with('#') {
-                continue;
-            }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(key) = parse_unsafe_prod_site_key_line(trimmed) else {
             return Err(color_eyre::eyre::eyre!(
                 "invalid production-unsafe baseline line {} in {:?}: {line:?}",
                 idx + 1,
                 path
             ));
         };
-        if !expected.insert(key.clone()) {
+        if expected.contains(&key) {
             return Err(color_eyre::eyre::eyre!(
                 "duplicate production-unsafe baseline entry in {:?}: {key}",
                 path
             ));
         }
+        expected.insert(key);
     }
     if expected.is_empty() {
         return Err(color_eyre::eyre::eyre!("{:?} contains no path:line entries", path));
@@ -2499,8 +2497,8 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     let mut exit_code = 0;
 
     if current != expected {
-        let unexpected: Vec<_> = current.difference(&expected).cloned().collect();
-        let missing: Vec<_> = expected.difference(&current).cloned().collect();
+        let unexpected: Vec<&str> = current.difference(&expected).map(String::as_str).collect();
+        let missing: Vec<&str> = expected.difference(&current).map(String::as_str).collect();
         println!(
             "FAIL: production-unsafe site set differs from {:?} (unexpected={}, missing={})",
             baseline_path,
@@ -2509,13 +2507,13 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
         );
         if !unexpected.is_empty() {
             println!("Unexpected sites (present in code, absent from baseline):");
-            for item in &unexpected {
+            for &item in &unexpected {
                 println!("  {item}");
             }
         }
         if !missing.is_empty() {
             println!("Missing sites (listed in baseline, absent from code):");
-            for item in &missing {
+            for &item in &missing {
                 println!("  {item}");
             }
         }
@@ -3203,6 +3201,14 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 mod tests {
     use super::*;
     use color_eyre::eyre::ensure;
+
+    #[test]
+    fn unsafe_prod_site_key_normalizes_windows_path_separators() {
+        assert_eq!(
+            unsafe_prod_site_key("crates\\demo\\src\\lib.rs", 42),
+            "crates/demo/src/lib.rs:42"
+        );
+    }
 
     #[test]
     fn cargo_wrapper_keeps_cargo_args_before_test_harness_separator() {
