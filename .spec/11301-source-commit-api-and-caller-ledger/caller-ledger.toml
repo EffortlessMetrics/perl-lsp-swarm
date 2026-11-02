@@ -163,6 +163,11 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # canonical index_initial_file before planning a rename and shrinking one
 # file. Owned by the existing crates/perl-parser row; no compatibility call,
 # no production caller. Baseline therefore stays 697.
+# Held at 697 by the main-red repair for #18720 (#1761 dynamic-construct
+# acceptance): crates/perl-workspace/tests/issue_1761_dynamic_construct_acceptance.rs
+# is a new caller identity that seeds temp on-disk fixtures through
+# index_initial_file in index_temp_source. Owned by the existing
+# crates/perl-workspace/tests row; no compatibility call, no production caller.
 compatibility_baseline = 697
 
 # Structural recurrence control (#11305): files under these prefixes must
@@ -245,6 +250,7 @@ caller_paths = [
   "crates/perl-workspace/tests/folder_provenance_tests.rs",
   "crates/perl-workspace/tests/generated_member_facts.rs",
   "crates/perl-workspace/tests/interpolated_string_usage_tests.rs",
+  "crates/perl-workspace/tests/issue_1761_dynamic_construct_acceptance.rs",
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
