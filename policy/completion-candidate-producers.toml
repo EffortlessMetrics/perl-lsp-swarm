@@ -187,7 +187,7 @@ outcome_owner = "#10230"
 # change touched the scanned `completion/variables.rs` and
 # `completion/request/dispatch.rs`; the existing producer rows, their
 # identity/evidence/completeness ceilings and migration owners are unchanged.
-source_digest = "sha256:600b298efa06bde8852a6b1c1302c471c81ea0e5311183cc009a7e1891019630"
+source_digest = "sha256:96c9a2b8f59cdba160ae762e74db97c218da73093df2da7128cde3f537190921"
 
 [[delegations]]
 module = "dancer2"
@@ -648,6 +648,23 @@ reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
 limitations = "This seam finalizes early on two of its three exit paths: both the regex-flag branch and the plain in-regex branch call the shared deduplicate-and-sort and return, after which the runtime finalizes the page again. Candidates on either branch are therefore sorted twice and capped once downstream. Only the sigil-prefixed branch, which returns empty, is exempt. Collapsing the duplicate finalization is #10229's."
 note = "Regex-context routing, with an early finalization on two branches that the shared route does not expect."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::context::complete_htmx_attribute_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#14116"
+limitations = "Early-return router: delegates to `htmx::complete_attribute_names` and does not add candidates of its own."
+note = "Admitted markup attribute-name router for htmx completion."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_dispatch"
@@ -1169,14 +1186,13 @@ identity = "legacy_label_compatibility"
 insertion_plan = "legacy_compatibility"
 evidence = "static_server_metadata"
 rank = "compatibility_with_exit"
-source_completeness = "legacy_unreported"
+source_completeness = "complete_or_empty"
 finalizer_route = "compatibility_adapter_before_shared_finalizer"
-reach_evidence = "unreachable"
-reached_by = []
-migration_owner = "#15014"
-unreachable_reason = "Completes htmx attribute names in markup. Only the module's own tests call it; the Perl completion route reaches `complete_header_names` and nothing else in this module. Recorded because it sits beside a producer that is reached, which is where an attribute-completion fix would wrongly land."
-limitations = "Unreached from `textDocument/completion`. Nothing about live htmx attribute behavior can be read from this row."
-note = "htmx markup attribute-name catalogue, not wired into Perl completion."
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#14116"
+limitations = "Returns `None` outside admitted markup attribute-name slots and `Some([])` once an `hx-on:<event>` suffix is typed; the request router returns that vector directly without reaching #10230 completeness reporting."
+note = "Canonical htmx attribute names in admitted template markup."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion_item::finalize_completion_candidates"

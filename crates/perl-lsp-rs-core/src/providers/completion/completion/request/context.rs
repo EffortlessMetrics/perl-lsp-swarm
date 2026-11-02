@@ -32,6 +32,19 @@ pub(super) fn rejects_lexical_block(source: &str, position: usize) -> bool {
         || CompletionProvider::is_in_pod(source, position)
 }
 
+/// Canonical htmx attribute names in admitted raw-markup slots.
+///
+/// Returns `Some` when the markup recognizer owns the cursor — including
+/// `Some([])` for a proven slot with no catalog match — and `None` when
+/// normal Perl completion should continue.
+pub(super) fn complete_htmx_attribute_context(
+    source: &str,
+    position: usize,
+) -> Option<Vec<CompletionItem>> {
+    let items = crate::providers::htmx::complete_attribute_names(source, position)?;
+    Some(sort::deduplicate_and_sort(items))
+}
+
 pub(super) fn complete_regex_context(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
@@ -109,5 +122,52 @@ mod tests {
             complete_regex_context(&mut completions, &context, "if ($str =~ /pattern %h/) {");
 
         assert!(result.as_ref().is_some_and(Vec::is_empty));
+    }
+
+    #[test]
+    fn complete_htmx_attribute_context_returns_none_outside_markup() {
+        assert!(complete_htmx_attribute_context("my $hx = 'hx-get';", 3).is_none());
+    }
+
+    #[test]
+    fn complete_htmx_attribute_context_surfaces_catalog_in_markup() {
+        let source = "<button hx-ge";
+        let items = complete_htmx_attribute_context(source, source.len()).expect("markup slot");
+        assert!(items.iter().any(|item| item.label == "hx-get"));
+    }
+
+    #[test]
+    fn completion_request_returns_htmx_attributes_before_perl_dispatch() {
+        use crate::providers::completion::completion::CompletionProvider;
+        use perl_parser_core::Parser;
+
+        let source = "<div hx-on";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("parse template markup");
+        let provider = CompletionProvider::new(&ast);
+        let items = provider.get_completions(source, source.len());
+
+        assert!(items.iter().any(|item| item.label == "hx-on:"));
+        assert!(!items.iter().any(|item| item.label == "hx-on"));
+    }
+
+    #[test]
+    fn dash_trigger_does_not_suppress_htmx_attribute_completion() {
+        use crate::providers::completion::completion::CompletionProvider;
+        use perl_parser_core::Parser;
+
+        let source = "<div hx-";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("parse template markup");
+        let provider = CompletionProvider::new(&ast);
+        let context = provider.analyze_context(source, source.len());
+        assert!(rejects_dash_trigger(&CompletionContext {
+            trigger_character: Some('-'),
+            ..context
+        }));
+
+        let items = provider.get_completions(source, source.len());
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|item| item.label.starts_with("hx-")));
     }
 }

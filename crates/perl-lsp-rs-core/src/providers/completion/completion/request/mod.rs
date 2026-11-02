@@ -15,7 +15,15 @@ pub(super) fn complete(
         return vec![];
     };
 
-    if is_cancelled() || context::rejects_dash_trigger(&context) {
+    if is_cancelled() {
+        return vec![];
+    }
+
+    if let Some(htmx_attributes) = context::complete_htmx_attribute_context(source, position) {
+        return htmx_attributes;
+    }
+
+    if context::rejects_dash_trigger(&context) {
         return vec![];
     }
 
