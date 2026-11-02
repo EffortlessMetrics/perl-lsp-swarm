@@ -1759,6 +1759,25 @@ impl CompletionProvider {
     }
 }
 
+/// Whether HTMX attribute-name completion should own the cursor at `position`.
+///
+/// Requires a proven markup attribute slot and rejects Perl strings, regex
+/// bodies, comments, POD, and heredocs even when the bytes look like HTML.
+#[must_use]
+pub fn htmx_attribute_name_completion_admitted(source: &str, position: usize) -> bool {
+    use crate::providers::htmx::htmx_attribute_name_context;
+
+    if htmx_attribute_name_context(source, position).is_none() {
+        return false;
+    }
+
+    !(lexical_context::is_in_string(source, position)
+        || lexical_context::is_in_regex(source, position)
+        || lexical_context::is_in_comment(source, position)
+        || CompletionProvider::is_in_heredoc(source, position)
+        || CompletionProvider::is_in_pod(source, position))
+}
+
 #[cfg(test)]
 mod keyword_role_tests;
 #[cfg(test)]

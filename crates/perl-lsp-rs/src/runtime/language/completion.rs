@@ -27,17 +27,13 @@ use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
 use perl_lsp_rs_core::providers::dancer2::Dancer2CompletionCandidate;
-use perl_lsp_rs_core::providers::htmx::htmx_attribute_name_context;
+use perl_lsp_rs_core::providers::htmx::htmx_attribute_name_completion_admitted;
 use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-
-fn htmx_markup_attribute_slot(doc_text: &str, offset: usize) -> bool {
-    htmx_attribute_name_context(doc_text, offset).is_some()
-}
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -1053,7 +1049,7 @@ impl LspServer {
             });
         if is_method_completion
             || CompletionProvider::detect_hash_key_context(doc_text, offset).is_some()
-            || htmx_attribute_name_context(doc_text, offset).is_some()
+            || htmx_attribute_name_completion_admitted(doc_text, offset)
         {
             return;
         }
@@ -1627,9 +1623,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                if super::navigation::is_in_comment_naive(offset, &doc.text)
-                    && !htmx_markup_attribute_slot(&doc.text, offset)
-                {
+                if super::navigation::is_in_comment_naive(offset, &doc.text) {
                     break 'completion_response None;
                 }
 
@@ -2019,7 +2013,7 @@ impl LspServer {
                     });
                 }
 
-                if in_comment && !htmx_markup_attribute_slot(&doc.text, offset) {
+                if in_comment {
                     break 'completion_response None;
                 }
 

@@ -43,15 +43,19 @@ pub(super) fn try_complete_htmx_attributes(
     source: &str,
     position: usize,
 ) -> Option<Vec<CompletionItem>> {
-    let mut items = crate::providers::htmx::complete_attribute_names(source, position)?;
-    let context = provider.analyze_context(source, position);
-    if context.in_string || context.in_regex || rejects_lexical_block(source, position) {
+    if !crate::providers::completion::htmx_attribute_name_completion_admitted(source, position) {
         return None;
     }
+    let htmx_context = crate::providers::htmx::htmx_attribute_name_context(source, position)?;
+    let suffix_end =
+        crate::providers::htmx::markup_attribute_name_suffix_end(source, htmx_context.prefix_start);
+    let mut items = crate::providers::htmx::complete_attribute_names(source, position)?;
+    let context = provider.analyze_context(source, position);
     for item in &mut items {
         if let Some((start, end)) = item.text_edit_range {
-            if end < context.suffix_end {
-                item.text_edit_range = Some((start, context.suffix_end));
+            let replace_end = suffix_end.max(context.suffix_end);
+            if end < replace_end {
+                item.text_edit_range = Some((start, replace_end));
             }
         }
     }
@@ -210,11 +214,36 @@ mod tests {
     }
 
     #[test]
-    fn markup_helper_surfaces_catalog_in_markup() {
+    fn markup_helper_surfaces_catalog_in_markup() -> Result<(), Box<dyn std::error::Error>> {
         let source = "<button hx-ge";
         let items = crate::providers::htmx::complete_attribute_names(source, source.len())
-            .expect("markup slot");
+            .ok_or("expected markup attribute slot")?;
         assert!(items.iter().any(|item| item.label == "hx-get"));
+        Ok(())
+    }
+
+    #[test]
+    fn perl_comment_does_not_receive_markup_attribute_completions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "# <div hx-ge";
+        let position = source.len();
+        let provider = provider_for(source)?;
+        assert!(try_complete_htmx_attributes(&provider, source, position).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn hx_on_event_suffix_included_in_text_edit_range() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "<div hx-on|:click>";
+        let cursor = source.find("hx-on").map(|i| i + "hx-on".len()).ok_or("missing hx-on")?;
+        let provider = provider_for(source)?;
+        let items = try_complete_htmx_attributes(&provider, source, cursor)
+            .ok_or("expected markup attribute slot")?;
+        let item =
+            items.iter().find(|item| item.label == "hx-on:").ok_or("missing hx-on: candidate")?;
+        let suffix_end = source.find('>').ok_or("missing tag end")?;
+        assert_eq!(item.text_edit_range, Some((cursor - "hx-on".len(), suffix_end)));
+        Ok(())
     }
 
     #[test]
