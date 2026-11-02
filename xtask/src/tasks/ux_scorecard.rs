@@ -445,12 +445,13 @@ fn ensure_publication_lock_dir(lock_dir: &Path) -> Result<()> {
     {
         use std::io::ErrorKind;
         use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-        if let Err(error) = fs::DirBuilder::new().recursive(true).mode(0o700).create(lock_dir) {
-            if error.kind() != ErrorKind::AlreadyExists {
+        match fs::DirBuilder::new().recursive(true).mode(0o700).create(lock_dir) {
+            Err(error) if error.kind() != ErrorKind::AlreadyExists => {
                 return Err(error).with_context(|| {
                     format!("creating publication lock dir {}", lock_dir.display())
                 });
             }
+            Err(_) | Ok(()) => {}
         }
         let meta = fs::symlink_metadata(lock_dir)
             .with_context(|| format!("inspecting publication lock dir {}", lock_dir.display()))?;
