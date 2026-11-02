@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fixture proof for scripts/fuzz-bounded target discovery (#15059).
+# Fixture proof for scripts/fuzz-bounded target discovery (#15059) and for
+# nightly fuzz-matrix ↔ fuzz/Cargo.toml [[bin]] parity (#17135).
 #
-# cargo is stubbed. python3 is a PATH wrapper around the real interpreter so
-# the script's JSON extractor still runs. LF vs CRLF is applied to that
-# extractor's stdout. Fuzz binaries are never compiled.
+# Discovery cases stub cargo. python3 is a PATH wrapper around the real
+# interpreter so the script's JSON extractor still runs. LF vs CRLF is applied
+# to that extractor's stdout. Fuzz binaries are never compiled.
+#
+# Matrix parity reads the real workflow and manifest through the real
+# interpreter (not the PATH stub) and does not invoke cargo.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -402,6 +406,288 @@ run_fuzz_bounded "${TMPDIR_BASE}/bad-duration.out" "${TMPDIR_BASE}/bad-duration.
 assert_eq "duration 0 is rejected" 2 "$RUN_CODE"
 assert_not_contains "invalid duration does not invoke fuzz run" \
   "FUZZ_RUN_TARGET=" "$CARGO_INVOCATION_LOG"
+
+# ── Nightly matrix ↔ fuzz/Cargo.toml [[bin]] parity (#17135) ──────────────────
+# Uses REAL_PYTHON3 so a leftover FUZZ_BOUNDED_PYTHON_MODE=drop stub cannot
+# swallow the comparison. This is the production gate: the discovery self-test
+# job executes this script on every push.
+
+compare_fuzz_matrix() {
+  local nightly="$1"
+  local cargo="$2"
+  "$REAL_PYTHON3" - "$nightly" "$cargo" <<'PY'
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+
+class ParseError(Exception):
+    pass
+
+
+def fuzz_job_text(workflow: str) -> str:
+    lines = workflow.splitlines(keepends=True)
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(r"^  fuzz:\s*(#.*)?$", line):
+            start = index
+            break
+    if start is None:
+        raise ParseError("workflow has no jobs.fuzz")
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if re.match(r"^  [A-Za-z0-9_-]+:", lines[index]):
+            end = index
+            break
+    return "".join(lines[start:end])
+
+
+def parse_flow_names(body: str) -> list[str]:
+    names: list[str] = []
+    for raw in body.split(","):
+        token = raw.split("#", 1)[0].strip().strip("'\"")
+        if token:
+            names.append(token)
+    return names
+
+
+def parse_block_names(body: str) -> list[str]:
+    names: list[str] = []
+    for line in body.splitlines():
+        match = re.match(r"^\s+-\s+(\S+)", line)
+        if match is None:
+            continue
+        token = match.group(1).split("#", 1)[0].strip().strip("'\"").rstrip(",")
+        if token:
+            names.append(token)
+    return names
+
+
+def matrix_targets(job: str) -> list[str]:
+    flow = re.search(r"(?m)^\s+target:\s*\[(.*?)\]", job, re.S)
+    if flow is not None:
+        names = parse_flow_names(flow.group(1))
+    else:
+        block = re.search(r"(?m)^\s+target:\s*\n((?:\s+-\s+\S.*\n?)*)", job)
+        if block is None:
+            raise ParseError("jobs.fuzz.strategy.matrix.target not found")
+        names = parse_block_names(block.group(1))
+    if not names:
+        raise ParseError("jobs.fuzz.strategy.matrix.target is empty")
+    return names
+
+
+def manifest_bin_targets(path: Path) -> list[str]:
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    bins = data.get("bin")
+    if not isinstance(bins, list) or not bins:
+        raise ParseError(f"{path} has no [[bin]] targets")
+    names: list[str] = []
+    for entry in bins:
+        if not isinstance(entry, dict):
+            raise ParseError(f"{path} has a non-table [[bin]] entry")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            raise ParseError(f"{path} has a [[bin]] without name")
+        names.append(name)
+    return names
+
+
+def duplicates(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for name in names:
+        if name in seen and name not in dupes:
+            dupes.append(name)
+        seen.add(name)
+    return dupes
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        raise ParseError("usage: compare NIGHTLY.yml CARGO.toml")
+    nightly_path = Path(sys.argv[1])
+    cargo_path = Path(sys.argv[2])
+    job = fuzz_job_text(nightly_path.read_text(encoding="utf-8"))
+    matrix = matrix_targets(job)
+    manifest = manifest_bin_targets(cargo_path)
+    matrix_dupes = duplicates(matrix)
+    manifest_dupes = duplicates(manifest)
+    if matrix_dupes or manifest_dupes:
+        print("PARSE_ERROR: duplicate target names")
+        if matrix_dupes:
+            print("duplicates_matrix: " + ",".join(matrix_dupes))
+        if manifest_dupes:
+            print("duplicates_manifest: " + ",".join(manifest_dupes))
+        return 2
+    matrix_set = set(matrix)
+    manifest_set = set(manifest)
+    if matrix_set == manifest_set:
+        print("EQUAL")
+        print("count=" + str(len(matrix_set)))
+        print("names=" + ",".join(sorted(matrix_set)))
+        return 0
+    print("MISMATCH")
+    print("count_matrix=" + str(len(matrix_set)))
+    print("count_manifest=" + str(len(manifest_set)))
+    only_matrix = ",".join(sorted(matrix_set - manifest_set))
+    only_manifest = ",".join(sorted(manifest_set - matrix_set))
+    print("only_in_matrix:" + ((" " + only_matrix) if only_matrix else ""))
+    print("only_in_manifest:" + ((" " + only_manifest) if only_manifest else ""))
+    return 1
+
+
+try:
+    sys.exit(main())
+except ParseError as exc:
+    print(f"PARSE_ERROR: {exc}")
+    sys.exit(2)
+except (OSError, tomllib.TOMLDecodeError, UnicodeError) as exc:
+    print(f"PARSE_ERROR: {exc}")
+    sys.exit(2)
+PY
+}
+
+run_compare_fuzz_matrix() {
+  local out_file="$1"
+  local err_file="$2"
+  local nightly="$3"
+  local cargo="$4"
+  set +e
+  compare_fuzz_matrix "$nightly" "$cargo" >"$out_file" 2>"$err_file"
+  COMPARE_CODE=$?
+  set -e
+}
+
+NIGHTLY_YML="${REPO_ROOT}/.github/workflows/ci-nightly.yml"
+FUZZ_CARGO="${REPO_ROOT}/fuzz/Cargo.toml"
+
+run_compare_fuzz_matrix \
+  "${TMPDIR_BASE}/parity-live.out" "${TMPDIR_BASE}/parity-live.err" \
+  "$NIGHTLY_YML" "$FUZZ_CARGO"
+assert_eq "live nightly fuzz matrix equals fuzz/Cargo.toml [[bin]] names" \
+  0 "$COMPARE_CODE"
+assert_contains "live parity reports EQUAL" \
+  "EQUAL" "${TMPDIR_BASE}/parity-live.out"
+assert_contains "live parity reports a non-empty name set" \
+  "count=" "${TMPDIR_BASE}/parity-live.out"
+
+# Fixture workflow: a decoy job matrix must not be compared. The fuzz job is
+# the only authority for nightly enrollment.
+cat > "${TMPDIR_BASE}/fixture-nightly.yml" <<'YAML'
+jobs:
+  decoy:
+    strategy:
+      matrix:
+        target: [decoy_only]
+  fuzz:
+    strategy:
+      matrix:
+        target: [
+          alpha,
+          beta
+        ]
+YAML
+
+cat > "${TMPDIR_BASE}/fixture-cargo.toml" <<'TOML'
+[[bin]]
+name = "beta"
+path = "fuzz_targets/beta.rs"
+
+[[bin]]
+name = "alpha"
+path = "fuzz_targets/alpha.rs"
+TOML
+
+run_compare_fuzz_matrix \
+  "${TMPDIR_BASE}/parity-decoy.out" "${TMPDIR_BASE}/parity-decoy.err" \
+  "${TMPDIR_BASE}/fixture-nightly.yml" "${TMPDIR_BASE}/fixture-cargo.toml"
+assert_eq "decoy job matrix is ignored when fuzz job matches [[bin]]" \
+  0 "$COMPARE_CODE"
+assert_contains "decoy fixture reports EQUAL" \
+  "EQUAL" "${TMPDIR_BASE}/parity-decoy.out"
+assert_not_contains "decoy fixture does not enroll decoy_only" \
+  "decoy_only" "${TMPDIR_BASE}/parity-decoy.out"
+
+# Block-style matrix lists are accepted so a later YAML reformat cannot
+# silently disable the gate.
+cat > "${TMPDIR_BASE}/fixture-nightly-block.yml" <<'YAML'
+jobs:
+  fuzz:
+    strategy:
+      matrix:
+        target:
+          - alpha
+          - beta
+YAML
+
+run_compare_fuzz_matrix \
+  "${TMPDIR_BASE}/parity-block.out" "${TMPDIR_BASE}/parity-block.err" \
+  "${TMPDIR_BASE}/fixture-nightly-block.yml" "${TMPDIR_BASE}/fixture-cargo.toml"
+assert_eq "block-style fuzz matrix equals [[bin]] names" \
+  0 "$COMPARE_CODE"
+assert_contains "block-style fixture reports EQUAL" \
+  "EQUAL" "${TMPDIR_BASE}/parity-block.out"
+
+# Matrix-only name: the silent nightly miss in reverse (name stays enrolled
+# after it is removed from the manifest).
+cat > "${TMPDIR_BASE}/fixture-cargo-missing.toml" <<'TOML'
+[[bin]]
+name = "alpha"
+path = "fuzz_targets/alpha.rs"
+TOML
+
+run_compare_fuzz_matrix \
+  "${TMPDIR_BASE}/parity-matrix-extra.out" "${TMPDIR_BASE}/parity-matrix-extra.err" \
+  "${TMPDIR_BASE}/fixture-nightly.yml" "${TMPDIR_BASE}/fixture-cargo-missing.toml"
+assert_eq "matrix name absent from [[bin]] is a mismatch" \
+  1 "$COMPARE_CODE"
+assert_contains "matrix-extra mismatch names the leftover matrix target" \
+  "only_in_matrix: beta" "${TMPDIR_BASE}/parity-matrix-extra.out"
+
+# Manifest-only name: adding a [[bin]] without updating the nightly matrix.
+cat > "${TMPDIR_BASE}/fixture-cargo-extra.toml" <<'TOML'
+[[bin]]
+name = "alpha"
+path = "fuzz_targets/alpha.rs"
+
+[[bin]]
+name = "beta"
+path = "fuzz_targets/beta.rs"
+
+[[bin]]
+name = "gamma"
+path = "fuzz_targets/gamma.rs"
+TOML
+
+run_compare_fuzz_matrix \
+  "${TMPDIR_BASE}/parity-manifest-extra.out" "${TMPDIR_BASE}/parity-manifest-extra.err" \
+  "${TMPDIR_BASE}/fixture-nightly.yml" "${TMPDIR_BASE}/fixture-cargo-extra.toml"
+assert_eq "[[bin]] name absent from the nightly matrix is a mismatch" \
+  1 "$COMPARE_CODE"
+assert_contains "manifest-extra mismatch names the missing matrix target" \
+  "only_in_manifest: gamma" "${TMPDIR_BASE}/parity-manifest-extra.out"
+
+# Missing fuzz job cannot pass: an extractor that sees no matrix must not EQUAL.
+cat > "${TMPDIR_BASE}/fixture-no-fuzz.yml" <<'YAML'
+jobs:
+  decoy:
+    strategy:
+      matrix:
+        target: [alpha, beta]
+YAML
+
+run_compare_fuzz_matrix \
+  "${TMPDIR_BASE}/parity-no-fuzz.out" "${TMPDIR_BASE}/parity-no-fuzz.err" \
+  "${TMPDIR_BASE}/fixture-no-fuzz.yml" "${TMPDIR_BASE}/fixture-cargo.toml"
+assert_eq "workflow without jobs.fuzz is a parse error, not EQUAL" \
+  2 "$COMPARE_CODE"
+assert_contains "missing fuzz job is reported as PARSE_ERROR" \
+  "PARSE_ERROR:" "${TMPDIR_BASE}/parity-no-fuzz.out"
+assert_not_contains "missing fuzz job does not report EQUAL" \
+  "EQUAL" "${TMPDIR_BASE}/parity-no-fuzz.out"
 
 echo ""
 echo "=== ${PASS} passed, ${FAIL} failed ==="
