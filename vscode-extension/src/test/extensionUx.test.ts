@@ -103,9 +103,14 @@ describe('formatting provider experience projection', () => {
     } as unknown as vscode.TextDocument;
 
     await expect(
-      settleFormattingProviderCall(async () => {
-        throw error;
-      }, null, false, document),
+      settleFormattingProviderCall(
+        async () => {
+          throw error;
+        },
+        null,
+        false,
+        document,
+      ),
     ).resolves.toBeNull();
   });
 });
