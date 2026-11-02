@@ -3361,11 +3361,9 @@ clean-worktrees *ARGS:
 worktree-manager *ARGS:
     python3 scripts/worktree-manager.py {{ARGS}}
 
-# List orphaned agent /tmp build-target directories (dry-run by default).
+# Advisory listing of agent /tmp build-target directories (no deletion).
 # These accumulate from finished/zombie agent sessions and can exhaust disk space.
-# Pass --prune (or set APPLY=1) to delete them.
-# Only touches /tmp/agent-*-target and /tmp/wt-*-target patterns.
-# Never removes a target belonging to a currently registered git worktree.
-# Skips dirs modified within the last 5 minutes (grace period for active builds).
+# --prune and APPLY=1 are retired (exit 78); naming/age are not reclaim clearance.
+# Only inspects /tmp/agent-*-target and /tmp/wt-*-target patterns.
 clean-tmp-targets *ARGS:
     bash scripts/clean-tmp-targets.sh {{ARGS}}
