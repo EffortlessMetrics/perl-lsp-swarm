@@ -12,6 +12,10 @@ use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser::ast_utils::{find_declaration_position, get_indent_at};
 use perl_parser_core::{Node, NodeKind, SourceLocation};
 
+use crate::providers::diagnostics::quick_fix_context::{
+    ParseErrorFixKind, parse_error_fix_kind_from_legacy_code,
+};
+
 /// Fix undefined variable by declaring it
 pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
     let mut actions = Vec::new();
@@ -1430,81 +1434,12 @@ pub fn fix_parse_error(
 
     let mut actions = Vec::new();
 
+    if missing_semicolon_fix_authorized(diagnostic, code) {
+        actions.extend(missing_semicolon_quick_fix(source, diagnostic, code, range_start));
+        return actions;
+    }
+
     match code {
-        "parse-error-missingsemicolon" => {
-            // Add semicolon at the end
-            let line_end =
-                source[range_start..].find('\n').map(|p| range_start + p).unwrap_or(source.len());
-
-            // Find the actual end of the statement (before any trailing whitespace)
-            let mut end_pos = line_end;
-            while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
-                end_pos -= 1;
-            }
-
-            actions.push(CodeAction {
-                title: "Add missing semicolon".to_string(),
-                kind: CodeActionKind::QuickFix,
-                diagnostics: vec![code.to_string()],
-                edit: CodeActionEdit {
-                    changes: vec![TextEdit {
-                        location: SourceLocation { start: end_pos, end: end_pos },
-                        new_text: ";".to_string(),
-                    }],
-                },
-                is_preferred: true,
-            });
-        }
-        "PL001" | "PL002" | "PL003"
-            if diagnostic.message.to_ascii_lowercase().contains("missing semicolon") =>
-        {
-            // PL001/PL002 are general parse error codes. When the message indicates a missing
-            // semicolon, apply the same fix -- but skip heredoc contexts where insertion is wrong.
-            let at_heredoc = source[range_start..].get(..2).is_some_and(|s| s == "<<");
-            if !at_heredoc {
-                let line_end = source[range_start..]
-                    .find('\n')
-                    .map(|p| range_start + p)
-                    .unwrap_or(source.len());
-
-                // Insert before trailing whitespace. When the diagnostic
-                // range itself sits at EOF (PL003's shape), range_start is at
-                // or past the content end, so the trim must be bounded by the
-                // start of source rather than by range_start — otherwise the
-                // semicolon lands after the trailing newline (#12798).
-                let trim_floor = if range_start >= source.len() { 0 } else { range_start };
-                let mut end_pos = line_end;
-                while end_pos > trim_floor && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
-                    end_pos -= 1;
-                }
-
-                // A trailing line comment swallows a semicolon appended after
-                // it (`my $value = 1 # why;` — the statement never
-                // terminates). In the EOF case insert before the comment
-                // instead, then re-trim the whitespace ahead of it (#12803).
-                if trim_floor == 0
-                    && let Some(comment_start) = trailing_line_comment_start(&source[..end_pos])
-                {
-                    end_pos = comment_start;
-                    while end_pos > 0 && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
-                        end_pos -= 1;
-                    }
-                }
-
-                actions.push(CodeAction {
-                    title: "Add missing semicolon".to_string(),
-                    kind: CodeActionKind::QuickFix,
-                    diagnostics: vec![code.to_string()],
-                    edit: CodeActionEdit {
-                        changes: vec![TextEdit {
-                            location: SourceLocation { start: end_pos, end: end_pos },
-                            new_text: ";".to_string(),
-                        }],
-                    },
-                    is_preferred: true,
-                });
-            }
-        }
         "PL003" => {
             // Unexpected EOF has no interior delimiter location. Offer the
             // bounded fallback only when source evidence supports an
@@ -1599,6 +1534,54 @@ pub fn fix_parse_error(
     }
 
     actions
+}
+
+fn missing_semicolon_fix_authorized(diagnostic: &QuickFixDiagnostic, code: &str) -> bool {
+    diagnostic.parse_error_fix_kind() == Some(ParseErrorFixKind::MissingSemicolon)
+        || parse_error_fix_kind_from_legacy_code(code) == Some(ParseErrorFixKind::MissingSemicolon)
+}
+
+fn missing_semicolon_quick_fix(
+    source: &str,
+    _diagnostic: &QuickFixDiagnostic,
+    code: &str,
+    range_start: usize,
+) -> Vec<CodeAction> {
+    let at_heredoc = source[range_start..].get(..2).is_some_and(|s| s == "<<");
+    if at_heredoc {
+        return Vec::new();
+    }
+
+    let line_end =
+        source[range_start..].find('\n').map(|p| range_start + p).unwrap_or(source.len());
+
+    let trim_floor = if range_start >= source.len() { 0 } else { range_start };
+    let mut end_pos = line_end;
+    while end_pos > trim_floor && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
+        end_pos -= 1;
+    }
+
+    if trim_floor == 0
+        && let Some(comment_start) = trailing_line_comment_start(&source[..end_pos])
+    {
+        end_pos = comment_start;
+        while end_pos > 0 && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
+            end_pos -= 1;
+        }
+    }
+
+    vec![CodeAction {
+        title: "Add missing semicolon".to_string(),
+        kind: CodeActionKind::QuickFix,
+        diagnostics: vec![code.to_string()],
+        edit: CodeActionEdit {
+            changes: vec![TextEdit {
+                location: SourceLocation { start: end_pos, end: end_pos },
+                new_text: ";".to_string(),
+            }],
+        },
+        is_preferred: true,
+    }]
 }
 
 /// Conservatively detect an unmatched block opener without treating braces in

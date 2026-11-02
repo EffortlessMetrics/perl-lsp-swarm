@@ -2,6 +2,7 @@
 //!
 //! Defines the core types for representing code actions and their edits.
 
+use crate::providers::diagnostics::quick_fix_context::ParseErrorFixKind;
 use crate::providers::rename::TextEdit;
 
 /// A diagnostic with byte offset range for quick fix processing
@@ -26,6 +27,8 @@ pub struct QuickFixDiagnostic {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickFixMetadata {
+    /// Parser/classifier-owned parse-error fix identity (#8396).
+    ParseErrorFix(ParseErrorFixKind),
     /// Missing arguments for a static `printf`/`sprintf` format string.
     PrintfFormatArity {
         /// Function name used by the call.

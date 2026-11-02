@@ -334,6 +334,7 @@ fn maybe_warn_undefined_method(
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(format!(
             "Rename the call to a known `{receiver}` method, or add `sub {method}`."
         )),

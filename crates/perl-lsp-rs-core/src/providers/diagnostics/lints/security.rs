@@ -500,6 +500,7 @@ fn check_global_signal_handler_assignment(
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(format!(
             "Use `local $SIG{{{}}} = ...` if the handler should be scoped",
             signal_handler.signal_name
@@ -589,6 +590,7 @@ fn check_eval_node(block: &Node, eval_node: &Node, diagnostics: &mut Vec<Diagnos
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -637,6 +639,7 @@ fn check_two_arg_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut 
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some("Replace with 3-arg form: open(my $fh, '>', $file)".to_string()),
     });
 }
@@ -678,6 +681,7 @@ fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Use eval { } for exception handling, or consider safer alternatives like Try::Tiny"
                 .to_string(),
@@ -729,6 +733,7 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
             .with_suggestion(SYSTEM_LIST_FORM_SUGGESTION)
             .with_related_information(range, explanation),
         ),
+        parse_error_fix_kind: None,
         suggestion: Some(SYSTEM_LIST_FORM_SUGGESTION.to_string()),
     });
 }
@@ -774,6 +779,7 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             .with_suggestion(EXEC_LIST_FORM_SUGGESTION)
             .with_related_information(range, explanation),
         ),
+        parse_error_fix_kind: None,
         suggestion: Some(EXEC_LIST_FORM_SUGGESTION.to_string()),
     });
 }
@@ -836,6 +842,7 @@ fn check_pipe_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut Vec
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Use the list form: open(my $fh, '-|', $cmd, @args) for safer command execution"
                 .to_string(),
@@ -914,6 +921,7 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
             .with_related_information(range, explanation),
         ),
+        parse_error_fix_kind: None,
         suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
     });
 }
@@ -946,6 +954,7 @@ fn push_command_execution_diagnostic(
                 .with_suggestion(OPEN_LIST_FORM_SUGGESTION)
                 .with_related_information(range, explanation),
         ),
+        parse_error_fix_kind: None,
         suggestion: Some(OPEN_LIST_FORM_SUGGESTION.to_string()),
     });
 }
@@ -970,6 +979,7 @@ fn push_substitution_eval_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnost
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Compute the replacement without /e, or keep untrusted input out of the evaluated expression"
                 .to_string(),
@@ -997,6 +1007,7 @@ fn push_embedded_pattern_code_diagnostic(node: &Node, diagnostics: &mut Vec<Diag
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some("Remove the embedded executable code block from the pattern".to_string()),
     });
 }
@@ -1217,6 +1228,7 @@ fn check_sql_injection_method_call(
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(
             "Use placeholders: $dbh->prepare('... WHERE id = ?')->execute($user_id)".to_string(),
         ),

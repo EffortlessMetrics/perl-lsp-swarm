@@ -17,6 +17,7 @@ pub(crate) fn undefined_label(target: &Node, label: &str) -> Diagnostic {
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some(format!("Add a '{label}:' label or remove the goto")),
     }
 }

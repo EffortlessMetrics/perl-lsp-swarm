@@ -34,6 +34,7 @@ fn bareword_diag(start: usize, end: usize, name: &str) -> Diagnostic {
         tags: Vec::new(),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: None,
     }
 }

@@ -29,6 +29,7 @@ fn make_diag(start: usize, end: usize, code: &str, message: &str) -> Diagnostic 
         suggestion: None,
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
     }
 }
 

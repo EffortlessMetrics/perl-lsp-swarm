@@ -132,6 +132,7 @@ pub fn check_role_conflicts(
                 tags: Vec::new(),
                 fixable: false,
                 critic_observation: None,
+                parse_error_fix_kind: None,
                 suggestion: Some(format!(
                     "Define `{method_name}` in `{}` or remove one of the conflicting roles.",
                     class_model.name

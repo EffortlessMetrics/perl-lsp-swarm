@@ -591,6 +591,7 @@ fn emit_unreachable(stmt: &Node, diagnostics: &mut Vec<Diagnostic>) {
         tags: vec![DiagnosticTag::Unnecessary],
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
         suggestion: Some("Remove unreachable code".to_string()),
     });
 }

@@ -71,6 +71,7 @@ fn scan_execution_unit(root: &Node, diagnostics: &mut Vec<Diagnostic>) {
             tags: Vec::new(),
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
             suggestion: Some(
                 "Drop the `if (wantarray())` when both branches are empty, or return \
                  different values per context."

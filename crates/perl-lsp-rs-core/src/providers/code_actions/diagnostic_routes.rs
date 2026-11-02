@@ -1,5 +1,6 @@
 //! Diagnostic-code routing for code-action quick fixes.
 
+use super::diagnostic_context::DiagnosticContext;
 use super::quick_fixes;
 use super::types::{CodeAction, QuickFixDiagnostic, QuickFixMetadata};
 use crate::providers::diagnostics::Diagnostic;
@@ -14,11 +15,13 @@ fn to_quick_fix_diagnostic(
     diag: &Diagnostic,
     printf_metadata: Option<&QuickFixMetadata>,
 ) -> QuickFixDiagnostic {
-    let metadata = diag.code.as_deref().and_then(|code| {
+    let context = DiagnosticContext::new(diag);
+    let printf = diag.code.as_deref().and_then(|code| {
         matches!(code, "PL405" | "native.common.printf_format_arity")
             .then(|| printf_metadata.cloned())
             .flatten()
     });
+    let metadata = context.quick_fix_metadata(printf);
     QuickFixDiagnostic {
         range: diag.range,
         message: diag.message.clone(),
@@ -262,6 +265,7 @@ mod tests {
             suggestion: None,
             fixable: false,
             critic_observation: None,
+            parse_error_fix_kind: None,
         }
     }
 

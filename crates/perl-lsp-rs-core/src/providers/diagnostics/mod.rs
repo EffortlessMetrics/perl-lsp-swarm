@@ -46,6 +46,9 @@ mod internal_types;
 pub(crate) mod lints;
 /// Parse error to diagnostic conversion
 mod parse_errors;
+/// Typed machine context attached to parse-error diagnostics (#8396).
+pub(crate) mod quick_fix_context;
+pub use quick_fix_context::ParseErrorFixKind;
 
 /// Canonical regex-diagnostic projection from the parser-retained analysis (#7024).
 pub mod regex_canonical;

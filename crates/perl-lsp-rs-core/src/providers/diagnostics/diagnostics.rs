@@ -39,6 +39,7 @@ use super::lints::unused_imports::check_unused_imports;
 use super::lints::version_compat::check_version_compat_with_pragma_map;
 use super::lints::wantarray_branch::check_irrelevant_wantarray_branches;
 use super::parse_errors::{parse_error_code, parse_error_severity};
+use super::quick_fix_context::parse_error_fix_kind_from_parse_error;
 use super::regex_canonical::project_canonical_regex_diagnostics;
 use super::scope::scope_issues_to_diagnostics_with_semantics_ref;
 
@@ -652,6 +653,7 @@ impl DiagnosticsProvider {
                 suggestion,
                 fixable: code == DiagnosticCode::ParseError,
                 critic_observation: None,
+                parse_error_fix_kind: parse_error_fix_kind_from_parse_error(error),
             });
         }
 

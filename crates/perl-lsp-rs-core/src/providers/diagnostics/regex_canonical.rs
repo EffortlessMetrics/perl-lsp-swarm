@@ -289,6 +289,7 @@ fn build(code: DiagnosticCode, range: (usize, usize), message: String) -> Diagno
         suggestion: code.context_hint().map(str::to_string),
         fixable: false,
         critic_observation: None,
+        parse_error_fix_kind: None,
     }
 }
 
